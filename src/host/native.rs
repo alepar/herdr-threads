@@ -903,6 +903,25 @@ impl HostPort for NativeCli {
         }
     }
 
+    fn observe_pane_agent(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<Option<ports::PaneAgentObservation>, ApiError> {
+        self.check_context(context)?;
+        let started = Instant::now();
+        let limit = Duration::from_millis(750);
+        match self.run(&["agent", "get", target.as_str()], &context.budget, limit) {
+            Err(failure) if failure.code == ErrorCode::NotFound => Ok(None),
+            Err(failure) => Err(failure),
+            Ok(raw) => {
+                let parsed = crate::host::observation::normalize_pane_agent(&raw, target.as_str())?;
+                self.check_after_parse(&context.budget, started, limit)?;
+                Ok(parsed)
+            }
+        }
+    }
+
     fn launch_native(
         &self,
         request: NativeLaunchRequest,
@@ -1234,6 +1253,72 @@ mod tests {
                 "foreground_cwd":"/tmp","interactive_ready":true,"name":name,"pane_id":"w4:p1",
                 "revision":0,"state_change_seq":504,"tab_id":"w4:t1","terminal_id":"term_1",
                 "workspace_id":"w4"}})
+    }
+    fn pane_agent_context() -> HostCallContext {
+        HostCallContext {
+            budget: CallBudget {
+                deadline: MonoInstant(10_000),
+                cancellation: Cancellation::default(),
+            },
+            expected_boot: None,
+            expected_epoch: None,
+        }
+    }
+    /// One `agent.get` exchange answered with `reply` (its id is filled in).
+    fn pane_agent_read(reply: Value) -> Result<Option<ports::PaneAgentObservation>, ApiError> {
+        let (socket, cli, worker) = fixture(move |stream, wire| {
+            assert_eq!(wire["method"], "agent.get");
+            assert_eq!(wire["params"], json!({"target":"w4:p1"}));
+            let mut reply = reply;
+            reply["id"] = wire["id"].clone();
+            writeln!(stream, "{reply}").unwrap();
+        });
+        let result = cli.observe_pane_agent(&HostTargetId::new("w4:p1"), &pane_agent_context());
+        worker.join().unwrap();
+        let _ = fs::remove_file(socket);
+        result
+    }
+    fn agent_info(session: Option<&str>) -> Value {
+        let mut agent = json!({"agent":"claude","agent_status":"idle","pane_id":"w4:p1",
+            "terminal_id":"term_1"});
+        if let Some(value) = session {
+            agent["agent_session"] =
+                json!({"agent":"claude","kind":"id","source":"herdr:claude","value":value});
+        }
+        json!({"result":{"type":"agent_info","agent":agent}})
+    }
+    #[test]
+    fn pane_agent_maps_agent_get_with_session() {
+        assert_eq!(
+            pane_agent_read(agent_info(Some("sess-1"))).unwrap(),
+            Some(ports::PaneAgentObservation {
+                kind: Some("claude".into()),
+                agent_session: Some("sess-1".into()),
+            })
+        );
+    }
+    #[test]
+    fn pane_agent_maps_agent_get_without_session() {
+        assert_eq!(
+            pane_agent_read(agent_info(None)).unwrap(),
+            Some(ports::PaneAgentObservation {
+                kind: Some("claude".into()),
+                agent_session: None,
+            })
+        );
+    }
+    #[test]
+    fn pane_agent_not_found_is_absent() {
+        let reply = json!({"error":{"code":"agent_not_found","message":"no agent"}});
+        assert_eq!(pane_agent_read(reply).unwrap(), None);
+    }
+    #[test]
+    fn pane_agent_other_error_is_read_error() {
+        let reply = json!({"error":{"code":"permission_denied","message":"denied"}});
+        assert_eq!(
+            pane_agent_read(reply).unwrap_err().code,
+            ErrorCode::Unauthorized
+        );
     }
     #[test]
     fn guarded_start_correlates_exact_direct_request_without_claiming_execution() {

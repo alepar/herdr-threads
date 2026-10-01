@@ -1527,6 +1527,17 @@ impl OperatorRequest {
     }
 }
 
+/// Herdr's per-pane agent record for exactly one pane. TRUST-POLICY C1/A4:
+/// Herdr's agent field may only suggest; it never moves a seat, allocates one
+/// or ends a binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneAgentObservation {
+    /// Herdr's detection-based agent kind (for example `claude`, `codex`).
+    pub kind: Option<String>,
+    /// Herdr integration report; diagnostic value only.
+    pub agent_session: Option<String>,
+}
+
 /// A recognized idle native occupant may receive a recovery hint before check-in.
 /// This is separate from `ReceiptRegistration`, which starts receipt availability.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2536,6 +2547,16 @@ pub trait HostPort: Send + Sync {
         request: NativeLaunchRequest,
         context: &HostCallContext,
     ) -> Result<NativeLaunchOutcome, ApiError>;
+    /// Herdr's agent record for one pane. `Ok(None)`: Herdr answered and
+    /// reports no agent; `Err`: the read failed. Adapters without the route
+    /// report "no agent".
+    fn observe_pane_agent(
+        &self,
+        _target: &HostTargetId,
+        _context: &HostCallContext,
+    ) -> Result<Option<PaneAgentObservation>, ApiError> {
+        Ok(None)
+    }
     /// Elected composition calls this once, before any observation, with the
     /// host epoch the previous daemon boot persisted. Daemon restart creates a
     /// new, higher connection epoch so a same-incarnation capture orders after
