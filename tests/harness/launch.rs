@@ -28,6 +28,8 @@ struct FakeHost {
     outcome: NativeLaunchOutcome,
     correlation_override: Option<CorrelatedStartup>,
     launch_error: Option<ErrorCode>,
+    pane_agent: Mutex<Option<crate::ports::PaneAgentObservation>>,
+    pane_agent_reads: AtomicUsize,
 }
 impl HostPort for FakeHost {
     fn native_launch_capability(&self) -> NativeLaunchCapability {
@@ -59,6 +61,15 @@ impl HostPort for FakeHost {
         _: &HostCallContext,
     ) -> Result<PromptOutcome, ApiError> {
         unreachable!()
+    }
+    fn observe_pane_agent(
+        &self,
+        target: &HostTargetId,
+        _: &HostCallContext,
+    ) -> Result<Option<crate::ports::PaneAgentObservation>, ApiError> {
+        assert_eq!(target.as_str(), "w4:p9", "the guard reads the bound pane");
+        self.pane_agent_reads.fetch_add(1, Ordering::SeqCst);
+        Ok(self.pane_agent.lock().unwrap().clone())
     }
     fn launch_native(
         &self,
@@ -100,6 +111,7 @@ impl HostPort for FakeHost {
 struct FakeSeats {
     calls: AtomicUsize,
     failure: Option<ErrorCode>,
+    open: Option<OpenBinding>,
 }
 impl LaunchSeatResolver for FakeSeats {
     fn resolve_for_launch(
@@ -113,6 +125,9 @@ impl LaunchSeatResolver for FakeSeats {
             return Err(error(code.clone(), "held or unresolved"));
         }
         Ok(SeatId::new("seat_1"))
+    }
+    fn open_binding(&self, _: &SeatId, _: &CallBudget) -> Result<Option<OpenBinding>, ApiError> {
+        Ok(self.open.clone())
     }
 }
 struct FakeHooks(Option<ConfiguredHook>);
@@ -168,10 +183,13 @@ fn fixture() -> (FakeHost, FakeSeats, FakeHooks, TestClock, CallBudget) {
             },
             correlation_override: None,
             launch_error: None,
+            pane_agent: Mutex::new(None),
+            pane_agent_reads: AtomicUsize::new(0),
         },
         FakeSeats {
             calls: AtomicUsize::new(0),
             failure: None,
+            open: None,
         },
         FakeHooks(Some(ConfiguredHook {
             scope: "codex".into(),
@@ -916,32 +934,12 @@ fn codex_argv_composition_per_form() {
             &["exec", "--", "fork"],
             [&["--no-daemon", "exec"][..], &o, &["--", "fork"]].concat(),
         ),
-        // interactive resume
-        (
-            &["-m", "m", "resume", "ID"],
-            [&["--no-daemon", "-m", "m", "resume"][..], &o, &["ID"]].concat(),
-        ),
         // exec resume behind a value-taking exec option (0.159.2
         // `--thread-source`): the hooks go after `resume`, not after `exec`
         (
             &["exec", "--thread-source", "X", "resume", "ID"],
             [
                 &["--no-daemon", "exec", "--thread-source", "X", "resume"][..],
-                &o,
-                &["ID"],
-            ]
-            .concat(),
-        ),
-        // resume behind root `--remote ADDR`
-        (
-            &["--remote", "ADDR", "resume"],
-            [&["--no-daemon", "--remote", "ADDR", "resume"][..], &o].concat(),
-        ),
-        // resume behind root `--remote-auth-token-env VAR`
-        (
-            &["--remote-auth-token-env", "VAR", "resume", "ID"],
-            [
-                &["--no-daemon", "--remote-auth-token-env", "VAR", "resume"][..],
                 &o,
                 &["ID"],
             ]
@@ -1119,4 +1117,117 @@ fn shell_wrapper_no_daemon_is_never_duplicated() {
         compose_native_argv_with(Harness::Claude, vec!["x".into()], Vec::new(), true).unwrap(),
         ["x"]
     );
+}
+
+fn bound_fixture(
+    provenance: &str,
+    agent_kind: Option<&str>,
+) -> (FakeHost, FakeSeats, FakeHooks, TestClock, CallBudget) {
+    let (host, mut seats, hooks, clock, budget) = fixture();
+    seats.open = Some(OpenBinding {
+        target: HostTargetId::new("w4:p9"),
+        provenance: provenance.into(),
+    });
+    *host.pane_agent.lock().unwrap() = agent_kind.map(|kind| crate::ports::PaneAgentObservation {
+        kind: Some(kind.into()),
+        agent_session: None,
+    });
+    (host, seats, hooks, clock, budget)
+}
+
+/// Kills: a launch that starts a second agent for a seat whose bound agent is
+/// still live in its pane (the name-suffix retry would otherwise allow it).
+#[test]
+fn launch_refused_when_bound_claude_agent_is_live_elsewhere() {
+    launch_refused_for_live_bound_agent("claude");
+}
+
+#[test]
+fn launch_refused_when_bound_codex_agent_is_live_elsewhere() {
+    launch_refused_for_live_bound_agent("codex");
+}
+
+fn launch_refused_for_live_bound_agent(kind: &str) {
+    let (host, seats, hooks, clock, budget) = bound_fixture("cooperative_top_level", Some(kind));
+    let err = launch_managed(
+        &host,
+        &seats,
+        &hooks,
+        &clock,
+        request(Harness::Claude, &[]),
+        &budget,
+    )
+    .unwrap_err();
+    assert_eq!(err.code, ErrorCode::TargetUnsafe);
+    for needle in ["seat_1", "w4:p9", "second agent", kind] {
+        assert!(err.detail.contains(needle), "{needle}: {}", err.detail);
+    }
+    assert_eq!(host.pane_agent_reads.load(Ordering::SeqCst), 1);
+    assert!(host.submitted.lock().unwrap().is_empty());
+}
+
+#[test]
+fn launch_proceeds_when_bound_pane_shows_no_agent() {
+    let (host, seats, hooks, clock, budget) = bound_fixture("cooperative_top_level", None);
+    launch_managed(
+        &host,
+        &seats,
+        &hooks,
+        &clock,
+        request(Harness::Codex, &[]),
+        &budget,
+    )
+    .unwrap();
+    assert_eq!(host.pane_agent_reads.load(Ordering::SeqCst), 1);
+    assert_eq!(host.submitted.lock().unwrap().len(), 1);
+}
+
+/// A detected kind outside claude/codex is not a live bound agent.
+#[test]
+fn launch_proceeds_when_bound_pane_agent_kind_is_unrecognized() {
+    let (host, seats, hooks, clock, budget) = bound_fixture("cooperative_top_level", Some("pi"));
+    launch_managed(
+        &host,
+        &seats,
+        &hooks,
+        &clock,
+        request(Harness::Codex, &[]),
+        &budget,
+    )
+    .unwrap();
+    assert_eq!(host.submitted.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn launch_proceeds_for_human_bound_seat() {
+    let (host, seats, hooks, clock, budget) = bound_fixture("operator_human", Some("claude"));
+    launch_managed(
+        &host,
+        &seats,
+        &hooks,
+        &clock,
+        request(Harness::Codex, &[]),
+        &budget,
+    )
+    .unwrap();
+    assert_eq!(host.pane_agent_reads.load(Ordering::SeqCst), 0);
+    assert_eq!(host.submitted.lock().unwrap().len(), 1);
+}
+
+/// Kills: managed launch of the top-level Codex `resume` form, which no live
+/// capture shows loading the owned hooks.
+#[test]
+fn codex_top_level_resume_form_is_refused_until_captured() {
+    for caller in [
+        &["resume"][..],
+        &["-m", "m", "resume", "ID"],
+        &["--remote", "ADDR", "resume"],
+        &["--remote-auth-token-env", "VAR", "resume", "ID"],
+    ] {
+        let err = compose(caller).unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidRequest, "{caller:?}");
+        assert!(err.detail.contains("no live capture"), "{}", err.detail);
+        assert!(err.detail.contains("`resume`"), "{}", err.detail);
+    }
+    assert!(compose(&["exec", "resume", "ID"]).is_ok());
 }

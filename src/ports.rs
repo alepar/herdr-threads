@@ -1551,6 +1551,12 @@ pub struct SafeWakeTarget {
     pub basis: WakeTargetBasis,
     pub epoch: u64,
     pub observation_sequence: u64,
+    /// The seat's open binding harness (`claude` or `codex`); the host
+    /// adapter refuses a wake unless Herdr's detected agent kind equals it
+    /// (TRUST-POLICY A4). The host cannot know it, so adapters set `None` and
+    /// the notification dispatcher fills it from the reservation. `None`
+    /// means the seat has no open binding: the recognized-kind rule applies.
+    pub bound_harness: Option<String>,
 }
 
 /// What identifies the occupant a wake prompt may reach.
@@ -1883,6 +1889,8 @@ pub enum ReservedWakeAuthority {
         terminal: TerminalId,
         incarnation: String,
         binding_generation: Option<u64>,
+        /// The open binding's harness, when the seat has one.
+        harness: Option<String>,
     },
 }
 impl WakeReservation {

@@ -777,6 +777,7 @@ impl HostPort for NativeCli {
             basis: WakeTargetBasis::CooperativeAgent,
             epoch: observation.epoch,
             observation_sequence: observation.observation_sequence,
+            bound_harness: None,
         })
     }
 
@@ -994,6 +995,14 @@ fn cooperative_wake_ready(
     if !kind.is_some_and(|kind| WAKE_AGENTS.contains(&kind)) {
         return Err(format!(
             "no recognized harness agent (agent {})",
+            kind.unwrap_or("none").chars().take(32).collect::<String>()
+        ));
+    }
+    if let Some(bound) = target.bound_harness.as_deref()
+        && kind != Some(bound)
+    {
+        return Err(format!(
+            "agent kind {} differs from the bound harness {bound}",
             kind.unwrap_or("none").chars().take(32).collect::<String>()
         ));
     }
@@ -1857,6 +1866,77 @@ mod tests {
                 *methods.lock().unwrap(),
                 ["pane.get", "agent.get", "agent.prompt"],
                 "the recheck immediately precedes the prompt"
+            );
+        }
+    }
+
+    /// TRUST-POLICY A4 wake rule: the pane's detected agent kind must equal
+    /// the seat's bound harness; a different kind (both directions) or no
+    /// detected kind refuses before any prompt, a matching kind is prompted.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cooperative_wake_refuses_claude_bound_seat_with_codex_agent() {
+        bound_harness_wake_refused("claude", Some("codex"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cooperative_wake_refuses_codex_bound_seat_with_claude_agent() {
+        bound_harness_wake_refused("codex", Some("claude"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cooperative_wake_refuses_codex_bound_seat_without_detected_agent() {
+        bound_harness_wake_refused("codex", None);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn bound_harness_wake_refused(bound: &'static str, detected: Option<&str>) {
+        let (result, methods) = cooperative_wake_with(
+            vec![recheck_exchange(wake_agent("idle", detected, "term_1"))],
+            None,
+            |target, _| target.bound_harness = Some(bound.into()),
+        );
+        let error = result.unwrap_err();
+        assert_eq!(error.code, ErrorCode::TargetUnsafe, "{bound} {detected:?}");
+        assert!(
+            error.detail.contains("bound harness") || error.detail.contains("no recognized"),
+            "{}",
+            error.detail
+        );
+        assert_eq!(
+            *methods.lock().unwrap(),
+            ["pane.get", "agent.get"],
+            "no agent.prompt is sent"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cooperative_wake_prompts_matching_bound_harness() {
+        for kind in ["claude", "codex"] {
+            let prompt: Exchange = Box::new(move |stream: &mut UnixStream, request: Value| {
+                assert_eq!(request["method"], "agent.prompt");
+                answer(
+                    stream,
+                    &request,
+                    json!({"type":"agent_prompted","agent":wake_agent("idle", Some(kind), "term_1")}),
+                );
+            });
+            let (result, methods) = cooperative_wake_with(
+                vec![
+                    recheck_exchange(wake_agent("idle", Some(kind), "term_1")),
+                    prompt,
+                ],
+                None,
+                |target, _| target.bound_harness = Some(kind.into()),
+            );
+            assert_eq!(result.unwrap(), ports::PromptOutcome::Submitted, "{kind}");
+            assert_eq!(
+                *methods.lock().unwrap(),
+                ["pane.get", "agent.get", "agent.prompt"],
+                "{kind}"
             );
         }
     }
