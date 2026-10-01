@@ -48,6 +48,7 @@ pub enum CommandResult {
     OperatorRebound(SeatId),
     OperatorFreshSeat(SeatId),
     OperatorInvited(InvitationId),
+    OperatorRetired(SeatId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -747,6 +748,8 @@ pub enum IntentKind {
     OperatorRebind,
     OperatorFreshSeat,
     OperatorOrphanInvite,
+    OperatorRetire,
+    OperatorReplace,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

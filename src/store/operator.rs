@@ -19,6 +19,8 @@ pub(crate) fn operation(command: &OperatorCommand) -> &OperationId {
         OperatorCommand::Rebind(c) => &c.operation,
         OperatorCommand::FreshSeat(c) => &c.operation,
         OperatorCommand::OrphanInvite(c) => &c.operation,
+        OperatorCommand::Retire(c) => &c.operation,
+        OperatorCommand::Replace(c) => &c.operation,
     }
 }
 /// Preserve existing persisted tuples; changing these requires a migration.
@@ -33,6 +35,8 @@ pub(crate) fn digest(instance: &str, command: &OperatorCommand) -> Result<[u8; 3
         OperatorCommand::Rebind(c) => Command::OperatorRebind(c.clone()),
         OperatorCommand::FreshSeat(c) => Command::OperatorFreshSeat(c.clone()),
         OperatorCommand::OrphanInvite(c) => Command::OperatorOrphanInvite(c.clone()),
+        OperatorCommand::Retire(c) => Command::OperatorRetire(c.clone()),
+        OperatorCommand::Replace(c) => Command::OperatorReplace(c.clone()),
     };
     wire.validate()
         .map_err(|e| api_error(ErrorCode::InvalidRequest, e))?;
@@ -45,6 +49,16 @@ pub(crate) fn digest(instance: &str, command: &OperatorCommand) -> Result<[u8; 3
             instance,
             &c.target,
             Option::<&crate::protocol::ids::SeatId>::None,
+        )),
+        OperatorCommand::Retire(c) => {
+            schema::canonical_digest(&("operator_retire", instance, &c.seat))
+        }
+        OperatorCommand::Replace(c) => schema::canonical_digest(&(
+            "operator_replace",
+            instance,
+            &c.target,
+            &c.seat,
+            &c.replace,
         )),
         OperatorCommand::OrphanInvite(c) => {
             if c.deadline_millis.is_some_and(|d| d > i64::MAX as u64) {
@@ -68,6 +82,8 @@ pub(crate) fn validate_result(
 ) -> Result<(), ApiError> {
     let valid = match (command, result) {
         (OperatorCommand::Rebind(c), CommandResult::OperatorRebound(seat)) => seat == &c.seat,
+        (OperatorCommand::Retire(c), CommandResult::OperatorRetired(seat)) => seat == &c.seat,
+        (OperatorCommand::Replace(c), CommandResult::OperatorRebound(seat)) => seat == &c.seat,
         (OperatorCommand::FreshSeat(_), CommandResult::OperatorFreshSeat(_))
         | (OperatorCommand::OrphanInvite(_), CommandResult::OperatorInvited(_)) => true,
         _ => false,

@@ -20,7 +20,7 @@ use crate::{
         commands::CheckIn,
         ids::{ExecutionId, HostBootId, HostTargetId, SeatId, TerminalId, prefix},
         results::{ApiError, CheckInResult, CommandResult, ErrorCode},
-        time::CallBudget,
+        time::{CallBudget, UtcMillis},
     },
     store::{
         connection::{DecisionInstant, StoreContext, api_error, store_error},
@@ -1547,6 +1547,121 @@ fn saved_seat_cas(
     Ok(terminal.as_deref() == expected_terminal.map(|id| id.as_str()))
 }
 
+/// TRUST-POLICY C2: instance-wide restore-hold release when nothing is left
+/// to protect. Predicate: reconciliation of the current recovery boot/epoch
+/// finished (persisted marker) and no unresolved nonretired seat remains.
+/// Clears `baseline_hold_unclaimed` and releases every open `recovery_holds`
+/// row of the instance in the caller's transaction. Returns whether it lifted.
+pub(crate) fn lift_baseline_hold_if_clear(
+    tx: &Transaction<'_>,
+    instance: &str,
+    at: UtcMillis,
+) -> Result<bool, ApiError> {
+    type Marker = Option<(
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        Option<i64>,
+        i64,
+    )>;
+    let row: Marker = tx
+        .query_row(
+            "SELECT recovery_boot,recovery_epoch,reconciled_boot,reconciled_epoch,baseline_hold_unclaimed FROM host_instances WHERE id=?1",
+            [instance],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some((recovery_boot, recovery_epoch, reconciled_boot, reconciled_epoch, flag)) = row else {
+        return Ok(false);
+    };
+    if recovery_boot.is_none()
+        || recovery_boot != reconciled_boot
+        || recovery_epoch != reconciled_epoch
+    {
+        return Ok(false);
+    }
+    let unresolved: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM seats WHERE instance_id=?1 AND state='unresolved')",
+            [instance],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let open_holds: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE instance_id=?1 AND released_at IS NULL)",
+            [instance],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if unresolved || (flag == 0 && !open_holds) {
+        return Ok(false);
+    }
+    tx.execute(
+        "UPDATE host_instances SET baseline_hold_unclaimed=0 WHERE id=?1",
+        [instance],
+    )
+    .map_err(store_error)?;
+    tx.execute(
+        "UPDATE recovery_holds SET released_at=?1 WHERE instance_id=?2 AND released_at IS NULL",
+        params![at.0, instance],
+    )
+    .map_err(store_error)?;
+    schema::bump_lifecycle_revision(tx, instance)?;
+    schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
+    Ok(true)
+}
+
+/// Persist that the saved-seat pass of `published` finished with no refused
+/// transition, then run the hold lift in the same transaction. Writes only
+/// while `published` is still the active publication of the instance's current
+/// recovery boot/epoch; returns whether the marker was written.
+pub fn record_reconciliation_pass(
+    context: &StoreContext,
+    conn: &mut Connection,
+    published: &PublishedSnapshot,
+    budget: &CallBudget,
+) -> Result<bool, ApiError> {
+    snapshot_budget(context, budget)?;
+    let epoch = checked_host_number(published.epoch)?;
+    context.execute_budgeted_decision(
+        conn,
+        budget,
+        |tx| {
+            let current = match active_publication(tx, &published.id) {
+                Ok(current) => current,
+                Err(error) if error.code == ErrorCode::CursorStale => return Ok(false),
+                Err(error) => return Err(error),
+            };
+            if current != *published {
+                return Ok(false);
+            }
+            let recovery: Option<(Option<String>, Option<i64>)> = tx
+                .query_row(
+                    "SELECT recovery_boot,recovery_epoch FROM host_instances WHERE id=?1",
+                    [published.instance.as_str()],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .map_err(store_error)?;
+            Ok(recovery == Some((Some(published.boot.as_str().to_owned()), Some(epoch))))
+        },
+        |tx, at, current| {
+            if !current {
+                return Ok(false);
+            }
+            tx.execute(
+                "UPDATE host_instances SET reconciled_boot=?1,reconciled_epoch=?2 WHERE id=?3",
+                params![published.boot.as_str(), epoch, published.instance],
+            )
+            .map_err(store_error)?;
+            lift_baseline_hold_if_clear(tx, &published.instance, at.utc)?;
+            Ok(true)
+        },
+    )
+}
+
 fn mark_seat_unresolved(
     tx: &Transaction<'_>,
     at: DecisionInstant,
@@ -2165,6 +2280,7 @@ pub fn apply_reconciliation_transition(
                     update_structural_proof(tx, seat, proof.as_ref().expect("validated structural proof"))?;
                     schema::bump_lifecycle_revision(tx, instance)?;
                     schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
+                    lift_baseline_hold_if_clear(tx, instance, at.utc)?;
                     ReconciliationOutcome::Applied
                 }
                 ReconciliationAction::Move { target, terminal } => {
@@ -2220,6 +2336,7 @@ pub fn apply_reconciliation_transition(
                         absent_target.as_str(),
                         target_generation,
                     )?;
+                    lift_baseline_hold_if_clear(tx, instance, at.utc)?;
                     ReconciliationOutcome::RetirementStarted(job)
                 }
             };
@@ -3214,6 +3331,17 @@ pub fn mutate_operator(
             Some(command.seat.clone()),
             guard.structural_proof().cloned(),
         ),
+        OperatorRequest::Replace(command, guard) => (
+            "operator_rebind",
+            command.target.clone(),
+            command.operation.clone(),
+            guard.instance().to_owned(),
+            guard.host_boot().clone(),
+            guard.epoch(),
+            guard.generation(),
+            Some(command.seat.clone()),
+            guard.structural_proof().cloned(),
+        ),
         OperatorRequest::OrphanInvite(command) => {
             return crate::store::control::operator_orphan_invite(
                 context,
@@ -3224,6 +3352,13 @@ pub fn mutate_operator(
                 installation_default_ms,
             );
         }
+        OperatorRequest::Retire(command) => {
+            return operator_retire(context, conn, elected_instance, command, actor);
+        }
+    };
+    let replace: Option<SeatId> = match &request {
+        OperatorRequest::Replace(command, _) => Some(command.replace.clone()),
+        _ => None,
     };
     if instance != elected_instance {
         return Err(api_error(
@@ -3238,7 +3373,10 @@ pub fn mutate_operator(
         OperatorRequest::Rebind(c, _) => {
             crate::protocol::commands::OperatorCommand::Rebind(c.clone())
         }
-        OperatorRequest::OrphanInvite(_) => unreachable!(),
+        OperatorRequest::Replace(c, _) => {
+            crate::protocol::commands::OperatorCommand::Replace(c.clone())
+        }
+        OperatorRequest::OrphanInvite(_) | OperatorRequest::Retire(_) => unreachable!(),
     };
     let expected_epoch_sql = checked_host_number(expected_epoch)?;
     let expected_generation_sql = checked_host_number(expected_generation)?;
@@ -3257,12 +3395,35 @@ pub fn mutate_operator(
                 &expected_boot,
                 expected_epoch,
                 expected_generation,
-            )? || !target_free(tx, &instance, target.as_str())?
-            {
+            )? {
                 return Err(api_error(
                     ErrorCode::TargetAlreadyOwned,
                     "repair target changed or owned",
                 ));
+            }
+            if let Some(replace) = &replace {
+                // The target is owned by NEW by design; it must be NEW and
+                // nobody else, and NEW must not be the seat being rebound.
+                let owned: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2 AND state='resolved' AND target_id=?3)",
+                        params![replace.as_str(), instance, target.as_str()],
+                        |r| r.get(0),
+                    )
+                    .map_err(store_error)?;
+                if !owned || seat.as_ref() == Some(replace) {
+                    return Err(api_error(
+                        ErrorCode::TargetAlreadyOwned,
+                        "replace target is not owned by NEW",
+                    ));
+                }
+            } else if !target_free(tx, &instance, target.as_str())? {
+                return Err(owned_target_refusal(
+                    tx,
+                    &instance,
+                    target.as_str(),
+                    seat.as_ref(),
+                )?);
             }
             if let Some(proof) = &structural_proof
                 && !structural_proof_matches_current(tx, &instance, proof)?
@@ -3331,6 +3492,37 @@ pub fn mutate_operator(
                     },
                 )
                 .map_err(|reason| api_error(ErrorCode::StaleHostObservation, reason))?;
+            if let Some(replace) = &replace {
+                // One deciding transaction: NEW retires and OLD claims the
+                // target with no unowned window; a concurrent resolve
+                // serializes behind this writer and sees OLD.
+                let (boot, epoch, new_generation): (Option<String>, i64, i64) = tx
+                    .query_row(
+                        "SELECT h.host_boot,h.host_epoch,s.generation FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
+                        params![replace.as_str(), instance],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .map_err(store_error)?;
+                if new_generation == i64::MAX {
+                    return Err(api_error(
+                        ErrorCode::SequenceExhausted,
+                        "seat binding generation exhausted",
+                    ));
+                }
+                let boot = boot.unwrap_or_default();
+                control::begin_retirement_fence(
+                    tx,
+                    at.utc,
+                    replace.clone(),
+                    &instance,
+                    &boot,
+                    epoch,
+                    target.as_str(),
+                    expected_generation_sql,
+                )?;
+                tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_retire',?4,?5,?6,?7,?8)",
+                    params![instance,target.as_str(),replace.as_str(),at.utc.0,boot,epoch,expected_generation_sql,actor.audit_label()]).map_err(store_error)?;
+            }
             if !target_free(tx, &instance, target.as_str())? {
                 return Err(api_error(
                     ErrorCode::TargetAlreadyOwned,
@@ -3404,10 +3596,136 @@ pub fn mutate_operator(
             schema::apply_eligibility_transition(tx, &instance, |_| Ok(true))?;
             schema::bump_lifecycle_revision(tx, &instance)?;
             schema::bump_filter_revision(tx, &instance, "directory", "all")?;
+            lift_baseline_hold_if_clear(tx, &instance, at.utc)?;
             Ok(result)
         },
     )?;
     crate::store::operator::validate_result(&typed_command, &result)?;
+    Ok(result)
+}
+
+/// TRUST-POLICY C3: the refusal for a rebind onto an owned target names both
+/// operator resolutions. Falls back to the plain message when the owner is not
+/// a live seat of this instance (the observation, not a seat, is then stale).
+fn owned_target_refusal(
+    tx: &Transaction<'_>,
+    instance: &str,
+    target: &str,
+    old: Option<&SeatId>,
+) -> Result<ApiError, ApiError> {
+    let owner: Option<String> = tx
+        .query_row(
+            "SELECT id FROM seats WHERE instance_id=?1 AND target_id=?2 AND state='resolved' LIMIT 1",
+            params![instance, target],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    Ok(match (owner, old) {
+        (Some(new), Some(old)) => api_error(
+            ErrorCode::TargetAlreadyOwned,
+            format!(
+                "target {target} is owned by live seat {new}; seats are never merged. Abandon the old seat: `herdr-threads seat retire {old} --operator`, or abandon the new role: `herdr-threads seat rebind {old} --pane {target} --replace {new} --operator`",
+                old = old.as_str()
+            ),
+        ),
+        _ => api_error(
+            ErrorCode::TargetAlreadyOwned,
+            "repair target changed or owned",
+        ),
+    })
+}
+
+/// `seat retire SEAT --operator`: the existing bounded retirement cutover,
+/// started on the operator's say-so. Retirement claims no target, so there is
+/// no host observation; pending obligations settle as recipient-retired when
+/// the retirement worker advances the job.
+fn operator_retire(
+    context: &StoreContext,
+    conn: &mut Connection,
+    instance: &str,
+    command: &crate::protocol::commands::OperatorRetire,
+    actor: OperatorActor,
+) -> Result<CommandResult, ApiError> {
+    let typed = crate::protocol::commands::OperatorCommand::Retire(command.clone());
+    let digest = crate::store::operator::digest(instance, &typed)?;
+    let seat = command.seat.clone();
+    let result = schema::execute_idempotent_transaction(
+        context,
+        conn,
+        &actor.operation_scope(instance),
+        command.operation.as_str(),
+        digest,
+        |tx| {
+            let state: Option<(String, i64)> = tx
+                .query_row(
+                    "SELECT state,generation FROM seats WHERE id=?1 AND instance_id=?2",
+                    params![seat.as_str(), instance],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .map_err(store_error)?;
+            match state {
+                Some((state, generation)) if state != "retired" => {
+                    if generation == i64::MAX {
+                        return Err(api_error(
+                            ErrorCode::SequenceExhausted,
+                            "seat binding generation exhausted",
+                        ));
+                    }
+                    Ok(())
+                }
+                _ => Err(api_error(
+                    ErrorCode::NotFound,
+                    "seat is not a live seat of this instance",
+                )),
+            }
+        },
+        |tx, at| {
+            let (boot, epoch): (Option<String>, i64) = tx
+                .query_row(
+                    "SELECT host_boot,host_epoch FROM host_instances WHERE id=?1",
+                    [instance],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(store_error)?;
+            let (target, generation): (Option<String>, i64) = tx
+                .query_row(
+                    "SELECT target_id,target_generation FROM seats WHERE id=?1",
+                    [seat.as_str()],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(store_error)?;
+            let target = match target {
+                Some(target) => target,
+                None => tx
+                    .query_row(
+                        "SELECT target_id FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1",
+                        [seat.as_str()],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(store_error)?
+                    .unwrap_or_default(),
+            };
+            let boot = boot.unwrap_or_default();
+            control::begin_retirement_fence(
+                tx,
+                at.utc,
+                seat.clone(),
+                instance,
+                &boot,
+                epoch,
+                &target,
+                generation,
+            )?;
+            tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_retire',?4,?5,?6,?7,?8)",
+                params![instance,target,seat.as_str(),at.utc.0,boot,epoch,generation,actor.audit_label()]).map_err(store_error)?;
+            lift_baseline_hold_if_clear(tx, instance, at.utc)?;
+            Ok(CommandResult::OperatorRetired(seat.clone()))
+        },
+    )?;
+    crate::store::operator::validate_result(&typed, &result)?;
     Ok(result)
 }
 

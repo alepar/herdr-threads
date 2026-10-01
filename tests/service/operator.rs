@@ -979,3 +979,122 @@ fn cli_pane_derivation_covers_retry_and_seat_default_reads() {
         assert!(missing.detail.contains("--seat"), "{}", missing.detail);
     }
 }
+
+fn operator_label_for_daemon(f: &Fixture) -> String {
+    use std::os::unix::fs::MetadataExt;
+    format!(
+        "operator:local-user:{}",
+        fs::metadata(&f.paths.instance_dir).unwrap().uid()
+    )
+}
+
+// B5 (ht-rzi.1): `seat retire --operator` crosses the elected same-user
+// operator arm without a host observation, is audited by operator label and
+// replays. Kills: a dispatch arm that omits OperatorRetire (Unsupported), an
+// audit row without the label, a retire that takes a host call.
+#[test]
+fn elected_operator_retire_over_ipc_is_audited_and_peer_checked() {
+    let f = Fixture::new();
+    let retire = Command::OperatorRetire(OperatorRetire {
+        seat: SeatId::new("saved"),
+        operation: OperationId::new("retire-saved"),
+    });
+    let calls = f.host.calls.load(Ordering::SeqCst);
+    assert_eq!(
+        f.call(retire.clone()).unwrap(),
+        CommandResult::OperatorRetired(SeatId::new("saved"))
+    );
+    assert_eq!(
+        f.host.calls.load(Ordering::SeqCst),
+        calls,
+        "retire claims no target and observes nothing"
+    );
+    let db = f.db();
+    assert_eq!(
+        db.query_row("SELECT state FROM seats WHERE id='saved'", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "retired"
+    );
+    let audit: (String, Option<String>) = db
+        .query_row(
+            "SELECT kind,operator_label FROM allocation_decisions",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        audit,
+        (
+            "operator_retire".into(),
+            Some(operator_label_for_daemon(&f))
+        )
+    );
+    assert_eq!(
+        f.call(retire).unwrap(),
+        CommandResult::OperatorRetired(SeatId::new("saved"))
+    );
+    assert_eq!(
+        f.call(Command::OperatorRetire(OperatorRetire {
+            seat: SeatId::new("saved"),
+            operation: OperationId::new("retire-saved-again"),
+        }))
+        .unwrap_err()
+        .code,
+        ErrorCode::NotFound
+    );
+}
+
+#[test]
+fn elected_operator_replace_over_ipc() {
+    let f = Fixture::new();
+    let CommandResult::OperatorFreshSeat(new) = f.fresh("other", "fresh-other").unwrap() else {
+        panic!()
+    };
+    let replace = |operation: &str, replace: &SeatId| {
+        Command::OperatorReplace(OperatorReplace {
+            seat: SeatId::new("saved"),
+            target: HostTargetId::new("other"),
+            replace: replace.clone(),
+            operation: OperationId::new(operation),
+        })
+    };
+    // A seat that does not own the pane is refused and nothing changes.
+    assert_eq!(
+        f.call(replace("replace-wrong", &SeatId::new("saved")))
+            .unwrap_err()
+            .code,
+        ErrorCode::TargetAlreadyOwned
+    );
+    assert_eq!(
+        f.call(replace("replace-ok", &new)).unwrap(),
+        CommandResult::OperatorRebound(SeatId::new("saved"))
+    );
+    let db = f.db();
+    let states: (String, String, Option<String>) = db
+        .query_row(
+            "SELECT (SELECT state FROM seats WHERE id=?1),(SELECT state FROM seats WHERE id='saved'),(SELECT target_id FROM seats WHERE id='saved')",
+            [new.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        states,
+        ("retired".into(), "resolved".into(), Some("other".into()))
+    );
+    let labels: Vec<(String, Option<String>)> = db
+        .prepare("SELECT kind,operator_label FROM allocation_decisions WHERE kind IN ('operator_retire','operator_rebind') ORDER BY ordinal")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let label = Some(operator_label_for_daemon(&f));
+    assert_eq!(
+        labels,
+        vec![
+            ("operator_retire".to_owned(), label.clone()),
+            ("operator_rebind".to_owned(), label)
+        ]
+    );
+}

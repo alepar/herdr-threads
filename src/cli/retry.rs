@@ -328,6 +328,14 @@ fn matches_result(request: &SemanticMutation, result: &CommandResult) -> bool {
                 CommandResult::OperatorRebound(_)
             )
             | (
+                SemanticMutation::OperatorRetire { .. },
+                CommandResult::OperatorRetired(_)
+            )
+            | (
+                SemanticMutation::OperatorReplace { .. },
+                CommandResult::OperatorRebound(_)
+            )
+            | (
                 SemanticMutation::OperatorFreshSeat { .. },
                 CommandResult::OperatorFreshSeat(_)
             )

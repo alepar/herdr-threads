@@ -332,6 +332,7 @@ pub fn query_operation_status(
                 | CommandResult::OperatorInvited(v) => Some(v.as_str().to_owned()),
                 CommandResult::SeatResolved(v)
                 | CommandResult::OperatorRebound(v)
+                | CommandResult::OperatorRetired(v)
                 | CommandResult::OperatorFreshSeat(v) => Some(v.as_str().to_owned()),
                 _ => None,
             };

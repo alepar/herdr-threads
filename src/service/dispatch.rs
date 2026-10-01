@@ -255,7 +255,9 @@ impl LocalService for DomainService {
             }
             command @ (Command::OperatorRebind(_)
             | Command::OperatorFreshSeat(_)
-            | Command::OperatorOrphanInvite(_)) => {
+            | Command::OperatorOrphanInvite(_)
+            | Command::OperatorRetire(_)
+            | Command::OperatorReplace(_)) => {
                 let actor = self
                     .operator_owner_uid
                     .and_then(|uid| OperatorActor::from_peer(peer, uid))

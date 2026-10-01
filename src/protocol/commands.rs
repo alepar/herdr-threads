@@ -46,6 +46,8 @@ pub enum Command {
     OperatorRebind(OperatorRebind),
     OperatorFreshSeat(OperatorFreshSeat),
     OperatorOrphanInvite(OperatorOrphanInvite),
+    OperatorRetire(OperatorRetire),
+    OperatorReplace(OperatorReplace),
 }
 
 /// Service control only. The envelope supplies the expected instance; the
@@ -390,6 +392,25 @@ pub struct OperatorOrphanInvite {
     pub operation: OperationId,
 }
 
+/// Abandon a seat on the operator's say-so (TRUST-POLICY C3). Retirement is
+/// not a target claim, so no host observation accompanies it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorRetire {
+    pub seat: SeatId,
+    pub operation: OperationId,
+}
+/// Retire `replace` (the seat now owning `target`) and rebind `seat` onto
+/// `target` in one deciding transaction. Nothing moves from `replace` to `seat`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorReplace {
+    pub seat: SeatId,
+    pub target: HostTargetId,
+    pub replace: SeatId,
+    pub operation: OperationId,
+}
+
 pub const MAX_SEARCH_CANDIDATES: u16 = 100;
 pub const MAX_BATCH_ITEMS: usize = 100;
 
@@ -498,12 +519,14 @@ impl Command {
     }
 }
 
-/// Only these three commands can cross the local-user operator store boundary.
+/// Only these commands can cross the local-user operator store boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperatorCommand {
     Rebind(OperatorRebind),
     FreshSeat(OperatorFreshSeat),
     OrphanInvite(OperatorOrphanInvite),
+    Retire(OperatorRetire),
+    Replace(OperatorReplace),
 }
 impl TryFrom<Command> for OperatorCommand {
     type Error = Command;
@@ -512,6 +535,8 @@ impl TryFrom<Command> for OperatorCommand {
             Command::OperatorRebind(v) => Ok(Self::Rebind(v)),
             Command::OperatorFreshSeat(v) => Ok(Self::FreshSeat(v)),
             Command::OperatorOrphanInvite(v) => Ok(Self::OrphanInvite(v)),
+            Command::OperatorRetire(v) => Ok(Self::Retire(v)),
+            Command::OperatorReplace(v) => Ok(Self::Replace(v)),
             other => Err(other),
         }
     }

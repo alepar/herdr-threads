@@ -110,7 +110,8 @@ fn pane_arguments(parsed: &mut ParsedCli) -> Vec<&mut HostTargetId> {
         CliAction::Mutation(
             MutationSpec::Resolve(target)
             | MutationSpec::FreshSeat(target)
-            | MutationSpec::Rebind { pane: target, .. },
+            | MutationSpec::Rebind { pane: target, .. }
+            | MutationSpec::Replace { pane: target, .. },
         ) => found.push(target),
         CliAction::Launch(request) => found.push(&mut request.target),
         _ => {}
