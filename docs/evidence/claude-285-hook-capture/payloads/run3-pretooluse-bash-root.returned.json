@@ -1,0 +1,24 @@
+{
+ "input": {
+  "cwd": "<scratch>/proj",
+  "hook_event_name": "PreToolUse",
+  "permission_mode": "default",
+  "prompt_id": "fed75e17-aaa0-4bfd-a8ed-42cb36606233",
+  "session_id": "825f7fcf-3775-4f5c-a96e-6733f0a9a0ea",
+  "tool_input": {
+   "command": "echo \"ctx=$HERDR_THREADS_CALLER_CONTEXT\""
+  },
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_018DSm6vs8466KZKoiqXpjwv",
+  "transcript_path": "~/.claude/projects/-scratch-claude285-capture-b85866ad-proj/825f7fcf-3775-4f5c-a96e-6733f0a9a0ea.jsonl"
+ },
+ "returned": {
+  "hookSpecificOutput": {
+   "additionalContext": "HT-PTU-MARKER-eb75e8",
+   "hookEventName": "PreToolUse",
+   "updatedInput": {
+    "command": "export HERDR_THREADS_CALLER_CONTEXT='ctx_probe-eb75e8';\necho \"ctx=$HERDR_THREADS_CALLER_CONTEXT\""
+   }
+  }
+ }
+}

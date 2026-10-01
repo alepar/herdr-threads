@@ -1,0 +1,1283 @@
+{
+  "schema_version": 1,
+  "harness": "claude",
+  "version": "2.1.283",
+  "normalization": {
+    "session_id": "conversation-N by first source appearance",
+    "tool_use_id": "tool-N by source line",
+    "agent_id": "agent-N by first source appearance",
+    "pid": "1001+ by first observed host PID",
+    "invocation_context": "context-N by source line",
+    "generation": "parsed from CLAUDE_PROBE_GENERATION=1",
+    "context_received": "native tool_result exact token match, otherwise null",
+    "hook_before_tool": "native PreToolUse precedes matching tool_result"
+  },
+  "cases": [
+    {
+      "name": "initial_rewrite_error",
+      "expected": "UNSUPPORTED",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-1",
+        "tool_use_id": "tool-1",
+        "invocation_context": "context-1",
+        "context_received": null,
+        "generation": 1,
+        "hook_before_tool": false,
+        "observer_status": "unavailable",
+        "host_session_id": null,
+        "hook_parent_pid": null
+      },
+      "reference": {
+        "session_id": "conversation-1",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": null,
+        "host_observed_in_hook": false,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "native",
+        "source_line": 1,
+        "source_nonce": "ht4is-claude-pyzgDs",
+        "hook_utc": "2026-09-27T14:38:19.620239+00:00",
+        "tool_result_utc": "2026-09-27T14:38:20.945Z",
+        "tool_result_status": "mismatch",
+        "transcript_kind": "root",
+        "transcript_hash": "c116b5f09244a360",
+        "host_observed_utc": null,
+        "host_revision": null,
+        "host_pid_label": null,
+        "hook_parent_pid_label": null,
+        "host_session_label": null,
+        "agent_label": null
+      }
+    },
+    {
+      "name": "root",
+      "expected": "UNSUPPORTED",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-1",
+        "tool_use_id": "tool-2",
+        "invocation_context": "context-2",
+        "context_received": "context-2",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "unavailable",
+        "host_session_id": null,
+        "hook_parent_pid": null
+      },
+      "reference": {
+        "session_id": "conversation-1",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": null,
+        "host_observed_in_hook": false,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "native",
+        "source_line": 2,
+        "source_nonce": "ht4is-claude-pyzgDs",
+        "hook_utc": "2026-09-27T14:39:41.536267+00:00",
+        "tool_result_utc": "2026-09-27T14:39:42.550Z",
+        "tool_result_status": "matched",
+        "transcript_kind": "root",
+        "transcript_hash": "c116b5f09244a360",
+        "host_observed_utc": null,
+        "host_revision": null,
+        "host_pid_label": null,
+        "hook_parent_pid_label": null,
+        "host_session_label": null,
+        "agent_label": null
+      }
+    },
+    {
+      "name": "child",
+      "expected": "UNSUPPORTED",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-1",
+        "tool_use_id": "tool-3",
+        "invocation_context": "context-3",
+        "context_received": "context-3",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "unavailable",
+        "host_session_id": null,
+        "hook_parent_pid": null,
+        "agent_id": "agent-1",
+        "agent_type": "general-purpose"
+      },
+      "reference": {
+        "session_id": "conversation-1",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": null,
+        "host_observed_in_hook": false,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "native",
+        "source_line": 3,
+        "source_nonce": "ht4is-claude-pyzgDs",
+        "hook_utc": "2026-09-27T14:40:13.485989+00:00",
+        "tool_result_utc": "2026-09-27T14:40:14.394Z",
+        "tool_result_status": "matched",
+        "transcript_kind": "child",
+        "transcript_hash": "c116b5f09244a360",
+        "host_observed_utc": null,
+        "host_revision": null,
+        "host_pid_label": null,
+        "hook_parent_pid_label": null,
+        "host_session_label": null,
+        "agent_label": "agent-1"
+      }
+    },
+    {
+      "name": "root_after_child",
+      "expected": "UNSUPPORTED",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-1",
+        "tool_use_id": "tool-4",
+        "invocation_context": "context-4",
+        "context_received": "context-4",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "unavailable",
+        "host_session_id": null,
+        "hook_parent_pid": null
+      },
+      "reference": {
+        "session_id": "conversation-1",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": null,
+        "host_observed_in_hook": false,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "native",
+        "source_line": 4,
+        "source_nonce": "ht4is-claude-pyzgDs",
+        "hook_utc": "2026-09-27T14:40:19.818790+00:00",
+        "tool_result_utc": "2026-09-27T14:40:20.864Z",
+        "tool_result_status": "matched",
+        "transcript_kind": "root",
+        "transcript_hash": "c116b5f09244a360",
+        "host_observed_utc": null,
+        "host_revision": null,
+        "host_pid_label": null,
+        "hook_parent_pid_label": null,
+        "host_session_label": null,
+        "agent_label": null
+      }
+    },
+    {
+      "name": "early_concurrent_child_a",
+      "expected": "UNSUPPORTED",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-1",
+        "tool_use_id": "tool-5",
+        "invocation_context": "context-5",
+        "context_received": "context-5",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "unavailable",
+        "host_session_id": null,
+        "hook_parent_pid": null,
+        "agent_id": "agent-2",
+        "agent_type": "general-purpose"
+      },
+      "reference": {
+        "session_id": "conversation-1",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": null,
+        "host_observed_in_hook": false,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "native",
+        "source_line": 5,
+        "source_nonce": "ht4is-claude-pyzgDs",
+        "hook_utc": "2026-09-27T14:40:51.774173+00:00",
+        "tool_result_utc": "2026-09-27T14:40:52.894Z",
+        "tool_result_status": "matched",
+        "transcript_kind": "child",
+        "transcript_hash": "c116b5f09244a360",
+        "host_observed_utc": null,
+        "host_revision": null,
+        "host_pid_label": null,
+        "hook_parent_pid_label": null,
+        "host_session_label": null,
+        "agent_label": "agent-2"
+      }
+    },
+    {
+      "name": "early_concurrent_child_b",
+      "expected": "UNSUPPORTED",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-1",
+        "tool_use_id": "tool-6",
+        "invocation_context": "context-6",
+        "context_received": "context-6",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "unavailable",
+        "host_session_id": null,
+        "hook_parent_pid": null,
+        "agent_id": "agent-3",
+        "agent_type": "general-purpose"
+      },
+      "reference": {
+        "session_id": "conversation-1",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": null,
+        "host_observed_in_hook": false,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "native",
+        "source_line": 6,
+        "source_nonce": "ht4is-claude-pyzgDs",
+        "hook_utc": "2026-09-27T14:40:51.813343+00:00",
+        "tool_result_utc": "2026-09-27T14:40:52.685Z",
+        "tool_result_status": "matched",
+        "transcript_kind": "child",
+        "transcript_hash": "c116b5f09244a360",
+        "host_observed_utc": null,
+        "host_revision": null,
+        "host_pid_label": null,
+        "hook_parent_pid_label": null,
+        "host_session_label": null,
+        "agent_label": "agent-3"
+      }
+    },
+    {
+      "name": "root_observed",
+      "expected": "ROOT_CANDIDATE",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-1",
+        "tool_use_id": "tool-7",
+        "invocation_context": "context-7",
+        "context_received": "context-7",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "ok",
+        "host_session_id": "conversation-1",
+        "hook_parent_pid": 1001
+      },
+      "reference": {
+        "session_id": "conversation-1",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": 1001,
+        "host_observed_in_hook": true,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "native",
+        "source_line": 7,
+        "source_nonce": "ht4is-claude-pyzgDs",
+        "hook_utc": "2026-09-27T14:43:42.477206+00:00",
+        "tool_result_utc": "2026-09-27T14:43:43.397Z",
+        "tool_result_status": "matched",
+        "transcript_kind": "root",
+        "transcript_hash": "c116b5f09244a360",
+        "host_observed_utc": "2026-09-27T14:43:42.489679+00:00",
+        "host_revision": 2,
+        "host_pid_label": 1001,
+        "hook_parent_pid_label": 1001,
+        "host_session_label": "conversation-1",
+        "agent_label": null,
+        "source_session_sha256": "40663ca45dad7853fb1e8c35d6a9c3b195de566c31c1b9233d8edacb9e2a520c",
+        "source_host_pid_sha256": "c4b160cfbe0ed3c5f17da09bba82ae9ab50c04e4a0179e92efcda471c8d2bff9"
+      }
+    },
+    {
+      "name": "child_observed",
+      "expected": "CHILD",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-1",
+        "tool_use_id": "tool-8",
+        "invocation_context": "context-8",
+        "context_received": "context-8",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "ok",
+        "host_session_id": "conversation-1",
+        "hook_parent_pid": 1001,
+        "agent_id": "agent-4",
+        "agent_type": "general-purpose"
+      },
+      "reference": {
+        "session_id": "conversation-1",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": 1001,
+        "host_observed_in_hook": true,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "native",
+        "source_line": 8,
+        "source_nonce": "ht4is-claude-pyzgDs",
+        "hook_utc": "2026-09-27T14:44:26.643064+00:00",
+        "tool_result_utc": "2026-09-27T14:44:27.470Z",
+        "tool_result_status": "matched",
+        "transcript_kind": "child",
+        "transcript_hash": "c116b5f09244a360",
+        "host_observed_utc": "2026-09-27T14:44:26.655183+00:00",
+        "host_revision": 2,
+        "host_pid_label": 1001,
+        "hook_parent_pid_label": 1001,
+        "host_session_label": "conversation-1",
+        "agent_label": "agent-4",
+        "source_session_sha256": "40663ca45dad7853fb1e8c35d6a9c3b195de566c31c1b9233d8edacb9e2a520c",
+        "source_host_pid_sha256": "c4b160cfbe0ed3c5f17da09bba82ae9ab50c04e4a0179e92efcda471c8d2bff9"
+      }
+    },
+    {
+      "name": "new_after_clear",
+      "expected": "ROOT_CANDIDATE",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-2",
+        "tool_use_id": "tool-9",
+        "invocation_context": "context-9",
+        "context_received": "context-9",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "ok",
+        "host_session_id": "conversation-2",
+        "hook_parent_pid": 1001
+      },
+      "reference": {
+        "session_id": "conversation-2",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": 1001,
+        "host_observed_in_hook": true,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "native",
+        "source_line": 9,
+        "source_nonce": "ht4is-claude-pyzgDs",
+        "hook_utc": "2026-09-27T14:46:04.089706+00:00",
+        "tool_result_utc": "2026-09-27T14:46:05.262Z",
+        "tool_result_status": "matched",
+        "transcript_kind": "root",
+        "transcript_hash": "6a84198d7c79071c",
+        "host_observed_utc": "2026-09-27T14:46:04.101894+00:00",
+        "host_revision": 4,
+        "host_pid_label": 1001,
+        "hook_parent_pid_label": 1001,
+        "host_session_label": "conversation-2",
+        "agent_label": null,
+        "source_session_sha256": "0af0f0892bd5cb7ba990329193f7c602a2cbef8e532ce00c5bbdbf7152b330c8",
+        "source_host_pid_sha256": "c4b160cfbe0ed3c5f17da09bba82ae9ab50c04e4a0179e92efcda471c8d2bff9"
+      }
+    },
+    {
+      "name": "resumed_same_conversation",
+      "expected": "ROOT_CANDIDATE",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-2",
+        "tool_use_id": "tool-10",
+        "invocation_context": "context-10",
+        "context_received": "context-10",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "ok",
+        "host_session_id": "conversation-2",
+        "hook_parent_pid": 1002
+      },
+      "reference": {
+        "session_id": "conversation-2",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": 1002,
+        "host_observed_in_hook": true,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "native",
+        "source_line": 10,
+        "source_nonce": "ht4is-claude-pyzgDs",
+        "hook_utc": "2026-09-27T14:48:14.110316+00:00",
+        "tool_result_utc": "2026-09-27T14:48:15.409Z",
+        "tool_result_status": "matched",
+        "transcript_kind": "root",
+        "transcript_hash": "6a84198d7c79071c",
+        "host_observed_utc": "2026-09-27T14:48:14.122879+00:00",
+        "host_revision": 6,
+        "host_pid_label": 1002,
+        "hook_parent_pid_label": 1002,
+        "host_session_label": "conversation-2",
+        "agent_label": null,
+        "source_session_sha256": "0af0f0892bd5cb7ba990329193f7c602a2cbef8e532ce00c5bbdbf7152b330c8",
+        "source_host_pid_sha256": "349fabf61e23394208549fffd7ef74a636a138e006c0832145661c54f5889965"
+      }
+    },
+    {
+      "name": "new_process_new_conversation",
+      "expected": "ROOT_CANDIDATE",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-3",
+        "tool_use_id": "tool-11",
+        "invocation_context": "context-11",
+        "context_received": "context-11",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "ok",
+        "host_session_id": "conversation-3",
+        "hook_parent_pid": 1003
+      },
+      "reference": {
+        "session_id": "conversation-3",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": 1003,
+        "host_observed_in_hook": true,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "native",
+        "source_line": 11,
+        "source_nonce": "ht4is-claude-pyzgDs",
+        "hook_utc": "2026-09-27T14:55:45.858609+00:00",
+        "tool_result_utc": "2026-09-27T14:55:47.129Z",
+        "tool_result_status": "matched",
+        "transcript_kind": "root",
+        "transcript_hash": "eabbbcf9e118b54d",
+        "host_observed_utc": "2026-09-27T14:55:45.870739+00:00",
+        "host_revision": 9,
+        "host_pid_label": 1003,
+        "hook_parent_pid_label": 1003,
+        "host_session_label": "conversation-3",
+        "agent_label": null,
+        "source_session_sha256": "64817370e1114eaec052bb768ce78f2ea87725e303bc4b10bdac665f3c9e3818",
+        "source_host_pid_sha256": "c9103b1536f29ddd99a158dc7b97a9b6e41fbaca2796a47cd9945e991667a7f8"
+      }
+    },
+    {
+      "name": "concurrent_child_a",
+      "expected": "CHILD",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-3",
+        "tool_use_id": "tool-12",
+        "invocation_context": "context-12",
+        "context_received": "context-12",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "ok",
+        "host_session_id": "conversation-3",
+        "hook_parent_pid": 1003,
+        "agent_id": "agent-5",
+        "agent_type": "general-purpose"
+      },
+      "reference": {
+        "session_id": "conversation-3",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": 1003,
+        "host_observed_in_hook": true,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "native",
+        "source_line": 12,
+        "source_nonce": "ht4is-claude-pyzgDs",
+        "hook_utc": "2026-09-27T14:59:22.983886+00:00",
+        "tool_result_utc": "2026-09-27T14:59:24.012Z",
+        "tool_result_status": "matched",
+        "transcript_kind": "child",
+        "transcript_hash": "eabbbcf9e118b54d",
+        "host_observed_utc": "2026-09-27T14:59:22.995786+00:00",
+        "host_revision": 9,
+        "host_pid_label": 1003,
+        "hook_parent_pid_label": 1003,
+        "host_session_label": "conversation-3",
+        "agent_label": "agent-5",
+        "source_session_sha256": "64817370e1114eaec052bb768ce78f2ea87725e303bc4b10bdac665f3c9e3818",
+        "source_host_pid_sha256": "c9103b1536f29ddd99a158dc7b97a9b6e41fbaca2796a47cd9945e991667a7f8"
+      }
+    },
+    {
+      "name": "concurrent_child_b",
+      "expected": "CHILD",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-3",
+        "tool_use_id": "tool-13",
+        "invocation_context": "context-13",
+        "context_received": "context-13",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "ok",
+        "host_session_id": "conversation-3",
+        "hook_parent_pid": 1003,
+        "agent_id": "agent-6",
+        "agent_type": "general-purpose"
+      },
+      "reference": {
+        "session_id": "conversation-3",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": 1003,
+        "host_observed_in_hook": true,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "native",
+        "source_line": 13,
+        "source_nonce": "ht4is-claude-pyzgDs",
+        "hook_utc": "2026-09-27T14:59:23.044209+00:00",
+        "tool_result_utc": "2026-09-27T14:59:24.029Z",
+        "tool_result_status": "matched",
+        "transcript_kind": "child",
+        "transcript_hash": "eabbbcf9e118b54d",
+        "host_observed_utc": "2026-09-27T14:59:23.054903+00:00",
+        "host_revision": 9,
+        "host_pid_label": 1003,
+        "hook_parent_pid_label": 1003,
+        "host_session_label": "conversation-3",
+        "agent_label": "agent-6",
+        "source_session_sha256": "64817370e1114eaec052bb768ce78f2ea87725e303bc4b10bdac665f3c9e3818",
+        "source_host_pid_sha256": "c9103b1536f29ddd99a158dc7b97a9b6e41fbaca2796a47cd9945e991667a7f8"
+      }
+    },
+    {
+      "name": "replacement_before_observation",
+      "expected": "UNSUPPORTED",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-1",
+        "tool_use_id": "tool-7",
+        "invocation_context": "context-7",
+        "context_received": "context-7",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "ok",
+        "host_session_id": "conversation-1",
+        "hook_parent_pid": 1001
+      },
+      "reference": {
+        "session_id": "conversation-1",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": 1001,
+        "host_observed_in_hook": true,
+        "context_expired": false,
+        "known_replacement": true
+      },
+      "evidence": {
+        "kind": "synthetic_mutation",
+        "derived_from": "root_observed",
+        "source_line": 7,
+        "mutation": "reference.known_replacement",
+        "source_nonce": "ht4is-claude-pyzgDs"
+      }
+    },
+    {
+      "name": "cached_predecessor_pid",
+      "expected": "UNSUPPORTED",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-1",
+        "tool_use_id": "tool-7",
+        "invocation_context": "context-7",
+        "context_received": "context-7",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "ok",
+        "host_session_id": "conversation-1",
+        "hook_parent_pid": 1001
+      },
+      "reference": {
+        "session_id": "conversation-1",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": 9999,
+        "host_observed_in_hook": true,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "synthetic_mutation",
+        "derived_from": "root_observed",
+        "source_line": 7,
+        "mutation": "reference.host_pid",
+        "source_nonce": "ht4is-claude-pyzgDs"
+      }
+    },
+    {
+      "name": "missing_metadata",
+      "expected": "UNSUPPORTED",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-1",
+        "tool_use_id": null,
+        "invocation_context": "context-7",
+        "context_received": "context-7",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "ok",
+        "host_session_id": "conversation-1",
+        "hook_parent_pid": 1001
+      },
+      "reference": {
+        "session_id": "conversation-1",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": 1001,
+        "host_observed_in_hook": true,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "synthetic_mutation",
+        "derived_from": "root_observed",
+        "source_line": 7,
+        "mutation": "envelope.tool_use_id",
+        "source_nonce": "ht4is-claude-pyzgDs"
+      }
+    },
+    {
+      "name": "unknown_shape",
+      "expected": "UNSUPPORTED",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-1",
+        "tool_use_id": "tool-7",
+        "invocation_context": "context-7",
+        "context_received": "context-7",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "ok",
+        "host_session_id": "conversation-1",
+        "hook_parent_pid": 1001,
+        "future_field": "unknown"
+      },
+      "reference": {
+        "session_id": "conversation-1",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": 1001,
+        "host_observed_in_hook": true,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "synthetic_mutation",
+        "derived_from": "root_observed",
+        "source_line": 7,
+        "mutation": "envelope.future_field",
+        "source_nonce": "ht4is-claude-pyzgDs"
+      }
+    },
+    {
+      "name": "expired_context",
+      "expected": "UNSUPPORTED",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-1",
+        "tool_use_id": "tool-7",
+        "invocation_context": "context-7",
+        "context_received": "context-7",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "ok",
+        "host_session_id": "conversation-1",
+        "hook_parent_pid": 1001
+      },
+      "reference": {
+        "session_id": "conversation-1",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": 1001,
+        "host_observed_in_hook": true,
+        "context_expired": true,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "synthetic_mutation",
+        "derived_from": "root_observed",
+        "source_line": 7,
+        "mutation": "reference.context_expired",
+        "source_nonce": "ht4is-claude-pyzgDs"
+      }
+    },
+    {
+      "name": "evidence_after_hook_return",
+      "expected": "UNSUPPORTED",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-1",
+        "tool_use_id": "tool-7",
+        "invocation_context": "context-7",
+        "context_received": "context-7",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "ok",
+        "host_session_id": "conversation-1",
+        "hook_parent_pid": 1001
+      },
+      "reference": {
+        "session_id": "conversation-1",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": 1001,
+        "host_observed_in_hook": false,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "synthetic_mutation",
+        "derived_from": "root_observed",
+        "source_line": 7,
+        "mutation": "reference.host_observed_in_hook",
+        "source_nonce": "ht4is-claude-pyzgDs"
+      }
+    },
+    {
+      "name": "missing_host_observation",
+      "expected": "UNSUPPORTED",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-1",
+        "tool_use_id": "tool-7",
+        "invocation_context": "context-7",
+        "context_received": "context-7",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "unavailable",
+        "host_session_id": "conversation-1",
+        "hook_parent_pid": 1001
+      },
+      "reference": {
+        "session_id": "conversation-1",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": 1001,
+        "host_observed_in_hook": true,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "synthetic_mutation",
+        "derived_from": "root_observed",
+        "source_line": 7,
+        "mutation": "envelope.observer_status",
+        "source_nonce": "ht4is-claude-pyzgDs"
+      }
+    },
+    {
+      "name": "stale_generation",
+      "expected": "UNSUPPORTED",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-1",
+        "tool_use_id": "tool-7",
+        "invocation_context": "context-7",
+        "context_received": "context-7",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "ok",
+        "host_session_id": "conversation-1",
+        "hook_parent_pid": 1001
+      },
+      "reference": {
+        "session_id": "conversation-1",
+        "generation": 2,
+        "observed_after_request": true,
+        "host_pid": 1001,
+        "host_observed_in_hook": true,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "synthetic_mutation",
+        "derived_from": "root_observed",
+        "source_line": 7,
+        "mutation": "reference.generation",
+        "source_nonce": "ht4is-claude-pyzgDs"
+      }
+    },
+    {
+      "name": "observation_before_request",
+      "expected": "UNSUPPORTED",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-1",
+        "tool_use_id": "tool-7",
+        "invocation_context": "context-7",
+        "context_received": "context-7",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "ok",
+        "host_session_id": "conversation-1",
+        "hook_parent_pid": 1001
+      },
+      "reference": {
+        "session_id": "conversation-1",
+        "generation": 1,
+        "observed_after_request": false,
+        "host_pid": 1001,
+        "host_observed_in_hook": true,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "synthetic_mutation",
+        "derived_from": "root_observed",
+        "source_line": 7,
+        "mutation": "reference.observed_after_request",
+        "source_nonce": "ht4is-claude-pyzgDs"
+      }
+    },
+    {
+      "name": "cached_predecessor_session",
+      "expected": "UNSUPPORTED",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-1",
+        "tool_use_id": "tool-7",
+        "invocation_context": "context-7",
+        "context_received": "context-7",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "ok",
+        "host_session_id": "conversation-1",
+        "hook_parent_pid": 1001
+      },
+      "reference": {
+        "session_id": "conversation-previous",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": 1001,
+        "host_observed_in_hook": true,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "synthetic_mutation",
+        "derived_from": "root_observed",
+        "source_line": 7,
+        "mutation": "reference.session_id",
+        "source_nonce": "ht4is-claude-pyzgDs"
+      }
+    },
+    {
+      "name": "missing_invocation_context",
+      "expected": "UNSUPPORTED",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-1",
+        "tool_use_id": "tool-7",
+        "invocation_context": "context-7",
+        "context_received": null,
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "ok",
+        "host_session_id": "conversation-1",
+        "hook_parent_pid": 1001
+      },
+      "reference": {
+        "session_id": "conversation-1",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": 1001,
+        "host_observed_in_hook": true,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "synthetic_mutation",
+        "derived_from": "root_observed",
+        "source_line": 7,
+        "mutation": "envelope.context_received",
+        "source_nonce": "ht4is-claude-pyzgDs"
+      }
+    },
+    {
+      "name": "environment_root",
+      "expected": "ROOT_CANDIDATE",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-3",
+        "tool_use_id": "tool-14",
+        "invocation_context": "context-14",
+        "context_received": "context-14",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "ok",
+        "host_session_id": "conversation-3",
+        "hook_parent_pid": 1003
+      },
+      "reference": {
+        "session_id": "conversation-3",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": 1003,
+        "host_observed_in_hook": true,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "native",
+        "source_line": 14,
+        "source_nonce": "ht4is-claude-pyzgDs",
+        "hook_utc": "2026-09-27T15:19:43.201982+00:00",
+        "tool_result_utc": "2026-09-27T15:19:45.705Z",
+        "tool_result_status": "matched",
+        "transcript_kind": "root",
+        "transcript_hash": "eabbbcf9e118b54d",
+        "host_observed_utc": "2026-09-27T15:19:43.214641+00:00",
+        "host_revision": 9,
+        "host_pid_label": 1003,
+        "hook_parent_pid_label": 1003,
+        "host_session_label": "conversation-3",
+        "agent_label": null,
+        "claude_env_session_label": "conversation-3",
+        "claude_env_agent_label": null,
+        "source_session_sha256": "64817370e1114eaec052bb768ce78f2ea87725e303bc4b10bdac665f3c9e3818",
+        "source_host_pid_sha256": "c9103b1536f29ddd99a158dc7b97a9b6e41fbaca2796a47cd9945e991667a7f8"
+      }
+    },
+    {
+      "name": "environment_child",
+      "expected": "CHILD",
+      "envelope": {
+        "harness": "claude",
+        "version": "2.1.283",
+        "event": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "conversation-3",
+        "tool_use_id": "tool-15",
+        "invocation_context": "context-15",
+        "context_received": "context-15",
+        "generation": 1,
+        "hook_before_tool": true,
+        "observer_status": "ok",
+        "host_session_id": "conversation-3",
+        "hook_parent_pid": 1003,
+        "agent_id": "agent-7",
+        "agent_type": "general-purpose"
+      },
+      "reference": {
+        "session_id": "conversation-3",
+        "generation": 1,
+        "observed_after_request": true,
+        "host_pid": 1003,
+        "host_observed_in_hook": true,
+        "context_expired": false,
+        "known_replacement": false
+      },
+      "evidence": {
+        "kind": "native",
+        "source_line": 15,
+        "source_nonce": "ht4is-claude-pyzgDs",
+        "hook_utc": "2026-09-27T15:20:25.730306+00:00",
+        "tool_result_utc": "2026-09-27T15:20:27.405Z",
+        "tool_result_status": "matched",
+        "transcript_kind": "child",
+        "transcript_hash": "eabbbcf9e118b54d",
+        "host_observed_utc": "2026-09-27T15:20:25.742389+00:00",
+        "host_revision": 9,
+        "host_pid_label": 1003,
+        "hook_parent_pid_label": 1003,
+        "host_session_label": "conversation-3",
+        "agent_label": "agent-7",
+        "claude_env_session_label": "conversation-3",
+        "claude_env_agent_label": null,
+        "source_session_sha256": "64817370e1114eaec052bb768ce78f2ea87725e303bc4b10bdac665f3c9e3818",
+        "source_host_pid_sha256": "c9103b1536f29ddd99a158dc7b97a9b6e41fbaca2796a47cd9945e991667a7f8"
+      }
+    }
+  ],
+  "transition_provenance": {
+    "kind": "recovered_codex_tool_output",
+    "source_rollout_basename": "rollout-2026-09-27T07-29-43-01a0e345-9682-7d73-82ca-8e9e7cceb2e2.jsonl",
+    "private_recovered_sha256": "40f1588e68dacf9191da6ce2ce4314757c6d7f734e74d86d565e31d502891ba4",
+    "source_note": "Each transition source line hash covers the exact original Codex CommandExecution record. Only allowlisted observer/control fields are committed; original stdout remains in the private rollout."
+  },
+  "transition_sources": [
+    {
+      "kind": "observe",
+      "source_line": 379,
+      "source_line_sha256": "7846a2eda3bc6f6d2ee0d4fdf53598d987978f71e81e08f32ef6d1d36c5ae887",
+      "event_utc": "2026-09-27T14:45:41.548Z",
+      "pane_id": "w4:p3",
+      "session_sha256": "0af0f0892bd5cb7ba990329193f7c602a2cbef8e532ce00c5bbdbf7152b330c8",
+      "pid_sha256": "c4b160cfbe0ed3c5f17da09bba82ae9ab50c04e4a0179e92efcda471c8d2bff9",
+      "host_revision": 3,
+      "host_agent_status": "done",
+      "observer_status": "ok"
+    },
+    {
+      "kind": "exit_text",
+      "source_line": 400,
+      "source_line_sha256": "bdf71cf149f397002b66cfc75bcfa65cd157d1ab2b1f800307b6f06cf073da32",
+      "event_utc": "2026-09-27T14:46:27.662Z",
+      "pane_id": "w4:p3"
+    },
+    {
+      "kind": "enter",
+      "source_line": 405,
+      "source_line_sha256": "d0ffe6c20c01f2d9e8d21024a8718ebd58b5cf30f07d2c6ab37df48d8290c9f9",
+      "event_utc": "2026-09-27T14:46:39.254Z",
+      "pane_id": "w4:p3"
+    },
+    {
+      "kind": "pane_get",
+      "source_line": 410,
+      "source_line_sha256": "15f444f6b56e8d138f9f5c162893dac0c78e86ab5fa93757252c3b0fb35454b6",
+      "event_utc": "2026-09-27T14:46:53.813Z",
+      "pane_id": "w4:p3",
+      "session_sha256": null
+    },
+    {
+      "kind": "agent_start",
+      "source_line": 418,
+      "source_line_sha256": "a6c087930f05cf6b848e9d545265e4a8d21c1e6541f7aa653d935fa107528e96",
+      "event_utc": "2026-09-27T14:47:09.786Z",
+      "pane_id": "w4:p3",
+      "session_sha256": "0af0f0892bd5cb7ba990329193f7c602a2cbef8e532ce00c5bbdbf7152b330c8",
+      "agent_status": "idle"
+    },
+    {
+      "kind": "observe",
+      "source_line": 423,
+      "source_line_sha256": "5ddcef79aa95efc8811151327cd2792263bc446af1fe95696cf25bc1404c4bf8",
+      "event_utc": "2026-09-27T14:47:17.966Z",
+      "pane_id": "w4:p3",
+      "session_sha256": "0af0f0892bd5cb7ba990329193f7c602a2cbef8e532ce00c5bbdbf7152b330c8",
+      "pid_sha256": "349fabf61e23394208549fffd7ef74a636a138e006c0832145661c54f5889965",
+      "host_revision": 6,
+      "host_agent_status": "idle",
+      "observer_status": "ok"
+    },
+    {
+      "kind": "exit_text",
+      "source_line": 443,
+      "source_line_sha256": "e285c667f5ffa85ca0303cfdad9bdfd329fe8add264632af956d06f46c8a3f17",
+      "event_utc": "2026-09-27T14:49:22.336Z",
+      "pane_id": "w4:p3"
+    },
+    {
+      "kind": "enter",
+      "source_line": 448,
+      "source_line_sha256": "67c01e99e479cc2af507d8ce8f20025de1dfda334f5bc2147c10dfc317379b27",
+      "event_utc": "2026-09-27T14:49:38.872Z",
+      "pane_id": "w4:p3"
+    },
+    {
+      "kind": "pane_get",
+      "source_line": 453,
+      "source_line_sha256": "e5bb9fb0a9a743c7cea01cbbc8c7a02bf0934ebf27a3b117a2bbc707bbd18692",
+      "event_utc": "2026-09-27T14:52:11.895Z",
+      "pane_id": "w4:p3",
+      "session_sha256": null
+    },
+    {
+      "kind": "agent_start",
+      "source_line": 467,
+      "source_line_sha256": "a9302246faf7ea80228950d00388a55969862d3f5bff8652490880c7c6469168",
+      "event_utc": "2026-09-27T14:52:46.926Z",
+      "pane_id": "w4:p3",
+      "session_sha256": "cca1be8b768eafdce1473c56ef5d6c4e19ac81d5216d28a34173e918a33bb42d",
+      "agent_status": "idle"
+    },
+    {
+      "kind": "observe",
+      "source_line": 495,
+      "source_line_sha256": "7563ec4d0ffe9c857b4b2177ecd27400409646e356d52edfe420a1314ef172ee",
+      "event_utc": "2026-09-27T14:53:56.800Z",
+      "pane_id": "w4:p3",
+      "session_sha256": "cca1be8b768eafdce1473c56ef5d6c4e19ac81d5216d28a34173e918a33bb42d",
+      "pid_sha256": "c9103b1536f29ddd99a158dc7b97a9b6e41fbaca2796a47cd9945e991667a7f8",
+      "host_revision": 8,
+      "host_agent_status": "idle",
+      "observer_status": "ok",
+      "observed_utc": "2026-09-27T14:53:56.774563+00:00",
+      "observed_monotonic_ns": 524757923551875
+    },
+    {
+      "kind": "clear_text",
+      "source_line": 502,
+      "source_line_sha256": "f9cb686b2514b3ec8ceec8fd330ce7921337a8517a16d8343a610ee504f49091",
+      "event_utc": "2026-09-27T14:54:16.915Z",
+      "pane_id": "w4:p3"
+    },
+    {
+      "kind": "enter",
+      "source_line": 507,
+      "source_line_sha256": "7f29de3a45b05b0dd3b359826a36dbeb73a4c37a6c6f7e6f4dd57bf7a0b51da8",
+      "event_utc": "2026-09-27T14:54:30.238Z",
+      "pane_id": "w4:p3"
+    },
+    {
+      "kind": "observe",
+      "source_line": 512,
+      "source_line_sha256": "c445388a16fb1ddb8f91320afe1c68764217183492861c13313d55c85625005a",
+      "event_utc": "2026-09-27T14:54:46.910Z",
+      "pane_id": "w4:p3",
+      "session_sha256": "64817370e1114eaec052bb768ce78f2ea87725e303bc4b10bdac665f3c9e3818",
+      "pid_sha256": "c9103b1536f29ddd99a158dc7b97a9b6e41fbaca2796a47cd9945e991667a7f8",
+      "host_revision": 8,
+      "host_agent_status": "done",
+      "observer_status": "ok",
+      "observed_utc": "2026-09-27T14:54:46.883212+00:00",
+      "observed_monotonic_ns": 524808032268750
+    }
+  ],
+  "transitions": [
+    {
+      "name": "resume_same_conversation_new_pid",
+      "source_lines": [
+        379,
+        400,
+        405,
+        410,
+        418,
+        423
+      ],
+      "before_observation": 379,
+      "after_observation": 423,
+      "first_later_hook_line": 10,
+      "after_session_label": "conversation-2",
+      "result": "NATIVE_OBSERVED_AND_HOOK_CORRELATED"
+    },
+    {
+      "name": "fresh_replacement_preturn",
+      "source_lines": [
+        423,
+        443,
+        448,
+        453,
+        467,
+        495
+      ],
+      "before_observation": 423,
+      "after_observation": 495,
+      "first_later_hook_line": null,
+      "after_session_label": "preturn-uninvoked",
+      "result": "NATIVE_OBSERVED_NO_TOOL_BEFORE_CLEAR"
+    },
+    {
+      "name": "clear_before_first_turn",
+      "source_lines": [
+        495,
+        502,
+        507,
+        512
+      ],
+      "before_observation": 495,
+      "after_observation": 512,
+      "first_later_hook_line": 11,
+      "after_session_label": "conversation-3",
+      "result": "NATIVE_OBSERVED_AND_HOOK_CORRELATED"
+    }
+  ]
+}

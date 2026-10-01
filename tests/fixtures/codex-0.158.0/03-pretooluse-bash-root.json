@@ -1,0 +1,14 @@
+{
+ "cwd": "/private/tmp/codex158/proj",
+ "model": "gpt-6-luna",
+ "permission_mode": "default",
+ "transcript_path": null,
+ "session_id": "01a0ec6f-56ff-7142-8296-368c85520542",
+ "turn_id": "turn-root-1",
+ "hook_event_name": "PreToolUse",
+ "tool_name": "Bash",
+ "tool_input": {
+  "command": "echo capture-ok"
+ },
+ "tool_use_id": "call_root_1"
+}

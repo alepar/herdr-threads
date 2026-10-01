@@ -1,0 +1,571 @@
+//! Compact machine text (ht-4is.8.18): the non-TTY default an agent's tool
+//! call sees for the high-traffic reads. One line per row, page metadata only
+//! as a single trailing `next:` command when there is more, and no JSON blobs.
+//! `--json` keeps the full structured form; kinds without a form here use the
+//! generic `key: value` encoder.
+//!
+//! Layout rules every form follows:
+//! - the first line is the result kind (optionally followed by its subject);
+//! - a row's service-generated fields (sequence, IDs, seat, time) come first;
+//!   peer-supplied text only ever follows the first `": "` of a row and is
+//!   escaped to one line, so it cannot fake a row, a field or a command line;
+//! - a command line is `label: herdr-threads ...`, quoted for a POSIX shell;
+//! - `body` is the one multi-line exception: its header row comes first and
+//!   every body line after it is indented by two spaces, so no body line can
+//!   start at column 0 where a row or a command line would.
+
+use super::{OutputSpec, detail_argv, format_command_argv, needs_terminal_escape, text_json};
+use crate::protocol::{
+    pagination::Page,
+    results::{
+        CheckInResult, CommandResult, InboxItem, MessageContent, MessageDetails, MessageKind,
+        MessageSummary, Participant, PendingReceipt, ThreadDetails, WarningRef,
+    },
+    service::EventAuthor,
+    time::UtcMillis,
+};
+use serde_json::Value;
+
+/// Most IDs listed for one event row (`+N` counts the rest).
+const EVENT_IDS_SHOWN: usize = 3;
+
+pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String> {
+    let mut out = String::new();
+    match result {
+        CommandResult::History(page) => {
+            out.push_str("history\n");
+            for summary in &page.items {
+                message_row(summary, spec, &mut out);
+            }
+            next("next", page, &mut out);
+        }
+        CommandResult::Inbox(page) => {
+            out.push_str("inbox\n");
+            inbox_rows(page, spec, &mut out);
+            next("next", page, &mut out);
+        }
+        CommandResult::PendingReceipts(page) => {
+            pending_receipts(page, &mut out);
+            next("next", page, &mut out);
+        }
+        CommandResult::Participants(page) => {
+            out.push_str("participants\n");
+            for participant in &page.items {
+                participant_row(participant, &mut out);
+            }
+            next("next", page, &mut out);
+        }
+        CommandResult::Thread(details) => thread(details, &mut out),
+        CommandResult::CheckedIn(check) => checked_in(check, spec, &mut out),
+        CommandResult::Message(details) => message_body(details, spec, &mut out),
+        _ => return None,
+    }
+    Some(out)
+}
+
+/// `label: COMMAND` once, only when the page has more.
+fn next<T>(label: &str, page: &Page<T>, out: &mut String) {
+    if page.has_more
+        && let Some(argv) = &page.next_argv
+    {
+        out.push_str(label);
+        out.push_str(": ");
+        out.push_str(&format_command_argv(argv));
+        out.push('\n');
+    }
+}
+
+/// Peer text on one line: JSON-style escapes for controls, backslash, C1
+/// controls and Unicode line separators; quotes stay as they are.
+fn one_line(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\\' => out.push_str("\\\\"),
+            ch if ch.is_control() || needs_terminal_escape(ch) => {
+                out.push_str(&format!("\\u{:04x}", ch as u32));
+            }
+            ch => out.push(ch),
+        }
+    }
+    out
+}
+
+/// A label as a single token: escaped, whitespace replaced.
+fn token(text: &str) -> String {
+    one_line(text)
+        .chars()
+        .map(|ch| if ch.is_whitespace() { '_' } else { ch })
+        .collect()
+}
+
+/// `HH:MMZ` (UTC) of a timestamp.
+fn clock(at: UtcMillis) -> String {
+    let minutes = at.0.div_euclid(60_000).rem_euclid(24 * 60);
+    format!("{:02}:{:02}Z", minutes / 60, minutes % 60)
+}
+
+/// The author column: a seat ID, a service ID or `system`, with any actor
+/// label attached as `id(label)`.
+fn author(summary: &MessageSummary) -> String {
+    let id = match (&summary.event_author, &summary.author) {
+        (Some(EventAuthor::Programmatic(service)), _) => Some(service.as_str().to_owned()),
+        (Some(EventAuthor::Native(seat)), _) | (_, Some(seat)) => Some(seat.as_str().to_owned()),
+        (Some(EventAuthor::BuiltIn), None) | (None, None) => None,
+    };
+    match (id, &summary.actor_label) {
+        (Some(id), Some(label)) => format!("{id}({})", token(label)),
+        (Some(id), None) => id,
+        (None, Some(label)) => token(label),
+        (None, None) => "system".to_owned(),
+    }
+}
+
+/// `#SEQ MSG AUTHOR HH:MMZ: text`, with `[more: herdr-threads body MSG]`
+/// before the text when the preview was clipped. System events are one short
+/// `#SEQ EVENT IDS...` row.
+fn message_row(summary: &MessageSummary, spec: &OutputSpec, out: &mut String) {
+    if summary.kind != MessageKind::Ordinary
+        && let Some(row) = event_row(summary)
+    {
+        out.push_str(&row);
+        out.push('\n');
+        return;
+    }
+    out.push_str(&format!(
+        "#{} {} {} {}",
+        summary.sequence,
+        summary.message.as_str(),
+        author(summary),
+        clock(summary.created_at)
+    ));
+    if summary.kind == MessageKind::Warn {
+        out.push_str(" warn");
+    }
+    if summary.preview_omitted {
+        let argv = summary
+            .preview_detail_argv
+            .clone()
+            .unwrap_or_else(|| detail_argv(spec, &["body", summary.message.as_str()]));
+        out.push_str(&format!(" [more: {}]", format_command_argv(&argv)));
+    }
+    out.push_str(": ");
+    out.push_str(&one_line(&summary.preview_data));
+    out.push('\n');
+}
+
+/// Whether `value` is a service-generated ID safe to print as a bare token.
+fn id_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+/// `#SEQ NAME IDS...[: text]` for a structured system event, or `None` when
+/// its preview is clipped or not a structured event (the full row is used).
+fn event_row(summary: &MessageSummary) -> Option<String> {
+    if summary.preview_omitted {
+        return None;
+    }
+    let event: Value = serde_json::from_str(&summary.preview_data).ok()?;
+    let event = event.as_object()?;
+    let field = |key: &str| event.get(key).and_then(Value::as_str);
+    let name = field("action")
+        .or_else(|| field("event"))
+        .map(str::to_owned)
+        .or_else(|| field("obligation").map(|what| format!("overdue_{what}")))?;
+    if !id_token(&name) {
+        return None;
+    }
+    let mut row = format!("#{} {name}", summary.sequence);
+    if summary.kind == MessageKind::Warn {
+        row.push_str(" warn");
+    }
+    let mut ids: Vec<String> = Vec::new();
+    fn push(ids: &mut Vec<String>, id: &str) {
+        if id_token(id) && !ids.iter().any(|seen| seen == id) {
+            ids.push(id.to_owned());
+        }
+    }
+    // Who did it, when the event does not name its actor itself.
+    if !event.contains_key("actor_seat") {
+        match (&summary.author, &summary.event_author) {
+            (Some(seat), _) => push(&mut ids, seat.as_str()),
+            (None, Some(EventAuthor::Programmatic(service))) => push(&mut ids, service.as_str()),
+            _ => {}
+        }
+    }
+    for key in ["actor_seat", "seat", "invitation", "message"] {
+        if let Some(id) = field(key) {
+            push(&mut ids, id);
+        }
+    }
+    let (mut listed, mut extra) = (0usize, 0usize);
+    for key in ["messages", "seats"] {
+        if let Some(list) = event.get(key).and_then(Value::as_array) {
+            for id in list.iter().filter_map(Value::as_str) {
+                if listed < EVENT_IDS_SHOWN {
+                    push(&mut ids, id);
+                    listed += 1;
+                } else {
+                    extra += 1;
+                }
+            }
+        }
+    }
+    for id in &ids {
+        row.push(' ');
+        row.push_str(id);
+    }
+    if extra > 0 {
+        row.push_str(&format!(" +{extra}"));
+    }
+    for key in ["data", "topic", "goal", "detail"] {
+        if let Some(text) = field(key) {
+            row.push_str(": ");
+            row.push_str(&one_line(text));
+            break;
+        }
+    }
+    Some(row)
+}
+
+/// A count with `+` when more may be pending than it says.
+fn count(value: u64, more: bool) -> String {
+    format!("{value}{}", if more { "+" } else { "" })
+}
+
+/// `THREAD receipts=N invitations=N warnings=N [required]`, zero counts left
+/// out; a required invitation adds its exact accept command.
+fn inbox_rows(page: &Page<InboxItem>, spec: &OutputSpec, out: &mut String) {
+    if page.items.is_empty() && !page.has_more {
+        out.push_str("empty\n");
+    }
+    for item in &page.items {
+        out.push_str(item.thread.as_str());
+        for (label, value, more) in [
+            (
+                "receipts",
+                item.pending_receipts,
+                item.pending_receipts_has_more,
+            ),
+            ("invitations", item.invitations, item.invitations_has_more),
+            ("warnings", item.warnings, item.warnings_has_more),
+        ] {
+            if value > 0 || more {
+                out.push_str(&format!(" {label}={}", count(value, more)));
+            }
+        }
+        if let Some(required) = &item.pending_requirement {
+            out.push_str(" required\n  accept-required: ");
+            let revision = required.revision.to_string();
+            out.push_str(&format_command_argv(&detail_argv(
+                spec,
+                &[
+                    "accept-required",
+                    item.thread.as_str(),
+                    "--invitation",
+                    required.invitation.as_str(),
+                    "--requirement",
+                    required.requirement.as_str(),
+                    "--revision",
+                    &revision,
+                ],
+            )));
+        }
+        out.push('\n');
+    }
+}
+
+/// `pending_receipts [SEAT]`, then `MSG THREAD#SEQ from SENDER [due HH:MMZ]
+/// [overdue]`; the seat is on the header when every row shares it.
+fn pending_receipts(page: &Page<PendingReceipt>, out: &mut String) {
+    let shared = page
+        .items
+        .first()
+        .map(|first| &first.seat)
+        .filter(|seat| page.items.iter().all(|item| &item.seat == *seat));
+    out.push_str("pending_receipts");
+    if let Some(seat) = shared {
+        out.push(' ');
+        out.push_str(seat.as_str());
+    }
+    out.push('\n');
+    if page.items.is_empty() && !page.has_more {
+        out.push_str("none\n");
+    }
+    for item in &page.items {
+        out.push_str(&format!(
+            "{} {}#{} from {}",
+            item.message.as_str(),
+            item.thread.as_str(),
+            item.sequence,
+            item.sender.as_str()
+        ));
+        if shared.is_none() {
+            out.push_str(&format!(" to {}", item.seat.as_str()));
+        }
+        if let Some(deadline) = item.deadline {
+            out.push_str(&format!(" due {}", clock(deadline)));
+        }
+        if item.overdue {
+            out.push_str(" overdue");
+        }
+        out.push('\n');
+    }
+}
+
+fn snake<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// `SEAT STATE [self] [required invitation=I requirement=R revision=N]
+/// [retired]`.
+fn participant_row(participant: &Participant, out: &mut String) {
+    out.push_str(participant.seat.as_str());
+    out.push(' ');
+    out.push_str(&snake(&participant.effective_state));
+    if participant.physical_state != participant.effective_state {
+        out.push_str(&format!(
+            "(physical:{})",
+            snake(&participant.physical_state)
+        ));
+    }
+    if participant.is_self {
+        out.push_str(" self");
+    }
+    if let Some(required) = &participant.requirement {
+        out.push_str(&format!(
+            " required invitation={} requirement={} revision={}",
+            required.invitation.as_str(),
+            required.requirement.as_str(),
+            required.revision
+        ));
+        let state = snake(&required.state);
+        if state != "pending" {
+            out.push_str(&format!(" requirement_state={state}"));
+        }
+    }
+    if participant.retired {
+        out.push_str(" retired");
+    }
+    if let Some(cleanup) = &participant.cleanup_state {
+        out.push_str(&format!(" cleanup:{}", snake(cleanup)));
+    }
+    out.push('\n');
+}
+
+fn thread(details: &ThreadDetails, out: &mut String) {
+    let summary = &details.summary;
+    out.push_str(&format!(
+        "thread {} messages={} ordinary={} joined={} participants={} pending_receipts={}",
+        summary.thread.as_str(),
+        summary.message_count,
+        summary.ordinary_count,
+        summary.joined_count,
+        details.participant_count,
+        details.pending_receipt_count
+    ));
+    if summary.archived {
+        out.push_str(" archived");
+    }
+    if summary.orphaned {
+        out.push_str(" orphaned");
+    }
+    if let Some(owner) = &summary.managed_owner {
+        out.push_str(&format!(" managed_by={}", owner.as_str()));
+    }
+    out.push('\n');
+    out.push_str("topic: ");
+    out.push_str(&one_line(&summary.topic_data));
+    if summary.topic_omitted {
+        out.push('…');
+    }
+    out.push('\n');
+    if details.goal_data != summary.topic_data {
+        out.push_str("goal: ");
+        out.push_str(&one_line(&details.goal_data));
+        out.push('\n');
+    }
+    if details.pending_receipt_count > 0 {
+        out.push_str("pending_receipts: ");
+        out.push_str(&format_command_argv(&details.pending_receipts_argv));
+        out.push('\n');
+    }
+    out.push_str("participants:\n");
+    for participant in &details.participants.items {
+        participant_row(participant, out);
+    }
+    next("participants.next", &details.participants, out);
+}
+
+fn warning_row(warning: &WarningRef, out: &mut String) {
+    out.push_str(&format!(
+        "{} {}#{}\n",
+        warning.warning.as_str(),
+        warning.thread.as_str(),
+        warning.sequence
+    ));
+}
+
+/// `checked_in SEAT HARNESS ROLE generation=N DISPOSITION`, the inbox rows,
+/// the pending warning count, the first warning-history page (when there is
+/// any) and any notices this offer carries.
+fn checked_in(check: &CheckInResult, spec: &OutputSpec, out: &mut String) {
+    let context = &check.context;
+    out.push_str(&format!(
+        "checked_in {} {} {} generation={} {}",
+        check.seat.as_str(),
+        snake(&context.harness),
+        snake(&context.role),
+        context.binding_generation,
+        snake(&check.context_disposition)
+    ));
+    if let Some(through) = &check.offered_through {
+        out.push_str(&format!(" offered_through={}", token(through)));
+    }
+    out.push('\n');
+    out.push_str("inbox:\n");
+    inbox_rows(&check.inbox, spec, out);
+    next("inbox.next", &check.inbox, out);
+    out.push_str(&format!(
+        "warnings: {} pending\n",
+        count(check.warning_count, check.warning_count_has_more)
+    ));
+    if !check.warnings.items.is_empty() || check.warnings.has_more {
+        out.push_str("warning_history:\n");
+        for warning in &check.warnings.items {
+            warning_row(warning, out);
+        }
+        next("warning_history.next", &check.warnings, out);
+    }
+    if !check.notices.items.is_empty() || check.notices.has_more {
+        out.push_str("notices:\n");
+        for notice in &check.notices.items {
+            warning_row(notice, out);
+        }
+        if check.notices.has_more {
+            out.push_str("notices.more: ");
+            out.push_str(&format_command_argv(&detail_argv(
+                spec,
+                &["warnings", "--seat", check.seat.as_str()],
+            )));
+            out.push('\n');
+        }
+    }
+}
+
+/// Whether a body character must be escaped to keep the text terminal-safe.
+/// Newlines and tabs stay as they are.
+fn body_escape(ch: char) -> bool {
+    ch != '\n' && ch != '\t' && (ch.is_control() || needs_terminal_escape(ch))
+}
+
+/// `body`: the header `#SEQ MSG AUTHOR HH:MMZ [warn] [bytes=FROM-TO/TOTAL]
+/// [escaped]`, then the body verbatim with each non-empty line indented by
+/// two spaces, then `more: COMMAND` only when the body continues.
+///
+/// A body is printed exactly unless it holds a character that could drive
+/// the terminal (C0 other than newline and tab, C1, U+2028/U+2029). Such a
+/// body is marked `escaped` on the header and printed with those characters
+/// as `\uXXXX` and each backslash doubled, so the escapes stay unambiguous.
+/// A system event prints `event: JSON` (one line) and its condition.
+fn message_body(details: &MessageDetails, spec: &OutputSpec, out: &mut String) {
+    let summary = &details.summary;
+    out.push_str(&format!(
+        "#{} {} {} {}",
+        summary.sequence,
+        summary.message.as_str(),
+        author(summary),
+        clock(summary.created_at)
+    ));
+    if summary.kind == MessageKind::Warn {
+        out.push_str(" warn");
+    }
+    match &details.content {
+        MessageContent::Ordinary {
+            body_data,
+            body_offset,
+            body_total_bytes,
+            body_complete,
+            body_next_argv,
+            ..
+        } => {
+            let end = body_offset + body_data.len() as u64;
+            if *body_offset > 0 || !body_complete {
+                out.push_str(&format!(" bytes={body_offset}-{end}/{body_total_bytes}"));
+            }
+            let escaped = body_data.chars().any(body_escape);
+            if escaped {
+                out.push_str(" escaped");
+            }
+            out.push('\n');
+            let text = if escaped {
+                let mut text = String::with_capacity(body_data.len());
+                for ch in body_data.chars() {
+                    match ch {
+                        '\\' => text.push_str("\\\\"),
+                        ch if body_escape(ch) => text.push_str(&format!("\\u{:04x}", ch as u32)),
+                        ch => text.push(ch),
+                    }
+                }
+                text
+            } else {
+                body_data.clone()
+            };
+            for line in text.split('\n') {
+                if !line.is_empty() {
+                    out.push_str("  ");
+                    out.push_str(line);
+                }
+                out.push('\n');
+            }
+            if !body_complete {
+                let argv = body_next_argv.clone().unwrap_or_else(|| {
+                    let offset = end.to_string();
+                    detail_argv(
+                        spec,
+                        &["body", summary.message.as_str(), "--offset", &offset],
+                    )
+                });
+                out.push_str("more: ");
+                out.push_str(&format_command_argv(&argv));
+                out.push('\n');
+            }
+        }
+        MessageContent::System {
+            event,
+            current_condition,
+        } => {
+            out.push('\n');
+            out.push_str("event: ");
+            out.push_str(&text_json(&event.event_json));
+            out.push('\n');
+            if let Some(source) = &event.source_message {
+                out.push_str(&format!("source_message: {}\n", source.as_str()));
+            }
+            if let Some(source) = &event.source_invitation {
+                out.push_str(&format!("source_invitation: {}\n", source.as_str()));
+            }
+            if let Some(condition) = current_condition {
+                out.push_str(&format!(
+                    "condition: {} {}\n",
+                    token(&condition.state),
+                    if condition.active {
+                        "active"
+                    } else {
+                        "inactive"
+                    }
+                ));
+            }
+        }
+    }
+}

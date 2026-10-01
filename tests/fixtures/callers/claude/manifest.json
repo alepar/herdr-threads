@@ -1,0 +1,15 @@
+{
+  "harness": "claude",
+  "version": "2.1.283",
+  "herdr_version": "0.9.1",
+  "capture_status": "PASS_WITH_RECORDED_LIMITATIONS",
+  "authorization_status": "UNSUPPORTED_PENDING_SHARED_BOTH_HARNESS_GATE",
+  "fixture_count": 26,
+  "native_case_count": 15,
+  "native_receipt_matches": 14,
+  "private_raw_log_sha256": "46c84ef4189785801d1b80d787b778a773ad43fdd182342930084ef112afcb12",
+  "source_notes": "Native rows derive from one allowlisted hook line each; result status and timestamp derive from that tool ID in its root/child transcript. Synthetic mutations are labeled and never presented as native observations.",
+  "native_transition_count": 3,
+  "recovered_source_count": 14,
+  "recovered_source_sha256": "40f1588e68dacf9191da6ce2ce4314757c6d7f734e74d86d565e31d502891ba4"
+}

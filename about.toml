@@ -1,0 +1,12 @@
+# cargo-about configuration: third-party notices for the code linked into the
+# release executables (normal dependencies only, no dev/build-only crates, for
+# every release target).
+accepted = ["MIT", "Apache-2.0", "Zlib", "Unicode-3.0"]
+ignore-dev-dependencies = true
+ignore-build-dependencies = true
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+]

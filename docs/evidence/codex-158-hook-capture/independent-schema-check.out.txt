@@ -1,0 +1,28 @@
+0.155.1 sha256 8eaf1ad12fe6bf89b1710330f58900014322c7c5af677e43be116d8ac5fc0a9e schemas 23
+0.157.1 sha256 27ceb5f9b957b43a519efe4eaa3816a0bffb0a531a2c89af18840c0a3c016a7d schemas 23
+0.158.0 sha256 788a818fbb9596869c7a487554507cb8bdca17584b8671112b23f9e225ba35c8 schemas 23
+0.155.1 == 0.158.0: True
+0.157.1 == 0.158.0: True
+interrupt.command.input ce67cfa55af4d809
+interrupt.command.output 624bb8871ab60780
+permission-request.command.input 2515ff20185eace7
+permission-request.command.output ec745eabefc3cc7a
+post-compact.command.input 2ec253658699e2e7
+post-compact.command.output 96eaf71714a24697
+post-tool-use.command.input 4b627e465b4e09b5
+post-tool-use.command.output 2e85bb4ec6e49e71
+pre-compact.command.input dd80a65551c14084
+pre-compact.command.output 5345b088545db963
+pre-tool-use.command.input f98170394b8474c3
+pre-tool-use.command.output 5142a3e918caac72
+session-end.command.input 924cc4c1bc754ea8
+session-start.command.input f48fecf5618444ae
+session-start.command.output 286203bb0f40363c
+stop.command.input 9aae0499076165a3
+stop.command.output 429e232cc3841444
+subagent-start.command.input 32c6a4c57523f0fb
+subagent-start.command.output c86acee35a030944
+subagent-stop.command.input c3edd636c7430602
+subagent-stop.command.output 0fe9bdd774f47c80
+user-prompt-submit.command.input 968ac82b184f3d70
+user-prompt-submit.command.output 6d219428ae448965

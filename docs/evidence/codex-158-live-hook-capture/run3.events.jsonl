@@ -1,0 +1,9 @@
+{"type":"thread.started","thread_id":"01a0ef9e-76a2-7830-8c1f-431f5368a539"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation."}}
+{"type":"item.completed","item":{"id":"item_1","type":"error","message":"`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation."}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"I’ll run the requested shell command, then report matching developer messages visible in my context."}}
+{"type":"item.started","item":{"id":"item_3","type":"command_execution","command":"/bin/zsh -lc 'echo capture-ok'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_3","type":"command_execution","command":"/bin/zsh -lc 'echo capture-ok'","aggregated_output":"capture-ok\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_4","type":"agent_message","text":"Before the tool call: `herdr-threads-session-marker`\n\nAfter the tool call: `herdr-threads-capture-marker`"}}
+{"type":"turn.completed","usage":{"input_tokens":44611,"cached_input_tokens":39168,"cache_write_input_tokens":0,"output_tokens":131,"reasoning_output_tokens":0}}

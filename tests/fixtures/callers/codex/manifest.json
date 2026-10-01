@@ -1,0 +1,31 @@
+{
+  "harness": "codex",
+  "tested_version": "0.157.1",
+  "capture_status": "PASS",
+  "authorization_status": "UNSUPPORTED",
+  "default_transport_status": "UNSUPPORTED",
+  "reason": "Default Codex sandbox denied private Unix socket access; exact socket profile also denied. Scoped per-command escalation succeeded, but unattended default transport was not established. After /new, cached predecessor session and unchanged PID remained visible until the first new turn; no synchronous clear hook invalidation was observed.",
+  "scenarios": [
+    "manual_root_before_child",
+    "native_child",
+    "manual_root_after_child",
+    "concurrent_child_a",
+    "concurrent_child_b",
+    "resume_same_conversation",
+    "clear_new_conversation",
+    "cached_predecessor_host",
+    "cached_predecessor_old_context",
+    "replacement_before_observation",
+    "absent_caller_metadata",
+    "unknown_version",
+    "stale_generation",
+    "code_mode_nested_exec",
+    "default_socket_denied",
+    "scoped_escalation_socket",
+    "expired_context",
+    "evidence_after_hook_return"
+  ],
+  "raw_evidence": "/private/tmp/ht-codex-probe-2c2e381/evidence (private, uncommitted)",
+  "synthetic_temporal_inputs": "context_issued_ms, context_expires_ms, decision_ms, evidence_available_ms and hook_return_ms are synthetic classifier inputs, not measured native permit or hook-return signals.",
+  "alias_rule": "Native IDs, turns, tools and PIDs use stable synthetic aliases. Equality and differences across cited native rows are preserved; synthetic host/timing combinations are labeled per case."
+}

@@ -1,0 +1,25 @@
+{
+ "payload": {
+  "session_id": "01a0ef9d-e987-7c62-8e57-7709725792cc",
+  "turn_id": "01a0ef9e-0143-7553-a6f4-4f02d6935c8b",
+  "transcript_path": null,
+  "cwd": "$S/proj",
+  "hook_event_name": "SubagentStart",
+  "model": "gpt-6-luna",
+  "permission_mode": "bypassPermissions",
+  "agent_id": "01a0ef9e-0121-7462-8e75-aeac85509092",
+  "agent_type": "default"
+ },
+ "hook_stdout": "",
+ "env_names_herdr_codex": [
+  "AISW_SHELL_HOOK",
+  "CODEX_HOME",
+  "HERDR_AGENT",
+  "HERDR_BIN_PATH",
+  "HERDR_ENV",
+  "HERDR_PANE_ID",
+  "HERDR_SOCKET_PATH",
+  "HERDR_TAB_ID",
+  "HERDR_WORKSPACE_ID"
+ ]
+}

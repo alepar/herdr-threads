@@ -1,0 +1,98 @@
+# Deadline and native wake scheduling
+
+## Goal
+
+Recover committed attention work after failure, produce durable deadline warnings once, and deliver compact coalesced native hints without treating transport success as receipt or disturbing recognized blocked input.
+
+Parent: [root design](2026-09-27-herdr-threads-design.md). Bead: ht-4is.5. Earlier siblings: caller-attribution, store and seat-identity designs in this directory.
+
+## Adopted shared-contract detail
+
+The [adopted shared-contract amendment, revision 4](shared-contract-amendment-adopted.md) is normative for the exact types, schema, algorithms and ownership described below. Its adoption is a design decision, not implemented or native-tested evidence. Existing acceptance remains required. Logical publication is authoritative; bounded physical projection cannot hide committed receipt/warning obligations. Preserve F6's unresolved dissent and the BOTH-harness gate `ht-910`; shared types, fake ports and store tests cannot satisfy that gate. Formal design review counters and original task review histories are unchanged by these edits.
+
+## Ownership and the two clocks
+
+Use recoverable per-seat wake generations over StorePort. The store owns domain transitions, event uniqueness, injected-clock transaction decisions and durable work. The scheduler owns due-scan driving, wake selection, elapsed retry policy and transport observations. It never authors receipt success or sets ACK state.
+
+Invoke a tick after committed attention changes and on a one-second monotonic timer. Due scans use batches of at most 100 and continuation yields to requests. The same background driver resumes retirement jobs through StorePort in quanta of at most 16 fixed-size units/five ms between-unit work budget, with foreground/background fairness defined by the daemon. Retirement transition logic remains store-owned. Complete host reconciliation runs every five seconds in the independent observation coordinator. All host/metadata/subprocess waits run outside the serialized database writer; a hung host or search cannot occupy the deadline/check-in lane.
+
+Invitation and receipt defaults remain 300 seconds, with positive installation/per-operation settings and checked overflow rejection. Store freezes invitation duration at creation and receipt duration at send, including prelaunch messages whose timer starts only at first verified eligible availability. Its transaction-local UTC sample follows queue/preparation/write-lock waits. For successful transactions this is the logical decision point, not COMMIT/fsync completion; pauses before/after that point have the store's explicit different classification. Scheduler ticks never supply a cached decision timestamp.
+
+UTC determines persisted obligation deadlines. Restart, long sleep or forward wall jump scans pending due records; backward wall jump delays eligibility without changing stored deadlines. Existing warning history is never erased. Scan helpers recheck candidates at their own transaction decision. Accept/ACK and retirement share event uniqueness and overdue classification. Retirement commits a terminal fence and frozen cutover, then bounded cleanup uses that cutover to materialize owed warnings even when reconciliation precedes the first due tick. Due scans reread the fence and exclude effectively retired obligations; they never classify unfinished cleanup using later scan time. Predeadline retirement and timely recorded decisions cannot create false later warnings. Monotonic elapsed time independently governs retries and host-call deadlines; wall changes never grant wake eligibility.
+
+### Due and materialization progress
+
+Invitation and receipt scanners use independent pending-unwarned indexes, physical cursor/high-water state and per-phase errors. A call visits at most 100 physical candidates, including filtered rows; explicit continuation is independent of new-warning count. Rotate before fallible work, retain each failed position, return committed progress from the healthy phase and restart healthy completed scans even while their peer remains stuck. After no progress, retain retry/priority state rather than losing it through a generic error. Restart/UTC jumps begin fresh indexed pending-unwarned scans, not full retained-history rescans.
+
+The same driver fairly resumes warning attribution, send attention, receipt timer indexing and cleanup jobs with the adopted 16-unit/five-ms work contract and boot continuation. Earliest immutable availability anchors define effective deadlines immediately; physical indexing lag is diagnostic and cannot hide obligations from read/ACK/retirement. A stuck materializer cannot hide logical unavailable warnings or block another ready work class. Only a fresh live authorized caller can publish a staged send; background work never retains caller proof or publishes after disconnection.
+
+
+## Attention lifecycle
+
+Invitation, ordinary recipient obligation and actionable system warning publish durable logical attention transactionally. Manifest-backed receipt/warning obligations are visible before wake_work/recipient projection. Warning generation is the global event decision sequence; do not assign a later per-seat generation during attribution. Info and successful ACK/accept do not independently enqueue work. Warning recipients are nonretired joined seats at the event decision plus the directly affected invited/left seat with outstanding obligation; deduplicate and do not exclude a cause merely because it caused the condition. Store freezes this snapshot using immutable membership intervals/retirement decision provenance. Event/job or sealed manifest publication creates the complete logical recipient predicate immediately; per-recipient attribution proceeds in bounded crash-safe quanta, never a whole-thread deciding loop. Warnings materialized by retirement already have a settled condition: preserve their history without a new recipient snapshot or wake fanout. This uses the existing settled-condition suppression and keeps cleanup independent of thread width. System events never receive receipt rows.
+
+Verified fresh top-level check-in constructs bounded effective warning counts/references and reachable continuation, then records offered_through_seq for the current binding generation/execution. Logical unavailable warnings must already be discoverable before expansion; an interrupted count/offer returns an explicit error without advancing the frontier. This observation is neither proof output reached the model nor ACK. Child reads cannot advance it. Pending invitation/message reasons remain until explicit settlement or retirement. Warning-only reasons may stop waking once offered at that seat's verified check-in even if the page omitted individual warnings; history/inbox continuation preserves discovery. This retains rejected F1's seat-wide policy.
+
+Maintain pending/offered generations, binding generation, retry step, durable last reservation/outcome and duration fields. Replacement atomically installs and resets the successor binding-generation/execution frontier while preserving obligations, started deadlines and per-seat spacing history. Delayed event E is suppressed only by a matching current-occupant frontier C>=E; A's frontier never suppresses it for successor B. Same-execution repeated check-in does not reset the frontier. The retirement fence immediately cancels the seat's work without deleting diagnostics or warnings; wake selection and result application consult effective state before physical cleanup finishes. Reconciliation reconstructs missing work from authoritative pending obligations/unoffered warning generations, never resurrecting retired obligations. A settled underlying condition suppresses its warning wake even if historical warning remains. Stop attempts once no current reasons remain, retaining last reservation history for future work.
+
+## Target safety and failed-startup recovery
+
+Prompt-target safety and receipt availability are separate predicates. A resolved, supported native target with recognized execution identity in idle/done state may receive the generic hint while still unregistered. It does not require the check-in the hint is intended to recover. Receipt availability and authority require proven top-level invocation plus fresh matching observation/registration. Snapshots, launch, hints and prompt submission never register, start timers, offer a delivery checkpoint, accept or ACK. Running timers continue through outages/replacement.
+
+Before selecting a target and immediately before prompt, use the bounded observation coordinator to read explicit terminal/incarnation/native execution/binding generation and compare with the reservation. Discard on mismatch or known invalidation. These are ordered observations, not a physical-host/DB atomic guard. Execution identity's freshness must be established against source/native evidence; a fresh response containing unproven cached metadata does not qualify. Events invalidate/request observation rather than directly applying mappings; late results are fenced by call/epoch/sequence.
+
+Unknown harness/execution, unresolved continuity or repair-held target, shell-only, unavailable, working, blocked, approval/question or positively known human-composer input defers prompting. Working agents get attention through supported hooks. Never use focused-pane defaults. The host lacks atomic expected-session/composer-empty prompt guards: keep the accepted optimistic race explicit. Unknown composer occupancy is not claimed detected; native validation reports actual signals and exercises partial input.
+
+Coalesce all threads/reasons into one bounded fixed marker: `herdr-threads: attention pending; run herdr-threads inbox`. Optional plugin-owned counts must fit. No peer topic/body, credential or per-message marker. After failed startup exhausts its budget, a recovered running daemon reconstructs prelaunch work and can hint the surviving idle unregistered native occupant. The resulting ordinary root tool/turn hook retries fresh verified check-in; only that callback registers and starts unstarted timers. The model then reads, accepts and ACKs explicitly. Lost hint/output leaves obligations retriable. Missing/unsupported hooks keep health degraded; both native harnesses must prove callback-after-hint. No new OS supervisor is implied: a stopped daemon still needs an ensure-capable invocation/operator recovery.
+
+Lazy seat allocation and restart-stable recovery holds follow seat identity/store. An observed unused pane alone does not receive a new seat. Held ambiguous baseline targets require explicit operator repair or fresh-seat choice; F6's original dissent/escalation remains open; the later shared-contract adoption does not resolve it.
+
+## Bounded dispatch and uncertain outcomes
+
+One scheduler owner allows one in-flight attempt per seat, at most four active prompts globally. Host coordinator admits at most 32 pending host jobs, one active observation and one coalesced pending snapshot. Queued jobs retain absolute deadlines and expire before dispatch; foreground observations are FIFO with due reconciliation admitted after at most eight foreground reads. Overload returns typed busy/unavailable.
+
+Persist attempt ID, daemon boot ID, seat/binding generation, reservation decision time, retry step and frozen delays before invoking HostPort. Release writer ownership before any target read/prompt. Start a monotonic lease after reservation commit, at most five seconds for the complete recheck/prompt attempt. Target-read default is 750 ms, prompt two seconds, snapshot/subscription establishment two seconds; setup/parse/queue share whole-call budgets clipped to the remaining attempt/caller budget. Ordinary hook budget remains 1.5 seconds and startup five seconds. No queued operation restarts its budget.
+
+Use cancellable I/O; on timeout close owned request transport/drop future, discard late call/epoch results, and terminate/reap only owned CLI helpers with bounded cleanup if applicable. No abandoned blocking thread per timeout. Subscription cancellation on shutdown/reconnect completes within 250 ms. A local watchdog releases in-flight state by lease expiry; retain reasons and record OutcomeUnknown when submission may have occurred. Result application checks attempt/boot ID, so a late result cannot clear or overwrite a successor reservation. Cancellation cannot retract an already accepted remote prompt.
+
+Host submission is transport success only. After success, uncertain failure or discarded target, record bounded aggregate diagnostics and keep unresolved obligations. Crash after reservation/before prompt produces a conservative retry delay; crash after prompt/before recording outcome may duplicate a hint, never message/ACK. Old-boot reservations recover as uncertain. Failed reservation commit sends no prompt. Failure updates health/diagnostics, not recursive warning messages. Shutdown cancels host tasks and drains bounded database work.
+
+## Elapsed retry spacing and restart
+
+Configured minimum `M` defaults to 30 seconds. Accept finite durations at least 30 seconds and reject overflowing calculations before loops start. Backoff steps remain 30, 60, 120, 300 seconds; effective delay `D = max(M, step)`. New attention may shorten the step to the minimum without bypassing elapsed spacing.
+
+Persist reservation history, retry step, frozen minimum and effective delay. UTC last/next-attempt values may be exposed as diagnostic projections, never used as eligibility authority. MonoInstant is process-local, never a portable persisted timestamp. Clock implementation must not advance monotonic elapsed time merely because UTC changed. If supported platform monotonic time excludes suspend, retries conservatively wait longer after sleep.
+
+During a daemon run:
+
+1. After reservation commit, sample monotonic time as per-seat anchor; set eligibility to anchor plus D. Slow commit cannot consume the delay before a reservation becomes durable.
+2. Retain one in-flight attempt. On host completion, timeout/cancellation or final-target discard, advance anchor to completion time and recompute delay. This conservative rule prevents a delayed prompt from being followed by an immediate next prompt.
+3. New attention may shorten eligibility to anchor plus the reservation's minimum. It never moves anchor backward or bypasses in-flight state. Retain the anchor across temporary empty reasons, settlement, occupant replacement and reconstruction; no new attention resets it to an earlier time.
+
+Configuration is fixed for the run. On restart sample boot_mono; every seat with any durable prior reservation gets anchor=boot_mono and waits its retained effective delay, raised to the current minimum if larger. An old in-flight reservation is uncertain. New attention may shorten only to boot_mono plus max(prior frozen minimum, current minimum). Lowering configuration cannot weaken that prior reservation's guard; after a new reservation current configuration applies. Never-reserved seats have no restart guard. Retain last-reservation data even if reasons were empty at shutdown.
+
+Do not estimate elapsed downtime from UTC or subtract it from the guard. Wall jumps in either direction, during host work or retry waits, leave monotonic eligibility unchanged. Repeated restarts can postpone wakes indefinitely; after a stable restart work becomes time-eligible within one full retained effective delay (absent target/attention deferral or new in-flight work). Deadline scans, local reads and check-ins continue during the guard. This explicitly replaces the old guarantee of retry within an interval measured from a pre-crash wall timestamp.
+
+## Decomposition and acceptance
+
+ht-4is.5.1 owns deadline and bounded retirement-progress driving/configuration through StorePort, including boot resumption and fair rotation; it does not implement retirement transitions. The closed ht-4is.5.2 retains its accepted pure-policy history; a distinct follow-up adapts it to effective warning candidates and occupant-scoped frontiers without reopening/resetting that task. ht-4is.5.3 owns reservation/lease/clock/HostPort composition and restart reconstruction. Store owns shared overdue uniqueness and schema; identity owns observation ordering/provenance. Shared contracts allow driver/policy tests with fake ports; production composition verifies their wiring.
+
+Injected clocks and real-store/fake-host tests must cover:
+
+- Exact deadline boundary, frozen 300-second/override duration, prelaunch availability, long sleep, UTC jumps, bounded continuation and retirement before due scan after downtime. Pause before decision crosses deadline and warns; pause after timely decision does not.
+- Info-only silence, multi-thread coalescing, warning-only offered-generation settlement, pending ordinary/invitation retry, changed occupant, lost hook output and no implicit ACK/checkpoint.
+- Default 30/60/120/300 backoff and M=120; attention before eligibility; UTC +1 hour and -1 hour after one elapsed second; verify no prompt before elapsed floor and no backward-wall starvation.
+- Reservation at mono 0 with host completion at mono 2 seconds: next attempt not before mono 32 seconds under M=30. New attention at mono 3 seconds does not bypass it. Check actual fake-host call times, not only projected UTC rows.
+- Restart after reservation, after prompt/before outcome and after reasons emptied; full boot guard even with forward/backward wall correction. New attention shortens only to retained/current minimum. Never-reserved immediate eligibility, raised/lowered restart settings, repeated restart postponement and both allowed suspend behaviors.
+- Connected hung target/snapshot/prompt, absolute queued timeout, bounded cancellation/release, late old result against newer attempt, crash-before-prompt, failed commit, settlement/retirement cancellation. Local health/read/deadline work continues while host calls stall.
+- Safe idle unregistered native target can receive only generic recovery hint; registration/timer/checkpoint stays unchanged until fresh verified callback. Unknown/held/blocked/working/human-input targets defer; stale recheck discards. Both-harness positive attribution gate remains prerequisite, never an environment-only fallback.
+
+Composed-service and native evidence in validation remain required before support claims. Tests and requirements above are not passing results. F5's retained local intents and F16's unpassed positive native feasibility gate are unchanged.
+
+## Shared-contract adoption record
+
+2026-09-27: Reconciled this canonical spec with the adopted revision-4 shared contract. Detailed normative algorithms/types and preserved revision responses are in the [adopted shared-contract amendment, revision 4](shared-contract-amendment-adopted.md). This is specification work before the next formal design review; no source implementation or native-support completion is asserted.
+
+## Post-Implementation Notes
+
+*As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*

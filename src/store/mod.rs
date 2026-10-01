@@ -1,0 +1,2118 @@
+//! SQLite-backed production store dispatch.
+pub mod attention;
+pub mod connection;
+pub mod control;
+pub mod effective;
+pub mod invitation_due;
+pub mod materialization;
+pub mod messages;
+pub mod operator;
+pub(crate) mod public_ids;
+pub mod queries;
+pub mod receipts;
+pub mod schema;
+pub mod seats;
+pub mod service_controls;
+pub mod service_events;
+pub mod service_substrate;
+pub mod wake;
+pub mod work;
+
+use crate::{
+    ports::{
+        ClosureEvidence, DuePhase, DuePhaseCursor, DuePhaseProgress, DueScanProgress,
+        DueScanRequest, DurableWorkAdmission, GuardedInvalidationTransition, GuardedSeatTransition,
+        HostInvalidationFence, HostInvalidationReason, HostObservation, HostObservationAdmission,
+        InvalidationSeatPage, OperationReadScope, OperatorRequest, OrdinaryAllocationGuard,
+        PublishedSnapshot, ReadContext, ReceiptSparseCursor, ReconciliationOutcome,
+        RegisterAvailableRequest, RegistrationRevocation, RetirementJob, RetirementProgress,
+        RetirementSummary, SendPreparationProgress, SnapshotCleanupProgress, SnapshotGenerationId,
+        SnapshotHeader, SnapshotSeatPage, SnapshotStage, SnapshotStageProgress, StorePort,
+        WakeCandidate, WakeOutcome, WakeRecoveryCandidate, WakeRecoveryOutcome,
+        WakeRecoveryRequest, WakeReservation, WorkAdmission, WorkCandidate, WorkKind, WorkProgress,
+    },
+    protocol::{
+        authority::{DecisionFence, MutationPermit, OperatorActor},
+        commands::{
+            Command, DirectoryMembership, OperatorCommand, PermitMutation, ResolveSeat,
+            RetirementJobsQuery, SendMessage, WarningsQuery,
+        },
+        ids::{HostBootId, HostTargetId, RetirementJobId, SeatId, WakeAttemptId},
+        pagination::{
+            Consistency, Cursor, CursorDirection, CursorScope, Page, PageRequest, StopReason,
+        },
+        results::{ApiError, BoundedError, CommandResult, ErrorCode, RetirementStatus},
+        time::{CallBudget, Clock, UtcMillis},
+    },
+};
+use connection::{DecisionInstant, StoreContext, api_error, store_error};
+use rusqlite::{Connection, OptionalExtension, Transaction, ffi, params};
+use std::{ffi::c_void, sync::Mutex};
+
+#[derive(Debug, Clone)]
+pub struct StoreSettings {
+    pub invitation_default_ms: Option<u64>,
+    pub message_limits: messages::MessageLimits,
+    /// The elected daemon run's boot identity, supplied by the service factory.
+    pub daemon_boot: Option<uuid::Uuid>,
+    pub minimum_wake_delay_ms: u64,
+}
+impl Default for StoreSettings {
+    fn default() -> Self {
+        Self {
+            invitation_default_ms: None,
+            message_limits: messages::MessageLimits::default(),
+            daemon_boot: None,
+            minimum_wake_delay_ms: 30_000,
+        }
+    }
+}
+
+/// One serialized domain writer. Every ordinary query opens an independent
+/// query-only connection through StoreContext.
+pub struct SqliteStore {
+    context: StoreContext,
+    instance: String,
+    settings: StoreSettings,
+    writer: Mutex<Connection>,
+}
+
+struct WriterProgress<'a> {
+    budget: &'a CallBudget,
+    clock: &'a dyn Clock,
+}
+struct WriterProgressGuard<'a> {
+    handle: *mut ffi::sqlite3,
+    _state: Box<WriterProgress<'a>>,
+}
+unsafe extern "C" fn check_writer_progress(data: *mut c_void) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let state = unsafe { &*(data as *const WriterProgress<'_>) };
+        i32::from(state.budget.is_exhausted(state.clock))
+    }))
+    .unwrap_or(1)
+}
+impl<'a> WriterProgressGuard<'a> {
+    fn install(conn: &Connection, budget: &'a CallBudget, clock: &'a dyn Clock) -> Self {
+        let state = Box::new(WriterProgress { budget, clock });
+        let data = (&*state as *const WriterProgress<'_>).cast_mut().cast();
+        let handle = unsafe { conn.handle() };
+        unsafe { ffi::sqlite3_progress_handler(handle, 100, Some(check_writer_progress), data) };
+        Self {
+            handle,
+            _state: state,
+        }
+    }
+}
+impl Drop for WriterProgressGuard<'_> {
+    fn drop(&mut self) {
+        unsafe { ffi::sqlite3_progress_handler(self.handle, 0, None, std::ptr::null_mut()) };
+    }
+}
+impl SqliteStore {
+    pub fn new(
+        context: StoreContext,
+        instance: impl Into<String>,
+        settings: StoreSettings,
+    ) -> Result<Self, ApiError> {
+        let instance = instance.into();
+        if instance.is_empty()
+            || instance.len() > 128
+            || settings.message_limits.receipt_duration_ms <= 0
+            || settings.message_limits.body_bytes == 0
+            || settings.message_limits.body_bytes > messages::MAX_BODY_BYTES
+            || settings
+                .invitation_default_ms
+                .is_some_and(|ms| ms == 0 || ms > i64::MAX as u64)
+            || settings.minimum_wake_delay_ms < 30_000
+            || settings.minimum_wake_delay_ms > i64::MAX as u64
+            || settings
+                .daemon_boot
+                .as_ref()
+                .is_some_and(uuid::Uuid::is_nil)
+        {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "invalid store settings",
+            ));
+        }
+        let writer = context.open_writer()?;
+        Ok(Self {
+            context,
+            instance,
+            settings,
+            writer: Mutex::new(writer),
+        })
+    }
+
+    fn writer(
+        &self,
+        budget: &CallBudget,
+    ) -> Result<std::sync::MutexGuard<'_, Connection>, ApiError> {
+        loop {
+            self.live_budget(budget)?;
+            match self.writer.try_lock() {
+                Ok(guard) => {
+                    self.live_budget(budget)?;
+                    failpoint!(
+                        "store.writer.acquired",
+                        self.context.failpoint_scope(),
+                        connection = &guard
+                    );
+                    return Ok(guard);
+                }
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err(api_error(ErrorCode::StoreCorrupt, "writer lock poisoned"));
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    // Test-only barrier: this caller is waiting for the writer.
+                    failpoint!("store.writer.contended", self.context.failpoint_scope());
+                    let remaining = budget
+                        .deadline
+                        .0
+                        .saturating_sub(self.context.clock().monotonic_now().0);
+                    std::thread::sleep(std::time::Duration::from_millis(remaining.min(2)));
+                }
+            }
+        }
+    }
+
+    fn live_budget(&self, budget: &CallBudget) -> Result<(), ApiError> {
+        if budget.cancellation.is_cancelled() {
+            Err(api_error(ErrorCode::Cancelled, "store call cancelled"))
+        } else if budget.deadline_passed(self.context.clock()) {
+            Err(api_error(
+                ErrorCode::DeadlineExceeded,
+                "store call deadline exceeded",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn decision_fence(
+        &self,
+        tx: &Transaction<'_>,
+        at: DecisionInstant,
+        seat: &SeatId,
+        target: &HostTargetId,
+    ) -> Result<DecisionFence, ApiError> {
+        let (boot,epoch,binding_generation,target_generation,observed_boot,observed_epoch,observed_generation):(String,i64,i64,i64,String,i64,i64)=tx.query_row(
+            "SELECT h.host_boot,h.host_epoch,s.generation,s.target_generation,o.host_boot,o.epoch,o.generation \
+             FROM seats s JOIN host_instances h ON h.id=s.instance_id JOIN observed_targets o ON o.instance_id=s.instance_id AND o.target_id=s.target_id \
+             WHERE s.id=?1 AND s.instance_id=?2 AND s.target_id=?3 AND s.state='resolved'",
+            params![seat.as_str(),self.instance,target.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).map_err(store_error)?;
+        let nonnegative = |value: i64| {
+            u64::try_from(value)
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative authority generation"))
+        };
+        Ok(DecisionFence {
+            now: at.monotonic,
+            host_boot: HostBootId::new(&boot),
+            host_epoch: nonnegative(epoch)?,
+            target_generation: nonnegative(target_generation)?,
+            binding_generation: nonnegative(binding_generation)?,
+            known_invalidated: boot != observed_boot
+                || epoch != observed_epoch
+                || target_generation != observed_generation,
+        })
+    }
+}
+
+fn due_i64(value: u64) -> Result<i64, ApiError> {
+    i64::try_from(value)
+        .map_err(|_| api_error(ErrorCode::InvalidRequest, "due cursor position overflow"))
+}
+fn bounded_due_error(error: &ApiError) -> BoundedError {
+    let mut detail = format!("{:?}: {}", error.code, error.detail);
+    if detail.len() > crate::protocol::results::MAX_LAST_ERROR_BYTES {
+        let mut end = crate::protocol::results::MAX_LAST_ERROR_BYTES;
+        while !detail.is_char_boundary(end) {
+            end -= 1;
+        }
+        detail.truncate(end);
+    }
+    BoundedError::parse(detail).expect("bounded due detail")
+}
+fn invitation_cursor(
+    value: &DuePhaseCursor,
+) -> Result<invitation_due::InvitationDueCursor, ApiError> {
+    if value.receipt_sparse.is_some() || value.after_deadline.is_some() != (value.after_ordinal > 0)
+    {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "invalid invitation due cursor",
+        ));
+    }
+    Ok(invitation_due::InvitationDueCursor {
+        high_water_ordinal: due_i64(value.high_water_ordinal)?,
+        after_deadline: value.after_deadline.map_or(i64::MIN, |at| at.0),
+        after_ordinal: due_i64(value.after_ordinal)?,
+    })
+}
+fn receipt_cursor(value: &DuePhaseCursor) -> Result<receipts::ReceiptDueCursor, ApiError> {
+    let sparse = value.receipt_sparse.as_ref();
+    if value.after_deadline.is_some() != (value.after_ordinal > 0) {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "invalid receipt due cursor",
+        ));
+    }
+    let sparse_high_water_rowid = sparse
+        .map(|c| due_i64(c.high_water_rowid))
+        .transpose()?
+        .unwrap_or(0);
+    Ok(receipts::ReceiptDueCursor {
+        high_water_ordinal: due_i64(value.high_water_ordinal)?,
+        after_deadline: value.after_deadline.map(|at| at.0),
+        after_ordinal: due_i64(value.after_ordinal)?,
+        sparse_high_water_rowid,
+        sparse_after_deadline: sparse.and_then(|c| c.after_deadline.map(|at| at.0)),
+        sparse_after_message: sparse
+            .and_then(|c| c.after_message.as_ref().map(|id| id.as_str().to_owned())),
+        sparse_after_seat: sparse
+            .and_then(|c| c.after_seat.as_ref().map(|id| id.as_str().to_owned())),
+        next_sparse: sparse.is_some_and(|c| c.next_sparse),
+    })
+}
+fn exported_receipt_cursor(value: &receipts::ReceiptDueCursor) -> Result<DuePhaseCursor, ApiError> {
+    Ok(DuePhaseCursor {
+        high_water_ordinal: u64::try_from(value.high_water_ordinal)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative receipt high water"))?,
+        after_deadline: value.after_deadline.map(UtcMillis),
+        after_ordinal: u64::try_from(value.after_ordinal)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative receipt ordinal"))?,
+        receipt_sparse: Some(ReceiptSparseCursor {
+            high_water_rowid: u64::try_from(value.sparse_high_water_rowid)
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative sparse high water"))?,
+            after_deadline: value.sparse_after_deadline.map(UtcMillis),
+            after_message: value
+                .sparse_after_message
+                .as_ref()
+                .map(crate::protocol::ids::MessageId::new),
+            after_seat: value.sparse_after_seat.as_ref().map(SeatId::new),
+            next_sparse: value.next_sparse,
+        }),
+    })
+}
+
+/// Internal pages use their complete, fixed JSON representation for byte
+/// admission. This includes both copies of a continuation cursor and every
+/// candidate field, even though the pages never become CLI-selected output.
+fn internal_page_bytes<T: serde::Serialize>(page: &Page<T>) -> Result<usize, ApiError> {
+    serde_json::to_vec(page)
+        .map(|bytes| bytes.len())
+        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "internal page encoding failed"))
+}
+
+fn internal_page_budget_error(detail: &'static str, minimum: usize) -> ApiError {
+    ApiError {
+        code: ErrorCode::InvalidBudget,
+        detail: detail.into(),
+        restart_argv: None,
+        required_minimum_bytes: Some(minimum.min(u32::MAX as usize) as u32),
+    }
+}
+
+fn work_page_at(
+    instance: &str,
+    items: Vec<WorkCandidate>,
+    after: u64,
+    high_water: u64,
+    stop: StopReason,
+) -> Result<Page<WorkCandidate>, ApiError> {
+    let has_more = after < high_water;
+    let next_cursor = if has_more {
+        Some(
+            Cursor {
+                instance: instance.into(),
+                scope: CursorScope::WorkJobs,
+                scope_key: "all".into(),
+                filter_digest: "all".into(),
+                direction: CursorDirection::Ascending,
+                order_version: 1,
+                last_examined_key: None,
+                after_ordinal: after,
+                high_water_ordinal: high_water,
+                scope_revision: None,
+                filter_revision: None,
+                search: None,
+                attention: None,
+                inbox: None,
+                binding: None,
+            }
+            .encode()
+            .map_err(|why| api_error(ErrorCode::StoreCorrupt, why))?,
+        )
+    } else {
+        None
+    };
+    let next_argv = next_cursor
+        .as_ref()
+        .map(|raw| vec!["work-jobs".into(), "--cursor".into(), raw.clone()]);
+    Ok(Page {
+        items,
+        next_cursor,
+        next_argv,
+        high_water_ordinal: high_water,
+        scope_revision: None,
+        has_more,
+        stop_reason: if has_more { stop } else { StopReason::Complete },
+        consistency: Consistency::BoundedLive,
+    })
+}
+
+fn wake_page_at(
+    instance: &str,
+    items: Vec<WakeCandidate>,
+    after: u64,
+    high_water: u64,
+    pending: Option<&effective::SeatAttentionPosition>,
+    stop: StopReason,
+) -> Result<Page<WakeCandidate>, ApiError> {
+    let has_more = pending.is_some() || after < high_water;
+    let pending_revision = pending
+        .map(|position| {
+            u64::try_from(position.decision_seq)
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative wake attention revision"))
+        })
+        .transpose()?;
+    let next_cursor = if has_more {
+        Some(
+            Cursor {
+                instance: instance.into(),
+                scope: CursorScope::WakeCandidates,
+                scope_key: "all".into(),
+                filter_digest: "all".into(),
+                direction: CursorDirection::Ascending,
+                order_version: 1,
+                last_examined_key: pending.map(|position| position.seat_id.clone()),
+                after_ordinal: after,
+                high_water_ordinal: high_water,
+                scope_revision: pending_revision,
+                filter_revision: None,
+                search: None,
+                attention: pending.map(effective::SeatAttentionPosition::to_cursor_state),
+                inbox: None,
+                binding: None,
+            }
+            .encode()
+            .map_err(|why| api_error(ErrorCode::StoreCorrupt, why))?,
+        )
+    } else {
+        None
+    };
+    let next_argv = next_cursor
+        .as_ref()
+        .map(|raw| vec!["wake-candidates".into(), "--cursor".into(), raw.clone()]);
+    Ok(Page {
+        items,
+        next_cursor,
+        next_argv,
+        high_water_ordinal: high_water,
+        scope_revision: None,
+        has_more,
+        stop_reason: if has_more { stop } else { StopReason::Complete },
+        consistency: Consistency::BoundedLive,
+    })
+}
+
+fn wake_recovery_page_at(
+    instance: &str,
+    items: Vec<WakeRecoveryCandidate>,
+    after: u64,
+    high_water: u64,
+    stop: StopReason,
+) -> Result<Page<WakeRecoveryCandidate>, ApiError> {
+    let has_more = after < high_water;
+    let next_cursor = if has_more {
+        Some(
+            Cursor {
+                instance: instance.into(),
+                scope: CursorScope::WakeRecovery,
+                scope_key: "all".into(),
+                filter_digest: "all".into(),
+                direction: CursorDirection::Ascending,
+                order_version: 1,
+                last_examined_key: None,
+                after_ordinal: after,
+                high_water_ordinal: high_water,
+                scope_revision: None,
+                filter_revision: None,
+                search: None,
+                attention: None,
+                inbox: None,
+                binding: None,
+            }
+            .encode()
+            .map_err(|why| api_error(ErrorCode::StoreCorrupt, why))?,
+        )
+    } else {
+        None
+    };
+    let next_argv = next_cursor
+        .as_ref()
+        .map(|raw| vec!["wake-recovery".into(), "--cursor".into(), raw.clone()]);
+    Ok(Page {
+        items,
+        next_cursor,
+        next_argv,
+        high_water_ordinal: high_water,
+        scope_revision: None,
+        has_more,
+        stop_reason: if has_more { stop } else { StopReason::Complete },
+        consistency: Consistency::BoundedLive,
+    })
+}
+
+fn wake_recovery_page(
+    context: &StoreContext,
+    instance: &str,
+    elected_boot: Option<uuid::Uuid>,
+    page: PageRequest,
+    budget: &CallBudget,
+) -> Result<Page<WakeRecoveryCandidate>, ApiError> {
+    page.validate()
+        .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
+    let Some(current_boot) = elected_boot else {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "wake recovery requires elected daemon boot",
+        ));
+    };
+    let cursor = page
+        .cursor
+        .as_ref()
+        .map(|raw| {
+            Cursor::decode_for(
+                raw,
+                instance,
+                CursorScope::WakeRecovery,
+                "all",
+                "all",
+                CursorDirection::Ascending,
+                1,
+            )
+            .map_err(|why| api_error(ErrorCode::InvalidCursor, why))
+        })
+        .transpose()?;
+    if let Some(cursor) = &cursor {
+        cursor
+            .validate_for(
+                instance,
+                CursorScope::WakeRecovery,
+                "all",
+                "all",
+                CursorDirection::Ascending,
+                1,
+            )
+            .map_err(|why| api_error(ErrorCode::InvalidCursor, why))?;
+    }
+    let db = context.open_query(budget.clone())?;
+    db.execute_batch("BEGIN DEFERRED")
+        .map_err(|error| db.map_error(error))?;
+    let high_water = match &cursor {
+        Some(cursor) => cursor.high_water_ordinal,
+        None => {
+            let raw: i64 = db
+                .query_row(
+                    "SELECT COALESCE(MAX(ordinal),0) FROM seats WHERE instance_id=?1",
+                    [instance],
+                    |row| row.get(0),
+                )
+                .map_err(|error| db.map_error(error))?;
+            u64::try_from(raw)
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative seat high water"))?
+        }
+    };
+    let mut after = cursor.as_ref().map_or(0, |cursor| cursor.after_ordinal);
+    let mut items = Vec::new();
+    let mut positions = Vec::new();
+    let mut visited = 0usize;
+    let mut stop = StopReason::Complete;
+    let mut statement = db.prepare("SELECT s.ordinal,s.id,w.reservation_id,w.reservation_boot FROM seats s LEFT JOIN wake_work w ON w.seat_id=s.id WHERE s.instance_id=?1 AND s.ordinal>?2 AND s.ordinal<=?3 ORDER BY s.ordinal LIMIT 100")
+        .map_err(|error|db.map_error(error))?;
+    let mut rows = statement
+        .query(params![instance, due_i64(after)?, due_i64(high_water)?])
+        .map_err(|error| db.map_error(error))?;
+    while let Some(row) = rows.next().map_err(|error| db.map_error(error))? {
+        if budget.is_exhausted(context.clock()) {
+            return Err(api_error(
+                ErrorCode::ReadBudgetExhausted,
+                "wake recovery scan budget exhausted",
+            ));
+        }
+        let ordinal: i64 = row.get(0).map_err(store_error)?;
+        let seat: String = row.get(1).map_err(store_error)?;
+        let attempt: Option<String> = row.get(2).map_err(store_error)?;
+        let prior_boot: Option<String> = row.get(3).map_err(store_error)?;
+        match (attempt, prior_boot) {
+            (Some(attempt), Some(prior_boot)) => {
+                let parsed = uuid::Uuid::parse_str(&prior_boot).map_err(|_| {
+                    api_error(
+                        ErrorCode::StoreCorrupt,
+                        "invalid persisted wake daemon boot",
+                    )
+                })?;
+                if parsed != current_boot {
+                    if items.len() >= usize::from(page.limit) {
+                        stop = StopReason::Rows;
+                        break;
+                    }
+                    positions.push((
+                        after,
+                        u64::try_from(ordinal).map_err(|_| {
+                            api_error(ErrorCode::StoreCorrupt, "negative seat ordinal")
+                        })?,
+                    ));
+                    items.push(WakeRecoveryCandidate {
+                        seat: SeatId::new(seat),
+                        attempt: WakeAttemptId::new(attempt),
+                        prior_daemon_boot: parsed,
+                    });
+                }
+            }
+            (None, None) => {}
+            _ => {
+                return Err(api_error(
+                    ErrorCode::StoreCorrupt,
+                    "incomplete persisted wake reservation",
+                ));
+            }
+        }
+        after = u64::try_from(ordinal)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative seat ordinal"))?;
+        visited += 1;
+    }
+    if visited == 100 && after < high_water && stop == StopReason::Complete {
+        stop = StopReason::Work;
+    }
+    if after < high_water && stop == StopReason::Complete {
+        stop = StopReason::Work;
+    }
+    let mut result = wake_recovery_page_at(instance, items, after, high_water, stop)?;
+    loop {
+        let measured = internal_page_bytes(&result)?;
+        if measured <= page.max_bytes as usize {
+            return Ok(result);
+        }
+        if result.items.len() <= 1 {
+            if result.items.len() == 1 {
+                let (_, ordinal) = positions[0];
+                let single = wake_recovery_page_at(
+                    instance,
+                    result.items,
+                    ordinal,
+                    high_water,
+                    StopReason::Bytes,
+                )?;
+                let minimum = internal_page_bytes(&single)?;
+                if minimum <= page.max_bytes as usize {
+                    return Ok(single);
+                }
+                return Err(internal_page_budget_error(
+                    "wake recovery page cannot fit",
+                    minimum,
+                ));
+            }
+            return Err(internal_page_budget_error(
+                "wake recovery page cannot fit",
+                measured,
+            ));
+        }
+        let (before, _) = positions
+            .pop()
+            .expect("one position per recovery candidate");
+        result.items.pop();
+        after = before;
+        result =
+            wake_recovery_page_at(instance, result.items, after, high_water, StopReason::Bytes)?;
+    }
+}
+
+fn pending_work_page(
+    context: &StoreContext,
+    instance: &str,
+    page: PageRequest,
+    budget: &CallBudget,
+) -> Result<Page<WorkCandidate>, ApiError> {
+    page.validate()
+        .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
+    let cursor = page
+        .cursor
+        .as_ref()
+        .map(|raw| {
+            Cursor::decode_for(
+                raw,
+                instance,
+                CursorScope::WorkJobs,
+                "all",
+                "all",
+                CursorDirection::Ascending,
+                1,
+            )
+            .map_err(|why| api_error(ErrorCode::InvalidCursor, why))
+        })
+        .transpose()?;
+    if let Some(cursor) = &cursor {
+        cursor
+            .validate_for(
+                instance,
+                CursorScope::WorkJobs,
+                "all",
+                "all",
+                CursorDirection::Ascending,
+                1,
+            )
+            .map_err(|why| api_error(ErrorCode::InvalidCursor, why))?;
+    }
+    let db = context.open_query(budget.clone())?;
+    db.execute_batch("BEGIN DEFERRED")
+        .map_err(|e| db.map_error(e))?;
+    let high_water = match &cursor {
+        Some(c) => c.high_water_ordinal,
+        None => {
+            let value: i64 = db
+                .query_row("SELECT COALESCE(MAX(ordinal),0) FROM work_jobs", [], |r| {
+                    r.get(0)
+                })
+                .map_err(|e| db.map_error(e))?;
+            u64::try_from(value)
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative work high water"))?
+        }
+    };
+    let mut after = cursor.as_ref().map_or(0, |c| c.after_ordinal);
+    let mut items = Vec::new();
+    let mut item_positions = Vec::new();
+    let mut visited = 0usize;
+    let mut stop = StopReason::Complete;
+    let mut statement=db.prepare("SELECT ordinal,id,kind,position,high_water,status FROM work_jobs WHERE ordinal>?1 AND ordinal<=?2 ORDER BY ordinal LIMIT 100").map_err(|e|db.map_error(e))?;
+    let mut rows = statement
+        .query(params![due_i64(after)?, due_i64(high_water)?])
+        .map_err(|e| db.map_error(e))?;
+    while let Some(row) = rows.next().map_err(|e| db.map_error(e))? {
+        if budget.is_exhausted(context.clock()) {
+            return Err(api_error(
+                ErrorCode::ReadBudgetExhausted,
+                "work discovery budget exhausted",
+            ));
+        }
+        let ordinal: i64 = row.get(0).map_err(store_error)?;
+        let id: String = row.get(1).map_err(store_error)?;
+        let kind: String = row.get(2).map_err(store_error)?;
+        let position: i64 = row.get(3).map_err(store_error)?;
+        let high: i64 = row.get(4).map_err(store_error)?;
+        let status: String = row.get(5).map_err(store_error)?;
+        if status == "pending" || status == "failed" {
+            if items.len() >= usize::from(page.limit) {
+                stop = StopReason::Rows;
+                break;
+            }
+            let kind = match kind.as_str() {
+                "warning_attribution" => WorkKind::WarningAttribution,
+                "send_attention" => WorkKind::SendAttention,
+                "receipt_timer_materialization" => WorkKind::ReceiptTimerMaterialization,
+                "preparation_cleanup" => WorkKind::PreparationCleanup,
+                _ => return Err(api_error(ErrorCode::StoreCorrupt, "invalid work kind")),
+            };
+            item_positions.push((
+                after,
+                u64::try_from(ordinal)
+                    .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative work ordinal"))?,
+            ));
+            items.push(WorkCandidate {
+                id,
+                kind,
+                position: u64::try_from(position)
+                    .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative work position"))?,
+                high_water: u64::try_from(high)
+                    .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative work bound"))?,
+                has_more: position < high,
+            });
+        }
+        after = u64::try_from(ordinal)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative work ordinal"))?;
+        visited += 1;
+    }
+    if visited == 100 && after < high_water && stop == StopReason::Complete {
+        stop = StopReason::Work;
+    }
+    if after < high_water && stop == StopReason::Complete {
+        stop = StopReason::Work;
+    }
+    let mut result = work_page_at(instance, items, after, high_water, stop)?;
+    loop {
+        let measured = internal_page_bytes(&result)?;
+        if measured <= page.max_bytes as usize {
+            return Ok(result);
+        }
+        if result.items.len() <= 1 {
+            if result.items.len() == 1 {
+                let (_, ordinal) = item_positions[0];
+                let single = work_page_at(
+                    instance,
+                    result.items,
+                    ordinal,
+                    high_water,
+                    StopReason::Bytes,
+                )?;
+                let minimum = internal_page_bytes(&single)?;
+                if minimum <= page.max_bytes as usize {
+                    return Ok(single);
+                }
+                return Err(internal_page_budget_error("work page cannot fit", minimum));
+            }
+            return Err(internal_page_budget_error("work page cannot fit", measured));
+        }
+        let (before, _) = item_positions.pop().expect("one position per work item");
+        result.items.pop();
+        after = before;
+        result = work_page_at(instance, result.items, after, high_water, StopReason::Bytes)?;
+    }
+}
+
+fn wake_candidates_page(
+    context: &StoreContext,
+    instance: &str,
+    page: PageRequest,
+    budget: &CallBudget,
+) -> Result<Page<WakeCandidate>, ApiError> {
+    page.validate()
+        .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
+    let cursor = page
+        .cursor
+        .as_ref()
+        .map(|raw| {
+            Cursor::decode_for(
+                raw,
+                instance,
+                CursorScope::WakeCandidates,
+                "all",
+                "all",
+                CursorDirection::Ascending,
+                1,
+            )
+            .map_err(|why| api_error(ErrorCode::InvalidCursor, why))
+        })
+        .transpose()?;
+    if let Some(cursor) = &cursor {
+        cursor
+            .validate_for(
+                instance,
+                CursorScope::WakeCandidates,
+                "all",
+                "all",
+                CursorDirection::Ascending,
+                1,
+            )
+            .map_err(|why| api_error(ErrorCode::InvalidCursor, why))?;
+        if cursor.attention.is_some() != cursor.last_examined_key.is_some()
+            || (cursor.attention.is_some() && cursor.scope_revision.is_none())
+        {
+            return Err(api_error(
+                ErrorCode::InvalidCursor,
+                "invalid wake attention continuation",
+            ));
+        }
+    }
+    let db = context.open_query(budget.clone())?;
+    db.execute_batch("BEGIN DEFERRED")
+        .map_err(|e| db.map_error(e))?;
+    let high_water = if let Some(cursor) = &cursor {
+        cursor.high_water_ordinal
+    } else {
+        let value: i64 = db
+            .query_row(
+                "SELECT COALESCE(MAX(ordinal),0) FROM seats WHERE instance_id=?1",
+                [instance],
+                |r| r.get(0),
+            )
+            .map_err(|e| db.map_error(e))?;
+        u64::try_from(value)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative seat high water"))?
+    };
+    let mut after = cursor.as_ref().map_or(0, |c| c.after_ordinal);
+    let mut pending = cursor
+        .as_ref()
+        .and_then(|c| {
+            c.attention
+                .clone()
+                .zip(c.last_examined_key.clone())
+                .zip(c.scope_revision)
+        })
+        .map(|((state, seat), decision_seq)| {
+            Ok(effective::SeatAttentionPosition::from_cursor_state(
+                seat,
+                due_i64(decision_seq)?,
+                state,
+            ))
+        })
+        .transpose()?;
+    let mut items = Vec::new();
+    let mut item_positions = Vec::new();
+    let mut examined = 0u16;
+    let mut stop = StopReason::Complete;
+    while examined < 100 {
+        if budget.is_exhausted(context.clock()) {
+            return Err(api_error(
+                ErrorCode::ReadBudgetExhausted,
+                "wake discovery budget exhausted",
+            ));
+        }
+        let next:Option<(i64,String)>=db.query_row(
+            "SELECT ordinal,id FROM seats WHERE instance_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT 1",
+            params![instance,due_i64(after)?,due_i64(high_water)?],|r|Ok((r.get(0)?,r.get(1)?)))
+            .optional().map_err(|e|db.map_error(e))?;
+        let Some((ordinal, seat_raw)) = next else {
+            break;
+        };
+        if pending
+            .as_ref()
+            .is_some_and(|position| position.seat_id != seat_raw)
+        {
+            return Err(api_error(
+                ErrorCode::CursorStale,
+                "wake seat continuation changed",
+            ));
+        }
+        let slice = effective::scan_effective_seat_attention(
+            &db,
+            &seat_raw,
+            pending.take(),
+            100 - examined,
+        )?;
+        if slice.has_more && slice.visited == 0 {
+            return Err(api_error(
+                ErrorCode::StoreCorrupt,
+                "wake attention scan made no progress",
+            ));
+        }
+        examined = examined.saturating_add(slice.visited.max(1));
+        if slice.has_more {
+            pending = Some(slice.position);
+            stop = StopReason::Work;
+            break;
+        }
+        let attention = slice.attention.ok_or_else(|| {
+            api_error(
+                ErrorCode::StoreCorrupt,
+                "completed wake scan lacks attention",
+            )
+        })?;
+        let seat = SeatId::new(&seat_raw);
+        let candidate = wake::load_candidate(
+            &db,
+            instance,
+            &seat,
+            &attention,
+            slice.position.decision_seq,
+        )?;
+        let historical: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM wake_work WHERE seat_id=?1)",
+                [seat_raw.as_str()],
+                |r| r.get(0),
+            )
+            .map_err(|e| db.map_error(e))?;
+        if candidate.has_actionable_work() || historical {
+            if items.len() >= usize::from(page.limit) {
+                stop = StopReason::Rows;
+                break;
+            }
+            item_positions.push((
+                after,
+                u64::try_from(ordinal)
+                    .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative seat ordinal"))?,
+            ));
+            items.push(candidate);
+        }
+        after = u64::try_from(ordinal)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative seat ordinal"))?;
+    }
+    if (pending.is_some() || after < high_water) && stop == StopReason::Complete {
+        stop = StopReason::Work;
+    }
+    let mut result = wake_page_at(instance, items, after, high_water, pending.as_ref(), stop)?;
+    loop {
+        let measured = internal_page_bytes(&result)?;
+        if measured <= page.max_bytes as usize {
+            return Ok(result);
+        }
+        if result.items.len() <= 1 {
+            if result.items.len() == 1 {
+                let (_, ordinal) = item_positions[0];
+                let single = wake_page_at(
+                    instance,
+                    result.items,
+                    ordinal,
+                    high_water,
+                    None,
+                    StopReason::Bytes,
+                )?;
+                let minimum = internal_page_bytes(&single)?;
+                if minimum <= page.max_bytes as usize {
+                    return Ok(single);
+                }
+                return Err(internal_page_budget_error(
+                    "wake candidate page cannot fit",
+                    minimum,
+                ));
+            }
+            return Err(internal_page_budget_error(
+                "wake candidate page cannot fit",
+                measured,
+            ));
+        }
+        let (before, _) = item_positions.pop().expect("one position per wake item");
+        result.items.pop();
+        after = before;
+        result = wake_page_at(
+            instance,
+            result.items,
+            after,
+            high_water,
+            None,
+            StopReason::Bytes,
+        )?;
+    }
+}
+
+impl StorePort for SqliteStore {
+    fn clock(&self) -> &dyn Clock {
+        self.context.clock()
+    }
+
+    fn audit_service_disconnect(
+        &self,
+        boot: &str,
+        generation: u64,
+        peer: crate::protocol::authority::PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        use sha2::{Digest, Sha256};
+        if generation == 0
+            || self
+                .settings
+                .daemon_boot
+                .is_some_and(|current| current.to_string() != boot)
+        {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "invalid service recovery audit target",
+            ));
+        }
+        let scope = format!("service-recovery-audit:{}", self.instance);
+        let key = format!("{boot}:{generation}");
+        let payload = serde_json::json!({
+            "event": "operator_service_disconnect",
+            "instance": self.instance,
+            "daemon_boot": boot,
+            "connection_generation": generation,
+            "actor": format!("operator:local-user:{}", peer.effective_uid()),
+        });
+        let json = serde_json::to_string(&payload).map_err(|_| {
+            api_error(
+                ErrorCode::StoreCorrupt,
+                "cannot encode service recovery audit",
+            )
+        })?;
+        let digest = Sha256::digest(json.as_bytes());
+        // Reserve time in the ordinary call for reporting a failed audit.
+        let audit_budget = CallBudget {
+            deadline: crate::protocol::time::MonoInstant(
+                self.context
+                    .clock()
+                    .monotonic_now()
+                    .0
+                    .saturating_add(1_000)
+                    .min(budget.deadline.0.saturating_sub(100)),
+            ),
+            cancellation: budget.cancellation.clone(),
+        };
+        let mut writer = self.writer(&audit_budget)?;
+        self.context.execute_budgeted_decision(
+            &mut writer,
+            &audit_budget,
+            |_| Ok(()),
+            |tx, decision, ()| {
+                tx.execute(
+                    "INSERT INTO operations(actor_scope,operation_key,digest,result_json,decided_at) VALUES (?1,?2,?3,?4,?5)",
+                    params![scope, key, digest.as_slice(), json, decision.utc.0],
+                ).map_err(store_error)?;
+                Ok(())
+            },
+        )
+    }
+
+    fn service_operation(
+        &self,
+        operation: crate::protocol::service::ServiceOperation,
+        connection: &crate::ports::ServiceConnectionAuthority,
+        gate: &dyn crate::ports::ServiceAuthorityGate,
+        budget: &CallBudget,
+    ) -> Result<crate::protocol::service::ServiceResult, ApiError> {
+        operation
+            .validate()
+            .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
+        if let crate::protocol::service::ServiceOperation::Notify(ref request) = operation {
+            return self.service_notify(request, connection, gate, budget);
+        }
+        let mut writer = self.writer(budget)?;
+        service_controls::operate(
+            &self.context,
+            &mut writer,
+            &self.instance,
+            operation,
+            connection,
+            gate,
+            budget,
+            self.settings.invitation_default_ms,
+        )
+    }
+
+    fn service_operation_admitted(
+        &self,
+        operation: crate::protocol::service::ServiceOperation,
+        connection: &crate::ports::ServiceConnectionAuthority,
+        gate: &dyn crate::ports::ServiceAuthorityGate,
+        budget: &CallBudget,
+        admission: &crate::service::workers::FairWriter,
+    ) -> Result<crate::protocol::service::ServiceResult, ApiError> {
+        operation
+            .validate()
+            .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
+        if let crate::protocol::service::ServiceOperation::Notify(ref request) = operation {
+            return self.service_notify_admitted(request, connection, gate, budget, admission);
+        }
+        let _turn = admission.enter_foreground(budget, self.context.clock())?;
+        self.service_operation(operation, connection, gate, budget)
+    }
+
+    fn query(
+        &self,
+        command: &Command,
+        read: &ReadContext,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        read.validate()
+            .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
+        if read.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "read instance mismatch",
+            ));
+        }
+        if let Command::OperationStatus(status) = command {
+            let scope = read.operation_scope.as_ref().ok_or_else(|| {
+                api_error(ErrorCode::Unauthorized, "trusted operation scope required")
+            })?;
+            let result = queries::query_operation_status(
+                &self.context,
+                &self.instance,
+                scope,
+                status,
+                budget,
+            )?;
+            crate::protocol::output::encode_selected(&result, &read.output)?;
+            return Ok(result);
+        }
+        let mut selected = command.clone();
+        let needs_seat = matches!(&selected,Command::Inbox(q) if q.seat.is_none())
+            || matches!(&selected,Command::Directory(q) if q.membership.is_none() && q.membership_filter!=DirectoryMembership::All);
+        if needs_seat {
+            let Some(OperationReadScope::Seat(seat)) = &read.operation_scope else {
+                return Err(api_error(
+                    ErrorCode::InvalidRequest,
+                    "selected seat required for this query",
+                ));
+            };
+            let db = self.context.open_query(budget.clone())?;
+            let owned: bool = db
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2)",
+                    params![seat.as_str(), self.instance],
+                    |r| r.get(0),
+                )
+                .map_err(|e| db.map_error(e))?;
+            if !owned {
+                return Err(api_error(
+                    ErrorCode::Unauthorized,
+                    "selected seat does not belong to instance",
+                ));
+            }
+            match &mut selected {
+                Command::Inbox(q) => q.seat = Some(seat.clone()),
+                Command::Directory(q) => q.membership = Some(seat.clone()),
+                _ => unreachable!(),
+            }
+        }
+        queries::query_with_output(
+            &self.context,
+            &self.instance,
+            &selected,
+            &read.output,
+            budget,
+        )
+    }
+
+    fn mutate(
+        &self,
+        command: PermitMutation,
+        permit: MutationPermit,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        if permit
+            .cooperative_claim()
+            .is_some_and(|claim| claim.instance != self.instance)
+        {
+            return Err(api_error(
+                ErrorCode::CallerUnverified,
+                "cooperative permit instance mismatch",
+            ));
+        }
+        let seat = permit.seat_for_replay_scope().clone();
+        let mut writer = self.writer(budget)?;
+        match command {
+            PermitMutation::CheckIn(_) => Err(api_error(
+                ErrorCode::InvalidRequest,
+                "check-in requires verified registration and read context",
+            )),
+            PermitMutation::CreateThread(v) => {
+                control::create_thread(&self.context, &mut writer, budget, &v, permit, |tx, at| {
+                    self.decision_fence(tx, at, &seat, &v.claim.target)
+                })
+            }
+            PermitMutation::Invite(v) => control::invite(
+                &self.context,
+                &mut writer,
+                budget,
+                &v,
+                permit,
+                |tx, at| self.decision_fence(tx, at, &seat, &v.claim.target),
+                self.settings.invitation_default_ms,
+            ),
+            PermitMutation::Accept(v) => {
+                control::accept(&self.context, &mut writer, budget, &v, permit, |tx, at| {
+                    self.decision_fence(tx, at, &seat, &v.claim.target)
+                })
+            }
+            PermitMutation::AcceptRequired(v) => control::accept_required(
+                &self.context,
+                &mut writer,
+                budget,
+                &v,
+                permit,
+                |tx, at| self.decision_fence(tx, at, &seat, &v.claim.target),
+            ),
+            PermitMutation::SendMessage(v) => {
+                let mut permit = permit;
+                messages::publish_send(
+                    &self.context,
+                    &mut writer,
+                    &v,
+                    &mut permit,
+                    budget,
+                    |tx, at| self.decision_fence(tx, at, &seat, &v.claim.target),
+                    || self.settings.message_limits.body_bytes,
+                )
+            }
+            PermitMutation::Ack(v) => {
+                let mut permit = permit;
+                receipts::ack(
+                    &self.context,
+                    &mut writer,
+                    budget,
+                    &v,
+                    &mut permit,
+                    |tx, at| self.decision_fence(tx, at, &seat, &v.claim.target),
+                )
+            }
+            PermitMutation::Leave(v) => {
+                control::leave(&self.context, &mut writer, budget, &v, permit, |tx, at| {
+                    self.decision_fence(tx, at, &seat, &v.claim.target)
+                })
+            }
+            PermitMutation::SetTopic(v) => {
+                control::set_topic(&self.context, &mut writer, budget, &v, permit, |tx, at| {
+                    self.decision_fence(tx, at, &seat, &v.claim.target)
+                })
+            }
+            PermitMutation::Archive(v) => {
+                control::archive(&self.context, &mut writer, budget, &v, permit, |tx, at| {
+                    self.decision_fence(tx, at, &seat, &v.claim.target)
+                })
+            }
+            PermitMutation::Reopen(v) => {
+                control::reopen(&self.context, &mut writer, budget, &v, permit, |tx, at| {
+                    self.decision_fence(tx, at, &seat, &v.claim.target)
+                })
+            }
+        }
+    }
+    fn prepare_send_step(
+        &self,
+        request: &SendMessage,
+        admission: DurableWorkAdmission,
+        budget: &CallBudget,
+    ) -> Result<SendPreparationProgress, ApiError> {
+        if !request.claim.instance.is_empty() && request.claim.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::CallerUnverified,
+                "cooperative send instance mismatch",
+            ));
+        }
+
+        let mut writer = self.writer(budget)?;
+        messages::prepare_send_step(
+            &self.context,
+            &mut writer,
+            request,
+            self.settings.message_limits,
+            budget,
+            admission,
+        )
+    }
+    fn abandon_send_preparation(
+        &self,
+        expected_preparation_id: &str,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        let mut writer = self.writer(budget)?;
+        messages::abandon_send_preparation(&mut writer, expected_preparation_id)?;
+        Ok(())
+    }
+    fn allocate_seat(
+        &self,
+        request: ResolveSeat,
+        guard: OrdinaryAllocationGuard,
+        budget: &CallBudget,
+    ) -> Result<SeatId, ApiError> {
+        let mut writer = self.writer(budget)?;
+        seats::allocate(&self.context, &mut writer, &self.instance, request, guard)
+    }
+    fn resolve_seat(
+        &self,
+        request: ResolveSeat,
+        attempt: crate::ports::OrdinaryResolutionAttempt,
+        budget: &CallBudget,
+    ) -> Result<crate::ports::OrdinaryResolutionOutcome, ApiError> {
+        let mut writer = self.writer(budget)?;
+        seats::resolve_seat(
+            &self.context,
+            &mut writer,
+            &self.instance,
+            request,
+            attempt,
+            budget,
+        )
+    }
+    fn check_resolved_target(
+        &self,
+        check: crate::ports::ResolvedTargetCheck,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        let mut writer = self.writer(budget)?;
+        seats::check_resolved_target(&self.context, &mut writer, &self.instance, check, budget)
+    }
+    fn replay_operator(
+        &self,
+        command: OperatorCommand,
+        actor: OperatorActor,
+        budget: &CallBudget,
+    ) -> Result<Option<CommandResult>, ApiError> {
+        self.live_budget(budget)?;
+        let result = operator::replay(&self.context, &self.instance, &command, &actor, budget)?;
+        self.live_budget(budget)?;
+        Ok(result)
+    }
+    fn mutate_operator(
+        &self,
+        command: OperatorRequest,
+        actor: OperatorActor,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let mut writer = self.writer(budget)?;
+        seats::mutate_operator(
+            &self.context,
+            &mut writer,
+            &self.instance,
+            command,
+            actor,
+            self.settings.invitation_default_ms,
+        )
+    }
+    fn issue_cooperative_permit(
+        &self,
+        request: crate::ports::CooperativePermitRequest,
+        budget: &CallBudget,
+    ) -> Result<MutationPermit, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        let tx = db.unchecked_transaction().map_err(store_error)?;
+        let permit =
+            seats::issue_cooperative_permit(&self.context, &tx, &self.instance, request, budget)?;
+        tx.rollback().map_err(store_error)?;
+        self.live_budget(budget)?;
+        Ok(permit)
+    }
+
+    fn register_available(
+        &self,
+        request: RegisterAvailableRequest,
+        permit: MutationPermit,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        request
+            .read
+            .validate()
+            .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
+        if request.read.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "registration instance mismatch",
+            ));
+        }
+        if permit.cooperative_claim().is_some_and(|claim| {
+            claim.instance != self.instance || request.command.claim.instance != self.instance
+        }) {
+            return Err(api_error(
+                ErrorCode::CallerUnverified,
+                "cooperative registration instance mismatch",
+            ));
+        }
+        let seat = permit.seat_for_replay_scope().clone();
+        let mut writer = self.writer(budget)?;
+        let result = seats::register_available(
+            &self.context,
+            &mut writer,
+            &request.command,
+            request.registration.as_ref(),
+            budget,
+            permit,
+            |tx, at| self.decision_fence(tx, at, &seat, &request.command.claim.target),
+            |tx, seat, seq| {
+                let _progress = WriterProgressGuard::install(tx, budget, self.context.clock());
+                let page = PageRequest {
+                    max_bytes: 8_000,
+                    ..PageRequest::default()
+                };
+                let inbox = queries::inbox_in_transaction(
+                    tx,
+                    &self.instance,
+                    seat,
+                    &page,
+                    &request.read.output,
+                    budget,
+                    self.context.clock(),
+                )?;
+                let (warning_count, warning_count_has_more) =
+                    queries::pending_warning_count_in_transaction(
+                        tx,
+                        &self.instance,
+                        seat,
+                        budget,
+                        self.context.clock(),
+                    )?;
+                let warnings = queries::warnings_in_transaction(
+                    tx,
+                    &self.instance,
+                    &WarningsQuery {
+                        seat: seat.clone(),
+                        page,
+                    },
+                    &request.read.output,
+                )?;
+                let CommandResult::Warnings(warnings) = warnings else {
+                    return Err(api_error(
+                        ErrorCode::StoreCorrupt,
+                        "warning query returned wrong result",
+                    ));
+                };
+                let mut returned_context = request.command.claim.clone();
+                returned_context.instance = self.instance.clone();
+                returned_context.seat = seat.clone();
+                let generation: i64 = tx
+                    .query_row(
+                        "SELECT generation FROM seats WHERE id=?1",
+                        [seat.as_str()],
+                        |r| r.get(0),
+                    )
+                    .map_err(store_error)?;
+                returned_context.binding_generation = u64::try_from(generation).map_err(|_| {
+                    api_error(ErrorCode::StoreCorrupt, "negative binding generation")
+                })?;
+                // The capped page of programmatic notices above the current
+                // occupant's offered frontier, oldest first; the writer
+                // settles exactly the prefix this offer carries.
+                let mut notices = crate::store::attention::notice_offer_page(
+                    tx,
+                    seat.as_str(),
+                    crate::protocol::results::MAX_NOTICE_PAGE_ITEMS + 1,
+                )?
+                .into_iter()
+                .map(|offered| offered.notice)
+                .collect::<Vec<_>>();
+                let mut notices_has_more =
+                    notices.len() > crate::protocol::results::MAX_NOTICE_PAGE_ITEMS;
+                notices.truncate(crate::protocol::results::MAX_NOTICE_PAGE_ITEMS);
+                let mut offer = crate::protocol::results::CheckInResult {
+                    context_disposition:
+                        crate::protocol::results::CheckInContextDisposition::Current,
+                    context: returned_context,
+                    seat: seat.clone(),
+                    offered_through: Some(seq.to_string()),
+                    warning_count,
+                    warning_count_has_more,
+                    warnings,
+                    notices: crate::protocol::results::NoticeOffer::default(),
+                    inbox,
+                };
+                // Trim the notice page (never the rest of the offer) to the
+                // selected output bound: only notices the offer carries settle.
+                loop {
+                    offer.notices = crate::protocol::results::NoticeOffer {
+                        items: notices.clone(),
+                        has_more: notices_has_more,
+                    };
+                    let encoded = crate::protocol::output::encode_selected(
+                        &CommandResult::CheckedIn(offer.clone()),
+                        &request.read.output,
+                    )?;
+                    if encoded.len().saturating_add(3) <= PageRequest::default().max_bytes as usize
+                    {
+                        break;
+                    }
+                    if notices.pop().is_none() {
+                        return Err(api_error(
+                            ErrorCode::InvalidBudget,
+                            "complete check-in offer exceeds selected output bound",
+                        ));
+                    }
+                    notices_has_more = true;
+                }
+                Ok(offer)
+            },
+        );
+        match result {
+            Err(error)
+                if error.code == ErrorCode::Cancelled
+                    && !budget.cancellation.is_cancelled()
+                    && budget.deadline_passed(self.context.clock()) =>
+            {
+                Err(api_error(
+                    ErrorCode::ReadBudgetExhausted,
+                    "registration offer read budget exhausted",
+                ))
+            }
+            other => other,
+        }
+    }
+    fn revoke_registration(
+        &self,
+        evidence: RegistrationRevocation,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        let mut writer = self.writer(budget)?;
+        seats::revoke_registration(&self.context, &mut writer, evidence)
+    }
+    fn persisted_host_epoch(&self, instance: &str, budget: &CallBudget) -> Result<u64, ApiError> {
+        if instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "host instance mismatch",
+            ));
+        }
+        let writer = self.writer(budget)?;
+        seats::persisted_host_epoch(&writer, instance)
+    }
+    fn begin_host_observation(
+        &self,
+        instance: &str,
+        budget: &CallBudget,
+    ) -> Result<HostObservationAdmission, ApiError> {
+        if instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "host instance mismatch",
+            ));
+        }
+        let mut writer = self.writer(budget)?;
+        seats::begin_host_observation(&self.context, &mut writer, instance, budget)
+    }
+    fn publish_current_target_observation(
+        &self,
+        admission: &HostObservationAdmission,
+        observation: &HostObservation,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        if admission.instance() != self.instance {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "host admission instance mismatch",
+            ));
+        }
+        let mut writer = self.writer(budget)?;
+        seats::publish_current_target_observation(
+            &self.context,
+            &mut writer,
+            admission,
+            observation,
+            budget,
+        )
+    }
+    fn invalidate_host_observation(
+        &self,
+        admission: &HostObservationAdmission,
+        reason: HostInvalidationReason,
+        budget: &CallBudget,
+    ) -> Result<Option<HostInvalidationFence>, ApiError> {
+        if admission.instance() != self.instance {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "host admission instance mismatch",
+            ));
+        }
+        let mut writer = self.writer(budget)?;
+        seats::invalidate_host_observation(&self.context, &mut writer, admission, reason, budget)
+    }
+    fn mark_unresolved_from_invalidation(
+        &self,
+        transition: GuardedInvalidationTransition,
+        budget: &CallBudget,
+    ) -> Result<ReconciliationOutcome, ApiError> {
+        if transition.fence.instance() != self.instance {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "host invalidation instance mismatch",
+            ));
+        }
+        let mut writer = self.writer(budget)?;
+        seats::mark_unresolved_from_invalidation(&self.context, &mut writer, transition, budget)
+    }
+    fn saved_seats_page_for_invalidation(
+        &self,
+        fence: &HostInvalidationFence,
+        after_ordinal: u64,
+        high_water_ordinal: Option<u64>,
+        limit: u8,
+        budget: &CallBudget,
+    ) -> Result<InvalidationSeatPage, ApiError> {
+        if fence.instance() != self.instance {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "host invalidation instance mismatch",
+            ));
+        }
+        let db = self.context.open_query(budget.clone())?;
+        seats::saved_seats_page_for_invalidation(
+            &self.context,
+            &db,
+            fence,
+            after_ordinal,
+            high_water_ordinal,
+            limit,
+            budget,
+        )
+    }
+    fn begin_snapshot_stage(
+        &self,
+        header: SnapshotHeader,
+        budget: &CallBudget,
+    ) -> Result<SnapshotStage, ApiError> {
+        if header.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "snapshot instance mismatch",
+            ));
+        }
+        let mut writer = self.writer(budget)?;
+        seats::begin_snapshot_stage(&self.context, &mut writer, header, budget)
+    }
+    fn stage_snapshot_targets(
+        &self,
+        stage: &SnapshotGenerationId,
+        offset: u64,
+        targets: &[HostObservation],
+        admission: DurableWorkAdmission,
+        budget: &CallBudget,
+    ) -> Result<SnapshotStageProgress, ApiError> {
+        let mut writer = self.writer(budget)?;
+        seats::stage_snapshot_targets(
+            &self.context,
+            &mut writer,
+            stage,
+            offset,
+            targets,
+            admission,
+            budget,
+        )
+    }
+    fn seal_snapshot_stage(
+        &self,
+        stage: &SnapshotGenerationId,
+        budget: &CallBudget,
+    ) -> Result<SnapshotStage, ApiError> {
+        let mut writer = self.writer(budget)?;
+        seats::seal_snapshot_stage(&self.context, &mut writer, stage, budget)
+    }
+    fn publish_snapshot_stage(
+        &self,
+        stage: &SnapshotGenerationId,
+        budget: &CallBudget,
+    ) -> Result<PublishedSnapshot, ApiError> {
+        let mut writer = self.writer(budget)?;
+        seats::publish_snapshot_stage(&self.context, &mut writer, stage, budget)
+    }
+    fn discard_snapshot_stage(
+        &self,
+        stage: &SnapshotGenerationId,
+        admission: DurableWorkAdmission,
+        budget: &CallBudget,
+    ) -> Result<SnapshotCleanupProgress, ApiError> {
+        let mut writer = self.writer(budget)?;
+        seats::discard_snapshot_stage(&self.context, &mut writer, stage, admission, budget)
+    }
+    fn saved_seats_page(
+        &self,
+        published: &SnapshotGenerationId,
+        after_ordinal: u64,
+        high_water_ordinal: Option<u64>,
+        limit: u8,
+        budget: &CallBudget,
+    ) -> Result<SnapshotSeatPage, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        let page = seats::saved_seats_page(
+            &self.context,
+            &db,
+            published,
+            after_ordinal,
+            high_water_ordinal,
+            limit,
+            budget,
+        )?;
+        if page.publication.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "snapshot page instance mismatch",
+            ));
+        }
+        Ok(page)
+    }
+    fn apply_reconciliation_transition(
+        &self,
+        transition: GuardedSeatTransition,
+        budget: &CallBudget,
+    ) -> Result<ReconciliationOutcome, ApiError> {
+        if transition.publication.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "reconciliation instance mismatch",
+            ));
+        }
+        let mut writer = self.writer(budget)?;
+        seats::apply_reconciliation_transition(&self.context, &mut writer, transition, budget)
+    }
+    fn due_obligations(
+        &self,
+        request: DueScanRequest,
+        budget: &CallBudget,
+    ) -> Result<DueScanProgress, ApiError> {
+        request
+            .validate()
+            .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
+        if let Some(cursor) = &request.state.invitations {
+            invitation_cursor(cursor)?;
+        }
+        if let Some(cursor) = &request.state.receipts {
+            receipt_cursor(cursor)?;
+        }
+        let mut writer = self.writer(budget)?;
+        let mut state = request.state.clone();
+        let first = if request.run_invitations && request.run_receipts {
+            state.next_phase
+        } else if request.run_invitations {
+            DuePhase::Invitations
+        } else {
+            DuePhase::Receipts
+        };
+        state.next_phase = match first {
+            DuePhase::Invitations => DuePhase::Receipts,
+            DuePhase::Receipts => DuePhase::Invitations,
+        };
+        let (first_cap, second_cap) = if request.run_invitations && request.run_receipts {
+            (
+                request.max_candidates.div_ceil(2),
+                request.max_candidates / 2,
+            )
+        } else {
+            (request.max_candidates, 0)
+        };
+        let mut examined = 0u16;
+        let mut warnings = 0u16;
+        let mut invitation_phase = DuePhaseProgress::Skipped;
+        let mut receipt_phase = DuePhaseProgress::Skipped;
+        for (index, phase) in [first, state.next_phase].into_iter().enumerate() {
+            let cap = if index == 0 { first_cap } else { second_cap };
+            if cap == 0 {
+                continue;
+            }
+            match phase {
+                DuePhase::Invitations if request.run_invitations => {
+                    let cursor = state
+                        .invitations
+                        .as_ref()
+                        .map(invitation_cursor)
+                        .transpose()?;
+                    match invitation_due::scan_invitation_due_batch(
+                        &self.context,
+                        &mut writer,
+                        cursor,
+                        cap,
+                    ) {
+                        Ok(batch) => {
+                            examined += batch.inspected;
+                            warnings += batch.warnings_added;
+                            state.invitations = batch.next.map(|next| DuePhaseCursor {
+                                high_water_ordinal: next.high_water_ordinal as u64,
+                                after_deadline: Some(UtcMillis(next.after_deadline)),
+                                after_ordinal: next.after_ordinal as u64,
+                                receipt_sparse: None,
+                            });
+                            invitation_phase = if state.invitations.is_some() {
+                                DuePhaseProgress::More
+                            } else {
+                                DuePhaseProgress::Complete
+                            };
+                        }
+                        Err(error) => {
+                            invitation_phase = DuePhaseProgress::Failed(
+                                error.code.clone(),
+                                bounded_due_error(&error),
+                            )
+                        }
+                    }
+                }
+                DuePhase::Receipts if request.run_receipts => {
+                    let mut cursor = state
+                        .receipts
+                        .as_ref()
+                        .map(receipt_cursor)
+                        .transpose()?
+                        .unwrap_or_default();
+                    match receipts::scan_due(&self.context, &mut writer, cap, &mut cursor) {
+                        Ok(result) => {
+                            examined += result.inspected;
+                            warnings += result.warnings;
+                            state.receipts = if result.more {
+                                Some(exported_receipt_cursor(&cursor)?)
+                            } else {
+                                None
+                            };
+                            receipt_phase = if result.more {
+                                DuePhaseProgress::More
+                            } else {
+                                DuePhaseProgress::Complete
+                            };
+                        }
+                        Err(error) => {
+                            receipt_phase = DuePhaseProgress::Failed(
+                                error.code.clone(),
+                                bounded_due_error(&error),
+                            )
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let has_more = matches!(
+            invitation_phase,
+            DuePhaseProgress::More | DuePhaseProgress::Failed(..)
+        ) || matches!(
+            receipt_phase,
+            DuePhaseProgress::More | DuePhaseProgress::Failed(..)
+        ) || (request.run_invitations && request.run_receipts && second_cap == 0);
+        Ok(DueScanProgress {
+            state,
+            examined_candidates: examined,
+            warnings_added: warnings,
+            invitations: invitation_phase,
+            receipts: receipt_phase,
+            has_more,
+        })
+    }
+    fn begin_retirement(
+        &self,
+        seat: SeatId,
+        proof: ClosureEvidence,
+        budget: &CallBudget,
+    ) -> Result<RetirementJob, ApiError> {
+        let mut writer = self.writer(budget)?;
+        control::begin_retirement(&self.context, &mut writer, seat, proof)
+    }
+    fn advance_retirement(
+        &self,
+        job: RetirementJobId,
+        admission: WorkAdmission,
+        budget: &CallBudget,
+    ) -> Result<RetirementProgress, ApiError> {
+        let mut writer = self.writer(budget)?;
+        control::advance_retirement(&self.context, &mut writer, job, admission, budget)
+    }
+    fn pending_retirement_jobs(
+        &self,
+        page: PageRequest,
+        budget: &CallBudget,
+    ) -> Result<Page<RetirementStatus>, ApiError> {
+        let result = queries::query_with_output(
+            &self.context,
+            &self.instance,
+            &Command::RetirementJobs(RetirementJobsQuery { page }),
+            &crate::protocol::output::OutputSpec::default(),
+            budget,
+        )?;
+        match result {
+            CommandResult::RetirementJobs(page) => Ok(page),
+            _ => Err(api_error(
+                ErrorCode::StoreCorrupt,
+                "retirement query returned wrong result",
+            )),
+        }
+    }
+    fn binding_evidence_startup(&self) -> Option<crate::ports::BindingEvidenceStartup> {
+        self.context.binding_evidence_startup()
+    }
+    fn binding_evidence_current(
+        &self,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::ports::BindingEvidenceStartup>, ApiError> {
+        self.context.binding_evidence_current(budget)
+    }
+    fn unresolved_seat_summary(
+        &self,
+        budget: &CallBudget,
+    ) -> Result<crate::ports::UnresolvedSeatSummary, ApiError> {
+        queries::unresolved_seat_summary(&self.context, &self.instance, budget)
+    }
+    fn retirement_summary(&self, budget: &CallBudget) -> Result<RetirementSummary, ApiError> {
+        queries::retirement_summary(&self.context, &self.instance, budget)
+    }
+    fn wake_candidates(
+        &self,
+        page: PageRequest,
+        budget: &CallBudget,
+    ) -> Result<Page<WakeCandidate>, ApiError> {
+        wake_candidates_page(&self.context, &self.instance, page, budget)
+    }
+    fn pending_work(
+        &self,
+        page: PageRequest,
+        budget: &CallBudget,
+    ) -> Result<Page<WorkCandidate>, ApiError> {
+        pending_work_page(&self.context, &self.instance, page, budget)
+    }
+    fn advance_work(
+        &self,
+        job: &str,
+        admission: DurableWorkAdmission,
+        budget: &CallBudget,
+    ) -> Result<WorkProgress, ApiError> {
+        let mut writer = self.writer(budget)?;
+        materialization::advance_work(&mut writer, job, admission, budget, self.context.clock())
+    }
+    fn reserve_wake(
+        &self,
+        candidate: &WakeCandidate,
+        budget: &CallBudget,
+    ) -> Result<Option<WakeReservation>, ApiError> {
+        let Some(daemon_boot) = self.settings.daemon_boot else {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "elected daemon boot required",
+            ));
+        };
+        let mut writer = self.writer(budget)?;
+        wake::reserve(
+            &self.context,
+            &mut writer,
+            &self.instance,
+            candidate,
+            daemon_boot,
+            self.settings.minimum_wake_delay_ms,
+        )
+    }
+    fn wake_recovery_candidates(
+        &self,
+        page: PageRequest,
+        budget: &CallBudget,
+    ) -> Result<Page<WakeRecoveryCandidate>, ApiError> {
+        wake_recovery_page(
+            &self.context,
+            &self.instance,
+            self.settings.daemon_boot,
+            page,
+            budget,
+        )
+    }
+    fn recover_wake_reservation(
+        &self,
+        request: WakeRecoveryRequest,
+        budget: &CallBudget,
+    ) -> Result<WakeRecoveryOutcome, ApiError> {
+        let mut writer = self.writer(budget)?;
+        wake::recover_abandoned(
+            &self.context,
+            &mut writer,
+            &self.instance,
+            self.settings.daemon_boot,
+            &request,
+        )
+    }
+    fn validate_wake_reservation(
+        &self,
+        reservation: &WakeReservation,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        wake::validate_reservation(&db, &self.instance, reservation)
+    }
+    fn complete_wake(
+        &self,
+        attempt: WakeAttemptId,
+        outcome: WakeOutcome,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        let Some(daemon_boot) = &self.settings.daemon_boot else {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "elected daemon boot required",
+            ));
+        };
+        let mut writer = self.writer(budget)?;
+        wake::complete(
+            &self.context,
+            &mut writer,
+            &attempt,
+            daemon_boot,
+            outcome,
+            budget,
+        )
+    }
+}
+
+#[cfg(test)]
+#[path = "../../tests/store/facade.rs"]
+mod tests;
+#[cfg(test)]
+#[path = "../../tests/store/wake.rs"]
+mod wake_tests;
+
+#[cfg(test)]
+#[path = "../../tests/store/writer_budget.rs"]
+mod writer_budget_tests;
+
+#[cfg(test)]
+#[path = "../../tests/store/cooperative_checkin.rs"]
+mod cooperative_checkin_tests;
+
+/// Canonical service-local permit input for every accountable cooperative route.
+/// Accept freezes its current InvitationId inside the issuer, preserving episode
+/// races. The unresolved request marker can never authorize a new mutation.
+pub fn cooperative_permit_request(
+    command: &PermitMutation,
+) -> Result<crate::ports::CooperativePermitRequest, ApiError> {
+    use crate::protocol::authority::ObligationRef;
+    let (claim, operation, obligation, payload_hash, check_in_mode) = match command {
+        PermitMutation::CheckIn(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.claim.seat.clone()),
+            schema::canonical_digest(&seats::check_in_payload(v))?,
+            Some(v.mode),
+        ),
+        PermitMutation::CreateThread(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.claim.seat.clone()),
+            control::cooperative_payload_hash("create_thread", v)?,
+            None,
+        ),
+        PermitMutation::Invite(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::Control(v.thread.clone()),
+            control::cooperative_payload_hash("invite", v)?,
+            None,
+        ),
+        PermitMutation::Accept(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::AcceptCurrent(v.thread.clone()),
+            control::cooperative_payload_hash("accept", v)?,
+            None,
+        ),
+        PermitMutation::AcceptRequired(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::Invitation(v.invitation.clone()),
+            control::cooperative_payload_hash("accept_required", v)?,
+            None,
+        ),
+        PermitMutation::SendMessage(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::Control(v.thread.clone()),
+            schema::canonical_digest(&messages::send_payload(v))?,
+            None,
+        ),
+        PermitMutation::Ack(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.claim.seat.clone()),
+            schema::canonical_digest(&receipts::ack_payload(v))?,
+            None,
+        ),
+        PermitMutation::Leave(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::Control(v.thread.clone()),
+            control::cooperative_payload_hash("leave", v)?,
+            None,
+        ),
+        PermitMutation::SetTopic(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::Control(v.thread.clone()),
+            control::cooperative_payload_hash("set_topic", v)?,
+            None,
+        ),
+        PermitMutation::Archive(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::Control(v.thread.clone()),
+            control::cooperative_payload_hash("archive", v)?,
+            None,
+        ),
+        PermitMutation::Reopen(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::Control(v.thread.clone()),
+            control::cooperative_payload_hash("reopen", v)?,
+            None,
+        ),
+    };
+    if claim.instance.is_empty() {
+        return Err(api_error(
+            ErrorCode::CallerUnverified,
+            "cooperative instance required",
+        ));
+    }
+    Ok(crate::ports::CooperativePermitRequest {
+        claim,
+        operation,
+        obligation,
+        payload_hash,
+        check_in_mode,
+    })
+}

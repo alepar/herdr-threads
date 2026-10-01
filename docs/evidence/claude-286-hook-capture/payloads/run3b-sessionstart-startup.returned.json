@@ -1,0 +1,15 @@
+{
+ "input": {
+  "cwd": "<scratch>/proj",
+  "hook_event_name": "SessionStart",
+  "session_id": "ac030f18-c710-40fa-bd42-00e53eeb9462",
+  "source": "startup",
+  "transcript_path": "~/.claude/projects/-private-tmp-ht-claude286-scratch-proj/ac030f18-c710-40fa-bd42-00e53eeb9462.jsonl"
+ },
+ "returned": {
+  "hookSpecificOutput": {
+   "additionalContext": "HT-SS-MARKER-c286f4",
+   "hookEventName": "SessionStart"
+  }
+ }
+}

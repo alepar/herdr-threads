@@ -1,0 +1,6 @@
+[sandbox_workspace_write]
+network_access = true
+
+[features.network_proxy]
+enabled = true
+unix_sockets = { "/private/tmp/herdr-threads-501/87d2592e90e0b831.sock" = "allow" }

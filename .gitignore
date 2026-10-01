@@ -5,3 +5,11 @@
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+.worktrees/
+/target/
+
+__pycache__/
+/bin/
+.DS_Store
+/THIRD_PARTY_LICENSES.html

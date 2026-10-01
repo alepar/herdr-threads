@@ -1,0 +1,23 @@
+{
+ "payload": {
+  "session_id": "01a0ef9e-76a2-7830-8c1f-431f5368a539",
+  "transcript_path": "$CODEX_HOME/sessions/2026/09/29/rollout-2026-09-29T17-02-14-01a0ef9e-76a2-7830-8c1f-431f5368a539.jsonl",
+  "cwd": "$S/proj",
+  "hook_event_name": "SessionStart",
+  "model": "gpt-6-luna",
+  "permission_mode": "bypassPermissions",
+  "source": "resume"
+ },
+ "hook_stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"herdr-threads-session-marker\"}}",
+ "env_names_herdr_codex": [
+  "AISW_SHELL_HOOK",
+  "CODEX_HOME",
+  "HERDR_AGENT",
+  "HERDR_BIN_PATH",
+  "HERDR_ENV",
+  "HERDR_PANE_ID",
+  "HERDR_SOCKET_PATH",
+  "HERDR_TAB_ID",
+  "HERDR_WORKSPACE_ID"
+ ]
+}

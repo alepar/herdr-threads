@@ -1,0 +1,2608 @@
+use crate::protocol::{
+    authority::{
+        CallerClaim, DecisionFence, Harness, MutationPermit, ObligationRef, VerifiedCaller,
+    },
+    commands::{Ack, SendMessage},
+    ids::*,
+    time::{Clock, MonoInstant, UtcMillis},
+};
+use crate::store::{connection::StoreContext, messages, receipts};
+use rusqlite::{Connection, Transaction, params};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicI64, AtomicUsize, Ordering},
+    },
+};
+
+struct TestClock(AtomicI64);
+impl Clock for TestClock {
+    fn utc_now(&self) -> UtcMillis {
+        UtcMillis(self.0.load(Ordering::SeqCst))
+    }
+    fn monotonic_now(&self) -> MonoInstant {
+        MonoInstant(100)
+    }
+}
+fn setup() -> (StoreContext, Connection, Arc<TestClock>) {
+    let clock = Arc::new(TestClock(AtomicI64::new(1000)));
+    let path: PathBuf =
+        std::env::temp_dir().join(format!("receipt-test-{}.db", uuid::Uuid::new_v4()));
+    let context = StoreContext::new(path, clock.clone());
+    let conn = context.open_writer().unwrap();
+    conn.execute(
+        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1)",
+        [],
+    )
+    .unwrap();
+    for (seat, target) in [("a", "pa"), ("b", "pb"), ("c", "pc"), ("d", "pd")] {
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'i','resolved','native',?2,1,1,0,1)", params![seat,target]).unwrap();
+    }
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
+    for (seat, state) in [("a", "joined"), ("b", "joined"), ("c", "invited")] {
+        conn.execute(
+            "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,?2)",
+            params![seat, state],
+        )
+        .unwrap();
+        if state == "joined" {
+            conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t',?1,1,1)",[seat]).unwrap();
+        }
+    }
+    (context, conn, clock)
+}
+fn send_request(explicit: Vec<&str>) -> SendMessage {
+    SendMessage {
+        thread: ThreadId::new("t"),
+        body: "hello".into(),
+        invited_recipients: explicit.into_iter().map(SeatId::new).collect(),
+        deadline_millis: None,
+        operation: OperationId::new("op"),
+        claim: CallerClaim {
+            instance: String::new(),
+            seat: SeatId::new("legacy-fixture"),
+            binding_generation: 0,
+            role: crate::protocol::authority::CallerRole::TopLevel,
+            harness: Harness::Codex,
+            native_session: NativeSessionId::new("n"),
+            execution: ExecutionId::new("e"),
+            target: HostTargetId::new("pa"),
+        },
+    }
+}
+
+fn send_prepared(
+    context: &StoreContext,
+    conn: &mut Connection,
+    request: &SendMessage,
+    permit: &mut MutationPermit,
+    limits: messages::MessageLimits,
+    decision_fence: impl FnOnce(
+        &Transaction<'_>,
+        crate::store::connection::DecisionInstant,
+    ) -> Result<DecisionFence, crate::protocol::results::ApiError>,
+) -> Result<crate::protocol::results::CommandResult, crate::protocol::results::ApiError> {
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    let admission = crate::ports::DurableWorkAdmission { max_units: 16 };
+    loop {
+        match messages::prepare_send_step(context, conn, request, limits, &budget, admission)? {
+            crate::ports::SendPreparationProgress::Committed(result) => return Ok(result),
+            crate::ports::SendPreparationProgress::Ready { .. } => break,
+            crate::ports::SendPreparationProgress::More { visited, .. } => assert!(visited > 0),
+        }
+    }
+    messages::publish_send(
+        context,
+        conn,
+        request,
+        permit,
+        &budget,
+        decision_fence,
+        || limits.body_bytes,
+    )
+}
+fn permit(request: &SendMessage) -> MutationPermit {
+    let digest = crate::store::schema::canonical_digest(&messages::send_payload(request)).unwrap();
+    MutationPermit::new(
+        VerifiedCaller {
+            seat: SeatId::new("a"),
+            harness: Harness::Codex,
+            native_session: NativeSessionId::new("n"),
+            execution: ExecutionId::new("e"),
+            host_boot: HostBootId::new("b"),
+            target_generation: 1,
+            binding_generation: 1,
+            observed_at_utc: UtcMillis(900),
+        },
+        request.operation.clone(),
+        ObligationRef::Control(request.thread.clone()),
+        digest,
+        MonoInstant(50),
+        1,
+    )
+}
+fn ack_request(ids: Vec<MessageId>) -> Ack {
+    Ack {
+        messages: ids,
+        operation: OperationId::new("ack-op"),
+        claim: CallerClaim {
+            instance: String::new(),
+            seat: SeatId::new("legacy-fixture"),
+            binding_generation: 0,
+            role: crate::protocol::authority::CallerRole::TopLevel,
+            harness: Harness::Codex,
+            native_session: NativeSessionId::new("nb"),
+            execution: ExecutionId::new("eb"),
+            target: HostTargetId::new("pb"),
+        },
+    }
+}
+fn ack_permit(request: &Ack) -> MutationPermit {
+    let digest = crate::store::schema::canonical_digest(&receipts::ack_payload(request)).unwrap();
+    MutationPermit::new(
+        VerifiedCaller {
+            seat: SeatId::new("b"),
+            harness: Harness::Codex,
+            native_session: NativeSessionId::new("nb"),
+            execution: ExecutionId::new("eb"),
+            host_boot: HostBootId::new("b"),
+            target_generation: 1,
+            binding_generation: 1,
+            observed_at_utc: UtcMillis(900),
+        },
+        request.operation.clone(),
+        ObligationRef::CheckIn(SeatId::new("b")),
+        digest,
+        MonoInstant(50),
+        1,
+    )
+}
+fn fence(
+    _: &Transaction<'_>,
+    _: crate::store::connection::DecisionInstant,
+) -> Result<DecisionFence, crate::protocol::results::ApiError> {
+    Ok(DecisionFence {
+        now: MonoInstant(0),
+        host_boot: HostBootId::new("b"),
+        host_epoch: 1,
+        target_generation: 1,
+        binding_generation: 1,
+        known_invalidated: false,
+    })
+}
+
+fn filter_revision(conn: &Connection, kind: &str, key: &str) -> i64 {
+    conn.query_row(
+        "SELECT COALESCE((SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind=?1 AND scope_key=?2),0)",
+        params![kind, key],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn send_snapshots_joined_plus_explicit_invited_once() {
+    let (context, mut conn, _) = setup();
+    let request = send_request(vec!["c", "b"]);
+    let result = send_prepared(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&request),
+        messages::MessageLimits::default(),
+        fence,
+    )
+    .unwrap();
+    let id = match result {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        _ => panic!("wrong result"),
+    };
+    assert!(
+        crate::protocol::ids::is_short_public_id(
+            crate::protocol::ids::prefix::MESSAGE,
+            id.as_str()
+        ),
+        "new message IDs are short: {}",
+        id.as_str()
+    );
+    let preparation: String = conn
+        .query_row(
+            "SELECT preparation_id FROM send_manifests WHERE message_id=?1",
+            [id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(preparation.replacen("prep-", "msg-", 1), id.as_str());
+    let mut stmt = conn
+        .prepare("SELECT pr.seat_id FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id WHERE sm.message_id=?1 ORDER BY pr.seat_id")
+        .unwrap();
+    let seats: Vec<String> = stmt
+        .query_map([id.as_str()], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(seats, ["b", "c"]);
+    let frozen: Vec<i64> = conn
+        .prepare("SELECT pr.frozen_duration_ms FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id WHERE sm.message_id=?1")
+        .unwrap()
+        .query_map([id.as_str()], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(frozen, [300_000, 300_000]);
+}
+
+#[test]
+fn publication_uses_preparation_instance_for_message_and_manifest() {
+    let (context, mut conn, _) = setup();
+    conn.execute(
+        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('other',0,'other-boot',1,1)",
+        [],
+    )
+    .unwrap();
+    let request = send_request(vec![]);
+    let first = send_prepared(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&request),
+        messages::MessageLimits::default(),
+        fence,
+    )
+    .unwrap();
+    let id = match &first {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        other => panic!("{other:?}"),
+    };
+    let published: (String, String, i64, i64) = conn
+        .query_row(
+            "SELECT m.instance_id, sm.instance_id, m.decision_seq, sm.decision_seq FROM messages m JOIN send_manifests sm ON sm.message_id=m.id WHERE m.id=?1",
+            [id.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(published.0, "i");
+    assert_eq!(published.1, "i");
+    assert_eq!(published.2, published.3);
+    assert!(conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('wrong-instance','other','t',999,'ordinary','a','x',0,99)", []).is_err());
+    assert!(
+        conn.execute(
+            "UPDATE send_manifests SET instance_id='other' WHERE message_id=?1",
+            [id.as_str()]
+        )
+        .is_err()
+    );
+    let replay = send_prepared(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&request),
+        messages::MessageLimits::default(),
+        fence,
+    )
+    .unwrap();
+    assert_eq!(replay, first);
+    let counts: (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM messages WHERE kind='ordinary'),(SELECT count(*) FROM send_manifests)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(counts, (1, 1));
+}
+
+#[test]
+fn invalid_ack_batch_rolls_back_all_settlement_and_warnings() {
+    let (context, mut conn, clock) = setup();
+    let send = send_request(vec![]);
+    let id = match send_prepared(
+        &context,
+        &mut conn,
+        &send,
+        &mut permit(&send),
+        messages::MessageLimits::default(),
+        fence,
+    )
+    .unwrap()
+    {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        _ => panic!(),
+    };
+    clock.0.store(2000, Ordering::SeqCst);
+    let request = ack_request(vec![id.clone(), MessageId::new("missing")]);
+    assert!(
+        receipts::ack(
+            &context,
+            &mut conn,
+            &crate::protocol::time::CallBudget {
+                deadline: crate::protocol::time::MonoInstant(u64::MAX),
+                cancellation: Default::default()
+            },
+            &request,
+            &mut ack_permit(&request),
+            fence
+        )
+        .is_err()
+    );
+    let state = crate::store::effective::effective_receipt(&conn, id.as_str(), "b")
+        .unwrap()
+        .unwrap()
+        .state;
+    assert_eq!(
+        state,
+        crate::store::effective::EffectiveReceiptState::Pending
+    );
+    let warnings: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM messages WHERE kind='warn' AND source_message_id=?1",
+            [id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(warnings, 0);
+}
+
+#[test]
+fn availability_uses_frozen_duration_and_scan_warns_once_at_equality() {
+    let (context, mut conn, clock) = setup();
+    let send = send_request(vec![]);
+    let limits = messages::MessageLimits {
+        receipt_duration_ms: 50,
+        body_bytes: 10,
+    };
+    let id = match send_prepared(
+        &context,
+        &mut conn,
+        &send,
+        &mut permit(&send),
+        limits,
+        fence,
+    )
+    .unwrap()
+    {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        _ => panic!(),
+    };
+    conn.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES ('b',3,1100,1,'verified')",[]).unwrap();
+    let effective = crate::store::effective::effective_receipt(&conn, id.as_str(), "b")
+        .unwrap()
+        .unwrap();
+    let duration:i64=conn.query_row("SELECT pr.frozen_duration_ms FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id WHERE sm.message_id=?1 AND pr.seat_id='b'",[id.as_str()],|r|r.get(0)).unwrap();
+    let deadline = effective.deadline_at.unwrap();
+    assert_eq!((duration, deadline), (50, 1150));
+    conn.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at) VALUES (?1,'b','pending',1100,1150)",[id.as_str()]).unwrap();
+    let before_revision: i64 = conn.query_row("SELECT COALESCE((SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind='inbox' AND scope_key='b'),0)", [], |r| r.get(0)).unwrap();
+    clock.0.store(1150, Ordering::SeqCst);
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    assert_eq!(
+        receipts::scan_due(&context, &mut conn, 10, &mut cursor)
+            .unwrap()
+            .warnings,
+        1
+    );
+    let after_revision: i64 = conn.query_row("SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind='inbox' AND scope_key='b'", [], |r| r.get(0)).unwrap();
+    assert_eq!(after_revision, before_revision + 1);
+    assert_eq!(
+        receipts::scan_due(&context, &mut conn, 10, &mut cursor)
+            .unwrap()
+            .warnings,
+        0
+    );
+    let warnings: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM messages WHERE kind='warn' AND source_message_id=?1",
+            [id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(warnings, 1);
+}
+
+#[test]
+fn retired_recipient_is_fenced_from_new_send_and_due_scan() {
+    let (context, mut conn, clock) = setup();
+    let mut send = send_request(vec![]);
+    send.deadline_millis = Some(500);
+    let id = match send_prepared(
+        &context,
+        &mut conn,
+        &send,
+        &mut permit(&send),
+        messages::MessageLimits::default(),
+        fence,
+    )
+    .unwrap()
+    {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        _ => panic!(),
+    };
+    conn.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES ('b',3,1000,1,'verified')",[]).unwrap();
+    conn.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at) VALUES (?1,'b','pending',1000,1500)",[id.as_str()]).unwrap();
+    conn.execute(
+        "UPDATE seats SET state='retired',retired_at=1500,retired_seq=4 WHERE id='b'",
+        [],
+    )
+    .unwrap();
+    clock.0.store(3000, Ordering::SeqCst);
+    assert_eq!(
+        receipts::scan_due(
+            &context,
+            &mut conn,
+            10,
+            &mut receipts::ReceiptDueCursor::default()
+        )
+        .unwrap()
+        .warnings,
+        0
+    );
+    let mut other_send = send_request(vec![]);
+    other_send.operation = OperationId::new("op2");
+    let new_id = match send_prepared(
+        &context,
+        &mut conn,
+        &other_send,
+        &mut permit(&other_send),
+        messages::MessageLimits::default(),
+        fence,
+    )
+    .unwrap()
+    {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        _ => panic!(),
+    };
+    let count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id WHERE sm.message_id=?1",
+            [new_id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn reordered_explicit_recipients_replay_original_message() {
+    let (context, mut conn, _) = setup();
+    let first = send_request(vec!["b", "c"]);
+    let original = send_prepared(
+        &context,
+        &mut conn,
+        &first,
+        &mut permit(&first),
+        messages::MessageLimits::default(),
+        fence,
+    )
+    .unwrap();
+    let retry = send_request(vec!["c", "b", "b"]);
+    let replay = send_prepared(
+        &context,
+        &mut conn,
+        &retry,
+        &mut permit(&retry),
+        messages::MessageLimits::default(),
+        fence,
+    )
+    .unwrap();
+    assert_eq!(replay, original);
+    let total: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM messages WHERE kind='ordinary'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(total, 1);
+}
+
+#[test]
+fn ack_at_deadline_warns_before_info_and_replay_keeps_original_attribution() {
+    let (context, mut conn, clock) = setup();
+    let mut send = send_request(vec![]);
+    send.deadline_millis = Some(500);
+    let id = match send_prepared(
+        &context,
+        &mut conn,
+        &send,
+        &mut permit(&send),
+        messages::MessageLimits::default(),
+        fence,
+    )
+    .unwrap()
+    {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        _ => panic!(),
+    };
+    conn.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES ('b',3,1500,1,'verified')",[]).unwrap();
+    conn.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at) VALUES (?1,'b','pending',1500,2000)",[id.as_str()]).unwrap();
+    clock.0.store(2000, Ordering::SeqCst);
+    let request = ack_request(vec![id.clone()]);
+    let directory_before = filter_revision(&conn, "directory", "t");
+    let inbox_before = filter_revision(&conn, "inbox", "b");
+    let first = receipts::ack(
+        &context,
+        &mut conn,
+        &crate::protocol::time::CallBudget {
+            deadline: crate::protocol::time::MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
+        &request,
+        &mut ack_permit(&request),
+        fence,
+    )
+    .unwrap();
+    assert_eq!(
+        filter_revision(&conn, "directory", "t"),
+        directory_before + 1
+    );
+    assert_eq!(filter_revision(&conn, "inbox", "b"), inbox_before + 1);
+    let rows: Vec<(String,i64)> = conn.prepare("SELECT kind,sequence FROM messages WHERE source_message_id=?1 OR kind='info' ORDER BY sequence").unwrap()
+        .query_map([id.as_str()], |r| Ok((r.get(0)?,r.get(1)?))).unwrap().map(Result::unwrap).collect();
+    assert_eq!(
+        rows.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),
+        ["warn", "info"]
+    );
+    clock.0.store(9000, Ordering::SeqCst);
+    assert_eq!(
+        receipts::ack(
+            &context,
+            &mut conn,
+            &crate::protocol::time::CallBudget {
+                deadline: crate::protocol::time::MonoInstant(u64::MAX),
+                cancellation: Default::default()
+            },
+            &request,
+            &mut ack_permit(&request),
+            fence
+        )
+        .unwrap(),
+        first
+    );
+    let (at, observation): (i64, String) = conn
+        .query_row(
+            "SELECT acked_at,ack_observation FROM receipt_state WHERE message_id=?1 AND seat_id='b'",
+            [id.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(at, 2000);
+    assert_eq!(
+        filter_revision(&conn, "directory", "t"),
+        directory_before + 1
+    );
+    assert_eq!(filter_revision(&conn, "inbox", "b"), inbox_before + 1);
+    assert!(observation.contains("\"session\":\"nb\""));
+    assert_eq!(
+        receipts::scan_due(
+            &context,
+            &mut conn,
+            10,
+            &mut receipts::ReceiptDueCursor::default()
+        )
+        .unwrap()
+        .warnings,
+        0
+    );
+}
+
+#[test]
+fn configured_body_limit_rejects_one_byte_over_and_later_config_does_not_block_replay() {
+    let (context, mut conn, _) = setup();
+    let mut send = send_request(vec![]);
+    send.body = "éé".into(); // four UTF-8 bytes
+    let limits = messages::MessageLimits {
+        receipt_duration_ms: 25,
+        body_bytes: 4,
+    };
+    let original = send_prepared(
+        &context,
+        &mut conn,
+        &send,
+        &mut permit(&send),
+        limits,
+        fence,
+    )
+    .unwrap();
+    let replay = send_prepared(
+        &context,
+        &mut conn,
+        &send,
+        &mut permit(&send),
+        messages::MessageLimits {
+            receipt_duration_ms: 50,
+            body_bytes: 3,
+        },
+        fence,
+    )
+    .unwrap();
+    assert_eq!(replay, original);
+    let mut over = send_request(vec![]);
+    over.operation = OperationId::new("other");
+    over.body = "ééx".into();
+    let error = send_prepared(
+        &context,
+        &mut conn,
+        &over,
+        &mut permit(&over),
+        limits,
+        fence,
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.code,
+        crate::protocol::results::ErrorCode::InvalidRequest
+    );
+    let count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM messages WHERE kind='ordinary'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn one_ack_batch_can_settle_messages_from_two_threads() {
+    let (context, mut conn, _) = setup();
+    let send = send_request(vec![]);
+    let first = match send_prepared(
+        &context,
+        &mut conn,
+        &send,
+        &mut permit(&send),
+        messages::MessageLimits::default(),
+        fence,
+    )
+    .unwrap()
+    {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        _ => panic!(),
+    };
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','i','second','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('m2','i','u',1,'ordinary','a','other',0,100000)", []).unwrap();
+    conn.execute(
+        "UPDATE host_instances SET decision_seq=100000 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    conn.execute("UPDATE threads SET next_sequence=2 WHERE id='u'", [])
+        .unwrap();
+    conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m2','u','b','pending',300000)", []).unwrap();
+    let request = ack_request(vec![first, MessageId::new("m2")]);
+    let t_before = filter_revision(&conn, "directory", "t");
+    let u_before = filter_revision(&conn, "directory", "u");
+    let result = receipts::ack(
+        &context,
+        &mut conn,
+        &crate::protocol::time::CallBudget {
+            deadline: crate::protocol::time::MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
+        &request,
+        &mut ack_permit(&request),
+        fence,
+    )
+    .unwrap();
+    assert!(matches!(
+        result,
+        crate::protocol::results::CommandResult::Acknowledged(_)
+    ));
+    let info: i64 = conn
+        .query_row("SELECT count(*) FROM messages WHERE kind='info'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(info, 2);
+    assert_eq!(filter_revision(&conn, "directory", "t"), t_before + 1);
+    assert_eq!(filter_revision(&conn, "directory", "u"), u_before + 1);
+}
+
+#[test]
+fn committed_ack_replay_survives_retirement_without_new_attribution() {
+    let (context, mut conn, clock) = setup();
+    let send = send_request(vec![]);
+    let id = match send_prepared(
+        &context,
+        &mut conn,
+        &send,
+        &mut permit(&send),
+        messages::MessageLimits::default(),
+        fence,
+    )
+    .unwrap()
+    {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        _ => panic!(),
+    };
+    let request = ack_request(vec![id.clone()]);
+    let original = receipts::ack(
+        &context,
+        &mut conn,
+        &crate::protocol::time::CallBudget {
+            deadline: crate::protocol::time::MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
+        &request,
+        &mut ack_permit(&request),
+        fence,
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE seats SET state='retired',retired_at=1500 WHERE id='b'",
+        [],
+    )
+    .unwrap();
+    clock.0.store(9000, Ordering::SeqCst);
+    assert_eq!(
+        receipts::ack(
+            &context,
+            &mut conn,
+            &crate::protocol::time::CallBudget {
+                deadline: crate::protocol::time::MonoInstant(u64::MAX),
+                cancellation: Default::default()
+            },
+            &request,
+            &mut ack_permit(&request),
+            fence
+        )
+        .unwrap(),
+        original
+    );
+    let at: i64 = conn
+        .query_row(
+            "SELECT acked_at FROM receipt_state WHERE message_id=?1 AND seat_id='b'",
+            [id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(at, 1000);
+}
+
+#[test]
+fn unavailable_joined_recipient_gets_one_warning_for_its_episode() {
+    let (context, mut conn, _) = setup();
+    for key in ["op", "op2"] {
+        let mut send = send_request(vec!["c"]);
+        send.operation = OperationId::new(key);
+        send_prepared(
+            &context,
+            &mut conn,
+            &send,
+            &mut permit(&send),
+            messages::MessageLimits::default(),
+            fence,
+        )
+        .unwrap();
+    }
+    let mut stmt = conn
+        .prepare("SELECT w.event_json FROM prepared_unavailable_warnings w JOIN send_manifests sm ON sm.preparation_id=w.preparation_id")
+        .unwrap();
+    let warnings: Vec<String> = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("\"seat\":\"b\""));
+}
+
+#[test]
+fn send_does_not_start_timer_from_stale_registered_binding() {
+    let (context, mut conn, _) = setup();
+    conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('b',1,'pb','old',0,'codex','nb','eb','fresh',0,0,'term-'||'pb','inc')", []).unwrap();
+    let send = send_request(vec![]);
+    let id = match send_prepared(
+        &context,
+        &mut conn,
+        &send,
+        &mut permit(&send),
+        messages::MessageLimits::default(),
+        fence,
+    )
+    .unwrap()
+    {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        _ => panic!(),
+    };
+    let start = crate::store::effective::effective_receipt(&conn, id.as_str(), "b")
+        .unwrap()
+        .unwrap()
+        .available_at;
+    assert_eq!(start, None);
+}
+
+#[test]
+fn failed_operation_commit_rolls_back_message_receipt_and_wake() {
+    let (context, mut conn, _) = setup();
+    conn.execute_batch("CREATE TRIGGER fail_op BEFORE INSERT ON operations BEGIN SELECT RAISE(ABORT,'injected commit failure'); END;").unwrap();
+    let send = send_request(vec![]);
+    assert!(
+        send_prepared(
+            &context,
+            &mut conn,
+            &send,
+            &mut permit(&send),
+            messages::MessageLimits::default(),
+            fence
+        )
+        .is_err()
+    );
+    for table in ["messages", "receipts", "wake_work"] {
+        let count: i64 = conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "{table}");
+    }
+}
+
+#[test]
+fn due_cursor_progresses_in_bounded_physical_slices_past_warned_rows() {
+    let (context, mut conn, _) = setup();
+    for n in 0..205 {
+        let id = format!("m{n}");
+        conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','a','x',0,?3)", params![id,n+1,100000+n]).unwrap();
+        conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','b','pending',1,0,500)", [id.as_str()]).unwrap();
+        let key = format!("overdue:receipt:{}:{}:b", id.len(), id);
+        conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_at,source_message_id,decision_seq) VALUES (?1,'i','t',?2,'warn',?3,'{}',500,?4,?5)", params![format!("w{n}"),n+1001,key,id,200000+n]).unwrap();
+    }
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('last','i','t',500,'ordinary','a','x',0,300000)", []).unwrap();
+    conn.execute(
+        "UPDATE host_instances SET decision_seq=300000 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('last','t','b','pending',1,0,500)", []).unwrap();
+    conn.execute("UPDATE threads SET next_sequence=2000 WHERE id='t'", [])
+        .unwrap();
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    let mut warnings = 0;
+    for _ in 0..14 {
+        let page = receipts::scan_due(&context, &mut conn, 16, &mut cursor).unwrap();
+        assert!(page.inspected <= 16);
+        warnings += page.warnings;
+    }
+    assert_eq!(warnings, 1);
+}
+
+#[test]
+fn target_change_at_decision_rejects_prepared_send() {
+    let (context, mut conn, _) = setup();
+    let send = send_request(vec![]);
+    let result = send_prepared(
+        &context,
+        &mut conn,
+        &send,
+        &mut permit(&send),
+        messages::MessageLimits::default(),
+        |tx, at| {
+            tx.execute("UPDATE seats SET target_id='rebound' WHERE id='a'", [])
+                .unwrap();
+            fence(tx, at)
+        },
+    );
+    assert!(result.is_err());
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn maximum_ack_batch_with_long_ids_fits_compact_info_event() {
+    let (context, mut conn, _) = setup();
+    let mut ids = Vec::new();
+    for n in 0..100 {
+        let id = MessageId::new(format!("m{n:03}{}", "x".repeat(115)));
+        conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','a','x',0,?3)", params![id.as_str(),n+1,100000+n]).unwrap();
+        conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,'t','b','pending',300000)", [id.as_str()]).unwrap();
+        ids.push(id);
+    }
+    conn.execute(
+        "UPDATE host_instances SET decision_seq=100099 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    conn.execute("UPDATE threads SET next_sequence=101 WHERE id='t'", [])
+        .unwrap();
+    let request = ack_request(ids);
+    let result = receipts::ack(
+        &context,
+        &mut conn,
+        &crate::protocol::time::CallBudget {
+            deadline: crate::protocol::time::MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
+        &request,
+        &mut ack_permit(&request),
+        fence,
+    )
+    .unwrap();
+    let crate::protocol::results::CommandResult::Acknowledged(result) = result else {
+        panic!()
+    };
+    assert_eq!(result.acknowledged.len(), 100);
+    let info: i64 = conn
+        .query_row("SELECT count(*) FROM messages WHERE kind='info'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(info, 1);
+}
+
+#[test]
+fn wide_send_publishes_one_manifest_with_all_logical_recipients() {
+    let (context, mut conn, _) = setup();
+    for n in 0..205 {
+        let seat = format!("wide-{n:03}");
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'i','resolved','native',?2,1,1,0,1)", params![seat, format!("pane-{n:03}")]).unwrap();
+        conn.execute(
+            "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'joined')",
+            [seat.as_str()],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t',?1,1,1)", [seat.as_str()]).unwrap();
+    }
+    let request = send_request(vec![]);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    let mut steps = 0;
+    loop {
+        steps += 1;
+        match messages::prepare_send_step(
+            &context,
+            &mut conn,
+            &request,
+            messages::MessageLimits::default(),
+            &budget,
+            crate::ports::DurableWorkAdmission { max_units: 16 },
+        )
+        .unwrap()
+        {
+            crate::ports::SendPreparationProgress::More { visited, .. } => assert!(visited <= 16),
+            crate::ports::SendPreparationProgress::Ready { visited, .. } => {
+                assert!(visited <= 16);
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(steps >= 13);
+    let id = match messages::publish_send(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&request),
+        &budget,
+        fence,
+        || messages::MAX_BODY_BYTES,
+    )
+    .unwrap()
+    {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        other => panic!("{other:?}"),
+    };
+    let logical: i64 = conn.query_row("SELECT count(*) FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id WHERE sm.message_id=?1", [id.as_str()], |r| r.get(0)).unwrap();
+    assert_eq!(logical, 206);
+    let physical: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM receipts WHERE message_id=?1",
+            [id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(physical, 0);
+    assert!(
+        crate::store::effective::effective_receipt(&conn, id.as_str(), "wide-204")
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn manifest_receipt_can_be_acked_before_physical_projection() {
+    let (context, mut conn, _) = setup();
+    let request = send_request(vec![]);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    assert!(matches!(
+        messages::prepare_send_step(
+            &context,
+            &mut conn,
+            &request,
+            messages::MessageLimits::default(),
+            &budget,
+            crate::ports::DurableWorkAdmission { max_units: 16 }
+        )
+        .unwrap(),
+        crate::ports::SendPreparationProgress::Ready { .. }
+    ));
+    let id = match messages::publish_send(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&request),
+        &budget,
+        fence,
+        || messages::MAX_BODY_BYTES,
+    )
+    .unwrap()
+    {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        other => panic!("{other:?}"),
+    };
+    let ack = ack_request(vec![id.clone()]);
+    let result = receipts::ack(
+        &context,
+        &mut conn,
+        &crate::protocol::time::CallBudget {
+            deadline: crate::protocol::time::MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
+        &ack,
+        &mut ack_permit(&ack),
+        fence,
+    )
+    .unwrap();
+    let crate::protocol::results::CommandResult::Acknowledged(result) = result else {
+        panic!()
+    };
+    assert_eq!(result.acknowledged, vec![id.clone()]);
+    let state: String = conn
+        .query_row(
+            "SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id='b'",
+            [id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "acked");
+    assert_eq!(
+        crate::store::effective::effective_receipt(&conn, id.as_str(), "b")
+            .unwrap()
+            .unwrap()
+            .state,
+        crate::store::effective::EffectiveReceiptState::Acknowledged
+    );
+}
+
+#[test]
+fn due_scan_ignores_large_already_warned_history() {
+    let (context, mut conn, _) = setup();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES ('old-warning','i','t',207,'warn','old-warning','{}',0,200000)",[]).unwrap();
+    for n in 0..205 {
+        let id = format!("old-{n}");
+        conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','a','x',0,?3)",params![id,n+1,100000+n]).unwrap();
+        conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,warning_message_id) VALUES (?1,'t','b','pending',1,0,500,'old-warning')",[id.as_str()]).unwrap();
+    }
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('new','i','t',208,'ordinary','a','x',0,300000)",[]).unwrap();
+    conn.execute(
+        "UPDATE host_instances SET decision_seq=300000 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('new','t','b','pending',1,0,500)",[]).unwrap();
+    conn.execute("UPDATE threads SET next_sequence=209 WHERE id='t'", [])
+        .unwrap();
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    let page = receipts::scan_due(&context, &mut conn, 16, &mut cursor).unwrap();
+    assert_eq!(page.inspected, 1);
+    assert_eq!(page.warnings, 1);
+}
+
+#[test]
+fn stale_preparation_cleans_and_rebuilds_with_new_generation() {
+    let (context, mut conn, _) = setup();
+    let request = send_request(vec![]);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    let admission = crate::ports::DurableWorkAdmission { max_units: 1 };
+    assert!(matches!(
+        messages::prepare_send_step(
+            &context,
+            &mut conn,
+            &request,
+            messages::MessageLimits::default(),
+            &budget,
+            admission
+        )
+        .unwrap(),
+        crate::ports::SendPreparationProgress::More { .. }
+    ));
+    let first: String = conn
+        .query_row("SELECT id FROM send_preparations", [], |r| r.get(0))
+        .unwrap();
+    conn.execute(
+        "UPDATE threads SET membership_revision=membership_revision+1 WHERE id='t'",
+        [],
+    )
+    .unwrap();
+    assert!(
+        messages::prepare_send_step(
+            &context,
+            &mut conn,
+            &request,
+            messages::MessageLimits::default(),
+            &budget,
+            admission
+        )
+        .is_err()
+    );
+    let status: String = conn
+        .query_row("SELECT status FROM send_preparations", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(status, "discarded");
+    let cleanup: String = conn
+        .query_row(
+            "SELECT status FROM work_jobs WHERE kind='preparation_cleanup' AND subject_id=?1",
+            [first.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(cleanup, "pending");
+    let mut changed = request.clone();
+    changed.body.push('!');
+    assert_eq!(
+        messages::prepare_send_step(
+            &context,
+            &mut conn,
+            &changed,
+            messages::MessageLimits::default(),
+            &budget,
+            admission
+        )
+        .unwrap_err()
+        .code,
+        crate::protocol::results::ErrorCode::OperationPayloadMismatch
+    );
+    conn.execute(
+        "DELETE FROM prepared_recipients WHERE preparation_id=?1",
+        [first.as_str()],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE work_jobs SET status='complete' WHERE kind='preparation_cleanup' AND subject_id=?1",
+        [first.as_str()],
+    )
+    .unwrap();
+    messages::prepare_send_step(
+        &context,
+        &mut conn,
+        &request,
+        messages::MessageLimits::default(),
+        &budget,
+        admission,
+    )
+    .unwrap();
+    let second: String = conn
+        .query_row("SELECT id FROM send_preparations", [], |r| r.get(0))
+        .unwrap();
+    assert_ne!(first, second);
+    conn.execute(
+        "UPDATE threads SET membership_revision=membership_revision+1 WHERE id='t'",
+        [],
+    )
+    .unwrap();
+    assert!(
+        messages::prepare_send_step(
+            &context,
+            &mut conn,
+            &request,
+            messages::MessageLimits::default(),
+            &budget,
+            admission
+        )
+        .is_err()
+    );
+    let second_job: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM work_jobs WHERE kind='preparation_cleanup' AND subject_id=?1",
+            [second.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(second_job, 1);
+}
+
+#[test]
+fn first_anchor_makes_sparse_receipt_due_for_late_ack() {
+    let (context, mut conn, clock) = setup();
+    let mut request = send_request(vec![]);
+    request.deadline_millis = Some(500);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    let admission = crate::ports::DurableWorkAdmission { max_units: 16 };
+    assert!(matches!(
+        messages::prepare_send_step(
+            &context,
+            &mut conn,
+            &request,
+            messages::MessageLimits::default(),
+            &budget,
+            admission
+        )
+        .unwrap(),
+        crate::ports::SendPreparationProgress::Ready { .. }
+    ));
+    let id = match messages::publish_send(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&request),
+        &budget,
+        fence,
+        || messages::MAX_BODY_BYTES,
+    )
+    .unwrap()
+    {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        other => panic!("{other:?}"),
+    };
+    conn.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES ('b',3,1500,1,'verified')",[]).unwrap();
+    conn.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES ('b',4,9000,1,'verified')",[]).unwrap();
+    let effective = crate::store::effective::effective_receipt(&conn, id.as_str(), "b")
+        .unwrap()
+        .unwrap();
+    assert_eq!(effective.available_at, Some(1500));
+    assert_eq!(effective.deadline_at, Some(2000));
+    clock.0.store(2000, Ordering::SeqCst);
+    let ack = ack_request(vec![id.clone()]);
+    receipts::ack(
+        &context,
+        &mut conn,
+        &crate::protocol::time::CallBudget {
+            deadline: crate::protocol::time::MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
+        &ack,
+        &mut ack_permit(&ack),
+        fence,
+    )
+    .unwrap();
+    let marker: String = conn
+        .query_row(
+            "SELECT warning_message_id FROM receipt_state WHERE message_id=?1 AND seat_id='b'",
+            [id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let kind: String = conn
+        .query_row(
+            "SELECT kind FROM messages WHERE id=?1",
+            [marker.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kind, "warn");
+    let replay = receipts::ack(
+        &context,
+        &mut conn,
+        &crate::protocol::time::CallBudget {
+            deadline: crate::protocol::time::MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
+        &ack,
+        &mut ack_permit(&ack),
+        fence,
+    )
+    .unwrap();
+    assert!(matches!(
+        replay,
+        crate::protocol::results::CommandResult::Acknowledged(_)
+    ));
+    let warnings: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM messages WHERE kind='warn' AND source_message_id=?1",
+            [id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(warnings, 1);
+}
+
+#[test]
+fn manifest_warning_is_visible_before_worker_projection() {
+    let (context, mut conn, _) = setup();
+    let request = send_request(vec![]);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    let admission = crate::ports::DurableWorkAdmission { max_units: 16 };
+    assert!(matches!(
+        messages::prepare_send_step(
+            &context,
+            &mut conn,
+            &request,
+            messages::MessageLimits::default(),
+            &budget,
+            admission
+        )
+        .unwrap(),
+        crate::ports::SendPreparationProgress::Ready { .. }
+    ));
+    let id = match messages::publish_send(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&request),
+        &budget,
+        fence,
+        || messages::MAX_BODY_BYTES,
+    )
+    .unwrap()
+    {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        other => panic!("{other:?}"),
+    };
+    let key = crate::store::effective::UnavailableWarningKey {
+        instance: "i".into(),
+        thread_id: "t".into(),
+        affected_seat_id: "b".into(),
+        unavailability_episode: 1,
+    };
+    let warning = crate::store::effective::effective_warning_by_key(&conn, &key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(warning.sequence, 2);
+    assert_eq!(warning.source_message_id.as_deref(), Some(id.as_str()));
+    let physical: i64 = conn
+        .query_row("SELECT count(*) FROM messages WHERE kind='warn'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(physical, 0);
+    let next: i64 = conn
+        .query_row("SELECT next_sequence FROM threads WHERE id='t'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(next, 3);
+}
+
+#[test]
+fn sparse_pending_unwarned_due_scan_marks_once() {
+    let (context, mut conn, clock) = setup();
+    let mut request = send_request(vec![]);
+    request.deadline_millis = Some(500);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    let admission = crate::ports::DurableWorkAdmission { max_units: 16 };
+    messages::prepare_send_step(
+        &context,
+        &mut conn,
+        &request,
+        messages::MessageLimits::default(),
+        &budget,
+        admission,
+    )
+    .unwrap();
+    let id = match messages::publish_send(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&request),
+        &budget,
+        fence,
+        || messages::MAX_BODY_BYTES,
+    )
+    .unwrap()
+    {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        other => panic!("{other:?}"),
+    };
+    conn.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES ('b',3,1500,1,'verified')",[]).unwrap();
+    conn.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at) VALUES (?1,'b','pending',1500,2000)",[id.as_str()]).unwrap();
+    clock.0.store(2000, Ordering::SeqCst);
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    let first = receipts::scan_due(&context, &mut conn, 16, &mut cursor).unwrap();
+    assert_eq!(first.warnings, 1);
+    let marker: String = conn
+        .query_row(
+            "SELECT warning_message_id FROM receipt_state WHERE message_id=?1 AND seat_id='b'",
+            [id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!marker.is_empty());
+    let second = receipts::scan_due(&context, &mut conn, 16, &mut cursor).unwrap();
+    assert_eq!(second.warnings, 0);
+}
+
+#[test]
+fn publish_rechecks_scalar_eligibility_after_decision_callback() {
+    let (context, mut conn, _) = setup();
+    let request = send_request(vec![]);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    let admission = crate::ports::DurableWorkAdmission { max_units: 16 };
+    messages::prepare_send_step(
+        &context,
+        &mut conn,
+        &request,
+        messages::MessageLimits::default(),
+        &budget,
+        admission,
+    )
+    .unwrap();
+    let result = messages::publish_send(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&request),
+        &budget,
+        |tx, at| {
+            tx.execute("UPDATE host_instances SET send_eligibility_revision=send_eligibility_revision+1 WHERE id='i'",[]).unwrap();
+            fence(tx, at)
+        },
+        || messages::MAX_BODY_BYTES,
+    );
+    assert!(result.is_err());
+    let messages: i64 = conn
+        .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(messages, 0);
+}
+
+#[test]
+fn publish_rejects_changed_structural_target_generation() {
+    let (context, mut conn, _) = setup();
+    let request = send_request(vec![]);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    let admission = crate::ports::DurableWorkAdmission { max_units: 16 };
+    messages::prepare_send_step(
+        &context,
+        &mut conn,
+        &request,
+        messages::MessageLimits::default(),
+        &budget,
+        admission,
+    )
+    .unwrap();
+    let result = messages::publish_send(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&request),
+        &budget,
+        |tx, at| {
+            tx.execute("UPDATE seats SET target_generation=2 WHERE id='a'", [])
+                .unwrap();
+            fence(tx, at)
+        },
+        || messages::MAX_BODY_BYTES,
+    );
+    assert!(result.is_err());
+    let published: i64 = conn
+        .query_row("SELECT count(*) FROM send_manifests", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(published, 0);
+}
+
+#[test]
+fn ack_records_binding_generation_separately_from_target_generation() {
+    let (context, mut conn, _) = setup();
+    conn.execute(
+        "UPDATE seats SET generation=3,target_generation=2 WHERE id='b'",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('m','i','t',1,'ordinary','a','x',0,100000)",[]).unwrap();
+    conn.execute(
+        "UPDATE host_instances SET decision_seq=100000 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t','b','pending',300000)",[]).unwrap();
+    conn.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
+        .unwrap();
+    let request = ack_request(vec![MessageId::new("m")]);
+    let digest = crate::store::schema::canonical_digest(&receipts::ack_payload(&request)).unwrap();
+    let mut grant = MutationPermit::new(
+        VerifiedCaller {
+            seat: SeatId::new("b"),
+            harness: Harness::Codex,
+            native_session: NativeSessionId::new("nb"),
+            execution: ExecutionId::new("eb"),
+            host_boot: HostBootId::new("b"),
+            target_generation: 2,
+            binding_generation: 3,
+            observed_at_utc: UtcMillis(900),
+        },
+        request.operation.clone(),
+        ObligationRef::CheckIn(SeatId::new("b")),
+        digest,
+        MonoInstant(50),
+        1,
+    );
+    receipts::ack(
+        &context,
+        &mut conn,
+        &crate::protocol::time::CallBudget {
+            deadline: crate::protocol::time::MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
+        &request,
+        &mut grant,
+        |tx, at| {
+            let mut f = fence(tx, at)?;
+            f.target_generation = 2;
+            f.binding_generation = 3;
+            Ok(f)
+        },
+    )
+    .unwrap();
+    let generation: i64 = conn
+        .query_row(
+            "SELECT ack_generation FROM receipts WHERE message_id='m' AND seat_id='b'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(generation, 3);
+}
+
+#[test]
+fn published_send_freezes_available_recipient_duration() {
+    let (context, mut conn, _) = setup();
+    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pb','b',1,1,900,'fresh','term-'||'pb','inc','coherent_enumeration',1)",[]).unwrap();
+    conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('b',1,1,'pb','b',1,'codex','nb','eb','fresh',0,900,'term-'||'pb','inc')",[]).unwrap();
+    let mut request = send_request(vec![]);
+    request.deadline_millis = Some(750);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    let admission = crate::ports::DurableWorkAdmission { max_units: 16 };
+    messages::prepare_send_step(
+        &context,
+        &mut conn,
+        &request,
+        messages::MessageLimits {
+            receipt_duration_ms: 9000,
+            body_bytes: 65536,
+        },
+        &budget,
+        admission,
+    )
+    .unwrap();
+    let id = match messages::publish_send(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&request),
+        &budget,
+        fence,
+        || messages::MAX_BODY_BYTES,
+    )
+    .unwrap()
+    {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        other => panic!("{other:?}"),
+    };
+    conn.execute("UPDATE host_instances SET duration_config_revision=duration_config_revision+1 WHERE id='i'",[]).unwrap();
+    let receipt = crate::store::effective::effective_receipt(&conn, id.as_str(), "b")
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.available_at, Some(1000));
+    assert_eq!(receipt.deadline_at, Some(1750));
+    let frozen:i64=conn.query_row("SELECT pr.frozen_duration_ms FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id WHERE sm.message_id=?1 AND pr.seat_id='b'",[id.as_str()],|r|r.get(0)).unwrap();
+    assert_eq!(frozen, 750);
+    let provenance:String=conn.query_row("SELECT pr.availability_provenance FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id WHERE sm.message_id=?1 AND pr.seat_id='b'",[id.as_str()],|r|r.get(0)).unwrap();
+    assert_eq!(provenance, "fresh");
+    let observation: String = conn
+        .query_row(
+            "SELECT native_observation FROM messages WHERE id=?1",
+            [id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let observation: serde_json::Value = serde_json::from_str(&observation).unwrap();
+    assert_eq!(observation["binding_generation"], 1);
+    assert_eq!(observation["target_generation"], 1);
+}
+
+#[test]
+fn later_send_reuses_first_published_unavailability_warning() {
+    let (context, mut conn, _) = setup();
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    let admission = crate::ports::DurableWorkAdmission { max_units: 16 };
+    for operation in ["op", "second"] {
+        let mut request = send_request(vec![]);
+        request.operation = OperationId::new(operation);
+        messages::prepare_send_step(
+            &context,
+            &mut conn,
+            &request,
+            messages::MessageLimits::default(),
+            &budget,
+            admission,
+        )
+        .unwrap();
+        messages::publish_send(
+            &context,
+            &mut conn,
+            &request,
+            &mut permit(&request),
+            &budget,
+            fence,
+            || messages::MAX_BODY_BYTES,
+        )
+        .unwrap();
+    }
+    let key = crate::store::effective::UnavailableWarningKey {
+        instance: "i".into(),
+        thread_id: "t".into(),
+        affected_seat_id: "b".into(),
+        unavailability_episode: 1,
+    };
+    let warning = crate::store::effective::effective_warning_by_key(&conn, &key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(warning.sequence, 2);
+    let warning_count: i64 = conn
+        .query_row("SELECT sum(warning_count) FROM send_manifests", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(warning_count, 1);
+    let next: i64 = conn
+        .query_row("SELECT next_sequence FROM threads WHERE id='t'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(next, 4);
+}
+
+#[test]
+fn invalid_explicit_recipient_discards_hidden_preparation() {
+    let (context, mut conn, _) = setup();
+    let request = send_request(vec!["d"]);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    assert!(matches!(
+        messages::prepare_send_step(
+            &context,
+            &mut conn,
+            &request,
+            messages::MessageLimits::default(),
+            &budget,
+            crate::ports::DurableWorkAdmission { max_units: 1 }
+        )
+        .unwrap(),
+        crate::ports::SendPreparationProgress::More { .. }
+    ));
+    let error = messages::prepare_send_step(
+        &context,
+        &mut conn,
+        &request,
+        messages::MessageLimits::default(),
+        &budget,
+        crate::ports::DurableWorkAdmission { max_units: 16 },
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.code,
+        crate::protocol::results::ErrorCode::InvalidRequest
+    );
+    let (prep, status): (String, String) = conn
+        .query_row(
+            "SELECT id,status FROM send_preparations WHERE operation_key='op'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(status, "discarded");
+    let job: String = conn
+        .query_row(
+            "SELECT status FROM work_jobs WHERE kind='preparation_cleanup' AND subject_id=?1",
+            [prep.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(job, "pending");
+    let published: i64 = conn
+        .query_row("SELECT count(*) FROM send_manifests", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(published, 0);
+}
+
+#[test]
+fn abandon_only_discards_expected_unpublished_generation() {
+    let (context, mut conn, _) = setup();
+    let request = send_request(vec![]);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    let admission = crate::ports::DurableWorkAdmission { max_units: 1 };
+    messages::prepare_send_step(
+        &context,
+        &mut conn,
+        &request,
+        messages::MessageLimits::default(),
+        &budget,
+        admission,
+    )
+    .unwrap();
+    let original: String = conn
+        .query_row("SELECT id FROM send_preparations", [], |r| r.get(0))
+        .unwrap();
+    assert!(messages::abandon_send_preparation(&mut conn, &original).unwrap());
+    assert!(!messages::abandon_send_preparation(&mut conn, &original).unwrap());
+    conn.execute(
+        "DELETE FROM prepared_recipients WHERE preparation_id=?1",
+        [original.as_str()],
+    )
+    .unwrap();
+    conn.execute(
+        "DELETE FROM prepared_unavailable_warnings WHERE preparation_id=?1",
+        [original.as_str()],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE work_jobs SET status='complete' WHERE kind='preparation_cleanup' AND subject_id=?1",
+        [original.as_str()],
+    )
+    .unwrap();
+    messages::prepare_send_step(
+        &context,
+        &mut conn,
+        &request,
+        messages::MessageLimits::default(),
+        &budget,
+        admission,
+    )
+    .unwrap();
+    let successor: String = conn
+        .query_row("SELECT id FROM send_preparations", [], |r| r.get(0))
+        .unwrap();
+    assert_ne!(original, successor);
+    assert!(!messages::abandon_send_preparation(&mut conn, &original).unwrap());
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM send_preparations WHERE id=?1",
+            [successor.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "building");
+}
+
+#[test]
+fn sequence_exhaustion_rolls_back_manifest_publication() {
+    let (context, mut conn, _) = setup();
+    let request = send_request(vec![]);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    messages::prepare_send_step(
+        &context,
+        &mut conn,
+        &request,
+        messages::MessageLimits::default(),
+        &budget,
+        crate::ports::DurableWorkAdmission { max_units: 16 },
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE threads SET next_sequence=?1 WHERE id='t'",
+        [i64::MAX],
+    )
+    .unwrap();
+    let result = messages::publish_send(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&request),
+        &budget,
+        fence,
+        || messages::MAX_BODY_BYTES,
+    );
+    assert_eq!(
+        result.unwrap_err().code,
+        crate::protocol::results::ErrorCode::SequenceExhausted
+    );
+    for table in ["messages", "send_manifests", "operations"] {
+        let count: i64 = conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "{table}");
+    }
+    let next: i64 = conn
+        .query_row("SELECT next_sequence FROM threads WHERE id='t'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(next, i64::MAX);
+}
+
+#[test]
+fn send_rejects_receipt_deadline_overflow_at_publication() {
+    let (context, mut conn, clock) = setup();
+    let request = send_request(vec![]);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    messages::prepare_send_step(
+        &context,
+        &mut conn,
+        &request,
+        messages::MessageLimits::default(),
+        &budget,
+        crate::ports::DurableWorkAdmission { max_units: 16 },
+    )
+    .unwrap();
+    clock.0.store(i64::MAX - 1, Ordering::SeqCst);
+    let error = messages::publish_send(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&request),
+        &budget,
+        fence,
+        || messages::MAX_BODY_BYTES,
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.code,
+        crate::protocol::results::ErrorCode::InvalidRequest
+    );
+    let manifests: i64 = conn
+        .query_row("SELECT count(*) FROM send_manifests", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(manifests, 0);
+}
+
+#[test]
+fn changed_duration_between_steps_discards_preparation() {
+    let (context, mut conn, _) = setup();
+    let request = send_request(vec![]);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    let admission = crate::ports::DurableWorkAdmission { max_units: 2 };
+    messages::prepare_send_step(
+        &context,
+        &mut conn,
+        &request,
+        messages::MessageLimits::default(),
+        &budget,
+        admission,
+    )
+    .unwrap();
+    let changed = messages::MessageLimits {
+        receipt_duration_ms: 30_000,
+        body_bytes: messages::MAX_BODY_BYTES,
+    };
+    let error =
+        messages::prepare_send_step(&context, &mut conn, &request, changed, &budget, admission)
+            .unwrap_err();
+    assert_eq!(error.code, crate::protocol::results::ErrorCode::Conflict);
+    let status: String = conn
+        .query_row("SELECT status FROM send_preparations", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(status, "discarded");
+}
+
+#[test]
+fn publication_rechecks_reduced_body_limit_and_replay_keeps_committed_result() {
+    let (context, mut conn, _) = setup();
+    let request = send_request(vec![]);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    let admission = crate::ports::DurableWorkAdmission { max_units: 16 };
+    let five = messages::MessageLimits {
+        receipt_duration_ms: 750,
+        body_bytes: 5,
+    };
+    let prep_id =
+        match messages::prepare_send_step(&context, &mut conn, &request, five, &budget, admission)
+            .unwrap()
+        {
+            crate::ports::SendPreparationProgress::Ready { preparation_id, .. } => preparation_id,
+            other => panic!("{other:?}"),
+        };
+    let staged_message_id = prep_id.replacen("prep-", "msg-", 1);
+    let effective_body_limit = AtomicUsize::new(5);
+    effective_body_limit.store(4, Ordering::SeqCst);
+    let error = messages::publish_send(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&request),
+        &budget,
+        fence,
+        || effective_body_limit.load(Ordering::SeqCst),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.code,
+        crate::protocol::results::ErrorCode::InvalidRequest
+    );
+    for table in [
+        "messages",
+        "send_manifests",
+        "operations",
+        "receipt_state",
+        "warning_jobs",
+        "work_jobs",
+    ] {
+        let count: i64 = conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "{table}");
+    }
+    assert!(
+        crate::store::effective::effective_receipt(&conn, &staged_message_id, "b")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT decision_seq FROM host_instances WHERE id='i'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT timeline_revision FROM threads WHERE id='t'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    effective_body_limit.store(5, Ordering::SeqCst);
+    let original = messages::publish_send(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&request),
+        &budget,
+        fence,
+        || effective_body_limit.load(Ordering::SeqCst),
+    )
+    .unwrap();
+    let replay = messages::publish_send(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&request),
+        &budget,
+        fence,
+        || panic!("committed replay read current limit"),
+    )
+    .unwrap();
+    assert_eq!(replay, original);
+}
+
+#[test]
+fn failed_ack_event_rolls_back_settlement_warning_and_scoped_revisions() {
+    let (context, mut conn, clock) = setup();
+    let send = send_request(vec![]);
+    let id = match send_prepared(
+        &context,
+        &mut conn,
+        &send,
+        &mut permit(&send),
+        messages::MessageLimits::default(),
+        fence,
+    )
+    .unwrap()
+    {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        other => panic!("{other:?}"),
+    };
+    conn.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at) VALUES (?1,'b','pending',1000,1500)",[id.as_str()]).unwrap();
+    clock.0.store(2000, Ordering::SeqCst);
+    let directory_before = filter_revision(&conn, "directory", "t");
+    let inbox_before = filter_revision(&conn, "inbox", "b");
+    let timeline_before: i64 = conn
+        .query_row(
+            "SELECT timeline_revision FROM threads WHERE id='t'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    conn.execute_batch("CREATE TRIGGER fail_ack_info BEFORE INSERT ON messages WHEN NEW.kind='info' BEGIN SELECT RAISE(FAIL, 'injected ACK event failure'); END;").unwrap();
+    let request = ack_request(vec![id.clone()]);
+    assert!(
+        receipts::ack(
+            &context,
+            &mut conn,
+            &crate::protocol::time::CallBudget {
+                deadline: crate::protocol::time::MonoInstant(u64::MAX),
+                cancellation: Default::default()
+            },
+            &request,
+            &mut ack_permit(&request),
+            fence
+        )
+        .is_err()
+    );
+    assert_eq!(filter_revision(&conn, "directory", "t"), directory_before);
+    assert_eq!(filter_revision(&conn, "inbox", "b"), inbox_before);
+    assert_eq!(
+        conn.query_row(
+            "SELECT timeline_revision FROM threads WHERE id='t'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        timeline_before
+    );
+    assert_eq!(
+        crate::store::effective::effective_receipt(&conn, id.as_str(), "b")
+            .unwrap()
+            .unwrap()
+            .state,
+        crate::store::effective::EffectiveReceiptState::Pending
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM messages WHERE kind='warn'", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn ack_last_pending_receipt_for_left_seat_invalidates_thread_directory() {
+    let (context, mut conn, _) = setup();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('left-message','i','t',1,'ordinary','a','x',0,100000)",[]).unwrap();
+    conn.execute(
+        "UPDATE host_instances SET decision_seq=100000 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    conn.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
+        .unwrap();
+    conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('left-message','t','b','pending',300000)",[]).unwrap();
+    conn.execute(
+        "UPDATE memberships SET state='left' WHERE thread_id='t' AND seat_id='b'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE membership_intervals SET left_seq=2 WHERE thread_id='t' AND seat_id='b'",
+        [],
+    )
+    .unwrap();
+    let before = filter_revision(&conn, "directory", "t");
+    let inbox_before = filter_revision(&conn, "inbox", "b");
+    let request = ack_request(vec![MessageId::new("left-message")]);
+    conn.execute_batch("CREATE TRIGGER fail_physical_ack_info BEFORE INSERT ON messages WHEN NEW.kind='info' BEGIN SELECT RAISE(ABORT,'injected physical ACK event failure'); END;").unwrap();
+    assert!(
+        receipts::ack(
+            &context,
+            &mut conn,
+            &crate::protocol::time::CallBudget {
+                deadline: crate::protocol::time::MonoInstant(u64::MAX),
+                cancellation: Default::default()
+            },
+            &request,
+            &mut ack_permit(&request),
+            fence
+        )
+        .is_err()
+    );
+    assert_eq!(filter_revision(&conn, "inbox", "b"), inbox_before);
+    assert_eq!(
+        conn.query_row(
+            "SELECT state FROM receipts WHERE message_id='left-message' AND seat_id='b'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "pending"
+    );
+    conn.execute_batch("DROP TRIGGER fail_physical_ack_info;")
+        .unwrap();
+    receipts::ack(
+        &context,
+        &mut conn,
+        &crate::protocol::time::CallBudget {
+            deadline: crate::protocol::time::MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
+        &request,
+        &mut ack_permit(&request),
+        fence,
+    )
+    .unwrap();
+    assert_eq!(filter_revision(&conn, "directory", "t"), before + 1);
+    assert_eq!(filter_revision(&conn, "inbox", "b"), inbox_before + 1);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM receipts WHERE thread_id='t' AND seat_id='b' AND state='pending'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn already_acknowledged_new_operation_does_not_invalidate_directory() {
+    let (context, mut conn, _) = setup();
+    let send = send_request(vec![]);
+    let id = match send_prepared(
+        &context,
+        &mut conn,
+        &send,
+        &mut permit(&send),
+        messages::MessageLimits::default(),
+        fence,
+    )
+    .unwrap()
+    {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        other => panic!("{other:?}"),
+    };
+    let first = ack_request(vec![id.clone()]);
+    receipts::ack(
+        &context,
+        &mut conn,
+        &crate::protocol::time::CallBudget {
+            deadline: crate::protocol::time::MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
+        &first,
+        &mut ack_permit(&first),
+        fence,
+    )
+    .unwrap();
+    let revision = filter_revision(&conn, "directory", "t");
+    let inbox_revision = filter_revision(&conn, "inbox", "b");
+    let event_count: i64 = conn
+        .query_row("SELECT count(*) FROM messages WHERE kind='info'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let mut second = ack_request(vec![id.clone()]);
+    second.operation = OperationId::new("ack-again");
+    let result = receipts::ack(
+        &context,
+        &mut conn,
+        &crate::protocol::time::CallBudget {
+            deadline: crate::protocol::time::MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
+        &second,
+        &mut ack_permit(&second),
+        fence,
+    )
+    .unwrap();
+    let crate::protocol::results::CommandResult::Acknowledged(result) = result else {
+        panic!()
+    };
+    assert!(result.acknowledged.is_empty());
+    assert_eq!(result.already_acknowledged, vec![id]);
+    assert_eq!(filter_revision(&conn, "directory", "t"), revision);
+    assert_eq!(filter_revision(&conn, "inbox", "b"), inbox_revision);
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM messages WHERE kind='info'", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        event_count
+    );
+}
+
+#[test]
+fn foreground_write_between_preparation_quanta_and_failed_publication_stays_hidden_after_reopen() {
+    let (context, mut conn, _) = setup();
+    for n in 0..34 {
+        let seat = format!("interleave-{n:02}");
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'i','resolved','native',?2,1,1,0,1)", params![seat, format!("pane-{n:02}")]).unwrap();
+        conn.execute(
+            "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'joined')",
+            [seat.as_str()],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t',?1,1,1)",[seat.as_str()]).unwrap();
+    }
+    let request = send_request(vec![]);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    let admission = crate::ports::DurableWorkAdmission { max_units: 16 };
+    let first = messages::prepare_send_step(
+        &context,
+        &mut conn,
+        &request,
+        messages::MessageLimits::default(),
+        &budget,
+        admission,
+    )
+    .unwrap();
+    assert!(matches!(
+        first,
+        crate::ports::SendPreparationProgress::More {
+            visited: 1..=16,
+            ..
+        }
+    ));
+    let foreground = context.open_writer().unwrap();
+    foreground.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('foreground','i','fg','goal',0,0)",[]).unwrap();
+    let prep_id = loop {
+        match messages::prepare_send_step(
+            &context,
+            &mut conn,
+            &request,
+            messages::MessageLimits::default(),
+            &budget,
+            admission,
+        )
+        .unwrap()
+        {
+            crate::ports::SendPreparationProgress::More { visited, .. } => assert!(visited <= 16),
+            crate::ports::SendPreparationProgress::Ready { preparation_id, .. } => {
+                break preparation_id;
+            }
+            other => panic!("{other:?}"),
+        }
+    };
+    let staged: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM prepared_recipients WHERE preparation_id=?1",
+            [prep_id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(staged, 35);
+    let message_id = prep_id.replacen("prep-", "msg-", 1);
+    assert!(
+        crate::store::effective::effective_receipt(&conn, &message_id, "b")
+            .unwrap()
+            .is_none()
+    );
+    conn.execute("UPDATE host_instances SET send_eligibility_revision=send_eligibility_revision+1 WHERE id='i'",[]).unwrap();
+    assert_eq!(
+        messages::publish_send(
+            &context,
+            &mut conn,
+            &request,
+            &mut permit(&request),
+            &budget,
+            fence,
+            || messages::MAX_BODY_BYTES
+        )
+        .unwrap_err()
+        .code,
+        crate::protocol::results::ErrorCode::Conflict
+    );
+    let reopened = context.open_writer().unwrap();
+    assert!(
+        crate::store::effective::effective_receipt(&reopened, &message_id, "b")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        reopened
+            .query_row(
+                "SELECT count(*) FROM messages WHERE id=?1",
+                [message_id.as_str()],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        reopened
+            .query_row(
+                "SELECT count(*) FROM send_manifests WHERE preparation_id=?1",
+                [prep_id.as_str()],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        reopened
+            .query_row(
+                "SELECT count(*) FROM threads WHERE id='foreground'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+}
+
+/// Publish one send from `a` through the real prepare/publish writers.
+fn publish(
+    context: &StoreContext,
+    conn: &mut Connection,
+    operation: &str,
+    explicit: Vec<&str>,
+) -> MessageId {
+    let mut request = send_request(explicit);
+    request.operation = OperationId::new(operation);
+    match send_prepared(
+        context,
+        conn,
+        &request,
+        &mut permit(&request),
+        messages::MessageLimits::default(),
+        fence,
+    )
+    .unwrap()
+    {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Every (message, seat) in thread `t` that the canonical rule rates Pending,
+/// found by evaluating `effective_receipt` over every staged and physical
+/// receipt row the thread has ever held (no index restriction at all).
+fn canonical_pending(
+    conn: &Connection,
+) -> std::collections::BTreeMap<(String, String), crate::store::effective::EffectiveReceipt> {
+    let mut pairs = conn
+        .prepare(
+            "SELECT sm.message_id,pr.seat_id FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id WHERE pr.thread_id='t' \
+             UNION SELECT message_id,seat_id FROM receipts WHERE thread_id='t'",
+        )
+        .unwrap();
+    let pairs: Vec<(String, String)> = pairs
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    pairs
+        .into_iter()
+        .filter_map(|(message, seat)| {
+            let receipt = crate::store::effective::effective_receipt(conn, &message, &seat)
+                .unwrap()
+                .unwrap();
+            (receipt.state == crate::store::effective::EffectiveReceiptState::Pending)
+                .then_some(((message, seat), receipt))
+        })
+        .collect()
+}
+
+/// The thread-scoped receipt scan run to completion, Pending items only, and
+/// the number of indexed candidates it examined.
+fn scanned_pending(
+    conn: &Connection,
+) -> (
+    std::collections::BTreeMap<(String, String), crate::store::effective::EffectiveReceipt>,
+    u64,
+) {
+    use crate::store::effective::{
+        EffectiveReceiptState, ReceiptScanScope, scan_effective_receipts,
+    };
+    let mut found = std::collections::BTreeMap::new();
+    let mut visited = 0u64;
+    let mut position = None;
+    loop {
+        let slice =
+            scan_effective_receipts(conn, &ReceiptScanScope::Thread("t".into()), position, 100)
+                .unwrap();
+        visited += u64::from(slice.visited);
+        for receipt in slice.items {
+            if receipt.state == EffectiveReceiptState::Pending {
+                let key = (receipt.message_id.clone(), receipt.seat_id.clone());
+                assert!(found.insert(key, receipt).is_none(), "duplicate candidate");
+            }
+        }
+        if !slice.has_more {
+            return (found, visited);
+        }
+        position = Some(slice.position);
+    }
+}
+
+// Digest fix3 step 2, superset proof. The thread-scoped manifest candidate
+// that check-in's inbox walks is restricted to the v8 pending projection; this
+// proves that projection loses nothing the canonical `effective_receipt`
+// evaluation needs. Written through the real send/ACK writers: an ACKed
+// receipt, an unavailable-at-send receipt whose first ordered availability
+// anchor (not the later one) fixes `available_at`, the same receipt after the
+// due path stores a pending sparse `receipt_state` marker, an invited seat
+// that never became available (`available_at` None), receipts the send
+// worker has projected (pending `receipt_state` rows), a seat retired after
+// the send, and an unpublished staged recipient. Every canonical Pending receipt is in the projection and the
+// scan returns it with identical fields (anchor, deadline, marker included).
+// Kills: a settlement trigger without its `state!='pending'` guard (the
+// pending sparse marker would drop the receipt from the projection), a
+// restriction that treats any `receipt_state` row as settled, and a
+// restriction that requires availability (`eligible_at_snapshot=1` or an
+// anchor) before a receipt is pending.
+#[test]
+fn pending_only_thread_candidates_cover_every_canonical_pending_receipt() {
+    let (context, mut conn, _) = setup();
+    conn.execute(
+        "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','d','invited')",
+        [],
+    )
+    .unwrap();
+    let acked = publish(&context, &mut conn, "send-acked", vec![]);
+    let anchored = publish(&context, &mut conn, "send-anchored", vec![]);
+    let invited = publish(&context, &mut conn, "send-invited", vec!["c"]);
+    let retired = publish(&context, &mut conn, "send-retired", vec!["d"]);
+    // Unpublished: staged recipients exist, no manifest.
+    let mut staged = send_request(vec![]);
+    staged.operation = OperationId::new("send-staged");
+    assert!(matches!(
+        messages::prepare_send_step(
+            &context,
+            &mut conn,
+            &staged,
+            messages::MessageLimits::default(),
+            &crate::protocol::time::CallBudget {
+                deadline: MonoInstant(1000),
+                cancellation: Default::default(),
+            },
+            crate::ports::DurableWorkAdmission { max_units: 16 },
+        )
+        .unwrap(),
+        crate::ports::SendPreparationProgress::Ready { .. }
+    ));
+    let eligible: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM prepared_recipients WHERE eligible_at_snapshot=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(eligible, 0, "every recipient is unavailable at send");
+    // b's first ordered availability anchor after the sends, then a later one.
+    let seq: i64 = conn
+        .query_row(
+            "SELECT decision_seq FROM host_instances WHERE id='i'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    conn.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES ('b',?1,1500,1,'verified')",[seq+1]).unwrap();
+    conn.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES ('b',?1,9000,1,'verified')",[seq+2]).unwrap();
+    conn.execute(
+        "UPDATE host_instances SET decision_seq=?1 WHERE id='i'",
+        [seq + 2],
+    )
+    .unwrap();
+    let ack = ack_request(vec![acked.clone()]);
+    receipts::ack(
+        &context,
+        &mut conn,
+        &crate::protocol::time::CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
+        &ack,
+        &mut ack_permit(&ack),
+        fence,
+    )
+    .unwrap();
+    // The due path stores a pending sparse marker for the anchored receipt.
+    let deadline = crate::store::effective::effective_receipt(&conn, anchored.as_str(), "b")
+        .unwrap()
+        .unwrap()
+        .deadline_at
+        .unwrap();
+    let tx = conn.transaction().unwrap();
+    let overdue = crate::store::schema::record_overdue_if_pending(
+        &tx,
+        &ObligationRef::Receipt {
+            message: anchored.clone(),
+            seat: SeatId::new("b"),
+        },
+        &crate::ports::TimeBasis::Decision,
+        UtcMillis(deadline + 1),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    assert!(overdue.inserted);
+    let marker: (String, Option<String>) = conn
+        .query_row(
+            "SELECT state,warning_message_id FROM receipt_state WHERE message_id=?1 AND seat_id='b'",
+            [anchored.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(marker.0, "pending");
+    assert!(marker.1.is_some());
+    // The send worker projects the invited send's receipts: production
+    // projection writes pending `receipt_state` rows (no `receipts` rows).
+    let job = format!("work:send:{}", invited.as_str());
+    while crate::store::materialization::advance_work(
+        &mut conn,
+        &job,
+        crate::ports::DurableWorkAdmission { max_units: 16 },
+        &crate::protocol::time::CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
+        &TestClock(AtomicI64::new(1000)),
+    )
+    .unwrap()
+    .has_more
+    {}
+    let physical: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM receipt_state WHERE message_id=?1 AND state='pending'",
+            [invited.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(physical, 2, "b and c projected");
+    conn.execute(
+        "UPDATE seats SET state='retired',retired_at=5000,retired_seq=?1 WHERE id='d'",
+        [seq + 3],
+    )
+    .unwrap();
+
+    let canonical = canonical_pending(&conn);
+    let keys: Vec<(&str, &str)> = canonical
+        .keys()
+        .map(|(m, s)| (m.as_str(), s.as_str()))
+        .collect();
+    let mut expected = vec![
+        (anchored.as_str(), "b"),
+        (invited.as_str(), "b"),
+        (invited.as_str(), "c"),
+        (retired.as_str(), "b"),
+    ];
+    expected.sort();
+    assert_eq!(keys, expected);
+    let first_anchor = &canonical[&(anchored.as_str().to_owned(), "b".to_owned())];
+    assert_eq!(first_anchor.available_at, Some(1500));
+    assert_eq!(first_anchor.warning_message_id, marker.1);
+    assert_eq!(
+        canonical[&(invited.as_str().to_owned(), "c".to_owned())].available_at,
+        None
+    );
+    // Superset: every canonical pending manifest receipt is in the projection
+    // at its staged thread and ordinal.
+    for (message, seat) in canonical.keys() {
+        let projected: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM digest_pending_manifest_receipts d JOIN send_manifests sm ON sm.preparation_id=d.preparation_id JOIN prepared_recipients pr ON pr.preparation_id=d.preparation_id AND pr.seat_id=d.seat_id WHERE sm.message_id=?1 AND d.seat_id=?2 AND d.thread_id=pr.thread_id AND d.ordinal=pr.ordinal)",
+                params![message, seat],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            projected,
+            "{message}/{seat} missing from the pending projection"
+        );
+    }
+    let (scanned, _) = scanned_pending(&conn);
+    assert_eq!(scanned, canonical);
+}

@@ -1,0 +1,7 @@
+{
+  "permissions": {"allow": ["Bash(echo capture-ok)", "Bash(echo child-capture-ok)", "Task", "Agent"]},
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "<scratch>/claude284-capture/hook.py SessionStart", "timeout": 10}]}],
+    "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "<scratch>/claude284-capture/hook.py PreToolUse", "timeout": 10}]}]
+  }
+}

@@ -1,0 +1,9 @@
+{
+ "cwd": "/private/tmp/codex158/proj",
+ "model": "gpt-6-luna",
+ "permission_mode": "default",
+ "transcript_path": null,
+ "session_id": "01a0ec6f-56ff-7142-8296-368c85520542",
+ "hook_event_name": "SessionStart",
+ "source": "startup"
+}

@@ -1,0 +1,111 @@
+# Codex codex-cli 0.159.3 sandbox default-deny probe (no model), 2026-10-01T06:08:41Z
+# codex binary: ~/.codex/packages/standalone/releases/0.159.3-aarch64-apple-darwin/bin/codex sha256 4d210f7c5a18fd0386434df23b5bdbb8c0e7257d3e8a2b30b0769c8bbe99a878
+# DSOCK=/private/tmp/herdr-threads-501/87d2592e90e0b831.sock (stable path of scratch daemon; state=$SCRATCH/state host=$SCRATCH/fakehost.sock fake). NEG=$SCRATCH/neg.sock; TCP 127.0.0.1:47812 owned listener; HSOCK=~/.config/herdr/herdr.sock (connect+close only)
+# CH0=$SCRATCH/codex-home-empty (empty CODEX_HOME); CH1=$SCRATCH/codex-home-allowance (CODEX_HOME holding only the allowance):
+#   [sandbox_workspace_write]
+#   network_access = true
+#   
+#   [features.network_proxy]
+#   enabled = true
+#   unix_sockets = { "/private/tmp/herdr-threads-501/87d2592e90e0b831.sock" = "allow" }
+
+## P0 unsandboxed control
+$ sh $SCRATCH/net.sh $SCRATCH /private/tmp/herdr-threads-501/87d2592e90e0b831.sock ~/.config/herdr/herdr.sock
+/private/tmp/herdr-threads-501/87d2592e90e0b831.sock CONNECTED
+$SCRATCH/neg.sock CONNECTED
+~/.config/herdr/herdr.sock CONNECTED
+tcp:127.0.0.1:47812 CONNECTED
+tcp:1.1.1.1:53 ERR TimeoutError timed out
+tcp:93.184.215.14:443 ERR TimeoutError timed out
+env proxies: HTTP_PROXY= HTTPS_PROXY= ALL_PROXY=
+curl https://example.com http=200
+curl --noproxy example.com http=200
+rc=0
+
+## P0b unsandboxed daemon health
+$ $TARGET/debug/herdr-threads --state-dir $SCRATCH/state --host-endpoint $SCRATCH/fakehost.sock daemon health
+rc=0
+
+## P1 workspace-write, empty CODEX_HOME, no allowance: product CLI
+$ ~/.local/bin/codex sandbox -c sandbox_mode="workspace-write" -- $TARGET/debug/herdr-threads --state-dir $SCRATCH/state --host-endpoint $SCRATCH/fakehost.sock daemon health
+herdr-threads: daemon socket not reachable from this sandbox (permission denied): /private/tmp/herdr-threads-501/87d2592e90e0b831.sock; launch the harness with the sandbox socket allowance printed by `herdr-threads setup codex` (see docs/install.md) (transport_denied)
+rc=4
+
+## P1b workspace-write, empty CODEX_HOME, no allowance: net.sh
+$ ~/.local/bin/codex sandbox -c sandbox_mode="workspace-write" -- sh $SCRATCH/net.sh $SCRATCH /private/tmp/herdr-threads-501/87d2592e90e0b831.sock ~/.config/herdr/herdr.sock
+/private/tmp/herdr-threads-501/87d2592e90e0b831.sock ERR PermissionError [Errno 1] Operation not permitted
+$SCRATCH/neg.sock ERR PermissionError [Errno 1] Operation not permitted
+~/.config/herdr/herdr.sock ERR PermissionError [Errno 1] Operation not permitted
+tcp:127.0.0.1:47812 ERR PermissionError [Errno 1] Operation not permitted
+tcp:1.1.1.1:53 ERR PermissionError [Errno 1] Operation not permitted
+tcp:93.184.215.14:443 ERR PermissionError [Errno 1] Operation not permitted
+env proxies: HTTP_PROXY= HTTPS_PROXY= ALL_PROXY=
+curl: (6) Could not resolve host: example.com
+curl https://example.com http=000
+curl: (6) Could not resolve host: example.com
+curl --noproxy example.com http=000
+rc=0
+
+## P2 workspace-write + allowance as -c overrides (session-scoped form): net.sh
+$ ~/.local/bin/codex sandbox -c sandbox_mode="workspace-write" -c sandbox_workspace_write.network_access=true -c features.network_proxy.enabled=true -c features.network_proxy.unix_sockets={"/private/tmp/herdr-threads-501/87d2592e90e0b831.sock"="allow"} -- sh $SCRATCH/net.sh $SCRATCH /private/tmp/herdr-threads-501/87d2592e90e0b831.sock ~/.config/herdr/herdr.sock
+/private/tmp/herdr-threads-501/87d2592e90e0b831.sock CONNECTED
+$SCRATCH/neg.sock ERR PermissionError [Errno 1] Operation not permitted
+~/.config/herdr/herdr.sock ERR PermissionError [Errno 1] Operation not permitted
+tcp:127.0.0.1:47812 ERR PermissionError [Errno 1] Operation not permitted
+tcp:1.1.1.1:53 ERR PermissionError [Errno 1] Operation not permitted
+tcp:93.184.215.14:443 ERR PermissionError [Errno 1] Operation not permitted
+env proxies: HTTP_PROXY=set HTTPS_PROXY=set ALL_PROXY=set
+curl: (56) CONNECT tunnel failed, response 403
+curl https://example.com http=000
+curl: (6) Could not resolve host: example.com
+curl --noproxy example.com http=000
+rc=0
+
+## P2b -c allowance: product CLI
+$ ... -- $TARGET/debug/herdr-threads --state-dir $SCRATCH/state --host-endpoint $SCRATCH/fakehost.sock daemon health | head -c 200
+health
+boot_id: "293ca203-c136-4ba7-9a0f-be5e32ef3ca3"
+database: {"detail":null,"state":"ready"}
+harness: {"claude":"unsupported","codex":"unsupported"}
+held_targets: null
+host: {"coherent_enumeration
+
+## P2c -c allowance: curl must fail
+$ ~/.local/bin/codex sandbox -c sandbox_mode="workspace-write" -c sandbox_workspace_write.network_access=true -c features.network_proxy.enabled=true -c features.network_proxy.unix_sockets={"/private/tmp/herdr-threads-501/87d2592e90e0b831.sock"="allow"} -- curl -sS -m 8 https://example.com -o /dev/null
+curl: (56) CONNECT tunnel failed, response 403
+rc=56
+
+## P3 workspace-write, CODEX_HOME holding only the allowance in config.toml (user-level setup form): net.sh
+$ ~/.local/bin/codex sandbox -c sandbox_mode="workspace-write" -- sh $SCRATCH/net.sh $SCRATCH /private/tmp/herdr-threads-501/87d2592e90e0b831.sock ~/.config/herdr/herdr.sock
+/private/tmp/herdr-threads-501/87d2592e90e0b831.sock CONNECTED
+$SCRATCH/neg.sock ERR PermissionError [Errno 1] Operation not permitted
+~/.config/herdr/herdr.sock ERR PermissionError [Errno 1] Operation not permitted
+tcp:127.0.0.1:47812 ERR PermissionError [Errno 1] Operation not permitted
+tcp:1.1.1.1:53 ERR PermissionError [Errno 1] Operation not permitted
+tcp:93.184.215.14:443 ERR PermissionError [Errno 1] Operation not permitted
+env proxies: HTTP_PROXY=set HTTPS_PROXY=set ALL_PROXY=set
+curl: (56) CONNECT tunnel failed, response 403
+curl https://example.com http=000
+curl: (6) Could not resolve host: example.com
+curl --noproxy example.com http=000
+rc=0
+
+## P3b config.toml allowance: product CLI
+$ ... -- $TARGET/debug/herdr-threads --state-dir $SCRATCH/state --host-endpoint $SCRATCH/fakehost.sock daemon health | head -c 200
+health
+boot_id: "293ca203-c136-4ba7-9a0f-be5e32ef3ca3"
+database: {"detail":null,"state":"ready"}
+harness: {"claude":"unsupported","codex":"unsupported"}
+held_targets: null
+host: {"coherent_enumeration
+
+## P3c config.toml allowance: curl must fail
+$ ~/.local/bin/codex sandbox -c sandbox_mode="workspace-write" -- curl -sS -m 8 https://example.com -o /dev/null
+curl: (56) CONNECT tunnel failed, response 403
+rc=56
+
+## P3d config.toml allowance: curl --noproxy must fail
+$ ~/.local/bin/codex sandbox -c sandbox_mode="workspace-write" -- curl -sS -m 8 --noproxy * https://example.com -o /dev/null
+curl: (6) Could not resolve host: example.com
+rc=6
+

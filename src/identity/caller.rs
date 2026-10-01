@@ -1,0 +1,1 @@
+//! Inert component boundary.

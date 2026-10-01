@@ -1,0 +1,177 @@
+name: CI
+
+# Deterministic checks on the only supported platform (macOS arm64, Herdr 0.9.1).
+# Native Codex/Claude model-receipt validation needs an authenticated, isolated
+# Herdr environment and is NOT run here; a green run says nothing about it.
+# The setup CLI, managed launch and Codex fingerprint admission are covered
+# only by their deterministic tests (tests/setup_cli.rs, tests/cli/launch.rs,
+# tests/harness/codex_schema.rs, tests/lifecycle_ux.rs); no harness runs here.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.94.0
+  HERDR_VERSION: 0.9.1
+  HERDR_SHA256: 5fc7a7e7adfaca56fa80aa89dcb025693357268dab8285b9ce2d08a2313c89de
+
+jobs:
+  deterministic:
+    name: Build, format, test (macOS arm64)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python for TOML and fixture tests
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11.9'
+          architecture: arm64
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
+          rustup default "$RUST_TOOLCHAIN"
+          cargo --version
+          rustc --version
+
+      - name: Provision pinned Herdr 0.9.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          python3 -c 'import sys, tomllib; assert sys.version_info >= (3, 11)'
+          for tool in sh which id file curl shasum; do command -v "$tool"; done
+          tool_dir=$(mktemp -d "$RUNNER_TEMP/herdr-$HERDR_VERSION.XXXXXX")
+          curl -fsSL --retry 3 --max-time 120 \
+            "https://github.com/herdrdev/herdr/releases/download/v$HERDR_VERSION/herdr-macos-aarch64" \
+            -o "$tool_dir/herdr"
+          printf '%s  %s\n' "$HERDR_SHA256" "$tool_dir/herdr" | shasum -a 256 --check
+          file "$tool_dir/herdr" | grep -F 'Mach-O 64-bit executable arm64'
+          chmod 755 "$tool_dir/herdr"
+          test "$("$tool_dir/herdr" --version)" = "herdr $HERDR_VERSION"
+          printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
+
+      - name: Short TMPDIR for Unix socket tests
+        # macOS limits socket paths to 104 bytes; tests bind sockets under TMPDIR.
+        shell: bash
+        run: |
+          set -euo pipefail
+          short=$(mktemp -d /private/tmp/htci.XXXXXX)
+          printf 'TMPDIR=%s\n' "$short" >> "$GITHUB_ENV"
+
+      - name: Locked build
+        run: cargo build --locked --all-targets --all-features
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Package build script and manifest paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/build.sh
+          test -x bin/herdr-threads
+          bin/herdr-threads --version
+          python3 - <<'PY'
+          import os, tomllib
+          with open("herdr-plugin.toml", "rb") as f:
+              manifest = tomllib.load(f)
+          assert manifest["id"] == "herdr-threads", manifest["id"]
+          assert manifest["platforms"] == ["macos"], manifest["platforms"]
+          entries = [e for key in ("build", "startup", "actions", "panes") for e in manifest.get(key, [])]
+          assert entries, "manifest declares no commands"
+          for entry in entries:
+              program = entry["command"][0]
+              assert os.path.isfile(program) and os.access(program, os.X_OK), program
+          print(f"{len(entries)} manifest commands resolve to executable files")
+          PY
+
+      - name: Release installer (offline, stub Herdr)
+        # Packages bin/herdr-threads as fake v0.1.0/v0.1.1 releases served from
+        # file:// and drives scripts/install.sh in a scratch HOME: install,
+        # idempotent re-run, upgrade, refusals, harness setup and uninstall.
+        run: tests/release/install_test.sh bin/herdr-threads
+
+      - name: Tests (serial)
+        # One test thread per test binary; cargo already runs binaries one at a time.
+        # --all-features enables `test-support`, which tests/hook_entrypoint.rs
+        # requires. The package suite runs tests/service/check_failpoints_absent.sh
+        # (two extra release builds). #[ignore] tests (package lifecycle gate,
+        # 10^5..10^6 scale tests) do not run here.
+        run: cargo test --locked --all-targets --all-features -- --test-threads=1
+
+      - name: Python fixture tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          for dir in tests/native/support tests/native/cooperative/claude_lifecycle \
+                     tests/native/provenance/claude tests/native/provenance/codex; do
+            python3 -m unittest discover -s "$dir" -p 'test_*.py'
+          done
+
+  package-lifecycle:
+    name: Package lifecycle gate (private Herdr server; manual)
+    # The isolated clean-install gate (docs/validation/package.md). It publishes
+    # the committed HEAD to a private bare repository under /private/tmp and
+    # drives install/startup/actions/pane/update/link against a private Herdr
+    # 0.9.1 server it starts itself. Several minutes, so manual dispatch only.
+    # NOT YET RUN ON GITHUB: it has passed only locally (validator 52b0554).
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The validator pushes HEAD to a private bare repository; a shallow
+          # clone cannot be pushed.
+          fetch-depth: 0
+
+      - name: Python for the validator
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11.9'
+          architecture: arm64
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+
+      - name: Provision pinned Herdr 0.9.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          tool_dir=$(mktemp -d "$RUNNER_TEMP/herdr-$HERDR_VERSION.XXXXXX")
+          curl -fsSL --retry 3 --max-time 120 \
+            "https://github.com/herdrdev/herdr/releases/download/v$HERDR_VERSION/herdr-macos-aarch64" \
+            -o "$tool_dir/herdr"
+          printf '%s  %s\n' "$HERDR_SHA256" "$tool_dir/herdr" | shasum -a 256 --check
+          chmod 755 "$tool_dir/herdr"
+          test "$("$tool_dir/herdr" --version)" = "herdr $HERDR_VERSION"
+          printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
+
+      - name: Package lifecycle gate
+        run: >-
+          cargo test --locked --test package
+          install::clean_package_install_lifecycle
+          -- --ignored --exact --nocapture
+
+  clippy:
+    name: Clippy -D warnings
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy
+          rustup default "$RUST_TOOLCHAIN"
+      - name: Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings

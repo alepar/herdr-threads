@@ -1,0 +1,1 @@
+{"session_id": "01a0ec6f-56ff-7142-8296-368c85520542", "hook_event_name": "SessionStart", "source": "startup", "input_keys": ["cwd", "hook_event_name", "model", "permission_mode", "session_id", "source", "transcript_path"], "tool_input_keys": [], "utc": "2026-09-29T09:11:59.205773+00:00", "output": {}}

@@ -1,0 +1,339 @@
+//! Retry coordinator: fresh invocation evidence, replay, and output completion.
+use crate::{
+    cli::journal::{IntentRef, IntentScope, Journal, SemanticMutation},
+    protocol::{
+        authority::CallerClaim,
+        commands::Command,
+        output::OutputSpec,
+        results::{ApiError, CommandResult, ErrorCode},
+    },
+};
+use std::io::{self, Write};
+
+/// The command runner owns the real client and output writer. A journal error
+/// returns before `submit`; every other error leaves the entry recoverable.
+pub fn run_new<P, S, O>(
+    journal: &Journal,
+    scope: IntentScope,
+    semantic: SemanticMutation,
+    created_at_millis: i64,
+    proof: P,
+    submit: S,
+    output: O,
+) -> io::Result<(IntentRef, CommandResult)>
+where
+    P: FnOnce() -> io::Result<CallerClaim>,
+    S: FnOnce(Command) -> io::Result<CommandResult>,
+    O: FnOnce(&CommandResult) -> io::Result<()>,
+{
+    let reference = journal.record(scope.clone(), semantic, created_at_millis)?;
+    let result = run_retry(journal, &reference, &scope, proof, submit, output)?;
+    Ok((reference, result))
+}
+
+pub fn run_retry<P, S, O>(
+    journal: &Journal,
+    reference: &IntentRef,
+    scope: &IntentScope,
+    proof: P,
+    submit: S,
+    output: O,
+) -> io::Result<CommandResult>
+where
+    P: FnOnce() -> io::Result<CallerClaim>,
+    S: FnOnce(Command) -> io::Result<CommandResult>,
+    O: FnOnce(&CommandResult) -> io::Result<()>,
+{
+    run_retry_inner(journal, reference, scope, proof, submit, output).map_err(|failure| {
+        match failure {
+            RetryFailure::Local(error) | RetryFailure::Submit(error) => error,
+        }
+    })
+}
+
+#[derive(Debug)]
+pub enum RetryFailure<E> {
+    Local(io::Error),
+    Submit(E),
+}
+
+/// Publish the private intent before the first typed API submission.
+// Allowed: journal, intent, proof, submit and output are independent inputs of one durable retry step.
+#[allow(clippy::too_many_arguments)]
+pub fn run_new_api_to_writer<P, S, W>(
+    journal: &Journal,
+    scope: IntentScope,
+    semantic: SemanticMutation,
+    created_at_millis: i64,
+    proof: P,
+    submit: S,
+    output: &OutputSpec,
+    writer: &mut W,
+) -> Result<(IntentRef, CommandResult), RetryFailure<ApiError>>
+where
+    P: FnOnce() -> io::Result<CallerClaim>,
+    S: FnOnce(Command) -> Result<CommandResult, ApiError>,
+    W: Write,
+{
+    let reference = journal
+        .record(scope.clone(), semantic, created_at_millis)
+        .map_err(RetryFailure::Local)?;
+    let result =
+        run_retry_api_to_writer(journal, &reference, &scope, proof, submit, output, writer)?;
+    Ok((reference, result))
+}
+
+/// A first submission of a fresh operation key whose daemon answer is a
+/// definitive correlated rejection discards its intent. For cooperative
+/// mutations only a deterministic code (see `is_deterministic_rejection`)
+/// counts: the request itself is invalid or refused and would be refused
+/// identically on retry, while transient codes (`StoreBusy`,
+/// `DeadlineExceeded`, `Cancelled`), `StoreCorrupt` and any unlisted code keep
+/// the intent — a rejection does not prove nothing was committed under the key
+/// (send preparation commits quanta before a later rejection). Seat resolution
+/// (`ServiceAllocation`) commits nothing before deciding, so any correlated
+/// rejection other than `UnknownOutcome` is definitive there. `UnknownOutcome`,
+/// pre-submission failures and local output/journal failures always keep the
+/// intent (CLI design "Durable client intent"). Retries of an existing intent
+/// never discard it.
+// Allowed: same inputs as run_new_api_to_writer; this is its rejection-discarding variant.
+#[allow(clippy::too_many_arguments)]
+pub fn run_new_api_to_writer_discarding_rejection<P, S, W>(
+    journal: &Journal,
+    scope: IntentScope,
+    semantic: SemanticMutation,
+    created_at_millis: i64,
+    proof: P,
+    submit: S,
+    output: &OutputSpec,
+    writer: &mut W,
+) -> Result<(IntentRef, CommandResult), RetryFailure<ApiError>>
+where
+    P: FnOnce() -> io::Result<CallerClaim>,
+    S: FnOnce(Command) -> Result<Result<CommandResult, ApiError>, ApiError>,
+    W: Write,
+{
+    let cooperative = matches!(scope, IntentScope::Cooperative { .. });
+    let definitive = move |code: &ErrorCode| {
+        if cooperative {
+            is_deterministic_rejection(code)
+        } else {
+            *code != ErrorCode::UnknownOutcome
+        }
+    };
+    let reference = journal
+        .record(scope.clone(), semantic, created_at_millis)
+        .map_err(RetryFailure::Local)?;
+    let result = run_retry_inner(
+        journal,
+        &reference,
+        &scope,
+        proof,
+        |command| match submit(command) {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(rejection)) if definitive(&rejection.code) => {
+                Err(Submitted::Rejected(rejection))
+            }
+            Ok(Err(uncertain)) | Err(uncertain) => Err(Submitted::Kept(uncertain)),
+        },
+        |result| {
+            let bytes = super::output::emitted_bytes(result, output)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.detail))?;
+            writer.write_all(&bytes)?;
+            writer.flush()
+        },
+    );
+    match result {
+        Ok(result) => Ok((reference, result)),
+        Err(RetryFailure::Local(error)) => Err(RetryFailure::Local(error)),
+        Err(RetryFailure::Submit(Submitted::Kept(error))) => Err(RetryFailure::Submit(error)),
+        Err(RetryFailure::Submit(Submitted::Rejected(rejection))) => {
+            // A failed removal leaves an inert, still-retryable entry; the
+            // daemon's typed rejection remains the reported outcome.
+            let _ = journal.complete(&reference);
+            Err(RetryFailure::Submit(rejection))
+        }
+    }
+}
+
+/// Codes meaning the request itself is invalid or refused by durable state, so
+/// an identical retry is refused identically. Anything not listed (transient,
+/// store, host, or uncertain codes) must keep the intent pending.
+fn is_deterministic_rejection(code: &ErrorCode) -> bool {
+    matches!(
+        code,
+        ErrorCode::InvalidRequest
+            | ErrorCode::Unauthorized
+            | ErrorCode::Archived
+            | ErrorCode::Conflict
+            | ErrorCode::OperationPayloadMismatch
+            | ErrorCode::MembershipRequired
+    )
+}
+
+enum Submitted {
+    Rejected(ApiError),
+    Kept(ApiError),
+}
+
+/// Preserve the server's typed rejection or transport uncertainty for the
+/// command runner. Neither branch retries implicitly.
+pub fn run_retry_api_to_writer<P, S, W>(
+    journal: &Journal,
+    reference: &IntentRef,
+    scope: &IntentScope,
+    proof: P,
+    submit: S,
+    output: &OutputSpec,
+    writer: &mut W,
+) -> Result<CommandResult, RetryFailure<ApiError>>
+where
+    P: FnOnce() -> io::Result<CallerClaim>,
+    S: FnOnce(Command) -> Result<CommandResult, ApiError>,
+    W: Write,
+{
+    run_retry_inner(journal, reference, scope, proof, submit, |result| {
+        let bytes = super::output::emitted_bytes(result, output)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.detail))?;
+        writer.write_all(&bytes)?;
+        writer.flush()
+    })
+}
+
+fn run_retry_inner<P, S, O, E>(
+    journal: &Journal,
+    reference: &IntentRef,
+    scope: &IntentScope,
+    proof: P,
+    submit: S,
+    output: O,
+) -> Result<CommandResult, RetryFailure<E>>
+where
+    P: FnOnce() -> io::Result<CallerClaim>,
+    S: FnOnce(Command) -> Result<CommandResult, E>,
+    O: FnOnce(&CommandResult) -> io::Result<()>,
+{
+    let pending = journal.load(reference).map_err(RetryFailure::Local)?;
+    if &pending.header.scope != scope {
+        return Err(RetryFailure::Local(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "intent authority scope mismatch",
+        )));
+    }
+    if let IntentScope::Operator { local_user_uid, .. } = scope
+        && Some(*local_user_uid) != effective_uid()
+    {
+        return Err(RetryFailure::Local(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "operator intent belongs to a different effective user",
+        )));
+    }
+    let claim = match scope {
+        IntentScope::Cooperative { .. } => pending.semantic.frozen_claim().cloned(),
+        IntentScope::Native { .. } => Some(proof().map_err(RetryFailure::Local)?),
+        IntentScope::Operator { .. } | IntentScope::ServiceAllocation { .. } => None,
+    };
+    let command = pending
+        .semantic
+        .to_command(reference.operation.clone(), claim)
+        .map_err(RetryFailure::Local)?;
+    let result = submit(command).map_err(RetryFailure::Submit)?;
+    if !matches_result(&pending.semantic, &result) {
+        return Err(RetryFailure::Local(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unexpected mutation result",
+        )));
+    }
+    output(&result).map_err(RetryFailure::Local)?;
+    journal.complete(reference).map_err(RetryFailure::Local)?;
+    Ok(result)
+}
+
+/// Complete the journal entry only after the selected bytes reach and flush
+/// through the caller's writer. A write or flush error leaves it recoverable.
+pub fn run_retry_to_writer<P, S, W>(
+    journal: &Journal,
+    reference: &IntentRef,
+    scope: &IntentScope,
+    proof: P,
+    submit: S,
+    output: &OutputSpec,
+    writer: &mut W,
+) -> io::Result<CommandResult>
+where
+    P: FnOnce() -> io::Result<CallerClaim>,
+    S: FnOnce(Command) -> io::Result<CommandResult>,
+    W: Write,
+{
+    run_retry(journal, reference, scope, proof, submit, |result| {
+        let bytes = super::output::emitted_bytes(result, output)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.detail))?;
+        writer.write_all(&bytes)?;
+        writer.flush()
+    })
+}
+
+#[cfg(unix)]
+fn effective_uid() -> Option<u32> {
+    unsafe extern "C" {
+        fn geteuid() -> u32;
+    }
+    Some(unsafe { geteuid() })
+}
+#[cfg(not(unix))]
+fn effective_uid() -> Option<u32> {
+    None
+}
+
+fn matches_result(request: &SemanticMutation, result: &CommandResult) -> bool {
+    if let SemanticMutation::Frozen { mutation, .. } = request {
+        return matches_result(mutation, result);
+    }
+
+    matches!(
+        (request, result),
+        (
+            SemanticMutation::ResolveSeat { .. },
+            CommandResult::SeatResolved(_)
+        ) | (
+            SemanticMutation::CheckIn | SemanticMutation::CooperativeCheckIn { .. },
+            CommandResult::CheckedIn(_)
+        ) | (
+            SemanticMutation::CreateThread { .. },
+            CommandResult::ThreadCreated(_)
+        ) | (
+            SemanticMutation::Invite { .. },
+            // An invite for a seat that already joined is a settled no-op
+            // (ht-4is.3.12): no invitation episode, the intent completes.
+            CommandResult::Invitation(_) | CommandResult::AlreadyJoined(_)
+        ) | (SemanticMutation::Accept { .. }, CommandResult::Accepted(_))
+            | (
+                SemanticMutation::AcceptRequired { .. },
+                CommandResult::RequiredAccepted(_)
+            )
+            | (
+                SemanticMutation::SendMessage { .. },
+                CommandResult::MessageSent(_)
+            )
+            | (SemanticMutation::Ack { .. }, CommandResult::Acknowledged(_))
+            | (SemanticMutation::Leave { .. }, CommandResult::Left(_))
+            | (
+                SemanticMutation::SetTopic { .. },
+                CommandResult::TopicChanged(_)
+            )
+            | (SemanticMutation::Archive { .. }, CommandResult::Archived(_))
+            | (SemanticMutation::Reopen { .. }, CommandResult::Reopened(_))
+            | (
+                SemanticMutation::OperatorRebind { .. },
+                CommandResult::OperatorRebound(_)
+            )
+            | (
+                SemanticMutation::OperatorFreshSeat { .. },
+                CommandResult::OperatorFreshSeat(_)
+            )
+            | (
+                SemanticMutation::OperatorOrphanInvite { .. },
+                CommandResult::OperatorInvited(_)
+            )
+    )
+}

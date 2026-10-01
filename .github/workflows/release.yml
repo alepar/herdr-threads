@@ -1,0 +1,185 @@
+name: Release
+
+# On a v* tag: build prebuilt release archives for macOS (arm64, x86_64) and
+# Linux (x86_64, aarch64), write SHA256SUMS and attach them to a GitHub
+# release for that tag. scripts/install.sh installs these archives.
+#
+# Linux is built as static musl executables (x86_64/aarch64-unknown-linux-musl)
+# on native GitHub runners for each architecture: no cross toolchain, and the
+# binary runs on any distribution regardless of its glibc version. rusqlite
+# compiles its bundled SQLite with musl-gcc. Linux support is EXPERIMENTAL and
+# unvalidated: herdr-plugin.toml declares platforms = ["macos"] and the host
+# incarnation witness is macOS-only. Intel macOS is cross-compiled on the arm64
+# runner and only its architecture is checked.
+#
+# workflow_dispatch builds and uploads the archives as workflow artifacts
+# without creating a release.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.94.0
+
+jobs:
+  version:
+    name: Check tag matches package versions
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Compare versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          manifest_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' herdr-plugin.toml | head -n 1)
+          test "$cargo_version" = "$manifest_version" || {
+            echo "::error::Cargo.toml $cargo_version differs from herdr-plugin.toml $manifest_version"; exit 1; }
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            test "$GITHUB_REF_NAME" = "v$cargo_version" || {
+              echo "::error::tag $GITHUB_REF_NAME does not match package version v$cargo_version"; exit 1; }
+          fi
+          echo "version=$cargo_version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.os }}-${{ matrix.arch }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos, arch: aarch64, runner: macos-15, target: aarch64-apple-darwin, file: 'Mach-O 64-bit executable arm64', native: true }
+          - { os: macos, arch: x86_64, runner: macos-15, target: x86_64-apple-darwin, file: 'Mach-O 64-bit executable x86_64', native: false }
+          - { os: linux, arch: x86_64, runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, file: 'x86-64', native: true }
+          - { os: linux, arch: aarch64, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, file: 'ARM aarch64', native: true }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: musl toolchain
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools file
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "${{ matrix.target }}"
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+
+      - name: Locked release build
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.os }}" = linux ]; then
+            # The cc crate builds the bundled SQLite; point it at musl-gcc.
+            cc_var="CC_$(printf '%s' "$TARGET" | tr '-' '_')"
+            export "$cc_var=musl-gcc"
+          fi
+          cargo build --release --locked --target "$TARGET"
+
+      - name: Check the executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="target/${{ matrix.target }}/release/herdr-threads"
+          file "$binary"
+          file "$binary" | grep -F '${{ matrix.file }}'
+          if [ "${{ matrix.os }}" = linux ]; then
+            file "$binary" | grep -E 'statically linked|static-pie linked'
+          fi
+          if [ "${{ matrix.native }}" = true ]; then
+            test "$("$binary" --version)" = "herdr-threads ${{ needs.version.outputs.version }}"
+          fi
+
+      - name: Third-party licenses
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cargo-about --version 0.9.2 --locked --features cli
+          cargo about generate --locked about.hbs -o THIRD_PARTY_LICENSES.html
+          test -s THIRD_PARTY_LICENSES.html
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/package-release.sh \
+            --binary "target/${{ matrix.target }}/release/herdr-threads" \
+            --os "${{ matrix.os }}" --arch "${{ matrix.arch }}" \
+            --version "${{ needs.version.outputs.version }}" --out dist
+          tar -tzvf "dist/herdr-threads-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: herdr-threads-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/herdr-threads-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: [version, build]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: herdr-threads-*
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          archives=(herdr-threads-*.tar.gz)
+          printf '%s\n' "${archives[@]}"
+          test "${#archives[@]}" -eq 4
+          sha256sum herdr-threads-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          prerelease=()
+          case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
+          cat > notes.md <<EOF
+          Prebuilt herdr-threads $TAG for Herdr 0.9.1.
+
+          Install or upgrade:
+
+              curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/scripts/install.sh | bash
+
+          | Archive | Status |
+          | --- | --- |
+          | herdr-threads-macos-aarch64.tar.gz | supported (macOS arm64) |
+          | herdr-threads-macos-x86_64.tar.gz | built, not exercised (Intel macOS) |
+          | herdr-threads-linux-x86_64.tar.gz | experimental, unvalidated (static musl) |
+          | herdr-threads-linux-aarch64.tar.gz | experimental, unvalidated (static musl) |
+
+          Verify with SHA256SUMS. See the README for the support matrix.
+          EOF
+          gh release create "$TAG" --verify-tag --title "herdr-threads $TAG" \
+            --notes-file notes.md "${prerelease[@]}" \
+            dist/herdr-threads-*.tar.gz dist/SHA256SUMS

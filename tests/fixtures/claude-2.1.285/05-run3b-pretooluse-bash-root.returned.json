@@ -1,0 +1,26 @@
+{
+ "input": {
+  "cwd": "<scratch>/proj",
+  "hook_event_name": "PreToolUse",
+  "permission_mode": "default",
+  "prompt_id": "fa8446cd-81b9-4201-94c1-f9d274d3bf08",
+  "session_id": "d2bcd166-8f44-44d8-b3a0-106f78358560",
+  "tool_input": {
+   "command": "echo \"ctx=$HERDR_THREADS_CALLER_CONTEXT\"",
+   "description": "Check the HERDR_THREADS_CALLER_CONTEXT environment variable"
+  },
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_01EfGxVqsLkmctfig2yUpaXN",
+  "transcript_path": "~/.claude/projects/-scratch-claude285-capture-b85866ad-proj/d2bcd166-8f44-44d8-b3a0-106f78358560.jsonl"
+ },
+ "returned": {
+  "hookSpecificOutput": {
+   "additionalContext": "HT-PTU-MARKER-eb75e8",
+   "hookEventName": "PreToolUse",
+   "updatedInput": {
+    "command": "export HERDR_THREADS_CALLER_CONTEXT='ctx_probe-eb75e8';\necho \"ctx=$HERDR_THREADS_CALLER_CONTEXT\"",
+    "description": "Check the HERDR_THREADS_CALLER_CONTEXT environment variable"
+   }
+  }
+ }
+}

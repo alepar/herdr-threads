@@ -1,0 +1,20 @@
+# Design index
+
+Columns: date · title · relative link · one-line summary · status · tags.
+
+| Date | Title | Design | Summary | Status | Tags |
+|---|---|---|---|---|---|
+| 2026-09-27 | Herdr persistent threads | [Root design](../../design/herdr-threads/2026-09-27-herdr-threads-design.md) | Pane-bound seats, prelaunch handoffs, explicit receipts and compact native delivery. | draft | herdr-threads, root |
+| 2026-09-27 | Native caller attribution | [Design](../../design/herdr-threads/2026-09-27-herdr-threads--caller-attribution-design.md) | Prove top-level call attribution for Codex and Claude. | draft | herdr-threads, caller-attribution |
+| 2026-09-27 | Durable thread store | [Design](../../design/herdr-threads/2026-09-27-herdr-threads--store-design.md) | Atomic membership, messages, receipts, deadlines and bounded reads. | draft | herdr-threads, store |
+| 2026-09-27 | Seat identity | [Design](../../design/herdr-threads/2026-09-27-herdr-threads--seat-identity-design.md) | Native mapping, current occupants, retirement and explicit ambiguity repair. | draft | herdr-threads, identity |
+| 2026-09-27 | Deadline and wake scheduler | [Design](../../design/herdr-threads/2026-09-27-herdr-threads--scheduler-design.md) | Recoverable deadlines, bounded reminders and explicit-target native wake policy. | draft | herdr-threads, scheduler |
+| 2026-09-27 | Local daemon | [Design](../../design/herdr-threads/2026-09-27-herdr-threads--daemon-design.md) | Exclusive service ownership, bounded Unix IPC and safe restart/stop. | draft | herdr-threads, daemon |
+| 2026-09-27 | Agent and operator interface | [Design](../../design/herdr-threads/2026-09-27-herdr-threads--cli-design.md) | Compact commands, paginated discovery and durable client retry intent. | draft | herdr-threads, cli |
+| 2026-09-27 | Native harness integration | [Design](../../design/herdr-threads/2026-09-27-herdr-threads--harness-design.md) | Verified per-call hooks, compact recovery, owned setup and native launch. | draft | herdr-threads, harness |
+| 2026-09-27 | Native package | [Design](../../design/herdr-threads/2026-09-27-herdr-threads--package-design.md) | Manifest/build, native operator entrypoint, isolated install and release preparation. | draft | herdr-threads, package |
+| 2026-09-27 | Failure and native validation | [Design](../../design/herdr-threads/2026-09-27-herdr-threads--validation-design.md) | Crash matrix, four native launch configurations, host recovery and receipt evidence. | draft | herdr-threads, validation |
+| 2026-09-28 | Programmatic graph identity | [Design](../../design/graph-system-identity/design.md) | Connection-bound system author and explicitly accepted required memberships. | designed | herdr-threads, ht-4is, graph-system-identity |
+| 2026-09-28 | Graph system identity: connection | [Design](../../design/graph-system-identity/connection-design.md) | Scoped nested design under ht-4is. | designed | graph-system-identity, ht-4is |
+| 2026-09-28 | Graph system identity: store | [Design](../../design/graph-system-identity/store-design.md) | Scoped nested design under ht-4is. | designed | graph-system-identity, ht-4is |
+| 2026-09-28 | Graph system identity: client-integration | [Design](../../design/graph-system-identity/client-integration-design.md) | Scoped nested design under ht-4is. | designed | graph-system-identity, ht-4is |

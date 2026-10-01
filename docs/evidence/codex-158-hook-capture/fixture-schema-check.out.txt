@@ -1,0 +1,5 @@
+01-sessionstart-startup.json OK
+02-subagentstart.json OK
+03-pretooluse-bash-root.json OK
+04-pretooluse-bash-child.json OK
+05-sessionstart-fork.json OK

@@ -1,0 +1,11 @@
+{
+ "cwd": "/private/tmp/codex158/proj",
+ "model": "gpt-6-luna",
+ "permission_mode": "default",
+ "transcript_path": "/private/tmp/codex158/transcript.jsonl",
+ "session_id": "01a0ec6f-56ff-7142-8296-368c85520542",
+ "turn_id": "turn-root-1",
+ "hook_event_name": "SubagentStart",
+ "agent_id": "agent-child-1",
+ "agent_type": "default"
+}

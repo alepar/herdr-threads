@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(echo *)",
+      "Task",
+      "Agent",
+      "Bash(export HERDR_THREADS_CALLER_CONTEXT=*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<scratch>/hook_out.py SessionStart",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<scratch>/hook_out.py PreToolUse",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

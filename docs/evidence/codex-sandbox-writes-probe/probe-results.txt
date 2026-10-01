@@ -1,0 +1,181 @@
+# Codex codex-cli 0.159.3 workspace-write write probe (no model), 2026-10-01T09:20:28Z
+# codex binary: ~/.codex/packages/standalone/releases/0.159.3-aarch64-apple-darwin/bin/codex sha256 4d210f7c5a18fd0386434df23b5bdbb8c0e7257d3e8a2b30b0769c8bbe99a878
+# herdr-threads: b16ed4ff (working tree of lane/sandbox-writes)
+# state=$SCRATCH/home/.local/state/herdr/plugins/herdr-threads  instance=$INSTANCE  daemon socket=/private/tmp/herdr-threads-501/43b6364223ba54c9.sock
+# seats: A=seat-WlCJtgMq (w1:p1)  B=seat-Ol5E5C8M (w1:p2); ht-a / ht-b = herdr-threads --json --state-dir ... --cooperative-seat <A|B> ... --cooperative-harness codex --cooperative-role top-level
+# setup codex (CODEX_HOME=ch-setup): action=installed writable_roots_present=True
+# ch-setup/config.toml as written by setup:
+#   [sandbox_workspace_write]
+#   network_access = true
+#   writable_roots = ["$SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/intents", "$SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/contexts"]
+#   
+#   [features.network_proxy]
+#   enabled = true
+#   unix_sockets = { "/private/tmp/herdr-threads-501/43b6364223ba54c9.sock" = "allow" }
+
+## P0 unsandboxed preparation: A checks in, creates a thread, invites B, sends B a required-ACK message
+$ [unsandboxed] $SCRATCH/ht-a check-in --lifecycle-event probe-a0
+{"version":1,"result":{"kind":"checked_in","data":{"context_disposition":"current","context":{"instance":"34a4c1ff-e879-438a-b560-c35bc0f5df88","seat":"seat-WlCJtgMq","binding_generation":2,"role":"top_level","harness":"codex","native_session":"plugin_context:3a7cbe86-a174-4a5d-aa61-b3f17b53deb1","erc=0
+
+thread=thread-TKFTzey1
+$ [unsandboxed] $SCRATCH/ht-a invite thread-TKFTzey1 --seat seat-Ol5E5C8M
+{"version":1,"result":{"kind":"invitation","data":"inv-fCe9lu0s"}}
+rc=0
+
+$ [unsandboxed] $SCRATCH/ht-a send thread-TKFTzey1 --body unsandboxed handoff --require-ack seat-Ol5E5C8M
+{"version":1,"result":{"kind":"message_sent","data":"msg-GvoJOiws"}}
+rc=0
+
+## B before: workspace-write, socket allowance only (pre-fix setup)
+$ [CODEX_HOME=ch-socket] touch $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/intents/x
+touch: $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/intents/x: Operation not permitted
+rc=1
+
+$ [CODEX_HOME=ch-socket] $SCRATCH/ht-a send thread-TKFTzey1 --body sandboxed send, before
+herdr-threads: Operation not permitted (os error 1)
+rc=1
+
+$ [CODEX_HOME=ch-socket] $SCRATCH/ht-b check-in --lifecycle-event probe-b0
+herdr-threads: Operation not permitted (os error 1)
+rc=1
+
+$ [CODEX_HOME=ch-socket] $SCRATCH/ht-b accept thread-TKFTzey1
+herdr-threads: Operation not permitted (os error 1)
+rc=1
+
+$ [CODEX_HOME=ch-socket] $SCRATCH/ht-a daemon health
+herdr-threads: Operation not permitted (os error 1)
+rc=1
+
+## R reset: remove the client journal directories so the sandboxed CLI must create its roots
+daemon.log endpoint.json locator namespace owner.lock threads.sqlite3 threads.sqlite3-shm threads.sqlite3-wal 
+
+## A after: workspace-write, config.toml written by setup (socket allowance + writable roots)
+$ [CODEX_HOME=ch-setup] $SCRATCH/ht-a check-in --lifecycle-event probe-a1
+{"version":1,"result":{"kind":"checked_in","data":{"context_disposition":"current","context":{"instance":"34a4c1ff-e879-438a-b560-c35bc0f5df88","seat":"seat-WlCJtgMq","binding_generation":3,"role":"top_level","harness":"codex","native_session":"plugin_context:bf827b63-ff24-42b5-81b2-1ee27435ce56","execution":"bf827b63-ff24-42b5-81b2-1ee27435ce56","target":"w1:p1"},"seat":"seat-WlCJtgMq","offered_trc=0
+
+$ [CODEX_HOME=ch-setup] $SCRATCH/ht-a send thread-TKFTzey1 --body sandboxed send, after --require-ack seat-Ol5E5C8M
+{"version":1,"result":{"kind":"message_sent","data":"msg-4SEB3rD6"}}
+rc=0
+
+message for ack: msg-jeBhODf9
+
+$ [CODEX_HOME=ch-setup] $SCRATCH/ht-b check-in --lifecycle-event probe-b1
+{"version":1,"result":{"kind":"checked_in","data":{"context_disposition":"current","context":{"instance":"34a4c1ff-e879-438a-b560-c35bc0f5df88","seat":"seat-Ol5E5C8M","binding_generation":2,"role":"top_level","harness":"codex","native_session":"plugin_context:2f3beee1-48a1-4dd5-8de6-1f07c7566ce2","execution":"2f3beee1-48a1-4dd5-8de6-1f07c7566ce2","target":"w1:p2"},"seat":"seat-Ol5E5C8M","offered_trc=0
+
+$ [CODEX_HOME=ch-setup] $SCRATCH/ht-b ack msg-jeBhODf9
+{"version":1,"result":{"kind":"acknowledged","data":{"acknowledged":["msg-jeBhODf9"],"already_acknowledged":[]}}}
+rc=0
+
+$ [CODEX_HOME=ch-setup] $SCRATCH/ht-b accept thread-TKFTzey1
+{"version":1,"result":{"kind":"accepted","data":"inv-fCe9lu0s"}}
+rc=0
+
+# control: inviting an already joined seat fails the same way outside the sandbox (not a sandbox effect)
+$ [unsandboxed] $SCRATCH/ht-a invite thread-TKFTzey1 --seat seat-Ol5E5C8M
+herdr-threads: unexpected mutation result
+rc=1
+
+$ [CODEX_HOME=ch-setup] $SCRATCH/ht-b send thread-TKFTzey1 --body sandboxed reply from B
+{"version":1,"result":{"kind":"message_sent","data":"msg-7pJ7ZytF"}}
+rc=0
+
+$ [CODEX_HOME=ch-setup] $SCRATCH/ht-b check-in
+{"version":1,"result":{"kind":"checked_in","data":{"context_disposition":"current","context":{"instance":"34a4c1ff-e879-438a-b560-c35bc0f5df88","seat":"seat-Ol5E5C8M","binding_generation":2,"role":"top_level","harness":"codex","native_session":"plugin_context:2f3beee1-48a1-4dd5-8de6-1f07c7566ce2","execution":"2f3beee1-48a1-4dd5-8de6-1f07c7566ce2","target":"w1:p2"},"seat":"seat-Ol5E5C8M","offered_trc=0
+
+$ [CODEX_HOME=ch-setup] $SCRATCH/ht-b leave thread-TKFTzey1
+{"version":1,"result":{"kind":"left","data":"thread-TKFTzey1"}}
+rc=0
+
+$ [CODEX_HOME=ch-setup] $SCRATCH/ht-a invite thread-TKFTzey1 --seat seat-Ol5E5C8M
+{"version":1,"result":{"kind":"invitation","data":"inv-msjn3CwN"}}
+rc=0
+
+# client journals now: contexts contexts/2e5e3a576888850ed8e4287f8d01132fd1bf402c53e27fc0c27d09e14be07dee contexts/ae51e4199272c2301320f91df6dccdb536303510b89ecef69a3a4bf9af1f1591 intents intents/00000000000000000007-19b3b69c-c48c-43fe-8eea-8cb43a46c381.intent intents/allocator.lock intents/journal-format intents/next-ordinal 
+
+## N after, negatives in the same sandbox: everything outside the two roots stays read-only
+$ [CODEX_HOME=ch-setup] touch $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/x
+touch: $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/x: Operation not permitted
+rc=1
+
+$ [CODEX_HOME=ch-setup] touch $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/threads.sqlite3
+touch: $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/threads.sqlite3: Operation not permitted
+rc=1
+
+$ [CODEX_HOME=ch-setup] python3 $HERE/try-write.py open-rw $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/threads.sqlite3
+DENIED (open-rw): PermissionError: [Errno 1] Operation not permitted: '$SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/threads.sqlite3'
+rc=1
+
+$ [CODEX_HOME=ch-setup] python3 $HERE/try-write.py sqlite $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/threads.sqlite3
+DENIED (sqlite): OperationalError: attempt to write a readonly database
+rc=1
+
+$ [CODEX_HOME=ch-setup] python3 $HERE/try-write.py append $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/threads.sqlite3-wal
+DENIED (append): PermissionError: [Errno 1] Operation not permitted: '$SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/threads.sqlite3-wal'
+rc=1
+
+$ [CODEX_HOME=ch-setup] python3 $HERE/try-write.py append $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/threads.sqlite3-shm
+DENIED (append): PermissionError: [Errno 1] Operation not permitted: '$SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/threads.sqlite3-shm'
+rc=1
+
+$ [CODEX_HOME=ch-setup] python3 $HERE/try-write.py open-rw $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/endpoint.json
+DENIED (open-rw): PermissionError: [Errno 1] Operation not permitted: '$SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/endpoint.json'
+rc=1
+
+$ [CODEX_HOME=ch-setup] python3 $HERE/try-write.py open-rw $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/owner.lock
+DENIED (open-rw): PermissionError: [Errno 1] Operation not permitted: '$SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/owner.lock'
+rc=1
+
+$ [CODEX_HOME=ch-setup] python3 $HERE/try-write.py append $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/daemon.log
+DENIED (append): PermissionError: [Errno 1] Operation not permitted: '$SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/daemon.log'
+rc=1
+
+$ [CODEX_HOME=ch-setup] touch $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/../x
+touch: $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/../x: Operation not permitted
+rc=1
+
+$ [CODEX_HOME=ch-setup] touch $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/x
+touch: $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/x: Operation not permitted
+rc=1
+
+$ [CODEX_HOME=ch-setup] touch $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/setup/x
+touch: $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/setup/x: Operation not permitted
+rc=1
+
+$ [CODEX_HOME=ch-setup] mkdir $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/client2
+mkdir: $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/client2: Operation not permitted
+rc=1
+
+$ [CODEX_HOME=ch-setup] ln -s $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/threads.sqlite3 $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/contexts/esc
+
+rc=0
+
+$ [CODEX_HOME=ch-setup] python3 $HERE/try-write.py open-rw $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/contexts/esc
+DENIED (open-rw): PermissionError: [Errno 1] Operation not permitted: '$SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/contexts/esc'
+rc=1
+
+$ [CODEX_HOME=ch-setup] mv $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/intents/journal-format $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/moved-out
+mv: rename $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/intents/journal-format to $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/moved-out: Operation not permitterc=1
+
+$ [CODEX_HOME=ch-setup] touch $SCRATCH/x
+touch: $SCRATCH/x: Operation not permitted
+rc=1
+
+$ [CODEX_HOME=ch-setup] touch $SCRATCH/home/x
+touch: $SCRATCH/home/x: Operation not permitted
+rc=1
+
+$ [CODEX_HOME=ch-setup] touch $SCRATCH/ch-setup/config.toml
+touch: $SCRATCH/ch-setup/config.toml: Operation not permitted
+rc=1
+
+## N2 positive controls for the roots themselves
+$ [CODEX_HOME=ch-setup] touch $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/intents/probe-ok $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/contexts/probe-ok
+
+rc=0
+
+$ [CODEX_HOME=ch-setup] python3 $HERE/try-write.py append $SCRATCH/home/.local/state/herdr/plugins/herdr-threads/instances/$INSTANCE/intents/probe-ok
+WRITABLE (append)
+rc=0
+
+# DB has probe_x table: False
