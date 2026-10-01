@@ -14,3 +14,9 @@ R13 The `codex resume` launch form is refused until captured (Accepted limits)
 R14 A test pins stage_recipient staging unavailable when the effective observation generation differs (W5-2)
 R15 The self-marker hint says "when run in this pane"; ids.rs comment says 112 bits; prep-id reuse bound is commented
 R16 Operator and agent docs (docs/operations.md, docs/agent-usage.md, README) describe the new commands and behaviours
+R17 TRUST-POLICY.md marks shipped guards implemented (no "not yet implemented"/"today" wording for them)
+R18 The hold-lift predicate runs in every last-unresolved-seat transaction of decision 1 (rebind, fresh seat, retire, replace, cooperative continuity, reconciliation retirement)
+R19 An end-to-end F6 restore scenario is tested (incarnation change → holds → reattach → collision resolution → hold lift → ordinary allocation)
+R20 Native evidence that Claude and Codex resume keep the session id is captured, or the harness is excluded from C1
+R21 Operator decisions (retire, replace, override) are audited operator:local-user:<uid> and never appear on receipts
+R22 The CLI client fills expected_boot on every request

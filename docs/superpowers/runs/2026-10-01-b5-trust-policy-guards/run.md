@@ -16,3 +16,4 @@ escalationPolicy: ask the user only on contention about the ht-rzi.2 decision; e
 
 approvals:
 - top-split · auto · ht-rzi.1 LEAF, ht-rzi.2 LEAF, ht-rzi.3 LEAF, ht-rzi.4 LEAF, ht-rzi.5 LEAF, ht-rzi.6 LEAF (pre-filed decomposition adopted per user; promotion review skipped by instruction)
+- coverage-round-1 · canonical R-list: R1-R16 (coverage-round-1-requirements.md; R17-R22 appended from r-new) · requirements: 16 · mapped: 16 · unmapped: 0 · auto 14 applied (C1-C14 in coverage-ledger.md): edge ht-rzi.2<-ht-rzi.1; amended .1 .2 .3 .4 .5; new leaf ht-rzi.7 docs; integration sweep ht-rzi.8
