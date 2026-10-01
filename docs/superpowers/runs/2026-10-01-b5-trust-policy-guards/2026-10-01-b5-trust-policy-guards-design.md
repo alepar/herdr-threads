@@ -36,6 +36,12 @@ Non-goals:
    reconciliation calls it: rebind, fresh seat, retire, replace, cooperative continuity, reconciliation
    retirement, structural reconfirm (Reconfirm/ReconfirmStructure), each applied reconciliation page; and once
    at daemon start for stores already stuck. The list is illustrative, the rule is normative.
+   "Reconciliation finished" is a persisted fact, not worker memory: the B5 migration adds
+   `host_instances.reconciled_boot` / `reconciled_epoch`, written in the transaction that applies the last
+   page of a full pass for the current recovery boot/epoch with no refused (Stale) transition; the predicate
+   requires them to equal `recovery_boot` / `recovery_epoch`. A pass with refusals leaves the marker behind and
+   the next pass retries. At daemon start the helper lifts only when the marker already matches; otherwise
+   the first completed pass calls it.
 2. **Collisions (C3).** `seat retire SEAT --operator` reuses the bounded retirement cutover
    (`begin_retirement`); it is an operator action audited `operator:local-user:<uid>`. `seat rebind OLD
    --pane P --replace NEW --operator` performs NEW's retirement cutover and OLD's rebind in one deciding
@@ -47,18 +53,23 @@ Non-goals:
    and human-occupant values never match; any other source (startup/clear/new/compact) never reattaches and
    falls through to the existing hold/ordinary path. On a match the deciding transaction rebinds the seat,
    records `cooperative_continuity` in seat history (the binding itself stays `cooperative_top_level`), and
-   calls `lift_baseline_hold_if_clear`. A migration is needed only if `allocation_decisions`' kind CHECK must
-   widen for `cooperative_continuity`; then it is the single B5 migration (B4 numbering risk noted at merge).
+   calls `lift_baseline_hold_if_clear`.
+   **The single B5 migration** (owned by `ht-rzi.1`, consumed by `ht-rzi.2`; B4 numbering risk noted at merge)
+   rebuilds the STRICT `allocation_decisions` table to admit kind `cooperative_continuity` and add a nullable
+   `continuity_diagnostic` column, and adds the reconciliation marker columns of decision 1.
    **Herdr's per-pane agent observation is diagnostic only** (C1: Herdr's agent field may only suggest): the
-   daemon records the `agent get` agent_session comparison (match, mismatch, absent, read error) with the
-   decision and shows it in `seat inspect`; it never refuses or permits reattachment.
+   daemon records the `agent get` agent_session comparison (match, mismatch, absent, read error) in the
+   decision's `allocation_decisions.continuity_diagnostic` and shows it in `seat inspect`; it never refuses or permits reattachment.
    **Seatless check-in (client and wire).** Today the hook stops before contacting the daemon when the pane has
    no resolved seat (`src/cli/hook.rs` `find_seat` → held/unresolved Err, unowned → Quiet) and
    `CallerClaim` requires a seat and binding generation (`src/harness/bridge.rs`). `ht-rzi.2` adds a
    resume-only continuity check-in request that carries pane target, harness, session id and source but no
    seat; it is journaled under an instance-scoped intent; the daemon's response returns the chosen seat and
    binding generation, which the hook writes into the pane's client context exactly as an ordinary lifecycle
-   check-in does. A refusal leaves today's diagnostics unchanged.
+   check-in does. A refusal leaves today's diagnostics unchanged. Lost reply: before `find_seat`, every hook
+   event checks the instance-scoped continuity intent journal and replays a pending intent under the same
+   operation key; the daemon's idempotent replay returns the recorded seat and generation, so a reply lost
+   after the daemon committed is recovered on the next event.
    **Evidence capture.** `ht-rzi.2` logs SessionStart stdin and `agent get` from inside the hook for resume,
    /new and /clear on both harnesses and counts events per resume (Claude Code #24265 reported a
    startup(new id) + resume(original id) pair). A resume-only gate makes the startup-first order safe; if the

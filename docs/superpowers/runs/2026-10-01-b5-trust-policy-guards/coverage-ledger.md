@@ -28,3 +28,7 @@ C25 · r2 · GAP · ht-rzi.1 restore/daemon-start lift · applied — predicate 
 C26 · r2 · UNOWNED-SEAM · codex resume capture vs launch refusal · applied — .2 owns: manual 'codex resume' path, launch refusal stays; .7 documents
 C27 · r2 · UNSATISFIABLE-ACCEPTANCE · ht-rzi.5 session column · applied — criterion restated; session column checked in sweep
 C28 · r2 · GAP · R19 sweep scenarios · applied — .8 extended
+G1 · graph · GRAPH-EDGE · ht-rzi.7 <- ht-rzi.4 · kept — removal leaves depth 4
+G2 · graph · GRAPH-EDGE · ht-rzi.7 <- ht-rzi.2 · kept — removal leaves depth 4
+G3 · graph · GRAPH-EDGE · ht-rzi.7 <- ht-rzi.3 · kept — removal leaves depth 4
+G4 · graph · GRAPH-EDGE · ht-rzi.2 <- ht-rzi.1 · kept — real artifact (hold-lift helper, B5 migration); removal leaves depth 4

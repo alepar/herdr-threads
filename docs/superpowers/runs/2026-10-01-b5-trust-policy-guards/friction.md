@@ -1,0 +1,3 @@
+- 2026-10-01 · super-design · design-roast fix tasks: findings were pure design-text edits (spec + bead descriptions); applied inline rather than filing one fix bead per finding as §Adversarial Review Loop step 1 prescribes — the beads would be created and closed in the same minute with no implementation.
+- 2026-10-01 · super-design · parallelism pass: graph-shape printed 4 candidates all "depth 4→4"; the judge dispatch was skipped since no single removal can shorten the critical path.
+- 2026-10-01 · super-auto · user asked to be consulted only on ht-rzi.2 contention; a session Stop hook (goal) then forbade pausing, so the contention was resolved by applying the recommended option and parking it.
