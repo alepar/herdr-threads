@@ -48,6 +48,56 @@ pub(crate) fn agent_pane(id: &str, terminal: &str, kind: &str, session: Option<&
     pane
 }
 
+/// The stand-in Herdr's answer to one request against the scripted `panes`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn host_reply(panes: &[Value], request: &Value) -> Value {
+    let id = request["id"].clone();
+    match request["method"].as_str().unwrap_or_default() {
+        "ping" => {
+            json!({"id":id,"result":{"type":"pong","version":"0.9.1","protocol":22}})
+        }
+        "session.snapshot" => json!({"id":id,"result":{"type":"session_snapshot",
+                "snapshot":{"version":"0.9.1","protocol":22,"panes":panes,
+                            "agents":[],"tabs":[],"workspaces":[],"layouts":[]}}}),
+        "pane.get" => match panes
+            .iter()
+            .find(|pane| pane["pane_id"] == request["params"]["pane_id"])
+        {
+            Some(pane) => json!({"id":id,"result":{"type":"pane_info","pane":pane}}),
+            None => {
+                json!({"id":id,"error":{"code":"pane_not_found","message":"pane not found"}})
+            }
+        },
+        "agent.get" => {
+            let pane = panes
+                .iter()
+                .find(|pane| pane["pane_id"] == request["params"]["target"]);
+            match pane {
+                Some(pane) if pane.get("agent_get_error").is_some() => {
+                    json!({"id":id,"error":{"code":pane["agent_get_error"],
+                            "message":"scripted read error"}})
+                }
+                Some(pane) if pane["agent"].is_string() => {
+                    let mut agent = json!({"agent":pane["agent"],
+                            "agent_status":pane["agent_status"],
+                            "pane_id":pane["pane_id"],
+                            "terminal_id":pane["terminal_id"]});
+                    if let Some(session) = pane.get("agent_session") {
+                        agent["agent_session"] = session.clone();
+                    }
+                    json!({"id":id,"result":{"type":"agent_info","agent":agent}})
+                }
+                _ => {
+                    json!({"id":id,"error":{"code":"agent_not_found","message":"no agent in pane"}})
+                }
+            }
+        }
+        _ => {
+            json!({"id":id,"error":{"code":"agent_not_found","message":"no agent in pane"}})
+        }
+    }
+}
+
 /// The private Herdr endpoint. One request per accepted connection.
 pub(crate) struct FakeHost {
     stop: Arc<AtomicBool>,
@@ -81,51 +131,7 @@ impl FakeHost {
                 let Ok(request) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
-                let id = request["id"].clone();
-                let reply = match request["method"].as_str().unwrap_or_default() {
-                    "ping" => {
-                        json!({"id":id,"result":{"type":"pong","version":"0.9.1","protocol":22}})
-                    }
-                    "session.snapshot" => json!({"id":id,"result":{"type":"session_snapshot",
-                        "snapshot":{"version":"0.9.1","protocol":22,"panes":panes,
-                                    "agents":[],"tabs":[],"workspaces":[],"layouts":[]}}}),
-                    "pane.get" => match panes
-                        .iter()
-                        .find(|pane| pane["pane_id"] == request["params"]["pane_id"])
-                    {
-                        Some(pane) => json!({"id":id,"result":{"type":"pane_info","pane":pane}}),
-                        None => {
-                            json!({"id":id,"error":{"code":"pane_not_found","message":"pane not found"}})
-                        }
-                    },
-                    "agent.get" => {
-                        let pane = panes
-                            .iter()
-                            .find(|pane| pane["pane_id"] == request["params"]["target"]);
-                        match pane {
-                            Some(pane) if pane.get("agent_get_error").is_some() => {
-                                json!({"id":id,"error":{"code":pane["agent_get_error"],
-                                    "message":"scripted read error"}})
-                            }
-                            Some(pane) if pane["agent"].is_string() => {
-                                let mut agent = json!({"agent":pane["agent"],
-                                    "agent_status":pane["agent_status"],
-                                    "pane_id":pane["pane_id"],
-                                    "terminal_id":pane["terminal_id"]});
-                                if let Some(session) = pane.get("agent_session") {
-                                    agent["agent_session"] = session.clone();
-                                }
-                                json!({"id":id,"result":{"type":"agent_info","agent":agent}})
-                            }
-                            _ => {
-                                json!({"id":id,"error":{"code":"agent_not_found","message":"no agent in pane"}})
-                            }
-                        }
-                    }
-                    _ => {
-                        json!({"id":id,"error":{"code":"agent_not_found","message":"no agent in pane"}})
-                    }
-                };
+                let reply = host_reply(&panes, &request);
                 let _ = writeln!(stream, "{reply}");
             }
         });

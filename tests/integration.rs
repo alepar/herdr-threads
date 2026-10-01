@@ -19,3 +19,7 @@ mod sweep;
 /// per message, no page blobs), measured through the installed executable.
 #[path = "integration/token_diet.rs"]
 mod token_diet;
+/// ht-rzi.8: B5 trust-policy guards end to end, with a stand-in Herdr that
+/// restarts as its own process (a new incarnation).
+#[path = "integration/trust_policy.rs"]
+mod trust_policy;
