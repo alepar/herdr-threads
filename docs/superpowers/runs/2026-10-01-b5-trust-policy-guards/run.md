@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-01-b5-trust-policy-guards
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: code
+phase: roast-code
 
 idea: Implement epic ht-rzi (B5 cooperative trust policy guards) per TRUST-POLICY.md and beads ht-rzi.1-.6; design already exists (TRUST-POLICY.md + filed beads), start from the design's coverage checks; autonomous from there; raise questions only on contention about the ht-rzi.2 decision (Herdr agent_session report is a hint for reattachment); both roasts on; merge back into main at the end.
 branch: trust-model-invariants
@@ -32,3 +32,14 @@ stepBack-round-1: redesign — applied: Herdr agent_session hint as C1 veto → 
 - roast-design-1 fixes · auto · spec decisions 1 and 3 amended; ht-rzi.1, ht-rzi.2, ht-rzi.9 rewritten, ht-rzi.7 patched (native_session reuse, seatless check-in defined in .2, migration only if CHECK widening needed); fixes applied inline as design edits rather than separate fix beads
 - roast-design loop exit · converged at round 2 (Should-fix 3 confirmed [converged], 0 Blocking) · punch list applied inline: persisted reconciliation marker + single B5 migration moved to ht-rzi.1 (CHECK widening, continuity_diagnostic, marker columns); continuity intent replay on lost reply in ht-rzi.2
 graph-pass: depth 4→4 · width 2.2→2.2 · applied 0 · parked 0 (4 candidates, none shortens depth alone; judge not dispatched)
+
+codeBuckets:
+  completed: ht-rzi.6, ht-rzi.9, ht-rzi.4, ht-rzi.5, ht-rzi.1, ht-rzi.2, ht-rzi.3, ht-rzi.7, ht-rzi.8
+  escalated:
+  pendingRetry:
+  parked:
+  stalled: false
+  review: NOT READY (final review: daemon-restart carry-forward gap; resume into a different pane sticks; single-attempt resume; launch guard history paging; ids.rs comment) — see ledger .superpowers/sdd/ht-rzi-plan/progress.md
+  sweep: SWEEP DEFERRED (caller-owned)
+  stopReason: ready-drained (two launches: wf_5854046f-9a4 escalated ht-rzi.3 on a missing edge; relaunch wf_c60e7f25-648 drained the rest)
+roastCodeRound: 1
