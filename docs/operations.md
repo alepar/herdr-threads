@@ -146,7 +146,7 @@ The hook's tool-boundary check-in is non-durable: it writes nothing to the local
 
 ## A person's own pane (`me init`)
 
-`herdr-threads me init`, run in a shell pane, makes that pane's seat the person's identity: harness `human`, provenance `operator_human` on the binding, its availability and every accountable decision (send, invite, accept, ACK). It is the person's ordinary seat, not operator repair, and has none of the operator forms' powers. Inspect it with `seat inspect SEAT`; in SQLite the current `occupant_bindings` row has `harness='human'`. A person's seat is never sent a wake prompt; required receipts addressed to it wait for a manual `ack` and go overdue like any other. After a daemon restart, re-run `me init` in the pane to mark it available again. If `me init` reports that the seat belongs to an agent, either use your own pane or give this pane a fresh seat with `seat resolve --pane PANE --new-seat --operator`.
+`herdr-threads me init`, run in a shell pane, makes that pane's seat the person's identity: harness `human`, provenance `operator_human` on the binding, its availability and every accountable decision (send, invite, accept, ACK). It is the person's ordinary seat, not operator repair, and has none of the operator forms' powers. Inspect it with `seat inspect SEAT`; in SQLite the current `occupant_bindings` row has `harness='human'`. A person's seat is never sent a wake prompt (a wake goes only to an agent of the seat's bound harness, so a `human` binding has none); required receipts addressed to it wait for a manual `ack` and go overdue like any other. After a daemon restart, re-run `me init` in the pane to mark it available again. If `me init` is refused (agent environment markers `CLAUDECODE` or `CODEX_*`, a Herdr-reported agent in the pane, or a seat bound to an agent), use your own shell pane, give this pane a fresh seat with `seat resolve --pane PANE --new-seat --operator`, or override as the local account with `me init --operator`.
 
 `--pane` accepts a Herdr pane ID or a unique pane/tab label; `herdr pane current` inside a pane prints its ID when a name is ambiguous or unknown.
 
@@ -167,7 +167,38 @@ herdr-threads invite THREAD --seat SEAT --operator
 - Plain `seat resolve --pane PANE_ADDRESS` (no `--operator`) allocates an unclaimed empty pane, for example before launching its recipient.
 - The hook never allocates a seat. At SessionStart in a pane whose seat is unresolved it prints `herdr-threads: check-in unavailable (pane seat mapping is Unresolved) …` and the diagnose argv; on tool calls it prints nothing.
 
-Restore holds follow the [trust policy](../TRUST-POLICY.md) (F6, resolved 2026-10-01). Planned: holds lift once no unresolved seat remains, a resumed agent session reattaches its own seat, and a rebind refused by an occupied pane offers `seat retire` or `seat rebind --replace`.
+## Restore holds and repair
+
+Restore holds follow the [trust policy](../TRUST-POLICY.md) (C1 to C3, F6 resolved 2026-10-01). After a Herdr restart the daemon holds every unowned target in the restored baseline, and ordinary resolution (`seat resolve`, `launch`, `me init`) refuses it with inspect, rebind and fresh-seat guidance.
+
+**When a hold lifts.**
+
+- Per target: an operator `seat rebind` or `seat resolve --new-seat` on that target, or cooperative continuity on it (below).
+- Instance-wide: automatically once no unresolved nonretired seat remains and the restored baseline is reconciled. Nothing is left to protect, so panes created before the restart but never claimed become ordinary again. No command is needed.
+
+**Retire a seat.** `herdr-threads seat retire SEAT --operator` abandons the seat. It retires and its pending obligations settle as recipient-retired. Seats are never merged.
+
+**Rebind over a collision.** `seat rebind OLD --pane PANE --operator` refuses with `target_already_owned` when PANE is owned by another live seat NEW. The refusal names exactly two resolutions as ready argv:
+
+```text
+herdr-threads seat retire OLD --operator
+herdr-threads seat rebind OLD --pane PANE --replace NEW --operator
+```
+
+The first abandons the old seat. The second abandons the new role: it retires NEW and rebinds OLD to PANE in one decision, so nobody can claim the target in between. NEW's pending obligations settle as recipient-retired; nothing moves from NEW to OLD.
+
+**Cooperative continuity.** A resumed top-level agent session (SessionStart source `resume`) whose harness session id uniquely matches an unresolved seat's last binding reattaches that seat by itself, with no operator step. It never applies to `startup`, `/clear` or `/new`, which carry a new id, and it never merges seats. Claude does this with `claude --resume`. Codex does it when you run `codex resume` by hand in the pane. Managed `launch` of the Codex `resume` form stays refused (no captured hook evidence), so reattachment is by running it yourself in the pane. If the id matches no unresolved seat, or matches more than one, nothing happens and the seat waits for an operator choice. Evidence: [cooperative continuity](compatibility/cooperative-continuity-resume.md).
+
+**Reading the repair history.** `seat inspect SEAT` shows how the seat's latest repair was decided:
+
+| Row kind | Meaning |
+|---|---|
+| `operator_rebind` | `seat rebind` (including `--replace`), decided as `operator:local-user:<uid>` |
+| `operator_retire` | `seat retire`, or the retire half of `--replace` |
+| `cooperative_continuity` | reattached by a resumed session. The row carries a Herdr `agent_session` diagnostic: `match`, `mismatch`, `absent` or `read_error`. It is a diagnostic only and never decides anything |
+| `operator_human_override` | a person's `me init --operator` replaced an agent binding |
+
+**Daemon restart.** A request carries the daemon boot the client addressed. If the daemon restarted in between, it refuses before dispatch with `daemon_boot_changed` (`DaemonBootChanged`, exit 3, transient) and nothing was applied. Retry the command; the client addresses the daemon's current boot on the next attempt. A joined seat whose pane mapping is structurally reconfirmed after the restart stays available: its open binding carries forward to the new host epoch with no new check-in. Availability still ends when the mapping becomes unresolved, the seat retires, or a check-in replaces the binding.
 
 ## Native replacement race
 

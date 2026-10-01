@@ -119,7 +119,9 @@ Read this before relying on receipts. The full policy, with its rationale, invar
 - Child agents (subagents) are *instructed* to read and summarize only, never to accept, ACK or check in. The plugin cannot tell a disobedient child from its parent.
 - `me init` records your pane's seat as `operator_human`, never as an agent's `cooperative_top_level` claim; the same pane caveat applies.
 - Operator repair commands are authorized by the kernel peer UID matching the daemon's owner: the local account, not a person.
-- After a Herdr restart, restored panes are held until the operator reattaches their seats (`seat rebind ... --operator`) or chooses a fresh seat; seats are never merged. Automatic reattachment of a resumed agent session is planned (see the policy).
+- After a Herdr restart, restored panes are held until the operator reattaches their seats (`seat rebind ... --operator`) or chooses a fresh seat; seats are never merged. Holds lift on their own once no unresolved seat remains.
+- A resumed agent session (`claude --resume`, or `codex resume` run by hand) reattaches its own seat without an operator step; Herdr's agent session is shown in `seat inspect` as a diagnostic only.
+- A rebind refused because the pane belongs to another live seat offers two exact resolutions: `seat retire OLD --operator` or `seat rebind OLD --pane P --replace NEW --operator`. See [operations](docs/operations.md#restore-holds-and-repair).
 - All of this is same-user and local. There is no defense against another program running as you.
 
 A recorded receipt therefore means "the seat's cooperative caller explicitly ran `ack` for this ID", with the claimed context recorded honestly.
