@@ -167,7 +167,7 @@ herdr-threads invite THREAD --seat SEAT --operator
 - Plain `seat resolve --pane PANE_ADDRESS` (no `--operator`) allocates an unclaimed empty pane, for example before launching its recipient.
 - The hook never allocates a seat. At SessionStart in a pane whose seat is unresolved it prints `herdr-threads: check-in unavailable (pane seat mapping is Unresolved) …` and the diagnose argv; on tool calls it prints nothing.
 
-The restore-allocation dispute recorded as design escalation F6 remains open; this document does not declare it resolved.
+Restore holds follow the [trust policy](../TRUST-POLICY.md) (F6, resolved 2026-10-01). Planned: holds lift once no unresolved seat remains, a resumed agent session reattaches its own seat, and a rebind refused by an occupied pane offers `seat retire` or `seat rebind --replace`.
 
 ## Native replacement race
 

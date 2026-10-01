@@ -13,7 +13,7 @@ Parent: [root design](2026-09-27-herdr-threads-design.md). Bead: ht-4is.4. Earli
 
 ## Adopted shared-contract detail
 
-The [adopted shared-contract amendment, revision 4](shared-contract-amendment-adopted.md) is normative for the exact types, schema, algorithms and ownership described below. Its adoption is a design decision, not implemented or native-tested evidence. Existing acceptance remains required. Logical publication is authoritative; bounded physical projection cannot hide committed receipt/warning obligations. Preserve F6's unresolved dissent and the BOTH-harness gate `ht-910`; shared types, fake ports and store tests cannot satisfy that gate. Formal design review counters and original task review histories are unchanged by these edits.
+The [adopted shared-contract amendment, revision 4](shared-contract-amendment-adopted.md) is normative for the exact types, schema, algorithms and ownership described below. Its adoption is a design decision, not implemented or native-tested evidence. Existing acceptance remains required. Logical publication is authoritative; bounded physical projection cannot hide committed receipt/warning obligations. F6 is resolved by the [trust policy](../../../TRUST-POLICY.md) (2026-10-01), which is normative for continuity and attribution; preserve the BOTH-harness gate `ht-910`; shared types, fake ports and store tests cannot satisfy that gate. Formal design review counters and original task review histories are unchanged by these edits.
 
 ## Identity layers and allocation
 
@@ -99,23 +99,26 @@ After failed startup check-in, recovered service observes the idle native target
 
 Explicit operator mode means the owning local OS user, not proof of a human. For each such request, the daemon compares kernel-supplied connected-peer effective UID with daemon/state owner effective UID and constructs `OperatorActor { instance, effective_uid }`. Missing/mismatched credentials reject. Wire usernames, actor objects, environment, pane names and PID cannot establish it. An agent/child/tool running as that user may deliberately use operator mode; audit is `operator:local-user:<uid>`, never native agent provenance. Mode is per request and never automatically inherited from socket access.
 
-There are exactly three typed administrative domain actions:
+There are exactly five typed administrative domain actions (the last two added by the [trust policy](../../../TRUST-POLICY.md) C3, not yet implemented):
 
 - `seat rebind SEAT --pane ADDRESS --operator`: unresolved nonretired seat to an unowned freshly observed target, recording the operator's continuity assertion, old/new mappings and decision time. Fresh target/epoch/generation/hold guards apply at the decision. Refuse live-seat collision and retired-seat revival; invalidate prior invocation contexts and require new validated top-level check-in.
 - `seat resolve --pane ADDRESS --new-seat --operator`: explicit fresh-role choice for an unowned held target despite uncertainty. Record the choice without changing old unresolved seats/history. Refuse an already-owned target.
 - `invite THREAD --seat SEAT --operator [--deadline SECONDS]`: the store permits an ordinary invitation only if its deciding transaction finds zero joined seats. Unavailable/unresolved joined seats still count. Existing pending invite reuses its episode/deadline. This restores the usual explicit target acceptance path; it does not join, reopen, rewrite recipients or settle old receipts.
 
+- `seat retire SEAT --operator`: abandon a seat explicitly (trust policy C3). Uses the ordinary bounded retirement cutover; obligations settle as recipient-retired.
+- `seat rebind OLD --pane ADDRESS --replace NEW --operator`: abandon the new role NEW that occupies ADDRESS and rebind OLD onto it in one decision. NEW retires; nothing moves from NEW to OLD.
+
 No operator ACK, accept, send, joined-seat control or checkpoint advancement exists. Missing explicit administrative mode on repair/fresh-role override returns `operator_required`. Ordinary joined-seat invitations continue to require native authority. Target rebind/fresh allocation uses the fresh observation lane and internal decision guards without requiring a native recipient (the target may be empty). Service-side allocation/repair permits are distinct from native MutationPermit and cannot authorize receipt/content actions. Corrected P11 pairs the operator command instance/target with its non-wire fresh guard and consumes against matching instance/target, boot/epoch/generation, invalidation, expiry and single-use fences; durable ownership/recovery-hold checks remain in the deciding transaction. Preserve stable operation keys and original operator provenance after response-loss replay.
 
-## Restore holds — F6 clarification pending fresh review
+## Restore holds (F6 resolved 2026-10-01)
 
-F6 remains the unresolved roast-1 escalation with its original dissent. These explicit rules are the new within-scope clarification for fresh review, not a declaration that the old panel is resolved.
+F6, the roast-1 escalation on restored-pane creation versus repair reservation, is resolved by the [trust policy](../../../TRUST-POLICY.md) (C1-C3): the restore holds below are adopted, with three additions. The instance-wide baseline hold lifts once no unresolved nonretired seats remain. A top-level check-in whose harness session id uniquely matches an unresolved seat's last binding reattaches that seat (`cooperative_continuity`). A rebind refused by an owned target offers exactly two resolutions, `seat retire OLD --operator` or `seat rebind OLD --pane P --replace NEW --operator`; seats are never merged. The rules below were the pre-decision clarification and remain accurate.
 
 After an unknown/new host incarnation with unresolved saved seats, establish a coherent recovery baseline of current targets. Hold unclaimed restored targets for repair; saved addresses only suggest candidates. Without reliable narrowing, hold every unclaimed target present at that baseline, including moved/restored address mismatches and many-to-one suggestions. Until a coherent baseline is available, unresolved continuity prevents ordinary allocation of potentially restored targets. Persist baseline/hold/allocation decisions so daemon restart cannot release a hold or let a startup claim preempt repair.
 
 Ordinary resolve and startup reject a held target with compact inspect/rebind/explicit-fresh-role guidance. Rebind may choose an unowned held target and record the operator's assertion; explicit `--new-seat --operator` may instead consume that target's hold for fresh identity. Old unresolved seats/history remain intact. A merely observed empty pane is unallocated and remains available for rebind before anyone claims a new role. New panes authoritatively shown created after a coherent current-incarnation baseline have no restore claim and follow ordinary allocation. Uncertain creation timing retains the hold.
 
-Never merge colliding seats or use a hold as proof of lineage. Keep all-target ambiguity, holds, suggestions and operator choices inspectable with bounded continued diagnostics. This conservative choice may delay a genuinely new role until explicit operator choice; fresh review must assess the recovery tradeoff.
+Never merge colliding seats or use a hold as proof of lineage. Keep all-target ambiguity, holds, suggestions and operator choices inspectable with bounded continued diagnostics. This conservative choice may delay a genuinely new role until explicit operator choice when cooperative continuity does not apply; the trust policy accepts that cost.
 
 ## Decomposition and acceptance
 
@@ -130,6 +133,8 @@ Allocation/repair tests cover empty-pane prelaunch resolve without native proof;
 ## Design revision record
 
 2026-09-27: Integrated roast-1 F8/F10/F12/F15 host contract and related F9 authority/time/query boundaries after the cumulative-history assessment. Adopted the explicit F6 recovery-baseline clarification for fresh review; F6 remains unresolved. These are specification/acceptance changes, not completed native capability evidence.
+
+2026-10-01: F6 resolved by the [trust policy](../../../TRUST-POLICY.md): restore holds adopted, hold lift, cooperative continuity and abandonment-only collision resolution added.
 
 ## Shared-contract adoption record
 

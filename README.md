@@ -113,12 +113,13 @@ For a hands-off version with four guests, see [`scripts/demo-tea-party.sh`](scri
 
 ## Trust model: cooperative, not enforced
 
-Read this before relying on receipts.
+Read this before relying on receipts. The full policy, with its rationale, invariants and accepted limits, is [TRUST-POLICY.md](TRUST-POLICY.md).
 
 - A command run inside a Herdr pane acts as the seat mapped to that pane, located through `HERDR_PANE_ID` (never the focused pane). Any process that inherits the pane's environment, including a child agent or a script, acts as the same seat.
 - Child agents (subagents) are *instructed* to read and summarize only, never to accept, ACK or check in. The plugin cannot tell a disobedient child from its parent.
 - `me init` records your pane's seat as `operator_human`, never as an agent's `cooperative_top_level` claim; the same pane caveat applies.
 - Operator repair commands are authorized by the kernel peer UID matching the daemon's owner: the local account, not a person.
+- After a Herdr restart, restored panes are held until the operator reattaches their seats (`seat rebind ... --operator`) or chooses a fresh seat; seats are never merged. Automatic reattachment of a resumed agent session is planned (see the policy).
 - All of this is same-user and local. There is no defense against another program running as you.
 
 A recorded receipt therefore means "the seat's cooperative caller explicitly ran `ack` for this ID", with the claimed context recorded honestly.
@@ -153,6 +154,7 @@ No claim is made about interrupting a model mid-inference, exactly-once processi
 
 ## Documentation
 
+- [TRUST-POLICY.md](TRUST-POLICY.md): the cooperative trust policy: seat continuity, attribution, provenance and accepted limits.
 - [docs/install.md](docs/install.md): prerequisites, build, activation, settings, harness hooks and the Codex sandbox allowance, managed `launch`, updating and removal.
 - [docs/operations.md](docs/operations.md): exit statuses, health, attention, recovery, deadlines, seats and operator repair.
 - [docs/agent-usage.md](docs/agent-usage.md): complete command grammar, hook behaviour and exit statuses.

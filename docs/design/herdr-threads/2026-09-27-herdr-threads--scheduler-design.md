@@ -8,7 +8,7 @@ Parent: [root design](2026-09-27-herdr-threads-design.md). Bead: ht-4is.5. Earli
 
 ## Adopted shared-contract detail
 
-The [adopted shared-contract amendment, revision 4](shared-contract-amendment-adopted.md) is normative for the exact types, schema, algorithms and ownership described below. Its adoption is a design decision, not implemented or native-tested evidence. Existing acceptance remains required. Logical publication is authoritative; bounded physical projection cannot hide committed receipt/warning obligations. Preserve F6's unresolved dissent and the BOTH-harness gate `ht-910`; shared types, fake ports and store tests cannot satisfy that gate. Formal design review counters and original task review histories are unchanged by these edits.
+The [adopted shared-contract amendment, revision 4](shared-contract-amendment-adopted.md) is normative for the exact types, schema, algorithms and ownership described below. Its adoption is a design decision, not implemented or native-tested evidence. Existing acceptance remains required. Logical publication is authoritative; bounded physical projection cannot hide committed receipt/warning obligations. F6 is resolved by the [trust policy](../../../TRUST-POLICY.md) (2026-10-01), which is normative for continuity and attribution; preserve the BOTH-harness gate `ht-910`; shared types, fake ports and store tests cannot satisfy that gate. Formal design review counters and original task review histories are unchanged by these edits.
 
 ## Ownership and the two clocks
 
@@ -45,7 +45,7 @@ Unknown harness/execution, unresolved continuity or repair-held target, shell-on
 
 Coalesce all threads/reasons into one bounded fixed marker: `herdr-threads: attention pending; run herdr-threads inbox`. Optional plugin-owned counts must fit. No peer topic/body, credential or per-message marker. After failed startup exhausts its budget, a recovered running daemon reconstructs prelaunch work and can hint the surviving idle unregistered native occupant. The resulting ordinary root tool/turn hook retries fresh verified check-in; only that callback registers and starts unstarted timers. The model then reads, accepts and ACKs explicitly. Lost hint/output leaves obligations retriable. Missing/unsupported hooks keep health degraded; both native harnesses must prove callback-after-hint. No new OS supervisor is implied: a stopped daemon still needs an ensure-capable invocation/operator recovery.
 
-Lazy seat allocation and restart-stable recovery holds follow seat identity/store. An observed unused pane alone does not receive a new seat. Held ambiguous baseline targets require explicit operator repair or fresh-seat choice; F6's original dissent/escalation remains open; the later shared-contract adoption does not resolve it.
+Lazy seat allocation and restart-stable recovery holds follow seat identity/store. An observed unused pane alone does not receive a new seat. Held ambiguous baseline targets require explicit operator repair or fresh-seat choice; F6 is resolved by the [trust policy](../../../TRUST-POLICY.md).
 
 ## Bounded dispatch and uncertain outcomes
 
