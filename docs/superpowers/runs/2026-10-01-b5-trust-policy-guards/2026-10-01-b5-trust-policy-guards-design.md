@@ -26,23 +26,44 @@ Non-goals:
 
 ## Implementation decisions
 
-1. **Hold lift (C2).** The instance-wide `baseline_hold_unclaimed` flag is cleared in the same transaction
-   that leaves zero unresolved nonretired seats (rebind, fresh seat, retire, replace, cooperative
-   continuity, reconciliation retirement). Per-target `recovery_baseline_releases` stay as they are.
+1. **Hold lift (C2).** Hold state lives in three places: `host_instances.baseline_hold_unclaimed`, per-target
+   `recovery_holds` rows (read first by the effective disposition and directly by resolve, wake and inspect),
+   and `recovery_baseline_releases`. One store helper, `lift_baseline_hold_if_clear(tx, instance)`, owns the
+   lift. Predicate: no unresolved nonretired seat, **and** no saved seat still pending reconciliation for the
+   current recovery boot/epoch (reconciliation of the current baseline has finished). When it holds, the same
+   transaction clears `baseline_hold_unclaimed` and sets `released_at` on every open `recovery_holds` row of
+   the instance. Governing rule: every transaction that can lower the unresolved count or finish
+   reconciliation calls it: rebind, fresh seat, retire, replace, cooperative continuity, reconciliation
+   retirement, structural reconfirm (Reconfirm/ReconfirmStructure), each applied reconciliation page; and once
+   at daemon start for stores already stuck. The list is illustrative, the rule is normative.
 2. **Collisions (C3).** `seat retire SEAT --operator` reuses the bounded retirement cutover
    (`begin_retirement`); it is an operator action audited `operator:local-user:<uid>`. `seat rebind OLD
    --pane P --replace NEW --operator` performs NEW's retirement cutover and OLD's rebind in one deciding
    transaction. Both join the typed administrative actions; neither ACKs, accepts or sends.
-3. **Cooperative continuity (C1, `ht-rzi.2`).** The harness session id from the hook payload is persisted
-   on `occupant_bindings`. A top-level *lifecycle* check-in in a pane whose target is held or unowned, and
-   whose session id equals the last binding session of exactly one unresolved nonretired seat, rebinds that
-   seat to the target in the deciding transaction (releasing the hold, recording provenance
-   `cooperative_continuity` in seat history). Herdr's own `agent_session` report (`pane.report_agent_session`
-   from Herdr's integration hooks, visible via `agent get`/`agent list`) is a **hint**: when present it must
-   equal the claimed session id or the reattachment is refused to the operator path; when absent the claim
-   alone suffices (Herdr may lack the integration, e.g. Codex panes observed without it). A Herdr
-   `session_start_source` of `startup`/`new`/`clear` (a fresh session) also refuses reattachment. Never
-   proof, never on receipts. Schema change via the next migration number; coordinate numbering with B4.
+3. **Cooperative continuity (C1, `ht-rzi.2`).** Reattachment is gated only on the plugin's own hook payload: a
+   top-level SessionStart lifecycle check-in whose payload `source` is `resume`, whose session id equals the
+   last-binding `occupant_bindings.native_session` (the existing column; no new session column) of exactly one
+   unresolved nonretired seat, in a pane whose target is held or unowned. Sentinel values (`plugin_context:…`)
+   and human-occupant values never match; any other source (startup/clear/new/compact) never reattaches and
+   falls through to the existing hold/ordinary path. On a match the deciding transaction rebinds the seat,
+   records `cooperative_continuity` in seat history (the binding itself stays `cooperative_top_level`), and
+   calls `lift_baseline_hold_if_clear`. A migration is needed only if `allocation_decisions`' kind CHECK must
+   widen for `cooperative_continuity`; then it is the single B5 migration (B4 numbering risk noted at merge).
+   **Herdr's per-pane agent observation is diagnostic only** (C1: Herdr's agent field may only suggest): the
+   daemon records the `agent get` agent_session comparison (match, mismatch, absent, read error) with the
+   decision and shows it in `seat inspect`; it never refuses or permits reattachment.
+   **Seatless check-in (client and wire).** Today the hook stops before contacting the daemon when the pane has
+   no resolved seat (`src/cli/hook.rs` `find_seat` → held/unresolved Err, unowned → Quiet) and
+   `CallerClaim` requires a seat and binding generation (`src/harness/bridge.rs`). `ht-rzi.2` adds a
+   resume-only continuity check-in request that carries pane target, harness, session id and source but no
+   seat; it is journaled under an instance-scoped intent; the daemon's response returns the chosen seat and
+   binding generation, which the hook writes into the pane's client context exactly as an ordinary lifecycle
+   check-in does. A refusal leaves today's diagnostics unchanged.
+   **Evidence capture.** `ht-rzi.2` logs SessionStart stdin and `agent get` from inside the hook for resume,
+   /new and /clear on both harnesses and counts events per resume (Claude Code #24265 reported a
+   startup(new id) + resume(original id) pair). A resume-only gate makes the startup-first order safe; if the
+   capture shows resume-then-startup, a later startup check-in on a seat reattached moments earlier must not
+   overwrite its `native_session` (dedupe rule in `ht-rzi.2`).
 4. **Agent-to-human refusal (A4).** Enforced in the daemon's lifecycle check-in decision; the CLI
    environment-marker check in `me init` is advisory hardening on top.
 5. **Expected boot (A2).** Optional envelope field; absent means today's behaviour (programmatic clients
