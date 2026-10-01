@@ -866,7 +866,7 @@ fn explicit_lifecycle_argv_retains_external_identity_and_session_absence() {
     ])
     .unwrap();
     assert!(
-        matches!(parsed.action,crate::cli::commands::CliAction::Mutation(crate::cli::commands::MutationSpec::CheckInLifecycle{event_id,native_session:None}) if event_id=="launch-123")
+        matches!(parsed.action,crate::cli::commands::CliAction::Mutation(crate::cli::commands::MutationSpec::CheckInLifecycle{event_id,native_session:None,operator:false}) if event_id=="launch-123")
     );
     assert!(
         crate::cli::commands::parse_argv([
@@ -1098,6 +1098,11 @@ fn thread_reads_carry_the_located_caller_for_the_self_marker() {
     };
     let clock: std::sync::Arc<dyn crate::protocol::time::Clock> =
         std::sync::Arc::new(crate::app::SystemClock::new());
+    let runtime = crate::daemon::paths::RuntimeContext {
+        state_dir: root.clone(),
+        host_endpoint: root.join("host"),
+        herdr_bin: None,
+    };
     let selected = [
         "herdr-threads",
         "--cooperative-seat",
@@ -1116,7 +1121,7 @@ fn thread_reads_carry_the_located_caller_for_the_self_marker() {
     ] {
         let mut parsed =
             crate::cli::commands::parse_argv(selected.iter().chain(tail).copied()).unwrap();
-        crate::cli::derive_caller(&mut parsed, None, &paths, &clock).unwrap();
+        crate::cli::derive_caller(&mut parsed, None, &runtime, &paths, &clock).unwrap();
         let caller = match &parsed.action {
             crate::cli::commands::CliAction::Wire(Command::Participants(q)) => q.caller.clone(),
             crate::cli::commands::CliAction::Wire(Command::Thread(q)) => q.caller.clone(),
@@ -1127,7 +1132,7 @@ fn thread_reads_carry_the_located_caller_for_the_self_marker() {
             crate::cli::commands::parse_argv(["herdr-threads"].iter().chain(tail).copied())
                 .unwrap();
         assert!(
-            crate::cli::derive_caller(&mut bare, None, &paths, &clock)
+            crate::cli::derive_caller(&mut bare, None, &runtime, &paths, &clock)
                 .unwrap()
                 .is_none()
         );
@@ -1138,4 +1143,116 @@ fn thread_reads_carry_the_located_caller_for_the_self_marker() {
         };
         assert_eq!(caller, None, "{tail:?}");
     }
+}
+
+#[test]
+fn agent_markers_detects_claudecode_and_codex_prefix() {
+    use crate::cli::agent_marker;
+    assert_eq!(
+        agent_marker([("CLAUDECODE", "1")]),
+        Some("CLAUDECODE".to_owned())
+    );
+    assert_eq!(
+        agent_marker([("PATH", "/bin"), ("CODEX_HOME", "/x")]),
+        Some("CODEX_HOME".to_owned())
+    );
+    assert_eq!(agent_marker([("PATH", "/bin"), ("CODEXX", "1")]), None);
+    assert_eq!(
+        agent_marker([("XCLAUDECODE", "1"), ("CLAUDE_CODE", "1")]),
+        None
+    );
+}
+
+fn human_context(pane: &str) -> crate::harness::context::OccupantContext {
+    use crate::harness::context::{Harness as H, OccupantContext, Role, SessionReference};
+    OccupantContext {
+        format_version: 1,
+        instance: uuid::Uuid::from_u128(1),
+        seat: "seat-1".into(),
+        target: pane.into(),
+        harness: H::Human,
+        binding_generation: 1,
+        execution: uuid::Uuid::from_u128(2),
+        session: SessionReference::PluginContext(uuid::Uuid::from_u128(2)),
+        role: Role::TopLevel,
+    }
+}
+fn observed(kind: Option<&str>) -> crate::ports::PaneAgentObservation {
+    crate::ports::PaneAgentObservation {
+        kind: kind.map(str::to_owned),
+        agent_session: None,
+    }
+}
+fn select(
+    env: &[(&str, &str)],
+    agent: Result<Option<crate::ports::PaneAgentObservation>, crate::protocol::results::ApiError>,
+) -> Result<crate::cli::commands::CooperativeSelection, crate::cli::RunError> {
+    crate::cli::selection_from_context(
+        HostTargetId::new("w:p1"),
+        SeatId::new("seat-1"),
+        &human_context("w:p1"),
+        env.iter().copied(),
+        |_| agent,
+    )
+}
+fn refusal_detail(error: crate::cli::RunError) -> String {
+    match error {
+        crate::cli::RunError::Api(api) => {
+            assert_eq!(
+                api.code,
+                crate::protocol::results::ErrorCode::InvalidRequest
+            );
+            api.detail
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn derive_selection_refuses_human_context_with_agent_marker() {
+    let detail = refusal_detail(select(&[("CLAUDECODE", "1")], Ok(None)).unwrap_err());
+    assert!(detail.contains("CLAUDECODE"), "{detail}");
+    assert!(
+        detail.contains("herdr-threads me init --operator"),
+        "{detail}"
+    );
+    assert!(select(&[("CODEX_HOME", "/x")], Ok(None)).is_err());
+    assert!(select(&[("PATH", "/bin")], Ok(None)).is_ok());
+}
+
+#[test]
+fn derive_selection_refuses_human_context_when_herdr_reports_agent() {
+    for kind in ["claude", "codex"] {
+        let detail = refusal_detail(select(&[], Ok(Some(observed(Some(kind))))).unwrap_err());
+        assert!(detail.contains(kind), "{detail}");
+        assert!(
+            detail.contains("herdr-threads me init --operator"),
+            "{detail}"
+        );
+    }
+    // No agent, an unrelated detection, or a failed read never refuses.
+    assert!(select(&[], Ok(Some(observed(None)))).is_ok());
+    assert!(select(&[], Ok(Some(observed(Some("shell"))))).is_ok());
+    let failed = crate::protocol::results::ApiError {
+        code: crate::protocol::results::ErrorCode::Unsupported,
+        detail: "herdr down".into(),
+        restart_argv: None,
+        required_minimum_bytes: None,
+    };
+    assert!(select(&[], Err(failed)).is_ok());
+}
+
+#[test]
+fn agent_context_selection_ignores_agent_markers() {
+    let mut context = human_context("w:p1");
+    context.harness = crate::harness::context::Harness::Claude;
+    let selected = crate::cli::selection_from_context(
+        HostTargetId::new("w:p1"),
+        SeatId::new("seat-1"),
+        &context,
+        [("CLAUDECODE", "1")],
+        |_| panic!("an agent context never reads the pane"),
+    )
+    .unwrap();
+    assert_eq!(selected.harness, crate::harness::context::Harness::Claude);
 }

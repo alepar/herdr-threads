@@ -340,6 +340,9 @@ pub struct RegisterAvailableRequest {
     pub registration: Option<ReceiptRegistration>,
     /// Trusted instance and selected-output bounds for the transaction-local offer.
     pub read: ReadContext,
+    /// Set only when the local account explicitly overrides the agent-to-human
+    /// binding guard (TRUST-POLICY A4); the daemon audits it.
+    pub operator: Option<OperatorActor>,
 }
 
 /// Service input for a cooperative permit. The digest must cover the exact

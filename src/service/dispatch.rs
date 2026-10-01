@@ -57,6 +57,7 @@ impl DomainService {
         peer: PeerIdentity,
         budget: &CallBudget,
         read: ReadContext,
+        operator_override: bool,
     ) -> Result<CommandResult, ApiError> {
         let (owner_uid, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
             error(
@@ -70,6 +71,16 @@ impl DomainService {
                 "caller peer does not match elected owner",
             ));
         }
+        let operator = if operator_override {
+            Some(OperatorActor::from_peer(peer, *owner_uid).ok_or_else(|| {
+                error(
+                    ErrorCode::Unauthorized,
+                    "operator peer does not match elected owner",
+                )
+            })?)
+        } else {
+            None
+        };
         let request = crate::store::cooperative_permit_request(&mutation)?;
         if request.claim.instance != self.instance {
             return Err(error(
@@ -114,6 +125,7 @@ impl DomainService {
                     command,
                     registration: None,
                     read,
+                    operator,
                 },
                 permit,
                 budget,
@@ -240,7 +252,21 @@ impl LocalService for DomainService {
                         "command is not an accountable mutation",
                     )
                 })?;
-                self.cooperative_mutation(mutation, peer, budget, read)
+                self.cooperative_mutation(mutation, peer, budget, read, false)
+            }
+            Command::OperatorCheckIn(check) => {
+                if check.claim.harness != crate::protocol::authority::Harness::Human
+                    || !matches!(
+                        check.mode,
+                        crate::protocol::commands::CheckInMode::Lifecycle { .. }
+                    )
+                {
+                    return Err(error(
+                        ErrorCode::InvalidRequest,
+                        "operator check-in is a human lifecycle check-in",
+                    ));
+                }
+                self.cooperative_mutation(PermitMutation::CheckIn(check), peer, budget, read, true)
             }
             Command::ResolveSeat(request) => {
                 let preparation = self.current_target.as_ref().ok_or_else(|| {

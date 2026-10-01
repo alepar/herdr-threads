@@ -1411,6 +1411,7 @@ impl StorePort for SqliteStore {
             &mut writer,
             &request.command,
             request.registration.as_ref(),
+            request.operator.as_ref(),
             budget,
             permit,
             |tx, at| self.decision_fence(tx, at, &seat, &request.command.claim.target),

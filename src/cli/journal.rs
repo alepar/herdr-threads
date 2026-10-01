@@ -62,6 +62,10 @@ pub enum SemanticMutation {
         claim: CallerClaim,
         mode: CheckInMode,
         event_id: String,
+        /// A person's explicit override of the agent-to-human guard
+        /// (`me init --operator`); submitted as `Command::OperatorCheckIn`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        operator: bool,
     },
     ResolveSeat {
         target: HostTargetId,
@@ -194,6 +198,7 @@ impl SemanticMutation {
                 claim,
                 mode,
                 event_id,
+                operator,
             } => {
                 if event_id.is_empty()
                     || event_id.len() > 1024
@@ -201,11 +206,25 @@ impl SemanticMutation {
                 {
                     return Err(invalid("invalid lifecycle event identity"));
                 }
-                Command::CheckIn(CheckIn {
+                if *operator
+                    && (claim.harness != crate::protocol::authority::Harness::Human
+                        || !matches!(
+                            mode,
+                            crate::protocol::commands::CheckInMode::Lifecycle { .. }
+                        ))
+                {
+                    return Err(invalid("operator check-in is a human lifecycle check-in"));
+                }
+                let check = CheckIn {
                     claim: claim.clone(),
                     mode: *mode,
                     operation: OperationId::new("validation"),
-                })
+                };
+                if *operator {
+                    Command::OperatorCheckIn(check)
+                } else {
+                    Command::CheckIn(check)
+                }
                 .validate()
                 .map_err(invalid)
             }
@@ -321,11 +340,23 @@ impl SemanticMutation {
             Self::Frozen { claim, mutation } => {
                 return mutation.to_command(operation, Some(claim.clone()));
             }
-            Self::CooperativeCheckIn { claim, mode, .. } => Command::CheckIn(CheckIn {
-                claim: claim.clone(),
-                mode: *mode,
-                operation,
-            }),
+            Self::CooperativeCheckIn {
+                claim,
+                mode,
+                operator,
+                ..
+            } => {
+                let check = CheckIn {
+                    claim: claim.clone(),
+                    mode: *mode,
+                    operation,
+                };
+                if *operator {
+                    Command::OperatorCheckIn(check)
+                } else {
+                    Command::CheckIn(check)
+                }
+            }
             Self::ResolveSeat { target } => Command::ResolveSeat(ResolveSeat {
                 target: target.clone(),
                 operation,
@@ -663,6 +694,17 @@ impl Journal {
         created_at_millis: i64,
         factory: impl FnOnce() -> io::Result<(CallerClaim, CheckInMode)>,
     ) -> io::Result<IntentRef> {
+        self.record_check_in_as(scope, event_id, created_at_millis, false, factory)
+    }
+    /// `record_check_in`, optionally flagged as the operator override.
+    pub fn record_check_in_as(
+        &self,
+        scope: IntentScope,
+        event_id: &str,
+        created_at_millis: i64,
+        operator: bool,
+        factory: impl FnOnce() -> io::Result<(CallerClaim, CheckInMode)>,
+    ) -> io::Result<IntentRef> {
         let _lock = self.lock()?;
         for entry in fs::read_dir(&self.root)? {
             let path = entry?.path();
@@ -686,6 +728,7 @@ impl Journal {
             claim,
             mode,
             event_id: event_id.into(),
+            operator,
         };
         if !scope_matches(&scope, &semantic) {
             return Err(invalid("intent authority scope mismatch"));

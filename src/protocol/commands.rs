@@ -35,6 +35,9 @@ pub enum Command {
     /// TRUST-POLICY C1: seatless resume-only reattachment decision.
     ContinuityCheckIn(ContinuityCheckIn),
     CheckIn(CheckIn),
+    /// Person check-in over an agent's binding, as the local account
+    /// (TRUST-POLICY A4 override). Human lifecycle only.
+    OperatorCheckIn(CheckIn),
     CreateThread(CreateThread),
     Invite(Invite),
     Accept(Accept),
@@ -453,7 +456,7 @@ impl Command {
             page.validate()?;
         }
         let claim = match self {
-            Self::CheckIn(v) => Some(&v.claim),
+            Self::CheckIn(v) | Self::OperatorCheckIn(v) => Some(&v.claim),
             Self::CreateThread(v) => Some(&v.claim),
             Self::Invite(v) => Some(&v.claim),
             Self::Accept(v) => Some(&v.claim),
