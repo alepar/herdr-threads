@@ -14,3 +14,17 @@ C11 · r1 · GAP · ht-rzi.3 triggers · applied — .3 acceptance: CODEX_*, Her
 C12 · r1 · UNEXERCISED-CONFIGURATION · harnesses · applied — extended .2 (Claude w/ hint, Codex w/o hint via hook entry) and .4 (both directions) acceptance instead of a separate smoke leaf
 C13 · r1 · GAP · ht-rzi.5 human bindings · applied — carry-forward covers operator_human; acceptance added
 C14 · r1 · GAP · R22 CLI expected_boot fill · applied — .5 description + acceptance
+C15 · r2 · UNOWNED-SEAM · pane-agent observation port · applied — new Seam contract ht-rzi.9; .2 .3 .4 depend on it (boundary contract lines); seam integration folded into sweep ht-rzi.8 instead of a separate Seam integration bead
+C16 · r2 · GAP · ht-rzi.4 absent agent · applied — rules stated: launch proceeds when no agent detected; wake requires detected kind == bound harness; human-bound never woken
+C17 · r2 · UNEXERCISED-CONFIGURATION · human-bound wake · applied — .4 acceptance
+C18 · r2 · GAP · ht-rzi.2 null session · applied — never matches on NULL/empty; pre-migration seats → operator path; acceptance
+C19 · r2 · GAP · ht-rzi.3 override audit · applied — audit label, operator_human binding, off receipts; guidance 'me init --operator'
+C20 · r2 · UNEXERCISED-CONFIGURATION · same-seat agent re-check-in · applied — .3 acceptance (startup, /clear, resume)
+C21 · r2 · UNOWNED-SEAM · docs ownership · applied — docs files removed from .1/.3; .7 sole owner
+C22 · r2 · GAP · ht-rzi.7 C5 · applied — C5 marker kept, named in Status line, excluded from grep
+C23 · r2 · NARRATIVE-EDGE · ht-rzi.7<-ht-rzi.6 · applied — line restated: consumes allocator.lock no-follow guard (marker flip)
+C24 · r2 · UNOWNED-SEAM · lifecycle check order · applied — owned by .2 (A4 refusal → C1 reattach → hold refusal); .3 consumes
+C25 · r2 · GAP · ht-rzi.1 restore/daemon-start lift · applied — predicate also after reconciliation page and at daemon start; acceptance
+C26 · r2 · UNOWNED-SEAM · codex resume capture vs launch refusal · applied — .2 owns: manual 'codex resume' path, launch refusal stays; .7 documents
+C27 · r2 · UNSATISFIABLE-ACCEPTANCE · ht-rzi.5 session column · applied — criterion restated; session column checked in sweep
+C28 · r2 · GAP · R19 sweep scenarios · applied — .8 extended
