@@ -97,6 +97,10 @@ pub fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String> {
         CommandResult::OperatorRebound(seat) => {
             out.push_str(&format!("Rebound seat {}.\n", seat.as_str()))
         }
+        CommandResult::OperatorRetired(seat) => out.push_str(&format!(
+            "Seat {} retired; its pending obligations settle as recipient-retired.\n",
+            seat.as_str()
+        )),
         CommandResult::OperatorFreshSeat(seat) => {
             out.push_str(&format!("Created fresh seat {}.\n", seat.as_str()))
         }

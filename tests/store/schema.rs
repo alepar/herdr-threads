@@ -191,7 +191,7 @@ fn v5_upgrade_adds_index_for_failed_pending_retirements() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        9
+        10
     );
     let plan: Vec<String> = db.prepare(
         "EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM retirements r INDEXED BY retirements_failed_pending JOIN seats s ON s.id=r.seat_id WHERE r.status='pending' AND r.last_error IS NOT NULL AND s.instance_id='i')",
@@ -230,7 +230,7 @@ fn v6_upgrade_adds_seat_and_thread_leading_digest_indexes() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        9
+        10
     );
     assert_eq!(
         db.query_row(
@@ -326,7 +326,7 @@ fn v7_upgrade_backfills_only_pending_rows_into_the_digest_projections() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        9
+        10
     );
     assert_eq!(history(&db), before);
     let rows = |sql: &str| -> Vec<String> {
@@ -447,7 +447,7 @@ fn v1_history_migrates_once_with_native_and_builtin_authors_intact() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        9
+        10
     );
     assert_eq!(
         db.query_row("SELECT id FROM seats", [], |r| r.get::<_, String>(0))
@@ -841,7 +841,7 @@ fn startup_rejects_missing_or_weakened_acceptance_guard_without_history_changes(
         assert_eq!(
             db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            9
+            10
         );
         assert_eq!(
             db.query_row(
@@ -990,7 +990,7 @@ fn startup_rejects_missing_or_weakened_actor_presence_checks() {
         assert_eq!(
             db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            9
+            10
         );
         assert_eq!(
             db.query_row(
@@ -1259,7 +1259,7 @@ fn fresh_database_has_durable_settings_constraints_and_read_only_queries() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        9
+        10
     );
     assert!(db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('s', 'missing', 'resolved', 'native', 1, 0)", []).is_err());
     db.execute(
@@ -2551,7 +2551,7 @@ fn v2_database_migrates_to_additive_invitation_cancellations_and_voluntary_state
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        9
+        10
     );
     assert_eq!(
         db.query_row(
@@ -2595,7 +2595,7 @@ fn v4_database_adds_notification_schema_without_changing_existing_history() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        9
+        10
     );
     assert_eq!(
         db.query_row("SELECT event_json FROM messages WHERE id='old'", [], |r| {
@@ -2794,7 +2794,7 @@ fn v3_required_only_shadow_recovers_prior_left_only_from_exact_leave_audit() {
         recovered
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        9
+        10
     );
     assert_eq!(
         recovered
@@ -3022,7 +3022,7 @@ fn v8_upgrade_rebuilds_occupant_bindings_to_accept_a_human_occupant() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        9
+        10
     );
     assert_eq!(rows(&db), before);
     for index in [
@@ -3066,4 +3066,111 @@ fn v8_upgrade_rebuilds_occupant_bindings_to_accept_a_human_occupant() {
     );
     // A second startup is a verified no-op.
     schema::initialize(&db).unwrap();
+}
+
+fn v9_database() -> Connection {
+    let db = v8_database();
+    db.execute_batch(include_str!("../../migrations/0009_human_occupant.sql"))
+        .unwrap();
+    db.pragma_update(None, "user_version", 9).unwrap();
+    db
+}
+
+// B5 (ht-rzi.1): a populated v9 store upgrades to v10 by rebuilding
+// allocation_decisions. Kills: a rebuild that renumbers or drops history,
+// loses an index, or seeds the new marker/diagnostic columns with non-NULL.
+#[test]
+fn v9_store_with_rows_migrates_to_v10_preserving_allocation_history() {
+    let db = v9_database();
+    db.execute_batch("\
+        INSERT INTO host_instances(id,created_at) VALUES ('i',0);\
+        INSERT INTO allocation_decisions(ordinal,instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (3,'i','w1:p1','s1','ordinary',10,'b',0,1,NULL);\
+        INSERT INTO allocation_decisions(ordinal,instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (7,'i','w1:p2','s2','operator_rebind',11,'b',1,2,'operator:local-user:501');\
+    ").unwrap();
+    let rows = |db: &Connection| -> Vec<(i64, String, String, String, i64, Option<String>)> {
+        db.prepare("SELECT ordinal,target_id,seat_id,kind,epoch,operator_label FROM allocation_decisions ORDER BY ordinal")
+            .unwrap()
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let before = rows(&db);
+    assert_eq!(before.len(), 2);
+    schema::initialize(&db).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        10
+    );
+    assert_eq!(rows(&db), before);
+    let diagnostics: i64 = db
+        .query_row(
+            "SELECT count(*) FROM allocation_decisions WHERE continuity_diagnostic IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(diagnostics, 0);
+    let marker: (Option<String>, Option<i64>) = db
+        .query_row(
+            "SELECT reconciled_boot,reconciled_epoch FROM host_instances WHERE id='i'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(marker, (None, None));
+    for index in [
+        "allocation_decisions_target",
+        "allocation_decisions_seat_history",
+    ] {
+        let exists: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1 AND tbl_name='allocation_decisions')",
+                [index],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(exists, "{index}");
+    }
+    db.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation) VALUES ('i','w1:p3','s3','ordinary',12,'b',0,1)", [])
+        .unwrap();
+    let next: i64 = db
+        .query_row("SELECT max(ordinal) FROM allocation_decisions", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(next, 8, "AUTOINCREMENT continues past the copied history");
+    schema::initialize(&db).unwrap();
+}
+
+#[test]
+fn v10_allocation_decisions_accepts_b5_kinds() {
+    let db = v9_database();
+    schema::initialize(&db).unwrap();
+    db.execute(
+        "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
+        [],
+    )
+    .unwrap();
+    let insert = |kind: &str, diagnostic: Option<&str>| {
+        db.execute(
+            "INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,continuity_diagnostic) VALUES ('i','t','s',?1,1,'b',0,1,?2)",
+            params![kind, diagnostic],
+        )
+    };
+    for kind in [
+        "operator_retire",
+        "operator_human_override",
+        "cooperative_continuity",
+    ] {
+        insert(kind, None).unwrap();
+    }
+    assert!(insert("bogus", None).is_err());
+    for diagnostic in ["match", "mismatch", "absent", "read_error"] {
+        insert("cooperative_continuity", Some(diagnostic)).unwrap();
+    }
+    assert!(insert("cooperative_continuity", Some("maybe")).is_err());
 }

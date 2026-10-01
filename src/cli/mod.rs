@@ -767,6 +767,16 @@ fn operator_semantic(mutation: &MutationSpec) -> Option<SemanticMutation> {
         MutationSpec::FreshSeat(target) => SemanticMutation::OperatorFreshSeat {
             target: target.clone(),
         },
+        MutationSpec::Retire(seat) => SemanticMutation::OperatorRetire { seat: seat.clone() },
+        MutationSpec::Replace {
+            seat,
+            pane,
+            replace,
+        } => SemanticMutation::OperatorReplace {
+            seat: seat.clone(),
+            target: pane.clone(),
+            replace: replace.clone(),
+        },
         MutationSpec::Rebind { seat, pane } => SemanticMutation::OperatorRebind {
             seat: seat.clone(),
             target: pane.clone(),
@@ -858,6 +868,8 @@ fn caller_need(action: &CliAction, paths: &InstancePaths) -> Result<CallerNeed, 
                 mutation,
                 MutationSpec::Resolve(_)
                     | MutationSpec::Rebind { .. }
+                    | MutationSpec::Retire(_)
+                    | MutationSpec::Replace { .. }
                     | MutationSpec::FreshSeat(_)
                     | MutationSpec::Invite { operator: true, .. }
             ) {

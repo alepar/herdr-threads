@@ -107,6 +107,14 @@ pub enum SemanticMutation {
     OperatorFreshSeat {
         target: HostTargetId,
     },
+    OperatorRetire {
+        seat: SeatId,
+    },
+    OperatorReplace {
+        seat: SeatId,
+        target: HostTargetId,
+        replace: SeatId,
+    },
     OperatorOrphanInvite {
         thread: ThreadId,
         seat: SeatId,
@@ -214,6 +222,8 @@ impl SemanticMutation {
             self,
             Self::OperatorRebind { .. }
                 | Self::OperatorFreshSeat { .. }
+                | Self::OperatorRetire { .. }
+                | Self::OperatorReplace { .. }
                 | Self::OperatorOrphanInvite { .. }
         )
     }
@@ -235,6 +245,8 @@ impl SemanticMutation {
             Self::Reopen { .. } => IntentKind::Reopen,
             Self::OperatorRebind { .. } => IntentKind::OperatorRebind,
             Self::OperatorFreshSeat { .. } => IntentKind::OperatorFreshSeat,
+            Self::OperatorRetire { .. } => IntentKind::OperatorRetire,
+            Self::OperatorReplace { .. } => IntentKind::OperatorReplace,
             Self::OperatorOrphanInvite { .. } => IntentKind::OperatorOrphanInvite,
         }
     }
@@ -358,6 +370,22 @@ impl SemanticMutation {
             Self::OperatorRebind { seat, target } => Command::OperatorRebind(OperatorRebind {
                 seat: seat.clone(),
                 target: target.clone(),
+                operation,
+            }),
+            Self::OperatorRetire { seat } => {
+                Command::OperatorRetire(crate::protocol::commands::OperatorRetire {
+                    seat: seat.clone(),
+                    operation,
+                })
+            }
+            Self::OperatorReplace {
+                seat,
+                target,
+                replace,
+            } => Command::OperatorReplace(crate::protocol::commands::OperatorReplace {
+                seat: seat.clone(),
+                target: target.clone(),
+                replace: replace.clone(),
                 operation,
             }),
             Self::OperatorFreshSeat { target } => Command::OperatorFreshSeat(OperatorFreshSeat {

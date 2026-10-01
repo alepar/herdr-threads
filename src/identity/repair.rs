@@ -184,7 +184,16 @@ impl OrdinaryIdentity {
                     budget,
                 );
             }
+            OperatorCommand::Retire(request) => {
+                let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
+                return self.store.mutate_operator(
+                    OperatorRequest::Retire(request.clone()),
+                    actor,
+                    budget,
+                );
+            }
             OperatorCommand::Rebind(request) => request.target.clone(),
+            OperatorCommand::Replace(request) => request.target.clone(),
             OperatorCommand::FreshSeat(request) => request.target.clone(),
         };
         self.with_observation(&target, budget, |_, observation| {
@@ -193,7 +202,8 @@ impl OrdinaryIdentity {
             let request = match command {
                 OperatorCommand::Rebind(c) => OperatorRequest::Rebind(c, guard),
                 OperatorCommand::FreshSeat(c) => OperatorRequest::FreshSeat(c, guard),
-                OperatorCommand::OrphanInvite(_) => unreachable!(),
+                OperatorCommand::Replace(c) => OperatorRequest::Replace(c, guard),
+                OperatorCommand::OrphanInvite(_) | OperatorCommand::Retire(_) => unreachable!(),
             };
             let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
             self.store.mutate_operator(request, actor, budget)

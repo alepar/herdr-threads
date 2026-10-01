@@ -89,6 +89,13 @@ pub mod observation_store {
             transition: GuardedSeatTransition,
             budget: &CallBudget,
         ) -> Result<ReconciliationOutcome, ApiError>;
+        fn record_reconciliation_pass(
+            &self,
+            _published: &PublishedSnapshot,
+            _budget: &CallBudget,
+        ) -> Result<bool, ApiError> {
+            Ok(false)
+        }
     }
     impl<T: StorePort + ?Sized> ObservationStore for T {
         fn clock(&self) -> &dyn crate::protocol::time::Clock {
@@ -195,6 +202,13 @@ pub mod observation_store {
             budget: &CallBudget,
         ) -> Result<ReconciliationOutcome, ApiError> {
             StorePort::apply_reconciliation_transition(self, transition, budget)
+        }
+        fn record_reconciliation_pass(
+            &self,
+            published: &PublishedSnapshot,
+            budget: &CallBudget,
+        ) -> Result<bool, ApiError> {
+            StorePort::record_reconciliation_pass(self, published, budget)
         }
     }
 }

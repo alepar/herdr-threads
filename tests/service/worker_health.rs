@@ -833,6 +833,7 @@ struct FaultyObservationStore {
     fail_admission: std::sync::atomic::AtomicBool,
     fail_page: std::sync::atomic::AtomicBool,
     pages_ok: AtomicU64,
+    pass_records: AtomicU64,
 }
 impl crate::identity::reconcile::observation_store::ObservationStore
     for Arc<FaultyObservationStore>
@@ -958,6 +959,14 @@ impl crate::identity::reconcile::observation_store::ObservationStore
         self.inner
             .apply_reconciliation_transition(transition, budget)
     }
+    fn record_reconciliation_pass(
+        &self,
+        published: &crate::ports::PublishedSnapshot,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        self.pass_records.fetch_add(1, Ordering::SeqCst);
+        self.inner.record_reconciliation_pass(published, budget)
+    }
 }
 
 /// Cancels and joins the observation worker thread. Tests call
@@ -1038,6 +1047,7 @@ fn observation_worker_loop_feeds_production_health_at_both_call_sites() {
         fail_admission: Default::default(),
         fail_page: Default::default(),
         pages_ok: AtomicU64::new(0),
+        pass_records: AtomicU64::new(0),
     });
     let private = ["private", "/Users/", "SQLite", "socket"];
     let wait_for = |what: &str, done: &dyn Fn() -> bool| {
@@ -1241,4 +1251,93 @@ fn production_health_reports_the_last_completed_scheduler_tick() {
     };
     assert!(failing.drive_deadlines(&mut driver, &exhausted).is_err());
     assert_eq!(failing.last_tick(), None);
+}
+
+fn page_progress(
+    next: Option<u64>,
+    refused: u8,
+) -> crate::identity::reconcile::ReconcilePageProgress {
+    crate::identity::reconcile::ReconcilePageProgress {
+        next_after_ordinal: next,
+        high_water_ordinal: 9,
+        transition_count: 1,
+        retirements_started: 0,
+        transitions_refused: refused,
+    }
+}
+
+// B5 (ht-rzi.1): the marker is recorded only by a refusal-free full pass.
+// Kills: a pass_complete that forgets a refusal from an earlier page (the
+// last clean page would then record the marker), or that reports done while a
+// next page remains.
+#[test]
+fn pass_with_refused_transition_leaves_marker_behind() {
+    assert_eq!(
+        pass_complete(false, &page_progress(Some(4), 0)),
+        (false, false)
+    );
+    assert_eq!(
+        pass_complete(false, &page_progress(Some(4), 1)),
+        (false, true)
+    );
+    // The refusal on an earlier page survives a clean final page.
+    assert_eq!(pass_complete(true, &page_progress(None, 0)), (true, true));
+    assert_eq!(pass_complete(false, &page_progress(None, 2)), (true, true));
+    assert_eq!(pass_complete(false, &page_progress(None, 0)), (true, false));
+}
+
+// Kills: a worker loop that never calls record_reconciliation_pass, or calls
+// it again on every turn instead of once per completed published pass.
+#[test]
+fn refusal_free_pass_records_marker_once() {
+    let observation = Arc::new(WorkerStatus::default());
+    let production = Production::new([Default::default(), Default::default(), observation.clone()]);
+    let clock = production.clock.clone();
+    let host = Arc::new(ObservedHost {
+        clock: clock.clone(),
+        sequence: AtomicU64::new(1),
+        fail: Default::default(),
+        snapshots: AtomicU64::new(0),
+    });
+    let writer = Arc::new(FairWriter::new(32));
+    let identity = Arc::new(crate::identity::repair::OrdinaryIdentity::new(
+        production.instance.to_string(),
+        production.store.clone(),
+        host.clone(),
+        clock.clone(),
+        writer.clone(),
+    ));
+    let port = Arc::new(FaultyObservationStore {
+        inner: ScheduledStore {
+            store: production.store.clone(),
+            writer,
+        },
+        fail_admission: Default::default(),
+        fail_page: Default::default(),
+        pages_ok: AtomicU64::new(0),
+        pass_records: AtomicU64::new(0),
+    });
+    let cancellation = Cancellation::default();
+    let worker = StopWorker(
+        cancellation.clone(),
+        Some(
+            spawn_observation_loop(
+                identity,
+                port.clone(),
+                cancellation,
+                observation,
+                Arc::new(Default::default()),
+            )
+            .unwrap(),
+        ),
+    );
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while port.pass_records.load(Ordering::SeqCst) == 0 {
+        assert!(std::time::Instant::now() < until, "no pass was recorded");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    // No further capture is due (the clock has not advanced): still once.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(port.pass_records.load(Ordering::SeqCst), 1);
+    worker.stop();
 }

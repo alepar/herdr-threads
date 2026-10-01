@@ -136,7 +136,14 @@ impl SqliteStore {
                 "invalid store settings",
             ));
         }
-        let writer = context.open_writer()?;
+        let mut writer = context.open_writer()?;
+        // A store stuck with a hold nothing protects (reconciliation already
+        // finished, no unresolved seat) is cleared once at daemon start.
+        let tx = writer
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        seats::lift_baseline_hold_if_clear(&tx, &instance, context.clock().utc_now())?;
+        tx.commit().map_err(store_error)?;
         Ok(Self {
             context,
             instance,
@@ -1710,6 +1717,20 @@ impl StorePort for SqliteStore {
         }
         let mut writer = self.writer(budget)?;
         seats::apply_reconciliation_transition(&self.context, &mut writer, transition, budget)
+    }
+    fn record_reconciliation_pass(
+        &self,
+        published: &PublishedSnapshot,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        if published.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "reconciliation instance mismatch",
+            ));
+        }
+        let mut writer = self.writer(budget)?;
+        seats::record_reconciliation_pass(&self.context, &mut writer, published, budget)
     }
     fn due_obligations(
         &self,

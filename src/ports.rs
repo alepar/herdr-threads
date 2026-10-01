@@ -18,7 +18,7 @@ use crate::protocol::{
     },
     commands::{
         CheckIn, Command, OperatorCommand, OperatorFreshSeat, OperatorOrphanInvite, OperatorRebind,
-        PermitMutation, ResolveSeat, SendMessage,
+        OperatorReplace, OperatorRetire, PermitMutation, ResolveSeat, SendMessage,
     },
     ids::*,
     output::OutputSpec,
@@ -1445,7 +1445,9 @@ impl OperatorTargetGuard {
         let target = match command {
             OperatorCommand::Rebind(command) => &command.target,
             OperatorCommand::FreshSeat(command) => &command.target,
+            OperatorCommand::Replace(command) => &command.target,
             OperatorCommand::OrphanInvite(_) => return Err("orphan invite has no target guard"),
+            OperatorCommand::Retire(_) => return Err("retire has no target guard"),
         };
         if instance.is_empty() || observation.target != *target {
             return Err("operator target does not match fresh observation");
@@ -1516,6 +1518,8 @@ pub enum OperatorRequest {
     Rebind(OperatorRebind, OperatorTargetGuard),
     FreshSeat(OperatorFreshSeat, OperatorTargetGuard),
     OrphanInvite(OperatorOrphanInvite),
+    Retire(OperatorRetire),
+    Replace(OperatorReplace, OperatorTargetGuard),
 }
 impl OperatorRequest {
     /// Consume target evidence against the command being decided and the store's
@@ -1534,7 +1538,10 @@ impl OperatorRequest {
                 &OperatorCommand::FreshSeat(command.clone()),
                 fence,
             ),
-            Self::OrphanInvite(_) => Ok(()),
+            Self::Replace(command, guard) => {
+                guard.consume(instance, &OperatorCommand::Replace(command.clone()), fence)
+            }
+            Self::OrphanInvite(_) | Self::Retire(_) => Ok(()),
         }
     }
 }
@@ -2428,6 +2435,16 @@ pub trait StorePort: Send + Sync {
         transition: GuardedSeatTransition,
         budget: &CallBudget,
     ) -> Result<ReconciliationOutcome, ApiError>;
+    /// Persist that the saved-seat pass of `published` ended with no refused
+    /// transition and lift the restore hold when nothing is left to protect.
+    /// Returns whether the marker was written (false for a stale publication).
+    fn record_reconciliation_pass(
+        &self,
+        _published: &PublishedSnapshot,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
+    }
     fn due_obligations(
         &self,
         request: DueScanRequest,

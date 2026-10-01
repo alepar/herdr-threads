@@ -31,6 +31,9 @@ const V7: &str = include_str!("../../migrations/0007_attention_digest.sql");
 const V8: &str = include_str!("../../migrations/0008_digest_pending_paths.sql");
 /// Occupant bindings also accept a person's pane identity (`harness='human'`).
 const V9: &str = include_str!("../../migrations/0009_human_occupant.sql");
+/// B5 trust guards: reconciliation marker, wider allocation kinds and the
+/// cooperative-continuity diagnostic column.
+const V10: &str = include_str!("../../migrations/0010_b5_trust_guards.sql");
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -112,7 +115,8 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
                 .and_then(|_| conn.execute_batch(V7))
                 .and_then(|_| conn.execute_batch(V8))
                 .and_then(|_| conn.execute_batch(V9))
-                .and_then(|_| conn.pragma_update(None, "user_version", 9));
+                .and_then(|_| conn.execute_batch(V10))
+                .and_then(|_| conn.pragma_update(None, "user_version", 10));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
                 Err(error) => {
@@ -132,6 +136,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v6_to_v7(conn)?;
             migrate_v7_to_v8(conn)?;
             migrate_v8_to_v9(conn)?;
+            migrate_v9_to_v10(conn)?;
             verify_existing(conn)
         }
         2 => {
@@ -144,6 +149,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v6_to_v7(conn)?;
             migrate_v7_to_v8(conn)?;
             migrate_v8_to_v9(conn)?;
+            migrate_v9_to_v10(conn)?;
             verify_existing(conn)
         }
         3 => {
@@ -156,6 +162,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v6_to_v7(conn)?;
             migrate_v7_to_v8(conn)?;
             migrate_v8_to_v9(conn)?;
+            migrate_v9_to_v10(conn)?;
             verify_existing(conn)
         }
         4 => {
@@ -169,6 +176,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v6_to_v7(conn)?;
             migrate_v7_to_v8(conn)?;
             migrate_v8_to_v9(conn)?;
+            migrate_v9_to_v10(conn)?;
             verify_existing(conn)
         }
         5 => {
@@ -182,6 +190,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v6_to_v7(conn)?;
             migrate_v7_to_v8(conn)?;
             migrate_v8_to_v9(conn)?;
+            migrate_v9_to_v10(conn)?;
             verify_existing(conn)
         }
         6 => {
@@ -195,6 +204,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v6_to_v7(conn)?;
             migrate_v7_to_v8(conn)?;
             migrate_v8_to_v9(conn)?;
+            migrate_v9_to_v10(conn)?;
             verify_existing(conn)
         }
         7 => {
@@ -208,14 +218,21 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             verify_existing_v7(conn)?;
             migrate_v7_to_v8(conn)?;
             migrate_v8_to_v9(conn)?;
+            migrate_v9_to_v10(conn)?;
             verify_existing(conn)
         }
         8 => {
             verify_existing_v8_shape(conn)?;
             migrate_v8_to_v9(conn)?;
+            migrate_v9_to_v10(conn)?;
             verify_existing(conn)
         }
-        9 => verify_existing(conn),
+        9 => {
+            verify_existing_v9_shape(conn)?;
+            migrate_v9_to_v10(conn)?;
+            verify_existing(conn)
+        }
+        10 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -331,7 +348,70 @@ pub fn verify_existing(conn: &Connection) -> Result<(), ApiError> {
     verify_existing_v6(conn)?;
     verify_existing_v7(conn)?;
     verify_existing_v8(conn)?;
+    verify_existing_v9(conn)?;
+    verify_existing_v10(conn)
+}
+
+/// A v9 store is audited as v9 before allocation decisions are rebuilt.
+fn verify_existing_v9_shape(conn: &Connection) -> Result<(), ApiError> {
+    verify_existing_v8_shape(conn)?;
     verify_existing_v9(conn)
+}
+
+fn migrate_v9_to_v10(conn: &Connection) -> Result<(), ApiError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    let result = conn
+        .execute_batch(V10)
+        .and_then(|_| conn.pragma_update(None, "user_version", 10));
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(store_error(error))
+        }
+    }
+}
+
+/// v10: allocation decisions admit the B5 kinds and the continuity diagnostic;
+/// host instances carry the reconciliation marker.
+fn verify_existing_v10(conn: &Connection) -> Result<(), ApiError> {
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='allocation_decisions'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let normalized = sql
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if !normalized.contains("'cooperative_continuity'")
+        || !normalized.contains("continuity_diagnostic")
+    {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "allocation decisions do not accept the B5 kinds",
+        ));
+    }
+    for column in ["reconciled_boot", "reconciled_epoch"] {
+        let present: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('host_instances') WHERE name=?1)",
+                [column],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if !present {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("host instances lack {column}"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// A v8 store is audited as v8 before its occupant bindings are rebuilt.
@@ -1176,7 +1256,7 @@ fn verify_existing_v1(conn: &Connection) -> Result<(), ApiError> {
 /// Read workers must not scan the whole database during connection setup.
 /// The writer performs the full integrity and schema audit at startup.
 pub fn verify_query_connection(conn: &Connection) -> Result<(), ApiError> {
-    verify_query_connection_version(conn, 9, false)
+    verify_query_connection_version(conn, 10, false)
 }
 
 fn verify_query_connection_version(
@@ -1187,7 +1267,7 @@ fn verify_query_connection_version(
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .map_err(store_error)?;
-    if version != expected_version && !(allow_v2 && (2..=9).contains(&version)) {
+    if version != expected_version && !(allow_v2 && (2..=10).contains(&version)) {
         return Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
