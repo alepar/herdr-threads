@@ -1116,6 +1116,10 @@ pub struct SnapshotSavedSeat {
     /// Current registered binding only. `binding_execution` above may be
     /// historical evidence for an unresolved seat after invalidation.
     pub active_binding_execution: Option<ExecutionId>,
+    /// Host epoch of the open registered binding, only when that binding
+    /// carries the same host boot and incarnation as the seat's structural
+    /// proof. A lagging epoch is what C4 carries forward.
+    pub bound_epoch: Option<u64>,
     pub bound_boot: Option<HostBootId>,
     pub bound_incarnation: Option<String>,
     /// Reconfirmation evidence stored on the seat's latest occupant binding,
@@ -1217,6 +1221,14 @@ pub enum ReconciliationAction {
     /// registration; the pane's agent registers by its next lifecycle
     /// check-in at the new generation.
     ReconfirmStructure {
+        target: HostTargetId,
+        terminal: TerminalId,
+    },
+    /// C4: a resolved seat structurally reconfirmed in a newer host epoch of
+    /// the same boot and incarnation keeps its open binding; the binding's
+    /// host epoch and target generation move forward in place; nothing else
+    /// changes.
+    CarryForward {
         target: HostTargetId,
         terminal: TerminalId,
     },

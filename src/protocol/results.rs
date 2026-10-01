@@ -103,6 +103,9 @@ pub enum ErrorCode {
     UnknownWireVersion,
     DaemonVersionMismatch,
     InstanceMismatch,
+    /// The request named a daemon boot that is no longer running; nothing was
+    /// dispatched. Re-read the descriptor and retry.
+    DaemonBootChanged,
     CursorStale,
     InvalidCursor,
     InvalidBudget,

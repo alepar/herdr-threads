@@ -213,6 +213,7 @@ fn wire_instance_mismatch_and_uuid_boot_are_typed() {
         version: 1,
         request_id: "r".into(),
         expected_instance: "00000000-0000-4000-8000-000000000001".into(),
+        expected_boot: None,
         output: None,
         command: Command::Health,
     };
@@ -232,6 +233,33 @@ fn wire_instance_mismatch_and_uuid_boot_are_typed() {
     assert!(
         serde_json::from_value::<WireResponse>(serde_json::to_value(malformed).unwrap()).is_err()
     );
+}
+
+#[test]
+fn wire_request_expected_boot_is_optional_validated_and_typed() {
+    let base = |boot: &str| {
+        format!(
+            r#"{{"version":1,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001"{boot},"command":{{"kind":"health"}}}}"#
+        )
+    };
+    let absent: WireRequest = serde_json::from_str(&base("")).unwrap();
+    assert_eq!(absent.expected_boot, None);
+    assert!(
+        !serde_json::to_string(&absent)
+            .unwrap()
+            .contains("expected_boot")
+    );
+    let uuid = "00000000-0000-4000-8000-000000000002";
+    let present: WireRequest =
+        serde_json::from_str(&base(&format!(r#","expected_boot":"{uuid}""#))).unwrap();
+    assert_eq!(present.expected_boot.as_deref(), Some(uuid));
+    assert_eq!(
+        serde_json::to_value(&present).unwrap()["expected_boot"],
+        uuid
+    );
+    assert!(serde_json::from_str::<WireRequest>(&base(r#","expected_boot":"boot-a""#)).is_err());
+    let code: ErrorCode = serde_json::from_str("\"daemon_boot_changed\"").unwrap();
+    assert_eq!(code, ErrorCode::DaemonBootChanged);
 }
 
 #[test]
@@ -628,6 +656,7 @@ fn wire_response_is_bounded_and_correlates_actual_identity() {
         version: 1,
         request_id: "r".into(),
         expected_instance: "00000000-0000-4000-8000-000000000001".into(),
+        expected_boot: None,
         output: None,
         command: Command::Health,
     };
@@ -910,6 +939,7 @@ fn request_wire_rejects_authority_and_unknown_versions() {
         version: PROTOCOL_VERSION,
         request_id: "r1".into(),
         expected_instance: "00000000-0000-4000-8000-000000000001".into(),
+        expected_boot: None,
         output: None,
         command: Command::Health,
     };

@@ -20,6 +20,7 @@ pub fn api_exit_code(code: &ErrorCode) -> i32 {
         | DaemonVersionMismatch
         | UnknownWireVersion
         | InstanceMismatch
+        | DaemonBootChanged
         | ServiceBusy
         | StoreBusy
         | DeadlineExceeded

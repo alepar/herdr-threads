@@ -156,6 +156,7 @@ impl LocalSocketClient {
             version: PROTOCOL_VERSION,
             request_id: uuid::Uuid::new_v4().to_string(),
             expected_instance: self.expected_instance.to_string(),
+            expected_boot: self.expected_boot.map(|boot| boot.to_string()),
             output: output.cloned(),
             command,
         };
@@ -190,6 +191,13 @@ impl LocalSocketClient {
                 "unknown outcome after request submission",
             )
         })?;
+        if let Err(error) = &response.result
+            && error.code == ErrorCode::DaemonBootChanged
+            && response.correlates_to(&request, None)
+        {
+            // The daemon refused before dispatch: a definite rejection.
+            return Ok(response.result);
+        }
         let expected_boot = self.expected_boot.map(|boot| boot.to_string());
         let valid_boot = Uuid::parse_str(&response.daemon_boot)
             .is_ok_and(|boot| boot.to_string() == response.daemon_boot);

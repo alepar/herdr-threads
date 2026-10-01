@@ -449,6 +449,21 @@ pub fn plan_page(page: &SnapshotSeatPage) -> Result<Vec<GuardedSeatTransition>, 
                     target: observed.target.clone(),
                     terminal: terminal.clone(),
                 })
+            } else if saved.state == SeatState::Resolved
+                && saved.terminal.as_ref() == Some(terminal)
+                && saved.active_binding_execution.is_some()
+                && saved
+                    .bound_epoch
+                    .is_some_and(|epoch| epoch < page.publication.epoch)
+                && observed.connection_epoch.is_some_and(|epoch| epoch > 0)
+                && observed.incarnation_source.is_some()
+            {
+                // C4: same terminal, boot and incarnation in a newer host
+                // epoch; the open registered binding follows the seat.
+                Some(ReconciliationAction::CarryForward {
+                    target: observed.target.clone(),
+                    terminal: terminal.clone(),
+                })
             } else {
                 None
             }

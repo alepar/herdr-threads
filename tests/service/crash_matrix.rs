@@ -2495,6 +2495,7 @@ fn failpoints_cannot_be_armed_through_requests_or_foreign_scopes() {
         version: PROTOCOL_VERSION,
         request_id: "r".into(),
         expected_instance: uuid::Uuid::new_v4().to_string(),
+        expected_boot: None,
         output: None,
         command: Command::SendMessage(SendMessage {
             thread: thread.clone(),

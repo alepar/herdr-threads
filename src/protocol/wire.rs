@@ -14,6 +14,10 @@ pub struct WireRequest {
     pub version: u16,
     pub request_id: String,
     pub expected_instance: String,
+    /// The daemon boot the client read from the descriptor. A daemon running a
+    /// different boot refuses the request before dispatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_boot: Option<String>,
     /// Presentation only. Omitting it preserves the original JSON read mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<OutputSpec>,
@@ -29,6 +33,8 @@ impl<'de> Deserialize<'de> for WireRequest {
             request_id: String,
             expected_instance: String,
             #[serde(default)]
+            expected_boot: Option<String>,
+            #[serde(default)]
             output: Option<OutputSpec>,
             command: serde_json::Value,
         }
@@ -38,6 +44,13 @@ impl<'de> Deserialize<'de> for WireRequest {
         }
         if !valid_wire_id(&raw.request_id) || !valid_uuid(&raw.expected_instance) {
             return Err(serde::de::Error::custom("invalid request or instance id"));
+        }
+        if raw
+            .expected_boot
+            .as_deref()
+            .is_some_and(|boot| !valid_uuid(boot))
+        {
+            return Err(serde::de::Error::custom("invalid expected boot"));
         }
         let fields = raw
             .command
@@ -56,6 +69,7 @@ impl<'de> Deserialize<'de> for WireRequest {
             version: raw.version,
             request_id: raw.request_id,
             expected_instance: raw.expected_instance,
+            expected_boot: raw.expected_boot,
             output: raw.output,
             command,
         })

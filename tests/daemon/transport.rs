@@ -16,6 +16,7 @@ fn health_request(instance: uuid::Uuid, request_id: &str) -> Vec<u8> {
         version: PROTOCOL_VERSION,
         request_id: request_id.into(),
         expected_instance: instance.to_string(),
+        expected_boot: None,
         output: None,
         command: Command::Health,
     })
@@ -116,6 +117,7 @@ async fn admitted_stop_returns_correlated_acceptance_after_shutdown_cancellation
         version: PROTOCOL_VERSION,
         request_id: "stop-once".into(),
         expected_instance: instance_id(&instance).to_string(),
+        expected_boot: None,
         output: None,
         command: Command::Stop(crate::protocol::commands::StopRequest {
             expected_boot: boot.clone(),
@@ -199,6 +201,7 @@ async fn wrong_instance_and_boot_stop_do_not_cancel_real_socket_owner() {
             version: PROTOCOL_VERSION,
             request_id: "wrong-stop".into(),
             expected_instance: expected_instance.to_string(),
+            expected_boot: None,
             output: None,
             command: Command::Stop(crate::protocol::commands::StopRequest {
                 expected_boot: expected_boot.to_string(),
@@ -217,6 +220,7 @@ async fn wrong_instance_and_boot_stop_do_not_cancel_real_socket_owner() {
         version: PROTOCOL_VERSION,
         request_id: "valid-stop".into(),
         expected_instance: instance_id.to_string(),
+        expected_boot: None,
         output: None,
         command: Command::Stop(crate::protocol::commands::StopRequest {
             expected_boot: boot.to_string(),
@@ -265,6 +269,7 @@ async fn disconnected_stop_keeps_worker_and_owner_lease_until_handler_exits() {
         version: PROTOCOL_VERSION,
         request_id: "disconnected-stop".into(),
         expected_instance: instance_id(&instance).to_string(),
+        expected_boot: None,
         output: None,
         command: Command::Stop(crate::protocol::commands::StopRequest {
             expected_boot: boot,
@@ -653,6 +658,7 @@ async fn held_search_has_four_waiters_and_health_remains_available() {
             version: 1,
             request_id: format!("search-{n}"),
             expected_instance: instance_id(&instance).to_string(),
+            expected_boot: None,
             output: None,
             command: Command::Search(SearchQuery {
                 literal: "needle".into(),
@@ -679,6 +685,7 @@ async fn held_search_has_four_waiters_and_health_remains_available() {
         version: 1,
         request_id: "excess".into(),
         expected_instance: instance_id(&instance).to_string(),
+        expected_boot: None,
         output: None,
         command: Command::Search(SearchQuery {
             literal: "needle".into(),
@@ -806,6 +813,7 @@ async fn disconnected_search_retains_active_admission_until_worker_exits() {
         version: 1,
         request_id: request_id.into(),
         expected_instance: instance_id(&instance).to_string(),
+        expected_boot: None,
         output: None,
         command: Command::Search(SearchQuery {
             literal: "needle".into(),
@@ -1087,6 +1095,7 @@ async fn timed_out_search_keeps_active_permit_until_sync_worker_exits() {
         version: 1,
         request_id: request_id.into(),
         expected_instance: instance_id(&instance).to_string(),
+        expected_boot: None,
         output: None,
         command: Command::Search(SearchQuery {
             literal: "needle".into(),
@@ -2294,6 +2303,7 @@ async fn recovery_call(
         version: PROTOCOL_VERSION,
         request_id: "recovery".into(),
         expected_instance: instance.to_string(),
+        expected_boot: None,
         output: None,
         command,
     };
@@ -3076,4 +3086,167 @@ async fn elected_health_transport_disconnect_cancels_locked_retirement_read() {
     std::fs::remove_file(path).unwrap();
     std::fs::remove_dir_all(root).unwrap();
     std::fs::remove_dir_all(store_root).unwrap();
+}
+
+struct BootCheckService(Arc<AtomicUsize>);
+impl LocalService for BootCheckService {
+    fn handle(
+        &self,
+        _: Command,
+        _: PeerIdentity,
+        _: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Err(api_error(ErrorCode::Unsupported, "counted"))
+    }
+}
+
+async fn send_with_expected_boot(
+    path: &std::path::Path,
+    instance: uuid::Uuid,
+    expected_boot: Option<String>,
+) -> WireResponse {
+    let mut stream = UnixStream::connect(path).await.unwrap();
+    let request = WireRequest {
+        version: PROTOCOL_VERSION,
+        request_id: "boot-check".into(),
+        expected_instance: instance.to_string(),
+        expected_boot,
+        output: None,
+        command: Command::Health,
+    };
+    write_frame(&mut stream, &serde_json::to_vec(&request).unwrap())
+        .await
+        .unwrap();
+    serde_json::from_slice(&read_frame(&mut stream).await.unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn stale_expected_boot_is_refused_before_dispatch_and_applies_nothing() {
+    let (listener, path, root, paths) = guarded_listener();
+    let instance = instance_id(&paths);
+    let boot = listener.boot_id();
+    let uid = UnixStream::pair().unwrap().0.peer_cred().unwrap().uid();
+    let shutdown = Cancellation::default();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let server = tokio::spawn(serve(
+        listener,
+        instance,
+        Arc::new(BootCheckService(calls.clone())),
+        Arc::new(TestClock),
+        uid,
+        shutdown.clone(),
+    ));
+    let response =
+        send_with_expected_boot(&path, instance, Some(uuid::Uuid::new_v4().to_string())).await;
+    assert_eq!(response.daemon_boot, boot.to_string());
+    assert_eq!(response.request_id, "boot-check");
+    let error = response.result.unwrap_err();
+    assert_eq!(error.code, ErrorCode::DaemonBootChanged);
+    assert!(error.detail.contains("nothing was applied"));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    shutdown.cancel();
+    let _ = server.await;
+    std::fs::remove_file(path).ok();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn matching_or_absent_expected_boot_dispatches() {
+    let (listener, path, root, paths) = guarded_listener();
+    let instance = instance_id(&paths);
+    let boot = listener.boot_id();
+    let uid = UnixStream::pair().unwrap().0.peer_cred().unwrap().uid();
+    let shutdown = Cancellation::default();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let server = tokio::spawn(serve(
+        listener,
+        instance,
+        Arc::new(BootCheckService(calls.clone())),
+        Arc::new(TestClock),
+        uid,
+        shutdown.clone(),
+    ));
+    for expected in [Some(boot.to_string()), None] {
+        let response = send_with_expected_boot(&path, instance, expected).await;
+        assert_eq!(response.result.unwrap_err().code, ErrorCode::Unsupported);
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    shutdown.cancel();
+    let _ = server.await;
+    std::fs::remove_file(path).ok();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn client_maps_daemon_boot_changed_to_definite_rejection() {
+    let path = std::env::temp_dir().join(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
+    let listener = UnixListener::bind(&path).unwrap();
+    let instance = uuid::Uuid::new_v4();
+    let expected_boot = uuid::Uuid::new_v4();
+    let actual_boot = uuid::Uuid::new_v4();
+    let accepted = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = WireRequest::decode(&read_frame(&mut stream).await.unwrap()).unwrap();
+        let response = WireResponse {
+            version: PROTOCOL_VERSION,
+            request_id: request.request_id,
+            instance: instance.to_string(),
+            daemon_boot: actual_boot.to_string(),
+            result: Err(api_error(ErrorCode::DaemonBootChanged, "boot changed")),
+        };
+        write_frame(&mut stream, &serde_json::to_vec(&response).unwrap())
+            .await
+            .unwrap();
+    });
+    let clock = Arc::new(TestClock);
+    let budget = CallBudget {
+        deadline: MonoInstant(clock.monotonic_now().0 + 1000),
+        cancellation: Cancellation::default(),
+    };
+    let client = crate::client::local::LocalSocketClient::new(
+        path.clone(),
+        clock,
+        instance,
+        Some(expected_boot),
+    );
+    let definite =
+        tokio::task::spawn_blocking(move || client.call_definitive(Command::Health, &budget))
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(definite.unwrap_err().code, ErrorCode::DaemonBootChanged);
+    accepted.await.unwrap();
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn local_client_sends_expected_boot_from_descriptor() {
+    for boot in [Some(uuid::Uuid::new_v4()), None] {
+        let path = std::env::temp_dir().join(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
+        let listener = UnixListener::bind(&path).unwrap();
+        let instance = uuid::Uuid::new_v4();
+        let accepted = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let frame = read_frame(&mut stream).await.unwrap();
+            let request = WireRequest::decode(&frame).unwrap();
+            let raw: serde_json::Value = serde_json::from_slice(&frame).unwrap();
+            (request.expected_boot, raw.get("expected_boot").cloned())
+        });
+        let clock = Arc::new(TestClock);
+        let budget = CallBudget {
+            deadline: MonoInstant(clock.monotonic_now().0 + 300),
+            cancellation: Cancellation::default(),
+        };
+        let client =
+            crate::client::local::LocalSocketClient::new(path.clone(), clock, instance, boot);
+        let _ = client.call_async(Command::Health, &budget).await;
+        let (seen, raw) = accepted.await.unwrap();
+        assert_eq!(seen, boot.map(|b| b.to_string()));
+        match boot {
+            Some(b) => assert_eq!(raw, Some(serde_json::Value::String(b.to_string()))),
+            None => assert_eq!(raw, None),
+        }
+        std::fs::remove_file(path).unwrap();
+    }
 }
