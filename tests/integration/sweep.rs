@@ -177,8 +177,16 @@ impl Plugin {
                 caller.role,
             ]);
         }
+        // The agent-marker guard (TRUST-POLICY A4) must not see the test
+        // runner's own agent environment.
+        for (key, _) in std::env::vars() {
+            if key.starts_with("CODEX_") {
+                command.env_remove(key);
+            }
+        }
         let output = command
             .args(args)
+            .env_remove("CLAUDECODE")
             .env_remove("HERDR_PLUGIN_STATE_DIR")
             .env_remove("HERDR_SOCKET_PATH")
             .env_remove("HERDR_PANE_ID")

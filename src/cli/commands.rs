@@ -50,7 +50,10 @@ pub enum CliAction {
     /// Managed native launch into one explicit existing empty shell pane.
     Launch(super::launch::LaunchRequest),
     /// `me init`: record the invoking pane as the person's own seat identity.
-    MeInit,
+    /// `operator` overrides the agent-to-human guard (TRUST-POLICY A4).
+    MeInit {
+        operator: bool,
+    },
     /// Print the embedded agent skill (`skill` or `--skill`); local only.
     Skill,
     /// `read THREAD --follow`: recent messages, then each new one as it is
@@ -143,7 +146,7 @@ pub fn dispatch<B: CliBackend>(
         CliAction::Setup(_)
         | CliAction::SetupAll(_)
         | CliAction::Launch(_)
-        | CliAction::MeInit
+        | CliAction::MeInit { .. }
         | CliAction::Skill
         | CliAction::Follow(_) => {
             return Err(ApiError {
@@ -195,6 +198,8 @@ pub enum MutationSpec {
     CheckInLifecycle {
         event_id: String,
         native_session: Option<String>,
+        /// `me init --operator`: submitted as `Command::OperatorCheckIn`.
+        operator: bool,
     },
     Rebind {
         seat: SeatId,
@@ -510,7 +515,12 @@ enum MeSub {
     /// provenance, so `thread create`, `invite`, `send`, `read`, `ack` and
     /// `accept` run here with no caller flags. Re-run after a daemon restart.
     #[command(after_help = super::me::ME_INIT_HELP)]
-    Init,
+    Init {
+        /// Override the agent guard as the local account: record yourself over
+        /// an agent's binding or where agent markers are present.
+        #[arg(long)]
+        operator: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1149,6 +1159,7 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
                     .native_session
                     .map(|s| bounded(s, "native session reference"))
                     .transpose()?,
+                operator: false,
             },
             None => MutationSpec::CheckIn,
         }),
@@ -1320,8 +1331,8 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
         Top::Unsetup(args) => setup_action(super::setup::SetupVerb::Remove, args)?,
         Top::SetupStatus(args) => setup_action(super::setup::SetupVerb::Status, args)?,
         Top::Me {
-            command: MeSub::Init,
-        } => CliAction::MeInit,
+            command: MeSub::Init { operator },
+        } => CliAction::MeInit { operator },
         Top::Launch(args) => {
             use crate::harness::context::Harness;
             let harness = if args.kind == "codex" {

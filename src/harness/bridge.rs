@@ -308,6 +308,7 @@ pub(crate) fn pending_request(
         claim,
         mode,
         event_id,
+        ..
     } = &intent.semantic
     else {
         return Err(ContextError::Invalid);
@@ -344,6 +345,18 @@ pub fn prepare_event(
     initial: Option<&OccupantContext>,
     created_at_millis: i64,
 ) -> Result<Option<PendingCheckIn>, ContextError> {
+    prepare_event_as(journal, contexts, event, initial, created_at_millis, false)
+}
+/// `prepare_event`; `operator` freezes the request as the person's explicit
+/// override of the agent-to-human guard (`Command::OperatorCheckIn`).
+pub fn prepare_event_as(
+    journal: &Journal,
+    contexts: &ContextJournal,
+    event: &LifecycleEvent,
+    initial: Option<&OccupantContext>,
+    created_at_millis: i64,
+    operator: bool,
+) -> Result<Option<PendingCheckIn>, ContextError> {
     if !event.can_check_in() {
         return Ok(None);
     }
@@ -372,8 +385,12 @@ pub fn prepare_event(
             instance: seed.instance.to_string(),
             seat: SeatId::parse(seed.seat.clone()).map_err(|_| ContextError::Invalid)?,
         };
-        let reference =
-            journal.record_check_in(scope, &event.event_id, created_at_millis, || {
+        let reference = journal.record_check_in_as(
+            scope,
+            &event.event_id,
+            created_at_millis,
+            operator,
+            || {
                 let next = seed
                     .for_event(event.kind, Uuid::new_v4(), event.native_session.clone())
                     .map_err(context_io)?;
@@ -384,7 +401,8 @@ pub fn prepare_event(
                     },
                 };
                 Ok((caller_claim(&next).map_err(context_io)?, mode))
-            })?;
+            },
+        )?;
         pending_request(journal, &reference)
     })?;
     validate_event(&request, event)?;
@@ -420,7 +438,7 @@ pub fn decode_request(request: &PendingCheckIn) -> Result<Command, ContextError>
     }
     let command: Command =
         serde_json::from_slice(&request.payload).map_err(|_| ContextError::Corrupt)?;
-    let Command::CheckIn(check) = &command else {
+    let (Command::CheckIn(check) | Command::OperatorCheckIn(check)) = &command else {
         return Err(ContextError::Invalid);
     };
     let mode = match request.mode {
@@ -452,11 +470,20 @@ fn cached_event<C: LocalClient + ?Sized>(
     event: &LifecycleEvent,
     initial: Option<&OccupantContext>,
     created_at_millis: i64,
+    operator: bool,
     client: &C,
     clock: &dyn Clock,
     output: &OutputSpec,
 ) -> Result<Option<(PendingCheckIn, CheckInResponse, CommandResult)>, BridgeError> {
-    let Some(request) = prepare_event(journal, contexts, event, initial, created_at_millis)? else {
+    let Some(request) = prepare_event_as(
+        journal,
+        contexts,
+        event,
+        initial,
+        created_at_millis,
+        operator,
+    )?
+    else {
         return Ok(None);
     };
     let mut api_error = None;
@@ -513,12 +540,41 @@ pub fn run_event<C: LocalClient + ?Sized, W: Write>(
     output: &OutputSpec,
     writer: &mut W,
 ) -> Result<Option<CommandResult>, BridgeError> {
+    run_event_as(
+        journal,
+        contexts,
+        event,
+        initial,
+        created_at_millis,
+        false,
+        client,
+        clock,
+        output,
+        writer,
+    )
+}
+/// `run_event`; `operator` submits the check-in as `Command::OperatorCheckIn`.
+// Allowed: run_event's inputs plus the operator flag.
+#[allow(clippy::too_many_arguments)]
+pub fn run_event_as<C: LocalClient + ?Sized, W: Write>(
+    journal: &Journal,
+    contexts: &ContextJournal,
+    event: &LifecycleEvent,
+    initial: Option<&OccupantContext>,
+    created_at_millis: i64,
+    operator: bool,
+    client: &C,
+    clock: &dyn Clock,
+    output: &OutputSpec,
+    writer: &mut W,
+) -> Result<Option<CommandResult>, BridgeError> {
     let Some((request, _response, result)) = cached_event(
         journal,
         contexts,
         event,
         initial,
         created_at_millis,
+        operator,
         client,
         clock,
         output,
@@ -660,6 +716,7 @@ pub fn run_hook_event_reporting_notices<C: LocalClient + ?Sized, W: Write>(
         event,
         initial,
         created_at_millis,
+        false,
         client,
         clock,
         output,

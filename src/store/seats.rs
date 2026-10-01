@@ -2354,6 +2354,7 @@ pub fn register_available(
     conn: &mut Connection,
     command: &CheckIn,
     registration: Option<&ReceiptRegistration>,
+    operator: Option<&OperatorActor>,
     budget: &CallBudget,
     mut permit: MutationPermit,
     decision_fence: impl FnOnce(&Transaction<'_>, DecisionInstant) -> Result<DecisionFence, ApiError>,
@@ -2366,7 +2367,15 @@ pub fn register_available(
                 "cooperative registration must not supply native evidence",
             ));
         }
-        return register_cooperative(context, conn, command, permit, budget, build_offer);
+        return register_cooperative(
+            context,
+            conn,
+            command,
+            operator,
+            permit,
+            budget,
+            build_offer,
+        );
     }
     let registration = registration.ok_or_else(|| {
         api_error(
@@ -4334,12 +4343,19 @@ fn register_cooperative(
     context: &StoreContext,
     conn: &mut Connection,
     command: &CheckIn,
+    operator: Option<&OperatorActor>,
     mut permit: MutationPermit,
     budget: &CallBudget,
     build_offer: impl FnOnce(&Transaction<'_>, &SeatId, u64) -> Result<CheckInResult, ApiError>,
 ) -> Result<CommandResult, ApiError> {
     let claim = &command.claim;
     let digest = schema::canonical_digest(&check_in_payload(command))?;
+    // The operator form never shares an idempotency key with the plain one.
+    let idempotency_digest = if operator.is_some() {
+        schema::canonical_digest(&("operator_check_in", &command.mode, &command.claim))?
+    } else {
+        digest
+    };
     let scope = format!("seat:{}", claim.seat.as_str());
     schema::execute_budgeted_idempotent_transaction(
         context,
@@ -4347,7 +4363,7 @@ fn register_cooperative(
         budget,
         &scope,
         command.operation.as_str(),
-        digest,
+        idempotency_digest,
         |tx| cooperative_instance(tx, &claim.instance, claim),
         |tx| cooperative_mapping(tx, claim, Some(command.mode)).map(|_| ()),
         |tx, at| {
@@ -4373,6 +4389,28 @@ fn register_cooperative(
                 command.mode,
                 crate::protocol::commands::CheckInMode::Lifecycle { .. }
             );
+            if lifecycle && claim.harness == crate::protocol::authority::Harness::Human {
+                let open: Option<(String, String)> = tx
+                    .query_row(
+                        "SELECT observation_provenance,harness FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
+                        [seat.as_str()],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(store_error)?;
+                if let Some((provenance, harness)) = open
+                    && provenance == crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE
+                    && operator.is_none()
+                {
+                    return Err(api_error(
+                        ErrorCode::Unauthorized,
+                        format!(
+                            "seat {} is bound to a {harness} agent (cooperative_top_level); a person's check-in never replaces an agent's binding. Run it in your own shell pane, or override as the local account: `herdr-threads me init --operator`",
+                            seat.as_str()
+                        ),
+                    ));
+                }
+            }
             let generation = if lifecycle {
                 let maximum:i64=tx.query_row("SELECT MAX(?2,COALESCE(MAX(generation),0)) FROM occupant_bindings WHERE seat_id=?1",
                     params![seat.as_str(),mapping.generation as i64],|r|r.get(0)).map_err(store_error)?;
@@ -4398,6 +4436,10 @@ fn register_cooperative(
                 tx.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?13,?10,?10,?11,?12)",
                     params![seat.as_str(),next,claim.target.as_str(),mapping.boot,mapping.epoch as i64,mapping.revision as i64,
                         claim.harness.as_str(),claim.native_session.as_str(),claim.execution.as_str(),at.utc.0,terminal,incarnation,claim.harness.cooperative_provenance()]).map_err(store_error)?;
+                if let Some(actor) = operator {
+                    tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_human_override',?4,?5,?6,?7,?8)",
+                        params![claim.instance,claim.target.as_str(),seat.as_str(),at.utc.0,mapping.boot,mapping.epoch as i64,mapping.revision as i64,actor.audit_label()]).map_err(store_error)?;
+                }
                 tx.execute(
                     "DELETE FROM warning_offer WHERE seat_id=?1",
                     [seat.as_str()],

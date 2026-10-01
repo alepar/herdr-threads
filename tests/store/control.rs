@@ -3884,6 +3884,7 @@ fn verified_registration_anchors_once_and_rolls_back_failed_offer() {
         &mut conn,
         &command,
         Some(&registration),
+        None,
         &crate::protocol::time::CallBudget {
             deadline: crate::protocol::time::MonoInstant(u64::MAX),
             cancellation: Default::default(),
@@ -3946,6 +3947,7 @@ fn verified_registration_anchors_once_and_rolls_back_failed_offer() {
         &mut conn,
         &command,
         Some(&registration),
+        None,
         &crate::protocol::time::CallBudget {
             deadline: crate::protocol::time::MonoInstant(u64::MAX),
             cancellation: Default::default(),
@@ -4024,6 +4026,7 @@ fn verified_registration_anchors_once_and_rolls_back_failed_offer() {
         &mut conn,
         &second,
         Some(&registration),
+        None,
         &crate::protocol::time::CallBudget {
             deadline: crate::protocol::time::MonoInstant(u64::MAX),
             cancellation: Default::default(),
@@ -4177,6 +4180,7 @@ fn structural_target_generation_change_rotates_binding_even_for_same_execution()
         &mut conn,
         &command,
         Some(&registration),
+        None,
         &crate::protocol::time::CallBudget {
             deadline: crate::protocol::time::MonoInstant(u64::MAX),
             cancellation: Default::default(),
@@ -4240,6 +4244,7 @@ fn structural_target_generation_change_rotates_binding_even_for_same_execution()
         &mut conn,
         &second,
         Some(&updated),
+        None,
         &crate::protocol::time::CallBudget {
             deadline: crate::protocol::time::MonoInstant(u64::MAX),
             cancellation: Default::default(),
@@ -4305,6 +4310,7 @@ fn structural_target_generation_change_rotates_binding_even_for_same_execution()
         &mut conn,
         &third,
         Some(&stable),
+        None,
         &crate::protocol::time::CallBudget {
             deadline: crate::protocol::time::MonoInstant(u64::MAX),
             cancellation: Default::default(),
@@ -5618,6 +5624,7 @@ fn registration_rejects_exhausted_binding_generation_without_anchor() {
         &mut conn,
         &command,
         Some(&registration),
+        None,
         &crate::protocol::time::CallBudget {
             deadline: crate::protocol::time::MonoInstant(u64::MAX),
             cancellation: Default::default(),
@@ -7962,6 +7969,7 @@ fn native_registration_requires_and_records_reconfirmation_evidence() {
         &mut conn,
         &command,
         Some(&registration),
+        None,
         &budget,
         permit(
             "s2",
@@ -7995,6 +8003,7 @@ fn native_registration_requires_and_records_reconfirmation_evidence() {
         &mut conn,
         &command,
         Some(&registration),
+        None,
         &budget,
         permit(
             "s2",

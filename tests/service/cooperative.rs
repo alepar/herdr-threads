@@ -1173,3 +1173,58 @@ fn sends_succeed_after_host_outage_epoch_advance_and_reconfirmation() {
         .unwrap();
     assert_eq!(open, 0);
 }
+
+#[test]
+fn operator_check_in_requires_human_lifecycle() {
+    let (service, db) = fixture();
+    let operator = |command: Command| match command {
+        Command::CheckIn(check) => Command::OperatorCheckIn(check),
+        other => other,
+    };
+    let call = |command: Command, uid: u32| {
+        service.handle(command, PeerIdentity::from_kernel(uid), &budget())
+    };
+    let human = |claim: CallerClaim| CallerClaim {
+        harness: Harness::Human,
+        native_session: NativeSessionId::new("plugin_context:person"),
+        ..claim
+    };
+    // An agent harness is never an operator override.
+    let refused = call(operator(lifecycle(claim(), "agent")), 501).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::InvalidRequest);
+    // Nor is a Current-mode (non-lifecycle) check-in.
+    let current = Command::OperatorCheckIn(CheckIn {
+        mode: CheckInMode::Current,
+        claim: human(claim()),
+        operation: OperationId::new("current"),
+    });
+    assert_eq!(
+        call(current, 501).unwrap_err().code,
+        ErrorCode::InvalidRequest
+    );
+    // Only the elected owner may override.
+    let foreign = operator(lifecycle(human(claim()), "foreign"));
+    assert_eq!(
+        call(foreign, 502).unwrap_err().code,
+        ErrorCode::Unauthorized
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM occupant_bindings", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    // A plain human check-in over an agent's binding is refused with guidance.
+    let agent = checked(&service, lifecycle(claim(), "agent-ok"));
+    let plain = lifecycle(
+        human(CallerClaim {
+            binding_generation: agent.context.binding_generation,
+            execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
+            ..claim()
+        }),
+        "human",
+    );
+    let refused = call(plain, 501).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Unauthorized);
+    assert!(refused.detail.contains("me init --operator"));
+}

@@ -157,6 +157,13 @@ fn check_in(
     store: &SqliteStore,
     command: CheckIn,
 ) -> Result<crate::protocol::results::CheckInResult, crate::protocol::results::ApiError> {
+    check_in_as(store, command, None)
+}
+fn check_in_as(
+    store: &SqliteStore,
+    command: CheckIn,
+    operator: Option<crate::protocol::authority::OperatorActor>,
+) -> Result<crate::protocol::results::CheckInResult, crate::protocol::results::ApiError> {
     let permit = store.issue_cooperative_permit(request(&command), &budget())?;
     let result = store.register_available(
         RegisterAvailableRequest {
@@ -167,6 +174,7 @@ fn check_in(
                 output: Default::default(),
                 operation_scope: None,
             },
+            operator,
         },
         permit,
         &budget(),
@@ -704,6 +712,7 @@ fn dispatch_check_in(
                 output: Default::default(),
                 operation_scope: None,
             },
+            operator: None,
         },
         permit,
         call_budget,
@@ -856,6 +865,7 @@ fn cooperative_offer_failure_rolls_back_binding_anchor_frontier_and_operation() 
         &store.context,
         &mut writer,
         &command,
+        None,
         None,
         &budget(),
         permit,
@@ -1023,7 +1033,8 @@ fn native_missing_evidence_and_cooperative_supplied_native_evidence_are_rejected
                         instance: "i".into(),
                         output: Default::default(),
                         operation_scope: None
-                    }
+                    },
+                    operator: None,
                 },
                 permit,
                 &budget()
@@ -1247,6 +1258,7 @@ fn legacy_native_check_in_digest_and_result_are_retained_with_explicit_diagnosti
                     output: Default::default(),
                     operation_scope: None,
                 },
+                operator: None,
             },
             permit,
             &budget(),
@@ -2214,4 +2226,159 @@ fn programmatic_notices_settle_page_by_page_for_the_current_occupant() {
     );
     assert_eq!(carried(&successor), (all[..16].to_vec(), true));
     assert_eq!(pending_notices(&conn), ((6, false), 22));
+}
+
+fn human_claim(from: &CallerClaim, generation: u64) -> CallerClaim {
+    CallerClaim {
+        harness: Harness::Human,
+        native_session: NativeSessionId::new("plugin_context:person"),
+        execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
+        binding_generation: generation,
+        ..from.clone()
+    }
+}
+fn open_bindings(conn: &Connection) -> Vec<(i64, String, String)> {
+    let mut stmt = conn
+        .prepare("SELECT generation,harness,observation_provenance FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL")
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+fn binding_count(conn: &Connection) -> i64 {
+    conn.query_row("SELECT count(*) FROM occupant_bindings", [], |r| r.get(0))
+        .unwrap()
+}
+fn decision_count(conn: &Connection, kind: &str) -> i64 {
+    conn.query_row(
+        "SELECT count(*) FROM allocation_decisions WHERE kind=?1",
+        [kind],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn human_lifecycle_check_in_over_cooperative_top_level_binding_is_refused() {
+    let (store, conn, _) = fixture();
+    let agent = check_in(&store, lifecycle(claim(), "agent")).unwrap();
+    let before = binding_count(&conn);
+    let refused = check_in(
+        &store,
+        lifecycle(
+            human_claim(&agent.context, agent.context.binding_generation),
+            "human",
+        ),
+    )
+    .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Unauthorized);
+    assert!(
+        refused.detail.contains("herdr-threads me init --operator"),
+        "{}",
+        refused.detail
+    );
+    assert_eq!(
+        open_bindings(&conn),
+        vec![(1, "codex".to_owned(), "cooperative_top_level".to_owned())]
+    );
+    assert_eq!(binding_count(&conn), before);
+    let generation: i64 = conn
+        .query_row("SELECT generation FROM seats WHERE id='s'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(generation, 1);
+}
+
+#[test]
+fn human_to_agent_lifecycle_check_in_still_replaces_human_binding() {
+    let (store, conn, _) = fixture();
+    let human = check_in(&store, lifecycle(human_claim(&claim(), 0), "human")).unwrap();
+    assert_eq!(
+        open_bindings(&conn),
+        vec![(1, "human".to_owned(), "operator_human".to_owned())]
+    );
+    let mut agent = claim();
+    agent.binding_generation = human.context.binding_generation;
+    let result = check_in(&store, lifecycle(agent, "agent")).unwrap();
+    assert_eq!(result.context.binding_generation, 2);
+    assert_eq!(
+        open_bindings(&conn),
+        vec![(2, "codex".to_owned(), "cooperative_top_level".to_owned())]
+    );
+}
+
+#[test]
+fn agent_lifecycle_check_ins_on_own_target_always_replace() {
+    let (store, conn, _) = fixture();
+    let mut context = claim();
+    for (round, event) in ["startup", "clear", "resume"].into_iter().enumerate() {
+        let result = check_in(&store, lifecycle(context.clone(), event)).unwrap();
+        assert_eq!(
+            result.context.binding_generation,
+            round as u64 + 1,
+            "{event}"
+        );
+        assert_eq!(
+            open_bindings(&conn),
+            vec![(
+                round as i64 + 1,
+                "codex".to_owned(),
+                "cooperative_top_level".to_owned()
+            )],
+            "{event}"
+        );
+        context = result.context;
+        context.execution = ExecutionId::new(format!("00000000-0000-4000-8000-00000000010{round}"));
+    }
+    assert_eq!(binding_count(&conn), 3);
+    let kinds: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    assert_eq!(kinds, 0);
+}
+
+#[test]
+fn operator_human_override_replaces_agent_binding_and_is_audited() {
+    use crate::protocol::authority::{OperatorActor, PeerIdentity};
+    let (store, conn, _) = fixture();
+    let agent = check_in(&store, lifecycle(claim(), "agent")).unwrap();
+    let actor = OperatorActor::from_peer(PeerIdentity::from_kernel(501), 501).unwrap();
+    let result = check_in_as(
+        &store,
+        lifecycle(
+            human_claim(&agent.context, agent.context.binding_generation),
+            "human",
+        ),
+        Some(actor),
+    )
+    .unwrap();
+    assert_eq!(result.context.binding_generation, 2);
+    assert_eq!(
+        open_bindings(&conn),
+        vec![(2, "human".to_owned(), "operator_human".to_owned())]
+    );
+    assert_eq!(decision_count(&conn, "operator_human_override"), 1);
+    let label: String = conn
+        .query_row(
+            "SELECT operator_label FROM allocation_decisions WHERE kind='operator_human_override'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(label, "operator:local-user:501");
+    // The label never leaks into receipts or messages.
+    let leaked: i64 = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM receipts WHERE state LIKE '%operator:local-user%') + (SELECT count(*) FROM messages WHERE body LIKE '%operator:local-user%')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(leaked, 0);
 }

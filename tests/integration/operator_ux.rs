@@ -3,7 +3,7 @@
 //! `sweep.rs`. The stand-in agent seat uses the cooperative caller flags; the
 //! person uses only `HERDR_PANE_ID`, as a shell inside Herdr would.
 
-use super::sweep::{FakeHost, Scratch, pane};
+use super::sweep::{FakeHost, Scratch, agent_pane, pane};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -27,6 +27,16 @@ impl Plugin {
         agent: Option<(&str, &str)>,
         args: &[&str],
     ) -> (i32, Value, String) {
+        self.run_with_env(pane, agent, args, &[])
+    }
+    /// `run` with extra environment variables (the agent-marker tests).
+    fn run_with_env(
+        &self,
+        pane: Option<&str>,
+        agent: Option<(&str, &str)>,
+        args: &[&str],
+        extra_env: &[(&str, &str)],
+    ) -> (i32, Value, String) {
         let mut command = Command::new(BIN);
         command
             .arg("--json")
@@ -46,8 +56,15 @@ impl Plugin {
                 "top-level",
             ]);
         }
+        // The runner's own agent environment must not reach the guard under test.
+        for (key, _) in std::env::vars() {
+            if key.starts_with("CODEX_") {
+                command.env_remove(key);
+            }
+        }
         command
             .args(args)
+            .env_remove("CLAUDECODE")
             .env_remove("HERDR_PLUGIN_STATE_DIR")
             .env_remove("HERDR_SOCKET_PATH")
             .env_remove("HERDR_PANE_ID")
@@ -56,6 +73,7 @@ impl Plugin {
         if let Some(pane) = pane {
             command.env("HERDR_PANE_ID", pane);
         }
+        command.envs(extra_env.iter().copied());
         let output = command.output().unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -68,7 +86,15 @@ impl Plugin {
         value["result"].clone()
     }
     fn refused(&self, pane: Option<&str>, args: &[&str]) -> String {
-        let (code, value, stderr) = self.run(pane, None, args);
+        self.refused_with_env(pane, args, &[])
+    }
+    fn refused_with_env(
+        &self,
+        pane: Option<&str>,
+        args: &[&str],
+        extra_env: &[(&str, &str)],
+    ) -> String {
+        let (code, value, stderr) = self.run_with_env(pane, None, args, extra_env);
         assert_eq!(
             code, 2,
             "herdr-threads {args:?} must be refused as invalid: {stderr}{value}"
@@ -357,4 +383,195 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
     );
     let replaced = plugin.refused(Some("w1:p1"), &["me", "init"]);
     assert!(replaced.contains("never takes over"), "{replaced}");
+}
+
+fn scratch(prefix: &str) -> (PathBuf, Scratch, PathBuf) {
+    let root = PathBuf::from(format!(
+        "/private/tmp/{prefix}-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..10]
+    ));
+    fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+    let guard = Scratch(root.clone());
+    let socket = root.join("herdr.sock");
+    (root, guard, socket)
+}
+
+const OVERRIDE_ARGV: &str = "herdr-threads me init --operator";
+
+/// TRUST-POLICY A4, client side: an agent environment marker refuses `me init`
+/// and names the override; `--operator` is the explicit escape.
+#[test]
+fn me_init_refuses_with_claudecode_or_codex_marker() {
+    let (root, _scratch, socket) = scratch("htmk");
+    let _host = FakeHost::start(&socket, vec![pane("w1:p1", "term-a")]);
+    let plugin = Plugin {
+        state: root.join("state"),
+        host: socket.clone(),
+    };
+    plugin.ok(None, None, &["daemon", "ensure"]);
+    for marker in [("CLAUDECODE", "1"), ("CODEX_HOME", "/tmp/x")] {
+        let refused = plugin.refused_with_env(Some("w1:p1"), &["me", "init"], &[marker]);
+        assert!(refused.contains(OVERRIDE_ARGV), "{refused}");
+        assert!(refused.contains(marker.0), "{refused}");
+    }
+    // Nothing was recorded for the refused attempts.
+    let seats: i64 = plugin
+        .database()
+        .query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE harness='human'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(seats, 0);
+    // The explicit override works with the marker present.
+    let (code, value, stderr) = plugin.run_with_env(
+        Some("w1:p1"),
+        None,
+        &["me", "init", "--operator"],
+        &[("CLAUDECODE", "1")],
+    );
+    assert_eq!(code, 0, "{stderr}{value}");
+    assert_eq!(value["result"]["data"]["context"]["harness"], "human");
+}
+
+#[test]
+fn me_init_refuses_where_stand_in_herdr_reports_claude_or_codex() {
+    let (root, _scratch, socket) = scratch("htag");
+    let _host = FakeHost::start(
+        &socket,
+        vec![
+            agent_pane("w1:p1", "term-a", "claude", Some("s-1")),
+            agent_pane("w1:p2", "term-b", "codex", Some("s-2")),
+            pane("w1:p3", "term-c"),
+        ],
+    );
+    let plugin = Plugin {
+        state: root.join("state"),
+        host: socket.clone(),
+    };
+    plugin.ok(None, None, &["daemon", "ensure"]);
+    for (pane, kind) in [("w1:p1", "claude"), ("w1:p2", "codex")] {
+        let refused = plugin.refused(Some(pane), &["me", "init"]);
+        assert!(refused.contains(kind), "{refused}");
+        assert!(refused.contains(OVERRIDE_ARGV), "{refused}");
+    }
+    // A plain shell pane is fine.
+    assert_eq!(
+        plugin.ok(Some("w1:p3"), None, &["me", "init"])["kind"],
+        "checked_in"
+    );
+}
+
+/// An agent holds the seat of the person's pane. `me init` is refused with the
+/// override argv; `me init --operator` records the person (`operator_human`)
+/// and no receipt carries the operator label. Returns the plugin for audit checks.
+fn refused_then_overridden(root: &Path, socket: &Path) -> (Plugin, String) {
+    let plugin = Plugin {
+        state: root.join("state"),
+        host: socket.to_path_buf(),
+    };
+    plugin.ok(None, None, &["daemon", "ensure"]);
+    let seat = plugin.ok(None, None, &["seat", "resolve", "--pane", "w1:p1"])["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let agent = Some((seat.as_str(), "w1:p1"));
+    plugin.ok(
+        None,
+        agent,
+        &["check-in", "--lifecycle-event", "agent-start"],
+    );
+
+    let refused = plugin.refused(Some("w1:p1"), &["me", "init"]);
+    assert!(refused.contains(OVERRIDE_ARGV), "{refused}");
+    let open = |plugin: &Plugin| -> Vec<(String, String)> {
+        plugin
+            .database()
+            .prepare("SELECT harness,observation_provenance FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL")
+            .unwrap()
+            .query_map([&seat], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(
+        open(&plugin),
+        vec![("claude".to_owned(), "cooperative_top_level".to_owned())]
+    );
+
+    let me = plugin.ok(Some("w1:p1"), None, &["me", "init", "--operator"]);
+    assert_eq!(me["data"]["context"]["harness"], "human", "{me}");
+    assert_eq!(
+        open(&plugin),
+        vec![("human".to_owned(), "operator_human".to_owned())]
+    );
+
+    // The person works from the pane afterwards; the label stays out of receipts.
+    let thread = plugin.ok(
+        Some("w1:p1"),
+        None,
+        &["thread", "create", "--topic", "after override"],
+    )["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    plugin.ok(Some("w1:p1"), None, &["send", &thread, "--body", "hello"]);
+    let leaked: i64 = plugin
+        .database()
+        .query_row(
+            "SELECT (SELECT count(*) FROM messages WHERE native_observation LIKE '%operator:local-user%') \
+                  + (SELECT count(*) FROM receipts WHERE ack_observation LIKE '%operator:local-user%')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(leaked, 0);
+    (plugin, seat)
+}
+
+#[test]
+fn me_init_over_live_agent_binding_is_refused_then_operator_override_replaces_it() {
+    let (root, _scratch, socket) = scratch("htov");
+    let _host = FakeHost::start(&socket, vec![pane("w1:p1", "term-a")]);
+    refused_then_overridden(&root, &socket);
+}
+
+#[test]
+fn me_init_over_live_agent_binding_is_refused_then_operator_override_records_audit() {
+    let (root, _scratch, socket) = scratch("htau");
+    let _host = FakeHost::start(&socket, vec![pane("w1:p1", "term-a")]);
+    let (plugin, _seat) = refused_then_overridden(&root, &socket);
+    let uid = unsafe { libc::geteuid() };
+    let audits: Vec<String> = plugin
+        .database()
+        .prepare(
+            "SELECT operator_label FROM allocation_decisions WHERE kind='operator_human_override'",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(audits, vec![format!("operator:local-user:{uid}")]);
+}
+
+#[test]
+fn flagless_command_from_human_context_with_agent_marker_refuses() {
+    let (root, _scratch, socket) = scratch("htfl");
+    let _host = FakeHost::start(&socket, vec![pane("w1:p1", "term-a")]);
+    let plugin = Plugin {
+        state: root.join("state"),
+        host: socket.clone(),
+    };
+    plugin.ok(None, None, &["daemon", "ensure"]);
+    plugin.ok(Some("w1:p1"), None, &["me", "init"]);
+    plugin.ok(Some("w1:p1"), None, &["inbox"]);
+    let refused = plugin.refused_with_env(
+        Some("w1:p1"),
+        &["thread", "create", "--topic", "x"],
+        &[("CLAUDECODE", "1")],
+    );
+    assert!(refused.contains(OVERRIDE_ARGV), "{refused}");
+    assert!(refused.contains("CLAUDECODE"), "{refused}");
 }

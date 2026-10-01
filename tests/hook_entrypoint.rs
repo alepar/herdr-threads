@@ -937,6 +937,51 @@ fn rejection_then_generation_bump_then_session_start_registers_new_generation() 
     assert!(tool.stderr.is_empty(), "{}", tool.stderr);
 }
 
+/// TRUST-POLICY A4: an agent's own startup, /clear and resume lifecycle
+/// check-ins on its resolved target always replace its binding. None is
+/// refused and none records a continuity decision.
+#[test]
+fn cooperative_seat_on_own_target_startup_clear_resume_always_replace_binding() {
+    let fx = Fixture::start();
+    let session_start = |session: &str, source: &str| {
+        format!(r#"{{"session_id":"{session}","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"{source}"}}"#).into_bytes()
+    };
+    let mut generation = fx.count("SELECT generation FROM seats WHERE id='seat'");
+    for (session, source) in [("s-a", "startup"), ("s-b", "clear"), ("s-a", "resume")] {
+        let hook = fx.hook("w9:p1", &session_start(session, source));
+        assert_eq!(hook.code, Some(0), "{source}: {}", hook.stderr);
+        let context = context_of(&hook);
+        assert!(
+            context.starts_with("The top-level agent reads pending mail"),
+            "{source}: {context}"
+        );
+        assert!(!context.contains("unavailable"), "{source}: {context}");
+        let next = fx.count("SELECT generation FROM seats WHERE id='seat'");
+        assert!(next > generation, "{source}: {generation} -> {next}");
+        generation = next;
+        assert_eq!(
+            fx.count(
+                "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL"
+            ),
+            1,
+            "{source}"
+        );
+        assert_eq!(
+            fx.count(&format!("SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND generation={generation} AND observation_provenance='cooperative_top_level' AND harness='claude' AND native_session='{session}'")),
+            1,
+            "{source}"
+        );
+    }
+    assert_eq!(
+        fx.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='seat'"),
+        3
+    );
+    assert_eq!(
+        fx.count("SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'"),
+        0
+    );
+}
+
 // Required test 3: offer -> identical second tool call is quiet -> new message
 // is emitted. Kills: no coalescing (every call re-injects the same offer),
 // coalescing on counts or text (an ACK of one message plus a new one in the

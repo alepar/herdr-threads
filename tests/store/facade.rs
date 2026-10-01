@@ -1363,6 +1363,7 @@ fn public_facade_check_in_commits_anchor_and_exact_empty_offer() {
             output: OutputSpec::default(),
             operation_scope: None,
         },
+        operator: None,
     };
     let CommandResult::CheckedIn(offer) =
         StorePort::register_available(&store, request, permit, &budget()).unwrap()

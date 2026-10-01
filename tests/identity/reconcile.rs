@@ -1694,6 +1694,7 @@ fn ordinary_allocation_lifecycle(loss_address: Option<&str>) {
                 &mut conn,
                 &command,
                 Some(&registration),
+                None,
                 &crate::protocol::time::CallBudget {
                     deadline: crate::protocol::time::MonoInstant(u64::MAX),
                     cancellation: Default::default()

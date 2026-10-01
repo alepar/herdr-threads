@@ -367,6 +367,7 @@ fn registration_request_binds_operation_and_selected_offer_context() {
             output: OutputSpec::default(),
             operation_scope: None,
         },
+        operator: None,
     };
     assert_eq!(request.command.operation.as_str(), "op");
     assert!(request.read.validate().is_ok());
