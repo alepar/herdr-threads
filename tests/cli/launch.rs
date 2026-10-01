@@ -1063,3 +1063,136 @@ fn launch_name_flag_parses_and_refuses_unusable_names() {
         );
     }
 }
+
+/// Scripted `SeatInspect` pages for the launch guard's open-binding read.
+struct HistoryClient {
+    pages: std::sync::Mutex<Vec<crate::protocol::results::SeatInspection>>,
+    cursors: std::sync::Mutex<Vec<Option<String>>>,
+}
+impl LocalClient for HistoryClient {
+    fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        let Command::SeatInspect(query) = command else {
+            panic!("only seat inspection is expected");
+        };
+        assert_eq!(query.page.limit, 50);
+        self.cursors.lock().unwrap().push(query.page.cursor);
+        Ok(CommandResult::SeatInspect(
+            self.pages.lock().unwrap().remove(0),
+        ))
+    }
+}
+
+fn history_binding(
+    ordinal: u64,
+    target: &str,
+    provenance: &str,
+    ended: bool,
+) -> crate::protocol::results::SeatHistoryItem {
+    use crate::protocol::{
+        ids::{ExecutionId, NativeSessionId},
+        results::{BindingHistory, SeatHistoryItem},
+    };
+    SeatHistoryItem::Binding(BindingHistory {
+        ordinal,
+        generation: ordinal,
+        target: HostTargetId::new(target),
+        terminal: None,
+        incarnation: None,
+        host_boot: HostBootId::new("boot"),
+        host_epoch: 1,
+        native_session: NativeSessionId::new("s"),
+        execution: ExecutionId::new("e"),
+        observed_at: UtcMillis(1),
+        registered_at: None,
+        ended_at: ended.then_some(UtcMillis(2)),
+        provenance: provenance.into(),
+    })
+}
+
+fn history_page(
+    items: Vec<crate::protocol::results::SeatHistoryItem>,
+    next: Option<&str>,
+) -> crate::protocol::results::SeatInspection {
+    use crate::protocol::{
+        pagination::{Consistency, Page, StopReason},
+        results::{ContinuityStatus, MappingStatus, SeatInspection, SeatSummary},
+    };
+    SeatInspection {
+        summary: SeatSummary {
+            seat: SeatId::new("seat_1"),
+            continuity: ContinuityStatus::Resolved,
+            target: None,
+            generation: 2,
+            created_at: UtcMillis(0),
+            retired_at: None,
+        },
+        mapping: MappingStatus {
+            state: ContinuityStatus::Resolved,
+            target: None,
+            detail_argv: None,
+        },
+        hold: None,
+        retirement: None,
+        history: Page {
+            items,
+            next_cursor: next.map(Into::into),
+            next_argv: None,
+            high_water_ordinal: 9,
+            scope_revision: None,
+            has_more: next.is_some(),
+            stop_reason: if next.is_some() {
+                StopReason::Rows
+            } else {
+                StopReason::Complete
+            },
+            consistency: Consistency::BoundedLive,
+        },
+    }
+}
+
+/// Kills: reading only the first history page (a long-lived seat's open
+/// binding is on a later page), and treating an ended binding as open.
+#[test]
+fn daemon_resolver_open_binding_returns_last_open_binding() {
+    let client = HistoryClient {
+        pages: std::sync::Mutex::new(vec![
+            history_page(
+                vec![
+                    history_binding(1, "w1:p1", "cooperative_top_level", true),
+                    history_binding(2, "w2:p2", "cooperative_top_level", false),
+                ],
+                Some("c1"),
+            ),
+            history_page(
+                vec![history_binding(3, "w4:p9", "cooperative_top_level", false)],
+                None,
+            ),
+        ]),
+        cursors: std::sync::Mutex::new(vec![]),
+    };
+    let budget = CallBudget {
+        deadline: MonoInstant(60_000),
+        cancellation: Cancellation::default(),
+    };
+    let bound = open_binding_from_history(&client, &SeatId::new("seat_1"), &budget)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bound.target.as_str(), "w4:p9");
+    assert_eq!(bound.provenance, "cooperative_top_level");
+    assert_eq!(
+        *client.cursors.lock().unwrap(),
+        vec![None, Some("c1".to_string())]
+    );
+
+    let ended = HistoryClient {
+        pages: std::sync::Mutex::new(vec![history_page(
+            vec![history_binding(1, "w1:p1", "cooperative_top_level", true)],
+            None,
+        )]),
+        cursors: std::sync::Mutex::new(vec![]),
+    };
+    assert_eq!(
+        open_binding_from_history(&ended, &SeatId::new("seat_1"), &budget).unwrap(),
+        None
+    );
+}

@@ -747,6 +747,7 @@ fn unverified_execution_gets_structural_cooperative_reservation() {
                 terminal: crate::protocol::ids::TerminalId::new("term-pane"),
                 incarnation: "inc".into(),
                 binding_generation: registered.then_some(1),
+                harness: registered.then(|| "claude".to_string()),
             }
         );
         assert!(
@@ -814,6 +815,86 @@ fn unverified_execution_gets_structural_cooperative_reservation() {
         "UPDATE observed_targets SET occupancy='empty_shell'",
     );
     assert!(reserve(&store).is_none());
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// A seat with one open binding of `harness` on a fresh, verified-incarnation
+/// target with a pending invitation: the cooperative reservation fixture.
+fn bound_seat_store(harness: &str) -> (SqliteStore, std::path::PathBuf) {
+    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let context = StoreContext::new(path.clone(), Arc::new(WakeClock));
+    let db = context.open_writer().unwrap();
+    db.execute_batch("\
+        INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1);\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','pane',1,1,0);\
+        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pane','host',1,1,0,'fresh','term-pane','inc','native_current_target',1);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);\
+        INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s','invited');\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv','t','s',1,'pending',0,1,100,100);\
+    ").unwrap();
+    db.execute(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'pane','host',0,?1,'session','self-reported','cooperative_top_level',0,0,'term-pane','inc')",
+        [harness],
+    )
+    .unwrap();
+    drop(db);
+    let store = SqliteStore::new(
+        context,
+        "i",
+        StoreSettings {
+            daemon_boot: Some(uuid::Uuid::parse_str(DAEMON_BOOT).unwrap()),
+            ..StoreSettings::default()
+        },
+    )
+    .unwrap();
+    (store, path)
+}
+
+fn reserve_for_seat(store: &SqliteStore) -> Option<crate::ports::WakeReservation> {
+    let candidate = StorePort::wake_candidates(store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    StorePort::reserve_wake(store, &candidate, &budget()).unwrap()
+}
+
+/// Kills: a reservation that drops the open binding's harness, so the host
+/// adapter could not compare it with Herdr's detected agent kind.
+#[test]
+fn cooperative_reservation_carries_bound_harness() {
+    for harness in ["claude", "codex"] {
+        let (store, path) = bound_seat_store(harness);
+        let reservation = reserve_for_seat(&store).expect("cooperative reservation");
+        assert!(
+            matches!(
+                &reservation.authority,
+                crate::ports::ReservedWakeAuthority::Cooperative { harness: Some(bound), .. }
+                    if bound == harness
+            ),
+            "{harness}: {:?}",
+            reservation.authority
+        );
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Kills: waking a human-bound seat because its pane shows a claude/codex
+/// agent: a human binding never yields wake authority, whatever the
+/// effective observation (a fresh, verified-incarnation terminal) shows.
+#[test]
+fn human_bound_seat_with_agent_in_pane_gets_no_wake_authority() {
+    let (store, path) = bound_seat_store("human");
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    assert!(
+        StorePort::reserve_wake(&store, &candidate, &budget())
+            .unwrap()
+            .is_none()
+    );
     drop(store);
     let _ = std::fs::remove_file(path);
 }

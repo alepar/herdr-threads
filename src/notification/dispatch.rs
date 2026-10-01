@@ -128,9 +128,14 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NotificationPort
         if !identity_ok {
             return Ok(WakeOutcome::Unsafe);
         }
-        let Some(target) = self.host.safe_wake_target(&reservation.seat, &observation) else {
+        let Some(mut target) = self.host.safe_wake_target(&reservation.seat, &observation) else {
             return Ok(WakeOutcome::Unavailable);
         };
+        // The host cannot know the bound harness; the reservation does
+        // (TRUST-POLICY A4 wake rule).
+        if let ReservedWakeAuthority::Cooperative { harness, .. } = &reservation.authority {
+            target.bound_harness = harness.clone();
+        }
         let basis_ok = match (&target.basis, cooperative) {
             (WakeTargetBasis::CooperativeAgent, true) => true,
             (WakeTargetBasis::VerifiedOccupant { session, execution }, false) => {

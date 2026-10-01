@@ -2837,6 +2837,7 @@ impl HostPort for FakeNativeHost {
             },
             epoch: observation.epoch,
             observation_sequence: observation.observation_sequence,
+            bound_harness: None,
         })
     }
     fn submit_prompt(
@@ -3419,6 +3420,7 @@ fn cooperative_reservation_rechecks_structure_and_never_crosses_bases() {
         terminal: TerminalId::new("terminal"),
         incarnation: "incarnation".into(),
         binding_generation: None,
+        harness: None,
     };
     let cooperative = || {
         let mut observation = fresh_observation();
@@ -3481,5 +3483,119 @@ fn cooperative_reservation_rechecks_structure_and_never_crosses_bases() {
         );
         assert_eq!(host.submitted.load(Ordering::SeqCst), 0, "{label}");
         assert_eq!(check.calls.load(Ordering::SeqCst), 0, "{label}");
+    }
+}
+
+/// A cooperative-basis host that records the target handed to `submit_prompt`.
+struct CooperativeRecordingHost {
+    observation: HostObservation,
+    prompted: std::sync::Mutex<Vec<SafeWakeTarget>>,
+}
+impl HostPort for CooperativeRecordingHost {
+    fn native_launch_capability(&self) -> NativeLaunchCapability {
+        NativeLaunchCapability::HostGuardedStart
+    }
+    fn observe_current_target(
+        &self,
+        _: &HostTargetId,
+        _: &HostCallContext,
+    ) -> Result<HostObservation, ApiError> {
+        Ok(self.observation.clone())
+    }
+    fn enumerate_targets(&self, _: &HostCallContext) -> Result<HostSnapshot, ApiError> {
+        unreachable!()
+    }
+    fn subscribe_lifecycle(
+        &self,
+        _: &HostCallContext,
+    ) -> Result<Box<dyn HostLifecycleSubscription>, ApiError> {
+        unreachable!()
+    }
+    fn safe_wake_target(
+        &self,
+        seat: &SeatId,
+        observation: &HostObservation,
+    ) -> Option<SafeWakeTarget> {
+        let IncarnationEvidence::Verified { identity, .. } = &observation.incarnation else {
+            return None;
+        };
+        Some(SafeWakeTarget {
+            seat: seat.clone(),
+            target: observation.target.clone(),
+            host_boot: observation.host_boot.clone(),
+            generation: observation.generation,
+            terminal: observation.terminal.clone()?,
+            incarnation: identity.clone(),
+            basis: crate::ports::WakeTargetBasis::CooperativeAgent,
+            epoch: observation.epoch,
+            observation_sequence: observation.observation_sequence,
+            bound_harness: None,
+        })
+    }
+    fn submit_prompt(
+        &self,
+        target: &SafeWakeTarget,
+        _: &str,
+        _: &HostCallContext,
+    ) -> Result<PromptOutcome, ApiError> {
+        self.prompted.lock().unwrap().push(target.clone());
+        Ok(PromptOutcome::Submitted)
+    }
+    fn launch_native(
+        &self,
+        _: NativeLaunchRequest,
+        _: &HostCallContext,
+    ) -> Result<NativeLaunchOutcome, ApiError> {
+        unreachable!()
+    }
+}
+
+/// Kills: a dispatcher that leaves `bound_harness` unset (the adapter would
+/// then accept any recognized agent kind) or sets it from the wrong source.
+#[test]
+fn dispatcher_passes_bound_harness_to_prompt_target() {
+    let clock = FakeClock(AtomicU64::new(0));
+    let context = HostCallContext {
+        budget: CallBudget {
+            deadline: MonoInstant(5_000),
+            cancellation: Cancellation::default(),
+        },
+        expected_boot: Some(HostBootId::new("boot")),
+        expected_epoch: Some(1),
+    };
+    for bound in [Some("claude"), Some("codex"), None] {
+        let mut reservation = test_reservation();
+        reservation.authority = ReservedWakeAuthority::Cooperative {
+            terminal: TerminalId::new("terminal"),
+            incarnation: "incarnation".into(),
+            binding_generation: None,
+            harness: bound.map(str::to_string),
+        };
+        let mut observation = fresh_observation();
+        observation.occupant = None;
+        observation.ui = HostUiState::Unknown;
+        observation.occupancy = StructuralOccupancy::Unknown;
+        observation.execution = ExecutionEvidence::Unknown;
+        let host = CooperativeRecordingHost {
+            observation,
+            prompted: std::sync::Mutex::new(vec![]),
+        };
+        let check = FakeReservationCheck {
+            current: true,
+            calls: AtomicU64::new(0),
+        };
+        let dispatch = NativeWakeDispatcher::new(&host, &check, &clock);
+        assert_eq!(
+            dispatch.attempt_wake(reservation, &context).unwrap(),
+            WakeOutcome::Submitted,
+            "{bound:?}"
+        );
+        let prompted = host.prompted.lock().unwrap();
+        assert_eq!(prompted.len(), 1, "{bound:?}");
+        assert_eq!(
+            prompted[0].bound_harness.as_deref(),
+            bound,
+            "the prompt target carries the reservation's harness"
+        );
     }
 }
