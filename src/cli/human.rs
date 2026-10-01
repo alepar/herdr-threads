@@ -94,6 +94,11 @@ pub fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String> {
         CommandResult::Reopened(thread) => {
             out.push_str(&format!("Reopened thread {}.\n", thread.as_str()))
         }
+        CommandResult::ContinuityReattached(reattached) => out.push_str(&format!(
+            "Reattached seat {} (binding generation {}).\n",
+            reattached.seat.as_str(),
+            reattached.binding_generation
+        )),
         CommandResult::OperatorRebound(seat) => {
             out.push_str(&format!("Rebound seat {}.\n", seat.as_str()))
         }

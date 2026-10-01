@@ -30,6 +30,7 @@ pub enum CommandResult {
     OperationStatus(OperationStatus),
     RetirementJobs(Page<RetirementStatus>),
     SeatResolved(SeatId),
+    ContinuityReattached(ContinuityReattachment),
     CheckedIn(CheckInResult),
     /// Local presentation of an immutable completed CheckIn fragment.
     #[serde(skip_deserializing)]
@@ -455,6 +456,19 @@ pub struct RepairHistory {
     pub host_epoch: u64,
     pub generation: u64,
     pub operator_label: Option<String>,
+    /// TRUST-POLICY C1: how Herdr's `agent_session` compared with the resumed
+    /// session id (`match`, `mismatch`, `absent`, `read_error`). Diagnostic
+    /// only; it never decided the reattachment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuity_diagnostic: Option<String>,
+}
+/// The seat a resumed session was reattached to and the binding generation
+/// the caller's ordinary lifecycle check-in must name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContinuityReattachment {
+    pub seat: SeatId,
+    pub binding_generation: u64,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -750,6 +764,7 @@ pub enum IntentKind {
     OperatorOrphanInvite,
     OperatorRetire,
     OperatorReplace,
+    ContinuityCheckIn,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

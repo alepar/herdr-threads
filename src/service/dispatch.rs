@@ -281,6 +281,33 @@ impl LocalService for DomainService {
                 })?;
                 preparation.operator(operator, actor, budget)
             }
+            // Daemon lifecycle check order (TRUST-POLICY A4, C1): (1) the A4
+            // agent-to-human refusal, (2) this C1 reattachment on a held or
+            // unowned target, (3) the existing hold refusal / ordinary path.
+            // The hook sends this seatless command only when the pane has no
+            // resolved seat and the event is a top-level resume, so (1)
+            // (human lifecycle check-ins) never reaches it.
+            Command::ContinuityCheckIn(continuity) => {
+                let (owner_uid, _) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+                    error(
+                        ErrorCode::CallerUnverified,
+                        "cooperative elected runtime unavailable",
+                    )
+                })?;
+                if peer.effective_uid() != *owner_uid {
+                    return Err(error(
+                        ErrorCode::Unauthorized,
+                        "caller peer does not match elected owner",
+                    ));
+                }
+                let identity = self.current_target.as_ref().ok_or_else(|| {
+                    error(
+                        ErrorCode::Unsupported,
+                        "current-target preparation unavailable",
+                    )
+                })?;
+                identity.continuity(continuity, budget)
+            }
             Command::LocalIntents(_) => Err(error(
                 ErrorCode::Unsupported,
                 "local intents are client-owned",

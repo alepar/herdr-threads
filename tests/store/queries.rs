@@ -2798,3 +2798,39 @@ fn participants_and_thread_show_mark_the_caller_seat() {
         .collect();
     assert_eq!(selves, ["s-agent"]);
 }
+
+#[test]
+fn seat_inspect_shows_continuity_diagnostic() {
+    let (store, db) = fixture();
+    db.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,continuity_diagnostic) VALUES ('i','target','s','cooperative_continuity',1,'boot',1,2,'mismatch')",[]).unwrap();
+    db.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation) VALUES ('i','target','s','operator_rebind',2,'boot',1,3)",[]).unwrap();
+    let q = Command::SeatInspect(SeatInspectQuery {
+        seat: SeatId::new("s"),
+        page: page(None),
+    });
+    let CommandResult::SeatInspect(result) = query(&store, "i", &q, &budget()).unwrap() else {
+        panic!()
+    };
+    let repairs: Vec<_> = result
+        .history
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            crate::protocol::results::SeatHistoryItem::Repair(repair) => Some((
+                repair.decision_kind.as_str(),
+                repair.continuity_diagnostic.as_deref(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        repairs,
+        vec![
+            ("cooperative_continuity", Some("mismatch")),
+            ("operator_rebind", None)
+        ]
+    );
+    // Absent values stay off the wire so operator history is unchanged.
+    let json = serde_json::to_string(&result.history).unwrap();
+    assert_eq!(json.matches("continuity_diagnostic").count(), 1);
+}
