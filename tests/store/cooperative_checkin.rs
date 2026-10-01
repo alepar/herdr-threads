@@ -2343,9 +2343,7 @@ fn agent_lifecycle_check_ins_on_own_target_always_replace() {
     assert_eq!(kinds, 0);
 }
 
-// Needs migration 0010 (ht-rzi.1), the only schema admitting this audit kind.
 #[test]
-#[ignore = "blocked on ht-rzi.1: allocation_decisions kind operator_human_override"]
 fn operator_human_override_replaces_agent_binding_and_is_audited() {
     use crate::protocol::authority::{OperatorActor, PeerIdentity};
     let (store, conn, _) = fixture();

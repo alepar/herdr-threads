@@ -4436,6 +4436,10 @@ fn register_cooperative(
                 tx.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?13,?10,?10,?11,?12)",
                     params![seat.as_str(),next,claim.target.as_str(),mapping.boot,mapping.epoch as i64,mapping.revision as i64,
                         claim.harness.as_str(),claim.native_session.as_str(),claim.execution.as_str(),at.utc.0,terminal,incarnation,claim.harness.cooperative_provenance()]).map_err(store_error)?;
+                if let Some(actor) = operator {
+                    tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_human_override',?4,?5,?6,?7,?8)",
+                        params![claim.instance,claim.target.as_str(),seat.as_str(),at.utc.0,mapping.boot,mapping.epoch as i64,mapping.revision as i64,actor.audit_label()]).map_err(store_error)?;
+                }
                 tx.execute(
                     "DELETE FROM warning_offer WHERE seat_id=?1",
                     [seat.as_str()],

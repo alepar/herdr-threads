@@ -537,9 +537,7 @@ fn me_init_over_live_agent_binding_is_refused_then_operator_override_replaces_it
     refused_then_overridden(&root, &socket);
 }
 
-// Needs migration 0010 (ht-rzi.1), the only schema admitting this audit kind.
 #[test]
-#[ignore = "blocked on ht-rzi.1: allocation_decisions kind operator_human_override"]
 fn me_init_over_live_agent_binding_is_refused_then_operator_override_records_audit() {
     let (root, _scratch, socket) = scratch("htau");
     let _host = FakeHost::start(&socket, vec![pane("w1:p1", "term-a")]);
