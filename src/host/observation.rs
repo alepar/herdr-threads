@@ -263,3 +263,89 @@ pub fn normalize_pane_names(raw: &str) -> Result<Vec<PaneName>, ApiError> {
         })
         .collect())
 }
+
+/// Herdr `agent.get` for one pane. Detection-based kind and the
+/// integration's agent session are diagnostic/best-effort evidence only.
+pub fn normalize_pane_agent(
+    raw: &str,
+    target: &str,
+) -> Result<Option<crate::ports::PaneAgentObservation>, ApiError> {
+    let result = envelope(raw, "agent_info")?;
+    let agent = result
+        .get("agent")
+        .ok_or_else(|| invalid("missing agent record"))?;
+    if agent.get("pane_id").and_then(Value::as_str) != Some(target) {
+        return Err(invalid("agent record names another pane"));
+    }
+    let kind = agent
+        .get("agent")
+        .and_then(Value::as_str)
+        .filter(|kind| !kind.is_empty())
+        .map(str::to_owned);
+    let agent_session = match agent.get("agent_session") {
+        None | Some(Value::Null) => None,
+        Some(session) => Some(field(session, "value")?.to_owned()),
+    };
+    Ok(Some(crate::ports::PaneAgentObservation {
+        kind,
+        agent_session,
+    }))
+}
+
+#[cfg(test)]
+mod pane_agent_tests {
+    use super::*;
+    use crate::ports::PaneAgentObservation;
+
+    fn raw(agent: &str, pane: &str, session: &str) -> String {
+        format!(
+            r#"{{"id":"x","result":{{"type":"agent_info","agent":{{{agent}"agent_status":"idle","pane_id":"{pane}","terminal_id":"term_1"{session}}}}}}}"#
+        )
+    }
+    const SESSION: &str = r#","agent_session":{"agent":"claude","kind":"id","source":"herdr:claude","value":"sess-1"}"#;
+
+    #[test]
+    fn agent_info_with_session_maps_kind_and_session() {
+        assert_eq!(
+            normalize_pane_agent(&raw(r#""agent":"claude","#, "w4:p1", SESSION), "w4:p1").unwrap(),
+            Some(PaneAgentObservation {
+                kind: Some("claude".into()),
+                agent_session: Some("sess-1".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn agent_info_without_session_has_none_session() {
+        for session in ["", r#","agent_session":null"#] {
+            let parsed =
+                normalize_pane_agent(&raw(r#""agent":"claude","#, "w4:p1", session), "w4:p1")
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(parsed.kind.as_deref(), Some("claude"));
+            assert_eq!(parsed.agent_session, None, "{session}");
+        }
+    }
+
+    #[test]
+    fn agent_info_without_kind_has_none_kind() {
+        let parsed = normalize_pane_agent(&raw("", "w4:p1", SESSION), "w4:p1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.kind, None);
+        assert_eq!(parsed.agent_session.as_deref(), Some("sess-1"));
+    }
+
+    #[test]
+    fn agent_info_for_another_pane_is_an_error() {
+        assert!(
+            normalize_pane_agent(&raw(r#""agent":"claude","#, "w4:p2", SESSION), "w4:p1").is_err()
+        );
+    }
+
+    #[test]
+    fn wrong_result_type_is_an_error() {
+        let wrong = raw(r#""agent":"claude","#, "w4:p1", "").replace("agent_info", "pane_info");
+        assert!(normalize_pane_agent(&wrong, "w4:p1").is_err());
+    }
+}

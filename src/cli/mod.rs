@@ -224,6 +224,31 @@ where
     run(argv, writer)
 }
 
+/// Single best-effort read for `me init`; never authority. One
+/// `observe_pane_agent` call on a fresh adapter with a 2 s budget and no
+/// expected boot or epoch.
+#[allow(dead_code)] // consumed by ht-rzi.3
+pub(crate) fn pane_agent(
+    context: &RuntimeContext,
+    clock: &Arc<dyn Clock>,
+    pane: &crate::protocol::ids::HostTargetId,
+) -> Result<Option<crate::ports::PaneAgentObservation>, ApiError> {
+    use crate::ports::HostPort;
+    let host =
+        crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(clock));
+    host.observe_pane_agent(
+        pane,
+        &crate::ports::HostCallContext {
+            budget: CallBudget {
+                deadline: MonoInstant(clock.monotonic_now().0.saturating_add(2_000)),
+                cancellation: Cancellation::default(),
+            },
+            expected_boot: None,
+            expected_epoch: None,
+        },
+    )
+}
+
 /// Run with an explicit caller pane (Herdr's `HERDR_PANE_ID` for the process
 /// that invoked the CLI; never the focused pane). The pane only locates the
 /// seat whose service mapping and private lifecycle context already exist.

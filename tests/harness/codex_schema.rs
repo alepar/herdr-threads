@@ -13,8 +13,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const CAPTURE: &str =
-    "docs/evidence/codex-158-hook-capture";
+const CAPTURE: &str = "docs/evidence/codex-158-hook-capture";
 const LIVE_ROOT_TOOL: &[u8] =
     include_bytes!("../fixtures/codex-0.158.0/03-pretooluse-bash-root.json");
 const LIVE_START: &[u8] = include_bytes!("../fixtures/codex-0.158.0/01-sessionstart-startup.json");

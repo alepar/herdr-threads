@@ -297,9 +297,8 @@ fn code(result: Result<LaunchReport, RunError>) -> ErrorCode {
 /// The committed Codex 0.158.0 hook schema extraction, concatenated (what a
 /// schema-matched unlisted binary embeds).
 fn committed_codex_schemas() -> Vec<u8> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(
-        "docs/evidence/codex-158-hook-capture/schemas-0.158.0",
-    );
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("docs/evidence/codex-158-hook-capture/schemas-0.158.0");
     let mut files: Vec<_> = fs::read_dir(dir)
         .unwrap()
         .map(|entry| entry.unwrap().path())
