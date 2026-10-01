@@ -498,7 +498,8 @@ fn classify(error: &ApiError) -> FailureClass {
         | ErrorCode::ReadBudgetExhausted
         | ErrorCode::CursorStale
         | ErrorCode::InvalidCursor
-        | ErrorCode::InstanceMismatch => FailureClass::Transient,
+        | ErrorCode::InstanceMismatch
+        | ErrorCode::DaemonBootChanged => FailureClass::Transient,
         _ => FailureClass::Definitive,
     }
 }

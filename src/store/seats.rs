@@ -1041,14 +1041,28 @@ fn saved_seat_scalar(
         "SELECT terminal_id,incarnation,execution_id,host_boot FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1",
         [&id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
     ).optional().map_err(store_error)?;
-    let active_binding_execution: Option<String> = conn
+    type ActiveBinding = (String, i64, String, Option<String>);
+    let active_binding: Option<ActiveBinding> = conn
         .query_row(
-            "SELECT execution_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL ORDER BY ordinal DESC LIMIT 1",
+            "SELECT execution_id,host_epoch,host_boot,incarnation FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL ORDER BY ordinal DESC LIMIT 1",
             [&id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()
         .map_err(store_error)?;
+    let bound_epoch =
+        match (&active_binding, &structural_proof) {
+            (Some((_, epoch, boot, incarnation)), Some(proof))
+                if boot == proof.host_boot().as_str()
+                    && incarnation.as_deref() == Some(proof.incarnation()) =>
+            {
+                Some(u64::try_from(*epoch).map_err(|_| {
+                    api_error(ErrorCode::StoreCorrupt, "negative binding host epoch")
+                })?)
+            }
+            _ => None,
+        };
+    let active_binding_execution: Option<String> = active_binding.map(|(execution, ..)| execution);
     let prior_published_observation = if state == "unresolved"
         && unresolved_reason.as_deref() == Some("host_invalidation")
     {
@@ -1138,6 +1152,7 @@ fn saved_seat_scalar(
             .as_ref()
             .map(|value| ExecutionId::new(value.2.clone())),
         active_binding_execution: active_binding_execution.map(ExecutionId::new),
+        bound_epoch,
         bound_boot: structural_proof
             .as_ref()
             .map(|proof| proof.host_boot().clone())
@@ -1663,6 +1678,39 @@ pub fn mark_unresolved_from_invalidation(
     )
 }
 
+/// C4: carry the open registered binding forward to the publication's host
+/// epoch in place. Harness, session, execution, generation and provenance stay.
+/// Closes the seat's open unavailability marker only when a binding moved.
+fn carry_binding_forward(
+    tx: &Transaction<'_>,
+    seat: &SeatId,
+    generation: u64,
+    publication: &PublishedSnapshot,
+    target: &str,
+    target_generation: i64,
+) -> Result<(), ApiError> {
+    let changed = tx.execute(
+        "UPDATE occupant_bindings SET host_epoch=?1,target_generation=?2 WHERE seat_id=?3 AND generation=?4 AND ended_at IS NULL AND registered_at IS NOT NULL AND host_boot=?5 AND target_id=?6 AND incarnation=?7 AND observation_provenance IN ('cooperative_top_level','operator_human')",
+        params![
+            checked_host_number(publication.epoch)?,
+            target_generation,
+            seat.as_str(),
+            checked_host_number(generation)?,
+            publication.boot.as_str(),
+            target,
+            publication.incarnation
+        ],
+    ).map_err(store_error)?;
+    if changed == 1 {
+        tx.execute(
+            "UPDATE seats SET unavailability_open=0 WHERE id=?1",
+            [seat.as_str()],
+        )
+        .map_err(store_error)?;
+    }
+    Ok(())
+}
+
 pub fn apply_reconciliation_transition(
     context: &StoreContext,
     conn: &mut Connection,
@@ -1808,7 +1856,15 @@ pub fn apply_reconciliation_transition(
                     if owned { return Ok(None); }
                     checked_host_number(observed.structural_generation)?
                 }
-                ReconciliationAction::ReconfirmStructure { target, terminal } => {
+                ReconciliationAction::ReconfirmStructure { target, terminal }
+                | ReconciliationAction::CarryForward { target, terminal } => {
+                    if matches!(transition.action, ReconciliationAction::CarryForward { .. }) {
+                        let resolved: bool = tx.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND state='resolved')",
+                            [transition.seat.as_str()], |r| r.get(0),
+                        ).map_err(store_error)?;
+                        if !resolved { return Ok(None); }
+                    }
                     // Same terminal, same verified boot and incarnation as the
                     // evidence on the seat's latest binding; occupancy and
                     // execution are not consulted (the production adapter
@@ -2039,6 +2095,7 @@ pub fn apply_reconciliation_transition(
             let proof = match &transition.action {
                 ReconciliationAction::Reconfirm { target, terminal, .. }
                 | ReconciliationAction::ReconfirmStructure { target, terminal }
+                | ReconciliationAction::CarryForward { target, terminal }
                 | ReconciliationAction::Move { target, terminal }
                 | ReconciliationAction::Replace { target, terminal, .. }
                 | ReconciliationAction::MarkOccupantUnavailable { target, terminal, .. } => {
@@ -2091,6 +2148,20 @@ pub fn apply_reconciliation_transition(
                         params![target.as_str(),target_generation,seat.as_str(),instance,checked_host_number(transition.expected_binding_generation)?],
                     ).map_err(store_error)?;
                     if changed != 1 { return Ok(ReconciliationOutcome::Stale); }
+                    carry_binding_forward(tx, seat, transition.expected_binding_generation, &transition.publication, target.as_str(), target_generation)?;
+                    update_structural_proof(tx, seat, proof.as_ref().expect("validated structural proof"))?;
+                    schema::bump_lifecycle_revision(tx, instance)?;
+                    schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
+                    ReconciliationOutcome::Applied
+                }
+                ReconciliationAction::CarryForward { target, .. } => {
+                    let generation = checked_host_number(transition.expected_binding_generation)?;
+                    let changed = tx.execute(
+                        "UPDATE seats SET target_generation=?1 WHERE id=?2 AND generation=?3 AND state='resolved'",
+                        params![target_generation,seat.as_str(),generation],
+                    ).map_err(store_error)?;
+                    if changed != 1 { return Ok(ReconciliationOutcome::Stale); }
+                    carry_binding_forward(tx, seat, transition.expected_binding_generation, &transition.publication, target.as_str(), target_generation)?;
                     update_structural_proof(tx, seat, proof.as_ref().expect("validated structural proof"))?;
                     schema::bump_lifecycle_revision(tx, instance)?;
                     schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;

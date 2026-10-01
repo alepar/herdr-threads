@@ -817,6 +817,50 @@ fn send_does_not_start_timer_from_stale_registered_binding() {
 }
 
 #[test]
+fn current_binding_with_bumped_snapshot_generation_is_unavailable_and_warns_once() {
+    let (context, mut conn, _) = setup();
+    conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('b',1,'pb','b',1,1,'codex','nb','eb','cooperative_top_level',0,0,'term-pb','inc')", []).unwrap();
+    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pb','b',1,1,0,'fresh','term-pb','inc','coherent_enumeration',1)", []).unwrap();
+    // Control: the same binding is available while the observed structural
+    // generation matches, so the bump below is the only thing that changes.
+    assert_eq!(
+        crate::store::schema::effective_registered_availability(&conn, "b", None).unwrap(),
+        Some("cooperative_top_level".into())
+    );
+    conn.execute(
+        "UPDATE observed_targets SET generation=2 WHERE instance_id='i' AND target_id='pb'",
+        [],
+    )
+    .unwrap();
+    let send = send_request(vec![]);
+    let id = match send_prepared(
+        &context,
+        &mut conn,
+        &send,
+        &mut permit(&send),
+        messages::MessageLimits::default(),
+        fence,
+    )
+    .unwrap()
+    {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        _ => panic!(),
+    };
+    let receipt = crate::store::effective::effective_receipt(&conn, id.as_str(), "b")
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.available_at, None);
+    let warnings: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM prepared_unavailable_warnings w JOIN send_manifests sm ON sm.preparation_id=w.preparation_id WHERE w.event_json LIKE '%\"seat\":\"b\"%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(warnings, 1);
+}
+
+#[test]
 fn failed_operation_commit_rolls_back_message_receipt_and_wake() {
     let (context, mut conn, _) = setup();
     conn.execute_batch("CREATE TRIGGER fail_op BEFORE INSERT ON operations BEGIN SELECT RAISE(ABORT,'injected commit failure'); END;").unwrap();
