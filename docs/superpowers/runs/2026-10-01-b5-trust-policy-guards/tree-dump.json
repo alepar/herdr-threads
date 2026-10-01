@@ -1,0 +1,200 @@
+[
+  {
+    "id": "ht-rzi.5",
+    "title": "Daemon-restart continuity: expected boot in requests, binding carry-forward (P35, O1, W5-2)",
+    "description": "TRUST-POLICY A2/C4. (1) P35: add optional expected_boot to the WireRequest envelope (src/client/local.rs ~155, src/protocol/wire.rs); LocalSocketClient already holds descriptor.boot_id; the daemon refuses a mismatch before dispatch with a definitive DaemonBootChanged error (client maps it to a retryable definite rejection, not UnknownOutcome). (2) O1: when a structural reconfirm (same terminal, Herdr boot and incarnation) is applied after a daemon restart, carry the open cooperative binding forward to the new host epoch (Reconfirm/ReconfirmStructure apply in src/store/seats.rs ~1811-1840, ~2087-2096; effective_registered_availability src/store/schema.rs:1356), so the first send no longer warns recipient_unavailable. (3) W5-2: store test for current binding + bumped snapshot generation -\u003e available_at NULL and exactly one prepared_unavailable_warnings row (src/store/messages.rs ~421).\n\nowns: WireRequest expected_boot field and pre-dispatch refusal error code, binding carry-forward on structural reconfirm, W5-2 store test. files: src/protocol/wire.rs, src/protocol/results.rs (error code), src/client/local.rs, src/daemon/ (dispatch), src/store/seats.rs (reconfirm apply), src/store/schema.rs, tests/store/receipts.rs or tests/service/cooperative.rs.",
+    "acceptance_criteria": "Tests: request with stale expected_boot refused pre-dispatch, nothing applied; daemon stop/ensure then send to a joined, structurally reconfirmed seat starts its timer with no warning; a Herdr-incarnation change still makes it unresolved; W5-2 test present.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-01T19:54:09Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-01T20:02:51Z",
+    "labels": [
+      "sp:ht-rzi"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-rzi.5",
+        "depends_on_id": "ht-rzi",
+        "type": "parent-child",
+        "created_at": "2026-10-01T19:54:09Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-rzi"
+  },
+  {
+    "id": "ht-rzi.3",
+    "title": "Agent-to-human binding guards for me init (Wave 18)",
+    "description": "TRUST-POLICY A3/A4. (1) Daemon-side: refuse a lifecycle check-in with harness=human while the seat's open binding has provenance cooperative_top_level, unless the request is --operator (store lifecycle path src/store/seats.rs ~3671-3695 ends any open binding today). Daemon-side because a forged contexts/ file can bypass the CLI (Wave 30). (2) Client-side best effort in src/cli/me.rs (and derive_selection in src/cli/mod.rs ~1064 when the local context is Human): refuse when CLAUDECODE or CODEX_* env markers are present, or Herdr reports an agent in the pane (one pane read). Guidance: --new-seat --operator.\n\nowns: daemon refusal of agent-to-human lifecycle check-in without --operator; me init / derive_selection agent-marker refusal. files: src/store/seats.rs (lifecycle check-in), src/cli/me.rs, src/cli/mod.rs, docs/operations.md.",
+    "acceptance_criteria": "Tests: me init over a live cooperative_top_level binding is refused with operator guidance; --operator path allowed and audited; human-\u003eagent check-in still replaces the human binding; me init with CLAUDECODE set refuses; flagless command from a Human context with agent markers refuses.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-01T19:54:08Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-01T20:02:49Z",
+    "labels": [
+      "sp:ht-rzi"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-rzi.3",
+        "depends_on_id": "ht-rzi",
+        "type": "parent-child",
+        "created_at": "2026-10-01T19:54:08Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-rzi"
+  },
+  {
+    "id": "ht-rzi.4",
+    "title": "Launch and wake harness guards (Wave 28, W9-2, W6-C3)",
+    "description": "TRUST-POLICY A4 / Accepted limits. (1) Wave 28: launch_managed (src/harness/launch.rs ~440-560) refuses when the seat's open binding is agent provenance and Herdr reports a claude/codex agent in that binding's pane (seat inspect + agent get); the name suffix retry (src/host/native.rs:210-216) then cannot start a second agent for the seat. (2) W9-2: carry the binding harness into SafeWakeTarget (src/ports.rs ~1533) and compare with agent.agent in cooperative_wake_ready (src/host/native.rs ~964-994). (3) W6-C3: refuse the top-level 'codex resume' launch form (src/harness/launch.rs:283) like fork/review until a live capture exists. Coordinate with B6 ht-p03.28 (launch correctness) to avoid overlapping edits.\n\nowns: launch live-bound-agent refusal, SafeWakeTarget harness field + cooperative_wake_ready comparison, codex resume launch-form refusal. files: src/harness/launch.rs, src/cli/launch.rs, src/ports.rs (SafeWakeTarget), src/host/native.rs, src/store/wake.rs.",
+    "acceptance_criteria": "Tests: launch onto a seat whose bound agent is live elsewhere is refused with a clear message; wake to a pane whose agent kind differs from the bound harness is refused (no prompt sent); 'codex resume' launch refused with evidence message.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-01T19:54:08Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-01T20:02:50Z",
+    "labels": [
+      "sp:ht-rzi"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-rzi.4",
+        "depends_on_id": "ht-rzi",
+        "type": "parent-child",
+        "created_at": "2026-10-01T19:54:08Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-rzi"
+  },
+  {
+    "id": "ht-rzi.2",
+    "title": "Cooperative continuity: session-id reattachment of unresolved seats",
+    "description": "TRUST-POLICY C1. Persist the harness session id (Claude session_id, Codex session id) on occupant_bindings at check-in (hooks already parse it: src/harness/claude.rs:130, src/harness/codex.rs:979; it is not stored today). When a top-level lifecycle check-in arrives in a held or unowned target and its session id uniquely matches the last binding of exactly one unresolved nonretired seat, rebind that seat to the target, release the hold, record provenance cooperative_continuity (new constant in src/protocol/authority.rs, never on receipts). No match / multiple matches / fresh session -\u003e unchanged operator path. The hook today never allocates (src/cli/hook.rs find_seat); this is a new daemon-side decision, not client-side. Herdr's agent list exposes agent_session for claude panes (source herdr:claude): consider cross-checking it as a consistency hint, never as proof. First step: capture native evidence that Claude --resume/--continue and Codex resume keep the session id across a Herdr restart (docs/compatibility).\n\nowns: occupant_bindings harness session column + migration, cooperative_continuity provenance constant, session-id reattachment decision in the lifecycle check-in path, Herdr agent_session hint comparison, docs/compatibility evidence note. consumes: hold-lift predicate (owned by ht-rzi.1) — call it after reattachment if it exists, else release the per-target hold only. files: src/store/seats.rs, src/store/schema.rs, migrations/, src/protocol/authority.rs, src/protocol/commands.rs, src/cli/hook.rs, src/harness/claude.rs, src/harness/codex.rs, src/host/native.rs, docs/compatibility/. Spec: docs/superpowers/runs/2026-10-01-b5-trust-policy-guards/2026-10-01-b5-trust-policy-guards-design.md decision 3.",
+    "acceptance_criteria": "Captured evidence for both harnesses' resume session-id stability (or the harness excluded). Tests: unique match reattaches and releases the hold; zero and multiple matches leave the seat unresolved and the pane held; retired seats never match; provenance cooperative_continuity appears in seat history and never on receipts; daemon restart mid-way is idempotent.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-01T19:54:07Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-01T20:02:48Z",
+    "labels": [
+      "sp:ht-rzi"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-rzi.2",
+        "depends_on_id": "ht-rzi",
+        "type": "parent-child",
+        "created_at": "2026-10-01T19:54:07Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 1,
+    "parent": "ht-rzi"
+  },
+  {
+    "id": "ht-rzi.1",
+    "title": "F6 repair path: hold lift, seat retire, rebind --replace",
+    "description": "TRUST-POLICY C2/C3. (1) Clear host_instances.baseline_hold_unclaimed once no unresolved nonretired seat remains (today sticky until next recovery epoch: src/store/seats.rs:684 and the set at :1589); evaluate in the transactions that resolve/retire the last unresolved seat. (2) New operator command 'seat retire SEAT --operator' using the existing bounded retirement cutover (begin_retirement path in src/store/seats.rs; today retirement only comes from reconciliation of an absent target). (3) 'seat rebind OLD --pane P --replace NEW --operator': retire NEW and rebind OLD onto P in one deciding transaction; nothing moves NEW-\u003eOLD; NEW's pending obligations settle as recipient-retired. (4) The rebind refusal for an owned target carries both resolutions as argv. Files: src/store/seats.rs, src/store/effective.rs, src/cli/commands.rs, src/protocol/commands.rs + results.rs, docs/operations.md, docs/agent-usage.md.\n\nowns: hold-lift predicate (clear host_instances.baseline_hold_unclaimed when no unresolved nonretired seat remains), seat retire --operator, seat rebind --replace --operator, collision refusal argv. consumes: existing begin_retirement cutover. files: src/store/seats.rs, src/store/effective.rs, src/store/schema.rs, src/protocol/commands.rs, src/protocol/results.rs, src/cli/commands.rs, docs/operations.md, docs/agent-usage.md.",
+    "acceptance_criteria": "Tests: hold lifts after last unresolved seat is rebound or retired (and not before); retire --operator retires and settles obligations; rebind --replace is atomic (no window where P is unowned, concurrent resolve loses); refusal error lists both argv; operator audit label recorded; non-operator calls get operator_required.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-01T19:54:06Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-01T20:02:47Z",
+    "labels": [
+      "sp:ht-rzi"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-rzi.1",
+        "depends_on_id": "ht-rzi",
+        "type": "parent-child",
+        "created_at": "2026-10-01T19:54:06Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-rzi"
+  },
+  {
+    "id": "ht-rzi",
+    "title": "B5: Cooperative trust policy guards (TRUST-POLICY.md)",
+    "description": "Implement the required guards decided in TRUST-POLICY.md (adopted 2026-10-01, branch trust-model-invariants). Resolves F6 and the B5 bucket of docs/history/remaining-findings-2026-10-01.md. P10 and W5-1 are not here: they are deletions folded into B4 (ht-p03.2). Each child names the policy invariant it implements; a change that weakens an invariant must update TRUST-POLICY.md in the same commit.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-01T19:53:38Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-01T19:53:38Z",
+    "labels": [
+      "sp:ht-rzi"
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  },
+  {
+    "id": "ht-rzi.6",
+    "title": "Trust-edge hygiene: O_NOFOLLOW allocator.lock, wording, id comments",
+    "description": "TRUST-POLICY Accepted limits. (1) src/cli/journal.rs:467 private_open (:1066-1072) uses secure_options (O_NOFOLLOW) like the context journal (src/harness/context.rs ~893). (2) W6-R2: src/harness/mod.rs:243 hint -\u003e '...mark it as self when run in this pane'. (3) src/protocol/ids.rs:133 comment says 104 random bits; it is 112. (4) Comment the send-preparation id reuse bound (62^8 ~ 2^47.6; src/store/public_ids.rs fresh()).\n\nfiles: src/cli/journal.rs, src/harness/mod.rs, src/protocol/ids.rs, src/store/public_ids.rs.",
+    "acceptance_criteria": "allocator.lock leaf symlink is refused (test); hint text updated with its test; comments corrected.",
+    "status": "open",
+    "priority": 3,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-01T19:54:10Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-01T20:02:52Z",
+    "labels": [
+      "sp:ht-rzi"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-rzi.6",
+        "depends_on_id": "ht-rzi",
+        "type": "parent-child",
+        "created_at": "2026-10-01T19:54:10Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-rzi"
+  }
+]

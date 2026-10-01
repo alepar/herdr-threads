@@ -7,9 +7,12 @@ idea: Implement epic ht-rzi (B5 cooperative trust policy guards) per TRUST-POLIC
 branch: trust-model-invariants
 base: main
 
-spec: TRUST-POLICY.md
+spec: 2026-10-01-b5-trust-policy-guards-design.md
 epic: ht-rzi
 assumption: branch name trust-model-invariants (user-designated, pre-existing worktree .worktrees/trust-model-invariants) replaces the super-auto/<slug> convention.
 assumption: removed deps ht-rzi.{1,2,3,5} -> ht-p03.2 (B4, other run's epic, not started) so this epic can drain; whichever run lands second resolves seats.rs conflicts and migration-number collisions (B4 plans a v10 migration skeleton; ht-rzi.2 needs a schema change).
 assumption: user pre-authorized the phase-7 merge into main ("merging back into main at the end"; goal "complete ht-rzi and merge result to main").
 escalationPolicy: ask the user only on contention about the ht-rzi.2 decision; everything else autonomous.
+
+approvals:
+- top-split · auto · ht-rzi.1 LEAF, ht-rzi.2 LEAF, ht-rzi.3 LEAF, ht-rzi.4 LEAF, ht-rzi.5 LEAF, ht-rzi.6 LEAF (pre-filed decomposition adopted per user; promotion review skipped by instruction)
