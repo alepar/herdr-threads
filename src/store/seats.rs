@@ -2267,6 +2267,7 @@ pub fn apply_reconciliation_transition(
                     update_structural_proof(tx, seat, proof.as_ref().expect("validated structural proof"))?;
                     schema::bump_lifecycle_revision(tx, instance)?;
                     schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
+                    lift_baseline_hold_if_clear(tx, instance, at.utc)?;
                     ReconciliationOutcome::Applied
                 }
                 ReconciliationAction::CarryForward { target, .. } => {
@@ -2280,7 +2281,6 @@ pub fn apply_reconciliation_transition(
                     update_structural_proof(tx, seat, proof.as_ref().expect("validated structural proof"))?;
                     schema::bump_lifecycle_revision(tx, instance)?;
                     schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
-                    lift_baseline_hold_if_clear(tx, instance, at.utc)?;
                     ReconciliationOutcome::Applied
                 }
                 ReconciliationAction::Move { target, terminal } => {
