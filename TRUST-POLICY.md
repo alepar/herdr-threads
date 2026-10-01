@@ -1,9 +1,9 @@
 # herdr-threads trust policy
 
-Status: adopted 2026-10-01. Normative for seat continuity, caller attribution, receipt provenance and
-operator repair. Where an older design document requires adversarial proof of who is calling, this policy
-supersedes it. Guards marked **required** below are decided but not yet implemented; they are tracked under
-the beads epic `ht-rzi`.
+Status: adopted 2026-10-01; B5 guards implemented (epic `ht-rzi`). Normative for seat continuity, caller
+attribution, receipt provenance and operator repair. Where an older design document requires adversarial
+proof of who is calling, this policy supersedes it. C5's guard is owned by B4 (`ht-p03.2`) and is the one
+guard still marked **required**.
 
 ## Abstract
 
@@ -72,19 +72,18 @@ of current targets. Every unowned target in that baseline is **held**: ordinary 
 `launch`, `me init`) refuses it with inspect / rebind / fresh-seat guidance. Panes authoritatively created
 after the baseline are not held. Holds are durable and survive daemon restart. A hold is released by:
 operator rebind or fresh seat on that target; cooperative continuity on that target (C1); or, instance-wide,
-when no unresolved nonretired seats remain (**required**, nothing left to protect).
+when no unresolved nonretired seats remain (implemented, nothing left to protect).
 
 **C3. Collisions resolve by abandonment, never by merge.** When a rebind finds its target owned by another
 live seat, the refusal offers exactly two resolutions, each as ready argv:
-- abandon the old seat: `seat retire OLD --operator` (**required**: new command);
-- abandon the new role: `seat rebind OLD --pane P --replace NEW --operator` (**required**), which retires NEW
+- abandon the old seat: `seat retire OLD --operator` (implemented);
+- abandon the new role: `seat rebind OLD --pane P --replace NEW --operator` (implemented), which retires NEW
   and rebinds OLD in one decision so the target cannot be claimed in between. NEW's pending obligations settle
   as recipient-retired; nothing moves from NEW to OLD.
 
 **C4. Availability ends only on evidence.** A joined seat stays available across a daemon restart when its
-mapping is structurally reconfirmed; the open binding carries forward to the new host epoch (**required**,
-today it lapses until the agent's next check-in). Availability ends when the mapping becomes unresolved, the
-seat retires, or a check-in replaces the binding.
+mapping is structurally reconfirmed; the open binding carries forward to the new host epoch (implemented). Availability ends when the mapping becomes
+unresolved, the seat retires, or a check-in replaces the binding.
 
 **C5. Only producible evidence drives transitions.** The production Herdr adapter reports structure
 (terminal, incarnation, generation) but not occupancy or current execution. Code paths that need an observed
@@ -102,7 +101,7 @@ in-contract (see Accepted limits).
 **A2. One canonical decision view.** Every accountable mutation is decided by the daemon, in its deciding
 transaction, against:
 - the daemon boot the client addressed: a request carrying a different expected boot is refused before
-  dispatch (**required**, today only the response is checked);
+  dispatch (implemented);
 - the seat being resolved, nonretired and not on a held target;
 - the exact binding generation, harness, harness session and execution of the open binding;
 - the effective host observation (published snapshot or newer current-target read) at the current host boot
@@ -123,12 +122,12 @@ Client-local state (`contexts/`, `intents/`) only selects what to ask; it never 
 - *Human to agent*: a hooked agent's lifecycle check-in replaces a human binding. Allowed.
 - *Agent to agent, same seat*: a lifecycle check-in (startup, `/clear`, resume) replaces the binding. Allowed.
 - *Agent to human*: the daemon refuses a human lifecycle check-in while the open binding is
-  `cooperative_top_level`, unless the request is `--operator` (**required**). `me init` additionally refuses
+  `cooperative_top_level`, unless the request is `--operator` (implemented). `me init` additionally refuses
   when agent environment markers are present (`CLAUDECODE`, `CODEX_*`) or Herdr reports an agent in the pane
-  (**required**, best effort, client-side).
+  (implemented, best effort, client-side).
 - *Second agent*: `launch` refuses to start an agent for a seat whose bound agent Herdr reports live in
-  another pane (**required**).
-- *Wake*: a wake prompt goes only to an agent of the bound harness (**required**).
+  another pane (implemented).
+- *Wake*: a wake prompt goes only to an agent of the bound harness (implemented).
 
 **A5. Who may do what.**
 
@@ -149,10 +148,10 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
 - **Same-user spoofing.** Any same-user process can select another seat, set `HERDR_PANE_ID`, or write another
   seat's files under the instance `contexts/` and `intents/` directories (writable from the Codex sandbox by
   design). Forged client files cannot satisfy A2's binding match, but they can disrupt that seat's local
-  state. Sandbox-writable files are opened without following symlinks (**required** for `allocator.lock`).
+  state. Sandbox-writable files are opened without following symlinks (implemented for `allocator.lock`).
 - **Unseen exits.** An agent that exits to its shell stays bound until the next check-in or retirement (C5).
 - **Launch is not check-in.** A successful `launch` means Herdr started the agent, not that it registered.
-  Launch forms without captured hook evidence are refused (**required** for `codex resume`).
+  Launch forms without captured hook evidence are refused (implemented for `codex resume`).
 - **Restore costs operator time.** A genuinely new role in a restored pane waits for an explicit choice when
   cooperative continuity does not apply.
 - **Probabilistic identifiers.** Pagination cursor binding tags are 48 bits (about 2^-48 acceptance per forged
