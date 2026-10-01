@@ -19,8 +19,12 @@ approvals:
 - coverage-round-1 · canonical R-list: R1-R16 (coverage-round-1-requirements.md; R17-R22 appended from r-new) · requirements: 16 · mapped: 16 · unmapped: 0 · auto 14 applied (C1-C14 in coverage-ledger.md): edge ht-rzi.2<-ht-rzi.1; amended .1 .2 .3 .4 .5; new leaf ht-rzi.7 docs; integration sweep ht-rzi.8
 - coverage-round-2 · canonical R-list: R1-R22 (coverage-round-2-requirements.md) · requirements: 22 · mapped: 22 · unmapped: 0 · divergence: findings 14 → 14, novel 100%, widening: yes · auto 14 applied (C15-C28): seam contract ht-rzi.9 (pane-agent port) with .2 .3 .4 depending; amended .1 .2 .3 .4 .5 .7 .8
 
+roast-design: 2026-10-01-b5-trust-policy-guards-roast-design-1.md
+roastDesignRound: 1
+
 parked:
 - coverage-round-2 · degraded-verdict · "coverage widening: yes (round 2 found 14 novel findings; round-2 fixes C15-C28 are not re-reviewed — the design roast and integration sweep ht-rzi.8 absorb them)"
 - coverage-round-2 · degraded-verdict · "Seam integration bead for ht-rzi.9 folded into Integration sweep ht-rzi.8 rather than created separately"
 
-roastDesignRound: 1
+- 2026-10-01-b5-trust-policy-guards-roast-design-1.md · escalation · "ht-rzi.2 Herdr agent_session hint: roast confirmed mandatory-match causes timing-dependent false refusals; user asked to choose (1 diagnostic-only / 2 re-read / 3 keep mandatory); stop hook forbade pausing, so option 1 (diagnostic-only, recommended) applied as an assumption — user may overturn"
+- 2026-10-01-b5-trust-policy-guards-roast-design-1.md · escalation · "Claude Code #24265: resume may emit startup(new id)+resume(orig id); unverified on current versions — ht-rzi.2 capture must check; resume-only continuity covers one order"
