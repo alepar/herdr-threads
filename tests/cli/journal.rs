@@ -969,3 +969,22 @@ fn new_resolution_discards_only_definitively_rejected_first_submission() {
     assert!(journal.page(&Default::default()).unwrap().items.is_empty());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn allocator_lock_leaf_symlink_is_refused() {
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let elsewhere = temp();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let victim = elsewhere.join("victim");
+    std::fs::write(&victim, b"").unwrap();
+    let _ = std::fs::remove_file(dir.join("allocator.lock"));
+    std::os::unix::fs::symlink(&victim, dir.join("allocator.lock")).unwrap();
+    assert!(
+        journal.record(scope(), send(), 1).is_err(),
+        "a symlinked allocator.lock must not be followed"
+    );
+    assert!(journal.lock().is_err());
+    std::fs::remove_dir_all(dir).unwrap();
+    std::fs::remove_dir_all(elsewhere).unwrap();
+}
