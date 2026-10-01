@@ -17,8 +17,9 @@ use crate::protocol::{
         OperatorActor, ReceiptRegistration,
     },
     commands::{
-        CheckIn, Command, OperatorCommand, OperatorFreshSeat, OperatorOrphanInvite, OperatorRebind,
-        OperatorReplace, OperatorRetire, PermitMutation, ResolveSeat, SendMessage,
+        CheckIn, Command, ContinuityCheckIn, OperatorCommand, OperatorFreshSeat,
+        OperatorOrphanInvite, OperatorRebind, OperatorReplace, OperatorRetire, PermitMutation,
+        ResolveSeat, SendMessage,
     },
     ids::*,
     output::OutputSpec,
@@ -1546,6 +1547,101 @@ impl OperatorRequest {
     }
 }
 
+/// Per-request host evidence for a cooperative continuity reattachment
+/// (TRUST-POLICY C1). Like [`OperatorTargetGuard`] it proves the target's
+/// current structural observation only; it grants no caller authority and the
+/// Herdr `agent_session` diagnostic is never part of it.
+#[derive(Debug)]
+pub struct ContinuityTargetGuard {
+    instance: String,
+    target: HostTargetId,
+    command: ContinuityCheckIn,
+    host_boot: HostBootId,
+    epoch: u64,
+    generation: u64,
+    observed_at: MonoInstant,
+    structural_proof: Option<DurableStructuralProof>,
+    consumed: bool,
+}
+impl ContinuityTargetGuard {
+    pub(crate) fn try_new(
+        instance: &str,
+        command: &ContinuityCheckIn,
+        observation: HostObservation,
+    ) -> Result<Self, &'static str> {
+        if instance.is_empty() || observation.target != command.target {
+            return Err("continuity target does not match fresh observation");
+        }
+        if observation.provenance != ObservationProvenance::FreshCurrentTarget {
+            return Err("continuity target lacks a fresh current observation");
+        }
+        Ok(Self {
+            structural_proof: observation.verified_structural_proof(),
+            instance: instance.into(),
+            target: observation.target,
+            command: command.clone(),
+            host_boot: observation.host_boot,
+            epoch: observation.epoch,
+            generation: observation.generation,
+            observed_at: observation.observed_at_mono,
+            consumed: false,
+        })
+    }
+    pub fn instance(&self) -> &str {
+        &self.instance
+    }
+    pub fn target(&self) -> &HostTargetId {
+        &self.target
+    }
+    pub fn host_boot(&self) -> &HostBootId {
+        &self.host_boot
+    }
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub fn structural_proof(&self) -> Option<&DurableStructuralProof> {
+        self.structural_proof.as_ref()
+    }
+    pub fn consume(
+        &mut self,
+        instance: &str,
+        command: &ContinuityCheckIn,
+        fence: &DecisionFence,
+    ) -> Result<(), &'static str> {
+        if self.consumed {
+            return Err("continuity target guard already consumed");
+        }
+        if instance != self.instance || command != &self.command {
+            return Err("continuity request does not match target guard");
+        }
+        if fence.known_invalidated
+            || fence.host_boot != self.host_boot
+            || fence.host_epoch != self.epoch
+            || fence.target_generation != self.generation
+        {
+            return Err("continuity target changed");
+        }
+        if fence.now.0 < self.observed_at.0 || fence.now.0 - self.observed_at.0 > MAX_PERMIT_MILLIS
+        {
+            return Err("continuity target observation expired");
+        }
+        self.consumed = true;
+        Ok(())
+    }
+}
+
+/// The decision input of [`StorePort::decide_continuity`]. `diagnostic` is
+/// one of `match`, `mismatch`, `absent`, `read_error` and is only recorded.
+#[derive(Debug)]
+pub struct ContinuityRequest {
+    pub command: ContinuityCheckIn,
+    pub guard: ContinuityTargetGuard,
+    pub diagnostic: &'static str,
+}
+
 /// Herdr's per-pane agent record for exactly one pane. TRUST-POLICY C1/A4:
 /// Herdr's agent field may only suggest; it never moves a seat, allocates one
 /// or ends a binding.
@@ -2313,6 +2409,33 @@ pub trait StorePort: Send + Sync {
         actor: OperatorActor,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError>;
+    /// Payload-bound historical continuity result; a miss has no durable effects.
+    fn replay_continuity(
+        &self,
+        _command: ContinuityCheckIn,
+        _budget: &CallBudget,
+    ) -> Result<Option<CommandResult>, ApiError> {
+        Err(ApiError {
+            code: crate::protocol::results::ErrorCode::Unsupported,
+            detail: "continuity replay is unavailable".into(),
+            restart_argv: None,
+            required_minimum_bytes: None,
+        })
+    }
+    /// TRUST-POLICY C1: reattach the unique unresolved seat whose last binding
+    /// carries the resumed session id.
+    fn decide_continuity(
+        &self,
+        _request: ContinuityRequest,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError {
+            code: crate::protocol::results::ErrorCode::Unsupported,
+            detail: "continuity reattachment is unavailable".into(),
+            restart_argv: None,
+            required_minimum_bytes: None,
+        })
+    }
     /// Local durable validation only; implementations must not invent native proof.
     fn issue_cooperative_permit(
         &self,

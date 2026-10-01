@@ -9020,3 +9020,414 @@ fn rebind_onto_owned_target_lists_both_resolutions() {
     drop(conn);
     let _ = std::fs::remove_file(path);
 }
+
+// ---- TRUST-POLICY C1 cooperative continuity (ht-rzi.2) ----
+
+fn c1_observe(conn: &Connection, target: &str) {
+    conn.execute(
+        "INSERT OR REPLACE INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,3,100,'fresh','term-'||?1,'inc','coherent_enumeration',1)",
+        [target],
+    )
+    .unwrap();
+}
+
+fn c1_bind(conn: &Connection, seat: &str, generation: i64, harness: &str, session: &str) {
+    conn.execute(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at) VALUES (?1,?2,1,'old-pane','b',1,?3,?4,'exec-'||?1||'-'||?2,'cooperative_top_level',10,10,50)",
+        rusqlite::params![seat, generation, harness, session],
+    )
+    .unwrap();
+}
+
+fn c1_unresolved_seat(conn: &Connection, seat: &str, harness: &str, session: &str) {
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','unresolved','native',NULL,1,1,0)", [seat]).unwrap();
+    c1_bind(conn, seat, 1, harness, session);
+}
+
+fn c1_command(
+    target: &str,
+    session: &str,
+    operation: &str,
+) -> crate::protocol::commands::ContinuityCheckIn {
+    crate::protocol::commands::ContinuityCheckIn {
+        target: HostTargetId::new(target),
+        harness: Harness::Claude,
+        native_session: NativeSessionId::new(session),
+        source: "resume".into(),
+        operation: OperationId::new(operation),
+    }
+}
+
+fn c1_decide(
+    context: &StoreContext,
+    conn: &mut Connection,
+    command: &crate::protocol::commands::ContinuityCheckIn,
+    diagnostic: &'static str,
+) -> Result<CommandResult, crate::protocol::results::ApiError> {
+    let guard = crate::ports::ContinuityTargetGuard::try_new(
+        "i",
+        command,
+        b5_fresh_observation(command.target.as_str()),
+    )
+    .unwrap();
+    crate::store::seats::decide_continuity(
+        context,
+        conn,
+        "i",
+        crate::ports::ContinuityRequest {
+            command: command.clone(),
+            guard,
+            diagnostic,
+        },
+    )
+}
+
+/// Seat `s1` unresolved with a latest `claude`/`sess-1` binding, `held-pane`
+/// observed and held. Marker left NULL (no lift unless a test sets it).
+fn c1_fixture() -> (StoreContext, Connection, PathBuf) {
+    let (context, mut conn, path, _) = fixture(100);
+    b5_published_baseline(&context, &mut conn, &["held-pane"]);
+    c1_bind(&conn, "s1", 1, "claude", "sess-1");
+    b5_add_hold(&conn, "i", "held-pane");
+    c1_observe(&conn, "held-pane");
+    (context, conn, path)
+}
+
+fn c1_tables_mentioning(conn: &Connection, needle: &str) -> Vec<String> {
+    let tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let mut found = Vec::new();
+    for table in tables {
+        let columns: Vec<String> = conn
+            .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let any = columns
+            .iter()
+            .map(|c| format!("CAST(\"{c}\" AS TEXT) LIKE '%{needle}%'"))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let hit: bool = conn
+            .query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM \"{table}\" WHERE {any})"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        if hit {
+            found.push(table);
+        }
+    }
+    found
+}
+
+#[test]
+fn continuity_reattaches_unique_session_match_on_held_target() {
+    let (context, mut conn, path) = c1_fixture();
+    let command = c1_command("held-pane", "sess-1", "c1-op");
+    let result = c1_decide(&context, &mut conn, &command, "match").unwrap();
+    assert_eq!(
+        result,
+        CommandResult::ContinuityReattached(crate::protocol::results::ContinuityReattachment {
+            seat: SeatId::new("s1"),
+            binding_generation: 2,
+        })
+    );
+    let seat: (String, Option<String>, i64) = conn
+        .query_row(
+            "SELECT state,target_id,generation FROM seats WHERE id='s1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(seat, ("resolved".into(), Some("held-pane".into()), 2));
+    let open: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        open, 0,
+        "the lifecycle check-in, not this decision, opens the successor binding"
+    );
+    let released: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM recovery_holds WHERE target_id='held-pane' AND released_at IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(released, 1);
+    let rows: Vec<(String, String, Option<String>, Option<String>)> = conn
+        .prepare(
+            "SELECT kind,seat_id,operator_label,continuity_diagnostic FROM allocation_decisions",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        rows,
+        vec![(
+            "cooperative_continuity".into(),
+            "s1".into(),
+            None,
+            Some("match".into())
+        )]
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_on_unowned_target_reattaches() {
+    let (context, mut conn, path, _) = fixture(100);
+    b5_published_baseline(&context, &mut conn, &["free-pane"]);
+    c1_bind(&conn, "s1", 1, "claude", "sess-1");
+    c1_observe(&conn, "free-pane");
+    let command = c1_command("free-pane", "sess-1", "c1-free");
+    let result = c1_decide(&context, &mut conn, &command, "absent").unwrap();
+    assert!(matches!(
+        result,
+        CommandResult::ContinuityReattached(ref r) if r.seat.as_str() == "s1"
+    ));
+    let state: (String, Option<String>) = conn
+        .query_row("SELECT state,target_id FROM seats WHERE id='s1'", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(state, ("resolved".into(), Some("free-pane".into())));
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_refuses_zero_and_multiple_matches() {
+    use crate::protocol::results::ErrorCode;
+    let (context, mut conn, path) = c1_fixture();
+    // Zero: no unresolved seat holds this session.
+    let none = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-other", "c1-zero"),
+        "match",
+    )
+    .unwrap_err();
+    assert_eq!(none.code, ErrorCode::NotFound);
+    // Several: a second unresolved seat carries the same last session.
+    c1_unresolved_seat(&conn, "s3", "claude", "sess-1");
+    let many = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-many"),
+        "match",
+    )
+    .unwrap_err();
+    assert_eq!(many.code, ErrorCode::Conflict);
+    assert!(many.detail.contains("seat rebind --operator"));
+    let after: (String, String, i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT state FROM seats WHERE id='s1'),(SELECT state FROM seats WHERE id='s3'),(SELECT count(*) FROM recovery_holds WHERE target_id='held-pane' AND released_at IS NULL),(SELECT count(*) FROM allocation_decisions)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(after, ("unresolved".into(), "unresolved".into(), 1, 0));
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_never_matches_retired_sentinel_human_or_empty_sessions() {
+    use crate::store::seats::continuity_candidates;
+    let (_context, mut conn, path) = c1_fixture();
+    // Retired seat with the session.
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,retired_at,retired_seq) VALUES ('s-retired','i','retired','native',NULL,1,1,0,5,1)", []).unwrap();
+    c1_bind(&conn, "s-retired", 1, "claude", "sess-r");
+    // Sentinel, human and empty values on unresolved seats.
+    c1_unresolved_seat(&conn, "s-sentinel", "claude", "plugin_context:abc");
+    c1_unresolved_seat(&conn, "s-human", "human", "sess-h");
+    c1_unresolved_seat(&conn, "s-empty", "claude", "");
+    // A different harness with the same id, and a superseded (not latest) binding.
+    c1_unresolved_seat(&conn, "s-codex", "codex", "sess-c");
+    c1_unresolved_seat(&conn, "s-old", "claude", "sess-old");
+    c1_bind(&conn, "s-old", 2, "claude", "sess-new");
+    let tx = conn.transaction().unwrap();
+    let ask = |harness: &str, session: &str| {
+        continuity_candidates(&tx, "i", harness, session)
+            .unwrap()
+            .into_iter()
+            .map(|seat| seat.as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert!(ask("claude", "sess-r").is_empty(), "retired seat");
+    assert!(ask("claude", "plugin_context:abc").is_empty(), "sentinel");
+    assert!(ask("human", "sess-h").is_empty(), "human occupant");
+    assert!(ask("claude", "").is_empty(), "empty");
+    assert!(
+        ask("claude", "sess-c").is_empty(),
+        "other harness's session"
+    );
+    assert!(ask("claude", "sess-old").is_empty(), "superseded binding");
+    // Controls: the live matches are found, so the empties above are real.
+    assert_eq!(ask("codex", "sess-c"), vec!["s-codex"]);
+    assert_eq!(ask("claude", "sess-new"), vec!["s-old"]);
+    assert_eq!(ask("claude", "sess-1"), vec!["s1"]);
+    drop(tx);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_refuses_owned_target() {
+    use crate::protocol::results::ErrorCode;
+    let (context, mut conn, path) = c1_fixture();
+    // s2 resolved on target "s2" (fixture): never taken.
+    c1_observe(&conn, "s2");
+    let error = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("s2", "sess-1", "c1-owned"),
+        "match",
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::TargetAlreadyOwned);
+    let state: String = conn
+        .query_row("SELECT state FROM seats WHERE id='s1'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(state, "unresolved");
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_of_last_unresolved_seat_lifts_hold() {
+    let (context, mut conn, path) = c1_fixture();
+    b5_set_marker_to_recovery(&conn);
+    assert_eq!(b5_hold_state(&conn), (1, 1));
+    c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-lift"),
+        "mismatch",
+    )
+    .unwrap();
+    assert_eq!(b5_hold_state(&conn), (0, 0));
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+    // With another unresolved seat left (or the marker lagging) the baseline
+    // flag stays: only the target's own hold is released.
+    let (context, mut conn, path) = c1_fixture();
+    b5_set_marker_to_recovery(&conn);
+    c1_unresolved_seat(&conn, "s3", "claude", "sess-3");
+    c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-nolift"),
+        "match",
+    )
+    .unwrap();
+    assert_eq!(b5_hold_state(&conn), (1, 0));
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_replay_returns_recorded_seat_and_generation() {
+    let (context, mut conn, path) = c1_fixture();
+    let command = c1_command("held-pane", "sess-1", "c1-replay");
+    let first = c1_decide(&context, &mut conn, &command, "match").unwrap();
+    let replayed =
+        crate::store::seats::replay_continuity(&context, "i", &command, &b5_budget()).unwrap();
+    assert_eq!(replayed, Some(first.clone()));
+    // The same key and payload decided again is the recorded result.
+    let again = c1_decide(&context, &mut conn, &command, "absent").unwrap();
+    assert_eq!(again, first);
+    let rows: (i64, Option<String>) = conn
+        .query_row(
+            "SELECT count(*),max(continuity_diagnostic) FROM allocation_decisions WHERE kind='cooperative_continuity'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        rows,
+        (1, Some("match".into())),
+        "no second row, first diagnostic kept"
+    );
+    // Another payload under the same key is refused, not replayed.
+    let other = c1_command("held-pane", "sess-2", "c1-replay");
+    assert_eq!(
+        crate::store::seats::replay_continuity(&context, "i", &other, &b5_budget())
+            .unwrap_err()
+            .code,
+        crate::protocol::results::ErrorCode::OperationPayloadMismatch
+    );
+    assert_eq!(
+        crate::store::seats::replay_continuity(
+            &context,
+            "i",
+            &c1_command("held-pane", "sess-1", "c1-never-used"),
+            &b5_budget()
+        )
+        .unwrap(),
+        None
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_diagnostic_values_round_trip() {
+    for diagnostic in ["match", "mismatch", "absent", "read_error"] {
+        let (context, mut conn, path) = c1_fixture();
+        c1_decide(
+            &context,
+            &mut conn,
+            &c1_command("held-pane", "sess-1", "c1-diag"),
+            diagnostic,
+        )
+        .unwrap();
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT continuity_diagnostic FROM allocation_decisions",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored.as_deref(), Some(diagnostic));
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn continuity_never_writes_receipts() {
+    let (context, mut conn, path) = c1_fixture();
+    c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-receipts"),
+        "match",
+    )
+    .unwrap();
+    // The value exists in seat history only: no receipt, binding or other
+    // table carries it (A3).
+    assert_eq!(
+        c1_tables_mentioning(&conn, "cooperative_continuity"),
+        vec!["allocation_decisions".to_owned()]
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}

@@ -1348,6 +1348,24 @@ impl StorePort for SqliteStore {
             self.settings.invitation_default_ms,
         )
     }
+    fn replay_continuity(
+        &self,
+        command: crate::protocol::commands::ContinuityCheckIn,
+        budget: &CallBudget,
+    ) -> Result<Option<CommandResult>, ApiError> {
+        self.live_budget(budget)?;
+        let result = seats::replay_continuity(&self.context, &self.instance, &command, budget)?;
+        self.live_budget(budget)?;
+        Ok(result)
+    }
+    fn decide_continuity(
+        &self,
+        request: crate::ports::ContinuityRequest,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let mut writer = self.writer(budget)?;
+        seats::decide_continuity(&self.context, &mut writer, &self.instance, request)
+    }
     fn issue_cooperative_permit(
         &self,
         request: crate::ports::CooperativePermitRequest,

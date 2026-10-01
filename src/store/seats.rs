@@ -3530,18 +3530,14 @@ pub fn mutate_operator(
                 ));
             }
             let result = if let Some(seat) = &seat {
-                let changed = tx.execute("UPDATE seats SET state='resolved',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL,target_id=?1,generation=generation+1,target_generation=?2 WHERE id=?3 AND instance_id=?4 AND state='unresolved'",
-                    params![target.as_str(),expected_generation_sql,seat.as_str(),instance]).map_err(store_error)?;
-                if changed != 1 {
-                    return Err(api_error(ErrorCode::TargetUnresolved, "source changed"));
-                }
-                tx.execute("UPDATE occupant_bindings SET ended_at=?1 WHERE seat_id=?2 AND ended_at IS NULL", params![at.utc.0,seat.as_str()]).map_err(store_error)?;
-                tx.execute(
-                    "DELETE FROM warning_offer WHERE seat_id=?1",
-                    [seat.as_str()],
-                )
-                .map_err(store_error)?;
-                schema::ensure_unavailability_episode(tx, seat)?;
+                rebind_unresolved_seat(
+                    tx,
+                    &instance,
+                    seat,
+                    target.as_str(),
+                    expected_generation_sql,
+                    at.utc,
+                )?;
                 CommandResult::OperatorRebound(seat.clone())
             } else {
                 let seat = SeatId::new(crate::store::public_ids::fresh(
@@ -3565,42 +3561,362 @@ pub fn mutate_operator(
             }
             tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
                 params![instance,target.as_str(),result_seat.as_str(),kind,at.utc.0,expected_boot.as_str(),expected_epoch_sql,expected_generation_sql,actor.audit_label()]).map_err(store_error)?;
-            tx.execute("UPDATE recovery_holds SET released_at=?1 WHERE instance_id=?2 AND target_id=?3 AND released_at IS NULL",
-                params![at.utc.0,instance,target.as_str()]).map_err(store_error)?;
-            let baseline: Option<String> = tx
-                .query_row(
-                    "SELECT recovery_baseline_generation_id FROM host_instances WHERE id=?1",
-                    [&instance],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?;
-            if let Some(baseline) = baseline {
-                let member: bool = tx
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM snapshot_targets WHERE generation_id=?1 AND target_id=?2)",
-                        params![baseline,target.as_str()],
-                        |r| r.get(0),
-                    )
-                    .map_err(store_error)?;
-                if member {
-                    let sequence = schema::next_decision_seq(tx, &instance)?;
-                    tx.execute(
-                        "INSERT INTO recovery_baseline_releases(instance_id,baseline_generation_id,target_id,decision_seq) VALUES (?1,?2,?3,?4) ON CONFLICT(instance_id,baseline_generation_id,target_id) DO NOTHING",
-                        params![instance,baseline,target.as_str(),checked_host_number(sequence)?],
-                    )
-                    .map_err(store_error)?;
-                }
-            }
-            tx.execute("UPDATE recovery_baseline_targets SET disposition='already_owned' WHERE instance_id=?1 AND target_id=?2",
-                params![instance,target.as_str()]).map_err(store_error)?;
-            schema::apply_eligibility_transition(tx, &instance, |_| Ok(true))?;
-            schema::bump_lifecycle_revision(tx, &instance)?;
-            schema::bump_filter_revision(tx, &instance, "directory", "all")?;
+            release_claimed_target(tx, &instance, target.as_str(), at.utc)?;
             lift_baseline_hold_if_clear(tx, &instance, at.utc)?;
             Ok(result)
         },
     )?;
     crate::store::operator::validate_result(&typed_command, &result)?;
+    Ok(result)
+}
+
+/// The seat-side half of a rebind of an unresolved seat onto `target`: one
+/// generation step, the open binding ended (the next lifecycle check-in opens
+/// the successor), its warning offer dropped and an unavailability episode
+/// open. Shared by operator repair and TRUST-POLICY C1 continuity.
+fn rebind_unresolved_seat(
+    tx: &Transaction<'_>,
+    instance: &str,
+    seat: &SeatId,
+    target: &str,
+    target_generation: i64,
+    at: UtcMillis,
+) -> Result<(), ApiError> {
+    let changed = tx.execute("UPDATE seats SET state='resolved',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL,target_id=?1,generation=generation+1,target_generation=?2 WHERE id=?3 AND instance_id=?4 AND state='unresolved'",
+        params![target,target_generation,seat.as_str(),instance]).map_err(store_error)?;
+    if changed != 1 {
+        return Err(api_error(ErrorCode::TargetUnresolved, "source changed"));
+    }
+    tx.execute(
+        "UPDATE occupant_bindings SET ended_at=?1 WHERE seat_id=?2 AND ended_at IS NULL",
+        params![at.0, seat.as_str()],
+    )
+    .map_err(store_error)?;
+    tx.execute(
+        "DELETE FROM warning_offer WHERE seat_id=?1",
+        [seat.as_str()],
+    )
+    .map_err(store_error)?;
+    schema::ensure_unavailability_episode(tx, seat)?;
+    Ok(())
+}
+
+/// The target-side half of claiming `target` for a seat: its recovery holds
+/// are released, its baseline membership recorded as released and owned, and
+/// eligibility and revisions advance. Shared by operator repair and C1.
+fn release_claimed_target(
+    tx: &Transaction<'_>,
+    instance: &str,
+    target: &str,
+    at: UtcMillis,
+) -> Result<(), ApiError> {
+    tx.execute("UPDATE recovery_holds SET released_at=?1 WHERE instance_id=?2 AND target_id=?3 AND released_at IS NULL",
+        params![at.0,instance,target]).map_err(store_error)?;
+    let baseline: Option<String> = tx
+        .query_row(
+            "SELECT recovery_baseline_generation_id FROM host_instances WHERE id=?1",
+            [instance],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if let Some(baseline) = baseline {
+        let member: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM snapshot_targets WHERE generation_id=?1 AND target_id=?2)",
+                params![baseline,target],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if member {
+            let sequence = schema::next_decision_seq(tx, instance)?;
+            tx.execute(
+                "INSERT INTO recovery_baseline_releases(instance_id,baseline_generation_id,target_id,decision_seq) VALUES (?1,?2,?3,?4) ON CONFLICT(instance_id,baseline_generation_id,target_id) DO NOTHING",
+                params![instance,baseline,target,checked_host_number(sequence)?],
+            )
+            .map_err(store_error)?;
+        }
+    }
+    tx.execute("UPDATE recovery_baseline_targets SET disposition='already_owned' WHERE instance_id=?1 AND target_id=?2",
+        params![instance,target]).map_err(store_error)?;
+    schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
+    schema::bump_lifecycle_revision(tx, instance)?;
+    schema::bump_filter_revision(tx, instance, "directory", "all")?;
+    Ok(())
+}
+
+/// TRUST-POLICY C1 candidates: nonretired unresolved seats of the instance
+/// whose *latest* binding is this harness's session `native_session`.
+/// Sentinel (`plugin_context:`), empty and human values never match; NULL
+/// never equals anything. Returns at most two (the caller only needs to tell
+/// zero, one and several apart).
+pub(crate) fn continuity_candidates(
+    tx: &Transaction<'_>,
+    instance: &str,
+    harness: &str,
+    native_session: &str,
+) -> Result<Vec<SeatId>, ApiError> {
+    let mut statement = tx
+        .prepare(
+            "SELECT s.id FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.ordinal=(SELECT MAX(l.ordinal) FROM occupant_bindings l WHERE l.seat_id=s.id) WHERE s.instance_id=?1 AND s.state='unresolved' AND b.harness=?2 AND b.harness<>'human' AND b.native_session=?3 AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' ORDER BY s.id LIMIT 2",
+        )
+        .map_err(store_error)?;
+    let rows = statement
+        .query_map(params![instance, harness, native_session], |r| {
+            r.get::<_, String>(0)
+        })
+        .map_err(store_error)?;
+    rows.map(|row| row.map(SeatId::new).map_err(store_error))
+        .collect()
+}
+
+pub fn continuity_digest(
+    instance: &str,
+    command: &crate::protocol::commands::ContinuityCheckIn,
+) -> Result<[u8; 32], ApiError> {
+    schema::canonical_digest(&(
+        "continuity_check_in",
+        instance,
+        &command.target,
+        &command.harness,
+        &command.native_session,
+    ))
+}
+
+fn continuity_scope(instance: &str) -> String {
+    format!("continuity:{instance}")
+}
+
+fn validate_continuity_result(result: &CommandResult) -> Result<(), ApiError> {
+    if matches!(result, CommandResult::ContinuityReattached(_)) {
+        Ok(())
+    } else {
+        Err(api_error(
+            ErrorCode::StoreCorrupt,
+            "continuity replay result has wrong type",
+        ))
+    }
+}
+
+/// Historical continuity result for the same operation key and payload. Grants
+/// no current authority and touches no durable state.
+pub fn replay_continuity(
+    context: &StoreContext,
+    instance: &str,
+    command: &crate::protocol::commands::ContinuityCheckIn,
+    budget: &CallBudget,
+) -> Result<Option<CommandResult>, ApiError> {
+    let expected = continuity_digest(instance, command)?;
+    let db = context.open_query(budget.clone())?;
+    let stored: Option<(Vec<u8>, String)> = db
+        .query_row(
+            "SELECT digest, result_json FROM operations WHERE actor_scope=?1 AND operation_key=?2",
+            params![continuity_scope(instance), command.operation.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| db.map_error(e))?;
+    let Some((digest, json)) = stored else {
+        return Ok(None);
+    };
+    if digest != expected {
+        return Err(api_error(
+            ErrorCode::OperationPayloadMismatch,
+            "operation key reused with different payload",
+        ));
+    }
+    let result: CommandResult = serde_json::from_str(&json).map_err(|e| {
+        api_error(
+            ErrorCode::StoreCorrupt,
+            format!("invalid stored result: {e}"),
+        )
+    })?;
+    validate_continuity_result(&result)?;
+    Ok(Some(result))
+}
+
+/// TRUST-POLICY C1: reattach the one unresolved seat whose last binding holds
+/// the resumed session id onto the (held or unowned) target, in one deciding
+/// transaction. The match is cooperative and structural only: Herdr's
+/// `agent_session` (`diagnostic`) is recorded, never consulted. The seat's open
+/// binding is ended and not replaced here; the caller's ordinary lifecycle
+/// check-in opens the successor binding as `cooperative_top_level`. The
+/// `cooperative_continuity` value is written to seat history
+/// (`allocation_decisions`) only, never to a receipt.
+pub fn decide_continuity(
+    context: &StoreContext,
+    conn: &mut Connection,
+    elected_instance: &str,
+    mut request: crate::ports::ContinuityRequest,
+) -> Result<CommandResult, ApiError> {
+    let command = request.command.clone();
+    let diagnostic = request.diagnostic;
+    let instance = request.guard.instance().to_owned();
+    if instance != elected_instance {
+        return Err(api_error(
+            ErrorCode::StaleHostObservation,
+            "continuity guard belongs to another instance",
+        ));
+    }
+    command
+        .validate()
+        .map_err(|e| api_error(ErrorCode::InvalidRequest, e))?;
+    let target = command.target.clone();
+    let expected_boot = request.guard.host_boot().clone();
+    let expected_epoch = request.guard.epoch();
+    let expected_generation = request.guard.generation();
+    let structural_proof = request.guard.structural_proof().cloned();
+    let expected_epoch_sql = checked_host_number(expected_epoch)?;
+    let expected_generation_sql = checked_host_number(expected_generation)?;
+    let digest = continuity_digest(elected_instance, &command)?;
+    let harness = command.harness.as_str();
+    let session = command.native_session.as_str();
+    let result = schema::execute_idempotent_transaction(
+        context,
+        conn,
+        &continuity_scope(&instance),
+        command.operation.as_str(),
+        digest,
+        |tx| {
+            if !observed_matches(
+                tx,
+                &instance,
+                target.as_str(),
+                &expected_boot,
+                expected_epoch,
+                expected_generation,
+            )? {
+                return Err(api_error(
+                    ErrorCode::StaleHostObservation,
+                    "continuity target observation changed",
+                ));
+            }
+            // Held or unowned only: a target with a resolved owner is never
+            // taken (seats are never merged, nothing moves on a heuristic).
+            if !target_free(tx, &instance, target.as_str())? {
+                return Err(api_error(
+                    ErrorCode::TargetAlreadyOwned,
+                    "resumed session's pane already has a resolved seat",
+                ));
+            }
+            if let Some(proof) = &structural_proof
+                && !structural_proof_matches_current(tx, &instance, proof)?
+            {
+                return Err(api_error(
+                    ErrorCode::StaleHostObservation,
+                    "continuity structural proof differs from current evidence",
+                ));
+            }
+            let candidates = continuity_candidates(tx, &instance, harness, session)?;
+            let [seat] = candidates.as_slice() else {
+                return Err(if candidates.is_empty() {
+                    api_error(
+                        ErrorCode::NotFound,
+                        "no unresolved seat matches this resumed session",
+                    )
+                } else {
+                    api_error(
+                        ErrorCode::Conflict,
+                        "resumed session matches several unresolved seats; repair with seat rebind --operator",
+                    )
+                });
+            };
+            let generation: i64 = tx
+                .query_row(
+                    "SELECT generation FROM seats WHERE id=?1 AND instance_id=?2",
+                    params![seat.as_str(), instance],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            if generation == i64::MAX {
+                return Err(api_error(
+                    ErrorCode::SequenceExhausted,
+                    "seat binding generation exhausted",
+                ));
+            }
+            Ok(())
+        },
+        |tx, at| {
+            let fresh = effective::effective_observation(tx, &instance, target.as_str())?
+                .filter(|observation| {
+                    observation.source == EffectiveObservationSource::NewerCurrentTarget
+                })
+                .ok_or_else(|| {
+                    api_error(
+                        ErrorCode::StaleHostObservation,
+                        "fresh target observation missing",
+                    )
+                })?;
+            request
+                .guard
+                .consume(
+                    &instance,
+                    &command,
+                    &DecisionFence {
+                        now: at.monotonic,
+                        host_boot: HostBootId::new(fresh.host_boot),
+                        host_epoch: u64::try_from(fresh.epoch).map_err(|_| {
+                            api_error(ErrorCode::StoreCorrupt, "negative host epoch")
+                        })?,
+                        target_generation: u64::try_from(fresh.structural_generation).map_err(
+                            |_| api_error(ErrorCode::StoreCorrupt, "negative target generation"),
+                        )?,
+                        binding_generation: 0,
+                        known_invalidated: !observed_matches(
+                            tx,
+                            &instance,
+                            target.as_str(),
+                            &expected_boot,
+                            expected_epoch,
+                            expected_generation,
+                        )?,
+                    },
+                )
+                .map_err(|reason| api_error(ErrorCode::StaleHostObservation, reason))?;
+            let candidates = continuity_candidates(tx, &instance, harness, session)?;
+            let [seat] = candidates.as_slice() else {
+                return Err(api_error(ErrorCode::Conflict, "continuity match changed"));
+            };
+            if !target_free(tx, &instance, target.as_str())? {
+                return Err(api_error(
+                    ErrorCode::TargetAlreadyOwned,
+                    "target became owned",
+                ));
+            }
+            rebind_unresolved_seat(
+                tx,
+                &instance,
+                seat,
+                target.as_str(),
+                expected_generation_sql,
+                at.utc,
+            )?;
+            if let Some(proof) = &structural_proof {
+                update_structural_proof(tx, seat, proof)?;
+            } else {
+                tx.execute("UPDATE seats SET structural_terminal_id=NULL,structural_incarnation=NULL,structural_incarnation_kind=NULL,structural_host_boot=NULL,structural_host_epoch=NULL,structural_connection_epoch=NULL,structural_observation_sequence=NULL WHERE id=?1", [seat.as_str()]).map_err(store_error)?;
+            }
+            let new_generation: i64 = tx
+                .query_row(
+                    "SELECT generation FROM seats WHERE id=?1",
+                    [seat.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label,continuity_diagnostic) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,NULL,?9)",
+                params![instance,target.as_str(),seat.as_str(),crate::protocol::authority::COOPERATIVE_CONTINUITY_PROVENANCE,at.utc.0,expected_boot.as_str(),expected_epoch_sql,expected_generation_sql,diagnostic]).map_err(store_error)?;
+            release_claimed_target(tx, &instance, target.as_str(), at.utc)?;
+            lift_baseline_hold_if_clear(tx, &instance, at.utc)?;
+            Ok(CommandResult::ContinuityReattached(
+                crate::protocol::results::ContinuityReattachment {
+                    seat: seat.clone(),
+                    binding_generation: u64::try_from(new_generation).map_err(|_| {
+                        api_error(ErrorCode::StoreCorrupt, "negative seat generation")
+                    })?,
+                },
+            ))
+        },
+    )?;
+    validate_continuity_result(&result)?;
     Ok(result)
 }
 

@@ -41,6 +41,13 @@ pub enum IntentScope {
         instance: String,
         target: HostTargetId,
     },
+    /// TRUST-POLICY C1: a seatless resume-only continuity check-in. There is
+    /// no seat to scope to; the pane's target under one instance is the
+    /// authority scope and the key the hook replays by.
+    Continuity {
+        instance: String,
+        target: HostTargetId,
+    },
 }
 
 /// Native evidence is refreshed; cooperative claims are frozen as durable payload.
@@ -58,6 +65,15 @@ pub enum SemanticMutation {
     },
     ResolveSeat {
         target: HostTargetId,
+    },
+    /// TRUST-POLICY C1: resume-only seatless reattachment request. `event_id`
+    /// is the hook event the follow-up lifecycle check-in belongs to.
+    ContinuityCheckIn {
+        target: HostTargetId,
+        harness: crate::protocol::authority::Harness,
+        native_session: NativeSessionId,
+        source: String,
+        event_id: String,
     },
     CheckIn,
     CreateThread {
@@ -127,6 +143,7 @@ impl SemanticMutation {
             || matches!(
                 mutation,
                 Self::ResolveSeat { .. }
+                    | Self::ContinuityCheckIn { .. }
                     | Self::CheckIn
                     | Self::Frozen { .. }
                     | Self::CooperativeCheckIn { .. }
@@ -163,6 +180,7 @@ impl SemanticMutation {
                     || matches!(
                         mutation.as_ref(),
                         Self::ResolveSeat { .. }
+                            | Self::ContinuityCheckIn { .. }
                             | Self::CheckIn
                             | Self::Frozen { .. }
                             | Self::CooperativeCheckIn { .. }
@@ -188,6 +206,29 @@ impl SemanticMutation {
                     mode: *mode,
                     operation: OperationId::new("validation"),
                 })
+                .validate()
+                .map_err(invalid)
+            }
+            Self::ContinuityCheckIn {
+                target,
+                harness,
+                native_session,
+                source,
+                event_id,
+            } => {
+                if event_id.is_empty()
+                    || event_id.len() > 1024
+                    || event_id.chars().any(char::is_control)
+                {
+                    return Err(invalid("invalid lifecycle event identity"));
+                }
+                ContinuityCheckIn {
+                    target: target.clone(),
+                    harness: *harness,
+                    native_session: native_session.clone(),
+                    source: source.clone(),
+                    operation: OperationId::new("validation"),
+                }
                 .validate()
                 .map_err(invalid)
             }
@@ -232,6 +273,7 @@ impl SemanticMutation {
             Self::Frozen { mutation, .. } => mutation.kind(),
             Self::CooperativeCheckIn { .. } => IntentKind::CheckIn,
             Self::ResolveSeat { .. } => IntentKind::ResolveSeat,
+            Self::ContinuityCheckIn { .. } => IntentKind::ContinuityCheckIn,
             Self::CheckIn => IntentKind::CheckIn,
             Self::CreateThread { .. } => IntentKind::CreateThread,
             Self::Invite { .. } => IntentKind::Invite,
@@ -286,6 +328,19 @@ impl SemanticMutation {
             }),
             Self::ResolveSeat { target } => Command::ResolveSeat(ResolveSeat {
                 target: target.clone(),
+                operation,
+            }),
+            Self::ContinuityCheckIn {
+                target,
+                harness,
+                native_session,
+                source,
+                ..
+            } => Command::ContinuityCheckIn(ContinuityCheckIn {
+                target: target.clone(),
+                harness: *harness,
+                native_session: native_session.clone(),
+                source: source.clone(),
                 operation,
             }),
             Self::CheckIn => Command::CheckIn(CheckIn {
@@ -665,6 +720,40 @@ impl Journal {
         }
         Ok(None)
     }
+    /// The pending continuity intent of this pane under `instance`, if a
+    /// previous hook recorded one and did not finish it (lost reply, crash).
+    /// Oldest first; it carries the operation key the daemon replays by.
+    pub fn pending_continuity(
+        &self,
+        instance: &str,
+        target: &HostTargetId,
+    ) -> io::Result<Option<PendingIntent>> {
+        let scope = IntentScope::Continuity {
+            instance: instance.into(),
+            target: target.clone(),
+        };
+        let _lock = self.lock()?;
+        let mut found: Option<(u64, IntentRef)> = None;
+        for entry in fs::read_dir(&self.root)? {
+            let path = entry?.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("intent") {
+                continue;
+            }
+            let mut line = String::new();
+            BufReader::new(File::open(&path)?).read_line(&mut line)?;
+            let header: IntentHeader = serde_json::from_str(&line)?;
+            if header.scope == scope
+                && found
+                    .as_ref()
+                    .is_none_or(|(ordinal, _)| header.reference.ordinal < *ordinal)
+            {
+                found = Some((header.reference.ordinal, header.reference));
+            }
+        }
+        found
+            .map(|(_, reference)| self.load(&reference))
+            .transpose()
+    }
     fn record_locked(
         &self,
         scope: IntentScope,
@@ -958,10 +1047,20 @@ fn scope_matches(scope: &IntentScope, semantic: &SemanticMutation) -> bool {
             IntentScope::ServiceAllocation { target, .. },
             SemanticMutation::ResolveSeat { target: requested },
         ) => target == requested,
+        (
+            IntentScope::Continuity { target, .. },
+            SemanticMutation::ContinuityCheckIn {
+                target: requested, ..
+            },
+        ) => target == requested,
         (IntentScope::Native { .. }, request) => {
             !request.is_operator()
                 && request.frozen_claim().is_none()
-                && !matches!(request, SemanticMutation::ResolveSeat { .. })
+                && !matches!(
+                    request,
+                    SemanticMutation::ResolveSeat { .. }
+                        | SemanticMutation::ContinuityCheckIn { .. }
+                )
         }
         (IntentScope::Operator { .. }, request) => request.is_operator(),
         _ => false,

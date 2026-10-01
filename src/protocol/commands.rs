@@ -32,6 +32,8 @@ pub enum Command {
     OperationStatus(OperationStatusQuery),
     RetirementJobs(RetirementJobsQuery),
     ResolveSeat(ResolveSeat),
+    /// TRUST-POLICY C1: seatless resume-only reattachment decision.
+    ContinuityCheckIn(ContinuityCheckIn),
     CheckIn(CheckIn),
     CreateThread(CreateThread),
     Invite(Invite),
@@ -241,6 +243,37 @@ pub struct RetirementJobsQuery {
 pub struct ResolveSeat {
     pub target: HostTargetId,
     pub operation: OperationId,
+}
+/// TRUST-POLICY C1. A resumed top-level session asks the daemon to reattach
+/// the one unresolved seat whose last binding carries its session id onto the
+/// pane's target. It names no seat: the daemon decides the seat, and the
+/// caller then performs an ordinary lifecycle check-in for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContinuityCheckIn {
+    pub target: HostTargetId,
+    pub harness: crate::protocol::authority::Harness,
+    pub native_session: NativeSessionId,
+    /// The hook's SessionStart source. Only `resume` can reattach.
+    pub source: String,
+    pub operation: OperationId,
+}
+impl ContinuityCheckIn {
+    pub const RESUME_SOURCE: &'static str = "resume";
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.source != Self::RESUME_SOURCE {
+            return Err("only a resume check-in can reattach a seat");
+        }
+        if self.harness == crate::protocol::authority::Harness::Human {
+            return Err("a human occupant cannot resume a harness session");
+        }
+        if self.native_session.as_str().is_empty()
+            || self.native_session.as_str().starts_with("plugin_context:")
+        {
+            return Err("a resumed session needs a native session id");
+        }
+        Ok(())
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -463,6 +496,7 @@ impl Command {
                 Err("deadline must be positive")
             }
             Self::AcceptRequired(accept) => accept.validate(),
+            Self::ContinuityCheckIn(continuity) => continuity.validate(),
             Self::OperatorOrphanInvite(invite) if invite.deadline_millis == Some(0) => {
                 Err("deadline must be positive")
             }

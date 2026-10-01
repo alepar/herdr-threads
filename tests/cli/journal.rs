@@ -988,3 +988,130 @@ fn allocator_lock_leaf_symlink_is_refused() {
     std::fs::remove_dir_all(dir).unwrap();
     std::fs::remove_dir_all(elsewhere).unwrap();
 }
+
+fn continuity_semantic(target: &str, event_id: &str) -> SemanticMutation {
+    SemanticMutation::ContinuityCheckIn {
+        target: HostTargetId::new(target),
+        harness: Harness::Claude,
+        native_session: NativeSessionId::new("sess-1"),
+        source: "resume".into(),
+        event_id: event_id.into(),
+    }
+}
+fn continuity_scope(instance: &str, target: &str) -> IntentScope {
+    IntentScope::Continuity {
+        instance: instance.into(),
+        target: HostTargetId::new(target),
+    }
+}
+
+#[test]
+fn continuity_intent_round_trips_and_is_found_by_instance_and_target() {
+    use crate::protocol::{commands::ContinuityCheckIn, ids::OperationId};
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let reference = journal
+        .record(
+            continuity_scope("i1", "w1:p1"),
+            continuity_semantic("w1:p1", "evt-1"),
+            7,
+        )
+        .unwrap();
+    // Another pane and another instance never see it.
+    assert!(
+        journal
+            .pending_continuity("i1", &HostTargetId::new("w1:p2"))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        journal
+            .pending_continuity("i2", &HostTargetId::new("w1:p1"))
+            .unwrap()
+            .is_none()
+    );
+    let found = journal
+        .pending_continuity("i1", &HostTargetId::new("w1:p1"))
+        .unwrap()
+        .expect("pending continuity intent");
+    assert_eq!(found.header.reference, reference);
+    assert_eq!(found.operation, reference.operation);
+    assert_eq!(
+        found.header.kind,
+        crate::protocol::results::IntentKind::ContinuityCheckIn
+    );
+    // It becomes the same wire command under the journal's operation key.
+    let command = found
+        .semantic
+        .to_command(found.operation.clone(), None)
+        .unwrap();
+    assert_eq!(
+        command,
+        Command::ContinuityCheckIn(ContinuityCheckIn {
+            target: HostTargetId::new("w1:p1"),
+            harness: Harness::Claude,
+            native_session: NativeSessionId::new("sess-1"),
+            source: "resume".into(),
+            operation: OperationId::new(reference.operation.as_str()),
+        })
+    );
+    // Completion removes it.
+    journal.complete(&reference).unwrap();
+    assert!(
+        journal
+            .pending_continuity("i1", &HostTargetId::new("w1:p1"))
+            .unwrap()
+            .is_none()
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn continuity_intent_refuses_foreign_scope_and_non_resume_source() {
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    // The scope names one pane; a request for another is a scope mismatch.
+    assert!(
+        journal
+            .record(
+                continuity_scope("i1", "w1:p1"),
+                continuity_semantic("w1:p2", "evt"),
+                1
+            )
+            .is_err()
+    );
+    // A native seat scope cannot carry a continuity request.
+    assert!(
+        journal
+            .record(scope(), continuity_semantic("w1:p1", "evt"), 1)
+            .is_err()
+    );
+    // Only a resume can be journaled.
+    let SemanticMutation::ContinuityCheckIn {
+        target,
+        harness,
+        native_session,
+        event_id,
+        ..
+    } = continuity_semantic("w1:p1", "evt")
+    else {
+        unreachable!()
+    };
+    assert!(
+        journal
+            .record(
+                continuity_scope("i1", "w1:p1"),
+                SemanticMutation::ContinuityCheckIn {
+                    target,
+                    harness,
+                    native_session,
+                    source: "startup".into(),
+                    event_id,
+                },
+                1
+            )
+            .is_err()
+    );
+    assert!(journal.page(&Default::default()).unwrap().items.is_empty());
+    std::fs::remove_dir_all(dir).unwrap();
+}

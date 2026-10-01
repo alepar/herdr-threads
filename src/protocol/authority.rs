@@ -58,6 +58,12 @@ impl Harness {
 pub const COOPERATIVE_TOP_LEVEL_PROVENANCE: &str = "cooperative_top_level";
 /// A person acting from their own pane identity (`herdr-threads me init`).
 pub const OPERATOR_HUMAN_PROVENANCE: &str = "operator_human";
+/// TRUST-POLICY A3/C1: a seat was reattached because a resumed harness
+/// session id matched an unresolved seat's last binding. Seat rebinds only
+/// (the `allocation_decisions.kind` of the reattachment); never on receipts
+/// and never the provenance of a binding (the binding the reattached seat
+/// opens stays `cooperative_top_level`).
+pub const COOPERATIVE_CONTINUITY_PROVENANCE: &str = "cooperative_continuity";
 
 /// Obtained from the local socket kernel credential, never from JSON.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

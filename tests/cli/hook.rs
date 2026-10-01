@@ -1596,7 +1596,9 @@ mod pane_seat_selection {
             Instant::now() + Duration::from_secs(5),
             clock().as_ref(),
         ) {
-            Ok(v) => Ok(v),
+            Ok(PaneSeat::Resolved(seat, generation)) => Ok(Some((seat, generation))),
+            Ok(PaneSeat::HeldOrUnresolved(message)) => Err(message),
+            Ok(PaneSeat::Unowned) => Ok(None),
             Err(Failure::Unavailable(m)) => Err(m),
             Err(_) => Err("other failure".into()),
         }
@@ -1659,5 +1661,478 @@ mod pane_seat_selection {
         assert!(err.contains("Unresolved"), "{err}");
         assert!(cli_pick(seats).is_empty());
         assert!(hook_pick(vec![]).unwrap().is_none());
+    }
+}
+
+/// TRUST-POLICY C1 gate and journal behavior of the seatless continuity
+/// check-in, against a scripted daemon client (no process, no socket).
+mod continuity_gate {
+    use super::*;
+    use crate::cli::journal::{IntentScope, Journal, SemanticMutation};
+    use crate::protocol::{
+        authority::Harness as WireHarness,
+        ids::{NativeSessionId, SeatId},
+        results::ContinuityReattachment,
+    };
+    use std::{collections::VecDeque, sync::Mutex};
+
+    type Reply = Result<Result<CommandResult, ApiError>, ApiError>;
+
+    /// Answers every `call_definitive` from a script and records all commands.
+    struct Daemon {
+        replies: Mutex<VecDeque<Reply>>,
+        seen: Mutex<Vec<Command>>,
+        /// Whether the pane's seat lookup answers (an empty pane) or fails.
+        lookup: bool,
+    }
+    impl Daemon {
+        fn new(replies: Vec<Reply>) -> Self {
+            Self {
+                replies: Mutex::new(replies.into()),
+                seen: Mutex::new(Vec::new()),
+                lookup: false,
+            }
+        }
+        fn with_empty_pane(mut self) -> Self {
+            self.lookup = true;
+            self
+        }
+        fn continuity_requests(&self) -> Vec<crate::protocol::commands::ContinuityCheckIn> {
+            self.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|command| match command {
+                    Command::ContinuityCheckIn(request) => Some(request.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+    }
+    impl LocalClient for Daemon {
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            let seats = matches!(command, Command::Seats(_));
+            self.seen.lock().unwrap().push(command);
+            if seats && self.lookup {
+                return Ok(CommandResult::Seats(crate::protocol::pagination::Page {
+                    items: vec![],
+                    next_cursor: None,
+                    next_argv: None,
+                    high_water_ordinal: 0,
+                    scope_revision: None,
+                    has_more: false,
+                    stop_reason: crate::protocol::pagination::StopReason::Complete,
+                    consistency: crate::protocol::pagination::Consistency::BoundedLive,
+                }));
+            }
+            Err(rejection(ErrorCode::HostUnavailable))
+        }
+        fn call_definitive(
+            &self,
+            command: Command,
+            _: &CallBudget,
+        ) -> Result<Result<CommandResult, ApiError>, ApiError> {
+            self.seen.lock().unwrap().push(command);
+            self.replies
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("an unscripted daemon call")
+        }
+    }
+
+    fn rejection(code: ErrorCode) -> ApiError {
+        ApiError {
+            code,
+            detail: "scripted".into(),
+            restart_argv: None,
+            required_minimum_bytes: None,
+        }
+    }
+    fn reattached(seat: &str, generation: u64) -> Reply {
+        Ok(Ok(CommandResult::ContinuityReattached(
+            ContinuityReattachment {
+                seat: SeatId::new(seat),
+                binding_generation: generation,
+            },
+        )))
+    }
+
+    struct Pane {
+        dir: PathBuf,
+        paths: InstancePaths,
+        target: HostTargetId,
+        instance: uuid::Uuid,
+        context: RuntimeContext,
+    }
+    impl Pane {
+        fn new() -> Self {
+            let dir = PathBuf::from(format!(
+                "/private/tmp/hkc-{}",
+                &uuid::Uuid::new_v4().simple().to_string()[..10]
+            ));
+            std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+            let context =
+                RuntimeContext::explicit(dir.join("state"), dir.join("host.sock"), None).unwrap();
+            let paths = InstancePaths::resolve(&context).unwrap();
+            std::fs::create_dir_all(&paths.instance_dir).unwrap();
+            Self {
+                dir,
+                paths,
+                target: HostTargetId::new("w1:p1"),
+                instance: uuid::Uuid::new_v4(),
+                context,
+            }
+        }
+        fn call<'a>(&'a self, client: &'a dyn LocalClient) -> PaneCall<'a> {
+            PaneCall {
+                context: &self.context,
+                paths: &self.paths,
+                client,
+                instance: self.instance,
+                target: &self.target,
+                deadline: Instant::now() + Duration::from_secs(5),
+                clock: clock(),
+            }
+        }
+        fn journal(&self) -> Journal {
+            Journal::open(self.paths.instance_dir.join("intents")).unwrap()
+        }
+        fn pending(&self) -> Option<crate::cli::journal::PendingIntent> {
+            self.journal()
+                .pending_continuity(&self.instance.to_string(), &self.target)
+                .unwrap()
+        }
+        fn record(&self, session: &str) -> crate::cli::journal::IntentRef {
+            self.journal()
+                .record(
+                    IntentScope::Continuity {
+                        instance: self.instance.to_string(),
+                        target: self.target.clone(),
+                    },
+                    SemanticMutation::ContinuityCheckIn {
+                        target: self.target.clone(),
+                        harness: WireHarness::Claude,
+                        native_session: NativeSessionId::new(session),
+                        source: "resume".into(),
+                        event_id: "evt-recorded".into(),
+                    },
+                    1,
+                )
+                .unwrap()
+        }
+    }
+    impl Drop for Pane {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn event(
+        harness: Harness,
+        kind: EventKind,
+        role: Role,
+        session: Option<&str>,
+    ) -> LifecycleEvent {
+        LifecycleEvent {
+            harness,
+            source: match kind {
+                EventKind::Resume => "resume",
+                EventKind::Startup => "startup",
+                EventKind::Clear => "clear",
+                EventKind::Compact => "compact",
+                EventKind::Restart => "retry",
+                EventKind::Tool => "PreToolUse",
+            }
+            .into(),
+            kind,
+            native_session: session.map(str::to_owned),
+            role,
+            event_id: uuid::Uuid::new_v4().to_string(),
+            capability: Capability::ObservedInput,
+        }
+    }
+    fn resume(harness: Harness) -> LifecycleEvent {
+        event(harness, EventKind::Resume, Role::TopLevel, Some("S-1"))
+    }
+
+    // Kills: a gate that lets startup/clear/compact/tool events, children or a
+    // human occupant reach the daemon's reattachment decision.
+    #[test]
+    fn only_a_top_level_resume_with_a_session_asks_for_reattachment() {
+        let pane = Pane::new();
+        let daemon = Daemon::new(vec![]);
+        let call = pane.call(&daemon);
+        for (name, candidate) in [
+            (
+                "startup",
+                event(
+                    Harness::Claude,
+                    EventKind::Startup,
+                    Role::TopLevel,
+                    Some("S-1"),
+                ),
+            ),
+            (
+                "clear",
+                event(
+                    Harness::Claude,
+                    EventKind::Clear,
+                    Role::TopLevel,
+                    Some("S-1"),
+                ),
+            ),
+            (
+                "compact",
+                event(
+                    Harness::Codex,
+                    EventKind::Compact,
+                    Role::TopLevel,
+                    Some("S-1"),
+                ),
+            ),
+            (
+                "tool",
+                event(
+                    Harness::Claude,
+                    EventKind::Tool,
+                    Role::TopLevel,
+                    Some("S-1"),
+                ),
+            ),
+            (
+                "restart",
+                event(
+                    Harness::Claude,
+                    EventKind::Restart,
+                    Role::TopLevel,
+                    Some("S-1"),
+                ),
+            ),
+            (
+                "child resume",
+                event(
+                    Harness::Claude,
+                    EventKind::Resume,
+                    Role::Subagent,
+                    Some("S-1"),
+                ),
+            ),
+            (
+                "human",
+                event(
+                    Harness::Human,
+                    EventKind::Resume,
+                    Role::TopLevel,
+                    Some("S-1"),
+                ),
+            ),
+            (
+                "no session",
+                event(Harness::Codex, EventKind::Resume, Role::TopLevel, None),
+            ),
+        ] {
+            assert!(call.reattach_by_continuity(&candidate).is_none(), "{name}");
+        }
+        assert!(daemon.seen.lock().unwrap().is_empty(), "nothing was sent");
+        assert!(pane.pending().is_none(), "no intent was recorded");
+    }
+
+    // Kills: a request that names a seat, drops the harness, session or source,
+    // or an intent completed before the follow-up check-in ran.
+    #[test]
+    fn resume_sends_the_seatless_request_and_keeps_the_intent_for_the_follow_up() {
+        for harness in [Harness::Claude, Harness::Codex] {
+            let pane = Pane::new();
+            let daemon = Daemon::new(vec![reattached("saved", 3)]);
+            let (seat, generation, (journal, reference)) = pane
+                .call(&daemon)
+                .reattach_by_continuity(&resume(harness))
+                .expect("reattached");
+            assert_eq!((seat.as_str(), generation), ("saved", 3));
+            let requests = daemon.continuity_requests();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].target, pane.target);
+            assert_eq!(requests[0].native_session.as_str(), "S-1");
+            assert_eq!(requests[0].source, "resume");
+            assert_eq!(
+                requests[0].harness,
+                if harness == Harness::Codex {
+                    WireHarness::Codex
+                } else {
+                    WireHarness::Claude
+                }
+            );
+            // The journal's key is the daemon's operation key, and the intent stays pending.
+            assert_eq!(requests[0].operation, reference.operation);
+            assert!(pane.pending().is_some());
+            journal.complete(&reference).unwrap();
+            assert!(pane.pending().is_none());
+        }
+    }
+
+    // Kills: keeping a refused intent, which would replay the same refusal on
+    // every later hook event of the pane.
+    #[test]
+    fn a_refusal_discards_the_intent_and_reattaches_nothing() {
+        for code in [
+            ErrorCode::NotFound,
+            ErrorCode::Conflict,
+            ErrorCode::TargetAlreadyOwned,
+        ] {
+            let pane = Pane::new();
+            let daemon = Daemon::new(vec![Ok(Err(rejection(code.clone())))]);
+            assert!(
+                pane.call(&daemon)
+                    .reattach_by_continuity(&resume(Harness::Claude))
+                    .is_none()
+            );
+            assert_eq!(daemon.continuity_requests().len(), 1, "{code:?}");
+            assert!(pane.pending().is_none(), "{code:?}");
+        }
+    }
+
+    // Kills: discarding an intent whose outcome is unknown: the daemon may
+    // have committed, and only the replay finds out.
+    #[test]
+    fn an_uncertain_outcome_keeps_the_intent_under_its_key() {
+        for failure in [
+            Err(rejection(ErrorCode::UnknownOutcome)),
+            Err(rejection(ErrorCode::DeadlineExceeded)),
+            Ok(Err(rejection(ErrorCode::StoreBusy))),
+            Ok(Err(rejection(ErrorCode::HostUnavailable))),
+        ] {
+            let pane = Pane::new();
+            let daemon = Daemon::new(vec![failure]);
+            assert!(
+                pane.call(&daemon)
+                    .reattach_by_continuity(&resume(Harness::Claude))
+                    .is_none()
+            );
+            let kept = pane.pending().expect("the intent is kept");
+            assert_eq!(daemon.continuity_requests()[0].operation, kept.operation);
+        }
+    }
+
+    // Kills: giving up on a decision that only raced the daemon's own host
+    // capture, or retrying it under a fresh key.
+    #[test]
+    fn a_stale_observation_is_retried_once_under_the_same_key() {
+        let pane = Pane::new();
+        let daemon = Daemon::new(vec![
+            Ok(Err(rejection(ErrorCode::StaleHostObservation))),
+            reattached("saved", 2),
+        ]);
+        let found = pane
+            .call(&daemon)
+            .reattach_by_continuity(&resume(Harness::Claude));
+        assert!(found.is_some());
+        let requests = daemon.continuity_requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].operation, requests[1].operation);
+        // A second stale answer is a refusal, not a loop.
+        let pane = Pane::new();
+        let daemon = Daemon::new(vec![
+            Ok(Err(rejection(ErrorCode::StaleHostObservation))),
+            Ok(Err(rejection(ErrorCode::StaleHostObservation))),
+        ]);
+        assert!(
+            pane.call(&daemon)
+                .reattach_by_continuity(&resume(Harness::Claude))
+                .is_none()
+        );
+        assert_eq!(daemon.continuity_requests().len(), 2);
+        assert!(pane.pending().is_none());
+    }
+
+    // Kills: replaying a stale intent for a pane that now hosts a different
+    // session (a seat would move on evidence that no longer describes the pane).
+    #[test]
+    fn an_event_of_another_session_discards_the_pending_intent_unreplayed() {
+        let pane = Pane::new();
+        pane.record("S-1");
+        let daemon = Daemon::new(vec![]);
+        let other = event(
+            Harness::Claude,
+            EventKind::Tool,
+            Role::TopLevel,
+            Some("S-9"),
+        );
+        assert!(
+            pane.call(&daemon)
+                .finish_pending_continuity(&other)
+                .is_none()
+        );
+        assert!(daemon.seen.lock().unwrap().is_empty());
+        assert!(pane.pending().is_none());
+        // An event without a session of its own proves nothing: the intent stays.
+        pane.record("S-1");
+        let anonymous = event(Harness::Codex, EventKind::Tool, Role::TopLevel, None);
+        assert!(
+            pane.call(&daemon)
+                .finish_pending_continuity(&anonymous)
+                .is_none()
+        );
+        assert!(pane.pending().is_some());
+    }
+
+    // Kills: a replay under a new operation key (the daemon would decide again
+    // instead of returning the recorded seat), or an intent that outlives it.
+    #[test]
+    fn the_same_session_replays_the_pending_intent_under_its_recorded_key() {
+        let pane = Pane::new();
+        let reference = pane.record("S-1");
+        let tool = event(
+            Harness::Claude,
+            EventKind::Tool,
+            Role::TopLevel,
+            Some("S-1"),
+        );
+        // The seat lookup after the replay fails: the idempotent intent stays,
+        // so a later event can still write the client context.
+        let daemon = Daemon::new(vec![reattached("saved", 2)]);
+        assert!(
+            pane.call(&daemon)
+                .finish_pending_continuity(&tool)
+                .is_none()
+        );
+        let requests = daemon.continuity_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].operation, reference.operation);
+        assert_eq!(requests[0].native_session.as_str(), "S-1");
+        assert_eq!(pane.pending().unwrap().operation, reference.operation);
+        // The pane no longer maps to the replayed seat: the intent is used up.
+        let daemon = Daemon::new(vec![reattached("saved", 2)]).with_empty_pane();
+        assert!(
+            pane.call(&daemon)
+                .finish_pending_continuity(&tool)
+                .is_none()
+        );
+        assert_eq!(
+            daemon.continuity_requests()[0].operation,
+            reference.operation
+        );
+        assert!(pane.pending().is_none());
+    }
+
+    // Kills: an uncertain replay completing the intent (the next event could
+    // then never recover the reply).
+    #[test]
+    fn an_uncertain_replay_keeps_the_intent() {
+        let pane = Pane::new();
+        pane.record("S-1");
+        let daemon = Daemon::new(vec![Err(rejection(ErrorCode::UnknownOutcome))]);
+        let tool = event(
+            Harness::Claude,
+            EventKind::Tool,
+            Role::TopLevel,
+            Some("S-1"),
+        );
+        assert!(
+            pane.call(&daemon)
+                .finish_pending_continuity(&tool)
+                .is_none()
+        );
+        assert!(pane.pending().is_some());
     }
 }
