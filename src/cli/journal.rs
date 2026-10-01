@@ -1061,11 +1061,13 @@ fn private_new(path: &Path) -> io::Result<File> {
     options.mode(0o600);
     options.open(path)
 }
+/// Sandbox-writable (Codex) instance directory: never follow a leaf
+/// symlink (TRUST-POLICY Accepted limits), like the context journal.
 fn private_open(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true);
     #[cfg(unix)]
-    options.mode(0o600);
+    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     options.open(path)
 }
 #[cfg(test)]

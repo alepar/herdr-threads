@@ -130,9 +130,11 @@ const BASE62: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop
 
 /// A fresh random base62 suffix of [`PUBLIC_ID_SUFFIX_LEN`] characters.
 ///
-/// The entropy comes from the OS CSPRNG (via `uuid::Uuid::new_v4`): the 104
-/// fully random bits of a v4 UUID (its version and variant bytes skipped) are
-/// reduced modulo 62^8, so the bias is below 2^-56.
+/// The entropy comes from the OS CSPRNG (via `uuid::Uuid::new_v4`): the 112
+/// bits of a v4 UUID outside its version and variant bytes (bytes 6 and 8 are
+/// skipped whole, so 4 random bits there are discarded) are reduced modulo
+/// 62^8. 112 bits is 14 bytes x 8, and the bias is about 62^8 / 2^112 ≈ 2^-64,
+/// below 2^-56.
 pub fn public_id_suffix() -> String {
     let bytes = uuid::Uuid::new_v4().into_bytes();
     let mut random: u128 = 0;

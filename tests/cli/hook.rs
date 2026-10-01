@@ -651,7 +651,7 @@ fn burst_digest_ranks_the_require_ack_handoff_first() {
     );
     assert!(
         actions.header.contains(&format!(
-            "Your seat in this pane: {} ",
+            "Your seat in this pane: {} (thread participants and thread show mark it as self when run in this pane).",
             digest.seat.as_str()
         )),
         "{}",
