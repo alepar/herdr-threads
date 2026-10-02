@@ -28,11 +28,11 @@ Source: beads closed under `ht-rzi`; `run.md` `codeBuckets` and `fixLoop-round-1
 | ht-rzi.21 | Fix r1: one open-binding query for launch and wake; no-binding wake refused | 46d2817..905c017 |
 | ht-rzi.22 | Fix r1: single client agent-evidence rule (3-variable allowlist), honored `--operator` | c3703fe..4d4a5d2 (fix pass) |
 | ht-rzi.23 | Fix r1: PROTOCOL_VERSION 2 with client-side check; skew docs | 59ae47c..d2bb964 |
-| ht-rzi.24 | Sweep fix: continuity retry test no longer depends on wall-clock budget | 9a7a53f..c2118486 (merged in sweep-fix re-entry) |
+| ht-rzi.24 | Sweep fix: continuity retry test no longer depends on wall-clock budget | b6f0831..cdff672 |
 
 ## Remaining
 
-- **Sweep:** FAIL c2118486 — 1 of ~1,620 tests: service resolution::identity_final_currentness_check_… (capture-overlap assertion) under heavy load from 249 leaked test daemons; 10/10 clean re-runs of the service target on a quiet machine (main 4/4); classified load-sensitive, not fixed (sweep-fix pass already spent). First sweep at fce6e130 failed the continuity retry test (wall-clock budget) → fixed by ht-rzi.24. `hook_entrypoint` `three_thread_startup_…` / `twenty_thousand_…` fail on `main` but passed in the final sweep.
+- **Sweep:** FAIL c2118486 — 1 of 1611 tests run: service resolution::identity_final_currentness_check_… (capture-overlap assertion) under heavy load from 249 leaked test daemons; 10/10 clean re-runs of the service target on a quiet machine (main 4/4); classified load-sensitive, not fixed (sweep-fix pass already spent). First sweep at fce6e130 failed the continuity retry test (wall-clock budget) → fixed by ht-rzi.24. `hook_entrypoint` `three_thread_startup_…` / `twenty_thousand_…` fail on `main` but passed in the final sweep.
 - **Leaked test processes:** 244 orphaned test daemons from this run's task worktrees and 4 private test Herdr servers were killed during phase 6; bead `ht-6y1` tracks the fixture leak.
 
 Source: `run.md` `parked:`, `scopeFilter-round-1`, `fixLoop-exit`; parked beads (label `parked:ht-rzi`).
