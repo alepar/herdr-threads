@@ -39,7 +39,7 @@ codeBuckets:
   parked:
   stalled: false
   review: NOT READY (final review: daemon-restart carry-forward gap; resume into a different pane sticks; single-attempt resume; launch guard history paging; ids.rs comment) — see ledger .superpowers/sdd/ht-rzi-plan/progress.md
-  sweep: SWEEP DEFERRED (caller-owned)
+  sweep: FAIL fce6e130 — lib 1325/1326 (continuity_gate retry test, load-sensitive: 5/5 in isolation); hook_entrypoint 30/32 (three_thread_startup_…, twenty_thousand_… — both fail on main@55512edb too); all other targets pass
   stopReason: ready-drained (two launches: wf_5854046f-9a4 escalated ht-rzi.3 on a missing edge; relaunch wf_c60e7f25-648 drained the rest)
 roast-code: 2026-10-01-b5-trust-policy-guards-roast-pr-1.md, 2026-10-01-b5-trust-policy-guards-roast-pr-2.md
 stepBack-round-1: redesign — applied: two-request continuity (seatless decide + follow-up check-in + every-event intent replay) → one deciding transaction opens the successor binding; lost reply recovered by committed state (dissolves 3 confirmed + evidence b)
@@ -67,4 +67,5 @@ migrated: 4.5 coordinator wf_8ef903ea-7cb stopped with only its planner in fligh
 fixLoop-round-1: super-code re-entry wf_9103453f-851 (4.6) → root-closed; completed ht-rzi.18-.23; final review NOT READY: same-pane-id resume with daemon kept running may strand the seat (untested); retry installs no pane context; hook skips protocol check; ids.rs comment; migration 0010 vs B4
 roastCodeRound: 2
 fixLoop-exit: round 2 [converged] (Should-fix 3 confirmed, 0 Blocking; 13 resolved, 0 regressed); [fix-regression] only on a demoted Nit (install.sh) → no regression pass; sub-Blocking findings → punch list
+sweepFix: filed fix bead for the continuity retry test (wall-clock budget); hook_entrypoint failures pre-existing on base (not filed); re-entering super-code with deferSweep, then one sweep re-run
 phase: report
