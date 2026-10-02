@@ -123,7 +123,10 @@ Client-local state (`contexts/`, `intents/`) only selects what to ask; it never 
 - *Agent to agent, same seat*: a lifecycle check-in (startup, `/clear`, resume) replaces the binding. Allowed.
 - *Agent to human*: the daemon refuses a human lifecycle check-in while the open binding is
   `cooperative_top_level`, unless the request is `--operator` (implemented). `me init` additionally refuses
-  when agent environment markers are present (`CLAUDECODE`, `CODEX_*`) or Herdr reports an agent in the pane
+  when agent evidence is present: one of the three allowlisted environment markers (`CLAUDECODE`,
+  `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`), or Herdr reporting a Claude or Codex agent in the
+  pane. Other agent kinds are not evidence, and a failed Herdr read counts as no evidence. `--operator`
+  overrides the refusal through a local per-execution mark set only after the daemon accepts the request
   (implemented, best effort, client-side).
 - *Second agent*: `launch` refuses to start an agent for a seat whose bound agent Herdr reports live in
   another pane (implemented).

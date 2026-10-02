@@ -16,7 +16,7 @@
 //! sent to a human seat; its mail waits to be read and ACKed by hand.
 
 use super::{
-    RunError, agent_evidence_refusal, agent_marker,
+    RunError, agent_evidence, agent_evidence_refusal,
     commands::{CliAction, CooperativeSelection, MutationSpec, ParsedCli},
     connect, invalid_request, journal, mapping_error, pane_agent, pane_seat, parse_pane, retry,
     run_selected, seat_contexts, selected_generation,
@@ -39,9 +39,10 @@ pub const ME_INIT_HELP: &str = "Run it in your own shell pane, then use thread c
 read, ack and accept there with no --cooperative-* flags. Your actions are recorded as \
 operator_human, never as an agent. Mail addressed to your seat (including --require-ack) waits \
 for you: read it and `herdr-threads ack MESSAGE`. Re-run `me init` after a daemon restart to \
-mark yourself available again. It is refused where agent markers (CLAUDECODE, CODEX_*) or a Herdr \
-agent are present, and over a seat bound to an agent; `me init --operator` overrides that as the \
-local account.";
+mark yourself available again. It is refused where agent markers (CLAUDECODE, CODEX_SANDBOX, \
+CODEX_SANDBOX_NETWORK_DISABLED) or a Claude or Codex agent reported by Herdr are present, and over \
+a seat bound to an agent; `me init --operator` overrides that as the local account (later \
+commands in this pane then run as you).";
 
 fn budget(clock: &dyn Clock, millis: u64) -> CallBudget {
     CallBudget {
@@ -187,19 +188,11 @@ pub(crate) fn run_me_init<W: Write>(
     // Never record a person over agent evidence (TRUST-POLICY A4, best
     // effort; the daemon refuses a person's check-in over an agent binding).
     // `--operator` is the local account's explicit override.
-    if !operator {
-        if let Some(marker) = agent_marker(std::env::vars()) {
-            return Err(agent_evidence_refusal(
-                pane.as_str(),
-                &format!("environment variable {marker} is set"),
-            ));
-        }
-        if let Some(agent) = pane_agent(context, clock, &pane)?.and_then(|seen| seen.kind) {
-            return Err(agent_evidence_refusal(
-                pane.as_str(),
-                &format!("Herdr reports a `{agent}` agent in this pane"),
-            ));
-        }
+    if !operator
+        && let Some(evidence) =
+            agent_evidence(std::env::vars(), || pane_agent(context, clock, &pane))
+    {
+        return Err(agent_evidence_refusal(pane.as_str(), &evidence));
     }
     let (instance, _, client) = connect(paths, clock)?;
     let seat = match pane_seat(&parsed, &pane, paths, clock)? {
@@ -272,6 +265,16 @@ pub(crate) fn run_me_init<W: Write>(
         }
         other => other,
     })?;
+    // Honor `--operator` for later person-pane commands, only now that the
+    // daemon accepted the check-in (TRUST-POLICY A4).
+    if operator
+        && let Some(current) = contexts.current().map_err(super::context_run_error)?
+        && current.harness == Harness::Human
+    {
+        contexts
+            .set_operator_mark(current.execution)
+            .map_err(super::context_run_error)?;
+    }
     if human {
         writeln!(
             writer,

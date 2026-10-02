@@ -1245,7 +1245,9 @@ fn codex_reattachment_without_herdr_hint_then_wake() {
 /// record, a failing read -- reaches all three consumers as the same value.
 /// Present: `me init` and `launch` refuse naming the agent and the diagnostic
 /// is `match`. Absent: neither sees an agent and the diagnostic is `absent`.
-/// Error: neither guesses (`me init` and `launch` fail on the read) and the
+/// Error: neither guesses. `launch` is the required guard and fails on the
+/// read; `me init` is advisory (A4's daemon refusal is the guard), so a failed
+/// read is not evidence and the seat's own agent context stops it instead. The
 /// diagnostic is `read_error`, which never stops the reattachment.
 #[test]
 fn pane_agent_observation_reads_the_same_in_me_init_launch_and_diagnostics() {
@@ -1295,8 +1297,11 @@ fn pane_agent_observation_reads_the_same_in_me_init_launch_and_diagnostics() {
     // own agent context; `launch` went on to the hook preflight).
     assert!(!absent_me.contains("Herdr reports"), "{absent_me}");
     assert!(absent_launch.contains("missing_hook"), "{absent_launch}");
-    // Error: neither guesses; each fails on the read itself.
-    assert!(error_me.contains("scripted read error"), "{error_me}");
+    // Error: neither guesses. `launch` fails on the read itself; `me init`
+    // treats the failed read as no evidence and is stopped by the agent seat.
+    assert!(!error_me.contains("Herdr reports"), "{error_me}");
+    assert!(!error_me.contains("scripted read error"), "{error_me}");
+    assert!(error_me.contains("belongs to a Claude agent"), "{error_me}");
     assert!(
         error_launch.contains("scripted read error"),
         "{error_launch}"

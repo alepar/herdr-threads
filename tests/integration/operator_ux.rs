@@ -101,6 +101,24 @@ impl Plugin {
         );
         stderr
     }
+    fn operator_mark_files(&self) -> usize {
+        fn walk(dir: &Path) -> usize {
+            fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|entry| {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        walk(&path)
+                    } else {
+                        usize::from(path.file_name().is_some_and(|n| n == "operator.json"))
+                    }
+                })
+                .sum()
+        }
+        walk(&self.state)
+    }
     fn database(&self) -> rusqlite::Connection {
         fn find(dir: &Path) -> Option<PathBuf> {
             for entry in fs::read_dir(dir).ok()?.flatten() {
@@ -409,7 +427,7 @@ fn me_init_refuses_with_claudecode_or_codex_marker() {
         host: socket.clone(),
     };
     plugin.ok(None, None, &["daemon", "ensure"]);
-    for marker in [("CLAUDECODE", "1"), ("CODEX_HOME", "/tmp/x")] {
+    for marker in [("CLAUDECODE", "1"), ("CODEX_SANDBOX", "seatbelt")] {
         let refused = plugin.refused_with_env(Some("w1:p1"), &["me", "init"], &[marker]);
         assert!(refused.contains(OVERRIDE_ARGV), "{refused}");
         assert!(refused.contains(marker.0), "{refused}");
@@ -574,4 +592,104 @@ fn flagless_command_from_human_context_with_agent_marker_refuses() {
     );
     assert!(refused.contains(OVERRIDE_ARGV), "{refused}");
     assert!(refused.contains("CLAUDECODE"), "{refused}");
+}
+
+/// The agent seat's private `context.json` files under the state directory.
+fn context_files(state: &Path) -> Vec<PathBuf> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.file_name().is_some_and(|name| name == "context.json") {
+                out.push(path);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(state, &mut out);
+    out
+}
+
+/// TRUST-POLICY A4: a refusal that names `--operator` is honored. After
+/// `me init --operator` in a pane whose environment carries agent evidence,
+/// the person-pane commands in that pane work with the same environment.
+#[test]
+fn me_init_operator_then_person_pane_commands_work() {
+    let (root, _scratch, socket) = scratch("htop");
+    let _host = FakeHost::start(&socket, vec![pane("w1:p1", "term-a")]);
+    let plugin = Plugin {
+        state: root.join("state"),
+        host: socket.clone(),
+    };
+    plugin.ok(None, None, &["daemon", "ensure"]);
+    let seat = plugin.ok(None, None, &["seat", "resolve", "--pane", "w1:p1"])["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    plugin.ok(
+        None,
+        Some((seat.as_str(), "w1:p1")),
+        &["check-in", "--lifecycle-event", "agent-start"],
+    );
+    let env = [("CODEX_SANDBOX", "seatbelt")];
+    let refused = plugin.refused_with_env(Some("w1:p1"), &["me", "init"], &env);
+    assert!(refused.contains("CODEX_SANDBOX"), "{refused}");
+    let (code, value, stderr) =
+        plugin.run_with_env(Some("w1:p1"), None, &["me", "init", "--operator"], &env);
+    assert_eq!(code, 0, "{stderr}{value}");
+    assert_eq!(value["result"]["data"]["context"]["harness"], "human");
+    // The recorded override covers later commands in the same pane.
+    let (code, value, stderr) = plugin.run_with_env(Some("w1:p1"), None, &["inbox"], &env);
+    assert_eq!(code, 0, "{stderr}{value}");
+    let (code, value, stderr) = plugin.run_with_env(
+        Some("w1:p1"),
+        None,
+        &["thread", "create", "--topic", "operator override"],
+        &env,
+    );
+    assert_eq!(code, 0, "{stderr}{value}");
+    // The mark covers person-pane commands only; a plain `me init` still refuses.
+    let refused = plugin.refused_with_env(Some("w1:p1"), &["me", "init"], &env);
+    assert!(refused.contains("CODEX_SANDBOX"), "{refused}");
+}
+
+/// No local context is retired before the daemon accepts the operator
+/// check-in: a rejected `me init --operator` leaves the agent's context as it
+/// was. The rejection is forced with a local generation ahead of the
+/// service's (the check-in cannot be prepared at an older generation).
+#[test]
+fn rejected_operator_check_in_leaves_agent_context_intact() {
+    let (root, _scratch, socket) = scratch("htrj");
+    let _host = FakeHost::start(&socket, vec![pane("w1:p1", "term-a")]);
+    let plugin = Plugin {
+        state: root.join("state"),
+        host: socket.clone(),
+    };
+    plugin.ok(None, None, &["daemon", "ensure"]);
+    let seat = plugin.ok(None, None, &["seat", "resolve", "--pane", "w1:p1"])["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    plugin.ok(
+        None,
+        Some((seat.as_str(), "w1:p1")),
+        &["check-in", "--lifecycle-event", "agent-start"],
+    );
+    let files = context_files(&plugin.state);
+    assert_eq!(files.len(), 1, "{files:?}");
+    let mut state: Value = serde_json::from_slice(&fs::read(&files[0]).unwrap()).unwrap();
+    assert_eq!(state["current"]["harness"], "Claude", "{state}");
+    state["current"]["binding_generation"] = json!(99);
+    fs::write(&files[0], serde_json::to_vec(&state).unwrap()).unwrap();
+    let before = fs::read(&files[0]).unwrap();
+
+    let (code, value, stderr) =
+        plugin.run_with_env(Some("w1:p1"), None, &["me", "init", "--operator"], &[]);
+    assert_ne!(code, 0, "the check-in must be rejected: {stderr}{value}");
+    let after: Value = serde_json::from_slice(&fs::read(&files[0]).unwrap()).unwrap();
+    assert_eq!(after["current"], state["current"], "{after}");
+    assert_eq!(after["current"]["harness"], "Claude");
+    assert_eq!(fs::read(&files[0]).unwrap(), before);
+    assert_eq!(plugin.operator_mark_files(), 0);
 }
