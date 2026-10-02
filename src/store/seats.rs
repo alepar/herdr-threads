@@ -3714,6 +3714,21 @@ fn release_claimed_target(
     Ok(())
 }
 
+/// Whether the first reconciliation pass of the current recovery epoch has
+/// not run yet: seats a Herdr restart will unresolve may still look resolved,
+/// and unresolved seats it will rebuild may not exist yet.
+fn reconciliation_lags(tx: &Transaction<'_>, instance: &str) -> Result<bool, ApiError> {
+    Ok(tx
+        .query_row(
+            "SELECT recovery_boot IS NOT reconciled_boot OR recovery_epoch IS NOT reconciled_epoch FROM host_instances WHERE id=?1",
+            [instance],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?
+        .unwrap_or(false))
+}
+
 /// TRUST-POLICY C1 candidates: nonretired unresolved seats of the instance
 /// whose *latest* binding is this harness's session `native_session`.
 /// Sentinel (`plugin_context:`), empty and human values never match; NULL
@@ -3815,9 +3830,10 @@ pub fn replay_continuity(
 /// same transaction; the reply is idempotent under the operation key and a lost
 /// reply is recovered by the committed binding. The `cooperative_continuity`
 /// value is written to seat history (`allocation_decisions`) only, never to a
-/// receipt or the binding. With no matching unresolved seat while the host
-/// epoch's reconciliation lags its recovery marker, the refusal is the
-/// retryable `ServiceBusy`, not `NotFound`.
+/// receipt or the binding. With no matching unresolved seat, or a target that
+/// still has a resolved owner, while the host epoch's reconciliation lags its
+/// recovery marker, the refusal is the retryable `ServiceBusy`, not `NotFound`
+/// or `TargetAlreadyOwned`.
 pub fn decide_continuity(
     context: &StoreContext,
     conn: &mut Connection,
@@ -3868,11 +3884,22 @@ pub fn decide_continuity(
             }
             // Held or unowned only: a target with a resolved owner is never
             // taken (seats are never merged, nothing moves on a heuristic).
+            // Until the first reconciliation pass of the current recovery
+            // epoch has run, the owner may be a mapping from the previous
+            // Herdr incarnation that the pass will unresolve (a restored
+            // pane that kept its id, ht-p63): pending, not final.
             if !target_free(tx, &instance, target.as_str())? {
-                return Err(api_error(
-                    ErrorCode::TargetAlreadyOwned,
-                    "resumed session's pane already has a resolved seat",
-                ));
+                return Err(if reconciliation_lags(tx, &instance)? {
+                    api_error(
+                        ErrorCode::ServiceBusy,
+                        "recovery reconciliation of the current host epoch has not finished; retry",
+                    )
+                } else {
+                    api_error(
+                        ErrorCode::TargetAlreadyOwned,
+                        "resumed session's pane already has a resolved seat",
+                    )
+                });
             }
             if let Some(proof) = &structural_proof
                 && !structural_proof_matches_current(tx, &instance, proof)?
@@ -3889,16 +3916,7 @@ pub fn decide_continuity(
                     // recovery epoch has run, "no unresolved seat" only says the
                     // daemon has not yet rebuilt the seats a Herdr restart
                     // unresolved: pending, not final.
-                    let lagging: bool = tx
-                        .query_row(
-                            "SELECT recovery_boot IS NOT reconciled_boot OR recovery_epoch IS NOT reconciled_epoch FROM host_instances WHERE id=?1",
-                            [&instance],
-                            |r| r.get(0),
-                        )
-                        .optional()
-                        .map_err(store_error)?
-                        .unwrap_or(false);
-                    if lagging {
+                    if reconciliation_lags(tx, &instance)? {
                         api_error(
                             ErrorCode::ServiceBusy,
                             "recovery reconciliation of the current host epoch has not finished; retry",

@@ -3828,9 +3828,18 @@ mod continuity {
             let decisions =
                 "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'";
             assert_eq!(fx.count(decisions), 1);
+            let committed: String = fx
+                .db()
+                .query_row(
+                    "SELECT execution_id FROM occupant_bindings WHERE seat_id='saved' AND ended_at IS NULL",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
             // The elected daemon restarts before the hook's next resume. The
-            // seat is already resolved on the pane, so the hook never reaches
-            // the continuity path; the committed binding is the recovery.
+            // seat is already resolved on the pane, so the hook's continuity
+            // probe (ht-p63) is refused (the target is owned) and the ordinary
+            // check-in runs; the committed binding is the recovery.
             fx.restart();
             let resumed = fx.hook(harness, PANE, &session_start(harness, "S-1", "resume"));
             assert_eq!(resumed.code, Some(0), "{harness}: {}", resumed.stderr);
@@ -3841,10 +3850,17 @@ mod continuity {
                 state["current"]["binding_generation"].as_i64().unwrap() >= seat_generation,
                 "{harness}"
             );
-            // The stale intent of the lost reply is not replayed by the
-            // ordinary path; it is removed only by a resume that reaches the
-            // continuity path or `herdr-threads retry`.
-            assert_eq!(fx.intents(), 1, "{harness}: operation {operation}");
+            // The stale intent of the lost reply is never replayed in a pane
+            // that still has a resolved seat: the probe supersedes it (the
+            // context is the ordinary check-in's execution, not the replayed
+            // reattachment's) and its own fresh intent finishes with the
+            // refusal.
+            assert_ne!(
+                state["current"]["execution"],
+                committed.as_str(),
+                "{harness}"
+            );
+            assert_eq!(fx.intents(), 0, "{harness}: operation {operation}");
         }
     }
 

@@ -9423,6 +9423,9 @@ fn continuity_never_matches_retired_sentinel_human_or_empty_sessions() {
 fn continuity_refuses_owned_target() {
     use crate::protocol::results::ErrorCode;
     let (context, mut conn, path) = c1_fixture();
+    // Reconciliation of the current epoch has finished, so the resolved
+    // owner is current and the refusal is final.
+    b5_set_marker_to_recovery(&conn);
     // s2 resolved on target "s2" (fixture): never taken.
     c1_observe(&conn, "s2");
     let error = c1_decide(
@@ -9437,6 +9440,47 @@ fn continuity_refuses_owned_target() {
         .query_row("SELECT state FROM seats WHERE id='s1'", [], |r| r.get(0))
         .unwrap();
     assert_eq!(state, "unresolved");
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+/// ht-p63: a restored Herdr that kept the pane's id, before the first
+/// reconciliation pass of the recovery epoch. The target's resolved owner may
+/// be a stale mapping the pass will unresolve, so the refusal is the
+/// retryable `ServiceBusy` (nothing stored under the key, nothing taken);
+/// once reconciled with the owner still resolved it is final.
+#[test]
+fn continuity_on_owned_target_is_retryable_until_reconciled() {
+    use crate::protocol::results::ErrorCode;
+    let (context, mut conn, path) = c1_fixture();
+    conn.execute(
+        "UPDATE host_instances SET recovery_boot='b',recovery_epoch=2,reconciled_boot='b',reconciled_epoch=1 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    c1_observe(&conn, "s2");
+    let command = c1_command("s2", "sess-1", "c1-owned-lag");
+    let lagging = c1_decide(&context, &mut conn, &command, "match").unwrap_err();
+    assert_eq!(lagging.code, ErrorCode::ServiceBusy);
+    assert!(
+        lagging.detail.contains("has not finished"),
+        "{}",
+        lagging.detail
+    );
+    let (stored, s1, s2): (i64, String, String) = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM operations WHERE operation_key='c1-owned-lag'),(SELECT state FROM seats WHERE id='s1'),(SELECT state FROM seats WHERE id='s2')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (stored, s1.as_str(), s2.as_str()),
+        (0, "unresolved", "resolved")
+    );
+    b5_set_marker_to_recovery(&conn);
+    let settled = c1_decide(&context, &mut conn, &command, "match").unwrap_err();
+    assert_eq!(settled.code, ErrorCode::TargetAlreadyOwned);
     drop(conn);
     let _ = std::fs::remove_file(path);
 }

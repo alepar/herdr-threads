@@ -2005,7 +2005,13 @@ mod continuity_gate {
                 event(Harness::Codex, EventKind::Resume, Role::TopLevel, None),
             ),
         ] {
-            assert!(call.reattach_by_continuity(&candidate).is_none(), "{name}");
+            assert!(
+                matches!(
+                    call.reattach_by_continuity(&candidate, false),
+                    Reattach::Declined
+                ),
+                "{name}"
+            );
         }
         assert!(daemon.seen.lock().unwrap().is_empty(), "nothing was sent");
         assert!(pane.pending().is_none(), "no intent was recorded");
@@ -2020,7 +2026,8 @@ mod continuity_gate {
             let daemon = Daemon::new(vec![reattached("saved", 3)]);
             let done = pane
                 .call(&daemon)
-                .reattach_by_continuity(&resume(harness))
+                .reattach_by_continuity(&resume(harness), false)
+                .done()
                 .expect("reattached");
             assert!(
                 String::from_utf8_lossy(&done.text)
@@ -2086,7 +2093,8 @@ mod continuity_gate {
         let daemon = Daemon::new(vec![reattached("saved", 4)]);
         assert!(
             pane.call(&daemon)
-                .reattach_by_continuity(&resume(Harness::Claude))
+                .reattach_by_continuity(&resume(Harness::Claude), false)
+                .done()
                 .is_some()
         );
         let context = pane.saved_context("saved").unwrap();
@@ -2108,11 +2116,11 @@ mod continuity_gate {
         ] {
             let pane = Pane::new();
             let daemon = Daemon::new(vec![Ok(Err(rejection(code.clone())))]);
-            assert!(
+            assert!(matches!(
                 pane.call(&daemon)
-                    .reattach_by_continuity(&resume(Harness::Claude))
-                    .is_none()
-            );
+                    .reattach_by_continuity(&resume(Harness::Claude), false),
+                Reattach::Declined
+            ));
             assert_eq!(daemon.continuity_requests().len(), 1, "{code:?}");
             assert!(pane.pending().is_none(), "{code:?}");
             assert!(pane.saved_context("saved").is_none(), "{code:?}");
@@ -2136,11 +2144,11 @@ mod continuity_gate {
             let pane = Pane::new();
             let daemon = Daemon::new(vec![failure]).repeating();
             let window = ScriptedWindow::allowing(5);
-            assert!(
+            assert!(matches!(
                 pane.call_with(&daemon, Arc::clone(&window))
-                    .reattach_by_continuity(&resume(Harness::Claude))
-                    .is_none()
-            );
+                    .reattach_by_continuity(&resume(Harness::Claude), false),
+                Reattach::Pending
+            ));
             let kept = pane.pending().expect("the intent is kept");
             let requests = daemon.continuity_requests();
             assert_eq!(
@@ -2168,11 +2176,11 @@ mod continuity_gate {
     fn a_closed_window_submits_once_and_keeps_the_intent() {
         let pane = Pane::new();
         let daemon = Daemon::new(vec![Ok(Err(rejection(ErrorCode::ServiceBusy)))]).repeating();
-        assert!(
+        assert!(matches!(
             pane.call_with(&daemon, ScriptedWindow::allowing(0))
-                .reattach_by_continuity(&resume(Harness::Claude))
-                .is_none()
-        );
+                .reattach_by_continuity(&resume(Harness::Claude), false),
+            Reattach::Pending
+        ));
         assert_eq!(daemon.continuity_requests().len(), 1);
         assert!(pane.pending().is_some(), "the intent is kept");
     }
@@ -2190,7 +2198,8 @@ mod continuity_gate {
         let window = ScriptedWindow::allowing(8);
         assert!(
             pane.call_with(&daemon, Arc::clone(&window))
-                .reattach_by_continuity(&resume(Harness::Claude))
+                .reattach_by_continuity(&resume(Harness::Claude), false)
+                .done()
                 .is_some()
         );
         let requests = daemon.continuity_requests();
@@ -2220,7 +2229,12 @@ mod continuity_gate {
             Role::TopLevel,
             Some("S-9"),
         );
-        assert!(pane.call(&daemon).reattach_by_continuity(&other).is_some());
+        assert!(
+            pane.call(&daemon)
+                .reattach_by_continuity(&other, false)
+                .done()
+                .is_some()
+        );
         let requests = daemon.continuity_requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].native_session.as_str(), "S-9");
@@ -2237,7 +2251,8 @@ mod continuity_gate {
         let daemon = Daemon::new(vec![reattached("saved", 2)]);
         assert!(
             pane.call(&daemon)
-                .reattach_by_continuity(&resume(Harness::Claude))
+                .reattach_by_continuity(&resume(Harness::Claude), false)
+                .done()
                 .is_some()
         );
         let requests = daemon.continuity_requests();
@@ -2257,7 +2272,8 @@ mod continuity_gate {
         let daemon = Daemon::new(vec![reattached("saved", 2)]);
         assert!(
             pane.call(&daemon)
-                .reattach_by_continuity(&resume(Harness::Claude))
+                .reattach_by_continuity(&resume(Harness::Claude), false)
+                .done()
                 .is_some()
         );
         assert_eq!(daemon.continuity_requests().len(), 1);

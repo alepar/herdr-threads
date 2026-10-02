@@ -921,6 +921,54 @@ fn resume_before_reconciliation_with_daemon_kept_running_is_retried_then_reattac
     assert_eq!(world.intents(), 0, "the continuity intent is finished");
 }
 
+/// TRUST-POLICY C1 x C2 (ht-p63): as above, but the restored Herdr gives the
+/// resumed session's pane the SAME id it had before (w1:p1), and the daemon
+/// keeps running. The resume hook fires before the daemon has noticed the new
+/// incarnation, so the pane still looks resolved to the stale mapping. The
+/// seat must not end unresolved with its own pane held: the resumed session
+/// reattaches by cooperative continuity on the restored pane.
+#[test]
+fn resume_on_same_pane_id_before_reconciliation_with_daemon_kept_running_reattaches() {
+    let mut world = World::start(
+        "htsp",
+        vec![claude("w1:p1", "term-a", "SA"), pane("w1:p2", "term-b")],
+    );
+    let a = world.resolve("w1:p1");
+    let (code, _, stderr) =
+        world.hook("claude", "w1:p1", &session_start("claude", "SA", "startup"));
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(world.seat_state(&a), "resolved");
+    // The restored Herdr reuses the pane id w1:p1 on a new terminal; the
+    // daemon is not stopped, and nothing waits for its next capture.
+    world.restart_herdr_keeping_daemon(vec![
+        claude("w1:p1", "term-a2", "SA"),
+        pane("w1:p2", "term-b2"),
+    ]);
+    let (code, _, stderr) = world.hook("claude", "w1:p1", &session_start("claude", "SA", "resume"));
+    assert_eq!(code, 0, "{stderr}");
+    world.wait_reconciled();
+    assert_eq!(world.seat_state(&a), "resolved", "{stderr}");
+    assert_eq!(
+        world
+            .count("SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'"),
+        1,
+        "{stderr}"
+    );
+    assert_eq!(
+        world.open_binding(&a),
+        vec![("claude".into(), "cooperative_top_level".into(), "SA".into())],
+        "{stderr}"
+    );
+    assert_eq!(
+        world.count(&format!(
+            "SELECT count(*) FROM seats WHERE id='{a}' AND target_id='w1:p1'"
+        )),
+        1
+    );
+    assert_eq!(world.hold_unclaimed(), 0, "the restored pane is not held");
+    assert_eq!(world.intents(), 0, "the continuity intent is finished");
+}
+
 /// TRUST-POLICY A4 (agent to human) x C1 (ht-rzi.2 x ht-rzi.3): the seat a
 /// resumed session reattached holds a `cooperative_top_level` binding, so a
 /// person's `me init` over it is refused. Herdr reports no agent in the pane,
