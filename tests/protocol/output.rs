@@ -22,7 +22,7 @@ fn json_is_versioned_exact_utf8_and_newline_terminated() {
     let bytes = encode_selected(&result, &OutputSpec::default()).unwrap();
     assert_eq!(bytes.last(), Some(&b'\n'));
     let json: serde_json::Value = serde_json::from_slice(&bytes[..bytes.len() - 1]).unwrap();
-    assert_eq!(json["version"], 1);
+    assert_eq!(json["version"], crate::protocol::wire::PROTOCOL_VERSION);
     assert_eq!(json["result"]["kind"], "health");
     assert_eq!(json["result"]["data"]["software_version"], "v\"\n雪");
     assert_eq!(
@@ -699,9 +699,10 @@ fn maximum_cursor_and_context_bytes_are_fully_counted() {
             host: None,
         },
     };
+    let version = crate::protocol::wire::PROTOCOL_VERSION;
     let bytes = encode_selected(&result, &spec).unwrap();
     let expected = format!(
-        "{{\"version\":1,\"result\":{{\"kind\":\"diagnostics\",\"data\":{{\"items\":[],\"next_cursor\":\"{cursor}\",\"next_argv\":[\"herdr-threads\",\"--state-dir\",\"{state_dir}\",\"--json\",\"doctor\",\"--cursor\",\"{cursor}\"],\"high_water_ordinal\":205,\"scope_revision\":null,\"has_more\":true,\"stop_reason\":\"rows\",\"consistency\":\"bounded_live\"}}}}}}\n"
+        "{{\"version\":{version},\"result\":{{\"kind\":\"diagnostics\",\"data\":{{\"items\":[],\"next_cursor\":\"{cursor}\",\"next_argv\":[\"herdr-threads\",\"--state-dir\",\"{state_dir}\",\"--json\",\"doctor\",\"--cursor\",\"{cursor}\"],\"high_water_ordinal\":205,\"scope_revision\":null,\"has_more\":true,\"stop_reason\":\"rows\",\"consistency\":\"bounded_live\"}}}}}}\n"
     );
     assert_eq!(bytes, expected.as_bytes());
     let text = String::from_utf8(

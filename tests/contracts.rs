@@ -210,7 +210,7 @@ fn wire_instance_mismatch_and_uuid_boot_are_typed() {
     let code: ErrorCode = serde_json::from_str("\"instance_mismatch\"").unwrap();
     assert_eq!(code, ErrorCode::InstanceMismatch);
     let request = WireRequest {
-        version: 1,
+        version: PROTOCOL_VERSION,
         request_id: "r".into(),
         expected_instance: "00000000-0000-4000-8000-000000000001".into(),
         expected_boot: None,
@@ -218,7 +218,7 @@ fn wire_instance_mismatch_and_uuid_boot_are_typed() {
         command: Command::Health,
     };
     let malformed = WireResponse {
-        version: 1,
+        version: PROTOCOL_VERSION,
         request_id: "r".into(),
         instance: request.expected_instance.clone(),
         daemon_boot: "boot-a".into(),
@@ -239,7 +239,7 @@ fn wire_instance_mismatch_and_uuid_boot_are_typed() {
 fn wire_request_expected_boot_is_optional_validated_and_typed() {
     let base = |boot: &str| {
         format!(
-            r#"{{"version":1,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001"{boot},"command":{{"kind":"health"}}}}"#
+            r#"{{"version":{PROTOCOL_VERSION},"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001"{boot},"command":{{"kind":"health"}}}}"#
         )
     };
     let absent: WireRequest = serde_json::from_str(&base("")).unwrap();
@@ -472,11 +472,11 @@ fn omitted_topic_and_preview_keep_exact_detail_routes() {
 #[test]
 fn command_bounds_goal_operator_deadline_and_search_work() {
     let claim = serde_json::json!({"instance":"i","seat":"s1","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n","execution":"e","target":"p"});
-    let create = serde_json::json!({"version":1,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"create_thread","args":{"topic":"topic","goal":"x".repeat(1025),"operation":"o","claim":claim}}});
+    let create = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"create_thread","args":{"topic":"topic","goal":"x".repeat(1025),"operation":"o","claim":claim}}});
     assert!(WireRequest::decode(create.to_string().as_bytes()).is_err());
-    let orphan = serde_json::json!({"version":1,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"operator_orphan_invite","args":{"thread":"t","seat":"s","deadline_millis":1000,"operation":"o"}}});
+    let orphan = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"operator_orphan_invite","args":{"thread":"t","seat":"s","deadline_millis":1000,"operation":"o"}}});
     assert!(WireRequest::decode(orphan.to_string().as_bytes()).is_ok());
-    let search = serde_json::json!({"version":1,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"search","args":{"literal":"word","thread":null,"page":{"cursor":null,"limit":20,"max_bytes":16384},"max_candidates":101}}});
+    let search = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"search","args":{"literal":"word","thread":null,"page":{"cursor":null,"limit":20,"max_bytes":16384},"max_candidates":101}}});
     assert!(WireRequest::decode(search.to_string().as_bytes()).is_err());
 }
 
@@ -496,7 +496,7 @@ fn compound_and_range_read_commands_have_strict_wire_shapes() {
             serde_json::json!({"thread":"t","page":page,"initial":{"kind":"after","sequence":3}}),
         ),
     ] {
-        let request = serde_json::json!({"version":1,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":kind,"args":args}});
+        let request = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":kind,"args":args}});
         assert!(
             WireRequest::decode(request.to_string().as_bytes()).is_ok(),
             "rejected {kind}"
@@ -638,15 +638,15 @@ fn selected_output_context_is_bounded_and_json_is_the_direct_default() {
 
 #[test]
 fn wire_request_carries_expected_instance_without_granting_authority() {
-    let valid = serde_json::json!({"version":1,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"health"}});
+    let valid = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"health"}});
     let request = WireRequest::decode(valid.to_string().as_bytes()).unwrap();
     assert_eq!(
         request.expected_instance,
         "00000000-0000-4000-8000-000000000001"
     );
-    let missing = serde_json::json!({"version":1,"request_id":"r","command":{"kind":"health"}});
+    let missing = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","command":{"kind":"health"}});
     assert!(WireRequest::decode(missing.to_string().as_bytes()).is_err());
-    let too_long = serde_json::json!({"version":1,"request_id":"r".repeat(129),"expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"health"}});
+    let too_long = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r".repeat(129),"expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"health"}});
     assert!(WireRequest::decode(too_long.to_string().as_bytes()).is_err());
 }
 
@@ -654,7 +654,7 @@ fn wire_request_carries_expected_instance_without_granting_authority() {
 fn wire_response_is_bounded_and_correlates_actual_identity() {
     use herdr_threads::protocol::wire::{MAX_WIRE_FRAME_BYTES, encode_wire_response};
     let request = WireRequest {
-        version: 1,
+        version: PROTOCOL_VERSION,
         request_id: "r".into(),
         expected_instance: "00000000-0000-4000-8000-000000000001".into(),
         expected_boot: None,
@@ -662,7 +662,7 @@ fn wire_response_is_bounded_and_correlates_actual_identity() {
         command: Command::Health,
     };
     let response = WireResponse {
-        version: 1,
+        version: PROTOCOL_VERSION,
         request_id: "r".into(),
         instance: "00000000-0000-4000-8000-000000000001".into(),
         daemon_boot: "00000000-0000-4000-8000-000000000002".into(),
@@ -902,11 +902,18 @@ fn request_wire_rejects_authority_and_unknown_versions() {
         r#"{"version":1,"request_id":"r1","command":{"kind":"health"},"operator_actor":{"uid":0}}"#,
         r#"{"version":1,"request_id":"r1","command":{"kind":"health"},"mutation_permit":{"seat":"forged"}}"#,
         r#"{"version":1,"request_id":"r1","command":{"kind":"health"},"trusted_decision_at":1}"#,
-        r#"{"version":2,"request_id":"r1","command":{"kind":"health"}}"#,
+        r#"{"version":99,"request_id":"r1","command":{"kind":"health"}}"#,
         r#"{"version":1,"request_id":"r1","command":{"kind":"operator_fresh_seat","args":{"target":"p1","operation":"o1","operator_actor":{"uid":0}}}}"#,
         r#"{"version":1,"request_id":"r1","command":{"kind":"check_in","args":{"mode":{"kind":"current"},"operation":"o1","claim":{"instance":"i","seat":"s1","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n1","execution":"e1","target":"p1","verified":true}}}}"#,
     ] {
-        let mut request: serde_json::Value = serde_json::from_str(payload).unwrap();
+        // The fixtures spell version 1; stamp the current protocol so only the
+        // field under test (or the explicit version 99) is invalid.
+        let payload = payload.replacen(
+            "\"version\":1,",
+            &format!("\"version\":{PROTOCOL_VERSION},"),
+            1,
+        );
+        let mut request: serde_json::Value = serde_json::from_str(&payload).unwrap();
         request["expected_instance"] = serde_json::json!(WIRE_FIXTURE_INSTANCE);
         let mut control = request.clone();
         control["version"] = serde_json::json!(PROTOCOL_VERSION);
@@ -1407,7 +1414,7 @@ fn all_command_variants_round_trip_without_actor_fields() {
         if let Some(args) = args {
             command["args"] = args;
         }
-        let raw = json!({"version":1,"request_id":"r1","expected_instance":"00000000-0000-4000-8000-000000000001","command":command});
+        let raw = json!({"version":PROTOCOL_VERSION,"request_id":"r1","expected_instance":"00000000-0000-4000-8000-000000000001","command":command});
         let parsed: WireRequest =
             serde_json::from_value(raw.clone()).unwrap_or_else(|e| panic!("{kind}: {e}"));
         let out = serde_json::to_value(&parsed).unwrap();
@@ -1679,7 +1686,14 @@ fn command_envelope_rejects_extra_actor_and_time_fields() {
         r#"{"version":1,"request_id":"r1","command":{"kind":"ack","args":{"messages":["m1"],"operation":"o1","claim":{"instance":"i","seat":"s1","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n1","execution":"e1","target":"p1"}},"operator_actor":{"uid":0}}}"#,
         r#"{"version":1,"request_id":"r1","command":{"kind":"health","trusted_decision_at":123}}"#,
     ] {
-        let mut request: serde_json::Value = serde_json::from_str(payload).unwrap();
+        // The fixtures spell version 1; stamp the current protocol so only the
+        // field under test (or the explicit version 99) is invalid.
+        let payload = payload.replacen(
+            "\"version\":1,",
+            &format!("\"version\":{PROTOCOL_VERSION},"),
+            1,
+        );
+        let mut request: serde_json::Value = serde_json::from_str(&payload).unwrap();
         request["expected_instance"] = serde_json::json!(WIRE_FIXTURE_INSTANCE);
         let mut control = request.clone();
         for field in ["verified_actor", "operator_actor", "trusted_decision_at"] {
@@ -1740,7 +1754,7 @@ fn body_continuation_is_message_scoped_and_diagnostics_has_distinct_scope() {
     .unwrap();
     let request = |message: &str, cursor: &str, max_bytes: u32| {
         json!({
-            "version":1,"request_id":"r1","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"message","args":{
+            "version":PROTOCOL_VERSION,"request_id":"r1","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"message","args":{
                 "message":message,"body":{"cursor":cursor,"offset":null,"max_bytes":max_bytes}
             }}
         })

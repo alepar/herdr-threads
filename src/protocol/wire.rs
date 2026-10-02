@@ -6,7 +6,13 @@ use super::{
 use serde::{Deserialize, Deserializer, Serialize};
 use std::io::{self, Write};
 
-pub const PROTOCOL_VERSION: u16 = 1;
+/// Wire protocol version. A daemon and a client speak only the same version.
+/// 1: the original request/response envelope.
+/// 2: `WireRequest.expected_boot`, the B5 commands `OperatorRetire`,
+///    `OperatorReplace`, `OperatorCheckIn` and `ContinuityCheckIn`, and the
+///    `DaemonBootChanged` refusal. A version-1 daemon rejects a version-2
+///    request at decode, so the descriptor check reports the skew first.
+pub const PROTOCOL_VERSION: u16 = 2;
 pub const MAX_WIRE_FRAME_BYTES: usize = 1_048_576;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

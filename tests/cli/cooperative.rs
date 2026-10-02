@@ -1309,3 +1309,43 @@ fn agent_context_selection_ignores_agent_markers() {
     .unwrap();
     assert_eq!(selected.harness, crate::harness::context::Harness::Claude);
 }
+
+#[test]
+fn cli_command_against_previous_protocol_descriptor_is_refused_before_send() {
+    use crate::daemon::{
+        ownership::OwnerLock,
+        paths::{InstancePaths, RuntimeContext},
+    };
+    use crate::protocol::{results::ErrorCode, wire::PROTOCOL_VERSION};
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("herdr-cli-skew-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let context = RuntimeContext::explicit(root.clone(), root.join("host.sock"), None).unwrap();
+    let paths = InstancePaths::resolve(&context).unwrap();
+    let lock = OwnerLock::acquire(&paths).unwrap();
+    let listener = lock.bind_socket().unwrap();
+    lock.publish_endpoint(&listener, "0.0.1", PROTOCOL_VERSION - 1)
+        .unwrap();
+    let clock: std::sync::Arc<dyn crate::protocol::time::Clock> =
+        std::sync::Arc::new(crate::app::SystemClock::new());
+    let error = match crate::cli::connect(&paths, &clock) {
+        Err(crate::cli::RunError::Api(error)) => error,
+        Err(_) => panic!("expected an API error"),
+        Ok(_) => panic!("a previous-protocol descriptor must refuse before any client exists"),
+    };
+    assert_eq!(error.code, ErrorCode::UnknownWireVersion);
+    assert!(
+        error.detail.contains(&format!(
+            "daemon protocol {} differs from executable protocol {}",
+            PROTOCOL_VERSION - 1,
+            PROTOCOL_VERSION
+        )),
+        "{}",
+        error.detail
+    );
+    assert!(error.detail.contains("daemon stop"), "{}", error.detail);
+    drop(listener);
+    drop(lock);
+    std::fs::remove_dir_all(root).unwrap();
+}

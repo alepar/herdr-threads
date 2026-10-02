@@ -411,8 +411,8 @@ async fn malformed_requests_do_not_reach_service_and_peer_uid_is_kernel_supplied
     ));
     for bytes in [
         b"not json".to_vec(),
-        format!(r#"{{"version":2,"request_id":"r","expected_instance":"{}","command":{{"kind":"health"}}}}"#, instance_id(&instance)).into_bytes(),
-        format!(r#"{{"version":1,"request_id":"r","expected_instance":"{}","operator_actor":"forged","command":{{"kind":"health"}}}}"#, instance_id(&instance)).into_bytes(),
+        format!(r#"{{"version":{},"request_id":"r","expected_instance":"{}","command":{{"kind":"health"}}}}"#, PROTOCOL_VERSION + 1, instance_id(&instance)).into_bytes(),
+        format!(r#"{{"version":{},"request_id":"r","expected_instance":"{}","operator_actor":"forged","command":{{"kind":"health"}}}}"#, PROTOCOL_VERSION, instance_id(&instance)).into_bytes(),
     ] {
         let mut stream = UnixStream::connect(&path).await.unwrap();
         write_frame(&mut stream, &bytes).await.unwrap();
@@ -655,7 +655,7 @@ async fn held_search_has_four_waiters_and_health_remains_available() {
     for n in 0..5 {
         let mut stream = UnixStream::connect(&path).await.unwrap();
         let request = WireRequest {
-            version: 1,
+            version: PROTOCOL_VERSION,
             request_id: format!("search-{n}"),
             expected_instance: instance_id(&instance).to_string(),
             expected_boot: None,
@@ -682,7 +682,7 @@ async fn held_search_has_four_waiters_and_health_remains_available() {
     tokio::time::sleep(Duration::from_millis(30)).await;
     let mut excess = UnixStream::connect(&path).await.unwrap();
     let request = WireRequest {
-        version: 1,
+        version: PROTOCOL_VERSION,
         request_id: "excess".into(),
         expected_instance: instance_id(&instance).to_string(),
         expected_boot: None,
@@ -810,7 +810,7 @@ async fn disconnected_search_retains_active_admission_until_worker_exits() {
         shutdown.clone(),
     ));
     let search = |request_id: &str| WireRequest {
-        version: 1,
+        version: PROTOCOL_VERSION,
         request_id: request_id.into(),
         expected_instance: instance_id(&instance).to_string(),
         expected_boot: None,
@@ -1092,7 +1092,7 @@ async fn timed_out_search_keeps_active_permit_until_sync_worker_exits() {
         shutdown.clone(),
     ));
     let search = |request_id: &str| WireRequest {
-        version: 1,
+        version: PROTOCOL_VERSION,
         request_id: request_id.into(),
         expected_instance: instance_id(&instance).to_string(),
         expected_boot: None,

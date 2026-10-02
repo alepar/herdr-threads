@@ -226,6 +226,44 @@ async fn incompatible_protocol_owner_is_reported_before_health_dispatch() {
 }
 
 #[tokio::test]
+async fn upgraded_client_against_previous_protocol_daemon_reports_mismatch() {
+    let (root, context, paths) = fixture();
+    let lock = OwnerLock::acquire(&paths).unwrap();
+    let listener = lock.bind_socket().unwrap();
+    let descriptor = lock
+        .publish_endpoint(&listener, "0.0.1", PROTOCOL_VERSION - 1)
+        .unwrap();
+    // The previous daemon would drop the upgraded request without replying;
+    // the live listener never answers, so only the descriptor check can report.
+    let error = ensure_running_with_timeout(
+        &context,
+        PathBuf::from("/bin/false").as_path(),
+        Arc::new(TestClock),
+        Duration::from_secs(2),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::UnknownWireVersion);
+    assert!(
+        error.detail.contains(&format!(
+            "daemon protocol {} differs from executable protocol {}",
+            PROTOCOL_VERSION - 1,
+            PROTOCOL_VERSION
+        )),
+        "{}",
+        error.detail
+    );
+    assert!(!error.detail.contains("did not become ready"));
+    assert_eq!(
+        crate::daemon::ownership::read_descriptor(&paths, lock.instance_uuid()).unwrap(),
+        descriptor
+    );
+    drop(listener);
+    drop(lock);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn crashed_incompatible_protocol_owner_recovers_to_new_healthy_boot() {
     let (root, context, paths) = fixture();
     let launcher = launcher(&root);
