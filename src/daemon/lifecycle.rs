@@ -94,6 +94,17 @@ impl<S: DiagnosticSink> Drop for OwnerSession<S> {
 
 const ENSURE_WAIT: Duration = Duration::from_secs(5);
 
+/// Names the pid of the test process that owns any daemon started under it.
+/// Inherited through `daemon ensure`'s detached spawn; honored only by
+/// `test-support` builds (see `test_support::owner_watch`), ignored otherwise.
+pub const TEST_OWNER_PID_ENV: &str = "HERDR_THREADS_TEST_OWNER_PID";
+
+/// `(TEST_OWNER_PID_ENV, <this process id>)`, for tests to pass with
+/// `Command::envs([test_owner_env()])` on anything that may start a daemon.
+pub fn test_owner_env() -> (&'static str, String) {
+    (TEST_OWNER_PID_ENV, std::process::id().to_string())
+}
+
 fn record_owner_error<S: DiagnosticSink>(owner: &mut OwnerSession<S>, error: &io::Error) {
     let detail = format!("daemon owner error: {error}\n");
     let _ = owner.emit(DiagnosticSource::Daemon, detail.as_bytes());
@@ -110,15 +121,31 @@ fn api_error(code: ErrorCode, detail: impl Into<String>) -> ApiError {
 }
 
 /// The definite refusal for a daemon whose published protocol differs from
-/// this executable's. Shared by `ensure` and every CLI client so none of them
-/// sends a request an older daemon would drop at decode.
-pub(crate) fn protocol_mismatch_error(daemon_protocol: u16) -> ApiError {
+/// this executable's, from `ensure` and (via [`check_protocol`]) every client,
+/// so none of them sends a request an older daemon would drop at decode. It
+/// names the published pid: when the older executable is gone, stopping that
+/// process is the way out.
+fn protocol_mismatch_error(descriptor: &EndpointDescriptor) -> ApiError {
+    let daemon_protocol = descriptor.protocol_version;
+    let pid = descriptor.pid;
     api_error(
         ErrorCode::UnknownWireVersion,
         format!(
-            "daemon protocol {daemon_protocol} differs from executable protocol {PROTOCOL_VERSION}; run `daemon stop` with the matching older executable/protocol, then `daemon ensure` with the new executable and the same state/host context"
+            "daemon protocol {daemon_protocol} differs from executable protocol {PROTOCOL_VERSION}; run `daemon stop` with the matching older executable/protocol (if it is gone, stop the daemon process, pid {pid}, by hand), then `daemon ensure` with the new executable and the same state/host context"
         ),
     )
+}
+
+/// Refuse a published daemon whose protocol differs from this executable's
+/// before any request is sent: an older daemon drops a newer request at
+/// decode with no reply, so a caller would otherwise wait out its budget.
+/// The one check every client (CLI `connect`, the native hook) applies.
+pub(crate) fn check_protocol(descriptor: &EndpointDescriptor) -> Result<(), ApiError> {
+    if descriptor.protocol_version == PROTOCOL_VERSION {
+        Ok(())
+    } else {
+        Err(protocol_mismatch_error(descriptor))
+    }
 }
 
 fn io_error(error: io::Error) -> ApiError {
@@ -162,7 +189,7 @@ async fn handshake(
         {
             return Ok(None);
         }
-        return Err(protocol_mismatch_error(descriptor.protocol_version));
+        return Err(protocol_mismatch_error(&descriptor));
     }
     let client = LocalSocketClient::new(
         descriptor.endpoint.clone(),

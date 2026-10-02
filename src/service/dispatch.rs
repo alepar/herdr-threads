@@ -310,9 +310,11 @@ impl LocalService for DomainService {
             // Daemon lifecycle check order (TRUST-POLICY A4, C1): (1) the A4
             // agent-to-human refusal, (2) this C1 reattachment on a held or
             // unowned target, (3) the existing hold refusal / ordinary path.
-            // The hook sends this seatless command only when the pane has no
-            // resolved seat and the event is a top-level resume, so (1)
-            // (human lifecycle check-ins) never reaches it.
+            // The hook sends this seatless command only for a top-level
+            // resume, so (1) (human lifecycle check-ins) never reaches it. It
+            // is sent even when the pane still looks resolved (ht-p63): the
+            // fresh target read here detects a Herdr incarnation the daemon
+            // has not reconciled, and a current resolved owner is refused.
             Command::ContinuityCheckIn(continuity) => {
                 let (owner_uid, _) = self.cooperative_runtime.as_ref().ok_or_else(|| {
                     error(

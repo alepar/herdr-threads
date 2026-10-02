@@ -13,6 +13,9 @@ use std::{
 };
 
 fn detached_child(args: &[OsString]) -> io::Result<()> {
+    // Test builds: exit once the owning test process is gone (owner_watch).
+    #[cfg(feature = "test-support")]
+    herdr_threads::test_support::owner_watch::watch_from_env();
     if args.len() != 7 || args[3] != "--state-dir" || args[5] != "--host-endpoint" {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

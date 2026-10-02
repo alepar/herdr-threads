@@ -196,6 +196,7 @@ fn harness_path(host: &Path) -> String {
 fn run_hook(command: &str, pane: &str, host: &Path, stdin: &[u8]) -> Hook {
     let started = Instant::now();
     let mut child = std::process::Command::new("/bin/sh")
+        .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
         .arg("-c")
         .arg(command)
         .env("HERDR_ENV", "1")
@@ -724,6 +725,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     // `unresolved` (host-seat lane), so check-in must report, not allocate.
     let ensured = run_hook(&command, "w9:p1", &host, &start("sess-3"));
     let stop_daemon = std::process::Command::new(BIN)
+        .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
         .args([
             "--state-dir",
             state.to_str().unwrap(),
@@ -1163,6 +1165,7 @@ fn stalled_stdin_cannot_hold_a_hook_past_the_tool_budget() {
     let root = private_root();
     let started = Instant::now();
     let mut child = std::process::Command::new(BIN)
+        .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
         .args([
             "--state-dir",
             root.join("state").to_str().unwrap(),
@@ -2284,6 +2287,7 @@ fn agent_path(fx: &Fixture) -> String {
 /// the agent's pane environment (no state dir env, no seat flags).
 fn run_in_pane(fx: &Fixture, pane: &str, command: &str) -> std::process::Output {
     std::process::Command::new("/bin/sh")
+        .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
         .arg("-c")
         .arg(command)
         .env("HERDR_ENV", "1")
@@ -2713,6 +2717,7 @@ fn real_installed_codex_hook_emits_context_with_a_warm_fingerprint_cache() {
 fn conflicting_globals_fail_the_cli_but_fail_open_only_for_hook() {
     let run = |args: &[&str]| {
         let out = std::process::Command::new(BIN)
+            .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
             .args(args)
             .env_remove("HERDR_ENV")
             .env_remove("HERDR_PANE_ID")
@@ -2800,6 +2805,7 @@ fn user_level_hook_is_silent_outside_its_herdr_instance() {
     let run = |env: &[(&str, String)]| {
         let started = Instant::now();
         let mut command = std::process::Command::new(&argv[0]);
+        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
         command
             .args(&argv[1..])
             .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
@@ -3828,9 +3834,18 @@ mod continuity {
             let decisions =
                 "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'";
             assert_eq!(fx.count(decisions), 1);
+            let committed: String = fx
+                .db()
+                .query_row(
+                    "SELECT execution_id FROM occupant_bindings WHERE seat_id='saved' AND ended_at IS NULL",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
             // The elected daemon restarts before the hook's next resume. The
-            // seat is already resolved on the pane, so the hook never reaches
-            // the continuity path; the committed binding is the recovery.
+            // seat is already resolved on the pane, so the hook's continuity
+            // probe (ht-p63) is refused (the target is owned) and the ordinary
+            // check-in runs; the committed binding is the recovery.
             fx.restart();
             let resumed = fx.hook(harness, PANE, &session_start(harness, "S-1", "resume"));
             assert_eq!(resumed.code, Some(0), "{harness}: {}", resumed.stderr);
@@ -3841,10 +3856,17 @@ mod continuity {
                 state["current"]["binding_generation"].as_i64().unwrap() >= seat_generation,
                 "{harness}"
             );
-            // The stale intent of the lost reply is not replayed by the
-            // ordinary path; it is removed only by a resume that reaches the
-            // continuity path or `herdr-threads retry`.
-            assert_eq!(fx.intents(), 1, "{harness}: operation {operation}");
+            // The stale intent of the lost reply is never replayed in a pane
+            // that still has a resolved seat: the probe supersedes it (the
+            // context is the ordinary check-in's execution, not the replayed
+            // reattachment's) and its own fresh intent finishes with the
+            // refusal.
+            assert_ne!(
+                state["current"]["execution"],
+                committed.as_str(),
+                "{harness}"
+            );
+            assert_eq!(fx.intents(), 0, "{harness}: operation {operation}");
         }
     }
 

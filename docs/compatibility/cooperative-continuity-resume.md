@@ -44,6 +44,24 @@ The resumed run's own result reported `session_id` `<orig>` as well. SessionStar
 
 Limits of this capture: print mode only. The pre-existing interactive evidence below covers the interactive launcher.
 
+## Capture 2 (bead ht-zp0): interactive Claude 2.1.287 and Codex 0.159.3/0.160.0 in a Herdr pane
+
+Taken 2026-10-01 in a scratch pane of the shared Herdr 0.9.1 server (pane split from the orchestrating tab, closed afterwards; the server itself was not restarted). Claude ran with the same capture hook passed through `claude --settings <scratch>/settings.json` (SessionStart stdin appended to a scratch file). No harness configuration was edited. `herdr agent get` was read from outside after each action.
+
+| Action | SessionStart events | `source` | `session_id` | Herdr `agent_session` after the action |
+| --- | --- | --- | --- | --- |
+| Claude: fresh interactive launch | 1 | `startup` | `<orig>` | `<orig>` |
+| Claude: `/exit`, then `claude --resume <orig>` | **1** | `resume` | `<orig>` | `<orig>` |
+| Claude: `/exit`, then `claude --continue` | **1** | `resume` | `<orig>` | `<orig>` |
+| Claude: `/clear` | 1 | `clear` | `<new>` | `<new>` (updated promptly) |
+| Codex 0.159.3: fresh interactive launch | (no capture hook) | — | `<c-orig>` (rollout `rollout-…-<c-orig>.jsonl`) | absent until the first turn completed, then `<c-orig>` |
+| Codex: `/quit`, then `codex resume <c-orig>` (CLI self-updated to 0.160.0 on this launch) | (no capture hook) | — | `<c-orig>` (same rollout file, one `session_meta`) | `<c-orig>` immediately after the resumed launch, before any turn |
+
+Findings:
+- Claude 2.1.287 interactive: one `resume` event per resume or continue, with the original id; no `startup` + `resume` pair (Claude Code issue 24265 not reproduced).
+- Codex: resume keeps the original session id. Herdr's integration reported it right after the resumed launch. On a fresh launch Herdr's report appeared only after the first turn, so a fresh Codex pane can show no `agent_session` for a while (explains the earlier "Codex panes show none" observation).
+- The Codex SessionStart payload itself (event count and `source` on resume) was not captured interactively: Codex hooks come only from `CODEX_HOME`, which was not edited, and the account hit its weekly usage limit before a resumed turn could run. The 0.158.0 `codex exec resume` capture above remains the evidence for the payload.
+
 ## Existing captures reused (not repeated here)
 
 - Claude Code 2.1.283, interactive, private Herdr server and pane (`docs/compatibility/claude-lifecycle-probe.md`, attempt 2):
@@ -62,9 +80,9 @@ Limits of this capture: print mode only. The pre-existing interactive evidence b
 
 | Item | Why |
 | --- | --- |
-| Interactive `claude --resume` and `/clear` on 2.1.287 | No private Herdr pane or interactive session was started; 2.1.283 interactive evidence above stands for the interactive launcher. Count not re-measured on 2.1.287 interactive. |
+| Interactive `claude --resume` and `/clear` on 2.1.287 | Captured in capture 2. |
 | Codex `codex resume` and `/new` on 0.159.3 | Codex needs the user's credentials; a temporary `CODEX_HOME` would have required copying them, and running against `~/.codex` would write sessions there. Nothing was faked: the 0.158.0 live capture above is the evidence. Count on 0.159.3 not measured. |
-| `herdr agent get <pane>` from inside a hook during a resume, for either harness | Needs a scratch pane in a private named Herdr session. The shared Herdr server was not touched and no private session was started. The hook running here would have reported this orchestrating pane, not the scratch harness. |
+| `herdr agent get <pane>` from inside a hook during a resume, for either harness (capture 2 read it from outside, after each action) | Needs a scratch pane in a private named Herdr session. The shared Herdr server was not touched and no private session was started. The hook running here would have reported this orchestrating pane, not the scratch harness. |
 
 What is known about Herdr session reporting (bead ht-rzi.2 comment, from the integration scripts embedded in Herdr 0.9.1, observed 2026-10-01): claude, codex and other integrations call `pane.report_agent_session` with `agent_session_id`, usually with `session_start_source` (startup/resume/new/clear). Claude panes show `agent_session` in `herdr agent list`; three live Codex panes showed none although the Herdr state hook was installed (cause undetermined). The relation between the reported value and the SessionStart `session_id` on a resume is therefore **not established** here. That is why the daemon records the comparison (`match`, `mismatch`, `absent`, `read_error`) per reattachment in `allocation_decisions.continuity_diagnostic`, shows it in `seat inspect`, and never lets it decide.
 
@@ -76,7 +94,7 @@ A dedupe rule (a `startup` check-in on a seat reattached moments earlier must no
 
 | | Claude | Codex |
 | --- | --- | --- |
-| Resume id equals the original | observed (2.1.283 interactive, 2.1.287 print) | observed (0.158.0 `codex exec resume`) |
+| Resume id equals the original | observed (2.1.283 interactive, 2.1.287 print and interactive) | observed (0.158.0 `codex exec resume`; 0.159.3→0.160.0 interactive `codex resume`) |
 | One SessionStart per resume | observed | observed |
 | `/clear` or `/new` gives a new id | `/clear` observed (2.1.283) | not captured; the gate excludes `clear` and `compact` sources regardless |
 | Launch form | `claude --resume` | `codex resume` by hand reattaches; the managed launch form stays refused by ht-rzi.4 |

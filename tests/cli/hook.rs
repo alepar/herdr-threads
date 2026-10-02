@@ -1233,6 +1233,84 @@ fn unavailable_daemon_is_reported_only_for_top_level_lifecycle() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+// Kills: a hook client that skips connect()'s protocol check. Under version
+// skew an older daemon drops the newer request at decode, so the hook would
+// wait out its whole budget on every call instead of refusing at once.
+#[test]
+fn hook_refuses_previous_protocol_daemon_before_send() {
+    use crate::daemon::{
+        ownership::OwnerLock,
+        paths::{InstancePaths, RuntimeContext},
+    };
+    use crate::protocol::wire::PROTOCOL_VERSION;
+    let root = private_root();
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(root.join("state"))
+        .unwrap();
+    let hook_args = args(&root);
+    let context = RuntimeContext::explicit(
+        hook_args.state_dir.clone().unwrap(),
+        hook_args.host_endpoint.clone().unwrap(),
+        None,
+    )
+    .unwrap();
+    let paths = InstancePaths::resolve(&context).unwrap();
+    let lock = OwnerLock::acquire(&paths).unwrap();
+    // Bound but never accepted: a client that sent anyway would block.
+    let listener = lock.bind_socket().unwrap();
+    lock.publish_endpoint(&listener, "0.0.1", PROTOCOL_VERSION - 1)
+        .unwrap();
+    for (payload, budget) in [(CLAUDE_TOOL, TOOL_BUDGET), (CLAUDE_START, LIFECYCLE_BUDGET)] {
+        let started = Instant::now();
+        let outcome = run_hook(
+            &hook_args,
+            &claude(),
+            payload,
+            &herdr(),
+            started + budget,
+            clock(),
+            None,
+        );
+        assert!(
+            started.elapsed() < budget / 2,
+            "hook waited {:?} of its {budget:?} budget",
+            started.elapsed()
+        );
+        let diagnostic = outcome.diagnostic.unwrap();
+        assert!(
+            diagnostic.contains("daemon protocol: UnknownWireVersion"),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains(&format!(
+                "daemon protocol {} differs from executable protocol {PROTOCOL_VERSION}",
+                PROTOCOL_VERSION - 1
+            )),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains(&format!("pid {}", std::process::id())),
+            "{diagnostic}"
+        );
+        if payload == CLAUDE_TOOL {
+            assert!(outcome.stdout.is_empty());
+        } else {
+            let value: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+            let text = value["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap();
+            assert!(
+                text.starts_with("herdr-threads: check-in unavailable ("),
+                "{text}"
+            );
+        }
+    }
+    drop(listener);
+    drop(lock);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn budgets_follow_event_mode() {
     assert_eq!(budget_for(&event(CLAUDE_TOOL)), TOOL_BUDGET);
@@ -2005,7 +2083,13 @@ mod continuity_gate {
                 event(Harness::Codex, EventKind::Resume, Role::TopLevel, None),
             ),
         ] {
-            assert!(call.reattach_by_continuity(&candidate).is_none(), "{name}");
+            assert!(
+                matches!(
+                    call.reattach_by_continuity(&candidate, false),
+                    Reattach::Declined
+                ),
+                "{name}"
+            );
         }
         assert!(daemon.seen.lock().unwrap().is_empty(), "nothing was sent");
         assert!(pane.pending().is_none(), "no intent was recorded");
@@ -2020,7 +2104,8 @@ mod continuity_gate {
             let daemon = Daemon::new(vec![reattached("saved", 3)]);
             let done = pane
                 .call(&daemon)
-                .reattach_by_continuity(&resume(harness))
+                .reattach_by_continuity(&resume(harness), false)
+                .done()
                 .expect("reattached");
             assert!(
                 String::from_utf8_lossy(&done.text)
@@ -2086,7 +2171,8 @@ mod continuity_gate {
         let daemon = Daemon::new(vec![reattached("saved", 4)]);
         assert!(
             pane.call(&daemon)
-                .reattach_by_continuity(&resume(Harness::Claude))
+                .reattach_by_continuity(&resume(Harness::Claude), false)
+                .done()
                 .is_some()
         );
         let context = pane.saved_context("saved").unwrap();
@@ -2108,11 +2194,11 @@ mod continuity_gate {
         ] {
             let pane = Pane::new();
             let daemon = Daemon::new(vec![Ok(Err(rejection(code.clone())))]);
-            assert!(
+            assert!(matches!(
                 pane.call(&daemon)
-                    .reattach_by_continuity(&resume(Harness::Claude))
-                    .is_none()
-            );
+                    .reattach_by_continuity(&resume(Harness::Claude), false),
+                Reattach::Declined
+            ));
             assert_eq!(daemon.continuity_requests().len(), 1, "{code:?}");
             assert!(pane.pending().is_none(), "{code:?}");
             assert!(pane.saved_context("saved").is_none(), "{code:?}");
@@ -2136,11 +2222,11 @@ mod continuity_gate {
             let pane = Pane::new();
             let daemon = Daemon::new(vec![failure]).repeating();
             let window = ScriptedWindow::allowing(5);
-            assert!(
+            assert!(matches!(
                 pane.call_with(&daemon, Arc::clone(&window))
-                    .reattach_by_continuity(&resume(Harness::Claude))
-                    .is_none()
-            );
+                    .reattach_by_continuity(&resume(Harness::Claude), false),
+                Reattach::Pending
+            ));
             let kept = pane.pending().expect("the intent is kept");
             let requests = daemon.continuity_requests();
             assert_eq!(
@@ -2168,11 +2254,11 @@ mod continuity_gate {
     fn a_closed_window_submits_once_and_keeps_the_intent() {
         let pane = Pane::new();
         let daemon = Daemon::new(vec![Ok(Err(rejection(ErrorCode::ServiceBusy)))]).repeating();
-        assert!(
+        assert!(matches!(
             pane.call_with(&daemon, ScriptedWindow::allowing(0))
-                .reattach_by_continuity(&resume(Harness::Claude))
-                .is_none()
-        );
+                .reattach_by_continuity(&resume(Harness::Claude), false),
+            Reattach::Pending
+        ));
         assert_eq!(daemon.continuity_requests().len(), 1);
         assert!(pane.pending().is_some(), "the intent is kept");
     }
@@ -2190,7 +2276,8 @@ mod continuity_gate {
         let window = ScriptedWindow::allowing(8);
         assert!(
             pane.call_with(&daemon, Arc::clone(&window))
-                .reattach_by_continuity(&resume(Harness::Claude))
+                .reattach_by_continuity(&resume(Harness::Claude), false)
+                .done()
                 .is_some()
         );
         let requests = daemon.continuity_requests();
@@ -2220,7 +2307,12 @@ mod continuity_gate {
             Role::TopLevel,
             Some("S-9"),
         );
-        assert!(pane.call(&daemon).reattach_by_continuity(&other).is_some());
+        assert!(
+            pane.call(&daemon)
+                .reattach_by_continuity(&other, false)
+                .done()
+                .is_some()
+        );
         let requests = daemon.continuity_requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].native_session.as_str(), "S-9");
@@ -2237,7 +2329,8 @@ mod continuity_gate {
         let daemon = Daemon::new(vec![reattached("saved", 2)]);
         assert!(
             pane.call(&daemon)
-                .reattach_by_continuity(&resume(Harness::Claude))
+                .reattach_by_continuity(&resume(Harness::Claude), false)
+                .done()
                 .is_some()
         );
         let requests = daemon.continuity_requests();
@@ -2257,7 +2350,8 @@ mod continuity_gate {
         let daemon = Daemon::new(vec![reattached("saved", 2)]);
         assert!(
             pane.call(&daemon)
-                .reattach_by_continuity(&resume(Harness::Claude))
+                .reattach_by_continuity(&resume(Harness::Claude), false)
+                .done()
                 .is_some()
         );
         assert_eq!(daemon.continuity_requests().len(), 1);

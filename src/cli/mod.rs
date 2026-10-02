@@ -124,11 +124,7 @@ fn connect(
     let (instance, descriptor) = published_endpoint(paths)?;
     // An older daemon drops a newer request at decode with no reply, so refuse
     // here with the definite mismatch instead of sending it.
-    if descriptor.protocol_version != crate::protocol::wire::PROTOCOL_VERSION {
-        return Err(RunError::Api(
-            crate::daemon::lifecycle::protocol_mismatch_error(descriptor.protocol_version),
-        ));
-    }
+    crate::daemon::lifecycle::check_protocol(&descriptor).map_err(RunError::Api)?;
     let client = LocalSocketClient::new(
         descriptor.endpoint.clone(),
         Arc::clone(clock),

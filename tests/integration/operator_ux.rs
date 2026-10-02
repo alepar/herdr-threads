@@ -38,6 +38,7 @@ impl Plugin {
         extra_env: &[(&str, &str)],
     ) -> (i32, Value, String) {
         let mut command = Command::new(BIN);
+        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
         command
             .arg("--json")
             .arg("--state-dir")

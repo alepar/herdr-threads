@@ -120,10 +120,15 @@ impl FakeHost {
                     Err(error) => panic!("fake host accept: {error}"),
                 };
                 // macOS accept(2) inherits O_NONBLOCK from the listener.
-                stream.set_nonblocking(false).unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(10)))
-                    .unwrap();
+                // A client that already hung up makes these fail (EINVAL on
+                // macOS); drop that connection instead of killing the fake host.
+                if stream.set_nonblocking(false).is_err()
+                    || stream
+                        .set_read_timeout(Some(Duration::from_secs(10)))
+                        .is_err()
+                {
+                    continue;
+                }
                 let mut line = String::new();
                 if BufReader::new(&mut stream).read_line(&mut line).is_err() || line.is_empty() {
                     continue;
@@ -165,6 +170,7 @@ struct Plugin {
 impl Plugin {
     fn command(&self, caller: Option<Caller>, args: &[&str]) -> (i32, Value, String) {
         let mut command = Command::new(BIN);
+        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
         command
             .arg("--json")
             .arg("--state-dir")
