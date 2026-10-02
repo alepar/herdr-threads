@@ -63,3 +63,6 @@ fixBeads-round-1: ht-rzi.18 (redesign+c), ht-rzi.19 (C4+a+workers test), ht-rzi.
 resumeChange: 2026-10-01 · "superpowers skills moved to v6.4.2-alepar4.5 (104b54e); adopt at a round boundary" · pending skill-source switch to ~/AleCode/superpowers/skills @ 104b54e (6.4.2-alepar4.5), applied when the fix-loop round-1 super-code re-entry (wf_e4f75cbd-dfc, on 4.3) returns
 skillSource: ~/AleCode/superpowers/skills @ 104b54e (6.4.2-alepar4.5)
 migrated: run-state contract diff 4.3→4.5 is wording-only (coverage reviewer count, example token); no field remapped. Switch applied at the fix-loop round-1 boundary: the 4.3 coordinator re-entry wf_e4f75cbd-dfc was stopped while only its planner was in flight (planner dispatch hung 6×15 min with no first response; no task work started), and super-code is relaunched from the new source's coordinator.js.
+resumeChange: 2026-10-01 · "super-code fixes in v6.4.2-alepar4.6 (2bf1d53): bd 1.3 epic close-eligible shape; null planner degrades; relaunch at next round boundary" · skill-source switch to 4.6
+skillSource: ~/AleCode/superpowers/skills @ 2bf1d53 (6.4.2-alepar4.6)
+migrated: 4.5 coordinator wf_8ef903ea-7cb stopped with only its planner in flight (no task dispatched); relaunched on coordinator.js @ 2bf1d53; no run-state field changes.
