@@ -66,10 +66,16 @@ Non-goals:
    resume-only continuity check-in request that carries pane target, harness, session id and source but no
    seat; it is journaled under an instance-scoped intent; the daemon's response returns the chosen seat and
    binding generation, which the hook writes into the pane's client context exactly as an ordinary lifecycle
-   check-in does. A refusal leaves today's diagnostics unchanged. Lost reply: before `find_seat`, every hook
-   event checks the instance-scoped continuity intent journal and replays a pending intent under the same
-   operation key; the daemon's idempotent replay returns the recorded seat and generation, so a reply lost
-   after the daemon committed is recovered on the next event.
+   check-in does. A refusal leaves today's diagnostics unchanged. **The deciding transaction opens the successor
+   binding** (redesign after code roast round 1): one transaction rebinds the seat, opens the successor
+   `cooperative_top_level` binding for the event's harness/session/target with a new generation, records
+   `cooperative_continuity` and the diagnostic, and lifts the hold if clear; the reply
+   `ContinuityReattached{seat, binding_generation}` is idempotent under the operation key, and the hook writes
+   the pane context from it, unconditionally retiring any saved context for that seat or pane. There is no
+   follow-up check-in. A lost reply is recovered by the committed binding (the next event finds the seat
+   resolved and takes the ordinary path); the intent is retried only within the same hook, never by a
+   per-event journal scan. Before the first reconciliation pass of the current recovery epoch (marker of
+   decision 1 lagging), "no matching unresolved seat" is retryable, not final.
    **Evidence capture.** `ht-rzi.2` logs SessionStart stdin and `agent get` from inside the hook for resume,
    /new and /clear on both harnesses and counts events per resume (Claude Code #24265 reported a
    startup(new id) + resume(original id) pair). A resume-only gate makes the startup-first order safe; if the

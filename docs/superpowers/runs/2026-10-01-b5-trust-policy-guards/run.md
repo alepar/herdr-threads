@@ -44,3 +44,4 @@ codeBuckets:
   stopReason: ready-drained (two launches: wf_5854046f-9a4 escalated ht-rzi.3 on a missing edge; relaunch wf_c60e7f25-648 drained the rest)
 roastCodeRound: 1
 roast-code: 2026-10-01-b5-trust-policy-guards-roast-pr-1.md
+stepBack-round-1: redesign — applied: two-request continuity (seatless decide + follow-up check-in + every-event intent replay) → one deciding transaction opens the successor binding; lost reply recovered by committed state (dissolves 3 confirmed + evidence b)
