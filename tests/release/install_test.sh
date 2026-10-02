@@ -109,8 +109,13 @@ case "$1 $2" in
 "plugin list") if [ -s "$reg" ]; then echo "1 plugin installed:"; echo "- herdr-threads (Threads) enabled [local:$(cat "$reg")]"; else echo "No plugins installed."; fi ;;
 "plugin link") [ -f "$3/herdr-plugin.toml" ] || exit 1; printf '%s' "$3" > "$reg"; echo '{"result":{"type":"plugin_linked"}}' ;;
 "plugin unlink") up; : > "$reg"; echo '{"result":{"removed":true}}' ;;
-"plugin log") up; n=$(cat "$d/n" 2>/dev/null || echo 0); echo "{\"result\":{\"logs\":[{\"exit_code\":0,\"log_id\":\"plugin-log-$n\",\"status\":\"succeeded\"}]}}" ;;
-"plugin action") up; n=$(( $(cat "$d/n" 2>/dev/null || echo 0) + 1 )); echo $n > "$d/n"; echo "action $4" >> "$d/actions"; echo "{\"result\":{\"log\":{\"log_id\":\"plugin-log-$n\",\"status\":\"running\"}}}" ;;
+"plugin log") up; n=$(cat "$d/n" 2>/dev/null || echo 0); code=$(cat "$d/code-$n" 2>/dev/null || echo 0); echo "{\"result\":{\"logs\":[{\"exit_code\":$code,\"log_id\":\"plugin-log-$n\",\"status\":\"succeeded\"}]}}" ;;
+"plugin action") up; n=$(( $(cat "$d/n" 2>/dev/null || echo 0) + 1 )); echo $n > "$d/n"; echo "action $4" >> "$d/actions"
+    # Which package version the action ran from (the registered root's VERSION).
+    echo "$4 $(cat "$(cat "$reg")/VERSION" 2>/dev/null)" >> "$d/action-versions"
+    # $FAKE_HERDR_DIR/stop.fail makes every stop action exit 1.
+    if [ "$4" = stop ] && [ -e "$d/stop.fail" ]; then echo 1; else echo 0; fi > "$d/code-$n"
+    echo "{\"result\":{\"log\":{\"log_id\":\"plugin-log-$n\",\"status\":\"running\"}}}" ;;
 *) exit 2 ;;
 esac
 EOF
@@ -221,9 +226,45 @@ if [ -n "$real_herdr" ]; then
 else
     expect "upgrade stops then ensures the daemon" \
         [ "$(tr '\n' ' ' < "$root/actions")" = "action stop action ensure " ]
+    expect "upgrade stops with the old package, before the swap, and ensures with the new" \
+        [ "$(tr '\n' ' ' < "$root/action-versions")" = "stop 0.1.0 ensure 0.1.1 " ]
 fi
+expect "upgrade reports the old executable stopped the daemon" \
+    has "stopped the running daemon with the installed 0.1.0 executable"
 expect "next steps: daemon running, so check with doctor" has "Check it: herdr-threads doctor"
 expect "next steps: daemon running, no start-Herdr step" bash -c "! grep -qF 'Start Herdr' '$out'"
+
+# --- 3b. the old executable cannot stop the daemon ----------------------------
+# A failed old-binary stop must be visible: warn with the running daemon's pid
+# (from its endpoint.json) and the manual kill. Without a live daemon, say
+# nothing. Stub Herdr only (the failure is injected).
+if [ -z "$real_herdr" ]; then
+    : > "$root/stop.fail"
+    (exec -a "herdr-threads daemon run --state-dir $root/fake" sleep 300) &
+    fake_pid=$!
+    fake_instance="$root/st/herdr/plugins/herdr-threads/instances/fake"
+    mkdir -p "$fake_instance"
+    printf '{"software_version":"0.1.1","protocol_version":1,"pid":%s,"socket_inode":1}\n' \
+        "$fake_pid" > "$fake_instance/endpoint.json"
+    : > "$root/actions"
+    : > "$root/action-versions"
+    install --version v0.1.0
+    [ "$status" = 0 ] || fail "upgrade with a failing stop exits 0" "$(cat "$out")"
+    pass "upgrade with a failing stop exits 0"
+    expect "failed old-binary stop warns with the daemon pid" \
+        has "could not stop the running daemon (pid $fake_pid, from its endpoint.json) with the installed 0.1.1 executable"
+    expect "failed old-binary stop names the manual kill" has "stop it by hand: kill $fake_pid"
+    expect "failed old-binary stop: no success claimed" bash -c "! grep -qF 'stopped the running daemon' '$out'"
+    expect "failed old-binary stop: retried with the new package, then ensure" \
+        [ "$(tr '\n' ' ' < "$root/action-versions")" = "stop 0.1.1 stop 0.1.0 ensure 0.1.0 " ]
+    kill "$fake_pid" 2>/dev/null || true
+    wait "$fake_pid" 2>/dev/null || true
+    install
+    [ "$status" = 0 ] || fail "upgrade with a failing stop and no daemon exits 0" "$(cat "$out")"
+    expect "failing stop without a live daemon: no warning" bash -c "! grep -qF 'could not stop' '$out'"
+    expect "back on 0.1.1" [ "$(cat "$prefix/VERSION")" = 0.1.1 ]
+    rm -rf "$root/stop.fail" "$fake_instance"
+fi
 
 # --- 4. refusals --------------------------------------------------------------
 cp -R "$rel" "$root/bad-rel"

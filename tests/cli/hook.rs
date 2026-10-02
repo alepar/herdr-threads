@@ -1233,6 +1233,84 @@ fn unavailable_daemon_is_reported_only_for_top_level_lifecycle() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+// Kills: a hook client that skips connect()'s protocol check. Under version
+// skew an older daemon drops the newer request at decode, so the hook would
+// wait out its whole budget on every call instead of refusing at once.
+#[test]
+fn hook_refuses_previous_protocol_daemon_before_send() {
+    use crate::daemon::{
+        ownership::OwnerLock,
+        paths::{InstancePaths, RuntimeContext},
+    };
+    use crate::protocol::wire::PROTOCOL_VERSION;
+    let root = private_root();
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(root.join("state"))
+        .unwrap();
+    let hook_args = args(&root);
+    let context = RuntimeContext::explicit(
+        hook_args.state_dir.clone().unwrap(),
+        hook_args.host_endpoint.clone().unwrap(),
+        None,
+    )
+    .unwrap();
+    let paths = InstancePaths::resolve(&context).unwrap();
+    let lock = OwnerLock::acquire(&paths).unwrap();
+    // Bound but never accepted: a client that sent anyway would block.
+    let listener = lock.bind_socket().unwrap();
+    lock.publish_endpoint(&listener, "0.0.1", PROTOCOL_VERSION - 1)
+        .unwrap();
+    for (payload, budget) in [(CLAUDE_TOOL, TOOL_BUDGET), (CLAUDE_START, LIFECYCLE_BUDGET)] {
+        let started = Instant::now();
+        let outcome = run_hook(
+            &hook_args,
+            &claude(),
+            payload,
+            &herdr(),
+            started + budget,
+            clock(),
+            None,
+        );
+        assert!(
+            started.elapsed() < budget / 2,
+            "hook waited {:?} of its {budget:?} budget",
+            started.elapsed()
+        );
+        let diagnostic = outcome.diagnostic.unwrap();
+        assert!(
+            diagnostic.contains("daemon protocol: UnknownWireVersion"),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains(&format!(
+                "daemon protocol {} differs from executable protocol {PROTOCOL_VERSION}",
+                PROTOCOL_VERSION - 1
+            )),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains(&format!("pid {}", std::process::id())),
+            "{diagnostic}"
+        );
+        if payload == CLAUDE_TOOL {
+            assert!(outcome.stdout.is_empty());
+        } else {
+            let value: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+            let text = value["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap();
+            assert!(
+                text.starts_with("herdr-threads: check-in unavailable ("),
+                "{text}"
+            );
+        }
+    }
+    drop(listener);
+    drop(lock);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn budgets_follow_event_mode() {
     assert_eq!(budget_for(&event(CLAUDE_TOOL)), TOOL_BUDGET);
