@@ -917,6 +917,7 @@ fn check_in(
         target: &target,
         deadline,
         clock: Arc::clone(&clock),
+        retry: Arc::new(HookDeadline(deadline)),
     };
     // Daemon check order for a lifecycle check-in (TRUST-POLICY A4, C1):
     // (1) A4 agent-to-human refusal, (2) C1 reattachment on a held or
@@ -944,6 +945,8 @@ struct PaneCall<'a> {
     target: &'a HostTargetId,
     deadline: Instant,
     clock: Arc<dyn Clock>,
+    /// Paces retries of a continuity submission (the hook deadline in production).
+    retry: Arc<dyn RetryWindow>,
 }
 
 /// How a continuity intent's submission ended.
@@ -957,7 +960,7 @@ enum ContinuityOutcome {
 }
 
 /// First wait between submissions of a retryable continuity request; doubles
-/// up to `CONTINUITY_BACKOFF_CAP`, never past the hook deadline.
+/// up to `CONTINUITY_BACKOFF_CAP`; the `RetryWindow` decides whether a wait fits.
 const CONTINUITY_BACKOFF_START: Duration = Duration::from_millis(50);
 const CONTINUITY_BACKOFF_CAP: Duration = Duration::from_millis(400);
 
@@ -967,6 +970,27 @@ fn wire_harness(harness: Harness) -> Option<crate::protocol::authority::Harness>
         Harness::Claude => Some(Wire::Claude),
         Harness::Codex => Some(Wire::Codex),
         Harness::Human => None,
+    }
+}
+
+/// How a retryable continuity submission waits between attempts. The hook
+/// waits against its own deadline; tests script how many waits fit.
+trait RetryWindow: Send + Sync {
+    /// Wait `backoff` (never past the window) before the next attempt;
+    /// `false`, without waiting, when no further attempt fits.
+    fn wait(&self, backoff: Duration) -> bool;
+}
+
+/// The hook invocation's deadline as a retry window.
+struct HookDeadline(Instant);
+impl RetryWindow for HookDeadline {
+    fn wait(&self, backoff: Duration) -> bool {
+        let remaining = self.0.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        std::thread::sleep(backoff.min(remaining));
+        true
     }
 }
 
@@ -1012,11 +1036,9 @@ impl PaneCall<'_> {
                 Ok(Ok(_)) => return ContinuityOutcome::Kept,
                 _ => {}
             }
-            let remaining = self.deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+            if !self.retry.wait(backoff) {
                 return ContinuityOutcome::Kept;
             }
-            std::thread::sleep(backoff.min(remaining));
             backoff = (backoff * 2).min(CONTINUITY_BACKOFF_CAP);
         }
     }

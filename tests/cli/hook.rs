@@ -1239,6 +1239,26 @@ fn budgets_follow_event_mode() {
     assert_eq!(budget_for(&event(CLAUDE_START)), LIFECYCLE_BUDGET);
 }
 
+// Kills: a hook deadline window that retries after its deadline, or
+// sleeps a whole backoff past it.
+#[test]
+fn hook_deadline_window_never_waits_past_the_deadline() {
+    // Already passed: no further attempt fits.
+    assert!(!HookDeadline(Instant::now()).wait(Duration::from_millis(1)));
+    // Far away: the backoff is waited and another attempt fits.
+    assert!(HookDeadline(Instant::now() + Duration::from_secs(60)).wait(Duration::from_millis(1)));
+    // A backoff longer than the window is cut at the deadline, after which
+    // nothing fits (whether or not the first wait still fit under load).
+    let window = HookDeadline(Instant::now() + Duration::from_millis(20));
+    let started = Instant::now();
+    let _ = window.wait(Duration::from_secs(30));
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "slept past the deadline"
+    );
+    assert!(!window.wait(Duration::from_millis(1)));
+}
+
 // P6 (native Claude demo 2): print mode denied the ready commands because
 // setup granted nothing that covered them. Every command form the hook tells
 // an agent to run, rendered by the hook's own renderers (`cli_prefix`,
@@ -1679,6 +1699,35 @@ mod continuity_gate {
 
     type Reply = Result<Result<CommandResult, ApiError>, ApiError>;
 
+    /// A retry window that admits a fixed number of waits and never sleeps,
+    /// so how many attempts happen is decided by the test, not the clock.
+    struct ScriptedWindow {
+        left: Mutex<usize>,
+        waits: Mutex<Vec<Duration>>,
+    }
+    impl ScriptedWindow {
+        fn allowing(waits: usize) -> Arc<Self> {
+            Arc::new(Self {
+                left: Mutex::new(waits),
+                waits: Mutex::new(Vec::new()),
+            })
+        }
+        fn waits(&self) -> Vec<Duration> {
+            self.waits.lock().unwrap().clone()
+        }
+    }
+    impl RetryWindow for ScriptedWindow {
+        fn wait(&self, backoff: Duration) -> bool {
+            let mut left = self.left.lock().unwrap();
+            if *left == 0 {
+                return false;
+            }
+            *left -= 1;
+            self.waits.lock().unwrap().push(backoff);
+            true
+        }
+    }
+
     /// Answers every `call_definitive` from a script and records all commands.
     struct Daemon {
         replies: Mutex<VecDeque<Reply>>,
@@ -1789,12 +1838,12 @@ mod continuity_gate {
             }
         }
         fn call<'a>(&'a self, client: &'a dyn LocalClient) -> PaneCall<'a> {
-            self.call_within(client, Duration::from_secs(5))
+            self.call_with(client, ScriptedWindow::allowing(8))
         }
-        fn call_within<'a>(
+        fn call_with<'a>(
             &'a self,
             client: &'a dyn LocalClient,
-            window: Duration,
+            retry: Arc<ScriptedWindow>,
         ) -> PaneCall<'a> {
             PaneCall {
                 context: &self.context,
@@ -1802,8 +1851,9 @@ mod continuity_gate {
                 client,
                 instance: self.instance,
                 target: &self.target,
-                deadline: Instant::now() + window,
+                deadline: Instant::now() + Duration::from_secs(5),
                 clock: clock(),
+                retry,
             }
         }
         fn saved_context(&self, seat: &str) -> Option<OccupantContext> {
@@ -2071,7 +2121,8 @@ mod continuity_gate {
 
     // Kills: discarding an intent whose outcome is unknown or transient: the
     // daemon may have committed, and only the replay finds out. Every attempt
-    // within the hook reuses the one operation key and execution.
+    // within the hook reuses the one operation key and execution, and a retry
+    // loop whose backoff does not double to its cap.
     #[test]
     fn a_retryable_outcome_is_retried_then_keeps_the_intent_under_its_key() {
         for failure in [
@@ -2084,21 +2135,46 @@ mod continuity_gate {
         ] {
             let pane = Pane::new();
             let daemon = Daemon::new(vec![failure]).repeating();
+            let window = ScriptedWindow::allowing(5);
             assert!(
-                pane.call_within(&daemon, Duration::from_millis(400))
+                pane.call_with(&daemon, Arc::clone(&window))
                     .reattach_by_continuity(&resume(Harness::Claude))
                     .is_none()
             );
             let kept = pane.pending().expect("the intent is kept");
             let requests = daemon.continuity_requests();
-            assert!(requests.len() >= 2, "retried within the hook");
+            assert_eq!(
+                requests.len(),
+                6,
+                "retried within the hook until the window closed"
+            );
             assert!(
                 requests
                     .iter()
                     .all(|r| r.operation == kept.operation && r.execution == requests[0].execution)
             );
+            assert_eq!(
+                window.waits(),
+                [50, 100, 200, 400, 400].map(Duration::from_millis),
+                "backoff doubles from the start and stops at the cap"
+            );
             assert!(pane.saved_context("saved").is_none());
         }
+    }
+
+    // Kills: a retry loop that submits again after the window has closed,
+    // or discards the intent when no retry fits.
+    #[test]
+    fn a_closed_window_submits_once_and_keeps_the_intent() {
+        let pane = Pane::new();
+        let daemon = Daemon::new(vec![Ok(Err(rejection(ErrorCode::ServiceBusy)))]).repeating();
+        assert!(
+            pane.call_with(&daemon, ScriptedWindow::allowing(0))
+                .reattach_by_continuity(&resume(Harness::Claude))
+                .is_none()
+        );
+        assert_eq!(daemon.continuity_requests().len(), 1);
+        assert!(pane.pending().is_some(), "the intent is kept");
     }
 
     // Kills: giving up on a busy or lagging daemon, or retrying under a fresh
@@ -2111,13 +2187,15 @@ mod continuity_gate {
             Ok(Err(rejection(ErrorCode::ServiceBusy))),
             reattached("saved", 2),
         ]);
+        let window = ScriptedWindow::allowing(8);
         assert!(
-            pane.call(&daemon)
+            pane.call_with(&daemon, Arc::clone(&window))
                 .reattach_by_continuity(&resume(Harness::Claude))
                 .is_some()
         );
         let requests = daemon.continuity_requests();
         assert_eq!(requests.len(), 3);
+        assert_eq!(window.waits().len(), 2, "one wait before each retry");
         assert_eq!(requests[0].operation, requests[1].operation);
         assert_eq!(requests[1].operation, requests[2].operation);
         assert!(
