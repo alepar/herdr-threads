@@ -4390,23 +4390,17 @@ fn register_cooperative(
                 crate::protocol::commands::CheckInMode::Lifecycle { .. }
             );
             if lifecycle && claim.harness == crate::protocol::authority::Harness::Human {
-                let open: Option<(String, String)> = tx
-                    .query_row(
-                        "SELECT observation_provenance,harness FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
-                        [seat.as_str()],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )
-                    .optional()
-                    .map_err(store_error)?;
-                if let Some((provenance, harness)) = open
-                    && provenance == crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE
+                if let Some(open) = crate::store::queries::open_binding(tx, seat.as_str())?
+                    && open.provenance
+                        == crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE
                     && operator.is_none()
                 {
                     return Err(api_error(
                         ErrorCode::Unauthorized,
                         format!(
-                            "seat {} is bound to a {harness} agent (cooperative_top_level); a person's check-in never replaces an agent's binding. Run it in your own shell pane, or override as the local account: `herdr-threads me init --operator`",
-                            seat.as_str()
+                            "seat {} is bound to a {} agent (cooperative_top_level); a person's check-in never replaces an agent's binding. Run it in your own shell pane, or override as the local account: `herdr-threads me init --operator`",
+                            seat.as_str(),
+                            open.harness
                         ),
                     ));
                 }

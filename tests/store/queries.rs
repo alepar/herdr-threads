@@ -66,6 +66,43 @@ fn page(cursor: Option<String>) -> PageRequest {
     }
 }
 
+/// Kills: an open binding that depends on the history page (it must come back
+/// with `limit: 1`), and one that survives the binding's end.
+#[test]
+fn seat_inspect_reports_open_binding_and_none() {
+    let (store, db) = fixture();
+    let inspect = || {
+        let q = Command::SeatInspect(SeatInspectQuery {
+            seat: SeatId::new("s"),
+            page: PageRequest {
+                cursor: None,
+                limit: 1,
+                max_bytes: 65_536,
+            },
+        });
+        let CommandResult::SeatInspect(inspection) = query(&store, "i", &q, &budget()).unwrap()
+        else {
+            panic!("wrong result")
+        };
+        inspection.open_binding
+    };
+    assert_eq!(inspect(), None, "no binding yet");
+    for (generation, ended) in [(1_i64, Some(5_i64)), (2, None)] {
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at,terminal_id,incarnation) VALUES ('s',?1,1,?2,'host',1,'claude','session','exec','cooperative_top_level',0,0,?3,'term','inc')", params![generation, format!("w{generation}:p1"), ended]).unwrap();
+    }
+    assert_eq!(
+        inspect(),
+        Some(crate::protocol::results::OpenBindingSummary {
+            provenance: "cooperative_top_level".into(),
+            harness: "claude".into(),
+            target: crate::protocol::ids::HostTargetId::new("w2:p1"),
+        })
+    );
+    db.execute("UPDATE occupant_bindings SET ended_at=9", [])
+        .unwrap();
+    assert_eq!(inspect(), None, "ended binding is not open");
+}
+
 #[test]
 fn history_pages_205_rows_and_refresh_finds_append() {
     let (store, db) = fixture();

@@ -1037,13 +1037,17 @@ fn cooperative_wake_ready(
             kind.unwrap_or("none").chars().take(32).collect::<String>()
         ));
     }
-    if let Some(bound) = target.bound_harness.as_deref()
-        && kind != Some(bound)
-    {
-        return Err(format!(
-            "agent kind {} differs from the bound harness {bound}",
-            kind.unwrap_or("none").chars().take(32).collect::<String>()
-        ));
+    match target.bound_harness.as_deref() {
+        Some(bound) if kind != Some(bound) => {
+            return Err(format!(
+                "agent kind {} differs from the bound harness {bound}",
+                kind.unwrap_or("none").chars().take(32).collect::<String>()
+            ));
+        }
+        None if target.basis == WakeTargetBasis::CooperativeAgent => {
+            return Err("no bound harness for a cooperative wake".into());
+        }
+        _ => {}
     }
     let status = text("agent_status");
     if !status.is_some_and(|status| WAKE_READY_STATUSES.contains(&status)) {
@@ -1916,6 +1920,8 @@ mod tests {
             .expect("fresh verified terminal is a cooperative wake target");
         assert_eq!(target.basis, WakeTargetBasis::CooperativeAgent);
         assert_eq!(target.terminal.as_str(), "term_1");
+        // The store always supplies the bound harness for a cooperative wake.
+        target.bound_harness = Some("claude".into());
         let mut context = wake_context(&observation);
         tamper(&mut target, &mut context);
         let result = cli.submit_prompt(&target, "wake marker", &context);
@@ -1947,10 +1953,14 @@ mod tests {
                     json!({"type":"agent_prompted","agent":wake_agent("idle", Some(kind), "term_1")}),
                 );
             });
-            let (result, methods) = cooperative_wake(vec![
-                recheck_exchange(wake_agent(status, Some(kind), "term_1")),
-                prompt,
-            ]);
+            let (result, methods) = cooperative_wake_with(
+                vec![
+                    recheck_exchange(wake_agent(status, Some(kind), "term_1")),
+                    prompt,
+                ],
+                None,
+                |target, _| target.bound_harness = Some(kind.into()),
+            );
             assert_eq!(
                 result.unwrap(),
                 ports::PromptOutcome::Submitted,
@@ -1983,6 +1993,30 @@ mod tests {
     #[test]
     fn cooperative_wake_refuses_codex_bound_seat_without_detected_agent() {
         bound_harness_wake_refused("codex", None);
+    }
+
+    /// A cooperative target with no bound harness is refused, never compared
+    /// with the detected agent kind as "any recognized kind".
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cooperative_wake_refuses_target_without_bound_harness() {
+        let (result, methods) = cooperative_wake_with(
+            vec![recheck_exchange(wake_agent(
+                "idle",
+                Some("claude"),
+                "term_1",
+            ))],
+            None,
+            |target, _| target.bound_harness = None,
+        );
+        let error = result.unwrap_err();
+        assert_eq!(error.code, ErrorCode::TargetUnsafe);
+        assert!(
+            error.detail.contains("no bound harness"),
+            "{}",
+            error.detail
+        );
+        assert_eq!(*methods.lock().unwrap(), ["pane.get", "agent.get"]);
     }
 
     #[cfg(target_os = "macos")]
@@ -2215,7 +2249,7 @@ mod tests {
             .unwrap();
         });
         let (result, methods) = cooperative_wake(vec![
-            recheck_exchange(wake_agent("idle", Some("codex"), "term_1")),
+            recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
             weird,
         ]);
         assert_eq!(result.unwrap(), ports::PromptOutcome::OutcomeUnknown);

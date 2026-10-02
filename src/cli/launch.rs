@@ -474,59 +474,38 @@ impl LaunchSeatResolver for DaemonSeatResolver<'_> {
         seat: &SeatId,
         budget: &CallBudget,
     ) -> Result<Option<OpenBinding>, ApiError> {
-        open_binding_from_history(self.client, seat, budget)
+        open_binding_of(self.client, seat, budget)
     }
 }
 
-/// Pages the seat's inspection history (50 per page, at most 20 pages) and
-/// returns the last binding that has not ended.
-fn open_binding_from_history<C: LocalClient + ?Sized>(
+/// The seat's open binding from one `SeatInspect` call (`limit: 1`): the
+/// daemon's answer does not depend on how long the seat's history is.
+fn open_binding_of<C: LocalClient + ?Sized>(
     client: &C,
     seat: &SeatId,
     budget: &CallBudget,
 ) -> Result<Option<OpenBinding>, ApiError> {
-    use crate::protocol::results::SeatHistoryItem;
-    let mut cursor = None;
-    let mut open = None;
-    for _ in 0..20 {
-        let result = client.call(
-            Command::SeatInspect(crate::protocol::commands::SeatInspectQuery {
-                seat: seat.clone(),
-                page: PageRequest {
-                    cursor: cursor.take(),
-                    limit: 50,
-                    max_bytes: crate::protocol::pagination::MAX_PAGE_BYTES,
-                },
-            }),
-            budget,
-        )?;
-        let CommandResult::SeatInspect(inspection) = result else {
-            return Err(api(
-                ErrorCode::InvalidRequest,
-                "service returned no seat inspection",
-            ));
-        };
-        for item in inspection.history.items {
-            if let SeatHistoryItem::Binding(binding) = item {
-                if binding.ended_at.is_none() {
-                    open = Some(OpenBinding {
-                        target: binding.target,
-                        provenance: binding.provenance,
-                    });
-                } else {
-                    open = None;
-                }
-            }
-        }
-        match inspection.history.next_cursor {
-            Some(next) if inspection.history.has_more => cursor = Some(next),
-            _ => return Ok(open),
-        }
-    }
-    Err(api(
-        ErrorCode::InvalidRequest,
-        "seat history exceeds the launch guard's page bound",
-    ))
+    let result = client.call(
+        Command::SeatInspect(crate::protocol::commands::SeatInspectQuery {
+            seat: seat.clone(),
+            page: PageRequest {
+                cursor: None,
+                limit: 1,
+                max_bytes: crate::protocol::pagination::MAX_PAGE_BYTES,
+            },
+        }),
+        budget,
+    )?;
+    let CommandResult::SeatInspect(inspection) = result else {
+        return Err(api(
+            ErrorCode::InvalidRequest,
+            "service returned no seat inspection",
+        ));
+    };
+    Ok(inspection.open_binding.map(|bound| OpenBinding {
+        target: bound.target,
+        provenance: bound.provenance,
+    }))
 }
 
 /// Remembers the seat the policy resolved, for the report and the record.

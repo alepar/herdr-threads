@@ -706,11 +706,10 @@ fn unverified_execution_gets_structural_cooperative_reservation() {
             INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s','invited');\
             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv','t','s',1,'pending',0,1,100,100);\
         ").unwrap();
-        if registered {
-            // A cooperative check-in binding: self-reported execution, older
-            // host epoch, same terminal and incarnation.
-            db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'pane','host',0,'claude','session','self-reported','cooperative_top_level',0,0,'term-pane','inc')",[]).unwrap();
-        }
+        // A cooperative check-in binding is required (TRUST-POLICY A4):
+        // self-reported execution, older host epoch, same terminal and
+        // incarnation; `registered` only sets `registered_at`.
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'pane','host',0,'claude','session','self-reported','cooperative_top_level',0,?1,'term-pane','inc')",[registered.then_some(0_i64)]).unwrap();
         drop(db);
         let store = SqliteStore::new(
             context,
@@ -747,7 +746,7 @@ fn unverified_execution_gets_structural_cooperative_reservation() {
                 terminal: crate::protocol::ids::TerminalId::new("term-pane"),
                 incarnation: "inc".into(),
                 binding_generation: registered.then_some(1),
-                harness: registered.then(|| "claude".to_string()),
+                harness: Some("claude".to_string()),
             }
         );
         assert!(
@@ -815,6 +814,31 @@ fn unverified_execution_gets_structural_cooperative_reservation() {
         "UPDATE observed_targets SET occupancy='empty_shell'",
     );
     assert!(reserve(&store).is_none());
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Kills: a cooperative wake authority for a seat with no open binding (the
+/// harness comparison would be skipped and any recognized agent prompted).
+#[test]
+fn cooperative_wake_requires_an_open_binding() {
+    let (store, path) = bound_seat_store("claude");
+    assert!(reserve_for_seat(&store).is_some(), "control: bound seat");
+    store
+        .context
+        .open_writer()
+        .unwrap()
+        .execute("UPDATE occupant_bindings SET ended_at=1", [])
+        .unwrap();
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    assert!(
+        StorePort::reserve_wake(&store, &candidate, &budget())
+            .unwrap()
+            .is_none()
+    );
     drop(store);
     let _ = std::fs::remove_file(path);
 }

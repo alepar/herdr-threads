@@ -291,8 +291,9 @@ fn current_authority(
 /// Unknown current execution never blocks structural identity. The effective
 /// observation names a terminal in a verified server incarnation with no
 /// positive evidence of an empty shell, an active turn, blocked UI or human
-/// input; a live binding, when present, is the seat's current generation on
-/// this target and names that same terminal and incarnation. Whether the
+/// input; the seat's open binding is required (none: no authority) and is the
+/// seat's current generation on this target and names that same terminal and
+/// incarnation. Whether the
 /// occupant is a recognized idle harness (never a shell or unknown harness)
 /// is the host adapter's recheck immediately before prompting.
 fn cooperative_authority(
@@ -352,7 +353,9 @@ fn cooperative_authority(
             }
             (registered_at.map(|_| generation), Some(bound_harness))
         }
-        None => (None, None),
+        // The seat's open binding is required (TRUST-POLICY A4): no binding,
+        // no cooperative wake authority.
+        None => return Ok(None),
     };
     Ok(Some(ReservedWakeAuthority::Cooperative {
         terminal: TerminalId::new(terminal.clone()),

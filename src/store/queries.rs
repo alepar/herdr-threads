@@ -31,10 +31,10 @@ use crate::protocol::{
         AckProvenance, ApiError, BindingHistory, BoundedError, CleanupState, CommandResult,
         ContinuityStatus, DeliveryAggregates, DeliveryInspection, Diagnostic, ErrorCode,
         HoldSummary, InboxItem, InvitationAcceptance, MappingStatus, MembershipStatus,
-        MessageContent, MessageDetails, MessageKind, MessageSummary, OperationStatus, Participant,
-        PendingReceipt, ReceiptStatus, Recipient, RepairHistory, RetirementStatus, SearchHit,
-        SearchPage, SeatHistoryItem, SeatInspection, SeatSummary, StructuredEvent, ThreadDetails,
-        ThreadSummary, WarningRecipient, WarningRef,
+        MessageContent, MessageDetails, MessageKind, MessageSummary, OpenBindingSummary,
+        OperationStatus, Participant, PendingReceipt, ReceiptStatus, Recipient, RepairHistory,
+        RetirementStatus, SearchHit, SearchPage, SeatHistoryItem, SeatInspection, SeatSummary,
+        StructuredEvent, ThreadDetails, ThreadSummary, WarningRecipient, WarningRef,
     },
     time::{CallBudget, Clock, MonoInstant, UtcMillis},
 };
@@ -653,6 +653,27 @@ fn seat_inspect_cursor(
         .map_err(|e| api_error(ErrorCode::InvalidCursor, e))
 }
 
+/// The seat's open (not ended) binding, or none: the one answer every A4
+/// guard (launch, wake, cooperative check-in) reads.
+pub(crate) fn open_binding(
+    db: &Connection,
+    seat: &str,
+) -> Result<Option<OpenBindingSummary>, ApiError> {
+    db.query_row(
+        "SELECT observation_provenance,harness,target_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC LIMIT 1",
+        [seat],
+        |r| {
+            Ok(OpenBindingSummary {
+                provenance: r.get(0)?,
+                harness: r.get(1)?,
+                target: HostTargetId::new(r.get::<_, String>(2)?),
+            })
+        },
+    )
+    .optional()
+    .map_err(store_error)
+}
+
 fn seat_inspect_argv(q: &SeatInspectQuery, raw: &str) -> Vec<String> {
     vec![
         "herdr-threads".into(),
@@ -724,6 +745,7 @@ fn seat_inspect(
             })
         })
         .transpose()?;
+    let open_binding = open_binding(db, q.seat.as_str())?;
     let filter = digest(&q.seat.as_str())?;
     let cursor = decode_cursor(
         &q.page,
@@ -899,6 +921,7 @@ fn seat_inspect(
             mapping: mapping.clone(),
             hold: hold.clone(),
             retirement: retirement.clone(),
+            open_binding: open_binding.clone(),
             history: page(
                 proposed,
                 Some((raw.clone(), seat_inspect_argv(q, &raw))),
@@ -946,6 +969,7 @@ fn seat_inspect(
         mapping,
         hold,
         retirement,
+        open_binding,
         history: page(items, next, high, stop, output),
     });
     ensure_fit(&result, output, q.page.max_bytes)?;

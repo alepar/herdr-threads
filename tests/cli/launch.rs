@@ -1064,54 +1064,24 @@ fn launch_name_flag_parses_and_refuses_unusable_names() {
     }
 }
 
-/// Scripted `SeatInspect` pages for the launch guard's open-binding read.
+/// Scripted `SeatInspect` answers for the launch guard's open-binding read.
 struct HistoryClient {
-    pages: std::sync::Mutex<Vec<crate::protocol::results::SeatInspection>>,
-    cursors: std::sync::Mutex<Vec<Option<String>>>,
+    answer: crate::protocol::results::SeatInspection,
+    limits: std::sync::Mutex<Vec<u16>>,
 }
 impl LocalClient for HistoryClient {
     fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
         let Command::SeatInspect(query) = command else {
             panic!("only seat inspection is expected");
         };
-        assert_eq!(query.page.limit, 50);
-        self.cursors.lock().unwrap().push(query.page.cursor);
-        Ok(CommandResult::SeatInspect(
-            self.pages.lock().unwrap().remove(0),
-        ))
+        self.limits.lock().unwrap().push(query.page.limit);
+        Ok(CommandResult::SeatInspect(self.answer.clone()))
     }
 }
 
-fn history_binding(
-    ordinal: u64,
-    target: &str,
-    provenance: &str,
-    ended: bool,
-) -> crate::protocol::results::SeatHistoryItem {
-    use crate::protocol::{
-        ids::{ExecutionId, NativeSessionId},
-        results::{BindingHistory, SeatHistoryItem},
-    };
-    SeatHistoryItem::Binding(BindingHistory {
-        ordinal,
-        generation: ordinal,
-        target: HostTargetId::new(target),
-        terminal: None,
-        incarnation: None,
-        host_boot: HostBootId::new("boot"),
-        host_epoch: 1,
-        native_session: NativeSessionId::new("s"),
-        execution: ExecutionId::new("e"),
-        observed_at: UtcMillis(1),
-        registered_at: None,
-        ended_at: ended.then_some(UtcMillis(2)),
-        provenance: provenance.into(),
-    })
-}
-
-fn history_page(
-    items: Vec<crate::protocol::results::SeatHistoryItem>,
-    next: Option<&str>,
+fn inspection_with(
+    open: Option<crate::protocol::results::OpenBindingSummary>,
+    has_more: bool,
 ) -> crate::protocol::results::SeatInspection {
     use crate::protocol::{
         pagination::{Consistency, Page, StopReason},
@@ -1133,14 +1103,15 @@ fn history_page(
         },
         hold: None,
         retirement: None,
+        open_binding: open,
         history: Page {
-            items,
-            next_cursor: next.map(Into::into),
+            items: vec![],
+            next_cursor: has_more.then(|| "c1".to_string()),
             next_argv: None,
-            high_water_ordinal: 9,
+            high_water_ordinal: 5_000,
             scope_revision: None,
-            has_more: next.is_some(),
-            stop_reason: if next.is_some() {
+            has_more,
+            stop_reason: if has_more {
                 StopReason::Rows
             } else {
                 StopReason::Complete
@@ -1150,49 +1121,47 @@ fn history_page(
     }
 }
 
-/// Kills: reading only the first history page (a long-lived seat's open
-/// binding is on a later page), and treating an ended binding as open.
-#[test]
-fn daemon_resolver_open_binding_returns_last_open_binding() {
-    let client = HistoryClient {
-        pages: std::sync::Mutex::new(vec![
-            history_page(
-                vec![
-                    history_binding(1, "w1:p1", "cooperative_top_level", true),
-                    history_binding(2, "w2:p2", "cooperative_top_level", false),
-                ],
-                Some("c1"),
-            ),
-            history_page(
-                vec![history_binding(3, "w4:p9", "cooperative_top_level", false)],
-                None,
-            ),
-        ]),
-        cursors: std::sync::Mutex::new(vec![]),
-    };
-    let budget = CallBudget {
+fn guard_budget() -> CallBudget {
+    CallBudget {
         deadline: MonoInstant(60_000),
         cancellation: Cancellation::default(),
+    }
+}
+
+/// Kills: a launch guard that pages the history (a long-lived seat would
+/// exceed any page bound), or one that ignores the daemon's open binding.
+#[test]
+fn launch_guard_reads_open_binding_regardless_of_history_length() {
+    let client = HistoryClient {
+        answer: inspection_with(
+            Some(crate::protocol::results::OpenBindingSummary {
+                provenance: "cooperative_top_level".into(),
+                harness: "claude".into(),
+                target: HostTargetId::new("w4:p9"),
+            }),
+            true,
+        ),
+        limits: std::sync::Mutex::new(vec![]),
     };
-    let bound = open_binding_from_history(&client, &SeatId::new("seat_1"), &budget)
+    let bound = open_binding_of(&client, &SeatId::new("seat_1"), &guard_budget())
         .unwrap()
         .unwrap();
     assert_eq!(bound.target.as_str(), "w4:p9");
     assert_eq!(bound.provenance, "cooperative_top_level");
-    assert_eq!(
-        *client.cursors.lock().unwrap(),
-        vec![None, Some("c1".to_string())]
-    );
+    assert_eq!(*client.limits.lock().unwrap(), vec![1]);
+}
 
-    let ended = HistoryClient {
-        pages: std::sync::Mutex::new(vec![history_page(
-            vec![history_binding(1, "w1:p1", "cooperative_top_level", true)],
-            None,
-        )]),
-        cursors: std::sync::Mutex::new(vec![]),
+/// Kills: reporting an open binding when the daemon names none (the guard
+/// would then run its live-agent check against a stale pane).
+#[test]
+fn launch_with_no_open_binding_skips_the_live_agent_check() {
+    let client = HistoryClient {
+        answer: inspection_with(None, true),
+        limits: std::sync::Mutex::new(vec![]),
     };
     assert_eq!(
-        open_binding_from_history(&ended, &SeatId::new("seat_1"), &budget).unwrap(),
+        open_binding_of(&client, &SeatId::new("seat_1"), &guard_budget()).unwrap(),
         None
     );
+    assert_eq!(*client.limits.lock().unwrap(), vec![1]);
 }
