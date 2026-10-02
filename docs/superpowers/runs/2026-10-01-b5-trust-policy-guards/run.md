@@ -45,3 +45,18 @@ codeBuckets:
 roastCodeRound: 1
 roast-code: 2026-10-01-b5-trust-policy-guards-roast-pr-1.md
 stepBack-round-1: redesign — applied: two-request continuity (seatless decide + follow-up check-in + every-event intent replay) → one deciding transaction opens the successor binding; lost reply recovered by committed state (dissolves 3 confirmed + evidence b)
+scopeFilter-round-1: [Should-fix] src/protocol/wire.rs:20; src/protocol/wire.rs:9 in-scope — A2 guard breaks upgraded-binary→old-daemon requests
+scopeFilter-round-1: [Should-fix] src/identity/repair.rs:237; src/identity/repair.rs:235 in-scope — cluster diagnostic-off-fenced-path
+scopeFilter-round-1: [FYI] src/notification/dispatch.rs:137 in-scope — cluster open-binding-direct
+scopeFilter-round-1: [Should-fix] src/store/seats.rs:1799; src/store/seats.rs:1793 in-scope — cluster c4-carry-forward-complete
+scopeFilter-round-1: [Nit] src/cli/mod.rs:1194; src/cli/mod.rs:1192 in-scope — cluster a4-client-heuristic-single-rule
+scopeFilter-round-1: [Nit] src/cli/mod.rs:229 in-scope — cluster a4-client-heuristic-single-rule
+scopeFilter-round-1: [FYI] src/cli/journal.rs:769 punch-list — pre-existing unguarded scan; goal names only allocator.lock
+scopeFilter-round-1: [Should-fix] src/cli/launch.rs:483; src/cli/launch.rs:482 in-scope — cluster open-binding-direct
+scopeFilter-round-1: [Nit] src/cli/mod.rs:601 in-scope — cluster a4-client-heuristic-single-rule
+scopeFilter-round-1: [Nit] src/host/native.rs:907 in-scope — cluster diagnostic-off-fenced-path
+scopeFilter-round-1: [Should-fix] src/service/workers.rs:1323 in-scope — missing test for C2 marker wiring
+scopeFilter-round-1: [Should-fix] evidence(a) in-scope — clusters c4-carry-forward-complete, pre-reconciliation-window
+scopeFilter-round-1: [Should-fix] evidence(c) in-scope — cluster pre-reconciliation-window
+scope-filter: 12 in-scope · 1 punch-listed
+fixBeads-round-1: ht-rzi.18 (redesign+c), ht-rzi.19 (C4+a+workers test), ht-rzi.20, ht-rzi.21, ht-rzi.22, ht-rzi.23
