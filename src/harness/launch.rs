@@ -521,7 +521,7 @@ pub fn launch_managed(
         )?;
         if let Some(kind) = observed
             .and_then(|agent| agent.kind)
-            .filter(|kind| kind == "claude" || kind == "codex")
+            .filter(|kind| crate::protocol::authority::is_harness_agent_kind(kind))
         {
             return Err(error(
                 ErrorCode::TargetUnsafe,

@@ -224,14 +224,46 @@ where
     run(argv, writer)
 }
 
-/// Agent environment markers (TRUST-POLICY A4, best effort): `CLAUDECODE`
-/// or any `CODEX_*` variable. Returns the first marker name found.
-pub(crate) fn agent_marker<K: AsRef<str>, V>(
+/// Environment variables an agent harness sets inside its own process
+/// (TRUST-POLICY A4, best effort): `CLAUDECODE` (Claude Code) and
+/// `CODEX_SANDBOX` / `CODEX_SANDBOX_NETWORK_DISABLED` (set by codex-rs on the
+/// commands it spawns). An explicit allowlist, never a prefix: user
+/// configuration such as `CODEX_HOME` or `CODEX_API_KEY` is not evidence.
+/// No local `codex` was available to confirm the list with
+/// `codex exec ... 'env | grep ^CODEX_'`; it follows codex-rs's documented
+/// spawn environment.
+const AGENT_ENV_MARKERS: [&str; 3] = [
+    "CLAUDECODE",
+    "CODEX_SANDBOX",
+    "CODEX_SANDBOX_NETWORK_DISABLED",
+];
+
+/// First agent environment marker present, by name.
+pub(crate) fn agent_env_marker<K: AsRef<str>, V>(
     vars: impl IntoIterator<Item = (K, V)>,
 ) -> Option<String> {
     vars.into_iter()
         .map(|(key, _)| key.as_ref().to_owned())
-        .find(|key| key == "CLAUDECODE" || key.starts_with("CODEX_"))
+        .find(|key| AGENT_ENV_MARKERS.contains(&key.as_str()))
+}
+
+/// The single client-side agent-evidence rule (TRUST-POLICY A4, best effort;
+/// a hint, never authority: the daemon's refusal is the guard). Shared by
+/// `me init` and person-pane selection. Returns the evidence text: an agent
+/// environment marker, else Herdr reporting a supported harness agent in the
+/// pane. A failed Herdr read is not evidence. (The launch guard is the
+/// required guard itself and keeps propagating its read error.)
+pub(crate) fn agent_evidence<K: AsRef<str>, V>(
+    env: impl IntoIterator<Item = (K, V)>,
+    read_agent: impl FnOnce() -> Result<Option<crate::ports::PaneAgentObservation>, ApiError>,
+) -> Option<String> {
+    if let Some(marker) = agent_env_marker(env) {
+        return Some(format!("environment variable {marker} is set"));
+    }
+    let observation = read_agent().ok()??;
+    let kind = observation.kind?;
+    crate::protocol::authority::is_harness_agent_kind(&kind)
+        .then(|| format!("Herdr reports a `{kind}` agent in this pane"))
 }
 
 /// Refusal shared by `me init` and person-pane commands (TRUST-POLICY A4):
@@ -239,8 +271,8 @@ pub(crate) fn agent_marker<K: AsRef<str>, V>(
 pub(crate) fn agent_evidence_refusal(pane: &str, evidence: &str) -> RunError {
     invalid_request(&format!(
         "pane {pane}: `me init` and person-pane commands never act as an agent ({evidence}). \
-         Run them in your own shell pane, or override as the local account: \
-         `herdr-threads me init --operator`"
+         Run them in your own shell pane, or override as the local account with \
+         `herdr-threads me init --operator` (later commands in this pane then run as you)"
     ))
 }
 
@@ -589,10 +621,8 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
     if let Some(context) = current.clone().filter(|context| {
         use crate::harness::context::Harness;
         lifecycle
-            && ((context.harness == Harness::Human && selection.harness != Harness::Human)
-                || (operator
-                    && context.harness != Harness::Human
-                    && selection.harness == Harness::Human))
+            && context.harness == Harness::Human
+            && selection.harness != Harness::Human
             && context.instance == instance
             && context.seat == selection.seat.as_str()
             && context.target == selection.target.as_str()
@@ -603,6 +633,22 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         {
             return Err(mapping_error("local context changed during check-in"));
         }
+        current = None;
+    }
+    // The person's `me init --operator` over an agent's context retires
+    // nothing here: the daemon decides (TRUST-POLICY A4) and `dispatch`
+    // replaces the local context only on success, so a rejection leaves the
+    // agent's context intact. The agent context is treated as absent only for
+    // seeding the check-in from the service mapping.
+    if let Some(context) = &current
+        && lifecycle
+        && operator
+        && context.harness != crate::harness::context::Harness::Human
+        && selection.harness == crate::harness::context::Harness::Human
+        && context.instance == instance
+        && context.seat == selection.seat.as_str()
+        && context.target == selection.target.as_str()
+    {
         current = None;
     }
     // A fresh lifecycle check-in (a new event, not a replay of a recorded
@@ -1166,20 +1212,27 @@ fn derive_selection(
                 ))
             })?,
     };
-    selection_from_context(pane, seat, &context, std::env::vars(), |pane| {
-        pane_agent(runtime, clock, pane)
-    })
+    let operator_override = contexts.operator_mark() == Some(context.execution);
+    selection_from_context(
+        pane,
+        seat,
+        &context,
+        operator_override,
+        std::env::vars(),
+        |pane| pane_agent(runtime, clock, pane),
+    )
 }
 
 /// The selection a located seat's recorded context yields. A Human context
 /// is refused when agent evidence is present (TRUST-POLICY A4, best effort;
-/// the daemon's refusal is the guard): an agent environment marker, or Herdr
-/// reporting a claude or codex agent in the pane. A failed Herdr read does
-/// not refuse.
+/// the daemon's refusal is the guard) per `agent_evidence`, unless the person
+/// recorded the `me init --operator` override for this context
+/// (`operator_override`). A failed Herdr read does not refuse.
 fn selection_from_context<K: AsRef<str>, V>(
     pane: crate::protocol::ids::HostTargetId,
     seat: crate::protocol::ids::SeatId,
     context: &crate::harness::context::OccupantContext,
+    operator_override: bool,
     env: impl IntoIterator<Item = (K, V)>,
     read_agent: impl FnOnce(
         &crate::protocol::ids::HostTargetId,
@@ -1190,22 +1243,11 @@ fn selection_from_context<K: AsRef<str>, V>(
             "local context differs from current service mapping",
         ));
     }
-    if context.harness == crate::harness::context::Harness::Human {
-        if let Some(marker) = agent_marker(env) {
-            return Err(agent_evidence_refusal(
-                pane.as_str(),
-                &format!("environment variable {marker} is set"),
-            ));
-        }
-        if let Ok(Some(observation)) = read_agent(&pane)
-            && let Some(kind) = observation.kind.as_deref()
-            && matches!(kind, "claude" | "codex")
-        {
-            return Err(agent_evidence_refusal(
-                pane.as_str(),
-                &format!("Herdr reports a `{kind}` agent in this pane"),
-            ));
-        }
+    if context.harness == crate::harness::context::Harness::Human
+        && !operator_override
+        && let Some(evidence) = agent_evidence(env, || read_agent(&pane))
+    {
+        return Err(agent_evidence_refusal(pane.as_str(), &evidence));
     }
     Ok(CooperativeSelection {
         seat,
@@ -1379,9 +1421,8 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             operator,
         }) => {
             let context = contexts.current().map_err(context_run_error)?;
-            let seed = context
-                .as_ref()
-                .or(initial)
+            let seed = initial
+                .or(context.as_ref())
                 .ok_or_else(|| unsupported("lifecycle requires a service-resolved durable seat"))?;
             let event = LifecycleEvent {
                 harness: seed.harness,

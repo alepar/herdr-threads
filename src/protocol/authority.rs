@@ -56,6 +56,16 @@ impl Harness {
 
 /// An agent's cooperative top-level claim (not native attestation).
 pub const COOPERATIVE_TOP_LEVEL_PROVENANCE: &str = "cooperative_top_level";
+
+/// Herdr agent kinds that count as agent evidence in a pane (TRUST-POLICY A4):
+/// the harnesses this plugin supports. Any other detected kind is not
+/// evidence. `me init`, person-pane selection and the launch guard share this.
+pub const HARNESS_AGENT_KINDS: [&str; 2] = ["claude", "codex"];
+
+/// Whether a Herdr-reported agent kind is a supported harness.
+pub fn is_harness_agent_kind(kind: &str) -> bool {
+    HARNESS_AGENT_KINDS.contains(&kind)
+}
 /// A person acting from their own pane identity (`herdr-threads me init`).
 pub const OPERATOR_HUMAN_PROVENANCE: &str = "operator_human";
 /// TRUST-POLICY A3/C1: a seat was reattached because a resumed harness

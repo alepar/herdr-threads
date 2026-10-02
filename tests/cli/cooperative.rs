@@ -1149,21 +1149,68 @@ fn thread_reads_carry_the_located_caller_for_the_self_marker() {
 }
 
 #[test]
-fn agent_markers_detects_claudecode_and_codex_prefix() {
-    use crate::cli::agent_marker;
+fn codex_home_alone_is_not_agent_evidence() {
+    use crate::cli::agent_env_marker;
     assert_eq!(
-        agent_marker([("CLAUDECODE", "1")]),
+        agent_env_marker([("CLAUDECODE", "1")]),
         Some("CLAUDECODE".to_owned())
     );
     assert_eq!(
-        agent_marker([("PATH", "/bin"), ("CODEX_HOME", "/x")]),
-        Some("CODEX_HOME".to_owned())
-    );
-    assert_eq!(agent_marker([("PATH", "/bin"), ("CODEXX", "1")]), None);
-    assert_eq!(
-        agent_marker([("XCLAUDECODE", "1"), ("CLAUDE_CODE", "1")]),
+        agent_env_marker([("PATH", "/bin"), ("CODEX_HOME", "/x")]),
         None
     );
+    assert_eq!(
+        agent_env_marker([("CODEX_API_KEY", "k"), ("CODEXX", "1")]),
+        None
+    );
+    assert_eq!(
+        agent_env_marker([("XCLAUDECODE", "1"), ("CLAUDE_CODE", "1")]),
+        None
+    );
+    // The selection proceeds with CODEX_HOME alone.
+    assert!(select(&[("CODEX_HOME", "/x")], Ok(None), false).is_ok());
+}
+
+#[test]
+fn codex_sandbox_marker_is_agent_evidence() {
+    use crate::cli::agent_env_marker;
+    for name in ["CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED"] {
+        assert_eq!(agent_env_marker([(name, "1")]), Some(name.to_owned()));
+        let detail = refusal_detail(select(&[(name, "1")], Ok(None), false).unwrap_err());
+        assert!(detail.contains(name), "{detail}");
+    }
+}
+
+#[test]
+fn herdr_read_error_is_not_agent_evidence() {
+    let failed = crate::protocol::results::ApiError {
+        code: crate::protocol::results::ErrorCode::Unsupported,
+        detail: "herdr down".into(),
+        restart_argv: None,
+        required_minimum_bytes: None,
+    };
+    assert_eq!(
+        crate::cli::agent_evidence::<&str, &str>([], || Err(failed)),
+        None
+    );
+    assert_eq!(
+        crate::cli::agent_evidence::<&str, &str>([], || Ok(Some(observed(Some("claude"))))),
+        Some("Herdr reports a `claude` agent in this pane".to_owned())
+    );
+    assert_eq!(
+        crate::cli::agent_evidence::<&str, &str>([], || Ok(Some(observed(Some("shell"))))),
+        None
+    );
+}
+
+#[test]
+fn operator_marked_human_context_is_selected_despite_agent_evidence() {
+    let marker = [("CLAUDECODE", "1")];
+    assert!(select(&marker, Ok(None), true).is_ok());
+    assert!(select(&[], Ok(Some(observed(Some("codex")))), true).is_ok());
+    // Negative: without the recorded mark the same evidence refuses.
+    assert!(select(&marker, Ok(None), false).is_err());
+    assert!(select(&[], Ok(Some(observed(Some("codex")))), false).is_err());
 }
 
 fn human_context(pane: &str) -> crate::harness::context::OccupantContext {
@@ -1189,11 +1236,13 @@ fn observed(kind: Option<&str>) -> crate::ports::PaneAgentObservation {
 fn select(
     env: &[(&str, &str)],
     agent: Result<Option<crate::ports::PaneAgentObservation>, crate::protocol::results::ApiError>,
+    operator_override: bool,
 ) -> Result<crate::cli::commands::CooperativeSelection, crate::cli::RunError> {
     crate::cli::selection_from_context(
         HostTargetId::new("w:p1"),
         SeatId::new("seat-1"),
         &human_context("w:p1"),
+        operator_override,
         env.iter().copied(),
         |_| agent,
     )
@@ -1213,20 +1262,20 @@ fn refusal_detail(error: crate::cli::RunError) -> String {
 
 #[test]
 fn derive_selection_refuses_human_context_with_agent_marker() {
-    let detail = refusal_detail(select(&[("CLAUDECODE", "1")], Ok(None)).unwrap_err());
+    let detail = refusal_detail(select(&[("CLAUDECODE", "1")], Ok(None), false).unwrap_err());
     assert!(detail.contains("CLAUDECODE"), "{detail}");
     assert!(
         detail.contains("herdr-threads me init --operator"),
         "{detail}"
     );
-    assert!(select(&[("CODEX_HOME", "/x")], Ok(None)).is_err());
-    assert!(select(&[("PATH", "/bin")], Ok(None)).is_ok());
+    assert!(select(&[("PATH", "/bin")], Ok(None), false).is_ok());
 }
 
 #[test]
 fn derive_selection_refuses_human_context_when_herdr_reports_agent() {
     for kind in ["claude", "codex"] {
-        let detail = refusal_detail(select(&[], Ok(Some(observed(Some(kind))))).unwrap_err());
+        let detail =
+            refusal_detail(select(&[], Ok(Some(observed(Some(kind)))), false).unwrap_err());
         assert!(detail.contains(kind), "{detail}");
         assert!(
             detail.contains("herdr-threads me init --operator"),
@@ -1234,15 +1283,15 @@ fn derive_selection_refuses_human_context_when_herdr_reports_agent() {
         );
     }
     // No agent, an unrelated detection, or a failed read never refuses.
-    assert!(select(&[], Ok(Some(observed(None)))).is_ok());
-    assert!(select(&[], Ok(Some(observed(Some("shell"))))).is_ok());
+    assert!(select(&[], Ok(Some(observed(None))), false).is_ok());
+    assert!(select(&[], Ok(Some(observed(Some("shell")))), false).is_ok());
     let failed = crate::protocol::results::ApiError {
         code: crate::protocol::results::ErrorCode::Unsupported,
         detail: "herdr down".into(),
         restart_argv: None,
         required_minimum_bytes: None,
     };
-    assert!(select(&[], Err(failed)).is_ok());
+    assert!(select(&[], Err(failed), false).is_ok());
 }
 
 #[test]
@@ -1253,6 +1302,7 @@ fn agent_context_selection_ignores_agent_markers() {
         HostTargetId::new("w:p1"),
         SeatId::new("seat-1"),
         &context,
+        false,
         [("CLAUDECODE", "1")],
         |_| panic!("an agent context never reads the pane"),
     )

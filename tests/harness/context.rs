@@ -680,3 +680,83 @@ fn attention_mark_is_per_execution_last_writer_wins() {
     assert_eq!(j.completed_len().unwrap(), 0);
     fs::remove_dir_all(path).unwrap();
 }
+
+// Kills: a prepare that refuses a person's lifecycle request over an agent's
+// current context (me init --operator unusable), and a dispatch failure that
+// clears or replaces the agent's context before the daemon accepted the
+// check-in.
+#[test]
+fn person_lifecycle_request_over_agent_context_keeps_current_until_dispatch() {
+    let path = dir();
+    let i = Uuid::new_v4();
+    let j = journal(&path, i);
+    j.prepare(request(i, "agent", 0)).unwrap();
+    let agent = j
+        .dispatch("agent", &mut |p: &PendingCheckIn| Ok(result(p, 1)))
+        .unwrap()
+        .context;
+    assert_eq!(agent.harness, Harness::Codex);
+
+    let mut person = request(i, "person", 1);
+    person.context.harness = Harness::Human;
+    person.context.session = SessionReference::PluginContext(person.context.execution);
+    j.prepare(person.clone()).unwrap();
+    // The daemon rejects: the agent's context is untouched.
+    assert!(
+        j.dispatch("person", &mut |_p: &PendingCheckIn| Err(
+            ContextError::Dispatch("Conflict".into())
+        ))
+        .is_err()
+    );
+    assert_eq!(j.current().unwrap(), Some(agent.clone()));
+    // The daemon accepts: the human context replaces it.
+    let accepted = j
+        .dispatch("person", &mut |p: &PendingCheckIn| Ok(result(p, 2)))
+        .unwrap()
+        .context;
+    assert_eq!(accepted.harness, Harness::Human);
+    assert_eq!(j.current().unwrap(), Some(accepted));
+    fs::remove_dir_all(path).unwrap();
+}
+
+// Kills: an agent request over a person, or a different target, newly
+// admitted by the person-over-agent allowance.
+#[test]
+fn lifecycle_harness_change_is_admitted_only_for_a_person_over_an_agent() {
+    let path = dir();
+    let i = Uuid::new_v4();
+    let j = journal(&path, i);
+    j.prepare(request(i, "agent", 0)).unwrap();
+    j.dispatch("agent", &mut |p: &PendingCheckIn| Ok(result(p, 1)))
+        .unwrap();
+    let mut claude = request(i, "claude", 1);
+    claude.context.harness = Harness::Claude;
+    assert_eq!(j.prepare(claude), Err(ContextError::Conflict));
+    let mut elsewhere = request(i, "elsewhere", 1);
+    elsewhere.context.harness = Harness::Human;
+    elsewhere.context.session = SessionReference::PluginContext(elsewhere.context.execution);
+    elsewhere.context.target = "other-pane".into();
+    assert_eq!(j.prepare(elsewhere), Err(ContextError::Conflict));
+    fs::remove_dir_all(path).unwrap();
+}
+
+// Kills: an operator mark that applies to any execution, or one that does not
+// survive a reopen.
+#[test]
+fn operator_mark_round_trips_and_is_execution_scoped() {
+    let path = dir();
+    let i = Uuid::new_v4();
+    let j = journal(&path, i);
+    let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+    assert_eq!(j.operator_mark(), None);
+    assert_eq!(j.set_operator_mark(Uuid::nil()), Err(ContextError::Invalid));
+    j.set_operator_mark(a).unwrap();
+    assert_eq!(j.operator_mark(), Some(a));
+    assert_ne!(j.operator_mark(), Some(b));
+    drop(j);
+    let j = journal(&path, i);
+    assert_eq!(j.operator_mark(), Some(a));
+    j.set_operator_mark(b).unwrap();
+    assert_eq!(j.operator_mark(), Some(b));
+    fs::remove_dir_all(path).unwrap();
+}
