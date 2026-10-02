@@ -1,7 +1,6 @@
 # super-auto run — 2026-10-01-b5-trust-policy-guards
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: fix-loop
 
 idea: Implement epic ht-rzi (B5 cooperative trust policy guards) per TRUST-POLICY.md and beads ht-rzi.1-.6; design already exists (TRUST-POLICY.md + filed beads), start from the design's coverage checks; autonomous from there; raise questions only on contention about the ht-rzi.2 decision (Herdr agent_session report is a hint for reattachment); both roasts on; merge back into main at the end.
 branch: trust-model-invariants
@@ -42,7 +41,6 @@ codeBuckets:
   review: NOT READY (final review: daemon-restart carry-forward gap; resume into a different pane sticks; single-attempt resume; launch guard history paging; ids.rs comment) — see ledger .superpowers/sdd/ht-rzi-plan/progress.md
   sweep: SWEEP DEFERRED (caller-owned)
   stopReason: ready-drained (two launches: wf_5854046f-9a4 escalated ht-rzi.3 on a missing edge; relaunch wf_c60e7f25-648 drained the rest)
-roastCodeRound: 1
 roast-code: 2026-10-01-b5-trust-policy-guards-roast-pr-1.md
 stepBack-round-1: redesign — applied: two-request continuity (seatless decide + follow-up check-in + every-event intent replay) → one deciding transaction opens the successor binding; lost reply recovered by committed state (dissolves 3 confirmed + evidence b)
 scopeFilter-round-1: [Should-fix] src/protocol/wire.rs:20; src/protocol/wire.rs:9 in-scope — A2 guard breaks upgraded-binary→old-daemon requests
@@ -66,3 +64,6 @@ migrated: run-state contract diff 4.3→4.5 is wording-only (coverage reviewer c
 resumeChange: 2026-10-01 · "super-code fixes in v6.4.2-alepar4.6 (2bf1d53): bd 1.3 epic close-eligible shape; null planner degrades; relaunch at next round boundary" · skill-source switch to 4.6
 skillSource: ~/AleCode/superpowers/skills @ 2bf1d53 (6.4.2-alepar4.6)
 migrated: 4.5 coordinator wf_8ef903ea-7cb stopped with only its planner in flight (no task dispatched); relaunched on coordinator.js @ 2bf1d53; no run-state field changes.
+fixLoop-round-1: super-code re-entry wf_9103453f-851 (4.6) → root-closed; completed ht-rzi.18-.23; final review NOT READY: same-pane-id resume with daemon kept running may strand the seat (untested); retry installs no pane context; hook skips protocol check; ids.rs comment; migration 0010 vs B4
+roastCodeRound: 2
+phase: roast-code
