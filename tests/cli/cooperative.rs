@@ -40,6 +40,7 @@ fn selected_service_mapping_rejects_wrong_target_and_repair_hold() {
         },
         hold: None,
         retirement: None,
+        open_binding: None,
         history: Page {
             items: vec![],
             next_cursor: None,
@@ -141,6 +142,7 @@ fn selected_first_lifecycle_uses_service_generation_and_persists_context() {
                     },
                     hold: None,
                     retirement: None,
+                    open_binding: None,
                     history: empty(),
                 })),
                 Command::CheckIn(c) => {
@@ -298,6 +300,7 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
                     },
                     hold: None,
                     retirement: None,
+                    open_binding: None,
                     history: empty(),
                 })),
                 Command::CheckIn(c) => {

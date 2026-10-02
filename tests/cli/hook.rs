@@ -1581,6 +1581,7 @@ mod pane_seat_selection {
                         summary,
                         hold: None,
                         retirement: None,
+                        open_binding: None,
                         history: page(vec![], None),
                     }))
                 }

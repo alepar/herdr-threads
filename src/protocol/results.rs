@@ -413,6 +413,14 @@ pub struct HoldSummary {
     pub reason_data: String,
     pub detail_argv: Vec<String>,
 }
+/// A seat's open (not ended) binding, the single answer every A4 guard reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenBindingSummary {
+    pub provenance: String,
+    pub harness: String,
+    pub target: HostTargetId,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SeatInspection {
@@ -420,6 +428,9 @@ pub struct SeatInspection {
     pub mapping: MappingStatus,
     pub hold: Option<HoldSummary>,
     pub retirement: Option<RetirementStatus>,
+    /// The seat's open binding, independent of the history page.
+    #[serde(default)]
+    pub open_binding: Option<OpenBindingSummary>,
     pub history: Page<SeatHistoryItem>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

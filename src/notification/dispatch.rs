@@ -132,8 +132,11 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NotificationPort
             return Ok(WakeOutcome::Unavailable);
         };
         // The host cannot know the bound harness; the reservation does
-        // (TRUST-POLICY A4 wake rule).
+        // (TRUST-POLICY A4 wake rule). No bound harness, no prompt.
         if let ReservedWakeAuthority::Cooperative { harness, .. } = &reservation.authority {
+            if harness.is_none() {
+                return Ok(WakeOutcome::Unsafe);
+            }
             target.bound_harness = harness.clone();
         }
         let basis_ok = match (&target.basis, cooperative) {

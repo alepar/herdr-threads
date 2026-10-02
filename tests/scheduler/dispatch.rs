@@ -3420,7 +3420,7 @@ fn cooperative_reservation_rechecks_structure_and_never_crosses_bases() {
         terminal: TerminalId::new("terminal"),
         incarnation: "incarnation".into(),
         binding_generation: None,
-        harness: None,
+        harness: Some("claude".into()),
     };
     let cooperative = || {
         let mut observation = fresh_observation();
@@ -3563,7 +3563,7 @@ fn dispatcher_passes_bound_harness_to_prompt_target() {
         expected_boot: Some(HostBootId::new("boot")),
         expected_epoch: Some(1),
     };
-    for bound in [Some("claude"), Some("codex"), None] {
+    for bound in [Some("claude"), Some("codex")] {
         let mut reservation = test_reservation();
         reservation.authority = ReservedWakeAuthority::Cooperative {
             terminal: TerminalId::new("terminal"),
@@ -3598,4 +3598,45 @@ fn dispatcher_passes_bound_harness_to_prompt_target() {
             "the prompt target carries the reservation's harness"
         );
     }
+}
+
+/// Kills: a cooperative reservation without a bound harness reaching the
+/// prompt (TRUST-POLICY A4: no open binding, no wake).
+#[test]
+fn cooperative_reservation_without_harness_is_not_prompted() {
+    let clock = FakeClock(AtomicU64::new(0));
+    let context = HostCallContext {
+        budget: CallBudget {
+            deadline: MonoInstant(5_000),
+            cancellation: Cancellation::default(),
+        },
+        expected_boot: Some(HostBootId::new("boot")),
+        expected_epoch: Some(1),
+    };
+    let mut reservation = test_reservation();
+    reservation.authority = ReservedWakeAuthority::Cooperative {
+        terminal: TerminalId::new("terminal"),
+        incarnation: "incarnation".into(),
+        binding_generation: None,
+        harness: None,
+    };
+    let mut observation = fresh_observation();
+    observation.occupant = None;
+    observation.ui = HostUiState::Unknown;
+    observation.occupancy = StructuralOccupancy::Unknown;
+    observation.execution = ExecutionEvidence::Unknown;
+    let host = CooperativeRecordingHost {
+        observation,
+        prompted: std::sync::Mutex::new(vec![]),
+    };
+    let check = FakeReservationCheck {
+        current: true,
+        calls: AtomicU64::new(0),
+    };
+    let dispatch = NativeWakeDispatcher::new(&host, &check, &clock);
+    assert_eq!(
+        dispatch.attempt_wake(reservation, &context).unwrap(),
+        WakeOutcome::Unsafe
+    );
+    assert!(host.prompted.lock().unwrap().is_empty());
 }
