@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-01-b5-trust-policy-guards
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: roast-code
+phase: fix-loop
 
 idea: Implement epic ht-rzi (B5 cooperative trust policy guards) per TRUST-POLICY.md and beads ht-rzi.1-.6; design already exists (TRUST-POLICY.md + filed beads), start from the design's coverage checks; autonomous from there; raise questions only on contention about the ht-rzi.2 decision (Herdr agent_session report is a hint for reattachment); both roasts on; merge back into main at the end.
 branch: trust-model-invariants
@@ -43,3 +43,4 @@ codeBuckets:
   sweep: SWEEP DEFERRED (caller-owned)
   stopReason: ready-drained (two launches: wf_5854046f-9a4 escalated ht-rzi.3 on a missing edge; relaunch wf_c60e7f25-648 drained the rest)
 roastCodeRound: 1
+roast-code: 2026-10-01-b5-trust-policy-guards-roast-pr-1.md
