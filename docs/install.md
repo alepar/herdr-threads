@@ -235,7 +235,7 @@ Evidence: deterministic fake-host and real-daemon tests and a real-host smoke on
 2. Rebuild (`./scripts/build.sh`) or reinstall the plugin.
 3. Run `daemon ensure`, then `doctor`.
 
-A newer executable does not take over a running older daemon. `daemon ensure` and the startup entry exit 3 with `daemon_version_mismatch` and the hint to stop then ensure, start no second daemon, and `doctor` exits 3 with `result: daemon_version_mismatch`. The package gate showed that the `stop` action from the **newer** install reaches and stops the older daemon, after which `ensure` starts the new version with the same instance and the threads and seats still present. Reinstalling keeps the state directory and its data.
+A newer executable does not take over a running older daemon. `daemon ensure` and the startup entry exit 3 with `daemon_version_mismatch` and the hint to stop then ensure, start no second daemon, and `doctor` exits 3 with `result: daemon_version_mismatch`. Within one protocol version, the `stop` action from the **newer** install reaches and stops the older daemon, after which `ensure` starts the new version with the same instance and the threads and seats still present. Across a protocol change (protocol 2 added the expected daemon boot) the newer `stop` refuses with `unknown_wire_version`, because the older daemon cannot decode its request; step 1, stopping with the installed executable before rebuilding, is then required. Reinstalling keeps the state directory and its data.
 
 ## Removing
 

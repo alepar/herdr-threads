@@ -77,6 +77,8 @@ Hook installation is per harness environment, so `doctor` (run in that environme
 
 `notes` and the `cooperative` harness value were added to the Health result in protocol 1 without a version change. A newer CLI reads an older daemon's Health (no `notes`); an older CLI cannot decode a newer daemon's Health, so after upgrading run `daemon stop` and `daemon ensure` with the new executable.
 
+Protocol 2 (B5) added the request's expected daemon boot and the B5 commands. An older daemon cannot decode a protocol-2 request, so `daemon ensure`, `doctor`, `daemon stop` and every command from the newer executable stop with `unknown_wire_version` and the stop-then-ensure hint instead of reaching it. Stop the old daemon with the old executable first.
+
 ## Attention digest and notices
 
 [agent-usage.md](agent-usage.md) is authoritative; this is a summary.

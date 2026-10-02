@@ -2135,7 +2135,7 @@ class ServiceWireTests(unittest.TestCase):
                             "seat": SEAT, "issuer": "author-1", "state": "pending", "accepted_by": None, "accepted_at": None}}}}
                     else:
                         result = {"Ok": {"kind": "thread_ensured", "data": {}}}
-                    reply = json.dumps({"version": 1, "request_id": request["request_id"], "instance": request["expected_instance"],
+                    reply = json.dumps({"version": 2, "request_id": request["request_id"], "instance": request["expected_instance"],
                                         "daemon_boot": "b", "result": result}).encode()
                     conn.sendall(len(reply).to_bytes(4, "big") + reply)
         self.thread = threading.Thread(target=serve, daemon=True)
