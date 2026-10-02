@@ -1,5 +1,5 @@
 status: completed with 0 unresolved Blocking, 2 escalations [degraded: coverage widening (round 2 fixes not re-reviewed), seam integration folded into sweep, final review: not ready, sweep: FAIL c2118486 (1 load-sensitive test; re-runs clean)]
-metrics: pending (upstream-feedback not yet run)
+metrics: docs/superpowers/runs/2026-10-01-b5-trust-policy-guards/upstream-feedback-draft.md (parked, not filed)
 
 # B5 trust policy guards — run report (2026-10-01)
 

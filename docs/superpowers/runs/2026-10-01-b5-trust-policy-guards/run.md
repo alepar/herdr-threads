@@ -68,5 +68,6 @@ fixLoop-round-1: super-code re-entry wf_9103453f-851 (4.6) → root-closed; comp
 roastCodeRound: 2
 fixLoop-exit: round 2 [converged] (Should-fix 3 confirmed, 0 Blocking; 13 resolved, 0 regressed); [fix-regression] only on a demoted Nit (install.sh) → no regression pass; sub-Blocking findings → punch list
 sweepFix: filed fix bead for the continuity retry test (wall-clock budget); hook_entrypoint failures pre-existing on base (not filed); re-entering super-code with deferSweep, then one sweep re-run
-phase: report
 sweepFix-rerun: FAIL c2118486 — service resolution::identity_final_currentness_check_… (capture overlap) once under 249 leaked test daemons; 10/10 clean re-runs on quiet machine; reported as it stands
+feedback: parked draft upstream-feedback-draft.md (5 defects, 2 design questions, 1 doc gap); awaiting user decision at finish
+phase: finish
