@@ -61,8 +61,11 @@ a break in <event/field>; it has worked here"), never degraded.
   SessionStart; tool: PreToolUse/PostToolUse; plus any other event it parses), the required fields and their JSON
   types. The declaration is derived from what the existing parsers in `src/harness/claude.rs` and
   `src/harness/codex.rs` actually require; a test fails if a parser requires a field the declaration omits.
-- `contract_id` = a short hash of the declaration. It changes only when herdr-threads changes what it reads;
-  that is the one case that needs a build.
+- `contract_id` = the first 16 hex chars of SHA-256 over a canonical serialization of the declaration (JSON with
+  sorted keys, no whitespace, fields sorted within each event). `herdr-threads contract-id [--harness H] --json`
+  prints it so the canary and manifest writer use the binary's own value; a test pins the current value, so any
+  change to it is deliberate. It changes only when herdr-threads changes what it reads; that is the one case that
+  needs a build.
 - A **violation** is a well-formed JSON object for a known event kind with a required field missing or of the
   wrong type. Malformed or truncated stdin, unknown event kinds and extra fields are not violations (counted by
   B6's parse-failure counter, never degrading).
@@ -72,9 +75,12 @@ a break in <event/field>; it has worked here"), never degraded.
 - A daemon table `harness_version_evidence(harness, version, contract_id, lifecycle_ok_at, tool_ok_at,
   violation_at, violation_event, violation_field, last_seen_at)`, keyed by (harness, version, contract_id), added
   by one migration (number assigned at implementation; B4/B6 also add migrations).
-- **Attribution:** the version is the one B6's admission observer resolved for the executable that ran the hook
-  (path/inode cache, re-observed on change). When the hook cannot attribute a payload to one observed version,
-  nothing is recorded.
+- **Attribution:** the version is that of the **running harness process**, not the binary currently first on
+  PATH (both harnesses update in the background while old sessions keep running the old build). The hook
+  resolves its parent harness process's executable path (`proc_pidpath` on macOS, `/proc/<ppid>/exe` on Linux),
+  canonicalizes it, and maps it to a version through B6's admission observer cache keyed by path/inode (Claude
+  installs live under a `versions/<v>` path; Codex standalone releases under `releases/<v>-<target>`). When the
+  parent is not a recognized harness executable or the path maps to no observed version, nothing is recorded.
 - **Recording is cheap and bounded:** a successful lifecycle check-in already reaches the daemon and records
   `lifecycle_ok_at`. For tool events, the hook sends a best-effort, non-blocking "payload ok" note at most once
   per session, and only while the daemon's last reply said this version is not yet verified; once verified the
@@ -84,6 +90,14 @@ a break in <event/field>; it has worked here"), never degraded.
 
 ## Manifest
 
+- **One producer chain.** B6's in-repo generator (from the recipe tables) is upgraded to emit schema_version 2,
+  leaving the canary-only fields null; the canary reads the `harness-manifest` branch file as its baseline (falling
+  back to the in-repo file) and writes the branch file; `scripts/canary/versions.py` accepts schema 1 and 2 (1 is
+  upgraded on read). A daemon that meets an unsupported schema_version treats it as "no manifest" and falls back to
+  the next source (cache → embedded).
+- **Retention.** The canary writer keeps, per harness, the newest 50 versions plus every `known_broken` row and
+  every recipe-listed version; it fails the workflow loudly above 80% of the size cap rather than publishing an
+  oversized file.
 - **Format:** `harness-versions.json`, schema_version 2, extending B6's generated file: `generated_at`;
   `latest_release` (herdr-threads); `contracts: {harness: contract_id}`; `rows: [{harness, version, status
   (verified | known_broken), evidence (live | no_model | schema), contract_id, supported_since (oldest
@@ -94,7 +108,9 @@ a break in <event/field>; it has worked here"), never degraded.
 - **Fetch policy:** triggered only by (a) a harness version with no local evidence and no embedded or cached row,
   or (b) a newly observed violation. At most once per day per harness, 5 s timeout, conditional GET (ETag), result
   cached in the state dir with its fetch time. Any failure falls back silently to cache, then embedded copy.
-  Opt-out: config `harness_manifest = "off"` (default `"auto"`) and env `HERDR_THREADS_OFFLINE=1`. Implemented
+  Opt-out: `harness_manifest = "off"` (default `"auto"`) in the instance settings file the daemon already reads,
+  or `HERDR_THREADS_OFFLINE=1` in the daemon's environment; both are read at each fetch decision (no restart
+  needed), and `doctor` prints the effective policy and the cache's fetch time. Implemented
   as a `curl -fsS --max-time 5` subprocess (no TLS stack added to the binary; curl ships with macOS and common
   Linux distributions); a missing curl means "offline".
 - **Trust:** advisory and unsigned under the cooperative model. A bad manifest can at worst block a version never
@@ -107,7 +123,12 @@ a break in <event/field>; it has worked here"), never degraded.
   evidence tier, or known_broken with the failing event/field and last working version) to the
   `harness-manifest` branch with a direct bot commit (`contents: write` scoped to that branch; `main` stays
   protected). Issue filing for breaks is unchanged.
-- `latest_release` and `supported_since` come from the repository's releases and the recipe/contract tables.
+- **Only payload-contract failures write `known_broken`** (a captured hook payload that violates the declared
+  contract); such rows must carry `broken_event` and `broken_field`. Every other canary outcome (Tier 0 setup /
+  config-load / launch-flag checks, Codex schema-fingerprint drift, infra errors, inconclusive or flaky runs) stays
+  issue-only and never reaches users as a manifest row.
+- `latest_release` and `supported_since` come from the repository's releases and the recipe/contract tables; the
+  canary obtains `contract_id` from `herdr-threads contract-id` built at the commit it tests.
 - The release workflow reads the branch's file to embed.
 
 ## Deriving the state (one pure function)
@@ -138,7 +159,11 @@ signing the manifest.
   attribution refusal when the version is ambiguous; violation sticks until version/contract change.
 - Fetch policy with a fake fetcher: triggers only on (a)/(b), once per day, opt-out and offline honored, cache and
   embedded fallbacks, size cap.
-- Canary manifest writer: offline selftest cases (all pass, break, known broken persists, flaky).
+- Canary manifest writer: offline selftest cases (all pass, payload break, known broken persists, flaky,
+  non-payload Tier 0 failure → issue only, retention and size-cap failure, schema-1 baseline upgrade), and a test
+  that the writer's `contract_id` equals the binary's.
+- Attribution: a session started on version A keeps attributing to A after the PATH binary is upgraded to B; an
+  unrecognized parent records nothing.
 - End to end (stand-in harness): a new unlisted version → no Health line → first payloads → working; a payload
   missing a required field → degraded with the "upgrade to X" action from a fake manifest.
 
