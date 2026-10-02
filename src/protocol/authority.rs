@@ -68,6 +68,11 @@ pub fn is_harness_agent_kind(kind: &str) -> bool {
 }
 /// A person acting from their own pane identity (`herdr-threads me init`).
 pub const OPERATOR_HUMAN_PROVENANCE: &str = "operator_human";
+/// C4: bindings a structural reconfirmation carries to a new host epoch;
+/// native `verified_current_target` bindings re-register instead. The planner
+/// predicate and the applier both read this one set.
+pub const CARRIED_BINDING_PROVENANCES: [&str; 2] =
+    [COOPERATIVE_TOP_LEVEL_PROVENANCE, OPERATOR_HUMAN_PROVENANCE];
 /// TRUST-POLICY A3/C1: a seat was reattached because a resumed harness
 /// session id matched an unresolved seat's last binding. Seat rebinds only
 /// (the `allocation_decisions.kind` of the reattachment); never on receipts

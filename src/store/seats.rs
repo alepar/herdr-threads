@@ -15,7 +15,8 @@ use crate::{
     },
     protocol::{
         authority::{
-            DecisionFence, MutationPermit, ObligationRef, OperatorActor, ReceiptRegistration,
+            CARRIED_BINDING_PROVENANCES, DecisionFence, MutationPermit, ObligationRef,
+            OperatorActor, ReceiptRegistration,
         },
         commands::CheckIn,
         ids::{ExecutionId, HostBootId, HostTargetId, SeatId, TerminalId, prefix},
@@ -1041,19 +1042,22 @@ fn saved_seat_scalar(
         "SELECT terminal_id,incarnation,execution_id,host_boot FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1",
         [&id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
     ).optional().map_err(store_error)?;
-    type ActiveBinding = (String, i64, String, Option<String>);
+    type ActiveBinding = (String, i64, String, Option<String>, String);
     let active_binding: Option<ActiveBinding> = conn
         .query_row(
-            "SELECT execution_id,host_epoch,host_boot,incarnation FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL ORDER BY ordinal DESC LIMIT 1",
+            "SELECT execution_id,host_epoch,host_boot,incarnation,observation_provenance FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL ORDER BY ordinal DESC LIMIT 1",
             [&id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()
         .map_err(store_error)?;
     let bound_epoch =
         match (&active_binding, &structural_proof) {
-            (Some((_, epoch, boot, incarnation)), Some(proof))
-                if boot == proof.host_boot().as_str()
+            // C4: only a binding whose provenance is in the carried set
+            // yields a bound epoch; a native binding re-registers instead.
+            (Some((_, epoch, boot, incarnation, provenance)), Some(proof))
+                if CARRIED_BINDING_PROVENANCES.contains(&provenance.as_str())
+                    && boot == proof.host_boot().as_str()
                     && incarnation.as_deref() == Some(proof.incarnation()) =>
             {
                 Some(u64::try_from(*epoch).map_err(|_| {
@@ -1795,17 +1799,23 @@ pub fn mark_unresolved_from_invalidation(
 
 /// C4: carry the open registered binding forward to the publication's host
 /// epoch in place. Harness, session, execution, generation and provenance stay.
-/// Closes the seat's open unavailability marker only when a binding moved.
+/// The single definition of carrying: returns whether a binding moved. When
+/// one did it writes the same availability anchor and receipt-timer job a
+/// fresh registration writes, closes the seat's open unavailability marker and
+/// re-points pending wake work. Moves nothing for a native binding.
+#[allow(clippy::too_many_arguments)]
 fn carry_binding_forward(
     tx: &Transaction<'_>,
+    instance: &str,
+    at: UtcMillis,
     seat: &SeatId,
     generation: u64,
     publication: &PublishedSnapshot,
     target: &str,
     target_generation: i64,
-) -> Result<(), ApiError> {
+) -> Result<bool, ApiError> {
     let changed = tx.execute(
-        "UPDATE occupant_bindings SET host_epoch=?1,target_generation=?2 WHERE seat_id=?3 AND generation=?4 AND ended_at IS NULL AND registered_at IS NOT NULL AND host_boot=?5 AND target_id=?6 AND incarnation=?7 AND observation_provenance IN ('cooperative_top_level','operator_human')",
+        "UPDATE occupant_bindings SET host_epoch=?1,target_generation=?2 WHERE seat_id=?3 AND generation=?4 AND ended_at IS NULL AND registered_at IS NOT NULL AND host_boot=?5 AND target_id=?6 AND incarnation=?7 AND observation_provenance IN (?8,?9) AND (host_epoch!=?1 OR target_generation!=?2)",
         params![
             checked_host_number(publication.epoch)?,
             target_generation,
@@ -1813,16 +1823,59 @@ fn carry_binding_forward(
             checked_host_number(generation)?,
             publication.boot.as_str(),
             target,
-            publication.incarnation
+            publication.incarnation,
+            CARRIED_BINDING_PROVENANCES[0],
+            CARRIED_BINDING_PROVENANCES[1]
         ],
     ).map_err(store_error)?;
-    if changed == 1 {
-        tx.execute(
-            "UPDATE seats SET unavailability_open=0 WHERE id=?1",
-            [seat.as_str()],
+    if changed != 1 {
+        return Ok(false);
+    }
+    let (binding_generation, provenance): (i64, String) = tx
+        .query_row(
+            "SELECT generation,observation_provenance FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND ended_at IS NULL",
+            params![seat.as_str(), checked_host_number(generation)?],
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .map_err(store_error)?;
-    }
+    let seq = schema::next_decision_seq(tx, instance)?;
+    anchor_seat_availability(tx, seat, seq, at, binding_generation, &provenance)?;
+    tx.execute(
+        "UPDATE seats SET unavailability_open=0 WHERE id=?1",
+        [seat.as_str()],
+    )
+    .map_err(store_error)?;
+    tx.execute(
+        "UPDATE wake_work SET binding_generation=?1 WHERE seat_id=?2 AND reservation_id IS NULL",
+        params![binding_generation, seat.as_str()],
+    )
+    .map_err(store_error)?;
+    Ok(true)
+}
+
+/// A binding just became available: its availability anchor and the
+/// receipt-timer job for every recipient row already staged for the seat
+/// (same rows as a fresh registration writes).
+fn anchor_seat_availability(
+    tx: &Transaction<'_>,
+    seat: &SeatId,
+    seq: u64,
+    at: UtcMillis,
+    binding_generation: i64,
+    provenance: &str,
+) -> Result<(), ApiError> {
+    tx.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES (?1,?2,?3,?4,?5)",
+        params![seat.as_str(), seq as i64, at.0, binding_generation, provenance]).map_err(store_error)?;
+    let anchor = tx.last_insert_rowid();
+    let high_water: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(ordinal),0) FROM prepared_recipients WHERE seat_id=?1",
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    tx.execute("INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES (?1,'receipt_timer_materialization',?2,?3)",
+        params![format!("receipt-timer:{anchor}"), anchor.to_string(), high_water]).map_err(store_error)?;
     Ok(())
 }
 
@@ -2234,14 +2287,14 @@ pub fn apply_reconciliation_transition(
             let outcome = match &transition.action {
                 ReconciliationAction::MarkOccupantUnavailable { target, expected_execution, .. } => {
                     let changed = tx.execute(
-                        "UPDATE occupant_bindings SET registered_at=CASE WHEN observation_provenance IN ('cooperative_top_level','operator_human') THEN NULL ELSE registered_at END,ended_at=CASE WHEN observation_provenance IN ('cooperative_top_level','operator_human') THEN ended_at ELSE ?1 END WHERE seat_id=?2 AND generation=?3 AND execution_id=?4 AND ended_at IS NULL",
-                        params![at.utc.0,seat.as_str(),checked_host_number(transition.expected_binding_generation)?,expected_execution.as_str()],
+                        "UPDATE occupant_bindings SET registered_at=CASE WHEN observation_provenance IN (?5,?6) THEN NULL ELSE registered_at END,ended_at=CASE WHEN observation_provenance IN (?5,?6) THEN ended_at ELSE ?1 END WHERE seat_id=?2 AND generation=?3 AND execution_id=?4 AND ended_at IS NULL",
+                        params![at.utc.0,seat.as_str(),checked_host_number(transition.expected_binding_generation)?,expected_execution.as_str(),CARRIED_BINDING_PROVENANCES[0],CARRIED_BINDING_PROVENANCES[1]],
                     ).map_err(store_error)?;
                     if changed != 1 { return Ok(ReconciliationOutcome::Stale); }
                     tx.execute("UPDATE seats SET target_id=?1,target_generation=?2 WHERE id=?3 AND generation=?4 AND state='resolved'",
                         params![target.as_str(),target_generation,seat.as_str(),checked_host_number(transition.expected_binding_generation)?]).map_err(store_error)?;
                     update_structural_proof(tx, seat, proof.as_ref().expect("validated structural proof"))?;
-                    tx.execute("DELETE FROM warning_offer WHERE seat_id=?1 AND NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND observation_provenance IN ('cooperative_top_level','operator_human'))", [seat.as_str()]).map_err(store_error)?;
+                    tx.execute("DELETE FROM warning_offer WHERE seat_id=?1 AND NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND observation_provenance IN (?2,?3))", params![seat.as_str(),CARRIED_BINDING_PROVENANCES[0],CARRIED_BINDING_PROVENANCES[1]]).map_err(store_error)?;
                     // Retain the exact active attempt and spacing until its owner completes it.
                     schema::ensure_unavailability_episode(tx, seat)?;
                     schema::bump_lifecycle_revision(tx, instance)?;
@@ -2263,7 +2316,7 @@ pub fn apply_reconciliation_transition(
                         params![target.as_str(),target_generation,seat.as_str(),instance,checked_host_number(transition.expected_binding_generation)?],
                     ).map_err(store_error)?;
                     if changed != 1 { return Ok(ReconciliationOutcome::Stale); }
-                    carry_binding_forward(tx, seat, transition.expected_binding_generation, &transition.publication, target.as_str(), target_generation)?;
+                    carry_binding_forward(tx, instance, at.utc, seat, transition.expected_binding_generation, &transition.publication, target.as_str(), target_generation)?;
                     update_structural_proof(tx, seat, proof.as_ref().expect("validated structural proof"))?;
                     schema::bump_lifecycle_revision(tx, instance)?;
                     schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
@@ -2272,12 +2325,19 @@ pub fn apply_reconciliation_transition(
                 }
                 ReconciliationAction::CarryForward { target, .. } => {
                     let generation = checked_host_number(transition.expected_binding_generation)?;
-                    let changed = tx.execute(
+                    let resolved: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND generation=?2 AND state='resolved')",
+                        params![seat.as_str(),generation], |r| r.get(0),
+                    ).map_err(store_error)?;
+                    if !resolved { return Ok(ReconciliationOutcome::Stale); }
+                    // C4: a carry that moves no binding changes nothing.
+                    if !carry_binding_forward(tx, instance, at.utc, seat, transition.expected_binding_generation, &transition.publication, target.as_str(), target_generation)? {
+                        return Ok(ReconciliationOutcome::Unchanged);
+                    }
+                    tx.execute(
                         "UPDATE seats SET target_generation=?1 WHERE id=?2 AND generation=?3 AND state='resolved'",
                         params![target_generation,seat.as_str(),generation],
                     ).map_err(store_error)?;
-                    if changed != 1 { return Ok(ReconciliationOutcome::Stale); }
-                    carry_binding_forward(tx, seat, transition.expected_binding_generation, &transition.publication, target.as_str(), target_generation)?;
                     update_structural_proof(tx, seat, proof.as_ref().expect("validated structural proof"))?;
                     schema::bump_lifecycle_revision(tx, instance)?;
                     schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
@@ -2660,8 +2720,8 @@ pub fn revoke_registration(
         },
         |tx,at,instance| {
             let Some(instance)=instance else {return Ok(false)};
-            let changed=tx.execute("UPDATE occupant_bindings SET registered_at=CASE WHEN observation_provenance IN ('cooperative_top_level','operator_human') THEN NULL ELSE registered_at END,ended_at=CASE WHEN observation_provenance IN ('cooperative_top_level','operator_human') THEN ended_at ELSE ?1 END WHERE seat_id=?2 AND generation=?3 AND execution_id=?4 AND ended_at IS NULL",
-                params![at.utc.0,evidence.seat().as_str(),binding_generation_sql,evidence.execution().as_str()]).map_err(store_error)?;
+            let changed=tx.execute("UPDATE occupant_bindings SET registered_at=CASE WHEN observation_provenance IN (?5,?6) THEN NULL ELSE registered_at END,ended_at=CASE WHEN observation_provenance IN (?5,?6) THEN ended_at ELSE ?1 END WHERE seat_id=?2 AND generation=?3 AND execution_id=?4 AND ended_at IS NULL",
+                params![at.utc.0,evidence.seat().as_str(),binding_generation_sql,evidence.execution().as_str(),CARRIED_BINDING_PROVENANCES[0],CARRIED_BINDING_PROVENANCES[1]]).map_err(store_error)?;
             if changed==0 {return Ok(false)}
             schema::ensure_unavailability_episode(tx,evidence.seat())?;
             schema::apply_eligibility_transition(tx,&instance,|_|Ok(true))?;
