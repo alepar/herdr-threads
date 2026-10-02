@@ -2405,32 +2405,6 @@ pub fn apply_reconciliation_transition(
     )
 }
 
-/// A binding just became available: its availability anchor and the
-/// receipt-timer job for every recipient row already staged for the seat
-/// (same rows as a fresh registration writes).
-fn anchor_seat_availability(
-    tx: &Transaction<'_>,
-    seat: &SeatId,
-    seq: u64,
-    at: UtcMillis,
-    binding_generation: i64,
-    provenance: &str,
-) -> Result<(), ApiError> {
-    tx.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES (?1,?2,?3,?4,?5)",
-        params![seat.as_str(), seq as i64, at.0, binding_generation, provenance]).map_err(store_error)?;
-    let anchor = tx.last_insert_rowid();
-    let high_water: i64 = tx
-        .query_row(
-            "SELECT COALESCE(MAX(ordinal),0) FROM prepared_recipients WHERE seat_id=?1",
-            [seat.as_str()],
-            |r| r.get(0),
-        )
-        .map_err(store_error)?;
-    tx.execute("INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES (?1,'receipt_timer_materialization',?2,?3)",
-        params![format!("receipt-timer:{anchor}"), anchor.to_string(), high_water]).map_err(store_error)?;
-    Ok(())
-}
-
 /// A verified check-in constructs its bounded offer inside the deciding SQLite
 /// transaction. An offer or encoding failure rolls back the anchor and frontier.
 // Allowed: registration inputs plus the fence and offer phase closures.

@@ -577,7 +577,7 @@ fn seat_and_delivery_inspection_are_compound_pages() {
     let seat = serde_json::json!({"kind":"seat_inspect","data":{
         "summary":{"seat":"s","continuity":"resolved","target":"p","generation":2,"created_at":1,"retired_at":null},
         "mapping":{"state":"resolved","target":"p","detail_argv":["seat","inspect","s"]},
-        "hold":null,"retirement":null,"history":page
+        "hold":null,"open_binding":null,"retirement":null,"history":page
     }});
     let parsed: herdr_threads::protocol::results::CommandResult =
         serde_json::from_value(seat.clone()).unwrap();
