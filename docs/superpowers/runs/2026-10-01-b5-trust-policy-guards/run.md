@@ -41,7 +41,7 @@ codeBuckets:
   review: NOT READY (final review: daemon-restart carry-forward gap; resume into a different pane sticks; single-attempt resume; launch guard history paging; ids.rs comment) — see ledger .superpowers/sdd/ht-rzi-plan/progress.md
   sweep: SWEEP DEFERRED (caller-owned)
   stopReason: ready-drained (two launches: wf_5854046f-9a4 escalated ht-rzi.3 on a missing edge; relaunch wf_c60e7f25-648 drained the rest)
-roast-code: 2026-10-01-b5-trust-policy-guards-roast-pr-1.md
+roast-code: 2026-10-01-b5-trust-policy-guards-roast-pr-1.md, 2026-10-01-b5-trust-policy-guards-roast-pr-2.md
 stepBack-round-1: redesign — applied: two-request continuity (seatless decide + follow-up check-in + every-event intent replay) → one deciding transaction opens the successor binding; lost reply recovered by committed state (dissolves 3 confirmed + evidence b)
 scopeFilter-round-1: [Should-fix] src/protocol/wire.rs:20; src/protocol/wire.rs:9 in-scope — A2 guard breaks upgraded-binary→old-daemon requests
 scopeFilter-round-1: [Should-fix] src/identity/repair.rs:237; src/identity/repair.rs:235 in-scope — cluster diagnostic-off-fenced-path
@@ -66,4 +66,5 @@ skillSource: ~/AleCode/superpowers/skills @ 2bf1d53 (6.4.2-alepar4.6)
 migrated: 4.5 coordinator wf_8ef903ea-7cb stopped with only its planner in flight (no task dispatched); relaunched on coordinator.js @ 2bf1d53; no run-state field changes.
 fixLoop-round-1: super-code re-entry wf_9103453f-851 (4.6) → root-closed; completed ht-rzi.18-.23; final review NOT READY: same-pane-id resume with daemon kept running may strand the seat (untested); retry installs no pane context; hook skips protocol check; ids.rs comment; migration 0010 vs B4
 roastCodeRound: 2
-phase: roast-code
+fixLoop-exit: round 2 [converged] (Should-fix 3 confirmed, 0 Blocking; 13 resolved, 0 regressed); [fix-regression] only on a demoted Nit (install.sh) → no regression pass; sub-Blocking findings → punch list
+phase: report
