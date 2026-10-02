@@ -39,7 +39,7 @@ codeBuckets:
   parked:
   stalled: false
   review: NOT READY (final review: daemon-restart carry-forward gap; resume into a different pane sticks; single-attempt resume; launch guard history paging; ids.rs comment) — see ledger .superpowers/sdd/ht-rzi-plan/progress.md
-  sweep: FAIL fce6e130 — lib 1325/1326 (continuity_gate retry test, load-sensitive: 5/5 in isolation); hook_entrypoint 30/32 (three_thread_startup_…, twenty_thousand_… — both fail on main@55512edb too); all other targets pass
+  sweep: FAIL c2118486 (1 load-sensitive; re-runs clean) · earlier FAIL fce6e130 — lib 1325/1326 (continuity_gate retry test, load-sensitive: 5/5 in isolation); hook_entrypoint 30/32 (three_thread_startup_…, twenty_thousand_… — both fail on main@55512edb too); all other targets pass
   stopReason: ready-drained (two launches: wf_5854046f-9a4 escalated ht-rzi.3 on a missing edge; relaunch wf_c60e7f25-648 drained the rest)
 roast-code: 2026-10-01-b5-trust-policy-guards-roast-pr-1.md, 2026-10-01-b5-trust-policy-guards-roast-pr-2.md
 stepBack-round-1: redesign — applied: two-request continuity (seatless decide + follow-up check-in + every-event intent replay) → one deciding transaction opens the successor binding; lost reply recovered by committed state (dissolves 3 confirmed + evidence b)
@@ -69,3 +69,4 @@ roastCodeRound: 2
 fixLoop-exit: round 2 [converged] (Should-fix 3 confirmed, 0 Blocking; 13 resolved, 0 regressed); [fix-regression] only on a demoted Nit (install.sh) → no regression pass; sub-Blocking findings → punch list
 sweepFix: filed fix bead for the continuity retry test (wall-clock budget); hook_entrypoint failures pre-existing on base (not filed); re-entering super-code with deferSweep, then one sweep re-run
 phase: report
+sweepFix-rerun: FAIL c2118486 — service resolution::identity_final_currentness_check_… (capture overlap) once under 249 leaked test daemons; 10/10 clean re-runs on quiet machine; reported as it stands
