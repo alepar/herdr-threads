@@ -2901,6 +2901,9 @@ mod continuity {
         Missing,
         /// The read itself fails.
         ReadError,
+        /// The read takes 300 ms (past the 250 ms guard permit) and finds no
+        /// agent record.
+        Slow,
     }
 
     struct Herdr {
@@ -3028,6 +3031,10 @@ mod continuity {
                     agent_session: None,
                 })),
                 Some(Agent::Missing) | None => Ok(None),
+                Some(Agent::Slow) => {
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    Ok(None)
+                }
                 Some(Agent::ReadError) => Err(ApiError {
                     code: ErrorCode::Unauthorized,
                     detail: "scripted read error".into(),
@@ -3482,6 +3489,30 @@ mod continuity {
             );
             assert_eq!(repairs[0]["data"]["continuity_diagnostic"], name);
         }
+    }
+
+    /// A diagnostic read slower than the guard's 250 ms permit must not expire
+    /// the guard: it runs before the fresh observation, outside the window.
+    #[test]
+    fn slow_continuity_diagnostic_does_not_expire_the_guard() {
+        let fx = reattaching_fixture("claude", Agent::Slow);
+        let resumed = fx.hook("claude", PANE, &session_start("claude", "S-1", "resume"));
+        assert_eq!(resumed.code, Some(0), "{}", resumed.stderr);
+        assert_eq!(
+            fx.count("SELECT count(*) FROM seats WHERE id='saved' AND state='resolved' AND target_id='w1:p1'"),
+            1,
+            "{}",
+            resumed.stderr
+        );
+        let inspection = fx.seat_inspect("saved");
+        let repairs: Vec<_> = inspection["history"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["kind"] == "repair")
+            .collect();
+        assert_eq!(repairs.len(), 1, "{inspection}");
+        assert_eq!(repairs[0]["data"]["continuity_diagnostic"], "absent");
     }
 
     #[test]

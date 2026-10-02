@@ -490,7 +490,19 @@ impl NativeCli {
         budget: &CallBudget,
         limit: Duration,
     ) -> Result<String, ApiError> {
-        self.dispatch(args, budget, limit, false)
+        self.dispatch(args, budget, limit, false, true)
+            .map(|(body, _)| body)
+    }
+
+    /// A diagnostic/advisory read: it carries no fence and never invalidates
+    /// the connection epoch, however it fails.
+    fn run_unfenced(
+        &self,
+        args: &[&str],
+        budget: &CallBudget,
+        limit: Duration,
+    ) -> Result<String, ApiError> {
+        self.dispatch(args, budget, limit, false, false)
             .map(|(body, _)| body)
     }
 
@@ -503,7 +515,7 @@ impl NativeCli {
         budget: &CallBudget,
         limit: Duration,
     ) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
-        self.dispatch(args, budget, limit, cfg!(target_os = "macos"))
+        self.dispatch(args, budget, limit, cfg!(target_os = "macos"), true)
     }
 
     fn dispatch(
@@ -512,6 +524,7 @@ impl NativeCli {
         budget: &CallBudget,
         limit: Duration,
         witnessed: bool,
+        fenced: bool,
     ) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
         if !self.socket.is_absolute() {
             return Err(error(
@@ -592,15 +605,17 @@ impl NativeCli {
             )
             .map(|body| (body, None))
         };
-        if outcome.as_ref().is_err_and(|error| {
-            matches!(
-                error.code,
-                ErrorCode::Cancelled
-                    | ErrorCode::DeadlineExceeded
-                    | ErrorCode::HostUnavailable
-                    | ErrorCode::StaleHostObservation
-            )
-        }) {
+        if fenced
+            && outcome.as_ref().is_err_and(|error| {
+                matches!(
+                    error.code,
+                    ErrorCode::Cancelled
+                        | ErrorCode::DeadlineExceeded
+                        | ErrorCode::HostUnavailable
+                        | ErrorCode::StaleHostObservation
+                )
+            })
+        {
             self.epoch.fetch_add(1, Ordering::AcqRel);
         }
         outcome
@@ -612,21 +627,53 @@ impl NativeCli {
         started: Instant,
         limit: Duration,
     ) -> Result<(), ApiError> {
-        if budget.cancellation.is_cancelled() {
+        let checked = self.check_after_parse_unfenced(budget, started, limit);
+        if checked.is_err() {
             self.epoch.fetch_add(1, Ordering::AcqRel);
+        }
+        checked
+    }
+
+    /// The parse-time checks of [`Self::check_after_parse`] without the epoch
+    /// bump, for diagnostic reads that carry no fence.
+    fn check_after_parse_unfenced(
+        &self,
+        budget: &CallBudget,
+        started: Instant,
+        limit: Duration,
+    ) -> Result<(), ApiError> {
+        if budget.cancellation.is_cancelled() {
             return Err(error(
                 ErrorCode::Cancelled,
                 "host call cancelled during parse",
             ));
         }
         if started.elapsed() >= limit || self.clock.monotonic_now() >= budget.deadline {
-            self.epoch.fetch_add(1, Ordering::AcqRel);
             return Err(error(
                 ErrorCode::DeadlineExceeded,
                 "host call expired during parse",
             ));
         }
         Ok(())
+    }
+
+    fn pane_agent_within(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+        limit: Duration,
+    ) -> Result<Option<ports::PaneAgentObservation>, ApiError> {
+        self.check_context(context)?;
+        let started = Instant::now();
+        match self.run_unfenced(&["agent", "get", target.as_str()], &context.budget, limit) {
+            Err(failure) if failure.code == ErrorCode::NotFound => Ok(None),
+            Err(failure) => Err(failure),
+            Ok(raw) => {
+                let parsed = crate::host::observation::normalize_pane_agent(&raw, target.as_str())?;
+                self.check_after_parse_unfenced(&context.budget, started, limit)?;
+                Ok(parsed)
+            }
+        }
     }
 }
 
@@ -904,23 +951,15 @@ impl HostPort for NativeCli {
         }
     }
 
+    /// A diagnostic/advisory read: it carries no fence and never invalidates
+    /// the connection epoch, so a slow or failed read cannot refuse another
+    /// call.
     fn observe_pane_agent(
         &self,
         target: &HostTargetId,
         context: &HostCallContext,
     ) -> Result<Option<ports::PaneAgentObservation>, ApiError> {
-        self.check_context(context)?;
-        let started = Instant::now();
-        let limit = Duration::from_millis(750);
-        match self.run(&["agent", "get", target.as_str()], &context.budget, limit) {
-            Err(failure) if failure.code == ErrorCode::NotFound => Ok(None),
-            Err(failure) => Err(failure),
-            Ok(raw) => {
-                let parsed = crate::host::observation::normalize_pane_agent(&raw, target.as_str())?;
-                self.check_after_parse(&context.budget, started, limit)?;
-                Ok(parsed)
-            }
-        }
+        self.pane_agent_within(target, context, Duration::from_millis(750))
     }
 
     fn launch_native(
@@ -1328,6 +1367,61 @@ mod tests {
             pane_agent_read(reply).unwrap_err().code,
             ErrorCode::Unauthorized
         );
+    }
+    /// After a diagnostic read, a fenced call carrying the pre-read epoch is
+    /// still admitted: the read did not invalidate the connection.
+    fn assert_epoch_untouched(cli: &NativeCli, before: u64) {
+        assert_eq!(cli.epoch(), before);
+        let context = HostCallContext {
+            expected_boot: Some(HostBootId::new("proven-boot")),
+            expected_epoch: Some(before),
+            ..pane_agent_context()
+        };
+        cli.check_context(&context)
+            .expect("fenced call must not see 'host context changed'");
+    }
+    #[test]
+    fn pane_agent_failure_never_bumps_the_connection_epoch() {
+        let limit = Duration::from_millis(150);
+        let target = HostTargetId::new("w4:p1");
+        // Timeout: the fixture accepts the read and never replies in time.
+        let (socket, cli, worker) = fixture(|stream, _| {
+            thread::sleep(Duration::from_millis(600));
+            let _ = stream.flush();
+        });
+        let before = cli.epoch();
+        let result = cli.pane_agent_within(&target, &pane_agent_context(), limit);
+        assert!(result.is_err(), "a read past its limit must fail");
+        assert_epoch_untouched(&cli, before);
+        worker.join().unwrap();
+        let _ = fs::remove_file(socket);
+        // HostUnavailable: no listener at the socket path.
+        let missing = std::env::temp_dir().join(format!("ht-absent-{}", uuid::Uuid::new_v4()));
+        let cli = NativeCli::new(missing, Arc::new(TestClock(Instant::now())));
+        cli.epoch.store(3, Ordering::Release);
+        let failure = cli
+            .pane_agent_within(&target, &pane_agent_context(), limit)
+            .unwrap_err();
+        assert_eq!(failure.code, ErrorCode::HostUnavailable);
+        assert_epoch_untouched(&cli, 3);
+        // Parse-time overrun: the reply arrived after the limit.
+        let cli = NativeCli::new(
+            std::env::temp_dir().join("unused"),
+            Arc::new(TestClock(Instant::now())),
+        );
+        cli.epoch.store(3, Ordering::Release);
+        let late = Instant::now() - Duration::from_millis(500);
+        let failure = cli
+            .check_after_parse_unfenced(&pane_agent_context().budget, late, limit)
+            .unwrap_err();
+        assert_eq!(failure.code, ErrorCode::DeadlineExceeded);
+        assert_epoch_untouched(&cli, 3);
+        // The fenced variant still bumps, so the unfenced one is the difference.
+        assert!(
+            cli.check_after_parse(&pane_agent_context().budget, late, limit)
+                .is_err()
+        );
+        assert_eq!(cli.epoch(), 4);
     }
     #[test]
     fn guarded_start_correlates_exact_direct_request_without_claiming_execution() {

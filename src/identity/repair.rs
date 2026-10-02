@@ -22,6 +22,9 @@ use std::sync::Arc;
 /// budget (see [`OrdinaryIdentity::compensation_budget`]).
 pub const INVALIDATION_COMPENSATION_MS: u64 = 2_000;
 
+/// Own time budget of the C1 `agent.get` diagnostic read.
+const DIAGNOSTIC_READ_MILLIS: u64 = 750;
+
 pub struct OrdinaryIdentity {
     instance: String,
     store: Arc<dyn StorePort>,
@@ -215,7 +218,10 @@ impl OrdinaryIdentity {
     /// to. Historical replay precedes host work and grants no current
     /// authority. The Herdr `agent_session` read is a bounded diagnostic whose
     /// outcome (match, mismatch, absent, read error) is recorded and never
-    /// decides, so no read failure refuses or permits anything.
+    /// decides, so no read failure refuses or permits anything. The read runs
+    /// before the fresh target observation, so its latency is outside the
+    /// guard's freshness window; its failures map to `read_error` and never
+    /// fence (the adapter does not bump the connection epoch for it).
     pub fn continuity(
         &self,
         command: ContinuityCheckIn,
@@ -229,10 +235,10 @@ impl OrdinaryIdentity {
             return Ok(result);
         }
         let target = command.target.clone();
+        let diagnostic = self.agent_session_diagnostic(&target, &command, budget);
         self.with_observation(&target, budget, |_, observation| {
             let guard = ContinuityTargetGuard::try_new(&self.instance, &command, observation)
                 .map_err(|detail| error(ErrorCode::StaleHostObservation, detail))?;
-            let diagnostic = self.agent_session_diagnostic(&target, &command, budget);
             let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
             self.store.decide_continuity(
                 ContinuityRequest {
@@ -253,8 +259,19 @@ impl OrdinaryIdentity {
         command: &ContinuityCheckIn,
         budget: &CallBudget,
     ) -> &'static str {
+        // Its own bounded budget (at most 750 ms) so a slow read cannot
+        // consume the whole request budget.
+        let bounded = CallBudget {
+            deadline: budget.deadline.min(MonoInstant(
+                self.clock
+                    .monotonic_now()
+                    .0
+                    .saturating_add(DIAGNOSTIC_READ_MILLIS),
+            )),
+            cancellation: budget.cancellation.clone(),
+        };
         let context = HostCallContext {
-            budget: budget.clone(),
+            budget: bounded,
             expected_boot: None,
             expected_epoch: None,
         };
