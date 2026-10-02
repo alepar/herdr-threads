@@ -74,10 +74,15 @@ impl SlowHost {
                 };
                 let (panes, seen, slowed) = (panes.clone(), seen.clone(), slowed.clone());
                 std::thread::spawn(move || {
-                    stream.set_nonblocking(false).unwrap();
-                    stream
-                        .set_read_timeout(Some(Duration::from_secs(10)))
-                        .unwrap();
+                    // A client that already hung up makes these fail (EINVAL on
+                    // macOS); drop that connection (end this per-connection thread).
+                    if stream.set_nonblocking(false).is_err()
+                        || stream
+                            .set_read_timeout(Some(Duration::from_secs(10)))
+                            .is_err()
+                    {
+                        return;
+                    }
                     let mut line = String::new();
                     if BufReader::new(&mut stream).read_line(&mut line).is_err() || line.is_empty()
                     {

@@ -1462,10 +1462,15 @@ impl ActualNativeFixture {
                 // request read racing ahead of the client's write failed
                 // WouldBlock under CPU load. The request read blocks; its
                 // timeout is a hang guard, not a scheduling bound.
-                stream.set_nonblocking(false).unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(30)))
-                    .unwrap();
+                // A client that already hung up makes these fail (EINVAL on
+                // macOS); drop that connection instead of killing the fake host.
+                if stream.set_nonblocking(false).is_err()
+                    || stream
+                        .set_read_timeout(Some(Duration::from_secs(30)))
+                        .is_err()
+                {
+                    continue;
+                }
                 let mut request = String::new();
                 BufReader::new(&mut stream).read_line(&mut request).unwrap();
                 // The held snapshot polls for stop between short reads. macOS
