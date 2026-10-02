@@ -171,6 +171,26 @@ fn is_deterministic_rejection(code: &ErrorCode) -> bool {
     )
 }
 
+/// A continuity refusal that depends on durable state and identical retry
+/// would repeat (no match, several matches, owned target, an unusable
+/// target). Transient, store, host, uncertain and not-yet-reconciled codes
+/// (`ServiceBusy`, `StaleHostObservation`: a fresh observation or a finished
+/// reconciliation can succeed) keep the intent, which the next resume in the
+/// pane or `herdr-threads retry` replays under the same operation key.
+pub(crate) fn is_continuity_refusal(code: &ErrorCode) -> bool {
+    is_deterministic_rejection(code)
+        || matches!(
+            code,
+            ErrorCode::NotFound
+                | ErrorCode::TargetAlreadyOwned
+                | ErrorCode::TargetUnresolved
+                | ErrorCode::TargetUnsafe
+                | ErrorCode::CallerUnverified
+                | ErrorCode::Unsupported
+                | ErrorCode::SequenceExhausted
+        )
+}
+
 enum Submitted {
     Rejected(ApiError),
     Kept(ApiError),
@@ -231,7 +251,9 @@ where
     let claim = match scope {
         IntentScope::Cooperative { .. } => pending.semantic.frozen_claim().cloned(),
         IntentScope::Native { .. } => Some(proof().map_err(RetryFailure::Local)?),
-        IntentScope::Operator { .. } | IntentScope::ServiceAllocation { .. } => None,
+        IntentScope::Operator { .. }
+        | IntentScope::ServiceAllocation { .. }
+        | IntentScope::Continuity { .. } => None,
     };
     let command = pending
         .semantic
@@ -296,6 +318,9 @@ fn matches_result(request: &SemanticMutation, result: &CommandResult) -> bool {
             SemanticMutation::ResolveSeat { .. },
             CommandResult::SeatResolved(_)
         ) | (
+            SemanticMutation::ContinuityCheckIn { .. },
+            CommandResult::ContinuityReattached(_)
+        ) | (
             SemanticMutation::CheckIn | SemanticMutation::CooperativeCheckIn { .. },
             CommandResult::CheckedIn(_)
         ) | (
@@ -325,6 +350,14 @@ fn matches_result(request: &SemanticMutation, result: &CommandResult) -> bool {
             | (SemanticMutation::Reopen { .. }, CommandResult::Reopened(_))
             | (
                 SemanticMutation::OperatorRebind { .. },
+                CommandResult::OperatorRebound(_)
+            )
+            | (
+                SemanticMutation::OperatorRetire { .. },
+                CommandResult::OperatorRetired(_)
+            )
+            | (
+                SemanticMutation::OperatorReplace { .. },
                 CommandResult::OperatorRebound(_)
             )
             | (

@@ -421,7 +421,7 @@ class ServiceClient:
 
     def call(self, service):
         self.sequence += 1
-        request = {"version": 1, "request_id": f"ht-demo-{self.sequence}-{secrets.token_hex(3)}",
+        request = {"version": 2, "request_id": f"ht-demo-{self.sequence}-{secrets.token_hex(3)}",
                    "expected_instance": self.instance, "service": service}
         self.sock.sendall(encode_frame(request))
         size = int.from_bytes(self._read_exact(4), "big")

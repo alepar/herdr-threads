@@ -109,6 +109,18 @@ fn api_error(code: ErrorCode, detail: impl Into<String>) -> ApiError {
     }
 }
 
+/// The definite refusal for a daemon whose published protocol differs from
+/// this executable's. Shared by `ensure` and every CLI client so none of them
+/// sends a request an older daemon would drop at decode.
+pub(crate) fn protocol_mismatch_error(daemon_protocol: u16) -> ApiError {
+    api_error(
+        ErrorCode::UnknownWireVersion,
+        format!(
+            "daemon protocol {daemon_protocol} differs from executable protocol {PROTOCOL_VERSION}; run `daemon stop` with the matching older executable/protocol, then `daemon ensure` with the new executable and the same state/host context"
+        ),
+    )
+}
+
 fn io_error(error: io::Error) -> ApiError {
     let code = if crate::daemon::paths::is_unsafe_local_state(&error) {
         ErrorCode::InvalidRequest
@@ -150,13 +162,7 @@ async fn handshake(
         {
             return Ok(None);
         }
-        return Err(api_error(
-            ErrorCode::UnknownWireVersion,
-            format!(
-                "daemon protocol {} differs from executable protocol {}; run `daemon stop` with the matching older executable/protocol, then `daemon ensure` with the new executable and the same state/host context",
-                descriptor.protocol_version, PROTOCOL_VERSION
-            ),
-        ));
+        return Err(protocol_mismatch_error(descriptor.protocol_version));
     }
     let client = LocalSocketClient::new(
         descriptor.endpoint.clone(),

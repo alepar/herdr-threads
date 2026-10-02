@@ -225,6 +225,7 @@ fn indexed_saved_seat_page_plans_move_without_namespace_scan() {
             binding_generation: 3,
             binding_execution: None,
             active_binding_execution: None,
+            bound_epoch: None,
             bound_boot: Some(HostBootId::new("boot-a")),
             bound_incarnation: Some("inc-a".into()),
             latest_binding_evidence: None,
@@ -353,6 +354,7 @@ fn current_binding_loss_preserves_structural_seat_and_uses_fenced_revocation() {
             binding_generation: 7,
             binding_execution: Some(ExecutionId::new("execution-old")),
             active_binding_execution: Some(ExecutionId::new("execution-old")),
+            bound_epoch: None,
             bound_boot: Some(HostBootId::new("boot-a")),
             bound_incarnation: Some("inc-a".into()),
             latest_binding_evidence: None,
@@ -487,6 +489,7 @@ fn host_invalidation_reconfirms_only_proven_same_terminal_and_execution() {
             binding_generation: 5,
             binding_execution: Some(ExecutionId::new("execution-old")),
             active_binding_execution: None,
+            bound_epoch: None,
             bound_boot: Some(HostBootId::new("boot-a")),
             bound_incarnation: Some("inc-a".into()),
             latest_binding_evidence: None,
@@ -671,6 +674,7 @@ fn host_invalidated_seat_reconfirms_structurally_from_binding_evidence_with_unkn
             binding_generation: 3,
             binding_execution: Some(ExecutionId::new("execution-old")),
             active_binding_execution: None,
+            bound_epoch: None,
             bound_boot: Some(HostBootId::new("boot-a")),
             bound_incarnation: Some("inc-a".into()),
             latest_binding_evidence: Some(BindingEvidence {
@@ -1001,6 +1005,7 @@ fn never_registered_host_invalidated_seat_reconfirms_from_its_structural_proof()
             binding_generation: 2,
             binding_execution: None,
             active_binding_execution: None,
+            bound_epoch: None,
             bound_boot: Some(HostBootId::new("boot-a")),
             bound_incarnation: Some("inc-a".into()),
             latest_binding_evidence: None,
@@ -1689,6 +1694,7 @@ fn ordinary_allocation_lifecycle(loss_address: Option<&str>) {
                 &mut conn,
                 &command,
                 Some(&registration),
+                None,
                 &crate::protocol::time::CallBudget {
                     deadline: crate::protocol::time::MonoInstant(u64::MAX),
                     cancellation: Default::default()
@@ -3098,6 +3104,7 @@ mod fake_port {
                 binding_generation: 3,
                 binding_execution: None,
                 active_binding_execution: None,
+                bound_epoch: None,
                 bound_boot: Some(HostBootId::new("boot-a")),
                 bound_incarnation: Some("inc-a".into()),
                 latest_binding_evidence: None,
@@ -3157,6 +3164,7 @@ mod fake_port {
                 binding_generation: 3,
                 binding_execution: None,
                 active_binding_execution: None,
+                bound_epoch: None,
                 bound_boot: Some(HostBootId::new("boot-a")),
                 bound_incarnation: Some("inc-a".into()),
                 latest_binding_evidence: None,
@@ -3204,6 +3212,7 @@ mod fake_port {
                 binding_generation: 1,
                 binding_execution: None,
                 active_binding_execution: None,
+                bound_epoch: None,
                 bound_boot: Some(HostBootId::new("boot-a")),
                 bound_incarnation: Some("inc-a".into()),
                 latest_binding_evidence: None,
@@ -3253,6 +3262,519 @@ mod fake_port {
                 terminal: TerminalId::new("terminal-d"),
             }],
             "the later seat still follows its own move"
+        );
+    }
+}
+
+/// C4/O1 over a real store: a daemon restart resumes a higher host epoch of
+/// the same Herdr boot and incarnation, so an open registered binding lags the
+/// publication. The carry-forward moves it in place.
+mod carry_forward {
+    use super::*;
+    use crate::ports::{
+        DurableWorkAdmission, GuardedSeatTransition, PublishedSnapshot, ReconciliationAction,
+        ReconciliationOutcome, SnapshotHeader,
+    };
+    use crate::protocol::time::{CallBudget, Cancellation, Clock};
+    use crate::store::{connection::StoreContext, seats};
+    use std::sync::Arc;
+
+    struct FixedClock;
+    impl Clock for FixedClock {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(100)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(100)
+        }
+    }
+
+    struct Fixture {
+        context: StoreContext,
+        conn: rusqlite::Connection,
+        budget: CallBudget,
+        path: std::path::PathBuf,
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    type BindingRow = (
+        i64,
+        i64,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        i64,
+        String,
+        String,
+        i64,
+    );
+    const BINDING_SQL: &str = "SELECT host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,registered_at,observed_at,terminal_id,incarnation,generation FROM occupant_bindings WHERE seat_id='s' AND ordinal=1";
+    fn binding(conn: &rusqlite::Connection) -> BindingRow {
+        conn.query_row(BINDING_SQL, [], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+                r.get(8)?,
+                r.get(9)?,
+                r.get(10)?,
+            ))
+        })
+        .unwrap()
+    }
+
+    fn production(epoch: u64, sequence: u64, incarnation: &str) -> HostSnapshot {
+        let mut observation = target("pane", "terminal-a", None, sequence);
+        observation.provenance = ObservationProvenance::CoherentEnumeration;
+        observation.occupant = None;
+        observation.ui = HostUiState::Unknown;
+        observation.occupancy = StructuralOccupancy::Unknown;
+        observation.execution = ExecutionEvidence::Unknown;
+        observation.epoch = epoch;
+        observation.incarnation = IncarnationEvidence::Verified {
+            identity: incarnation.into(),
+            evidence_kind: EvidenceKind::CoherentEnumeration,
+        };
+        let mut capture = snapshot(sequence, vec![observation]);
+        capture.epoch = epoch;
+        capture.incarnation = IncarnationEvidence::Verified {
+            identity: incarnation.into(),
+            evidence_kind: EvidenceKind::CoherentEnumeration,
+        };
+        capture
+    }
+
+    fn publish(f: &mut Fixture, capture: HostSnapshot) -> PublishedSnapshot {
+        let admission =
+            seats::begin_host_observation(&f.context, &mut f.conn, "i", &f.budget).unwrap();
+        let header = SnapshotHeader::from_captured(admission, &capture).unwrap();
+        let stage =
+            seats::begin_snapshot_stage(&f.context, &mut f.conn, header, &f.budget).unwrap();
+        seats::stage_snapshot_targets(
+            &f.context,
+            &mut f.conn,
+            &stage.id,
+            0,
+            &capture.targets,
+            DurableWorkAdmission::new(16).unwrap(),
+            &f.budget,
+        )
+        .unwrap();
+        seats::seal_snapshot_stage(&f.context, &mut f.conn, &stage.id, &f.budget).unwrap();
+        seats::publish_snapshot_stage(&f.context, &mut f.conn, &stage.id, &f.budget).unwrap()
+    }
+
+    /// Seat `s` on `pane`/`terminal-a`, host epoch 3, open registered binding
+    /// of `provenance` at epoch 3. `unresolved` makes it host-invalidated.
+    fn fixture(provenance: &str, unresolved: bool) -> Fixture {
+        let path = std::env::temp_dir().join(format!("herdr-carry-{}.db", uuid::Uuid::new_v4()));
+        let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
+        let conn = context.open_writer().unwrap();
+        let budget = CallBudget {
+            deadline: MonoInstant(1_000),
+            cancellation: Cancellation::default(),
+        };
+        conn.execute(
+            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'boot-a',3)",
+            [],
+        )
+        .unwrap();
+        let kind = structural_proof("pane", "terminal-a", 1).source_spelling();
+        let (state, reason) = if unresolved {
+            ("unresolved", Some("host_invalidation"))
+        } else {
+            ("resolved", None)
+        };
+        conn.execute(
+            "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at,unavailability_open) VALUES ('s','i',?1,?2,'native','pane',1,1,'terminal-a','inc-a',?3,'boot-a',3,1,1,0,1)",
+            rusqlite::params![state, reason, kind],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'pane','boot-a',3,'claude','plugin_context:x','exec-x',?1,7,8,'terminal-a','inc-a')",
+            [provenance],
+        )
+        .unwrap();
+        Fixture {
+            context,
+            conn,
+            budget,
+            path,
+        }
+    }
+
+    fn plan(f: &Fixture, publication: &PublishedSnapshot) -> Vec<GuardedSeatTransition> {
+        let page =
+            seats::saved_seats_page(&f.context, &f.conn, &publication.id, 0, None, 16, &f.budget)
+                .unwrap();
+        plan_page(&page).unwrap()
+    }
+
+    fn apply(f: &mut Fixture, transition: GuardedSeatTransition) -> ReconciliationOutcome {
+        seats::apply_reconciliation_transition(&f.context, &mut f.conn, transition, &f.budget)
+            .unwrap()
+    }
+
+    fn observed_generation(f: &Fixture) -> i64 {
+        f.conn
+            .query_row(
+                "SELECT t.generation FROM snapshot_targets t JOIN host_instances h ON h.active_snapshot_id=t.generation_id WHERE t.target_id='pane'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    fn assert_carried(f: &Fixture, provenance: &str, before: &BindingRow) {
+        let after = binding(&f.conn);
+        // Moved: epoch and structural generation.
+        assert_eq!(after.0, 4);
+        assert_eq!(after.1, observed_generation(f));
+        // Untouched: every other column, including provenance.
+        assert_eq!(after.2, before.2);
+        assert_eq!(after.3, before.3);
+        assert_eq!(after.4, before.4);
+        assert_eq!(after.5, provenance);
+        assert_eq!((after.6, after.7), (before.6, before.7));
+        assert_eq!(after.8, before.8);
+        assert_eq!(after.9, before.9);
+        assert_eq!(after.10, before.10);
+        let ended: Option<i64> = f
+            .conn
+            .query_row(
+                "SELECT ended_at FROM occupant_bindings WHERE seat_id='s' AND ordinal=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ended, None);
+        assert_eq!(
+            crate::store::schema::effective_registered_availability(&f.conn, "s", None).unwrap(),
+            Some(provenance.to_owned())
+        );
+    }
+
+    #[test]
+    fn reconfirm_structure_after_restart_carries_open_binding_forward() {
+        let mut f = fixture("cooperative_top_level", true);
+        let before = binding(&f.conn);
+        let publication = publish(&mut f, production(4, 3, "inc-a"));
+        let transitions = plan(&f, &publication);
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(
+            transitions[0].action,
+            ReconciliationAction::ReconfirmStructure {
+                target: HostTargetId::new("pane"),
+                terminal: TerminalId::new("terminal-a"),
+            }
+        );
+        assert_eq!(
+            apply(&mut f, transitions[0].clone()),
+            ReconciliationOutcome::Applied
+        );
+        let state: String = f
+            .conn
+            .query_row("SELECT state FROM seats WHERE id='s'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(state, "resolved");
+        assert_carried(&f, "cooperative_top_level", &before);
+    }
+
+    #[test]
+    fn resolved_seat_with_lagging_binding_epoch_gets_carry_forward_transition() {
+        let mut f = fixture("cooperative_top_level", false);
+        let before = binding(&f.conn);
+        let publication = publish(&mut f, production(4, 3, "inc-a"));
+        let transitions = plan(&f, &publication);
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(
+            transitions[0].action,
+            ReconciliationAction::CarryForward {
+                target: HostTargetId::new("pane"),
+                terminal: TerminalId::new("terminal-a"),
+            }
+        );
+        assert_eq!(
+            apply(&mut f, transitions[0].clone()),
+            ReconciliationOutcome::Applied
+        );
+        assert_carried(&f, "cooperative_top_level", &before);
+        let open: i64 = f
+            .conn
+            .query_row(
+                "SELECT unavailability_open FROM seats WHERE id='s'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(open, 0, "the carried binding closes the outage marker");
+        // Carried: the next publication at the same epoch plans nothing.
+        let next = publish(&mut f, production(4, 4, "inc-a"));
+        assert!(plan(&f, &next).is_empty());
+    }
+
+    #[test]
+    fn current_binding_epoch_plans_no_carry_forward() {
+        let mut f = fixture("cooperative_top_level", false);
+        let publication = publish(&mut f, production(3, 3, "inc-a"));
+        assert!(plan(&f, &publication).is_empty());
+    }
+
+    #[test]
+    fn operator_human_binding_is_carried_forward_too() {
+        let mut f = fixture("operator_human", false);
+        let before = binding(&f.conn);
+        let publication = publish(&mut f, production(4, 3, "inc-a"));
+        let transitions = plan(&f, &publication);
+        assert!(matches!(
+            transitions[0].action,
+            ReconciliationAction::CarryForward { .. }
+        ));
+        assert_eq!(
+            apply(&mut f, transitions[0].clone()),
+            ReconciliationOutcome::Applied
+        );
+        assert_carried(&f, "operator_human", &before);
+    }
+
+    #[test]
+    fn incarnation_change_still_marks_unresolved_and_carries_nothing() {
+        let mut f = fixture("cooperative_top_level", false);
+        let publication = publish(&mut f, production(4, 3, "inc-new"));
+        let transitions = plan(&f, &publication);
+        assert_eq!(transitions[0].action, ReconciliationAction::MarkUnresolved);
+        assert_eq!(
+            apply(&mut f, transitions[0].clone()),
+            ReconciliationOutcome::Applied
+        );
+        let state: String = f
+            .conn
+            .query_row("SELECT state FROM seats WHERE id='s'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(state, "unresolved");
+        let (epoch, generation): (i64, i64) = f
+            .conn
+            .query_row(
+                "SELECT host_epoch,target_generation FROM occupant_bindings WHERE seat_id='s' AND ordinal=1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (epoch, generation),
+            (3, 1),
+            "no carry on incarnation change"
+        );
+        // A forged carry in the changed incarnation is refused.
+        let mut forged = transitions[0].clone();
+        forged.expected_binding_generation = 1;
+        forged.action = ReconciliationAction::CarryForward {
+            target: HostTargetId::new("pane"),
+            terminal: TerminalId::new("terminal-a"),
+        };
+        assert_eq!(apply(&mut f, forged), ReconciliationOutcome::Stale);
+    }
+
+    #[test]
+    fn carry_forward_is_stale_when_binding_changed() {
+        let mut f = fixture("cooperative_top_level", false);
+        let publication = publish(&mut f, production(4, 3, "inc-a"));
+        let transitions = plan(&f, &publication);
+        assert!(matches!(
+            transitions[0].action,
+            ReconciliationAction::CarryForward { .. }
+        ));
+        f.conn
+            .execute("UPDATE seats SET generation=2 WHERE id='s'", [])
+            .unwrap();
+        assert_eq!(
+            apply(&mut f, transitions[0].clone()),
+            ReconciliationOutcome::Stale
+        );
+        let epoch: i64 = f
+            .conn
+            .query_row(
+                "SELECT host_epoch FROM occupant_bindings WHERE seat_id='s'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(epoch, 3);
+    }
+
+    fn hand_built_carry(publication: &PublishedSnapshot) -> GuardedSeatTransition {
+        GuardedSeatTransition {
+            publication: publication.clone(),
+            seat: SeatId::new("s"),
+            expected_binding_generation: 1,
+            expected_target: Some(HostTargetId::new("pane")),
+            expected_terminal: Some(TerminalId::new("terminal-a")),
+            action: ReconciliationAction::CarryForward {
+                target: HostTargetId::new("pane"),
+                terminal: TerminalId::new("terminal-a"),
+            },
+        }
+    }
+
+    fn count(f: &Fixture, sql: &str) -> i64 {
+        f.conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    // Kills: a planner or applier that carries a native binding (a different
+    // provenance set from the one carry_binding_forward moves), which would
+    // re-plan the seat on every pass without ever moving a row.
+    #[test]
+    fn native_binding_is_never_planned_for_carry_forward() {
+        let mut f = fixture("verified_current_target", false);
+        let publication = publish(&mut f, production(4, 3, "inc-a"));
+        assert!(
+            plan(&f, &publication).is_empty(),
+            "a native binding yields no bound epoch, so no CarryForward"
+        );
+        let revision = |f: &Fixture| {
+            count(
+                f,
+                "SELECT lifecycle_revision FROM host_instances WHERE id='i'",
+            )
+        };
+        let before = revision(&f);
+        let anchors = count(&f, "SELECT COUNT(*) FROM seat_availability");
+        assert_eq!(
+            apply(&mut f, hand_built_carry(&publication)),
+            ReconciliationOutcome::Unchanged
+        );
+        assert_eq!(revision(&f), before, "an unmoved carry bumps no revision");
+        assert_eq!(count(&f, "SELECT COUNT(*) FROM seat_availability"), anchors);
+        assert_eq!(binding(&f.conn).0, 3, "the native binding stays put");
+        // A second pass plans nothing for it either.
+        let next = publish(&mut f, production(4, 4, "inc-a"));
+        assert!(plan(&f, &next).is_empty());
+    }
+
+    // Kills: the planner and applier reading different provenance sets: the
+    // saved-seat snapshot must expose a bound epoch only for a carried one.
+    #[test]
+    fn carry_forward_requires_bound_epoch_from_a_carried_provenance() {
+        let mut native = fixture("verified_current_target", false);
+        let publication = publish(&mut native, production(4, 3, "inc-a"));
+        let page = seats::saved_seats_page(
+            &native.context,
+            &native.conn,
+            &publication.id,
+            0,
+            None,
+            16,
+            &native.budget,
+        )
+        .unwrap();
+        assert_eq!(page.seats[0].bound_epoch, None);
+        assert!(
+            page.seats[0].active_binding_execution.is_some(),
+            "occupant-unavailable planning still sees the native active binding"
+        );
+        let mut coop = fixture("cooperative_top_level", false);
+        let publication = publish(&mut coop, production(4, 3, "inc-a"));
+        let mut page = seats::saved_seats_page(
+            &coop.context,
+            &coop.conn,
+            &publication.id,
+            0,
+            None,
+            16,
+            &coop.budget,
+        )
+        .unwrap();
+        assert_eq!(page.seats[0].bound_epoch, Some(3));
+        assert!(matches!(
+            plan_page(&page).unwrap()[0].action,
+            ReconciliationAction::CarryForward { .. }
+        ));
+        page.seats[0].bound_epoch = None;
+        assert!(plan_page(&page).unwrap().is_empty());
+    }
+
+    // Kills: a carry that moves the binding without the availability anchor
+    // and receipt-timer job a fresh registration writes.
+    #[test]
+    fn carried_binding_writes_availability_anchor_and_timer_job() {
+        let mut f = fixture("cooperative_top_level", false);
+        f.conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
+        // A recipient row staged while the seat was not yet available.
+        f.conn
+            .execute(
+                "INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot,availability_provenance) VALUES ('prep-1','t','s',1,1000,0,NULL)",
+                [],
+            )
+            .unwrap();
+        let staged = count(&f, "SELECT MAX(ordinal) FROM prepared_recipients");
+        let publication = publish(&mut f, production(4, 3, "inc-a"));
+        let transitions = plan(&f, &publication);
+        assert_eq!(
+            apply(&mut f, transitions[0].clone()),
+            ReconciliationOutcome::Applied
+        );
+        let (generation, provenance): (i64, String) = f
+            .conn
+            .query_row(
+                "SELECT binding_generation,observation_provenance FROM seat_availability WHERE seat_id='s'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (generation, provenance.as_str()),
+            (1, "cooperative_top_level")
+        );
+        assert_eq!(
+            count(
+                &f,
+                "SELECT COUNT(*) FROM seat_availability WHERE seat_id='s'"
+            ),
+            1
+        );
+        let (subject, high_water): (String, i64) = f
+            .conn
+            .query_row(
+                "SELECT subject_id,high_water FROM work_jobs WHERE kind='receipt_timer_materialization'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let anchor = count(
+            &f,
+            "SELECT ordinal FROM seat_availability WHERE seat_id='s'",
+        );
+        assert_eq!(subject, anchor.to_string());
+        assert_eq!(
+            high_water, staged,
+            "the job covers the row staged before the carry"
+        );
+        assert_eq!(
+            count(&f, "SELECT unavailability_open FROM seats WHERE id='s'"),
+            0
+        );
+        // Idempotent: the same transition again moves nothing and anchors nothing.
+        assert_eq!(
+            apply(&mut f, transitions[0].clone()),
+            ReconciliationOutcome::Unchanged
+        );
+        assert_eq!(
+            count(
+                &f,
+                "SELECT COUNT(*) FROM seat_availability WHERE seat_id='s'"
+            ),
+            1
         );
     }
 }

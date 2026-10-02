@@ -122,6 +122,13 @@ fn connect(
     RunError,
 > {
     let (instance, descriptor) = published_endpoint(paths)?;
+    // An older daemon drops a newer request at decode with no reply, so refuse
+    // here with the definite mismatch instead of sending it.
+    if descriptor.protocol_version != crate::protocol::wire::PROTOCOL_VERSION {
+        return Err(RunError::Api(
+            crate::daemon::lifecycle::protocol_mismatch_error(descriptor.protocol_version),
+        ));
+    }
     let client = LocalSocketClient::new(
         descriptor.endpoint.clone(),
         Arc::clone(clock),
@@ -224,6 +231,82 @@ where
     run(argv, writer)
 }
 
+/// Environment variables an agent harness sets inside its own process
+/// (TRUST-POLICY A4, best effort): `CLAUDECODE` (Claude Code) and
+/// `CODEX_SANDBOX` / `CODEX_SANDBOX_NETWORK_DISABLED` (set by codex-rs on the
+/// commands it spawns). An explicit allowlist, never a prefix: user
+/// configuration such as `CODEX_HOME` or `CODEX_API_KEY` is not evidence.
+/// No local `codex` was available to confirm the list with
+/// `codex exec ... 'env | grep ^CODEX_'`; it follows codex-rs's documented
+/// spawn environment.
+const AGENT_ENV_MARKERS: [&str; 3] = [
+    "CLAUDECODE",
+    "CODEX_SANDBOX",
+    "CODEX_SANDBOX_NETWORK_DISABLED",
+];
+
+/// First agent environment marker present, by name.
+pub(crate) fn agent_env_marker<K: AsRef<str>, V>(
+    vars: impl IntoIterator<Item = (K, V)>,
+) -> Option<String> {
+    vars.into_iter()
+        .map(|(key, _)| key.as_ref().to_owned())
+        .find(|key| AGENT_ENV_MARKERS.contains(&key.as_str()))
+}
+
+/// The single client-side agent-evidence rule (TRUST-POLICY A4, best effort;
+/// a hint, never authority: the daemon's refusal is the guard). Shared by
+/// `me init` and person-pane selection. Returns the evidence text: an agent
+/// environment marker, else Herdr reporting a supported harness agent in the
+/// pane. A failed Herdr read is not evidence. (The launch guard is the
+/// required guard itself and keeps propagating its read error.)
+pub(crate) fn agent_evidence<K: AsRef<str>, V>(
+    env: impl IntoIterator<Item = (K, V)>,
+    read_agent: impl FnOnce() -> Result<Option<crate::ports::PaneAgentObservation>, ApiError>,
+) -> Option<String> {
+    if let Some(marker) = agent_env_marker(env) {
+        return Some(format!("environment variable {marker} is set"));
+    }
+    let observation = read_agent().ok()??;
+    let kind = observation.kind?;
+    crate::protocol::authority::is_harness_agent_kind(&kind)
+        .then(|| format!("Herdr reports a `{kind}` agent in this pane"))
+}
+
+/// Refusal shared by `me init` and person-pane commands (TRUST-POLICY A4):
+/// agent evidence where a person's identity was about to act.
+pub(crate) fn agent_evidence_refusal(pane: &str, evidence: &str) -> RunError {
+    invalid_request(&format!(
+        "pane {pane}: `me init` and person-pane commands never act as an agent ({evidence}). \
+         Run them in your own shell pane, or override as the local account with \
+         `herdr-threads me init --operator` (later commands in this pane then run as you)"
+    ))
+}
+
+/// Single best-effort read for `me init`; never authority. One
+/// `observe_pane_agent` call on a fresh adapter with a 2 s budget and no
+/// expected boot or epoch.
+pub(crate) fn pane_agent(
+    context: &RuntimeContext,
+    clock: &Arc<dyn Clock>,
+    pane: &crate::protocol::ids::HostTargetId,
+) -> Result<Option<crate::ports::PaneAgentObservation>, ApiError> {
+    use crate::ports::HostPort;
+    let host =
+        crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(clock));
+    host.observe_pane_agent(
+        pane,
+        &crate::ports::HostCallContext {
+            budget: CallBudget {
+                deadline: MonoInstant(clock.monotonic_now().0.saturating_add(2_000)),
+                cancellation: Cancellation::default(),
+            },
+            expected_boot: None,
+            expected_epoch: None,
+        },
+    )
+}
+
 /// Run with an explicit caller pane (Herdr's `HERDR_PANE_ID` for the process
 /// that invoked the CLI; never the focused pane). The pane only locates the
 /// seat whose service mapping and private lifecycle context already exist.
@@ -278,8 +361,17 @@ where
         crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(&clock))
             .pane_names(&budget())
     })?;
-    if let CliAction::MeInit = &parsed.action {
-        return me::run_me_init(parsed, caller_pane, &context, &paths, &clock, writer);
+    if let CliAction::MeInit { operator } = &parsed.action {
+        let operator = *operator;
+        return me::run_me_init(
+            parsed,
+            operator,
+            caller_pane,
+            &context,
+            &paths,
+            &clock,
+            writer,
+        );
     }
     if let CliAction::Launch(request) = &parsed.action {
         return run_launch(request, &parsed, &context, &paths, &clock, writer);
@@ -308,7 +400,7 @@ where
         }
         return run_operator(semantic, &parsed, &paths, &clock, writer);
     }
-    let selection = derive_caller(&mut parsed, caller_pane, &paths, &clock)?;
+    let selection = derive_caller(&mut parsed, caller_pane, &context, &paths, &clock)?;
     if let Some(selection) = selection {
         let (instance, _, client) = connect(&paths, &clock)?;
         return run_selected(
@@ -461,7 +553,7 @@ where
         }
         CliAction::Skill => unreachable!("skill is handled before context resolution"),
         CliAction::Launch(_) => unreachable!("launch is handled after context resolution"),
-        CliAction::MeInit => unreachable!("me init is handled after context resolution"),
+        CliAction::MeInit { .. } => unreachable!("me init is handled after context resolution"),
         CliAction::Follow(_) => unreachable!("follow is handled after context resolution"),
         CliAction::View { once, page } => {
             if !once {
@@ -526,7 +618,13 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         CliAction::Mutation(MutationSpec::CheckInLifecycle { .. })
     );
     // An agent's lifecycle check-in in a pane a person claimed with `me init`
-    // replaces that person (a new binding generation); never the reverse.
+    // replaces that person (a new binding generation). The reverse happens
+    // only as the person's explicit `me init --operator` override
+    // (TRUST-POLICY A4); the daemon audits it.
+    let operator = matches!(
+        &parsed.action,
+        CliAction::Mutation(MutationSpec::CheckInLifecycle { operator: true, .. })
+    );
     if let Some(context) = current.clone().filter(|context| {
         use crate::harness::context::Harness;
         lifecycle
@@ -542,6 +640,22 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         {
             return Err(mapping_error("local context changed during check-in"));
         }
+        current = None;
+    }
+    // The person's `me init --operator` over an agent's context retires
+    // nothing here: the daemon decides (TRUST-POLICY A4) and `dispatch`
+    // replaces the local context only on success, so a rejection leaves the
+    // agent's context intact. The agent context is treated as absent only for
+    // seeding the check-in from the service mapping.
+    if let Some(context) = &current
+        && lifecycle
+        && operator
+        && context.harness != crate::harness::context::Harness::Human
+        && selection.harness == crate::harness::context::Harness::Human
+        && context.instance == instance
+        && context.seat == selection.seat.as_str()
+        && context.target == selection.target.as_str()
+    {
         current = None;
     }
     // A fresh lifecycle check-in (a new event, not a replay of a recorded
@@ -656,6 +770,7 @@ fn exact_check_in_replay(
         CliAction::Mutation(MutationSpec::CheckInLifecycle {
             event_id,
             native_session,
+            ..
         }) => {
             if let Some((saved, response)) = contexts
                 .completed_for_event(event_id)
@@ -741,6 +856,16 @@ fn operator_semantic(mutation: &MutationSpec) -> Option<SemanticMutation> {
     Some(match mutation {
         MutationSpec::FreshSeat(target) => SemanticMutation::OperatorFreshSeat {
             target: target.clone(),
+        },
+        MutationSpec::Retire(seat) => SemanticMutation::OperatorRetire { seat: seat.clone() },
+        MutationSpec::Replace {
+            seat,
+            pane,
+            replace,
+        } => SemanticMutation::OperatorReplace {
+            seat: seat.clone(),
+            target: pane.clone(),
+            replace: replace.clone(),
         },
         MutationSpec::Rebind { seat, pane } => SemanticMutation::OperatorRebind {
             seat: seat.clone(),
@@ -833,6 +958,8 @@ fn caller_need(action: &CliAction, paths: &InstancePaths) -> Result<CallerNeed, 
                 mutation,
                 MutationSpec::Resolve(_)
                     | MutationSpec::Rebind { .. }
+                    | MutationSpec::Retire(_)
+                    | MutationSpec::Replace { .. }
                     | MutationSpec::FreshSeat(_)
                     | MutationSpec::Invite { operator: true, .. }
             ) {
@@ -892,6 +1019,7 @@ fn default_seat(action: &mut CliAction, seat: crate::protocol::ids::SeatId) {
 fn derive_caller(
     parsed: &mut commands::ParsedCli,
     caller_pane: Option<&str>,
+    context: &RuntimeContext,
     paths: &InstancePaths,
     clock: &Arc<dyn Clock>,
 ) -> Result<Option<CooperativeSelection>, RunError> {
@@ -914,7 +1042,7 @@ fn derive_caller(
         }
         CallerNeed::Selection => match parsed.cooperative.clone() {
             Some(selection) => Ok(Some(selection)),
-            None => derive_selection(parsed, caller_pane, paths, clock).map(Some),
+            None => derive_selection(parsed, caller_pane, context, paths, clock).map(Some),
         },
         CallerNeed::SeatDefault { required } => {
             let seat = match (&parsed.cooperative, caller_pane.filter(|p| !p.is_empty())) {
@@ -1064,6 +1192,7 @@ fn pane_seat(
 fn derive_selection(
     parsed: &commands::ParsedCli,
     caller_pane: Option<&str>,
+    runtime: &RuntimeContext,
     paths: &InstancePaths,
     clock: &Arc<dyn Clock>,
 ) -> Result<CooperativeSelection, RunError> {
@@ -1090,10 +1219,42 @@ fn derive_selection(
                 ))
             })?,
     };
+    let operator_override = contexts.operator_mark() == Some(context.execution);
+    selection_from_context(
+        pane,
+        seat,
+        &context,
+        operator_override,
+        std::env::vars(),
+        |pane| pane_agent(runtime, clock, pane),
+    )
+}
+
+/// The selection a located seat's recorded context yields. A Human context
+/// is refused when agent evidence is present (TRUST-POLICY A4, best effort;
+/// the daemon's refusal is the guard) per `agent_evidence`, unless the person
+/// recorded the `me init --operator` override for this context
+/// (`operator_override`). A failed Herdr read does not refuse.
+fn selection_from_context<K: AsRef<str>, V>(
+    pane: crate::protocol::ids::HostTargetId,
+    seat: crate::protocol::ids::SeatId,
+    context: &crate::harness::context::OccupantContext,
+    operator_override: bool,
+    env: impl IntoIterator<Item = (K, V)>,
+    read_agent: impl FnOnce(
+        &crate::protocol::ids::HostTargetId,
+    ) -> Result<Option<crate::ports::PaneAgentObservation>, ApiError>,
+) -> Result<CooperativeSelection, RunError> {
     if context.target != pane.as_str() || context.seat != seat.as_str() {
         return Err(mapping_error(
             "local context differs from current service mapping",
         ));
+    }
+    if context.harness == crate::harness::context::Harness::Human
+        && !operator_override
+        && let Some(evidence) = agent_evidence(env, || read_agent(&pane))
+    {
+        return Err(agent_evidence_refusal(pane.as_str(), &evidence));
     }
     Ok(CooperativeSelection {
         seat,
@@ -1264,11 +1425,11 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
         CliAction::Mutation(MutationSpec::CheckInLifecycle {
             event_id,
             native_session,
+            operator,
         }) => {
             let context = contexts.current().map_err(context_run_error)?;
-            let seed = context
-                .as_ref()
-                .or(initial)
+            let seed = initial
+                .or(context.as_ref())
                 .ok_or_else(|| unsupported("lifecycle requires a service-resolved durable seat"))?;
             let event = LifecycleEvent {
                 harness: seed.harness,
@@ -1279,12 +1440,13 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 event_id,
                 capability: Capability::SourceSupported,
             };
-            bridge::run_event(
+            bridge::run_event_as(
                 journal,
                 contexts,
                 &event,
                 initial,
                 clock.utc_now().0,
+                operator,
                 client,
                 clock,
                 &parsed.output,
@@ -1336,6 +1498,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 claim,
                 mode,
                 event_id,
+                operator,
             } = &pending.semantic
             {
                 let saved_session = contexts
@@ -1363,12 +1526,13 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                     event_id: event_id.clone(),
                     capability: Capability::SourceSupported,
                 };
-                bridge::run_event(
+                bridge::run_event_as(
                     journal,
                     contexts,
                     &event,
                     initial,
                     clock.utc_now().0,
+                    *operator,
                     client,
                     clock,
                     &parsed.output,

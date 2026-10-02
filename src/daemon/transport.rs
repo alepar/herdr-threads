@@ -315,6 +315,26 @@ async fn serve_connection(
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "response expired"))?;
     }
+    if let Some(expected) = request
+        .expected_boot
+        .as_deref()
+        .filter(|expected| *expected != daemon_boot)
+    {
+        let detail = format!(
+            "request expected daemon boot {expected}; this daemon is boot {daemon_boot}; nothing was applied"
+        );
+        let response = WireResponse {
+            version: PROTOCOL_VERSION,
+            request_id: request.request_id,
+            instance,
+            daemon_boot,
+            result: Err(api_error(ErrorCode::DaemonBootChanged, &detail)),
+        };
+        let frame = encode_response(&response)?;
+        return tokio::time::timeout_at(expires, stream.write_all(&frame))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "response expired"))?;
+    }
     if request.request_id.len() > 128 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,

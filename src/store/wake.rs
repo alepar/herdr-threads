@@ -291,8 +291,9 @@ fn current_authority(
 /// Unknown current execution never blocks structural identity. The effective
 /// observation names a terminal in a verified server incarnation with no
 /// positive evidence of an empty shell, an active turn, blocked UI or human
-/// input; a live binding, when present, is the seat's current generation on
-/// this target and names that same terminal and incarnation. Whether the
+/// input; the seat's open binding is required (none: no authority) and is the
+/// seat's current generation on this target and names that same terminal and
+/// incarnation. Whether the
 /// occupant is a recognized idle harness (never a shell or unknown harness)
 /// is the host adapter's recheck immediately before prompting.
 fn cooperative_authority(
@@ -325,13 +326,14 @@ fn cooperative_authority(
         Option<String>,
         Option<String>,
         Option<i64>,
+        String,
     )>;
     let binding: BindingColumns = db.query_row(
-        "SELECT generation,target_generation,target_id,terminal_id,incarnation,registered_at FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
+        "SELECT generation,target_generation,target_id,terminal_id,incarnation,registered_at,harness FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
         [seat.as_str()],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
     ).optional().map_err(store_error)?;
-    let binding_generation = match binding {
+    let (binding_generation, harness) = match binding {
         Some((
             bound_generation,
             bound_target,
@@ -339,6 +341,7 @@ fn cooperative_authority(
             bound_terminal,
             bound_incarnation,
             registered_at,
+            bound_harness,
         )) => {
             if nonnegative(bound_generation)? != generation
                 || nonnegative(bound_target)? != target_generation
@@ -348,14 +351,17 @@ fn cooperative_authority(
             {
                 return Ok(None);
             }
-            registered_at.map(|_| generation)
+            (registered_at.map(|_| generation), Some(bound_harness))
         }
-        None => None,
+        // The seat's open binding is required (TRUST-POLICY A4): no binding,
+        // no cooperative wake authority.
+        None => return Ok(None),
     };
     Ok(Some(ReservedWakeAuthority::Cooperative {
         terminal: TerminalId::new(terminal.clone()),
         incarnation: incarnation.clone(),
         binding_generation,
+        harness,
     }))
 }
 

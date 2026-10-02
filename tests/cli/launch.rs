@@ -297,9 +297,8 @@ fn code(result: Result<LaunchReport, RunError>) -> ErrorCode {
 /// The committed Codex 0.158.0 hook schema extraction, concatenated (what a
 /// schema-matched unlisted binary embeds).
 fn committed_codex_schemas() -> Vec<u8> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(
-        "docs/evidence/codex-158-hook-capture/schemas-0.158.0",
-    );
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("docs/evidence/codex-158-hook-capture/schemas-0.158.0");
     let mut files: Vec<_> = fs::read_dir(dir)
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -1063,4 +1062,106 @@ fn launch_name_flag_parses_and_refuses_unusable_names() {
             "{bad:?}"
         );
     }
+}
+
+/// Scripted `SeatInspect` answers for the launch guard's open-binding read.
+struct HistoryClient {
+    answer: crate::protocol::results::SeatInspection,
+    limits: std::sync::Mutex<Vec<u16>>,
+}
+impl LocalClient for HistoryClient {
+    fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        let Command::SeatInspect(query) = command else {
+            panic!("only seat inspection is expected");
+        };
+        self.limits.lock().unwrap().push(query.page.limit);
+        Ok(CommandResult::SeatInspect(self.answer.clone()))
+    }
+}
+
+fn inspection_with(
+    open: Option<crate::protocol::results::OpenBindingSummary>,
+    has_more: bool,
+) -> crate::protocol::results::SeatInspection {
+    use crate::protocol::{
+        pagination::{Consistency, Page, StopReason},
+        results::{ContinuityStatus, MappingStatus, SeatInspection, SeatSummary},
+    };
+    SeatInspection {
+        summary: SeatSummary {
+            seat: SeatId::new("seat_1"),
+            continuity: ContinuityStatus::Resolved,
+            target: None,
+            generation: 2,
+            created_at: UtcMillis(0),
+            retired_at: None,
+        },
+        mapping: MappingStatus {
+            state: ContinuityStatus::Resolved,
+            target: None,
+            detail_argv: None,
+        },
+        hold: None,
+        retirement: None,
+        open_binding: open,
+        history: Page {
+            items: vec![],
+            next_cursor: has_more.then(|| "c1".to_string()),
+            next_argv: None,
+            high_water_ordinal: 5_000,
+            scope_revision: None,
+            has_more,
+            stop_reason: if has_more {
+                StopReason::Rows
+            } else {
+                StopReason::Complete
+            },
+            consistency: Consistency::BoundedLive,
+        },
+    }
+}
+
+fn guard_budget() -> CallBudget {
+    CallBudget {
+        deadline: MonoInstant(60_000),
+        cancellation: Cancellation::default(),
+    }
+}
+
+/// Kills: a launch guard that pages the history (a long-lived seat would
+/// exceed any page bound), or one that ignores the daemon's open binding.
+#[test]
+fn launch_guard_reads_open_binding_regardless_of_history_length() {
+    let client = HistoryClient {
+        answer: inspection_with(
+            Some(crate::protocol::results::OpenBindingSummary {
+                provenance: "cooperative_top_level".into(),
+                harness: "claude".into(),
+                target: HostTargetId::new("w4:p9"),
+            }),
+            true,
+        ),
+        limits: std::sync::Mutex::new(vec![]),
+    };
+    let bound = open_binding_of(&client, &SeatId::new("seat_1"), &guard_budget())
+        .unwrap()
+        .unwrap();
+    assert_eq!(bound.target.as_str(), "w4:p9");
+    assert_eq!(bound.provenance, "cooperative_top_level");
+    assert_eq!(*client.limits.lock().unwrap(), vec![1]);
+}
+
+/// Kills: reporting an open binding when the daemon names none (the guard
+/// would then run its live-agent check against a stale pane).
+#[test]
+fn launch_with_no_open_binding_skips_the_live_agent_check() {
+    let client = HistoryClient {
+        answer: inspection_with(None, true),
+        limits: std::sync::Mutex::new(vec![]),
+    };
+    assert_eq!(
+        open_binding_of(&client, &SeatId::new("seat_1"), &guard_budget()).unwrap(),
+        None
+    );
+    assert_eq!(*client.limits.lock().unwrap(), vec![1]);
 }

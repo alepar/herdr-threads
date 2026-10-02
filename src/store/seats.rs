@@ -15,12 +15,13 @@ use crate::{
     },
     protocol::{
         authority::{
-            DecisionFence, MutationPermit, ObligationRef, OperatorActor, ReceiptRegistration,
+            CARRIED_BINDING_PROVENANCES, DecisionFence, MutationPermit, ObligationRef,
+            OperatorActor, ReceiptRegistration,
         },
         commands::CheckIn,
         ids::{ExecutionId, HostBootId, HostTargetId, SeatId, TerminalId, prefix},
         results::{ApiError, CheckInResult, CommandResult, ErrorCode},
-        time::CallBudget,
+        time::{CallBudget, UtcMillis},
     },
     store::{
         connection::{DecisionInstant, StoreContext, api_error, store_error},
@@ -1041,14 +1042,31 @@ fn saved_seat_scalar(
         "SELECT terminal_id,incarnation,execution_id,host_boot FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1",
         [&id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
     ).optional().map_err(store_error)?;
-    let active_binding_execution: Option<String> = conn
+    type ActiveBinding = (String, i64, String, Option<String>, String);
+    let active_binding: Option<ActiveBinding> = conn
         .query_row(
-            "SELECT execution_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL ORDER BY ordinal DESC LIMIT 1",
+            "SELECT execution_id,host_epoch,host_boot,incarnation,observation_provenance FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL ORDER BY ordinal DESC LIMIT 1",
             [&id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()
         .map_err(store_error)?;
+    let bound_epoch =
+        match (&active_binding, &structural_proof) {
+            // C4: only a binding whose provenance is in the carried set
+            // yields a bound epoch; a native binding re-registers instead.
+            (Some((_, epoch, boot, incarnation, provenance)), Some(proof))
+                if CARRIED_BINDING_PROVENANCES.contains(&provenance.as_str())
+                    && boot == proof.host_boot().as_str()
+                    && incarnation.as_deref() == Some(proof.incarnation()) =>
+            {
+                Some(u64::try_from(*epoch).map_err(|_| {
+                    api_error(ErrorCode::StoreCorrupt, "negative binding host epoch")
+                })?)
+            }
+            _ => None,
+        };
+    let active_binding_execution: Option<String> = active_binding.map(|(execution, ..)| execution);
     let prior_published_observation = if state == "unresolved"
         && unresolved_reason.as_deref() == Some("host_invalidation")
     {
@@ -1138,6 +1156,7 @@ fn saved_seat_scalar(
             .as_ref()
             .map(|value| ExecutionId::new(value.2.clone())),
         active_binding_execution: active_binding_execution.map(ExecutionId::new),
+        bound_epoch,
         bound_boot: structural_proof
             .as_ref()
             .map(|proof| proof.host_boot().clone())
@@ -1532,6 +1551,121 @@ fn saved_seat_cas(
     Ok(terminal.as_deref() == expected_terminal.map(|id| id.as_str()))
 }
 
+/// TRUST-POLICY C2: instance-wide restore-hold release when nothing is left
+/// to protect. Predicate: reconciliation of the current recovery boot/epoch
+/// finished (persisted marker) and no unresolved nonretired seat remains.
+/// Clears `baseline_hold_unclaimed` and releases every open `recovery_holds`
+/// row of the instance in the caller's transaction. Returns whether it lifted.
+pub(crate) fn lift_baseline_hold_if_clear(
+    tx: &Transaction<'_>,
+    instance: &str,
+    at: UtcMillis,
+) -> Result<bool, ApiError> {
+    type Marker = Option<(
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        Option<i64>,
+        i64,
+    )>;
+    let row: Marker = tx
+        .query_row(
+            "SELECT recovery_boot,recovery_epoch,reconciled_boot,reconciled_epoch,baseline_hold_unclaimed FROM host_instances WHERE id=?1",
+            [instance],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some((recovery_boot, recovery_epoch, reconciled_boot, reconciled_epoch, flag)) = row else {
+        return Ok(false);
+    };
+    if recovery_boot.is_none()
+        || recovery_boot != reconciled_boot
+        || recovery_epoch != reconciled_epoch
+    {
+        return Ok(false);
+    }
+    let unresolved: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM seats WHERE instance_id=?1 AND state='unresolved')",
+            [instance],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let open_holds: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE instance_id=?1 AND released_at IS NULL)",
+            [instance],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if unresolved || (flag == 0 && !open_holds) {
+        return Ok(false);
+    }
+    tx.execute(
+        "UPDATE host_instances SET baseline_hold_unclaimed=0 WHERE id=?1",
+        [instance],
+    )
+    .map_err(store_error)?;
+    tx.execute(
+        "UPDATE recovery_holds SET released_at=?1 WHERE instance_id=?2 AND released_at IS NULL",
+        params![at.0, instance],
+    )
+    .map_err(store_error)?;
+    schema::bump_lifecycle_revision(tx, instance)?;
+    schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
+    Ok(true)
+}
+
+/// Persist that the saved-seat pass of `published` finished with no refused
+/// transition, then run the hold lift in the same transaction. Writes only
+/// while `published` is still the active publication of the instance's current
+/// recovery boot/epoch; returns whether the marker was written.
+pub fn record_reconciliation_pass(
+    context: &StoreContext,
+    conn: &mut Connection,
+    published: &PublishedSnapshot,
+    budget: &CallBudget,
+) -> Result<bool, ApiError> {
+    snapshot_budget(context, budget)?;
+    let epoch = checked_host_number(published.epoch)?;
+    context.execute_budgeted_decision(
+        conn,
+        budget,
+        |tx| {
+            let current = match active_publication(tx, &published.id) {
+                Ok(current) => current,
+                Err(error) if error.code == ErrorCode::CursorStale => return Ok(false),
+                Err(error) => return Err(error),
+            };
+            if current != *published {
+                return Ok(false);
+            }
+            let recovery: Option<(Option<String>, Option<i64>)> = tx
+                .query_row(
+                    "SELECT recovery_boot,recovery_epoch FROM host_instances WHERE id=?1",
+                    [published.instance.as_str()],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .map_err(store_error)?;
+            Ok(recovery == Some((Some(published.boot.as_str().to_owned()), Some(epoch))))
+        },
+        |tx, at, current| {
+            if !current {
+                return Ok(false);
+            }
+            tx.execute(
+                "UPDATE host_instances SET reconciled_boot=?1,reconciled_epoch=?2 WHERE id=?3",
+                params![published.boot.as_str(), epoch, published.instance],
+            )
+            .map_err(store_error)?;
+            lift_baseline_hold_if_clear(tx, &published.instance, at.utc)?;
+            Ok(true)
+        },
+    )
+}
+
 fn mark_seat_unresolved(
     tx: &Transaction<'_>,
     at: DecisionInstant,
@@ -1661,6 +1795,88 @@ pub fn mark_unresolved_from_invalidation(
             )
         },
     )
+}
+
+/// C4: carry the open registered binding forward to the publication's host
+/// epoch in place. Harness, session, execution, generation and provenance stay.
+/// The single definition of carrying: returns whether a binding moved. When
+/// one did it writes the same availability anchor and receipt-timer job a
+/// fresh registration writes, closes the seat's open unavailability marker and
+/// re-points pending wake work. Moves nothing for a native binding.
+#[allow(clippy::too_many_arguments)]
+fn carry_binding_forward(
+    tx: &Transaction<'_>,
+    instance: &str,
+    at: UtcMillis,
+    seat: &SeatId,
+    generation: u64,
+    publication: &PublishedSnapshot,
+    target: &str,
+    target_generation: i64,
+) -> Result<bool, ApiError> {
+    let changed = tx.execute(
+        "UPDATE occupant_bindings SET host_epoch=?1,target_generation=?2 WHERE seat_id=?3 AND generation=?4 AND ended_at IS NULL AND registered_at IS NOT NULL AND host_boot=?5 AND target_id=?6 AND incarnation=?7 AND observation_provenance IN (?8,?9) AND (host_epoch!=?1 OR target_generation!=?2)",
+        params![
+            checked_host_number(publication.epoch)?,
+            target_generation,
+            seat.as_str(),
+            checked_host_number(generation)?,
+            publication.boot.as_str(),
+            target,
+            publication.incarnation,
+            CARRIED_BINDING_PROVENANCES[0],
+            CARRIED_BINDING_PROVENANCES[1]
+        ],
+    ).map_err(store_error)?;
+    if changed != 1 {
+        return Ok(false);
+    }
+    let (binding_generation, provenance): (i64, String) = tx
+        .query_row(
+            "SELECT generation,observation_provenance FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND ended_at IS NULL",
+            params![seat.as_str(), checked_host_number(generation)?],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(store_error)?;
+    let seq = schema::next_decision_seq(tx, instance)?;
+    anchor_seat_availability(tx, seat, seq, at, binding_generation, &provenance)?;
+    tx.execute(
+        "UPDATE seats SET unavailability_open=0 WHERE id=?1",
+        [seat.as_str()],
+    )
+    .map_err(store_error)?;
+    tx.execute(
+        "UPDATE wake_work SET binding_generation=?1 WHERE seat_id=?2 AND reservation_id IS NULL",
+        params![binding_generation, seat.as_str()],
+    )
+    .map_err(store_error)?;
+    Ok(true)
+}
+
+/// A binding just became available: its availability anchor and the
+/// receipt-timer job for every recipient row already staged for the seat
+/// (same rows as a fresh registration writes).
+fn anchor_seat_availability(
+    tx: &Transaction<'_>,
+    seat: &SeatId,
+    seq: u64,
+    at: UtcMillis,
+    binding_generation: i64,
+    provenance: &str,
+) -> Result<(), ApiError> {
+    tx.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES (?1,?2,?3,?4,?5)",
+        params![seat.as_str(), seq as i64, at.0, binding_generation, provenance]).map_err(store_error)?;
+    let anchor = tx.last_insert_rowid();
+    let high_water: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(ordinal),0) FROM prepared_recipients WHERE seat_id=?1",
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    tx.execute("INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES (?1,'receipt_timer_materialization',?2,?3)",
+        params![format!("receipt-timer:{anchor}"), anchor.to_string(), high_water]).map_err(store_error)?;
+    Ok(())
 }
 
 pub fn apply_reconciliation_transition(
@@ -1808,7 +2024,15 @@ pub fn apply_reconciliation_transition(
                     if owned { return Ok(None); }
                     checked_host_number(observed.structural_generation)?
                 }
-                ReconciliationAction::ReconfirmStructure { target, terminal } => {
+                ReconciliationAction::ReconfirmStructure { target, terminal }
+                | ReconciliationAction::CarryForward { target, terminal } => {
+                    if matches!(transition.action, ReconciliationAction::CarryForward { .. }) {
+                        let resolved: bool = tx.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND state='resolved')",
+                            [transition.seat.as_str()], |r| r.get(0),
+                        ).map_err(store_error)?;
+                        if !resolved { return Ok(None); }
+                    }
                     // Same terminal, same verified boot and incarnation as the
                     // evidence on the seat's latest binding; occupancy and
                     // execution are not consulted (the production adapter
@@ -2039,6 +2263,7 @@ pub fn apply_reconciliation_transition(
             let proof = match &transition.action {
                 ReconciliationAction::Reconfirm { target, terminal, .. }
                 | ReconciliationAction::ReconfirmStructure { target, terminal }
+                | ReconciliationAction::CarryForward { target, terminal }
                 | ReconciliationAction::Move { target, terminal }
                 | ReconciliationAction::Replace { target, terminal, .. }
                 | ReconciliationAction::MarkOccupantUnavailable { target, terminal, .. } => {
@@ -2062,14 +2287,14 @@ pub fn apply_reconciliation_transition(
             let outcome = match &transition.action {
                 ReconciliationAction::MarkOccupantUnavailable { target, expected_execution, .. } => {
                     let changed = tx.execute(
-                        "UPDATE occupant_bindings SET registered_at=CASE WHEN observation_provenance IN ('cooperative_top_level','operator_human') THEN NULL ELSE registered_at END,ended_at=CASE WHEN observation_provenance IN ('cooperative_top_level','operator_human') THEN ended_at ELSE ?1 END WHERE seat_id=?2 AND generation=?3 AND execution_id=?4 AND ended_at IS NULL",
-                        params![at.utc.0,seat.as_str(),checked_host_number(transition.expected_binding_generation)?,expected_execution.as_str()],
+                        "UPDATE occupant_bindings SET registered_at=CASE WHEN observation_provenance IN (?5,?6) THEN NULL ELSE registered_at END,ended_at=CASE WHEN observation_provenance IN (?5,?6) THEN ended_at ELSE ?1 END WHERE seat_id=?2 AND generation=?3 AND execution_id=?4 AND ended_at IS NULL",
+                        params![at.utc.0,seat.as_str(),checked_host_number(transition.expected_binding_generation)?,expected_execution.as_str(),CARRIED_BINDING_PROVENANCES[0],CARRIED_BINDING_PROVENANCES[1]],
                     ).map_err(store_error)?;
                     if changed != 1 { return Ok(ReconciliationOutcome::Stale); }
                     tx.execute("UPDATE seats SET target_id=?1,target_generation=?2 WHERE id=?3 AND generation=?4 AND state='resolved'",
                         params![target.as_str(),target_generation,seat.as_str(),checked_host_number(transition.expected_binding_generation)?]).map_err(store_error)?;
                     update_structural_proof(tx, seat, proof.as_ref().expect("validated structural proof"))?;
-                    tx.execute("DELETE FROM warning_offer WHERE seat_id=?1 AND NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND observation_provenance IN ('cooperative_top_level','operator_human'))", [seat.as_str()]).map_err(store_error)?;
+                    tx.execute("DELETE FROM warning_offer WHERE seat_id=?1 AND NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND observation_provenance IN (?2,?3))", params![seat.as_str(),CARRIED_BINDING_PROVENANCES[0],CARRIED_BINDING_PROVENANCES[1]]).map_err(store_error)?;
                     // Retain the exact active attempt and spacing until its owner completes it.
                     schema::ensure_unavailability_episode(tx, seat)?;
                     schema::bump_lifecycle_revision(tx, instance)?;
@@ -2091,6 +2316,28 @@ pub fn apply_reconciliation_transition(
                         params![target.as_str(),target_generation,seat.as_str(),instance,checked_host_number(transition.expected_binding_generation)?],
                     ).map_err(store_error)?;
                     if changed != 1 { return Ok(ReconciliationOutcome::Stale); }
+                    carry_binding_forward(tx, instance, at.utc, seat, transition.expected_binding_generation, &transition.publication, target.as_str(), target_generation)?;
+                    update_structural_proof(tx, seat, proof.as_ref().expect("validated structural proof"))?;
+                    schema::bump_lifecycle_revision(tx, instance)?;
+                    schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
+                    lift_baseline_hold_if_clear(tx, instance, at.utc)?;
+                    ReconciliationOutcome::Applied
+                }
+                ReconciliationAction::CarryForward { target, .. } => {
+                    let generation = checked_host_number(transition.expected_binding_generation)?;
+                    let resolved: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND generation=?2 AND state='resolved')",
+                        params![seat.as_str(),generation], |r| r.get(0),
+                    ).map_err(store_error)?;
+                    if !resolved { return Ok(ReconciliationOutcome::Stale); }
+                    // C4: a carry that moves no binding changes nothing.
+                    if !carry_binding_forward(tx, instance, at.utc, seat, transition.expected_binding_generation, &transition.publication, target.as_str(), target_generation)? {
+                        return Ok(ReconciliationOutcome::Unchanged);
+                    }
+                    tx.execute(
+                        "UPDATE seats SET target_generation=?1 WHERE id=?2 AND generation=?3 AND state='resolved'",
+                        params![target_generation,seat.as_str(),generation],
+                    ).map_err(store_error)?;
                     update_structural_proof(tx, seat, proof.as_ref().expect("validated structural proof"))?;
                     schema::bump_lifecycle_revision(tx, instance)?;
                     schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
@@ -2149,6 +2396,7 @@ pub fn apply_reconciliation_transition(
                         absent_target.as_str(),
                         target_generation,
                     )?;
+                    lift_baseline_hold_if_clear(tx, instance, at.utc)?;
                     ReconciliationOutcome::RetirementStarted(job)
                 }
             };
@@ -2166,6 +2414,7 @@ pub fn register_available(
     conn: &mut Connection,
     command: &CheckIn,
     registration: Option<&ReceiptRegistration>,
+    operator: Option<&OperatorActor>,
     budget: &CallBudget,
     mut permit: MutationPermit,
     decision_fence: impl FnOnce(&Transaction<'_>, DecisionInstant) -> Result<DecisionFence, ApiError>,
@@ -2178,7 +2427,15 @@ pub fn register_available(
                 "cooperative registration must not supply native evidence",
             ));
         }
-        return register_cooperative(context, conn, command, permit, budget, build_offer);
+        return register_cooperative(
+            context,
+            conn,
+            command,
+            operator,
+            permit,
+            budget,
+            build_offer,
+        );
     }
     let registration = registration.ok_or_else(|| {
         api_error(
@@ -2463,8 +2720,8 @@ pub fn revoke_registration(
         },
         |tx,at,instance| {
             let Some(instance)=instance else {return Ok(false)};
-            let changed=tx.execute("UPDATE occupant_bindings SET registered_at=CASE WHEN observation_provenance IN ('cooperative_top_level','operator_human') THEN NULL ELSE registered_at END,ended_at=CASE WHEN observation_provenance IN ('cooperative_top_level','operator_human') THEN ended_at ELSE ?1 END WHERE seat_id=?2 AND generation=?3 AND execution_id=?4 AND ended_at IS NULL",
-                params![at.utc.0,evidence.seat().as_str(),binding_generation_sql,evidence.execution().as_str()]).map_err(store_error)?;
+            let changed=tx.execute("UPDATE occupant_bindings SET registered_at=CASE WHEN observation_provenance IN (?5,?6) THEN NULL ELSE registered_at END,ended_at=CASE WHEN observation_provenance IN (?5,?6) THEN ended_at ELSE ?1 END WHERE seat_id=?2 AND generation=?3 AND execution_id=?4 AND ended_at IS NULL",
+                params![at.utc.0,evidence.seat().as_str(),binding_generation_sql,evidence.execution().as_str(),CARRIED_BINDING_PROVENANCES[0],CARRIED_BINDING_PROVENANCES[1]]).map_err(store_error)?;
             if changed==0 {return Ok(false)}
             schema::ensure_unavailability_episode(tx,evidence.seat())?;
             schema::apply_eligibility_transition(tx,&instance,|_|Ok(true))?;
@@ -3143,6 +3400,17 @@ pub fn mutate_operator(
             Some(command.seat.clone()),
             guard.structural_proof().cloned(),
         ),
+        OperatorRequest::Replace(command, guard) => (
+            "operator_rebind",
+            command.target.clone(),
+            command.operation.clone(),
+            guard.instance().to_owned(),
+            guard.host_boot().clone(),
+            guard.epoch(),
+            guard.generation(),
+            Some(command.seat.clone()),
+            guard.structural_proof().cloned(),
+        ),
         OperatorRequest::OrphanInvite(command) => {
             return crate::store::control::operator_orphan_invite(
                 context,
@@ -3153,6 +3421,13 @@ pub fn mutate_operator(
                 installation_default_ms,
             );
         }
+        OperatorRequest::Retire(command) => {
+            return operator_retire(context, conn, elected_instance, command, actor);
+        }
+    };
+    let replace: Option<SeatId> = match &request {
+        OperatorRequest::Replace(command, _) => Some(command.replace.clone()),
+        _ => None,
     };
     if instance != elected_instance {
         return Err(api_error(
@@ -3167,7 +3442,10 @@ pub fn mutate_operator(
         OperatorRequest::Rebind(c, _) => {
             crate::protocol::commands::OperatorCommand::Rebind(c.clone())
         }
-        OperatorRequest::OrphanInvite(_) => unreachable!(),
+        OperatorRequest::Replace(c, _) => {
+            crate::protocol::commands::OperatorCommand::Replace(c.clone())
+        }
+        OperatorRequest::OrphanInvite(_) | OperatorRequest::Retire(_) => unreachable!(),
     };
     let expected_epoch_sql = checked_host_number(expected_epoch)?;
     let expected_generation_sql = checked_host_number(expected_generation)?;
@@ -3186,12 +3464,35 @@ pub fn mutate_operator(
                 &expected_boot,
                 expected_epoch,
                 expected_generation,
-            )? || !target_free(tx, &instance, target.as_str())?
-            {
+            )? {
                 return Err(api_error(
                     ErrorCode::TargetAlreadyOwned,
                     "repair target changed or owned",
                 ));
+            }
+            if let Some(replace) = &replace {
+                // The target is owned by NEW by design; it must be NEW and
+                // nobody else, and NEW must not be the seat being rebound.
+                let owned: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2 AND state='resolved' AND target_id=?3)",
+                        params![replace.as_str(), instance, target.as_str()],
+                        |r| r.get(0),
+                    )
+                    .map_err(store_error)?;
+                if !owned || seat.as_ref() == Some(replace) {
+                    return Err(api_error(
+                        ErrorCode::TargetAlreadyOwned,
+                        "replace target is not owned by NEW",
+                    ));
+                }
+            } else if !target_free(tx, &instance, target.as_str())? {
+                return Err(owned_target_refusal(
+                    tx,
+                    &instance,
+                    target.as_str(),
+                    seat.as_ref(),
+                )?);
             }
             if let Some(proof) = &structural_proof
                 && !structural_proof_matches_current(tx, &instance, proof)?
@@ -3260,6 +3561,37 @@ pub fn mutate_operator(
                     },
                 )
                 .map_err(|reason| api_error(ErrorCode::StaleHostObservation, reason))?;
+            if let Some(replace) = &replace {
+                // One deciding transaction: NEW retires and OLD claims the
+                // target with no unowned window; a concurrent resolve
+                // serializes behind this writer and sees OLD.
+                let (boot, epoch, new_generation): (Option<String>, i64, i64) = tx
+                    .query_row(
+                        "SELECT h.host_boot,h.host_epoch,s.generation FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
+                        params![replace.as_str(), instance],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .map_err(store_error)?;
+                if new_generation == i64::MAX {
+                    return Err(api_error(
+                        ErrorCode::SequenceExhausted,
+                        "seat binding generation exhausted",
+                    ));
+                }
+                let boot = boot.unwrap_or_default();
+                control::begin_retirement_fence(
+                    tx,
+                    at.utc,
+                    replace.clone(),
+                    &instance,
+                    &boot,
+                    epoch,
+                    target.as_str(),
+                    expected_generation_sql,
+                )?;
+                tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_retire',?4,?5,?6,?7,?8)",
+                    params![instance,target.as_str(),replace.as_str(),at.utc.0,boot,epoch,expected_generation_sql,actor.audit_label()]).map_err(store_error)?;
+            }
             if !target_free(tx, &instance, target.as_str())? {
                 return Err(api_error(
                     ErrorCode::TargetAlreadyOwned,
@@ -3267,18 +3599,14 @@ pub fn mutate_operator(
                 ));
             }
             let result = if let Some(seat) = &seat {
-                let changed = tx.execute("UPDATE seats SET state='resolved',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL,target_id=?1,generation=generation+1,target_generation=?2 WHERE id=?3 AND instance_id=?4 AND state='unresolved'",
-                    params![target.as_str(),expected_generation_sql,seat.as_str(),instance]).map_err(store_error)?;
-                if changed != 1 {
-                    return Err(api_error(ErrorCode::TargetUnresolved, "source changed"));
-                }
-                tx.execute("UPDATE occupant_bindings SET ended_at=?1 WHERE seat_id=?2 AND ended_at IS NULL", params![at.utc.0,seat.as_str()]).map_err(store_error)?;
-                tx.execute(
-                    "DELETE FROM warning_offer WHERE seat_id=?1",
-                    [seat.as_str()],
-                )
-                .map_err(store_error)?;
-                schema::ensure_unavailability_episode(tx, seat)?;
+                rebind_unresolved_seat(
+                    tx,
+                    &instance,
+                    seat,
+                    target.as_str(),
+                    expected_generation_sql,
+                    at.utc,
+                )?;
                 CommandResult::OperatorRebound(seat.clone())
             } else {
                 let seat = SeatId::new(crate::store::public_ids::fresh(
@@ -3302,41 +3630,551 @@ pub fn mutate_operator(
             }
             tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
                 params![instance,target.as_str(),result_seat.as_str(),kind,at.utc.0,expected_boot.as_str(),expected_epoch_sql,expected_generation_sql,actor.audit_label()]).map_err(store_error)?;
-            tx.execute("UPDATE recovery_holds SET released_at=?1 WHERE instance_id=?2 AND target_id=?3 AND released_at IS NULL",
-                params![at.utc.0,instance,target.as_str()]).map_err(store_error)?;
-            let baseline: Option<String> = tx
-                .query_row(
-                    "SELECT recovery_baseline_generation_id FROM host_instances WHERE id=?1",
-                    [&instance],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?;
-            if let Some(baseline) = baseline {
-                let member: bool = tx
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM snapshot_targets WHERE generation_id=?1 AND target_id=?2)",
-                        params![baseline,target.as_str()],
-                        |r| r.get(0),
-                    )
-                    .map_err(store_error)?;
-                if member {
-                    let sequence = schema::next_decision_seq(tx, &instance)?;
-                    tx.execute(
-                        "INSERT INTO recovery_baseline_releases(instance_id,baseline_generation_id,target_id,decision_seq) VALUES (?1,?2,?3,?4) ON CONFLICT(instance_id,baseline_generation_id,target_id) DO NOTHING",
-                        params![instance,baseline,target.as_str(),checked_host_number(sequence)?],
-                    )
-                    .map_err(store_error)?;
-                }
-            }
-            tx.execute("UPDATE recovery_baseline_targets SET disposition='already_owned' WHERE instance_id=?1 AND target_id=?2",
-                params![instance,target.as_str()]).map_err(store_error)?;
-            schema::apply_eligibility_transition(tx, &instance, |_| Ok(true))?;
-            schema::bump_lifecycle_revision(tx, &instance)?;
-            schema::bump_filter_revision(tx, &instance, "directory", "all")?;
+            release_claimed_target(tx, &instance, target.as_str(), at.utc)?;
+            lift_baseline_hold_if_clear(tx, &instance, at.utc)?;
             Ok(result)
         },
     )?;
     crate::store::operator::validate_result(&typed_command, &result)?;
+    Ok(result)
+}
+
+/// The seat-side half of a rebind of an unresolved seat onto `target`: one
+/// generation step, the open binding ended, its warning offer dropped and an
+/// unavailability episode open. Operator repair leaves the successor binding to
+/// the agent's next check-in; TRUST-POLICY C1 continuity opens it in the same
+/// transaction (`decide_continuity`).
+fn rebind_unresolved_seat(
+    tx: &Transaction<'_>,
+    instance: &str,
+    seat: &SeatId,
+    target: &str,
+    target_generation: i64,
+    at: UtcMillis,
+) -> Result<(), ApiError> {
+    let changed = tx.execute("UPDATE seats SET state='resolved',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL,target_id=?1,generation=generation+1,target_generation=?2 WHERE id=?3 AND instance_id=?4 AND state='unresolved'",
+        params![target,target_generation,seat.as_str(),instance]).map_err(store_error)?;
+    if changed != 1 {
+        return Err(api_error(ErrorCode::TargetUnresolved, "source changed"));
+    }
+    tx.execute(
+        "UPDATE occupant_bindings SET ended_at=?1 WHERE seat_id=?2 AND ended_at IS NULL",
+        params![at.0, seat.as_str()],
+    )
+    .map_err(store_error)?;
+    tx.execute(
+        "DELETE FROM warning_offer WHERE seat_id=?1",
+        [seat.as_str()],
+    )
+    .map_err(store_error)?;
+    schema::ensure_unavailability_episode(tx, seat)?;
+    Ok(())
+}
+
+/// The target-side half of claiming `target` for a seat: its recovery holds
+/// are released, its baseline membership recorded as released and owned, and
+/// eligibility and revisions advance. Shared by operator repair and C1.
+fn release_claimed_target(
+    tx: &Transaction<'_>,
+    instance: &str,
+    target: &str,
+    at: UtcMillis,
+) -> Result<(), ApiError> {
+    tx.execute("UPDATE recovery_holds SET released_at=?1 WHERE instance_id=?2 AND target_id=?3 AND released_at IS NULL",
+        params![at.0,instance,target]).map_err(store_error)?;
+    let baseline: Option<String> = tx
+        .query_row(
+            "SELECT recovery_baseline_generation_id FROM host_instances WHERE id=?1",
+            [instance],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if let Some(baseline) = baseline {
+        let member: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM snapshot_targets WHERE generation_id=?1 AND target_id=?2)",
+                params![baseline,target],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if member {
+            let sequence = schema::next_decision_seq(tx, instance)?;
+            tx.execute(
+                "INSERT INTO recovery_baseline_releases(instance_id,baseline_generation_id,target_id,decision_seq) VALUES (?1,?2,?3,?4) ON CONFLICT(instance_id,baseline_generation_id,target_id) DO NOTHING",
+                params![instance,baseline,target,checked_host_number(sequence)?],
+            )
+            .map_err(store_error)?;
+        }
+    }
+    tx.execute("UPDATE recovery_baseline_targets SET disposition='already_owned' WHERE instance_id=?1 AND target_id=?2",
+        params![instance,target]).map_err(store_error)?;
+    schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
+    schema::bump_lifecycle_revision(tx, instance)?;
+    schema::bump_filter_revision(tx, instance, "directory", "all")?;
+    Ok(())
+}
+
+/// TRUST-POLICY C1 candidates: nonretired unresolved seats of the instance
+/// whose *latest* binding is this harness's session `native_session`.
+/// Sentinel (`plugin_context:`), empty and human values never match; NULL
+/// never equals anything. Returns at most two (the caller only needs to tell
+/// zero, one and several apart).
+pub(crate) fn continuity_candidates(
+    tx: &Transaction<'_>,
+    instance: &str,
+    harness: &str,
+    native_session: &str,
+) -> Result<Vec<SeatId>, ApiError> {
+    let mut statement = tx
+        .prepare(
+            "SELECT s.id FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.ordinal=(SELECT MAX(l.ordinal) FROM occupant_bindings l WHERE l.seat_id=s.id) WHERE s.instance_id=?1 AND s.state='unresolved' AND b.harness=?2 AND b.harness<>'human' AND b.native_session=?3 AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' ORDER BY s.id LIMIT 2",
+        )
+        .map_err(store_error)?;
+    let rows = statement
+        .query_map(params![instance, harness, native_session], |r| {
+            r.get::<_, String>(0)
+        })
+        .map_err(store_error)?;
+    rows.map(|row| row.map(SeatId::new).map_err(store_error))
+        .collect()
+}
+
+pub fn continuity_digest(
+    instance: &str,
+    command: &crate::protocol::commands::ContinuityCheckIn,
+) -> Result<[u8; 32], ApiError> {
+    schema::canonical_digest(&(
+        "continuity_check_in",
+        instance,
+        &command.target,
+        &command.harness,
+        &command.native_session,
+        &command.execution,
+    ))
+}
+
+fn continuity_scope(instance: &str) -> String {
+    format!("continuity:{instance}")
+}
+
+fn validate_continuity_result(result: &CommandResult) -> Result<(), ApiError> {
+    if matches!(result, CommandResult::ContinuityReattached(_)) {
+        Ok(())
+    } else {
+        Err(api_error(
+            ErrorCode::StoreCorrupt,
+            "continuity replay result has wrong type",
+        ))
+    }
+}
+
+/// Historical continuity result for the same operation key and payload. Grants
+/// no current authority and touches no durable state.
+pub fn replay_continuity(
+    context: &StoreContext,
+    instance: &str,
+    command: &crate::protocol::commands::ContinuityCheckIn,
+    budget: &CallBudget,
+) -> Result<Option<CommandResult>, ApiError> {
+    let expected = continuity_digest(instance, command)?;
+    let db = context.open_query(budget.clone())?;
+    let stored: Option<(Vec<u8>, String)> = db
+        .query_row(
+            "SELECT digest, result_json FROM operations WHERE actor_scope=?1 AND operation_key=?2",
+            params![continuity_scope(instance), command.operation.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| db.map_error(e))?;
+    let Some((digest, json)) = stored else {
+        return Ok(None);
+    };
+    if digest != expected {
+        return Err(api_error(
+            ErrorCode::OperationPayloadMismatch,
+            "operation key reused with different payload",
+        ));
+    }
+    let result: CommandResult = serde_json::from_str(&json).map_err(|e| {
+        api_error(
+            ErrorCode::StoreCorrupt,
+            format!("invalid stored result: {e}"),
+        )
+    })?;
+    validate_continuity_result(&result)?;
+    Ok(Some(result))
+}
+
+/// TRUST-POLICY C1: reattach the one unresolved seat whose last binding holds
+/// the resumed session id onto the (held or unowned) target, in one deciding
+/// transaction that is a complete lifecycle check-in. The match is cooperative
+/// and structural only: Herdr's `agent_session` (`diagnostic`) is recorded,
+/// never consulted. The seat's old binding is ended and the successor
+/// `cooperative_top_level` binding (the command's harness, session and
+/// execution, a new generation) is opened with its availability anchor in the
+/// same transaction; the reply is idempotent under the operation key and a lost
+/// reply is recovered by the committed binding. The `cooperative_continuity`
+/// value is written to seat history (`allocation_decisions`) only, never to a
+/// receipt or the binding. With no matching unresolved seat while the host
+/// epoch's reconciliation lags its recovery marker, the refusal is the
+/// retryable `ServiceBusy`, not `NotFound`.
+pub fn decide_continuity(
+    context: &StoreContext,
+    conn: &mut Connection,
+    elected_instance: &str,
+    mut request: crate::ports::ContinuityRequest,
+) -> Result<CommandResult, ApiError> {
+    let command = request.command.clone();
+    let diagnostic = request.diagnostic;
+    let instance = request.guard.instance().to_owned();
+    if instance != elected_instance {
+        return Err(api_error(
+            ErrorCode::StaleHostObservation,
+            "continuity guard belongs to another instance",
+        ));
+    }
+    command
+        .validate()
+        .map_err(|e| api_error(ErrorCode::InvalidRequest, e))?;
+    let target = command.target.clone();
+    let expected_boot = request.guard.host_boot().clone();
+    let expected_epoch = request.guard.epoch();
+    let expected_generation = request.guard.generation();
+    let structural_proof = request.guard.structural_proof().cloned();
+    let expected_epoch_sql = checked_host_number(expected_epoch)?;
+    let expected_generation_sql = checked_host_number(expected_generation)?;
+    let digest = continuity_digest(elected_instance, &command)?;
+    let harness = command.harness.as_str();
+    let session = command.native_session.as_str();
+    let result = schema::execute_idempotent_transaction(
+        context,
+        conn,
+        &continuity_scope(&instance),
+        command.operation.as_str(),
+        digest,
+        |tx| {
+            if !observed_matches(
+                tx,
+                &instance,
+                target.as_str(),
+                &expected_boot,
+                expected_epoch,
+                expected_generation,
+            )? {
+                return Err(api_error(
+                    ErrorCode::StaleHostObservation,
+                    "continuity target observation changed",
+                ));
+            }
+            // Held or unowned only: a target with a resolved owner is never
+            // taken (seats are never merged, nothing moves on a heuristic).
+            if !target_free(tx, &instance, target.as_str())? {
+                return Err(api_error(
+                    ErrorCode::TargetAlreadyOwned,
+                    "resumed session's pane already has a resolved seat",
+                ));
+            }
+            if let Some(proof) = &structural_proof
+                && !structural_proof_matches_current(tx, &instance, proof)?
+            {
+                return Err(api_error(
+                    ErrorCode::StaleHostObservation,
+                    "continuity structural proof differs from current evidence",
+                ));
+            }
+            let candidates = continuity_candidates(tx, &instance, harness, session)?;
+            let [seat] = candidates.as_slice() else {
+                return Err(if candidates.is_empty() {
+                    // Until the first reconciliation pass of the current
+                    // recovery epoch has run, "no unresolved seat" only says the
+                    // daemon has not yet rebuilt the seats a Herdr restart
+                    // unresolved: pending, not final.
+                    let lagging: bool = tx
+                        .query_row(
+                            "SELECT recovery_boot IS NOT reconciled_boot OR recovery_epoch IS NOT reconciled_epoch FROM host_instances WHERE id=?1",
+                            [&instance],
+                            |r| r.get(0),
+                        )
+                        .optional()
+                        .map_err(store_error)?
+                        .unwrap_or(false);
+                    if lagging {
+                        api_error(
+                            ErrorCode::ServiceBusy,
+                            "recovery reconciliation of the current host epoch has not finished; retry",
+                        )
+                    } else {
+                        api_error(
+                            ErrorCode::NotFound,
+                            "no unresolved seat matches this resumed session",
+                        )
+                    }
+                } else {
+                    api_error(
+                        ErrorCode::Conflict,
+                        "resumed session matches several unresolved seats; repair with seat rebind --operator",
+                    )
+                });
+            };
+            let generation: i64 = tx
+                .query_row(
+                    "SELECT generation FROM seats WHERE id=?1 AND instance_id=?2",
+                    params![seat.as_str(), instance],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            if generation == i64::MAX {
+                return Err(api_error(
+                    ErrorCode::SequenceExhausted,
+                    "seat binding generation exhausted",
+                ));
+            }
+            Ok(())
+        },
+        |tx, at| {
+            let fresh = effective::effective_observation(tx, &instance, target.as_str())?
+                .filter(|observation| {
+                    observation.source == EffectiveObservationSource::NewerCurrentTarget
+                })
+                .ok_or_else(|| {
+                    api_error(
+                        ErrorCode::StaleHostObservation,
+                        "fresh target observation missing",
+                    )
+                })?;
+            request
+                .guard
+                .consume(
+                    &instance,
+                    &command,
+                    &DecisionFence {
+                        now: at.monotonic,
+                        host_boot: HostBootId::new(fresh.host_boot),
+                        host_epoch: u64::try_from(fresh.epoch).map_err(|_| {
+                            api_error(ErrorCode::StoreCorrupt, "negative host epoch")
+                        })?,
+                        target_generation: u64::try_from(fresh.structural_generation).map_err(
+                            |_| api_error(ErrorCode::StoreCorrupt, "negative target generation"),
+                        )?,
+                        binding_generation: 0,
+                        known_invalidated: !observed_matches(
+                            tx,
+                            &instance,
+                            target.as_str(),
+                            &expected_boot,
+                            expected_epoch,
+                            expected_generation,
+                        )?,
+                    },
+                )
+                .map_err(|reason| api_error(ErrorCode::StaleHostObservation, reason))?;
+            let candidates = continuity_candidates(tx, &instance, harness, session)?;
+            let [seat] = candidates.as_slice() else {
+                return Err(api_error(ErrorCode::Conflict, "continuity match changed"));
+            };
+            if !target_free(tx, &instance, target.as_str())? {
+                return Err(api_error(
+                    ErrorCode::TargetAlreadyOwned,
+                    "target became owned",
+                ));
+            }
+            rebind_unresolved_seat(
+                tx,
+                &instance,
+                seat,
+                target.as_str(),
+                expected_generation_sql,
+                at.utc,
+            )?;
+            if let Some(proof) = &structural_proof {
+                update_structural_proof(tx, seat, proof)?;
+            } else {
+                tx.execute("UPDATE seats SET structural_terminal_id=NULL,structural_incarnation=NULL,structural_incarnation_kind=NULL,structural_host_boot=NULL,structural_host_epoch=NULL,structural_connection_epoch=NULL,structural_observation_sequence=NULL WHERE id=?1", [seat.as_str()]).map_err(store_error)?;
+            }
+            let new_generation: i64 = tx
+                .query_row(
+                    "SELECT generation FROM seats WHERE id=?1",
+                    [seat.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            // The successor binding opens here, so the reply is a complete
+            // check-in: the seat is resolved, bound and available when this
+            // transaction commits. Evidence is the structural proof when the
+            // guard carries one, else the fresh observation of the same target.
+            let (terminal, incarnation) = match &structural_proof {
+                Some(proof) => (
+                    proof.terminal().as_str().to_owned(),
+                    proof.incarnation().to_owned(),
+                ),
+                None => {
+                    let (terminal, incarnation) = binding_evidence(
+                        fresh.terminal_id.as_deref(),
+                        fresh.incarnation.as_deref(),
+                    )?;
+                    (terminal.to_owned(), incarnation.to_owned())
+                }
+            };
+            tx.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?12,?13)",
+                params![seat.as_str(),new_generation,target.as_str(),expected_boot.as_str(),expected_epoch_sql,expected_generation_sql,
+                    command.harness.as_str(),command.native_session.as_str(),command.execution.as_str(),
+                    crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE,at.utc.0,terminal,incarnation]).map_err(store_error)?;
+            tx.execute("UPDATE wake_work SET binding_generation=?1 WHERE seat_id=?2 AND reservation_id IS NULL",
+                params![new_generation,seat.as_str()]).map_err(store_error)?;
+            let seq = schema::next_decision_seq(tx, &instance)?;
+            anchor_seat_availability(
+                tx,
+                seat,
+                seq,
+                at.utc,
+                new_generation,
+                crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE,
+            )?;
+            tx.execute(
+                "UPDATE seats SET unavailability_open=0 WHERE id=?1",
+                [seat.as_str()],
+            )
+            .map_err(store_error)?;
+            tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label,continuity_diagnostic) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,NULL,?9)",
+                params![instance,target.as_str(),seat.as_str(),crate::protocol::authority::COOPERATIVE_CONTINUITY_PROVENANCE,at.utc.0,expected_boot.as_str(),expected_epoch_sql,expected_generation_sql,diagnostic]).map_err(store_error)?;
+            release_claimed_target(tx, &instance, target.as_str(), at.utc)?;
+            lift_baseline_hold_if_clear(tx, &instance, at.utc)?;
+            Ok(CommandResult::ContinuityReattached(
+                crate::protocol::results::ContinuityReattachment {
+                    seat: seat.clone(),
+                    binding_generation: u64::try_from(new_generation).map_err(|_| {
+                        api_error(ErrorCode::StoreCorrupt, "negative seat generation")
+                    })?,
+                },
+            ))
+        },
+    )?;
+    validate_continuity_result(&result)?;
+    Ok(result)
+}
+
+/// TRUST-POLICY C3: the refusal for a rebind onto an owned target names both
+/// operator resolutions. Falls back to the plain message when the owner is not
+/// a live seat of this instance (the observation, not a seat, is then stale).
+fn owned_target_refusal(
+    tx: &Transaction<'_>,
+    instance: &str,
+    target: &str,
+    old: Option<&SeatId>,
+) -> Result<ApiError, ApiError> {
+    let owner: Option<String> = tx
+        .query_row(
+            "SELECT id FROM seats WHERE instance_id=?1 AND target_id=?2 AND state='resolved' LIMIT 1",
+            params![instance, target],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    Ok(match (owner, old) {
+        (Some(new), Some(old)) => api_error(
+            ErrorCode::TargetAlreadyOwned,
+            format!(
+                "target {target} is owned by live seat {new}; seats are never merged. Abandon the old seat: `herdr-threads seat retire {old} --operator`, or abandon the new role: `herdr-threads seat rebind {old} --pane {target} --replace {new} --operator`",
+                old = old.as_str()
+            ),
+        ),
+        _ => api_error(
+            ErrorCode::TargetAlreadyOwned,
+            "repair target changed or owned",
+        ),
+    })
+}
+
+/// `seat retire SEAT --operator`: the existing bounded retirement cutover,
+/// started on the operator's say-so. Retirement claims no target, so there is
+/// no host observation; pending obligations settle as recipient-retired when
+/// the retirement worker advances the job.
+fn operator_retire(
+    context: &StoreContext,
+    conn: &mut Connection,
+    instance: &str,
+    command: &crate::protocol::commands::OperatorRetire,
+    actor: OperatorActor,
+) -> Result<CommandResult, ApiError> {
+    let typed = crate::protocol::commands::OperatorCommand::Retire(command.clone());
+    let digest = crate::store::operator::digest(instance, &typed)?;
+    let seat = command.seat.clone();
+    let result = schema::execute_idempotent_transaction(
+        context,
+        conn,
+        &actor.operation_scope(instance),
+        command.operation.as_str(),
+        digest,
+        |tx| {
+            let state: Option<(String, i64)> = tx
+                .query_row(
+                    "SELECT state,generation FROM seats WHERE id=?1 AND instance_id=?2",
+                    params![seat.as_str(), instance],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .map_err(store_error)?;
+            match state {
+                Some((state, generation)) if state != "retired" => {
+                    if generation == i64::MAX {
+                        return Err(api_error(
+                            ErrorCode::SequenceExhausted,
+                            "seat binding generation exhausted",
+                        ));
+                    }
+                    Ok(())
+                }
+                _ => Err(api_error(
+                    ErrorCode::NotFound,
+                    "seat is not a live seat of this instance",
+                )),
+            }
+        },
+        |tx, at| {
+            let (boot, epoch): (Option<String>, i64) = tx
+                .query_row(
+                    "SELECT host_boot,host_epoch FROM host_instances WHERE id=?1",
+                    [instance],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(store_error)?;
+            let (target, generation): (Option<String>, i64) = tx
+                .query_row(
+                    "SELECT target_id,target_generation FROM seats WHERE id=?1",
+                    [seat.as_str()],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(store_error)?;
+            let target = match target {
+                Some(target) => target,
+                None => tx
+                    .query_row(
+                        "SELECT target_id FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1",
+                        [seat.as_str()],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(store_error)?
+                    .unwrap_or_default(),
+            };
+            let boot = boot.unwrap_or_default();
+            control::begin_retirement_fence(
+                tx,
+                at.utc,
+                seat.clone(),
+                instance,
+                &boot,
+                epoch,
+                &target,
+                generation,
+            )?;
+            tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_retire',?4,?5,?6,?7,?8)",
+                params![instance,target,seat.as_str(),at.utc.0,boot,epoch,generation,actor.audit_label()]).map_err(store_error)?;
+            lift_baseline_hold_if_clear(tx, instance, at.utc)?;
+            Ok(CommandResult::OperatorRetired(seat.clone()))
+        },
+    )?;
+    crate::store::operator::validate_result(&typed, &result)?;
     Ok(result)
 }
 
@@ -3629,12 +4467,19 @@ fn register_cooperative(
     context: &StoreContext,
     conn: &mut Connection,
     command: &CheckIn,
+    operator: Option<&OperatorActor>,
     mut permit: MutationPermit,
     budget: &CallBudget,
     build_offer: impl FnOnce(&Transaction<'_>, &SeatId, u64) -> Result<CheckInResult, ApiError>,
 ) -> Result<CommandResult, ApiError> {
     let claim = &command.claim;
     let digest = schema::canonical_digest(&check_in_payload(command))?;
+    // The operator form never shares an idempotency key with the plain one.
+    let idempotency_digest = if operator.is_some() {
+        schema::canonical_digest(&("operator_check_in", &command.mode, &command.claim))?
+    } else {
+        digest
+    };
     let scope = format!("seat:{}", claim.seat.as_str());
     schema::execute_budgeted_idempotent_transaction(
         context,
@@ -3642,7 +4487,7 @@ fn register_cooperative(
         budget,
         &scope,
         command.operation.as_str(),
-        digest,
+        idempotency_digest,
         |tx| cooperative_instance(tx, &claim.instance, claim),
         |tx| cooperative_mapping(tx, claim, Some(command.mode)).map(|_| ()),
         |tx, at| {
@@ -3668,6 +4513,22 @@ fn register_cooperative(
                 command.mode,
                 crate::protocol::commands::CheckInMode::Lifecycle { .. }
             );
+            if lifecycle && claim.harness == crate::protocol::authority::Harness::Human {
+                if let Some(open) = crate::store::queries::open_binding(tx, seat.as_str())?
+                    && open.provenance
+                        == crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE
+                    && operator.is_none()
+                {
+                    return Err(api_error(
+                        ErrorCode::Unauthorized,
+                        format!(
+                            "seat {} is bound to a {} agent (cooperative_top_level); a person's check-in never replaces an agent's binding. Run it in your own shell pane, or override as the local account: `herdr-threads me init --operator`",
+                            seat.as_str(),
+                            open.harness
+                        ),
+                    ));
+                }
+            }
             let generation = if lifecycle {
                 let maximum:i64=tx.query_row("SELECT MAX(?2,COALESCE(MAX(generation),0)) FROM occupant_bindings WHERE seat_id=?1",
                     params![seat.as_str(),mapping.generation as i64],|r|r.get(0)).map_err(store_error)?;
@@ -3693,6 +4554,10 @@ fn register_cooperative(
                 tx.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?13,?10,?10,?11,?12)",
                     params![seat.as_str(),next,claim.target.as_str(),mapping.boot,mapping.epoch as i64,mapping.revision as i64,
                         claim.harness.as_str(),claim.native_session.as_str(),claim.execution.as_str(),at.utc.0,terminal,incarnation,claim.harness.cooperative_provenance()]).map_err(store_error)?;
+                if let Some(actor) = operator {
+                    tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_human_override',?4,?5,?6,?7,?8)",
+                        params![claim.instance,claim.target.as_str(),seat.as_str(),at.utc.0,mapping.boot,mapping.epoch as i64,mapping.revision as i64,actor.audit_label()]).map_err(store_error)?;
+                }
                 tx.execute(
                     "DELETE FROM warning_offer WHERE seat_id=?1",
                     [seat.as_str()],

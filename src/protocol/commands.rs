@@ -32,7 +32,12 @@ pub enum Command {
     OperationStatus(OperationStatusQuery),
     RetirementJobs(RetirementJobsQuery),
     ResolveSeat(ResolveSeat),
+    /// TRUST-POLICY C1: seatless resume-only reattachment decision.
+    ContinuityCheckIn(ContinuityCheckIn),
     CheckIn(CheckIn),
+    /// Person check-in over an agent's binding, as the local account
+    /// (TRUST-POLICY A4 override). Human lifecycle only.
+    OperatorCheckIn(CheckIn),
     CreateThread(CreateThread),
     Invite(Invite),
     Accept(Accept),
@@ -46,6 +51,8 @@ pub enum Command {
     OperatorRebind(OperatorRebind),
     OperatorFreshSeat(OperatorFreshSeat),
     OperatorOrphanInvite(OperatorOrphanInvite),
+    OperatorRetire(OperatorRetire),
+    OperatorReplace(OperatorReplace),
 }
 
 /// Service control only. The envelope supplies the expected instance; the
@@ -240,6 +247,41 @@ pub struct ResolveSeat {
     pub target: HostTargetId,
     pub operation: OperationId,
 }
+/// TRUST-POLICY C1. A resumed top-level session asks the daemon to reattach
+/// the one unresolved seat whose last binding carries its session id onto the
+/// pane's target. It names no seat: the daemon decides the seat, rebinds it and
+/// opens the successor `cooperative_top_level` binding for `execution` in the
+/// same transaction; there is no follow-up lifecycle check-in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContinuityCheckIn {
+    pub target: HostTargetId,
+    pub harness: crate::protocol::authority::Harness,
+    pub native_session: NativeSessionId,
+    /// The hook's SessionStart source. Only `resume` can reattach.
+    pub source: String,
+    pub operation: OperationId,
+    /// The execution id the successor binding carries; chosen by the client
+    /// once per intent so every retry under the operation key repeats it.
+    pub execution: ExecutionId,
+}
+impl ContinuityCheckIn {
+    pub const RESUME_SOURCE: &'static str = "resume";
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.source != Self::RESUME_SOURCE {
+            return Err("only a resume check-in can reattach a seat");
+        }
+        if self.harness == crate::protocol::authority::Harness::Human {
+            return Err("a human occupant cannot resume a harness session");
+        }
+        if self.native_session.as_str().is_empty()
+            || self.native_session.as_str().starts_with("plugin_context:")
+        {
+            return Err("a resumed session needs a native session id");
+        }
+        Ok(())
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CheckIn {
@@ -390,6 +432,25 @@ pub struct OperatorOrphanInvite {
     pub operation: OperationId,
 }
 
+/// Abandon a seat on the operator's say-so (TRUST-POLICY C3). Retirement is
+/// not a target claim, so no host observation accompanies it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorRetire {
+    pub seat: SeatId,
+    pub operation: OperationId,
+}
+/// Retire `replace` (the seat now owning `target`) and rebind `seat` onto
+/// `target` in one deciding transaction. Nothing moves from `replace` to `seat`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorReplace {
+    pub seat: SeatId,
+    pub target: HostTargetId,
+    pub replace: SeatId,
+    pub operation: OperationId,
+}
+
 pub const MAX_SEARCH_CANDIDATES: u16 = 100;
 pub const MAX_BATCH_ITEMS: usize = 100;
 
@@ -399,7 +460,7 @@ impl Command {
             page.validate()?;
         }
         let claim = match self {
-            Self::CheckIn(v) => Some(&v.claim),
+            Self::CheckIn(v) | Self::OperatorCheckIn(v) => Some(&v.claim),
             Self::CreateThread(v) => Some(&v.claim),
             Self::Invite(v) => Some(&v.claim),
             Self::Accept(v) => Some(&v.claim),
@@ -442,6 +503,7 @@ impl Command {
                 Err("deadline must be positive")
             }
             Self::AcceptRequired(accept) => accept.validate(),
+            Self::ContinuityCheckIn(continuity) => continuity.validate(),
             Self::OperatorOrphanInvite(invite) if invite.deadline_millis == Some(0) => {
                 Err("deadline must be positive")
             }
@@ -498,12 +560,14 @@ impl Command {
     }
 }
 
-/// Only these three commands can cross the local-user operator store boundary.
+/// Only these commands can cross the local-user operator store boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperatorCommand {
     Rebind(OperatorRebind),
     FreshSeat(OperatorFreshSeat),
     OrphanInvite(OperatorOrphanInvite),
+    Retire(OperatorRetire),
+    Replace(OperatorReplace),
 }
 impl TryFrom<Command> for OperatorCommand {
     type Error = Command;
@@ -512,6 +576,8 @@ impl TryFrom<Command> for OperatorCommand {
             Command::OperatorRebind(v) => Ok(Self::Rebind(v)),
             Command::OperatorFreshSeat(v) => Ok(Self::FreshSeat(v)),
             Command::OperatorOrphanInvite(v) => Ok(Self::OrphanInvite(v)),
+            Command::OperatorRetire(v) => Ok(Self::Retire(v)),
+            Command::OperatorReplace(v) => Ok(Self::Replace(v)),
             other => Err(other),
         }
     }

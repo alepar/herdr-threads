@@ -52,7 +52,7 @@ Document the three explicit local administrator actions: `seat rebind SEAT --pan
 
 Operations instructions distinguish transaction decision time from physical commit, UTC warning deadlines from monotonic wake spacing, and safe unregistered recovery hints from verified registration. Explain the immediate terminal retirement fence and frozen cutover, effective status/orphan recovery before cleanup, bounded boot-resumed cleanup and seat-inspect pending/complete/error fields. Cutover-owed warning/audit history materializes incrementally; retirement warnings have already-settled conditions and add no new wake fanout. Preserve all history without a backlog cap. Explain how to run ensure when the unsupervised daemon is stopped. Keep the native observation/commit race and uncertain prompt delivery limits explicit; neither an RPC response nor paste+Enter establishes model receipt. Required native recovery or freshness failures block corresponding release support claims.
 
-The restore-allocation clarification responds to the still-open F6 escalation and must be carried into the next design review. Packaging does not declare that prior dispute resolved.
+The restore-allocation escalation F6 is resolved by the [trust policy](../../../TRUST-POLICY.md).
 
 ## Post-Implementation Notes
 

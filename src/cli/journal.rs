@@ -41,6 +41,13 @@ pub enum IntentScope {
         instance: String,
         target: HostTargetId,
     },
+    /// TRUST-POLICY C1: a seatless resume-only continuity check-in. There is
+    /// no seat to scope to; the pane's target under one instance is the
+    /// authority scope and the key the hook replays by.
+    Continuity {
+        instance: String,
+        target: HostTargetId,
+    },
 }
 
 /// Native evidence is refreshed; cooperative claims are frozen as durable payload.
@@ -55,9 +62,24 @@ pub enum SemanticMutation {
         claim: CallerClaim,
         mode: CheckInMode,
         event_id: String,
+        /// A person's explicit override of the agent-to-human guard
+        /// (`me init --operator`); submitted as `Command::OperatorCheckIn`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        operator: bool,
     },
     ResolveSeat {
         target: HostTargetId,
+    },
+    /// TRUST-POLICY C1: resume-only seatless reattachment request. `event_id`
+    /// is the hook event that recorded it; `execution` is the successor
+    /// binding's execution id, fixed once so every retry sends the same value.
+    ContinuityCheckIn {
+        target: HostTargetId,
+        harness: crate::protocol::authority::Harness,
+        native_session: NativeSessionId,
+        source: String,
+        event_id: String,
+        execution: ExecutionId,
     },
     CheckIn,
     CreateThread {
@@ -107,6 +129,14 @@ pub enum SemanticMutation {
     OperatorFreshSeat {
         target: HostTargetId,
     },
+    OperatorRetire {
+        seat: SeatId,
+    },
+    OperatorReplace {
+        seat: SeatId,
+        target: HostTargetId,
+        replace: SeatId,
+    },
     OperatorOrphanInvite {
         thread: ThreadId,
         seat: SeatId,
@@ -119,6 +149,7 @@ impl SemanticMutation {
             || matches!(
                 mutation,
                 Self::ResolveSeat { .. }
+                    | Self::ContinuityCheckIn { .. }
                     | Self::CheckIn
                     | Self::Frozen { .. }
                     | Self::CooperativeCheckIn { .. }
@@ -155,6 +186,7 @@ impl SemanticMutation {
                     || matches!(
                         mutation.as_ref(),
                         Self::ResolveSeat { .. }
+                            | Self::ContinuityCheckIn { .. }
                             | Self::CheckIn
                             | Self::Frozen { .. }
                             | Self::CooperativeCheckIn { .. }
@@ -168,6 +200,7 @@ impl SemanticMutation {
                 claim,
                 mode,
                 event_id,
+                operator,
             } => {
                 if event_id.is_empty()
                     || event_id.len() > 1024
@@ -175,11 +208,50 @@ impl SemanticMutation {
                 {
                     return Err(invalid("invalid lifecycle event identity"));
                 }
-                Command::CheckIn(CheckIn {
+                if *operator
+                    && (claim.harness != crate::protocol::authority::Harness::Human
+                        || !matches!(
+                            mode,
+                            crate::protocol::commands::CheckInMode::Lifecycle { .. }
+                        ))
+                {
+                    return Err(invalid("operator check-in is a human lifecycle check-in"));
+                }
+                let check = CheckIn {
                     claim: claim.clone(),
                     mode: *mode,
                     operation: OperationId::new("validation"),
-                })
+                };
+                if *operator {
+                    Command::OperatorCheckIn(check)
+                } else {
+                    Command::CheckIn(check)
+                }
+                .validate()
+                .map_err(invalid)
+            }
+            Self::ContinuityCheckIn {
+                target,
+                harness,
+                native_session,
+                source,
+                event_id,
+                execution,
+            } => {
+                if event_id.is_empty()
+                    || event_id.len() > 1024
+                    || event_id.chars().any(char::is_control)
+                {
+                    return Err(invalid("invalid lifecycle event identity"));
+                }
+                ContinuityCheckIn {
+                    target: target.clone(),
+                    harness: *harness,
+                    native_session: native_session.clone(),
+                    source: source.clone(),
+                    operation: OperationId::new("validation"),
+                    execution: execution.clone(),
+                }
                 .validate()
                 .map_err(invalid)
             }
@@ -214,6 +286,8 @@ impl SemanticMutation {
             self,
             Self::OperatorRebind { .. }
                 | Self::OperatorFreshSeat { .. }
+                | Self::OperatorRetire { .. }
+                | Self::OperatorReplace { .. }
                 | Self::OperatorOrphanInvite { .. }
         )
     }
@@ -222,6 +296,7 @@ impl SemanticMutation {
             Self::Frozen { mutation, .. } => mutation.kind(),
             Self::CooperativeCheckIn { .. } => IntentKind::CheckIn,
             Self::ResolveSeat { .. } => IntentKind::ResolveSeat,
+            Self::ContinuityCheckIn { .. } => IntentKind::ContinuityCheckIn,
             Self::CheckIn => IntentKind::CheckIn,
             Self::CreateThread { .. } => IntentKind::CreateThread,
             Self::Invite { .. } => IntentKind::Invite,
@@ -235,6 +310,8 @@ impl SemanticMutation {
             Self::Reopen { .. } => IntentKind::Reopen,
             Self::OperatorRebind { .. } => IntentKind::OperatorRebind,
             Self::OperatorFreshSeat { .. } => IntentKind::OperatorFreshSeat,
+            Self::OperatorRetire { .. } => IntentKind::OperatorRetire,
+            Self::OperatorReplace { .. } => IntentKind::OperatorReplace,
             Self::OperatorOrphanInvite { .. } => IntentKind::OperatorOrphanInvite,
         }
     }
@@ -267,14 +344,41 @@ impl SemanticMutation {
             Self::Frozen { claim, mutation } => {
                 return mutation.to_command(operation, Some(claim.clone()));
             }
-            Self::CooperativeCheckIn { claim, mode, .. } => Command::CheckIn(CheckIn {
-                claim: claim.clone(),
-                mode: *mode,
-                operation,
-            }),
+            Self::CooperativeCheckIn {
+                claim,
+                mode,
+                operator,
+                ..
+            } => {
+                let check = CheckIn {
+                    claim: claim.clone(),
+                    mode: *mode,
+                    operation,
+                };
+                if *operator {
+                    Command::OperatorCheckIn(check)
+                } else {
+                    Command::CheckIn(check)
+                }
+            }
             Self::ResolveSeat { target } => Command::ResolveSeat(ResolveSeat {
                 target: target.clone(),
                 operation,
+            }),
+            Self::ContinuityCheckIn {
+                target,
+                harness,
+                native_session,
+                source,
+                execution,
+                ..
+            } => Command::ContinuityCheckIn(ContinuityCheckIn {
+                target: target.clone(),
+                harness: *harness,
+                native_session: native_session.clone(),
+                source: source.clone(),
+                operation,
+                execution: execution.clone(),
             }),
             Self::CheckIn => Command::CheckIn(CheckIn {
                 mode: crate::protocol::commands::CheckInMode::Current,
@@ -358,6 +462,22 @@ impl SemanticMutation {
             Self::OperatorRebind { seat, target } => Command::OperatorRebind(OperatorRebind {
                 seat: seat.clone(),
                 target: target.clone(),
+                operation,
+            }),
+            Self::OperatorRetire { seat } => {
+                Command::OperatorRetire(crate::protocol::commands::OperatorRetire {
+                    seat: seat.clone(),
+                    operation,
+                })
+            }
+            Self::OperatorReplace {
+                seat,
+                target,
+                replace,
+            } => Command::OperatorReplace(crate::protocol::commands::OperatorReplace {
+                seat: seat.clone(),
+                target: target.clone(),
+                replace: replace.clone(),
                 operation,
             }),
             Self::OperatorFreshSeat { target } => Command::OperatorFreshSeat(OperatorFreshSeat {
@@ -580,6 +700,17 @@ impl Journal {
         created_at_millis: i64,
         factory: impl FnOnce() -> io::Result<(CallerClaim, CheckInMode)>,
     ) -> io::Result<IntentRef> {
+        self.record_check_in_as(scope, event_id, created_at_millis, false, factory)
+    }
+    /// `record_check_in`, optionally flagged as the operator override.
+    pub fn record_check_in_as(
+        &self,
+        scope: IntentScope,
+        event_id: &str,
+        created_at_millis: i64,
+        operator: bool,
+        factory: impl FnOnce() -> io::Result<(CallerClaim, CheckInMode)>,
+    ) -> io::Result<IntentRef> {
         let _lock = self.lock()?;
         for entry in fs::read_dir(&self.root)? {
             let path = entry?.path();
@@ -603,6 +734,7 @@ impl Journal {
             claim,
             mode,
             event_id: event_id.into(),
+            operator,
         };
         if !scope_matches(&scope, &semantic) {
             return Err(invalid("intent authority scope mismatch"));
@@ -636,6 +768,43 @@ impl Journal {
             }
         }
         Ok(None)
+    }
+    /// The pending continuity intent of this pane under `instance`, if a
+    /// previous hook recorded one and did not finish it (lost reply, crash,
+    /// retry window elapsed). Oldest first; it carries the operation key the
+    /// daemon replays by. Called only on the resume path. The journal
+    /// directory is shared with entries this scan does not own, so every read
+    /// is hardened: `O_NOFOLLOW|O_NONBLOCK`, regular files only, a capped
+    /// header read, and a vanished, unreadable or unparsable entry is skipped
+    /// rather than failing the scan.
+    pub fn pending_continuity(
+        &self,
+        instance: &str,
+        target: &HostTargetId,
+    ) -> io::Result<Option<PendingIntent>> {
+        let scope = IntentScope::Continuity {
+            instance: instance.into(),
+            target: target.clone(),
+        };
+        let _lock = self.lock()?;
+        let mut found: Vec<IntentRef> = Vec::new();
+        for entry in fs::read_dir(&self.root)? {
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("intent") {
+                continue;
+            }
+            let Some(header) = read_intent_header(&path) else {
+                continue;
+            };
+            if header.scope == scope {
+                found.push(header.reference);
+            }
+        }
+        found.sort_by_key(|reference| reference.ordinal);
+        Ok(found
+            .into_iter()
+            .find_map(|reference| self.load(&reference).ok()))
     }
     fn record_locked(
         &self,
@@ -930,10 +1099,20 @@ fn scope_matches(scope: &IntentScope, semantic: &SemanticMutation) -> bool {
             IntentScope::ServiceAllocation { target, .. },
             SemanticMutation::ResolveSeat { target: requested },
         ) => target == requested,
+        (
+            IntentScope::Continuity { target, .. },
+            SemanticMutation::ContinuityCheckIn {
+                target: requested, ..
+            },
+        ) => target == requested,
         (IntentScope::Native { .. }, request) => {
             !request.is_operator()
                 && request.frozen_claim().is_none()
-                && !matches!(request, SemanticMutation::ResolveSeat { .. })
+                && !matches!(
+                    request,
+                    SemanticMutation::ResolveSeat { .. }
+                        | SemanticMutation::ContinuityCheckIn { .. }
+                )
         }
         (IntentScope::Operator { .. }, request) => request.is_operator(),
         _ => false,
@@ -1061,11 +1240,32 @@ fn private_new(path: &Path) -> io::Result<File> {
     options.mode(0o600);
     options.open(path)
 }
+/// Sandbox-writable (Codex) instance directory: never follow a leaf
+/// symlink (TRUST-POLICY Accepted limits), like the context journal.
+/// Header line of one intent file for a scan, or `None` for anything that is
+/// not a readable intent: a vanished entry, a symlink, a FIFO or device (opened
+/// without blocking and rejected by `is_file`), a read error or garbage.
+fn read_intent_header(path: &Path) -> Option<IntentHeader> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    let file = options.open(path).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut line = String::new();
+    BufReader::new(file.take(64 * 1024))
+        .read_line(&mut line)
+        .ok()?;
+    serde_json::from_str(&line).ok()
+}
+
 fn private_open(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true);
     #[cfg(unix)]
-    options.mode(0o600);
+    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     options.open(path)
 }
 #[cfg(test)]

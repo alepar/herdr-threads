@@ -17,8 +17,9 @@ use crate::protocol::{
         OperatorActor, ReceiptRegistration,
     },
     commands::{
-        CheckIn, Command, OperatorCommand, OperatorFreshSeat, OperatorOrphanInvite, OperatorRebind,
-        PermitMutation, ResolveSeat, SendMessage,
+        CheckIn, Command, ContinuityCheckIn, OperatorCommand, OperatorFreshSeat,
+        OperatorOrphanInvite, OperatorRebind, OperatorReplace, OperatorRetire, PermitMutation,
+        ResolveSeat, SendMessage,
     },
     ids::*,
     output::OutputSpec,
@@ -339,6 +340,9 @@ pub struct RegisterAvailableRequest {
     pub registration: Option<ReceiptRegistration>,
     /// Trusted instance and selected-output bounds for the transaction-local offer.
     pub read: ReadContext,
+    /// Set only when the local account explicitly overrides the agent-to-human
+    /// binding guard (TRUST-POLICY A4); the daemon audits it.
+    pub operator: Option<OperatorActor>,
 }
 
 /// Service input for a cooperative permit. The digest must cover the exact
@@ -1116,6 +1120,10 @@ pub struct SnapshotSavedSeat {
     /// Current registered binding only. `binding_execution` above may be
     /// historical evidence for an unresolved seat after invalidation.
     pub active_binding_execution: Option<ExecutionId>,
+    /// Host epoch of the open registered binding, only when that binding
+    /// carries the same host boot and incarnation as the seat's structural
+    /// proof. A lagging epoch is what C4 carries forward.
+    pub bound_epoch: Option<u64>,
     pub bound_boot: Option<HostBootId>,
     pub bound_incarnation: Option<String>,
     /// Reconfirmation evidence stored on the seat's latest occupant binding,
@@ -1217,6 +1225,14 @@ pub enum ReconciliationAction {
     /// registration; the pane's agent registers by its next lifecycle
     /// check-in at the new generation.
     ReconfirmStructure {
+        target: HostTargetId,
+        terminal: TerminalId,
+    },
+    /// C4: a resolved seat structurally reconfirmed in a newer host epoch of
+    /// the same boot and incarnation keeps its open binding; the binding's
+    /// host epoch and target generation move forward in place; nothing else
+    /// changes.
+    CarryForward {
         target: HostTargetId,
         terminal: TerminalId,
     },
@@ -1433,7 +1449,9 @@ impl OperatorTargetGuard {
         let target = match command {
             OperatorCommand::Rebind(command) => &command.target,
             OperatorCommand::FreshSeat(command) => &command.target,
+            OperatorCommand::Replace(command) => &command.target,
             OperatorCommand::OrphanInvite(_) => return Err("orphan invite has no target guard"),
+            OperatorCommand::Retire(_) => return Err("retire has no target guard"),
         };
         if instance.is_empty() || observation.target != *target {
             return Err("operator target does not match fresh observation");
@@ -1504,6 +1522,8 @@ pub enum OperatorRequest {
     Rebind(OperatorRebind, OperatorTargetGuard),
     FreshSeat(OperatorFreshSeat, OperatorTargetGuard),
     OrphanInvite(OperatorOrphanInvite),
+    Retire(OperatorRetire),
+    Replace(OperatorReplace, OperatorTargetGuard),
 }
 impl OperatorRequest {
     /// Consume target evidence against the command being decided and the store's
@@ -1522,9 +1542,118 @@ impl OperatorRequest {
                 &OperatorCommand::FreshSeat(command.clone()),
                 fence,
             ),
-            Self::OrphanInvite(_) => Ok(()),
+            Self::Replace(command, guard) => {
+                guard.consume(instance, &OperatorCommand::Replace(command.clone()), fence)
+            }
+            Self::OrphanInvite(_) | Self::Retire(_) => Ok(()),
         }
     }
+}
+
+/// Per-request host evidence for a cooperative continuity reattachment
+/// (TRUST-POLICY C1). Like [`OperatorTargetGuard`] it proves the target's
+/// current structural observation only; it grants no caller authority and the
+/// Herdr `agent_session` diagnostic is never part of it.
+#[derive(Debug)]
+pub struct ContinuityTargetGuard {
+    instance: String,
+    target: HostTargetId,
+    command: ContinuityCheckIn,
+    host_boot: HostBootId,
+    epoch: u64,
+    generation: u64,
+    observed_at: MonoInstant,
+    structural_proof: Option<DurableStructuralProof>,
+    consumed: bool,
+}
+impl ContinuityTargetGuard {
+    pub(crate) fn try_new(
+        instance: &str,
+        command: &ContinuityCheckIn,
+        observation: HostObservation,
+    ) -> Result<Self, &'static str> {
+        if instance.is_empty() || observation.target != command.target {
+            return Err("continuity target does not match fresh observation");
+        }
+        if observation.provenance != ObservationProvenance::FreshCurrentTarget {
+            return Err("continuity target lacks a fresh current observation");
+        }
+        Ok(Self {
+            structural_proof: observation.verified_structural_proof(),
+            instance: instance.into(),
+            target: observation.target,
+            command: command.clone(),
+            host_boot: observation.host_boot,
+            epoch: observation.epoch,
+            generation: observation.generation,
+            observed_at: observation.observed_at_mono,
+            consumed: false,
+        })
+    }
+    pub fn instance(&self) -> &str {
+        &self.instance
+    }
+    pub fn target(&self) -> &HostTargetId {
+        &self.target
+    }
+    pub fn host_boot(&self) -> &HostBootId {
+        &self.host_boot
+    }
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub fn structural_proof(&self) -> Option<&DurableStructuralProof> {
+        self.structural_proof.as_ref()
+    }
+    pub fn consume(
+        &mut self,
+        instance: &str,
+        command: &ContinuityCheckIn,
+        fence: &DecisionFence,
+    ) -> Result<(), &'static str> {
+        if self.consumed {
+            return Err("continuity target guard already consumed");
+        }
+        if instance != self.instance || command != &self.command {
+            return Err("continuity request does not match target guard");
+        }
+        if fence.known_invalidated
+            || fence.host_boot != self.host_boot
+            || fence.host_epoch != self.epoch
+            || fence.target_generation != self.generation
+        {
+            return Err("continuity target changed");
+        }
+        if fence.now.0 < self.observed_at.0 || fence.now.0 - self.observed_at.0 > MAX_PERMIT_MILLIS
+        {
+            return Err("continuity target observation expired");
+        }
+        self.consumed = true;
+        Ok(())
+    }
+}
+
+/// The decision input of [`StorePort::decide_continuity`]. `diagnostic` is
+/// one of `match`, `mismatch`, `absent`, `read_error` and is only recorded.
+#[derive(Debug)]
+pub struct ContinuityRequest {
+    pub command: ContinuityCheckIn,
+    pub guard: ContinuityTargetGuard,
+    pub diagnostic: &'static str,
+}
+
+/// Herdr's per-pane agent record for exactly one pane. TRUST-POLICY C1/A4:
+/// Herdr's agent field may only suggest; it never moves a seat, allocates one
+/// or ends a binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneAgentObservation {
+    /// Herdr's detection-based agent kind (for example `claude`, `codex`).
+    pub kind: Option<String>,
+    /// Herdr integration report; diagnostic value only.
+    pub agent_session: Option<String>,
 }
 
 /// A recognized idle native occupant may receive a recovery hint before check-in.
@@ -1540,6 +1669,12 @@ pub struct SafeWakeTarget {
     pub basis: WakeTargetBasis,
     pub epoch: u64,
     pub observation_sequence: u64,
+    /// The seat's open binding harness (`claude` or `codex`); the host
+    /// adapter refuses a wake unless Herdr's detected agent kind equals it
+    /// (TRUST-POLICY A4). The host cannot know it, so adapters set `None` and
+    /// the notification dispatcher fills it from the reservation. `None`
+    /// means the seat has no open binding: the recognized-kind rule applies.
+    pub bound_harness: Option<String>,
 }
 
 /// What identifies the occupant a wake prompt may reach.
@@ -1872,6 +2007,8 @@ pub enum ReservedWakeAuthority {
         terminal: TerminalId,
         incarnation: String,
         binding_generation: Option<u64>,
+        /// The open binding's harness, when the seat has one.
+        harness: Option<String>,
     },
 }
 impl WakeReservation {
@@ -2275,6 +2412,33 @@ pub trait StorePort: Send + Sync {
         actor: OperatorActor,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError>;
+    /// Payload-bound historical continuity result; a miss has no durable effects.
+    fn replay_continuity(
+        &self,
+        _command: ContinuityCheckIn,
+        _budget: &CallBudget,
+    ) -> Result<Option<CommandResult>, ApiError> {
+        Err(ApiError {
+            code: crate::protocol::results::ErrorCode::Unsupported,
+            detail: "continuity replay is unavailable".into(),
+            restart_argv: None,
+            required_minimum_bytes: None,
+        })
+    }
+    /// TRUST-POLICY C1: reattach the unique unresolved seat whose last binding
+    /// carries the resumed session id.
+    fn decide_continuity(
+        &self,
+        _request: ContinuityRequest,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError {
+            code: crate::protocol::results::ErrorCode::Unsupported,
+            detail: "continuity reattachment is unavailable".into(),
+            restart_argv: None,
+            required_minimum_bytes: None,
+        })
+    }
     /// Local durable validation only; implementations must not invent native proof.
     fn issue_cooperative_permit(
         &self,
@@ -2397,6 +2561,16 @@ pub trait StorePort: Send + Sync {
         transition: GuardedSeatTransition,
         budget: &CallBudget,
     ) -> Result<ReconciliationOutcome, ApiError>;
+    /// Persist that the saved-seat pass of `published` ended with no refused
+    /// transition and lift the restore hold when nothing is left to protect.
+    /// Returns whether the marker was written (false for a stale publication).
+    fn record_reconciliation_pass(
+        &self,
+        _published: &PublishedSnapshot,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
+    }
     fn due_obligations(
         &self,
         request: DueScanRequest,
@@ -2536,6 +2710,16 @@ pub trait HostPort: Send + Sync {
         request: NativeLaunchRequest,
         context: &HostCallContext,
     ) -> Result<NativeLaunchOutcome, ApiError>;
+    /// Herdr's agent record for one pane. `Ok(None)`: Herdr answered and
+    /// reports no agent; `Err`: the read failed. Adapters without the route
+    /// report "no agent".
+    fn observe_pane_agent(
+        &self,
+        _target: &HostTargetId,
+        _context: &HostCallContext,
+    ) -> Result<Option<PaneAgentObservation>, ApiError> {
+        Ok(None)
+    }
     /// Elected composition calls this once, before any observation, with the
     /// host epoch the previous daemon boot persisted. Daemon restart creates a
     /// new, higher connection epoch so a same-incarnation capture orders after

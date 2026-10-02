@@ -18,3 +18,4 @@ Columns: date · title · relative link · one-line summary · status · tags.
 | 2026-09-28 | Graph system identity: connection | [Design](../../design/graph-system-identity/connection-design.md) | Scoped nested design under ht-4is. | designed | graph-system-identity, ht-4is |
 | 2026-09-28 | Graph system identity: store | [Design](../../design/graph-system-identity/store-design.md) | Scoped nested design under ht-4is. | designed | graph-system-identity, ht-4is |
 | 2026-09-28 | Graph system identity: client-integration | [Design](../../design/graph-system-identity/client-integration-design.md) | Scoped nested design under ht-4is. | designed | graph-system-identity, ht-4is |
+| 2026-10-01 | B5 cooperative trust policy guards | [Design](../runs/2026-10-01-b5-trust-policy-guards/2026-10-01-b5-trust-policy-guards-design.md) | Implements TRUST-POLICY.md required guards (C1–C4, A2, A4) and resolves F6. | implemented | herdr-threads, ht-rzi, trust-policy |

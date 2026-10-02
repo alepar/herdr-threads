@@ -28,6 +28,13 @@ pub struct ManagedLaunchRequest {
     pub name_hint: Option<String>,
 }
 
+/// The seat's open (not ended) binding, as launch needs it for the live-agent guard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenBinding {
+    pub target: HostTargetId,
+    pub provenance: String,
+}
+
 /// The ordinary service resolver must enforce durable recovery holds and ownership.
 /// It may allocate the explicit target only through the standard guarded seat path.
 pub trait LaunchSeatResolver: Send + Sync {
@@ -37,6 +44,16 @@ pub trait LaunchSeatResolver: Send + Sync {
         observation: &HostObservation,
         budget: &CallBudget,
     ) -> Result<SeatId, ApiError>;
+
+    /// The seat's open binding, if any (TRUST-POLICY A4 launch guard). The
+    /// default reports none.
+    fn open_binding(
+        &self,
+        _seat: &SeatId,
+        _budget: &CallBudget,
+    ) -> Result<Option<OpenBinding>, ApiError> {
+        Ok(None)
+    }
 }
 
 /// The owned hook configuration a managed launch adds: the installed hook's
@@ -161,7 +178,7 @@ const CODEX_VALUE_OPTIONS: &[&str] = &[
 const CODEX_MULTI_VALUE_OPTIONS: &[&str] = &["-i", "--image"];
 
 /// Codex subcommands a managed launch cannot configure: refused rather than
-/// started without the owned hooks. `exec` and `resume` are handled forms.
+/// started without the owned hooks. `exec` is a handled form; `resume` is refused until captured.
 /// Covers every top-level subcommand and alias `codex --help` lists for
 /// codex-cli 0.159.2 (plus older names), so a bare first positional naming a
 /// Codex subcommand is never mistaken for an interactive prompt; a prompt
@@ -220,14 +237,11 @@ const CODEX_EXEC_UNSUPPORTED_SUBCOMMANDS: &[&str] = &["fork", "review", "help"];
 ///   (`hook-placement-probe/exec.jsonl`, `codex-158-live-hook-capture/run1.sh`);
 /// - `ExecResume`: `codex --no-daemon exec ... resume ... -c hooks.* ID PROMPT`
 ///   (`codex-158-live-hook-capture/run3.sh`, SessionStart resume captured);
-/// - `Resume`: `codex --no-daemon resume -c hooks.* ...`, the same
-///   subcommand-level placement; not yet live-captured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodexLaunchForm {
     Interactive,
     Exec,
     ExecResume,
-    Resume,
 }
 
 /// The next positional argument at or after `start`: its index and whether
@@ -280,10 +294,13 @@ fn codex_form(argv: &[String]) -> Result<(CodexLaunchForm, usize, Option<usize>)
             }
             _ => Ok((CodexLaunchForm::Exec, first + 1, Some(first))),
         },
-        "resume" => Ok((CodexLaunchForm::Resume, first + 1, Some(first))),
+        "resume" => Err(error(
+            ErrorCode::InvalidRequest,
+            "managed launch refuses the Codex `resume` form: no live capture shows it loading the owned hooks (TRUST-POLICY Accepted limits); run `codex resume` by hand in the pane, or use `exec resume`",
+        )),
         word if CODEX_UNSUPPORTED_SUBCOMMANDS.contains(&word) => Err(error(
             ErrorCode::InvalidRequest,
-            "managed launch supports Codex interactive, `exec`, `exec resume` and `resume` only; \
+            "managed launch supports Codex interactive, `exec` and `exec resume` only; \
              this subcommand cannot carry the owned hook configuration",
         )),
         _ => {
@@ -491,6 +508,31 @@ pub fn launch_managed(
         ));
     }
     let seat = seats.resolve_for_launch(&request.target, &first, &budget)?;
+    if let Some(bound) = seats.open_binding(&seat, &budget)?
+        && bound.provenance == crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE
+    {
+        let observed = host.observe_pane_agent(
+            &bound.target,
+            &HostCallContext {
+                budget: budget.clone(),
+                expected_boot: None,
+                expected_epoch: None,
+            },
+        )?;
+        if let Some(kind) = observed
+            .and_then(|agent| agent.kind)
+            .filter(|kind| crate::protocol::authority::is_harness_agent_kind(kind))
+        {
+            return Err(error(
+                ErrorCode::TargetUnsafe,
+                &format!(
+                    "seat {} is bound to a live {kind} agent in pane {}; launch refuses to start a second agent for the seat (TRUST-POLICY A4). Use that pane, or retire/rebind the seat as the operator",
+                    seat.as_str(),
+                    bound.target.as_str()
+                ),
+            ));
+        }
+    }
     let configuration = hooks
         .launch_configuration(request.harness, &budget)?
         .ok_or_else(|| error(ErrorCode::MissingHook, "supported hook is not configured"))?;

@@ -1,13 +1,14 @@
 //! Ordinary structural seat resolution; native authority remains separate.
 use crate::{
     ports::{
-        HostCallContext, HostInvalidationReason, HostObservation, HostObservationAdmission,
-        HostPort, OperatorRequest, OperatorTargetGuard, OrdinaryResolutionAttempt,
-        OrdinaryResolutionGuard, OrdinaryResolutionOutcome, ResolvedTargetCheck, StorePort,
+        ContinuityRequest, ContinuityTargetGuard, HostCallContext, HostInvalidationReason,
+        HostObservation, HostObservationAdmission, HostPort, OperatorRequest, OperatorTargetGuard,
+        OrdinaryResolutionAttempt, OrdinaryResolutionGuard, OrdinaryResolutionOutcome,
+        ResolvedTargetCheck, StorePort,
     },
     protocol::{
         authority::OperatorActor,
-        commands::{OperatorCommand, ResolveSeat},
+        commands::{ContinuityCheckIn, OperatorCommand, ResolveSeat},
         ids::{HostTargetId, SeatId},
         results::{ApiError, CommandResult, ErrorCode},
         time::{CallBudget, Cancellation, Clock, MonoInstant},
@@ -20,6 +21,9 @@ use std::sync::Arc;
 /// invalidation compensation. It is deliberately independent of the request
 /// budget (see [`OrdinaryIdentity::compensation_budget`]).
 pub const INVALIDATION_COMPENSATION_MS: u64 = 2_000;
+
+/// Own time budget of the C1 `agent.get` diagnostic read.
+const DIAGNOSTIC_READ_MILLIS: u64 = 750;
 
 pub struct OrdinaryIdentity {
     instance: String,
@@ -184,7 +188,16 @@ impl OrdinaryIdentity {
                     budget,
                 );
             }
+            OperatorCommand::Retire(request) => {
+                let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
+                return self.store.mutate_operator(
+                    OperatorRequest::Retire(request.clone()),
+                    actor,
+                    budget,
+                );
+            }
             OperatorCommand::Rebind(request) => request.target.clone(),
+            OperatorCommand::Replace(request) => request.target.clone(),
             OperatorCommand::FreshSeat(request) => request.target.clone(),
         };
         self.with_observation(&target, budget, |_, observation| {
@@ -193,11 +206,84 @@ impl OrdinaryIdentity {
             let request = match command {
                 OperatorCommand::Rebind(c) => OperatorRequest::Rebind(c, guard),
                 OperatorCommand::FreshSeat(c) => OperatorRequest::FreshSeat(c, guard),
-                OperatorCommand::OrphanInvite(_) => unreachable!(),
+                OperatorCommand::Replace(c) => OperatorRequest::Replace(c, guard),
+                OperatorCommand::OrphanInvite(_) | OperatorCommand::Retire(_) => unreachable!(),
             };
             let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
             self.store.mutate_operator(request, actor, budget)
         })
+    }
+
+    /// TRUST-POLICY C1: reattach the unresolved seat a resumed session belongs
+    /// to. Historical replay precedes host work and grants no current
+    /// authority. The Herdr `agent_session` read is a bounded diagnostic whose
+    /// outcome (match, mismatch, absent, read error) is recorded and never
+    /// decides, so no read failure refuses or permits anything. The read runs
+    /// before the fresh target observation, so its latency is outside the
+    /// guard's freshness window; its failures map to `read_error` and never
+    /// fence (the adapter does not bump the connection epoch for it).
+    pub fn continuity(
+        &self,
+        command: ContinuityCheckIn,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let replay = {
+            let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
+            self.store.replay_continuity(command.clone(), budget)?
+        };
+        if let Some(result) = replay {
+            return Ok(result);
+        }
+        let target = command.target.clone();
+        let diagnostic = self.agent_session_diagnostic(&target, &command, budget);
+        self.with_observation(&target, budget, |_, observation| {
+            let guard = ContinuityTargetGuard::try_new(&self.instance, &command, observation)
+                .map_err(|detail| error(ErrorCode::StaleHostObservation, detail))?;
+            let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
+            self.store.decide_continuity(
+                ContinuityRequest {
+                    command,
+                    guard,
+                    diagnostic,
+                },
+                budget,
+            )
+        })
+    }
+
+    /// Compare Herdr's reported agent session for the pane with the resumed
+    /// session id. Diagnostic only (C1): the value is stored for seat inspect.
+    fn agent_session_diagnostic(
+        &self,
+        target: &HostTargetId,
+        command: &ContinuityCheckIn,
+        budget: &CallBudget,
+    ) -> &'static str {
+        // Its own bounded budget (at most 750 ms) so a slow read cannot
+        // consume the whole request budget.
+        let bounded = CallBudget {
+            deadline: budget.deadline.min(MonoInstant(
+                self.clock
+                    .monotonic_now()
+                    .0
+                    .saturating_add(DIAGNOSTIC_READ_MILLIS),
+            )),
+            cancellation: budget.cancellation.clone(),
+        };
+        let context = HostCallContext {
+            budget: bounded,
+            expected_boot: None,
+            expected_epoch: None,
+        };
+        match self.host.observe_pane_agent(target, &context) {
+            Ok(Some(agent)) => match agent.agent_session {
+                Some(session) if session == command.native_session.as_str() => "match",
+                Some(_) => "mismatch",
+                None => "absent",
+            },
+            Ok(None) => "absent",
+            Err(_) => "read_error",
+        }
     }
 
     /// This is a new, non-replayed currentness decision. A historical resolve

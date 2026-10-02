@@ -490,7 +490,19 @@ impl NativeCli {
         budget: &CallBudget,
         limit: Duration,
     ) -> Result<String, ApiError> {
-        self.dispatch(args, budget, limit, false)
+        self.dispatch(args, budget, limit, false, true)
+            .map(|(body, _)| body)
+    }
+
+    /// A diagnostic/advisory read: it carries no fence and never invalidates
+    /// the connection epoch, however it fails.
+    fn run_unfenced(
+        &self,
+        args: &[&str],
+        budget: &CallBudget,
+        limit: Duration,
+    ) -> Result<String, ApiError> {
+        self.dispatch(args, budget, limit, false, false)
             .map(|(body, _)| body)
     }
 
@@ -503,7 +515,7 @@ impl NativeCli {
         budget: &CallBudget,
         limit: Duration,
     ) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
-        self.dispatch(args, budget, limit, cfg!(target_os = "macos"))
+        self.dispatch(args, budget, limit, cfg!(target_os = "macos"), true)
     }
 
     fn dispatch(
@@ -512,6 +524,7 @@ impl NativeCli {
         budget: &CallBudget,
         limit: Duration,
         witnessed: bool,
+        fenced: bool,
     ) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
         if !self.socket.is_absolute() {
             return Err(error(
@@ -592,15 +605,17 @@ impl NativeCli {
             )
             .map(|body| (body, None))
         };
-        if outcome.as_ref().is_err_and(|error| {
-            matches!(
-                error.code,
-                ErrorCode::Cancelled
-                    | ErrorCode::DeadlineExceeded
-                    | ErrorCode::HostUnavailable
-                    | ErrorCode::StaleHostObservation
-            )
-        }) {
+        if fenced
+            && outcome.as_ref().is_err_and(|error| {
+                matches!(
+                    error.code,
+                    ErrorCode::Cancelled
+                        | ErrorCode::DeadlineExceeded
+                        | ErrorCode::HostUnavailable
+                        | ErrorCode::StaleHostObservation
+                )
+            })
+        {
             self.epoch.fetch_add(1, Ordering::AcqRel);
         }
         outcome
@@ -612,21 +627,53 @@ impl NativeCli {
         started: Instant,
         limit: Duration,
     ) -> Result<(), ApiError> {
-        if budget.cancellation.is_cancelled() {
+        let checked = self.check_after_parse_unfenced(budget, started, limit);
+        if checked.is_err() {
             self.epoch.fetch_add(1, Ordering::AcqRel);
+        }
+        checked
+    }
+
+    /// The parse-time checks of [`Self::check_after_parse`] without the epoch
+    /// bump, for diagnostic reads that carry no fence.
+    fn check_after_parse_unfenced(
+        &self,
+        budget: &CallBudget,
+        started: Instant,
+        limit: Duration,
+    ) -> Result<(), ApiError> {
+        if budget.cancellation.is_cancelled() {
             return Err(error(
                 ErrorCode::Cancelled,
                 "host call cancelled during parse",
             ));
         }
         if started.elapsed() >= limit || self.clock.monotonic_now() >= budget.deadline {
-            self.epoch.fetch_add(1, Ordering::AcqRel);
             return Err(error(
                 ErrorCode::DeadlineExceeded,
                 "host call expired during parse",
             ));
         }
         Ok(())
+    }
+
+    fn pane_agent_within(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+        limit: Duration,
+    ) -> Result<Option<ports::PaneAgentObservation>, ApiError> {
+        self.check_context(context)?;
+        let started = Instant::now();
+        match self.run_unfenced(&["agent", "get", target.as_str()], &context.budget, limit) {
+            Err(failure) if failure.code == ErrorCode::NotFound => Ok(None),
+            Err(failure) => Err(failure),
+            Ok(raw) => {
+                let parsed = crate::host::observation::normalize_pane_agent(&raw, target.as_str())?;
+                self.check_after_parse_unfenced(&context.budget, started, limit)?;
+                Ok(parsed)
+            }
+        }
     }
 }
 
@@ -777,6 +824,7 @@ impl HostPort for NativeCli {
             basis: WakeTargetBasis::CooperativeAgent,
             epoch: observation.epoch,
             observation_sequence: observation.observation_sequence,
+            bound_harness: None,
         })
     }
 
@@ -903,6 +951,17 @@ impl HostPort for NativeCli {
         }
     }
 
+    /// A diagnostic/advisory read: it carries no fence and never invalidates
+    /// the connection epoch, so a slow or failed read cannot refuse another
+    /// call.
+    fn observe_pane_agent(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<Option<ports::PaneAgentObservation>, ApiError> {
+        self.pane_agent_within(target, context, Duration::from_millis(750))
+    }
+
     fn launch_native(
         &self,
         request: NativeLaunchRequest,
@@ -977,6 +1036,18 @@ fn cooperative_wake_ready(
             "no recognized harness agent (agent {})",
             kind.unwrap_or("none").chars().take(32).collect::<String>()
         ));
+    }
+    match target.bound_harness.as_deref() {
+        Some(bound) if kind != Some(bound) => {
+            return Err(format!(
+                "agent kind {} differs from the bound harness {bound}",
+                kind.unwrap_or("none").chars().take(32).collect::<String>()
+            ));
+        }
+        None if target.basis == WakeTargetBasis::CooperativeAgent => {
+            return Err("no bound harness for a cooperative wake".into());
+        }
+        _ => {}
     }
     let status = text("agent_status");
     if !status.is_some_and(|status| WAKE_READY_STATUSES.contains(&status)) {
@@ -1234,6 +1305,127 @@ mod tests {
                 "foreground_cwd":"/tmp","interactive_ready":true,"name":name,"pane_id":"w4:p1",
                 "revision":0,"state_change_seq":504,"tab_id":"w4:t1","terminal_id":"term_1",
                 "workspace_id":"w4"}})
+    }
+    fn pane_agent_context() -> HostCallContext {
+        HostCallContext {
+            budget: CallBudget {
+                deadline: MonoInstant(10_000),
+                cancellation: Cancellation::default(),
+            },
+            expected_boot: None,
+            expected_epoch: None,
+        }
+    }
+    /// One `agent.get` exchange answered with `reply` (its id is filled in).
+    fn pane_agent_read(reply: Value) -> Result<Option<ports::PaneAgentObservation>, ApiError> {
+        let (socket, cli, worker) = fixture(move |stream, wire| {
+            assert_eq!(wire["method"], "agent.get");
+            assert_eq!(wire["params"], json!({"target":"w4:p1"}));
+            let mut reply = reply;
+            reply["id"] = wire["id"].clone();
+            writeln!(stream, "{reply}").unwrap();
+        });
+        let result = cli.observe_pane_agent(&HostTargetId::new("w4:p1"), &pane_agent_context());
+        worker.join().unwrap();
+        let _ = fs::remove_file(socket);
+        result
+    }
+    fn agent_info(session: Option<&str>) -> Value {
+        let mut agent = json!({"agent":"claude","agent_status":"idle","pane_id":"w4:p1",
+            "terminal_id":"term_1"});
+        if let Some(value) = session {
+            agent["agent_session"] =
+                json!({"agent":"claude","kind":"id","source":"herdr:claude","value":value});
+        }
+        json!({"result":{"type":"agent_info","agent":agent}})
+    }
+    #[test]
+    fn pane_agent_maps_agent_get_with_session() {
+        assert_eq!(
+            pane_agent_read(agent_info(Some("sess-1"))).unwrap(),
+            Some(ports::PaneAgentObservation {
+                kind: Some("claude".into()),
+                agent_session: Some("sess-1".into()),
+            })
+        );
+    }
+    #[test]
+    fn pane_agent_maps_agent_get_without_session() {
+        assert_eq!(
+            pane_agent_read(agent_info(None)).unwrap(),
+            Some(ports::PaneAgentObservation {
+                kind: Some("claude".into()),
+                agent_session: None,
+            })
+        );
+    }
+    #[test]
+    fn pane_agent_not_found_is_absent() {
+        let reply = json!({"error":{"code":"agent_not_found","message":"no agent"}});
+        assert_eq!(pane_agent_read(reply).unwrap(), None);
+    }
+    #[test]
+    fn pane_agent_other_error_is_read_error() {
+        let reply = json!({"error":{"code":"permission_denied","message":"denied"}});
+        assert_eq!(
+            pane_agent_read(reply).unwrap_err().code,
+            ErrorCode::Unauthorized
+        );
+    }
+    /// After a diagnostic read, a fenced call carrying the pre-read epoch is
+    /// still admitted: the read did not invalidate the connection.
+    fn assert_epoch_untouched(cli: &NativeCli, before: u64) {
+        assert_eq!(cli.epoch(), before);
+        let context = HostCallContext {
+            expected_boot: Some(HostBootId::new("proven-boot")),
+            expected_epoch: Some(before),
+            ..pane_agent_context()
+        };
+        cli.check_context(&context)
+            .expect("fenced call must not see 'host context changed'");
+    }
+    #[test]
+    fn pane_agent_failure_never_bumps_the_connection_epoch() {
+        let limit = Duration::from_millis(150);
+        let target = HostTargetId::new("w4:p1");
+        // Timeout: the fixture accepts the read and never replies in time.
+        let (socket, cli, worker) = fixture(|stream, _| {
+            thread::sleep(Duration::from_millis(600));
+            let _ = stream.flush();
+        });
+        let before = cli.epoch();
+        let result = cli.pane_agent_within(&target, &pane_agent_context(), limit);
+        assert!(result.is_err(), "a read past its limit must fail");
+        assert_epoch_untouched(&cli, before);
+        worker.join().unwrap();
+        let _ = fs::remove_file(socket);
+        // HostUnavailable: no listener at the socket path.
+        let missing = std::env::temp_dir().join(format!("ht-absent-{}", uuid::Uuid::new_v4()));
+        let cli = NativeCli::new(missing, Arc::new(TestClock(Instant::now())));
+        cli.epoch.store(3, Ordering::Release);
+        let failure = cli
+            .pane_agent_within(&target, &pane_agent_context(), limit)
+            .unwrap_err();
+        assert_eq!(failure.code, ErrorCode::HostUnavailable);
+        assert_epoch_untouched(&cli, 3);
+        // Parse-time overrun: the reply arrived after the limit.
+        let cli = NativeCli::new(
+            std::env::temp_dir().join("unused"),
+            Arc::new(TestClock(Instant::now())),
+        );
+        cli.epoch.store(3, Ordering::Release);
+        let late = Instant::now() - Duration::from_millis(500);
+        let failure = cli
+            .check_after_parse_unfenced(&pane_agent_context().budget, late, limit)
+            .unwrap_err();
+        assert_eq!(failure.code, ErrorCode::DeadlineExceeded);
+        assert_epoch_untouched(&cli, 3);
+        // The fenced variant still bumps, so the unfenced one is the difference.
+        assert!(
+            cli.check_after_parse(&pane_agent_context().budget, late, limit)
+                .is_err()
+        );
+        assert_eq!(cli.epoch(), 4);
     }
     #[test]
     fn guarded_start_correlates_exact_direct_request_without_claiming_execution() {
@@ -1728,6 +1920,8 @@ mod tests {
             .expect("fresh verified terminal is a cooperative wake target");
         assert_eq!(target.basis, WakeTargetBasis::CooperativeAgent);
         assert_eq!(target.terminal.as_str(), "term_1");
+        // The store always supplies the bound harness for a cooperative wake.
+        target.bound_harness = Some("claude".into());
         let mut context = wake_context(&observation);
         tamper(&mut target, &mut context);
         let result = cli.submit_prompt(&target, "wake marker", &context);
@@ -1759,10 +1953,14 @@ mod tests {
                     json!({"type":"agent_prompted","agent":wake_agent("idle", Some(kind), "term_1")}),
                 );
             });
-            let (result, methods) = cooperative_wake(vec![
-                recheck_exchange(wake_agent(status, Some(kind), "term_1")),
-                prompt,
-            ]);
+            let (result, methods) = cooperative_wake_with(
+                vec![
+                    recheck_exchange(wake_agent(status, Some(kind), "term_1")),
+                    prompt,
+                ],
+                None,
+                |target, _| target.bound_harness = Some(kind.into()),
+            );
             assert_eq!(
                 result.unwrap(),
                 ports::PromptOutcome::Submitted,
@@ -1772,6 +1970,101 @@ mod tests {
                 *methods.lock().unwrap(),
                 ["pane.get", "agent.get", "agent.prompt"],
                 "the recheck immediately precedes the prompt"
+            );
+        }
+    }
+
+    /// TRUST-POLICY A4 wake rule: the pane's detected agent kind must equal
+    /// the seat's bound harness; a different kind (both directions) or no
+    /// detected kind refuses before any prompt, a matching kind is prompted.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cooperative_wake_refuses_claude_bound_seat_with_codex_agent() {
+        bound_harness_wake_refused("claude", Some("codex"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cooperative_wake_refuses_codex_bound_seat_with_claude_agent() {
+        bound_harness_wake_refused("codex", Some("claude"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cooperative_wake_refuses_codex_bound_seat_without_detected_agent() {
+        bound_harness_wake_refused("codex", None);
+    }
+
+    /// A cooperative target with no bound harness is refused, never compared
+    /// with the detected agent kind as "any recognized kind".
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cooperative_wake_refuses_target_without_bound_harness() {
+        let (result, methods) = cooperative_wake_with(
+            vec![recheck_exchange(wake_agent(
+                "idle",
+                Some("claude"),
+                "term_1",
+            ))],
+            None,
+            |target, _| target.bound_harness = None,
+        );
+        let error = result.unwrap_err();
+        assert_eq!(error.code, ErrorCode::TargetUnsafe);
+        assert!(
+            error.detail.contains("no bound harness"),
+            "{}",
+            error.detail
+        );
+        assert_eq!(*methods.lock().unwrap(), ["pane.get", "agent.get"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn bound_harness_wake_refused(bound: &'static str, detected: Option<&str>) {
+        let (result, methods) = cooperative_wake_with(
+            vec![recheck_exchange(wake_agent("idle", detected, "term_1"))],
+            None,
+            |target, _| target.bound_harness = Some(bound.into()),
+        );
+        let error = result.unwrap_err();
+        assert_eq!(error.code, ErrorCode::TargetUnsafe, "{bound} {detected:?}");
+        assert!(
+            error.detail.contains("bound harness") || error.detail.contains("no recognized"),
+            "{}",
+            error.detail
+        );
+        assert_eq!(
+            *methods.lock().unwrap(),
+            ["pane.get", "agent.get"],
+            "no agent.prompt is sent"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cooperative_wake_prompts_matching_bound_harness() {
+        for kind in ["claude", "codex"] {
+            let prompt: Exchange = Box::new(move |stream: &mut UnixStream, request: Value| {
+                assert_eq!(request["method"], "agent.prompt");
+                answer(
+                    stream,
+                    &request,
+                    json!({"type":"agent_prompted","agent":wake_agent("idle", Some(kind), "term_1")}),
+                );
+            });
+            let (result, methods) = cooperative_wake_with(
+                vec![
+                    recheck_exchange(wake_agent("idle", Some(kind), "term_1")),
+                    prompt,
+                ],
+                None,
+                |target, _| target.bound_harness = Some(kind.into()),
+            );
+            assert_eq!(result.unwrap(), ports::PromptOutcome::Submitted, "{kind}");
+            assert_eq!(
+                *methods.lock().unwrap(),
+                ["pane.get", "agent.get", "agent.prompt"],
+                "{kind}"
             );
         }
     }
@@ -1956,7 +2249,7 @@ mod tests {
             .unwrap();
         });
         let (result, methods) = cooperative_wake(vec![
-            recheck_exchange(wake_agent("idle", Some("codex"), "term_1")),
+            recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
             weird,
         ]);
         assert_eq!(result.unwrap(), ports::PromptOutcome::OutcomeUnknown);

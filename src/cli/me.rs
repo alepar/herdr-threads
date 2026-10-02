@@ -16,10 +16,10 @@
 //! sent to a human seat; its mail waits to be read and ACKed by hand.
 
 use super::{
-    RunError,
+    RunError, agent_evidence, agent_evidence_refusal,
     commands::{CliAction, CooperativeSelection, MutationSpec, ParsedCli},
-    connect, invalid_request, journal, mapping_error, pane_seat, parse_pane, retry, run_selected,
-    seat_contexts, selected_generation,
+    connect, invalid_request, journal, mapping_error, pane_agent, pane_seat, parse_pane, retry,
+    run_selected, seat_contexts, selected_generation,
 };
 use crate::{
     daemon::paths::{InstancePaths, RuntimeContext},
@@ -39,7 +39,10 @@ pub const ME_INIT_HELP: &str = "Run it in your own shell pane, then use thread c
 read, ack and accept there with no --cooperative-* flags. Your actions are recorded as \
 operator_human, never as an agent. Mail addressed to your seat (including --require-ack) waits \
 for you: read it and `herdr-threads ack MESSAGE`. Re-run `me init` after a daemon restart to \
-mark yourself available again.";
+mark yourself available again. It is refused where agent markers (CLAUDECODE, CODEX_SANDBOX, \
+CODEX_SANDBOX_NETWORK_DISABLED) or a Claude or Codex agent reported by Herdr are present, and over \
+a seat bound to an agent; `me init --operator` overrides that as the local account (later \
+commands in this pane then run as you).";
 
 fn budget(clock: &dyn Clock, millis: u64) -> CallBudget {
     CallBudget {
@@ -89,8 +92,9 @@ fn resolve_seat(
 fn agent_seat_refusal(seat: &SeatId, pane: &HostTargetId, harness: Harness) -> RunError {
     invalid_request(&format!(
         "seat {seat} on pane {pane} belongs to a {harness:?} agent; `me init` never takes over an \
-         agent's seat. Run it in your own shell pane, or give this pane a fresh seat with \
-         `herdr-threads seat resolve --pane {pane} --new-seat --operator`",
+         agent's seat. Run it in your own shell pane, give this pane a fresh seat with \
+         `herdr-threads seat resolve --pane {pane} --new-seat --operator`, or override as the \
+         local account: `herdr-threads me init --operator`",
         seat = seat.as_str(),
         pane = pane.as_str(),
     ))
@@ -104,8 +108,19 @@ fn check_in_spec(
     seat: &SeatId,
     pane: &HostTargetId,
     generation: u64,
+    operator: bool,
 ) -> Result<MutationSpec, RunError> {
     let context_error = super::context_run_error;
+    let fresh = || MutationSpec::CheckInLifecycle {
+        event_id: format!("me-init:{}", uuid::Uuid::new_v4()),
+        native_session: None,
+        operator,
+    };
+    if operator {
+        // The override always starts a fresh lifecycle: a pending event from
+        // an earlier, refused run would replay without the override.
+        return Ok(fresh());
+    }
     if let Some(pending) = contexts.pending().map_err(context_error)? {
         if pending.context.harness != Harness::Human {
             return Err(agent_seat_refusal(seat, pane, pending.context.harness));
@@ -114,6 +129,7 @@ fn check_in_spec(
             CheckInMode::Lifecycle => MutationSpec::CheckInLifecycle {
                 event_id: pending.event_id,
                 native_session: None,
+                operator: false,
             },
             CheckInMode::Current => MutationSpec::CheckIn,
         });
@@ -123,15 +139,34 @@ fn check_in_spec(
             Err(agent_seat_refusal(seat, pane, current.harness))
         }
         Some(current) if current.binding_generation == generation => Ok(MutationSpec::CheckIn),
-        _ => Ok(MutationSpec::CheckInLifecycle {
-            event_id: format!("me-init:{}", uuid::Uuid::new_v4()),
-            native_session: None,
-        }),
+        _ => Ok(fresh()),
     }
+}
+
+/// Abandon this person's own pending lifecycle event (never an agent's).
+fn discard_pending_human_event(
+    journal: &journal::Journal,
+    contexts: &crate::harness::context::ContextJournal,
+) -> Result<(), RunError> {
+    let context_error = super::context_run_error;
+    let Some(pending) = contexts.pending().map_err(context_error)? else {
+        return Ok(());
+    };
+    if pending.context.harness != Harness::Human {
+        return Ok(());
+    }
+    journal.complete_operation(&crate::protocol::ids::OperationId::new(
+        pending.operation_id.to_string(),
+    ))?;
+    contexts
+        .abandon_pending(&pending.event_id)
+        .map_err(context_error)?;
+    Ok(())
 }
 
 pub(crate) fn run_me_init<W: Write>(
     mut parsed: ParsedCli,
+    operator: bool,
     caller_pane: Option<&str>,
     context: &RuntimeContext,
     paths: &InstancePaths,
@@ -150,18 +185,14 @@ pub(crate) fn run_me_init<W: Write>(
         )
     })?;
     let pane = parse_pane(pane)?;
-    // Never record a person over an agent Herdr sees in this pane.
-    let host =
-        crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(clock));
-    if let Some(agent) = host
-        .pane(pane.as_str(), &budget(clock.as_ref(), 2_000))?
-        .agent
+    // Never record a person over agent evidence (TRUST-POLICY A4, best
+    // effort; the daemon refuses a person's check-in over an agent binding).
+    // `--operator` is the local account's explicit override.
+    if !operator
+        && let Some(evidence) =
+            agent_evidence(std::env::vars(), || pane_agent(context, clock, &pane))
     {
-        return Err(invalid_request(&format!(
-            "Herdr reports a `{agent}` agent in pane {pane}; `me init` is for a person's own \
-             shell pane and never acts as an agent",
-            pane = pane.as_str(),
-        )));
+        return Err(agent_evidence_refusal(pane.as_str(), &evidence));
     }
     let (instance, _, client) = connect(paths, clock)?;
     let seat = match pane_seat(&parsed, &pane, paths, clock)? {
@@ -191,7 +222,13 @@ pub(crate) fn run_me_init<W: Write>(
     };
     let generation = selected_generation(&selection, &inspection)?;
     let contexts = seat_contexts(paths, instance, &seat)?;
-    parsed.action = CliAction::Mutation(check_in_spec(&contexts, &seat, &pane, generation)?);
+    let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
+    if operator {
+        discard_pending_human_event(&journal, &contexts)?;
+    }
+    parsed.action = CliAction::Mutation(check_in_spec(
+        &contexts, &seat, &pane, generation, operator,
+    )?);
     // A person at a terminal gets one line naming their seat; the machine
     // forms (and `--json`) keep the full check-in result.
     let human = super::output::human_active();
@@ -207,6 +244,15 @@ pub(crate) fn run_me_init<W: Write>(
         &mut sink,
     )
     .map_err(|error| match error {
+        RunError::Api(api) if api.code == ErrorCode::Unauthorized => {
+            // A deterministic refusal: the frozen event is never replayed, so
+            // a later `me init --operator` (or a re-run after the agent
+            // leaves) starts a fresh lifecycle.
+            if let Err(error) = discard_pending_human_event(&journal, &contexts) {
+                return error;
+            }
+            RunError::Api(api)
+        }
         RunError::Api(api) if api.code == ErrorCode::Conflict => {
             RunError::Api(crate::protocol::results::ApiError {
                 detail: format!(
@@ -219,6 +265,16 @@ pub(crate) fn run_me_init<W: Write>(
         }
         other => other,
     })?;
+    // Honor `--operator` for later person-pane commands, only now that the
+    // daemon accepted the check-in (TRUST-POLICY A4).
+    if operator
+        && let Some(current) = contexts.current().map_err(super::context_run_error)?
+        && current.harness == Harness::Human
+    {
+        contexts
+            .set_operator_mark(current.execution)
+            .map_err(super::context_run_error)?;
+    }
     if human {
         writeln!(
             writer,

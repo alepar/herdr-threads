@@ -969,3 +969,196 @@ fn new_resolution_discards_only_definitively_rejected_first_submission() {
     assert!(journal.page(&Default::default()).unwrap().items.is_empty());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn allocator_lock_leaf_symlink_is_refused() {
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let elsewhere = temp();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let victim = elsewhere.join("victim");
+    std::fs::write(&victim, b"").unwrap();
+    let _ = std::fs::remove_file(dir.join("allocator.lock"));
+    std::os::unix::fs::symlink(&victim, dir.join("allocator.lock")).unwrap();
+    assert!(
+        journal.record(scope(), send(), 1).is_err(),
+        "a symlinked allocator.lock must not be followed"
+    );
+    assert!(journal.lock().is_err());
+    std::fs::remove_dir_all(dir).unwrap();
+    std::fs::remove_dir_all(elsewhere).unwrap();
+}
+
+fn continuity_semantic(target: &str, event_id: &str) -> SemanticMutation {
+    SemanticMutation::ContinuityCheckIn {
+        target: HostTargetId::new(target),
+        harness: Harness::Claude,
+        native_session: NativeSessionId::new("sess-1"),
+        source: "resume".into(),
+        event_id: event_id.into(),
+        execution: ExecutionId::new("exec-1"),
+    }
+}
+fn continuity_scope(instance: &str, target: &str) -> IntentScope {
+    IntentScope::Continuity {
+        instance: instance.into(),
+        target: HostTargetId::new(target),
+    }
+}
+
+#[test]
+fn continuity_intent_round_trips_and_is_found_by_instance_and_target() {
+    use crate::protocol::{commands::ContinuityCheckIn, ids::OperationId};
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let reference = journal
+        .record(
+            continuity_scope("i1", "w1:p1"),
+            continuity_semantic("w1:p1", "evt-1"),
+            7,
+        )
+        .unwrap();
+    // Another pane and another instance never see it.
+    assert!(
+        journal
+            .pending_continuity("i1", &HostTargetId::new("w1:p2"))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        journal
+            .pending_continuity("i2", &HostTargetId::new("w1:p1"))
+            .unwrap()
+            .is_none()
+    );
+    let found = journal
+        .pending_continuity("i1", &HostTargetId::new("w1:p1"))
+        .unwrap()
+        .expect("pending continuity intent");
+    assert_eq!(found.header.reference, reference);
+    assert_eq!(found.operation, reference.operation);
+    assert_eq!(
+        found.header.kind,
+        crate::protocol::results::IntentKind::ContinuityCheckIn
+    );
+    // It becomes the same wire command under the journal's operation key.
+    let command = found
+        .semantic
+        .to_command(found.operation.clone(), None)
+        .unwrap();
+    assert_eq!(
+        command,
+        Command::ContinuityCheckIn(ContinuityCheckIn {
+            target: HostTargetId::new("w1:p1"),
+            harness: Harness::Claude,
+            native_session: NativeSessionId::new("sess-1"),
+            source: "resume".into(),
+            operation: OperationId::new(reference.operation.as_str()),
+            execution: ExecutionId::new("exec-1"),
+        })
+    );
+    // Completion removes it.
+    journal.complete(&reference).unwrap();
+    assert!(
+        journal
+            .pending_continuity("i1", &HostTargetId::new("w1:p1"))
+            .unwrap()
+            .is_none()
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn continuity_intent_refuses_foreign_scope_and_non_resume_source() {
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    // The scope names one pane; a request for another is a scope mismatch.
+    assert!(
+        journal
+            .record(
+                continuity_scope("i1", "w1:p1"),
+                continuity_semantic("w1:p2", "evt"),
+                1
+            )
+            .is_err()
+    );
+    // A native seat scope cannot carry a continuity request.
+    assert!(
+        journal
+            .record(scope(), continuity_semantic("w1:p1", "evt"), 1)
+            .is_err()
+    );
+    // Only a resume can be journaled.
+    let SemanticMutation::ContinuityCheckIn {
+        target,
+        harness,
+        native_session,
+        event_id,
+        execution,
+        ..
+    } = continuity_semantic("w1:p1", "evt")
+    else {
+        unreachable!()
+    };
+    assert!(
+        journal
+            .record(
+                continuity_scope("i1", "w1:p1"),
+                SemanticMutation::ContinuityCheckIn {
+                    target,
+                    harness,
+                    native_session,
+                    source: "startup".into(),
+                    event_id,
+                    execution,
+                },
+                1
+            )
+            .is_err()
+    );
+    assert!(journal.page(&Default::default()).unwrap().items.is_empty());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn pending_continuity_skips_vanished_unparsable_fifo_and_symlink_entries() {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let reference = journal
+        .record(
+            continuity_scope("i1", "w1:p1"),
+            continuity_semantic("w1:p1", "evt-1"),
+            7,
+        )
+        .unwrap();
+    // A FIFO with no writer would block a plain open; a symlink to an endless
+    // device would never finish a read; garbage does not parse.
+    let fifo = dir.join(format!("{:020}-fifo.intent", 1));
+    let c_path = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+    std::os::unix::fs::symlink("/dev/zero", dir.join(format!("{:020}-zero.intent", 1))).unwrap();
+    std::os::unix::fs::symlink(
+        dir.join("missing-target"),
+        dir.join(format!("{:020}-dangling.intent", 1)),
+    )
+    .unwrap();
+    std::fs::write(dir.join(format!("{:020}-garbage.intent", 1)), b"not json\n").unwrap();
+    std::fs::write(dir.join(format!("{:020}-empty.intent", 1)), b"").unwrap();
+    let found = journal
+        .pending_continuity("i1", &HostTargetId::new("w1:p1"))
+        .unwrap()
+        .expect("the valid intent is still found");
+    assert_eq!(found.header.reference, reference);
+    // With only bad entries present the scan finds nothing and does not fail.
+    journal.complete(&reference).unwrap();
+    assert!(
+        journal
+            .pending_continuity("i1", &HostTargetId::new("w1:p1"))
+            .unwrap()
+            .is_none()
+    );
+    let _ = std::fs::remove_file(fifo);
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -89,6 +89,13 @@ pub mod observation_store {
             transition: GuardedSeatTransition,
             budget: &CallBudget,
         ) -> Result<ReconciliationOutcome, ApiError>;
+        fn record_reconciliation_pass(
+            &self,
+            _published: &PublishedSnapshot,
+            _budget: &CallBudget,
+        ) -> Result<bool, ApiError> {
+            Ok(false)
+        }
     }
     impl<T: StorePort + ?Sized> ObservationStore for T {
         fn clock(&self) -> &dyn crate::protocol::time::Clock {
@@ -195,6 +202,13 @@ pub mod observation_store {
             budget: &CallBudget,
         ) -> Result<ReconciliationOutcome, ApiError> {
             StorePort::apply_reconciliation_transition(self, transition, budget)
+        }
+        fn record_reconciliation_pass(
+            &self,
+            published: &PublishedSnapshot,
+            budget: &CallBudget,
+        ) -> Result<bool, ApiError> {
+            StorePort::record_reconciliation_pass(self, published, budget)
         }
     }
 }
@@ -446,6 +460,24 @@ pub fn plan_page(page: &SnapshotSeatPage) -> Result<Vec<GuardedSeatTransition>, 
                 })
             } else if saved.target.as_ref() != Some(&observed.target) {
                 Some(ReconciliationAction::Move {
+                    target: observed.target.clone(),
+                    terminal: terminal.clone(),
+                })
+            } else if saved.state == SeatState::Resolved
+                && saved.terminal.as_ref() == Some(terminal)
+                && saved.active_binding_execution.is_some()
+                && saved
+                    .bound_epoch
+                    .is_some_and(|epoch| epoch < page.publication.epoch)
+                && observed.connection_epoch.is_some_and(|epoch| epoch > 0)
+                && observed.incarnation_source.is_some()
+            {
+                // C4: same terminal, boot and incarnation in a newer host
+                // epoch; the open registered binding follows the seat.
+                // `bound_epoch` is Some only for a binding whose provenance is
+                // in `authority::CARRIED_BINDING_PROVENANCES`, the single
+                // definition shared with the applier.
+                Some(ReconciliationAction::CarryForward {
                     target: observed.target.clone(),
                     terminal: terminal.clone(),
                 })

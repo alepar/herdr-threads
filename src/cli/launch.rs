@@ -37,7 +37,7 @@ use crate::{
         context::Harness as ContextHarness,
         launch::{
             LaunchHookConfiguration, LaunchHookInspector, LaunchSeatResolver, ManagedLaunchRequest,
-            launch_managed,
+            OpenBinding, launch_managed,
         },
     },
     host::observation::PaneName,
@@ -468,6 +468,44 @@ impl LaunchSeatResolver for DaemonSeatResolver<'_> {
             )),
         }
     }
+
+    fn open_binding(
+        &self,
+        seat: &SeatId,
+        budget: &CallBudget,
+    ) -> Result<Option<OpenBinding>, ApiError> {
+        open_binding_of(self.client, seat, budget)
+    }
+}
+
+/// The seat's open binding from one `SeatInspect` call (`limit: 1`): the
+/// daemon's answer does not depend on how long the seat's history is.
+fn open_binding_of<C: LocalClient + ?Sized>(
+    client: &C,
+    seat: &SeatId,
+    budget: &CallBudget,
+) -> Result<Option<OpenBinding>, ApiError> {
+    let result = client.call(
+        Command::SeatInspect(crate::protocol::commands::SeatInspectQuery {
+            seat: seat.clone(),
+            page: PageRequest {
+                cursor: None,
+                limit: 1,
+                max_bytes: crate::protocol::pagination::MAX_PAGE_BYTES,
+            },
+        }),
+        budget,
+    )?;
+    let CommandResult::SeatInspect(inspection) = result else {
+        return Err(api(
+            ErrorCode::InvalidRequest,
+            "service returned no seat inspection",
+        ));
+    };
+    Ok(inspection.open_binding.map(|bound| OpenBinding {
+        target: bound.target,
+        provenance: bound.provenance,
+    }))
 }
 
 /// Remembers the seat the policy resolved, for the report and the record.
@@ -487,6 +525,14 @@ impl LaunchSeatResolver for RecordingResolver<'_> {
             *slot = Some(seat.clone());
         }
         Ok(seat)
+    }
+
+    fn open_binding(
+        &self,
+        seat: &SeatId,
+        budget: &CallBudget,
+    ) -> Result<Option<OpenBinding>, ApiError> {
+        self.inner.open_binding(seat, budget)
     }
 }
 

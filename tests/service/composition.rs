@@ -61,6 +61,7 @@ fn selected_wire_output_is_optional_bounded_and_never_an_authority_field() {
         version: PROTOCOL_VERSION,
         request_id: "r".into(),
         expected_instance: instance.clone(),
+        expected_boot: None,
         output: None,
         command: Command::Health,
     };
@@ -2049,6 +2050,115 @@ fn actual_native_daemon_restart_keeps_same_terminal_seat_resolvable() {
     eprintln!(
         "actual NativeCli: restart moved host epoch past {epoch}; same live terminal kept seat {seat:?}"
     );
+}
+
+/// P35: a client holding the previous boot's descriptor reaches the restarted
+/// daemon. The daemon refuses before dispatch; the client reports a definite
+/// rejection, never UnknownOutcome, and nothing is recorded.
+/// Kills: no `expected_boot` on the wire (the resolve would create a seat) and
+/// the client treating the refusal as an identity mismatch (UnknownOutcome).
+#[cfg(target_os = "macos")]
+#[test]
+fn request_with_previous_boot_after_restart_is_daemon_boot_changed() {
+    use herdr_threads::protocol::results::ErrorCode;
+    let mut fixture =
+        ActualNativeFixture::start_with(false, 0, vec![actual_pane("w4:p1", "term_a")]);
+    fixture.wait_for("first verified publication", |db| {
+        host_state(db).0.is_some()
+    });
+    let stale = fixture.client();
+    let old_boot = fixture.descriptor.boot_id;
+    fixture.restart();
+    assert_ne!(fixture.descriptor.boot_id, old_boot);
+    let resolve = || {
+        Command::ResolveSeat(herdr_threads::protocol::commands::ResolveSeat {
+            target: HostTargetId::new("w4:p1"),
+            operation: herdr_threads::protocol::ids::OperationId::new("stale-boot"),
+        })
+    };
+    let definite = stale
+        .call_definitive(resolve(), &fixture.budget())
+        .expect("a boot refusal is a correlated answer, not an unknown outcome");
+    assert_eq!(definite.unwrap_err().code, ErrorCode::DaemonBootChanged);
+    let error =
+        herdr_threads::ports::LocalClient::call(&stale, resolve(), &fixture.budget()).unwrap_err();
+    assert_eq!(error.code, ErrorCode::DaemonBootChanged);
+    let seats: i64 = fixture
+        .db()
+        .query_row("SELECT count(*) FROM seats", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(seats, 0, "the refused request applied nothing");
+    // The current descriptor still works.
+    assert!(matches!(
+        fixture.resolve("w4:p1", "fresh-boot").unwrap(),
+        CommandResult::SeatResolved(_)
+    ));
+}
+
+/// O1/C4: a joined, registered seat stays effectively available across a
+/// daemon restart. The restarted boot resumes a higher host epoch of the same
+/// Herdr incarnation; the structural carry-forward moves the open binding to
+/// it, so the send-time availability projection (the one `stage_recipient`
+/// uses) still confirms the seat and the first send does not warn.
+/// Kills: no carry-forward on a resolved seat whose binding lags the epoch.
+#[cfg(target_os = "macos")]
+fn restart_keeps_registered_seat_available(provenance: &str) {
+    let mut fixture =
+        ActualNativeFixture::start_with(false, 0, vec![actual_pane("w4:p1", "term_a")]);
+    fixture.wait_for("first verified publication", |db| {
+        host_state(db).0.is_some()
+    });
+    let CommandResult::SeatResolved(seat) = fixture.resolve("w4:p1", "before-restart").unwrap()
+    else {
+        panic!("resolve did not return a seat");
+    };
+    let available = |db: &rusqlite::Connection| {
+        herdr_threads::store::schema::effective_registered_availability(db, seat.as_str(), None)
+            .unwrap()
+    };
+    {
+        // The seat's agent has checked in at the current epoch.
+        let db = fixture.db();
+        db.execute(
+            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) SELECT s.id,s.generation,s.target_generation,s.target_id,h.host_boot,h.host_epoch,'claude','plugin_context:x','exec-x',?2,1,1,s.structural_terminal_id,s.structural_incarnation FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1",
+            rusqlite::params![seat.as_str(), provenance],
+        )
+        .unwrap();
+        assert_eq!(available(&db).as_deref(), Some(provenance));
+    }
+    let (active, epoch, _) = host_state(&fixture.db());
+    fixture.restart();
+    fixture.wait_for("publication by the restarted boot", |db| {
+        let (now_active, now_epoch, _) = host_state(db);
+        now_active.is_some() && now_active != active && now_epoch > epoch
+    });
+    fixture.wait_for("binding carried to the restarted boot's epoch", |db| {
+        available(db).is_some()
+    });
+    let db = fixture.db();
+    assert_eq!(available(&db).as_deref(), Some(provenance));
+    let (binding_epoch, host_epoch, ended): (i64, i64, Option<i64>) = db
+        .query_row(
+            "SELECT b.host_epoch,h.host_epoch,b.ended_at FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id JOIN host_instances h ON h.id=s.instance_id WHERE b.seat_id=?1",
+            [seat.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert!(host_epoch > epoch);
+    assert_eq!(binding_epoch, host_epoch);
+    assert_eq!(ended, None);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn daemon_restart_keeps_joined_cooperative_seat_available_without_warning() {
+    restart_keeps_registered_seat_available("cooperative_top_level");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn daemon_restart_keeps_joined_human_seat_available() {
+    restart_keeps_registered_seat_available("operator_human");
 }
 
 /// S1 (wave-2 fix1): the writer's startup binding-evidence verification is

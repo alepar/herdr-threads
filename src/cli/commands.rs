@@ -50,7 +50,10 @@ pub enum CliAction {
     /// Managed native launch into one explicit existing empty shell pane.
     Launch(super::launch::LaunchRequest),
     /// `me init`: record the invoking pane as the person's own seat identity.
-    MeInit,
+    /// `operator` overrides the agent-to-human guard (TRUST-POLICY A4).
+    MeInit {
+        operator: bool,
+    },
     /// Print the embedded agent skill (`skill` or `--skill`); local only.
     Skill,
     /// `read THREAD --follow`: recent messages, then each new one as it is
@@ -143,7 +146,7 @@ pub fn dispatch<B: CliBackend>(
         CliAction::Setup(_)
         | CliAction::SetupAll(_)
         | CliAction::Launch(_)
-        | CliAction::MeInit
+        | CliAction::MeInit { .. }
         | CliAction::Skill
         | CliAction::Follow(_) => {
             return Err(ApiError {
@@ -195,12 +198,22 @@ pub enum MutationSpec {
     CheckInLifecycle {
         event_id: String,
         native_session: Option<String>,
+        /// `me init --operator`: submitted as `Command::OperatorCheckIn`.
+        operator: bool,
     },
     Rebind {
         seat: SeatId,
         pane: HostTargetId,
     },
     FreshSeat(HostTargetId),
+    /// `seat retire SEAT --operator`: abandon a seat.
+    Retire(SeatId),
+    /// `seat rebind OLD --pane P --replace NEW --operator`.
+    Replace {
+        seat: SeatId,
+        pane: HostTargetId,
+        replace: SeatId,
+    },
 }
 
 impl MutationSpec {
@@ -215,6 +228,8 @@ impl MutationSpec {
             self,
             Self::Resolve(_)
                 | Self::Rebind { .. }
+                | Self::Retire(_)
+                | Self::Replace { .. }
                 | Self::FreshSeat(_)
                 | Self::Invite { operator: true, .. }
         );
@@ -324,6 +339,22 @@ impl MutationSpec {
             Self::Rebind { seat, pane } => WireCommand::OperatorRebind(OperatorRebind {
                 seat,
                 target: pane,
+                operation,
+            }),
+            Self::Retire(seat) => {
+                WireCommand::OperatorRetire(crate::protocol::commands::OperatorRetire {
+                    seat,
+                    operation,
+                })
+            }
+            Self::Replace {
+                seat,
+                pane,
+                replace,
+            } => WireCommand::OperatorReplace(crate::protocol::commands::OperatorReplace {
+                seat,
+                target: pane,
+                replace,
                 operation,
             }),
             Self::FreshSeat(pane) => WireCommand::OperatorFreshSeat(OperatorFreshSeat {
@@ -484,7 +515,12 @@ enum MeSub {
     /// provenance, so `thread create`, `invite`, `send`, `read`, `ack` and
     /// `accept` run here with no caller flags. Re-run after a daemon restart.
     #[command(after_help = super::me::ME_INIT_HELP)]
-    Init,
+    Init {
+        /// Override the agent guard as the local account: record yourself over
+        /// an agent's binding or where agent markers are present.
+        #[arg(long)]
+        operator: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -532,7 +568,19 @@ enum SeatSub {
         seat: String,
         #[arg(long)]
         pane: String,
+        /// Retire the seat that owns the pane (NEW) and rebind this seat onto
+        /// the pane in one step; NEW's pending obligations settle as
+        /// recipient-retired and nothing moves from NEW to this seat.
+        #[arg(long, value_name = "NEW")]
+        replace: Option<String>,
         #[arg(long, required = true)]
+        operator: bool,
+    },
+    /// Abandon a seat: it retires and its pending obligations settle as
+    /// recipient-retired. The seat is never merged into another.
+    Retire {
+        seat: String,
+        #[arg(long)]
         operator: bool,
     },
     Retirements(PageArgs),
@@ -1111,6 +1159,7 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
                     .native_session
                     .map(|s| bounded(s, "native session reference"))
                     .transpose()?,
+                operator: false,
             },
             None => MutationSpec::CheckIn,
         }),
@@ -1205,15 +1254,28 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
             SeatSub::Rebind {
                 seat,
                 pane,
+                replace,
                 operator,
             } => {
                 if !operator {
                     return Err(invalid("operator required"));
                 }
-                CliAction::Mutation(MutationSpec::Rebind {
-                    seat: id(seat, SeatId::parse)?,
-                    pane: id(pane, HostTargetId::parse)?,
+                let seat = id(seat, SeatId::parse)?;
+                let pane = id(pane, HostTargetId::parse)?;
+                CliAction::Mutation(match replace {
+                    Some(replace) => MutationSpec::Replace {
+                        seat,
+                        pane,
+                        replace: id(replace, SeatId::parse)?,
+                    },
+                    None => MutationSpec::Rebind { seat, pane },
                 })
+            }
+            SeatSub::Retire { seat, operator } => {
+                if !operator {
+                    return Err(invalid("operator required"));
+                }
+                CliAction::Mutation(MutationSpec::Retire(id(seat, SeatId::parse)?))
             }
         },
         Top::Delivery {
@@ -1269,8 +1331,8 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
         Top::Unsetup(args) => setup_action(super::setup::SetupVerb::Remove, args)?,
         Top::SetupStatus(args) => setup_action(super::setup::SetupVerb::Status, args)?,
         Top::Me {
-            command: MeSub::Init,
-        } => CliAction::MeInit,
+            command: MeSub::Init { operator },
+        } => CliAction::MeInit { operator },
         Top::Launch(args) => {
             use crate::harness::context::Harness;
             let harness = if args.kind == "codex" {

@@ -651,7 +651,7 @@ fn burst_digest_ranks_the_require_ack_handoff_first() {
     );
     assert!(
         actions.header.contains(&format!(
-            "Your seat in this pane: {} ",
+            "Your seat in this pane: {} (thread participants and thread show mark it as self when run in this pane).",
             digest.seat.as_str()
         )),
         "{}",
@@ -1239,6 +1239,26 @@ fn budgets_follow_event_mode() {
     assert_eq!(budget_for(&event(CLAUDE_START)), LIFECYCLE_BUDGET);
 }
 
+// Kills: a hook deadline window that retries after its deadline, or
+// sleeps a whole backoff past it.
+#[test]
+fn hook_deadline_window_never_waits_past_the_deadline() {
+    // Already passed: no further attempt fits.
+    assert!(!HookDeadline(Instant::now()).wait(Duration::from_millis(1)));
+    // Far away: the backoff is waited and another attempt fits.
+    assert!(HookDeadline(Instant::now() + Duration::from_secs(60)).wait(Duration::from_millis(1)));
+    // A backoff longer than the window is cut at the deadline, after which
+    // nothing fits (whether or not the first wait still fit under load).
+    let window = HookDeadline(Instant::now() + Duration::from_millis(20));
+    let started = Instant::now();
+    let _ = window.wait(Duration::from_secs(30));
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "slept past the deadline"
+    );
+    assert!(!window.wait(Duration::from_millis(1)));
+}
+
 // P6 (native Claude demo 2): print mode denied the ready commands because
 // setup granted nothing that covered them. Every command form the hook tells
 // an agent to run, rendered by the hook's own renderers (`cli_prefix`,
@@ -1581,6 +1601,7 @@ mod pane_seat_selection {
                         summary,
                         hold: None,
                         retirement: None,
+                        open_binding: None,
                         history: page(vec![], None),
                     }))
                 }
@@ -1596,7 +1617,9 @@ mod pane_seat_selection {
             Instant::now() + Duration::from_secs(5),
             clock().as_ref(),
         ) {
-            Ok(v) => Ok(v),
+            Ok(PaneSeat::Resolved(seat, generation)) => Ok(Some((seat, generation))),
+            Ok(PaneSeat::HeldOrUnresolved(message)) => Err(message),
+            Ok(PaneSeat::Unowned) => Ok(None),
             Err(Failure::Unavailable(m)) => Err(m),
             Err(_) => Err("other failure".into()),
         }
@@ -1659,5 +1682,717 @@ mod pane_seat_selection {
         assert!(err.contains("Unresolved"), "{err}");
         assert!(cli_pick(seats).is_empty());
         assert!(hook_pick(vec![]).unwrap().is_none());
+    }
+}
+
+/// TRUST-POLICY C1 gate and journal behavior of the seatless continuity
+/// check-in, against a scripted daemon client (no process, no socket).
+mod continuity_gate {
+    use super::*;
+    use crate::cli::journal::{IntentScope, Journal, SemanticMutation};
+    use crate::protocol::{
+        authority::Harness as WireHarness,
+        ids::{NativeSessionId, SeatId},
+        results::ContinuityReattachment,
+    };
+    use std::{collections::VecDeque, sync::Mutex};
+
+    type Reply = Result<Result<CommandResult, ApiError>, ApiError>;
+
+    /// A retry window that admits a fixed number of waits and never sleeps,
+    /// so how many attempts happen is decided by the test, not the clock.
+    struct ScriptedWindow {
+        left: Mutex<usize>,
+        waits: Mutex<Vec<Duration>>,
+    }
+    impl ScriptedWindow {
+        fn allowing(waits: usize) -> Arc<Self> {
+            Arc::new(Self {
+                left: Mutex::new(waits),
+                waits: Mutex::new(Vec::new()),
+            })
+        }
+        fn waits(&self) -> Vec<Duration> {
+            self.waits.lock().unwrap().clone()
+        }
+    }
+    impl RetryWindow for ScriptedWindow {
+        fn wait(&self, backoff: Duration) -> bool {
+            let mut left = self.left.lock().unwrap();
+            if *left == 0 {
+                return false;
+            }
+            *left -= 1;
+            self.waits.lock().unwrap().push(backoff);
+            true
+        }
+    }
+
+    /// Answers every `call_definitive` from a script and records all commands.
+    struct Daemon {
+        replies: Mutex<VecDeque<Reply>>,
+        seen: Mutex<Vec<Command>>,
+        /// Whether the pane's seat lookup answers (an empty pane) or fails.
+        lookup: bool,
+        /// The last scripted reply repeats once the script runs out.
+        sticky: bool,
+    }
+    impl Daemon {
+        fn new(replies: Vec<Reply>) -> Self {
+            Self {
+                replies: Mutex::new(replies.into()),
+                seen: Mutex::new(Vec::new()),
+                lookup: false,
+                sticky: false,
+            }
+        }
+        fn repeating(mut self) -> Self {
+            self.sticky = true;
+            self
+        }
+        fn continuity_requests(&self) -> Vec<crate::protocol::commands::ContinuityCheckIn> {
+            self.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|command| match command {
+                    Command::ContinuityCheckIn(request) => Some(request.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+    }
+    impl LocalClient for Daemon {
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            let seats = matches!(command, Command::Seats(_));
+            self.seen.lock().unwrap().push(command);
+            if seats && self.lookup {
+                return Ok(CommandResult::Seats(crate::protocol::pagination::Page {
+                    items: vec![],
+                    next_cursor: None,
+                    next_argv: None,
+                    high_water_ordinal: 0,
+                    scope_revision: None,
+                    has_more: false,
+                    stop_reason: crate::protocol::pagination::StopReason::Complete,
+                    consistency: crate::protocol::pagination::Consistency::BoundedLive,
+                }));
+            }
+            Err(rejection(ErrorCode::HostUnavailable))
+        }
+        fn call_definitive(
+            &self,
+            command: Command,
+            _: &CallBudget,
+        ) -> Result<Result<CommandResult, ApiError>, ApiError> {
+            self.seen.lock().unwrap().push(command);
+            let mut replies = self.replies.lock().unwrap();
+            if self.sticky && replies.len() == 1 {
+                return replies.front().cloned().unwrap();
+            }
+            replies.pop_front().expect("an unscripted daemon call")
+        }
+    }
+
+    fn rejection(code: ErrorCode) -> ApiError {
+        ApiError {
+            code,
+            detail: "scripted".into(),
+            restart_argv: None,
+            required_minimum_bytes: None,
+        }
+    }
+    fn reattached(seat: &str, generation: u64) -> Reply {
+        Ok(Ok(CommandResult::ContinuityReattached(
+            ContinuityReattachment {
+                seat: SeatId::new(seat),
+                binding_generation: generation,
+            },
+        )))
+    }
+
+    struct Pane {
+        dir: PathBuf,
+        paths: InstancePaths,
+        target: HostTargetId,
+        instance: uuid::Uuid,
+        context: RuntimeContext,
+    }
+    impl Pane {
+        fn new() -> Self {
+            let dir = PathBuf::from(format!(
+                "/private/tmp/hkc-{}",
+                &uuid::Uuid::new_v4().simple().to_string()[..10]
+            ));
+            std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+            let context =
+                RuntimeContext::explicit(dir.join("state"), dir.join("host.sock"), None).unwrap();
+            let paths = InstancePaths::resolve(&context).unwrap();
+            paths.prepare_instance_dir().unwrap();
+            Self {
+                dir,
+                paths,
+                target: HostTargetId::new("w1:p1"),
+                instance: uuid::Uuid::new_v4(),
+                context,
+            }
+        }
+        fn call<'a>(&'a self, client: &'a dyn LocalClient) -> PaneCall<'a> {
+            self.call_with(client, ScriptedWindow::allowing(8))
+        }
+        fn call_with<'a>(
+            &'a self,
+            client: &'a dyn LocalClient,
+            retry: Arc<ScriptedWindow>,
+        ) -> PaneCall<'a> {
+            PaneCall {
+                context: &self.context,
+                paths: &self.paths,
+                client,
+                instance: self.instance,
+                target: &self.target,
+                deadline: Instant::now() + Duration::from_secs(5),
+                clock: clock(),
+                retry,
+            }
+        }
+        fn saved_context(&self, seat: &str) -> Option<OccupantContext> {
+            crate::cli::seat_contexts(&self.paths, self.instance, &SeatId::new(seat))
+                .unwrap()
+                .current()
+                .unwrap()
+        }
+        fn journal(&self) -> Journal {
+            Journal::open(self.paths.instance_dir.join("intents")).unwrap()
+        }
+        fn pending(&self) -> Option<crate::cli::journal::PendingIntent> {
+            self.journal()
+                .pending_continuity(&self.instance.to_string(), &self.target)
+                .unwrap()
+        }
+        fn record(&self, session: &str) -> (crate::cli::journal::IntentRef, uuid::Uuid) {
+            let execution = uuid::Uuid::new_v4();
+            let reference = self.record_with(session, execution.to_string());
+            (reference, execution)
+        }
+        fn record_with(&self, session: &str, execution: String) -> crate::cli::journal::IntentRef {
+            self.journal()
+                .record(
+                    IntentScope::Continuity {
+                        instance: self.instance.to_string(),
+                        target: self.target.clone(),
+                    },
+                    SemanticMutation::ContinuityCheckIn {
+                        target: self.target.clone(),
+                        harness: WireHarness::Claude,
+                        native_session: NativeSessionId::new(session),
+                        source: "resume".into(),
+                        event_id: "evt-recorded".into(),
+                        execution: crate::protocol::ids::ExecutionId::new(execution),
+                    },
+                    1,
+                )
+                .unwrap()
+        }
+    }
+    impl Drop for Pane {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn event(
+        harness: Harness,
+        kind: EventKind,
+        role: Role,
+        session: Option<&str>,
+    ) -> LifecycleEvent {
+        LifecycleEvent {
+            harness,
+            source: match kind {
+                EventKind::Resume => "resume",
+                EventKind::Startup => "startup",
+                EventKind::Clear => "clear",
+                EventKind::Compact => "compact",
+                EventKind::Restart => "retry",
+                EventKind::Tool => "PreToolUse",
+            }
+            .into(),
+            kind,
+            native_session: session.map(str::to_owned),
+            role,
+            event_id: uuid::Uuid::new_v4().to_string(),
+            capability: Capability::ObservedInput,
+        }
+    }
+    fn resume(harness: Harness) -> LifecycleEvent {
+        event(harness, EventKind::Resume, Role::TopLevel, Some("S-1"))
+    }
+
+    // Kills: a gate that lets startup/clear/compact/tool events, children or a
+    // human occupant reach the daemon's reattachment decision.
+    #[test]
+    fn only_a_top_level_resume_with_a_session_asks_for_reattachment() {
+        let pane = Pane::new();
+        let daemon = Daemon::new(vec![]);
+        let call = pane.call(&daemon);
+        for (name, candidate) in [
+            (
+                "startup",
+                event(
+                    Harness::Claude,
+                    EventKind::Startup,
+                    Role::TopLevel,
+                    Some("S-1"),
+                ),
+            ),
+            (
+                "clear",
+                event(
+                    Harness::Claude,
+                    EventKind::Clear,
+                    Role::TopLevel,
+                    Some("S-1"),
+                ),
+            ),
+            (
+                "compact",
+                event(
+                    Harness::Codex,
+                    EventKind::Compact,
+                    Role::TopLevel,
+                    Some("S-1"),
+                ),
+            ),
+            (
+                "tool",
+                event(
+                    Harness::Claude,
+                    EventKind::Tool,
+                    Role::TopLevel,
+                    Some("S-1"),
+                ),
+            ),
+            (
+                "restart",
+                event(
+                    Harness::Claude,
+                    EventKind::Restart,
+                    Role::TopLevel,
+                    Some("S-1"),
+                ),
+            ),
+            (
+                "child resume",
+                event(
+                    Harness::Claude,
+                    EventKind::Resume,
+                    Role::Subagent,
+                    Some("S-1"),
+                ),
+            ),
+            (
+                "human",
+                event(
+                    Harness::Human,
+                    EventKind::Resume,
+                    Role::TopLevel,
+                    Some("S-1"),
+                ),
+            ),
+            (
+                "no session",
+                event(Harness::Codex, EventKind::Resume, Role::TopLevel, None),
+            ),
+        ] {
+            assert!(call.reattach_by_continuity(&candidate).is_none(), "{name}");
+        }
+        assert!(daemon.seen.lock().unwrap().is_empty(), "nothing was sent");
+        assert!(pane.pending().is_none(), "no intent was recorded");
+    }
+
+    // Kills: a request that names a seat, drops the harness, session or source,
+    // a follow-up lifecycle check-in, or a context not written from the reply.
+    #[test]
+    fn resume_reattaches_in_one_request_and_installs_the_context() {
+        for harness in [Harness::Claude, Harness::Codex] {
+            let pane = Pane::new();
+            let daemon = Daemon::new(vec![reattached("saved", 3)]);
+            let done = pane
+                .call(&daemon)
+                .reattach_by_continuity(&resume(harness))
+                .expect("reattached");
+            assert!(
+                String::from_utf8_lossy(&done.text)
+                    .starts_with("The top-level agent reads pending mail"),
+                "a resumed session gets the standing instruction"
+            );
+            let requests = daemon.continuity_requests();
+            assert_eq!(requests.len(), 1, "one ContinuityCheckIn request");
+            assert_eq!(requests[0].target, pane.target);
+            assert_eq!(requests[0].native_session.as_str(), "S-1");
+            assert_eq!(requests[0].source, "resume");
+            assert_eq!(
+                requests[0].harness,
+                if harness == Harness::Codex {
+                    WireHarness::Codex
+                } else {
+                    WireHarness::Claude
+                }
+            );
+            assert!(
+                !daemon.seen.lock().unwrap().iter().any(|command| matches!(
+                    command,
+                    Command::CheckIn(check)
+                        if matches!(check.mode, crate::protocol::commands::CheckInMode::Lifecycle { .. })
+                )),
+                "no follow-up lifecycle check-in"
+            );
+            let context = pane.saved_context("saved").expect("context installed");
+            assert_eq!(context.binding_generation, 3);
+            assert_eq!(context.target, pane.target.as_str());
+            assert_eq!(context.harness, harness);
+            assert_eq!(context.session, SessionReference::Native("S-1".into()));
+            assert_eq!(context.role, Role::TopLevel);
+            assert_eq!(
+                context.execution.to_string(),
+                requests[0].execution.as_str()
+            );
+            assert!(pane.pending().is_none(), "the intent is completed");
+        }
+    }
+
+    // Kills: a context install that keeps a saved context for another pane or
+    // an older generation, or leaves its dead pending request's intent behind.
+    #[test]
+    fn reattachment_replaces_any_saved_context_of_the_seat() {
+        let pane = Pane::new();
+        let contexts =
+            crate::cli::seat_contexts(&pane.paths, pane.instance, &SeatId::new("saved")).unwrap();
+        let execution = uuid::Uuid::new_v4();
+        contexts
+            .install_reattached(OccupantContext {
+                format_version: 1,
+                instance: pane.instance,
+                seat: "saved".into(),
+                target: "old-pane".into(),
+                harness: Harness::Claude,
+                binding_generation: 1,
+                execution,
+                session: SessionReference::Native("S-0".into()),
+                role: Role::TopLevel,
+            })
+            .unwrap();
+        let daemon = Daemon::new(vec![reattached("saved", 4)]);
+        assert!(
+            pane.call(&daemon)
+                .reattach_by_continuity(&resume(Harness::Claude))
+                .is_some()
+        );
+        let context = pane.saved_context("saved").unwrap();
+        assert_eq!(
+            (context.target.as_str(), context.binding_generation),
+            (pane.target.as_str(), 4)
+        );
+        assert_ne!(context.execution, execution);
+    }
+
+    // Kills: keeping a refused intent, which would be resubmitted by every
+    // later resume of the pane, or installing a context from a refusal.
+    #[test]
+    fn a_refusal_discards_the_intent_and_reattaches_nothing() {
+        for code in [
+            ErrorCode::NotFound,
+            ErrorCode::Conflict,
+            ErrorCode::TargetAlreadyOwned,
+        ] {
+            let pane = Pane::new();
+            let daemon = Daemon::new(vec![Ok(Err(rejection(code.clone())))]);
+            assert!(
+                pane.call(&daemon)
+                    .reattach_by_continuity(&resume(Harness::Claude))
+                    .is_none()
+            );
+            assert_eq!(daemon.continuity_requests().len(), 1, "{code:?}");
+            assert!(pane.pending().is_none(), "{code:?}");
+            assert!(pane.saved_context("saved").is_none(), "{code:?}");
+        }
+    }
+
+    // Kills: discarding an intent whose outcome is unknown or transient: the
+    // daemon may have committed, and only the replay finds out. Every attempt
+    // within the hook reuses the one operation key and execution, and a retry
+    // loop whose backoff does not double to its cap.
+    #[test]
+    fn a_retryable_outcome_is_retried_then_keeps_the_intent_under_its_key() {
+        for failure in [
+            Err(rejection(ErrorCode::UnknownOutcome)),
+            Err(rejection(ErrorCode::DeadlineExceeded)),
+            Ok(Err(rejection(ErrorCode::StoreBusy))),
+            Ok(Err(rejection(ErrorCode::HostUnavailable))),
+            Ok(Err(rejection(ErrorCode::ServiceBusy))),
+            Ok(Err(rejection(ErrorCode::StaleHostObservation))),
+        ] {
+            let pane = Pane::new();
+            let daemon = Daemon::new(vec![failure]).repeating();
+            let window = ScriptedWindow::allowing(5);
+            assert!(
+                pane.call_with(&daemon, Arc::clone(&window))
+                    .reattach_by_continuity(&resume(Harness::Claude))
+                    .is_none()
+            );
+            let kept = pane.pending().expect("the intent is kept");
+            let requests = daemon.continuity_requests();
+            assert_eq!(
+                requests.len(),
+                6,
+                "retried within the hook until the window closed"
+            );
+            assert!(
+                requests
+                    .iter()
+                    .all(|r| r.operation == kept.operation && r.execution == requests[0].execution)
+            );
+            assert_eq!(
+                window.waits(),
+                [50, 100, 200, 400, 400].map(Duration::from_millis),
+                "backoff doubles from the start and stops at the cap"
+            );
+            assert!(pane.saved_context("saved").is_none());
+        }
+    }
+
+    // Kills: a retry loop that submits again after the window has closed,
+    // or discards the intent when no retry fits.
+    #[test]
+    fn a_closed_window_submits_once_and_keeps_the_intent() {
+        let pane = Pane::new();
+        let daemon = Daemon::new(vec![Ok(Err(rejection(ErrorCode::ServiceBusy)))]).repeating();
+        assert!(
+            pane.call_with(&daemon, ScriptedWindow::allowing(0))
+                .reattach_by_continuity(&resume(Harness::Claude))
+                .is_none()
+        );
+        assert_eq!(daemon.continuity_requests().len(), 1);
+        assert!(pane.pending().is_some(), "the intent is kept");
+    }
+
+    // Kills: giving up on a busy or lagging daemon, or retrying under a fresh
+    // key (the daemon would decide twice).
+    #[test]
+    fn service_busy_then_reattached_is_retried_within_the_hook() {
+        let pane = Pane::new();
+        let daemon = Daemon::new(vec![
+            Ok(Err(rejection(ErrorCode::ServiceBusy))),
+            Ok(Err(rejection(ErrorCode::ServiceBusy))),
+            reattached("saved", 2),
+        ]);
+        let window = ScriptedWindow::allowing(8);
+        assert!(
+            pane.call_with(&daemon, Arc::clone(&window))
+                .reattach_by_continuity(&resume(Harness::Claude))
+                .is_some()
+        );
+        let requests = daemon.continuity_requests();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(window.waits().len(), 2, "one wait before each retry");
+        assert_eq!(requests[0].operation, requests[1].operation);
+        assert_eq!(requests[1].operation, requests[2].operation);
+        assert!(
+            requests
+                .iter()
+                .all(|r| r.execution == requests[0].execution)
+        );
+        assert!(pane.pending().is_none(), "one intent, completed");
+        assert_eq!(pane.saved_context("saved").unwrap().binding_generation, 2);
+    }
+
+    // Kills: reusing an intent of another session (a seat would move on
+    // evidence that no longer describes the pane).
+    #[test]
+    fn a_resume_of_another_session_supersedes_the_pending_intent() {
+        let pane = Pane::new();
+        pane.record("S-1");
+        let daemon = Daemon::new(vec![reattached("other", 2)]);
+        let other = event(
+            Harness::Claude,
+            EventKind::Resume,
+            Role::TopLevel,
+            Some("S-9"),
+        );
+        assert!(pane.call(&daemon).reattach_by_continuity(&other).is_some());
+        let requests = daemon.continuity_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].native_session.as_str(), "S-9");
+        assert!(pane.pending().is_none(), "the stale S-1 intent is gone");
+    }
+
+    // Kills: a resume that records a second intent instead of finishing the
+    // pending one under its recorded key and execution (the daemon would
+    // decide again instead of replaying the committed result).
+    #[test]
+    fn a_resume_of_the_same_session_reuses_the_pending_intent() {
+        let pane = Pane::new();
+        let (reference, execution) = pane.record("S-1");
+        let daemon = Daemon::new(vec![reattached("saved", 2)]);
+        assert!(
+            pane.call(&daemon)
+                .reattach_by_continuity(&resume(Harness::Claude))
+                .is_some()
+        );
+        let requests = daemon.continuity_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].operation, reference.operation);
+        assert_eq!(requests[0].execution.as_str(), execution.to_string());
+        assert_eq!(pane.saved_context("saved").unwrap().execution, execution);
+        assert!(pane.pending().is_none());
+    }
+
+    // Kills: an intent with an execution that is not a UUID being reused (no
+    // context could be built from it).
+    #[test]
+    fn an_intent_without_a_usable_execution_is_superseded() {
+        let pane = Pane::new();
+        pane.record_with("S-1", "not-a-uuid".into());
+        let daemon = Daemon::new(vec![reattached("saved", 2)]);
+        assert!(
+            pane.call(&daemon)
+                .reattach_by_continuity(&resume(Harness::Claude))
+                .is_some()
+        );
+        assert_eq!(daemon.continuity_requests().len(), 1);
+        assert!(pane.pending().is_none());
+    }
+
+    // Kills: a tool event that scans or replays the journal's continuity
+    // intents (a per-event cost, and a stale intent moving a seat).
+    #[test]
+    fn tool_event_never_scans_or_replays_continuity_intents() {
+        let pane = Pane::new();
+        let (reference, _) = pane.record("S-1");
+        let path = pane.paths.instance_dir.join("intents");
+        let intent_file = std::fs::read_dir(&path)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|p| p.extension().and_then(|e| e.to_str()) == Some("intent"))
+            .unwrap();
+        let before = std::fs::read(&intent_file).unwrap();
+        // A pane with a resolved seat: the tool event is handed to the seat's
+        // ordinary tool-boundary path, which answers nothing continuity.
+        let daemon = Daemon::new(vec![]);
+        let tool = event(
+            Harness::Claude,
+            EventKind::Tool,
+            Role::TopLevel,
+            Some("S-1"),
+        );
+        let _ = pane
+            .call(&daemon)
+            .check_in_seat(&tool, &SeatId::new("saved"), 3);
+        assert!(daemon.continuity_requests().is_empty());
+        assert_eq!(std::fs::read(&intent_file).unwrap(), before);
+        assert_eq!(pane.pending().unwrap().operation, reference.operation);
+    }
+
+    // Kills: a classification drifting under the hook's retry loop: a
+    // transient code completing the intent, or a final refusal being retried.
+    #[test]
+    fn continuity_refusal_table_is_pinned() {
+        // Exhaustive on purpose: a new `ErrorCode` must be classified here.
+        fn is_refusal(code: &ErrorCode) -> bool {
+            match code {
+                ErrorCode::InvalidRequest
+                | ErrorCode::Unauthorized
+                | ErrorCode::Archived
+                | ErrorCode::Conflict
+                | ErrorCode::OperationPayloadMismatch
+                | ErrorCode::MembershipRequired
+                | ErrorCode::NotFound
+                | ErrorCode::TargetAlreadyOwned
+                | ErrorCode::TargetUnresolved
+                | ErrorCode::TargetUnsafe
+                | ErrorCode::CallerUnverified
+                | ErrorCode::Unsupported
+                | ErrorCode::SequenceExhausted => true,
+                ErrorCode::UnknownWireVersion
+                | ErrorCode::DaemonVersionMismatch
+                | ErrorCode::InstanceMismatch
+                | ErrorCode::DaemonBootChanged
+                | ErrorCode::CursorStale
+                | ErrorCode::InvalidCursor
+                | ErrorCode::InvalidBudget
+                | ErrorCode::ReadBudgetExhausted
+                | ErrorCode::PermitExpired
+                | ErrorCode::StaleHostObservation
+                | ErrorCode::ThreadNotOrphaned
+                | ErrorCode::StoreBusy
+                | ErrorCode::StoreCorrupt
+                | ErrorCode::StoreFull
+                | ErrorCode::IncompatibleSchema
+                | ErrorCode::HostUnavailable
+                | ErrorCode::UnknownOutcome
+                | ErrorCode::MissingHook
+                | ErrorCode::UnsupportedHarness
+                | ErrorCode::Cancelled
+                | ErrorCode::DeadlineExceeded
+                | ErrorCode::ServiceBusy
+                | ErrorCode::ServiceNotRegistered
+                | ErrorCode::StaleServiceGeneration
+                | ErrorCode::IncompatibleOwnership
+                | ErrorCode::RequiredInvitationNeedsManagedThread
+                | ErrorCode::StaleRequirementAcceptance
+                | ErrorCode::TransportDenied => false,
+            }
+        }
+        let all = [
+            ErrorCode::Unsupported,
+            ErrorCode::InvalidRequest,
+            ErrorCode::UnknownWireVersion,
+            ErrorCode::DaemonVersionMismatch,
+            ErrorCode::InstanceMismatch,
+            ErrorCode::DaemonBootChanged,
+            ErrorCode::CursorStale,
+            ErrorCode::InvalidCursor,
+            ErrorCode::InvalidBudget,
+            ErrorCode::ReadBudgetExhausted,
+            ErrorCode::SequenceExhausted,
+            ErrorCode::Unauthorized,
+            ErrorCode::CallerUnverified,
+            ErrorCode::PermitExpired,
+            ErrorCode::StaleHostObservation,
+            ErrorCode::TargetUnresolved,
+            ErrorCode::TargetUnsafe,
+            ErrorCode::TargetAlreadyOwned,
+            ErrorCode::ThreadNotOrphaned,
+            ErrorCode::Archived,
+            ErrorCode::NotFound,
+            ErrorCode::OperationPayloadMismatch,
+            ErrorCode::StoreBusy,
+            ErrorCode::StoreCorrupt,
+            ErrorCode::StoreFull,
+            ErrorCode::IncompatibleSchema,
+            ErrorCode::HostUnavailable,
+            ErrorCode::UnknownOutcome,
+            ErrorCode::MissingHook,
+            ErrorCode::UnsupportedHarness,
+            ErrorCode::Cancelled,
+            ErrorCode::DeadlineExceeded,
+            ErrorCode::Conflict,
+            ErrorCode::ServiceBusy,
+            ErrorCode::ServiceNotRegistered,
+            ErrorCode::StaleServiceGeneration,
+            ErrorCode::IncompatibleOwnership,
+            ErrorCode::RequiredInvitationNeedsManagedThread,
+            ErrorCode::MembershipRequired,
+            ErrorCode::StaleRequirementAcceptance,
+            ErrorCode::TransportDenied,
+        ];
+        for code in &all {
+            assert_eq!(
+                crate::cli::retry::is_continuity_refusal(code),
+                is_refusal(code),
+                "{code:?}"
+            );
+        }
     }
 }

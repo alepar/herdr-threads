@@ -43,6 +43,12 @@ pub(crate) const NOTIFY_PREPARATION_SLOTS: &[Slot] = &[
 /// The first slot is normally `(table, "id", prefix)` for the row about to be
 /// inserted; extra slots cover IDs derived from the same suffix (a send
 /// preparation `prep-X` publishes message `msg-X`).
+///
+/// Suffixes are drawn from 62^8 ≈ 2^47.6 values. A retired id is only reused
+/// if a fresh draw hits it and nothing references it any more: the probability
+/// per draw is about (retired ids) x 2^-47.6, and such a reuse is harmless
+/// (TRUST-POLICY Accepted limits, Probabilistic identifiers). Live ids are
+/// checked for collisions in every slot.
 pub(crate) fn fresh(conn: &Connection, prefix: &str, slots: &[Slot]) -> Result<String, ApiError> {
     fresh_with(
         prefix,

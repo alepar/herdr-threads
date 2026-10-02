@@ -30,6 +30,7 @@ pub enum CommandResult {
     OperationStatus(OperationStatus),
     RetirementJobs(Page<RetirementStatus>),
     SeatResolved(SeatId),
+    ContinuityReattached(ContinuityReattachment),
     CheckedIn(CheckInResult),
     /// Local presentation of an immutable completed CheckIn fragment.
     #[serde(skip_deserializing)]
@@ -48,6 +49,7 @@ pub enum CommandResult {
     OperatorRebound(SeatId),
     OperatorFreshSeat(SeatId),
     OperatorInvited(InvitationId),
+    OperatorRetired(SeatId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,6 +105,9 @@ pub enum ErrorCode {
     UnknownWireVersion,
     DaemonVersionMismatch,
     InstanceMismatch,
+    /// The request named a daemon boot that is no longer running; nothing was
+    /// dispatched. Re-read the descriptor and retry.
+    DaemonBootChanged,
     CursorStale,
     InvalidCursor,
     InvalidBudget,
@@ -408,6 +413,14 @@ pub struct HoldSummary {
     pub reason_data: String,
     pub detail_argv: Vec<String>,
 }
+/// A seat's open (not ended) binding, the single answer every A4 guard reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenBindingSummary {
+    pub provenance: String,
+    pub harness: String,
+    pub target: HostTargetId,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SeatInspection {
@@ -415,6 +428,9 @@ pub struct SeatInspection {
     pub mapping: MappingStatus,
     pub hold: Option<HoldSummary>,
     pub retirement: Option<RetirementStatus>,
+    /// The seat's open binding, independent of the history page.
+    #[serde(default)]
+    pub open_binding: Option<OpenBindingSummary>,
     pub history: Page<SeatHistoryItem>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -451,6 +467,20 @@ pub struct RepairHistory {
     pub host_epoch: u64,
     pub generation: u64,
     pub operator_label: Option<String>,
+    /// TRUST-POLICY C1: how Herdr's `agent_session` compared with the resumed
+    /// session id (`match`, `mismatch`, `absent`, `read_error`). Diagnostic
+    /// only; it never decided the reattachment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuity_diagnostic: Option<String>,
+}
+/// The seat a resumed session was reattached to and the generation of the
+/// successor binding the same transaction opened; the caller writes its
+/// context from it and sends nothing further.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContinuityReattachment {
+    pub seat: SeatId,
+    pub binding_generation: u64,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -744,6 +774,9 @@ pub enum IntentKind {
     OperatorRebind,
     OperatorFreshSeat,
     OperatorOrphanInvite,
+    OperatorRetire,
+    OperatorReplace,
+    ContinuityCheckIn,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

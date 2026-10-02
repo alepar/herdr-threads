@@ -914,6 +914,19 @@ fn fixture_worker_keeps_sqlite_alive_after_callers_drop_and_cleans_on_panic() {
 /// through the real store publication path (the reconfirmation a host
 /// recovery performs after an outage).
 fn publish_snapshot(context: &StoreContext, epoch: u64, sequence: u64, targets: &[&str]) {
+    publish_snapshot_at(context, epoch, sequence, targets, false);
+}
+
+/// As `publish_snapshot`, returning the published snapshot. `production`
+/// reports what the production adapter does (structural generation 1, which a
+/// carry requires, and unknown occupancy).
+fn publish_snapshot_at(
+    context: &StoreContext,
+    epoch: u64,
+    sequence: u64,
+    targets: &[&str],
+    production: bool,
+) -> crate::ports::PublishedSnapshot {
     use crate::ports::{
         DurableWorkAdmission, EnumerationEvidence, EvidenceKind, ExecutionEvidence,
         HostObservation, HostSnapshot, HostUiState, IncarnationEvidence, ObservationProvenance,
@@ -938,15 +951,22 @@ fn publish_snapshot(context: &StoreContext, epoch: u64, sequence: u64, targets: 
                 target: HostTargetId::new(*target),
                 host_boot: HostBootId::new("b"),
                 epoch,
-                generation: 0,
+                generation: u64::from(production),
                 observed_at_utc: UtcMillis(100),
                 observed_at_mono: MonoInstant(100),
                 provenance: ObservationProvenance::CoherentEnumeration,
                 occupant: None,
                 ui: HostUiState::Idle,
                 terminal: Some(TerminalId::new(format!("term-{target}"))),
-                occupancy: StructuralOccupancy::Occupied,
-                incarnation: IncarnationEvidence::Unknown,
+                occupancy: if production {
+                    StructuralOccupancy::Unknown
+                } else {
+                    StructuralOccupancy::Occupied
+                },
+                incarnation: IncarnationEvidence::Verified {
+                    identity: "inc".into(),
+                    evidence_kind: EvidenceKind::CoherentEnumeration,
+                },
                 execution: ExecutionEvidence::Unknown,
                 call_id: HostCallId::new(format!("capture-{target}-{sequence}")),
                 connection_epoch: 1,
@@ -969,7 +989,7 @@ fn publish_snapshot(context: &StoreContext, epoch: u64, sequence: u64, targets: 
     )
     .unwrap();
     seats::seal_snapshot_stage(context, &mut conn, &stage.id, &budget()).unwrap();
-    seats::publish_snapshot_stage(context, &mut conn, &stage.id, &budget()).unwrap();
+    seats::publish_snapshot_stage(context, &mut conn, &stage.id, &budget()).unwrap()
 }
 
 /// ht-4is.11.10 (host-recovery D1, R01+R04 shape). Two registered seats share
@@ -1172,4 +1192,248 @@ fn sends_succeed_after_host_outage_epoch_advance_and_reconfirmation() {
         )
         .unwrap();
     assert_eq!(open, 0);
+}
+
+/// C4 pre-reconciliation window (ht-rzi.19). A recipient registered at host
+/// epoch 1 whose Herdr then restarts (epoch 2, same boot and incarnation) is
+/// structurally continuous: a send before the first reconciliation pass is
+/// staged as not yet available but writes no `recipient_unavailable` warning,
+/// and once the carry-forward lands the receipt's timer starts. Kills: the
+/// send warning about a seat the pending pass will carry; a carry that writes
+/// no availability anchor, leaving the already-staged receipt without a timer.
+#[test]
+fn send_before_first_pass_to_structurally_continuous_seat_has_no_warning() {
+    use crate::protocol::commands::{Accept, Invite, SendMessage};
+    let (service, db) = fixture();
+    let context = StoreContext::new(db.directory.0.join("store.db"), Arc::new(FixedClock));
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient','i','resolved','native','q',0,0,0)", []).unwrap();
+    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'q','inc','coherent_enumeration',1)", []).unwrap();
+    // Allocation records the seats' structural proof (terminal and
+    // incarnation); the raw fixture rows carry none, so record it here.
+    db.execute("UPDATE seats SET structural_terminal_id='term-'||target_id,structural_incarnation='inc',structural_incarnation_kind='coherent_enumeration',structural_host_boot='b',structural_host_epoch=1,structural_connection_epoch=1,structural_observation_sequence=1,target_generation=1 WHERE id IN ('s','recipient')", []).unwrap();
+    db.execute("UPDATE observed_targets SET generation=1", [])
+        .unwrap();
+    let peer = PeerIdentity::from_kernel(501);
+    let sender = checked(&service, lifecycle(claim(), "sender")).context;
+    let mut recipient = claim();
+    recipient.seat = SeatId::new("recipient");
+    recipient.target = HostTargetId::new("q");
+    recipient.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
+    let recipient = checked(&service, lifecycle(recipient, "recipient")).context;
+    let CommandResult::ThreadCreated(thread) = service
+        .handle(
+            Command::CreateThread(CreateThread {
+                topic: "topic".into(),
+                goal: "goal".into(),
+                operation: OperationId::new("thread"),
+                claim: sender.clone(),
+            }),
+            peer,
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("wrong result")
+    };
+    for (op, command) in [
+        (
+            "invite",
+            Command::Invite(Invite {
+                thread: thread.clone(),
+                seat: SeatId::new("recipient"),
+                deadline_millis: None,
+                operation: OperationId::new("invite"),
+                claim: sender.clone(),
+            }),
+        ),
+        (
+            "accept",
+            Command::Accept(Accept {
+                thread: thread.clone(),
+                operation: OperationId::new("accept"),
+                claim: recipient.clone(),
+            }),
+        ),
+    ] {
+        service
+            .handle(command, peer, &budget())
+            .unwrap_or_else(|e| panic!("{op}: {e:?}"));
+    }
+    // Daemon restart: a newer host epoch of the same boot and incarnation is
+    // published; the reconciliation pass has not run, so the marker lags.
+    let publication = publish_snapshot_at(&context, 2, 7, &["p", "q"], true);
+    let lagging: bool = db
+        .query_row(
+            "SELECT reconciled_boot IS NOT recovery_boot OR reconciled_epoch IS NOT recovery_epoch FROM host_instances WHERE id='i'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        lagging,
+        "the published epoch advances recovery past the marker"
+    );
+    let binding_epoch: i64 = db
+        .query_row(
+            "SELECT host_epoch FROM occupant_bindings WHERE seat_id='recipient' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(binding_epoch, 1, "the recipient binding lags by one epoch");
+
+    let sent = match service.handle(
+        Command::SendMessage(SendMessage {
+            thread: thread.clone(),
+            body: "before the first pass".into(),
+            invited_recipients: vec![SeatId::new("recipient")],
+            deadline_millis: None,
+            operation: OperationId::new("pre-pass-send"),
+            claim: sender.clone(),
+        }),
+        peer,
+        &budget(),
+    ) {
+        Ok(CommandResult::MessageSent(message)) => message,
+        other => panic!("send before the first pass failed: {other:?}"),
+    };
+    let count = |sql: &str| -> i64 { db.query_row(sql, [], |r| r.get(0)).unwrap() };
+    assert_eq!(
+        count("SELECT count(*) FROM prepared_unavailable_warnings"),
+        0,
+        "no recipient_unavailable warning for a seat the pending pass will carry"
+    );
+    assert_eq!(
+        count(
+            "SELECT count(*) FROM prepared_recipients WHERE seat_id='recipient' AND eligible_at_snapshot=0"
+        ),
+        1,
+        "the recipient is staged not yet available"
+    );
+    assert_eq!(
+        count("SELECT unavailability_open FROM seats WHERE id='recipient'"),
+        0
+    );
+
+    // The first pass carries the binding: availability anchor plus the timer
+    // for the receipt staged before it.
+    let page = crate::store::seats::saved_seats_page(
+        &context,
+        &db,
+        &publication.id,
+        0,
+        None,
+        16,
+        &budget(),
+    )
+    .unwrap();
+    let mut conn = context.open_writer().unwrap();
+    let mut carried = 0;
+    for transition in crate::identity::reconcile::plan_page(&page).unwrap() {
+        if transition.seat.as_str() == "recipient" {
+            assert!(
+                matches!(
+                    transition.action,
+                    crate::ports::ReconciliationAction::CarryForward { .. }
+                ),
+                "{:?} {:?}",
+                transition.action,
+                page.seats
+            );
+            assert_eq!(
+                crate::store::seats::apply_reconciliation_transition(
+                    &context,
+                    &mut conn,
+                    transition,
+                    &budget()
+                )
+                .unwrap(),
+                crate::ports::ReconciliationOutcome::Applied
+            );
+            carried += 1;
+        }
+    }
+    assert_eq!(carried, 1, "the pass plans one carry for the recipient");
+    let CommandResult::PendingReceipts(pending) = service
+        .handle(
+            Command::PendingReceipts(crate::protocol::commands::PendingReceiptsQuery {
+                seat: Some(SeatId::new("recipient")),
+                thread: None,
+                page: Default::default(),
+            }),
+            peer,
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("wrong query result")
+    };
+    let item = pending
+        .items
+        .iter()
+        .find(|item| item.message == sent)
+        .expect("the staged receipt is pending");
+    assert!(
+        item.available_at.is_some(),
+        "the carry-forward starts the receipt timer: {item:?}"
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM prepared_unavailable_warnings"),
+        0
+    );
+}
+
+#[test]
+fn operator_check_in_requires_human_lifecycle() {
+    let (service, db) = fixture();
+    let operator = |command: Command| match command {
+        Command::CheckIn(check) => Command::OperatorCheckIn(check),
+        other => other,
+    };
+    let call = |command: Command, uid: u32| {
+        service.handle(command, PeerIdentity::from_kernel(uid), &budget())
+    };
+    let human = |claim: CallerClaim| CallerClaim {
+        harness: Harness::Human,
+        native_session: NativeSessionId::new("plugin_context:person"),
+        ..claim
+    };
+    // An agent harness is never an operator override.
+    let refused = call(operator(lifecycle(claim(), "agent")), 501).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::InvalidRequest);
+    // Nor is a Current-mode (non-lifecycle) check-in.
+    let current = Command::OperatorCheckIn(CheckIn {
+        mode: CheckInMode::Current,
+        claim: human(claim()),
+        operation: OperationId::new("current"),
+    });
+    assert_eq!(
+        call(current, 501).unwrap_err().code,
+        ErrorCode::InvalidRequest
+    );
+    // Only the elected owner may override.
+    let foreign = operator(lifecycle(human(claim()), "foreign"));
+    assert_eq!(
+        call(foreign, 502).unwrap_err().code,
+        ErrorCode::Unauthorized
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM occupant_bindings", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    // A plain human check-in over an agent's binding is refused with guidance.
+    let agent = checked(&service, lifecycle(claim(), "agent-ok"));
+    let plain = lifecycle(
+        human(CallerClaim {
+            binding_generation: agent.context.binding_generation,
+            execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
+            ..claim()
+        }),
+        "human",
+    );
+    let refused = call(plain, 501).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Unauthorized);
+    assert!(refused.detail.contains("me init --operator"));
 }

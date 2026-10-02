@@ -240,7 +240,7 @@ pub fn next_actions(
         let seat = digest.seat.as_str();
         if command_safe_id(seat) {
             header.push_str(&format!(
-                "Your seat in this pane: {seat} (thread participants and thread show mark it as self).\n"
+                "Your seat in this pane: {seat} (thread participants and thread show mark it as self when run in this pane).\n"
             ));
         }
         if digest

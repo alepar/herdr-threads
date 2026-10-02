@@ -680,3 +680,120 @@ fn attention_mark_is_per_execution_last_writer_wins() {
     assert_eq!(j.completed_len().unwrap(), 0);
     fs::remove_dir_all(path).unwrap();
 }
+
+// Kills: a prepare that refuses a person's lifecycle request over an agent's
+// current context (me init --operator unusable), and a dispatch failure that
+// clears or replaces the agent's context before the daemon accepted the
+// check-in.
+#[test]
+fn person_lifecycle_request_over_agent_context_keeps_current_until_dispatch() {
+    let path = dir();
+    let i = Uuid::new_v4();
+    let j = journal(&path, i);
+    j.prepare(request(i, "agent", 0)).unwrap();
+    let agent = j
+        .dispatch("agent", &mut |p: &PendingCheckIn| Ok(result(p, 1)))
+        .unwrap()
+        .context;
+    assert_eq!(agent.harness, Harness::Codex);
+
+    let mut person = request(i, "person", 1);
+    person.context.harness = Harness::Human;
+    person.context.session = SessionReference::PluginContext(person.context.execution);
+    j.prepare(person.clone()).unwrap();
+    // The daemon rejects: the agent's context is untouched.
+    assert!(
+        j.dispatch("person", &mut |_p: &PendingCheckIn| Err(
+            ContextError::Dispatch("Conflict".into())
+        ))
+        .is_err()
+    );
+    assert_eq!(j.current().unwrap(), Some(agent.clone()));
+    // The daemon accepts: the human context replaces it.
+    let accepted = j
+        .dispatch("person", &mut |p: &PendingCheckIn| Ok(result(p, 2)))
+        .unwrap()
+        .context;
+    assert_eq!(accepted.harness, Harness::Human);
+    assert_eq!(j.current().unwrap(), Some(accepted));
+    fs::remove_dir_all(path).unwrap();
+}
+
+// Kills: an agent request over a person, or a different target, newly
+// admitted by the person-over-agent allowance.
+#[test]
+fn lifecycle_harness_change_is_admitted_only_for_a_person_over_an_agent() {
+    let path = dir();
+    let i = Uuid::new_v4();
+    let j = journal(&path, i);
+    j.prepare(request(i, "agent", 0)).unwrap();
+    j.dispatch("agent", &mut |p: &PendingCheckIn| Ok(result(p, 1)))
+        .unwrap();
+    let mut claude = request(i, "claude", 1);
+    claude.context.harness = Harness::Claude;
+    assert_eq!(j.prepare(claude), Err(ContextError::Conflict));
+    let mut elsewhere = request(i, "elsewhere", 1);
+    elsewhere.context.harness = Harness::Human;
+    elsewhere.context.session = SessionReference::PluginContext(elsewhere.context.execution);
+    elsewhere.context.target = "other-pane".into();
+    assert_eq!(j.prepare(elsewhere), Err(ContextError::Conflict));
+    fs::remove_dir_all(path).unwrap();
+}
+
+// Kills: an operator mark that applies to any execution, or one that does not
+// survive a reopen.
+#[test]
+fn operator_mark_round_trips_and_is_execution_scoped() {
+    let path = dir();
+    let i = Uuid::new_v4();
+    let j = journal(&path, i);
+    let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+    assert_eq!(j.operator_mark(), None);
+    assert_eq!(j.set_operator_mark(Uuid::nil()), Err(ContextError::Invalid));
+    j.set_operator_mark(a).unwrap();
+    assert_eq!(j.operator_mark(), Some(a));
+    assert_ne!(j.operator_mark(), Some(b));
+    drop(j);
+    let j = journal(&path, i);
+    assert_eq!(j.operator_mark(), Some(a));
+    j.set_operator_mark(b).unwrap();
+    assert_eq!(j.operator_mark(), Some(b));
+    fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn install_reattached_replaces_a_context_for_another_pane_and_abandons_pending() {
+    let path = dir();
+    let instance = Uuid::new_v4();
+    let j = journal(&path, instance);
+    // A saved context for another pane at an older generation, with a request
+    // still pending for it.
+    let mut old = context(instance, Uuid::new_v4(), 3);
+    old.target = "old-pane".into();
+    let pending = PendingCheckIn {
+        context: old,
+        ..request(instance, "start", 3)
+    };
+    j.prepare(pending.clone()).unwrap();
+    let mut fresh = context(instance, Uuid::new_v4(), 5);
+    fresh.target = "new-pane".into();
+    assert_eq!(
+        j.install_reattached(fresh.clone()).unwrap(),
+        Some(pending.clone())
+    );
+    assert_eq!(j.current().unwrap(), Some(fresh.clone()));
+    assert_eq!(j.pending().unwrap(), None);
+    // The abandoned key is never prepared again.
+    assert!(j.prepare(pending).is_err());
+    // Without a pending request nothing is returned and current is replaced
+    // again, whatever its target or generation.
+    let mut later = context(instance, Uuid::new_v4(), 2);
+    later.target = "third".into();
+    assert_eq!(j.install_reattached(later.clone()).unwrap(), None);
+    assert_eq!(j.current().unwrap(), Some(later));
+    // A context for another seat or instance is refused.
+    let mut foreign = context(instance, Uuid::new_v4(), 6);
+    foreign.seat = "other".into();
+    assert!(j.install_reattached(foreign).is_err());
+    let _ = fs::remove_dir_all(path);
+}

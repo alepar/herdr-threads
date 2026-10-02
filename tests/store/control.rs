@@ -3884,6 +3884,7 @@ fn verified_registration_anchors_once_and_rolls_back_failed_offer() {
         &mut conn,
         &command,
         Some(&registration),
+        None,
         &crate::protocol::time::CallBudget {
             deadline: crate::protocol::time::MonoInstant(u64::MAX),
             cancellation: Default::default(),
@@ -3946,6 +3947,7 @@ fn verified_registration_anchors_once_and_rolls_back_failed_offer() {
         &mut conn,
         &command,
         Some(&registration),
+        None,
         &crate::protocol::time::CallBudget {
             deadline: crate::protocol::time::MonoInstant(u64::MAX),
             cancellation: Default::default(),
@@ -4024,6 +4026,7 @@ fn verified_registration_anchors_once_and_rolls_back_failed_offer() {
         &mut conn,
         &second,
         Some(&registration),
+        None,
         &crate::protocol::time::CallBudget {
             deadline: crate::protocol::time::MonoInstant(u64::MAX),
             cancellation: Default::default(),
@@ -4177,6 +4180,7 @@ fn structural_target_generation_change_rotates_binding_even_for_same_execution()
         &mut conn,
         &command,
         Some(&registration),
+        None,
         &crate::protocol::time::CallBudget {
             deadline: crate::protocol::time::MonoInstant(u64::MAX),
             cancellation: Default::default(),
@@ -4240,6 +4244,7 @@ fn structural_target_generation_change_rotates_binding_even_for_same_execution()
         &mut conn,
         &second,
         Some(&updated),
+        None,
         &crate::protocol::time::CallBudget {
             deadline: crate::protocol::time::MonoInstant(u64::MAX),
             cancellation: Default::default(),
@@ -4305,6 +4310,7 @@ fn structural_target_generation_change_rotates_binding_even_for_same_execution()
         &mut conn,
         &third,
         Some(&stable),
+        None,
         &crate::protocol::time::CallBudget {
             deadline: crate::protocol::time::MonoInstant(u64::MAX),
             cancellation: Default::default(),
@@ -5618,6 +5624,7 @@ fn registration_rejects_exhausted_binding_generation_without_anchor() {
         &mut conn,
         &command,
         Some(&registration),
+        None,
         &crate::protocol::time::CallBudget {
             deadline: crate::protocol::time::MonoInstant(u64::MAX),
             cancellation: Default::default(),
@@ -7962,6 +7969,7 @@ fn native_registration_requires_and_records_reconfirmation_evidence() {
         &mut conn,
         &command,
         Some(&registration),
+        None,
         &budget,
         permit(
             "s2",
@@ -7995,6 +8003,7 @@ fn native_registration_requires_and_records_reconfirmation_evidence() {
         &mut conn,
         &command,
         Some(&registration),
+        None,
         &budget,
         permit(
             "s2",
@@ -8049,4 +8058,1514 @@ fn accountable_observation_has_one_shape_and_legacy_rows_read_back_in_it() {
     assert!(read.get("native_session").is_none());
     assert_eq!(read["execution"], "exec-1");
     assert_eq!(read["provenance"], "cooperative_top_level");
+}
+
+// ---- B5 trust guards (ht-rzi.1): hold lift, retire, replace ----
+
+fn b5_budget() -> crate::protocol::time::CallBudget {
+    crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1_000),
+        cancellation: crate::protocol::time::Cancellation::default(),
+    }
+}
+
+fn b5_actor() -> crate::protocol::authority::OperatorActor {
+    use crate::protocol::authority::{OperatorActor, PeerIdentity};
+    OperatorActor::from_peer(PeerIdentity::from_kernel(501), 501).unwrap()
+}
+
+fn b5_fresh_observation(target: &str) -> crate::ports::HostObservation {
+    use crate::ports::{
+        ExecutionEvidence, HostObservation, HostUiState, IncarnationEvidence,
+        ObservationProvenance, StructuralOccupancy,
+    };
+    HostObservation {
+        target: HostTargetId::new(target),
+        host_boot: HostBootId::new("b"),
+        epoch: 1,
+        generation: 1,
+        observed_at_utc: UtcMillis(100),
+        observed_at_mono: MonoInstant(100),
+        provenance: ObservationProvenance::FreshCurrentTarget,
+        occupant: None,
+        ui: HostUiState::Idle,
+        terminal: None,
+        occupancy: StructuralOccupancy::EmptyShell,
+        incarnation: IncarnationEvidence::Unknown,
+        execution: ExecutionEvidence::Unknown,
+        call_id: HostCallId::new(format!("b5-call-{target}")),
+        connection_epoch: 1,
+        observation_sequence: 1,
+        started_at_mono: MonoInstant(100),
+        completed_at_mono: MonoInstant(100),
+    }
+}
+
+/// Publish a baseline holding `targets` with `s1` unresolved; returns the
+/// published snapshot. Leaves the restore flag set and the marker NULL.
+fn b5_published_baseline(
+    context: &StoreContext,
+    conn: &mut Connection,
+    targets: &[&str],
+) -> crate::ports::PublishedSnapshot {
+    use crate::store::seats;
+    conn.execute(
+        "UPDATE seats SET state='unresolved',target_id=NULL WHERE id='s1'",
+        [],
+    )
+    .unwrap();
+    let budget = b5_budget();
+    let admission = seats::begin_host_observation(context, conn, "i", &budget).unwrap();
+    let snapshot = snapshot_for_test(1, targets);
+    let stage = staged_test_snapshot(context, conn, admission, &snapshot, &budget);
+    seats::publish_snapshot_stage(context, conn, &stage, &budget).unwrap()
+}
+
+fn b5_hold_state(conn: &Connection) -> (i64, i64) {
+    conn.query_row(
+        "SELECT baseline_hold_unclaimed,(SELECT count(*) FROM recovery_holds WHERE instance_id='i' AND released_at IS NULL) FROM host_instances WHERE id='i'",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .unwrap()
+}
+
+fn b5_set_marker_to_recovery(conn: &Connection) {
+    conn.execute(
+        "UPDATE host_instances SET reconciled_boot=recovery_boot,reconciled_epoch=recovery_epoch WHERE id='i'",
+        [],
+    )
+    .unwrap();
+}
+
+fn b5_lift(context: &StoreContext, conn: &mut Connection) -> bool {
+    let _ = context;
+    let tx = conn.transaction().unwrap();
+    let lifted =
+        crate::store::seats::lift_baseline_hold_if_clear(&tx, "i", UtcMillis(100)).unwrap();
+    tx.commit().unwrap();
+    lifted
+}
+
+fn b5_add_hold(conn: &Connection, instance: &str, target: &str) {
+    conn.execute(
+        "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES (?1,?2,'b',1,'unresolved saved seat continuity')",
+        rusqlite::params![instance, target],
+    )
+    .unwrap();
+}
+
+#[test]
+fn lift_requires_reconciliation_marker_for_current_recovery_boot_epoch() {
+    let (context, mut conn, path, _) = fixture(100);
+    b5_published_baseline(&context, &mut conn, &["new-target"]);
+    conn.execute(
+        "INSERT INTO host_instances(id, created_at, host_boot, host_epoch, baseline_hold_unclaimed) VALUES ('other', 0, 'b', 1, 1)",
+        [],
+    )
+    .unwrap();
+    b5_add_hold(&conn, "i", "new-target");
+    b5_add_hold(&conn, "other", "other-target");
+    conn.execute(
+        "UPDATE seats SET state='retired',retired_at=1 WHERE id='s1'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(b5_hold_state(&conn), (1, 1));
+    // Marker NULL: nothing is lifted although no unresolved seat remains.
+    assert!(!b5_lift(&context, &mut conn));
+    assert_eq!(b5_hold_state(&conn), (1, 1));
+    // Marker for another epoch: still lagging.
+    conn.execute(
+        "UPDATE host_instances SET reconciled_boot=recovery_boot,reconciled_epoch=recovery_epoch+1 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    assert!(!b5_lift(&context, &mut conn));
+    assert_eq!(b5_hold_state(&conn), (1, 1));
+    b5_set_marker_to_recovery(&conn);
+    assert!(b5_lift(&context, &mut conn));
+    assert_eq!(b5_hold_state(&conn), (0, 0));
+    let other: (i64, i64) = conn
+        .query_row(
+            "SELECT baseline_hold_unclaimed,(SELECT count(*) FROM recovery_holds WHERE instance_id='other' AND released_at IS NULL) FROM host_instances WHERE id='other'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(other, (1, 1), "other instances are untouched");
+    // Nothing left to lift: the helper reports false the second time.
+    assert!(!b5_lift(&context, &mut conn));
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn lift_does_not_fire_while_an_unresolved_seat_remains() {
+    let (context, mut conn, path, _) = fixture(100);
+    b5_published_baseline(&context, &mut conn, &["new-target"]);
+    b5_add_hold(&conn, "i", "new-target");
+    b5_set_marker_to_recovery(&conn);
+    assert!(!b5_lift(&context, &mut conn), "s1 is still unresolved");
+    assert_eq!(b5_hold_state(&conn), (1, 1));
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn explicit_hold_pane_resolves_after_last_unresolved_seat_is_retired() {
+    use crate::store::{effective, effective::EffectiveRecoveryDisposition as Disposition, seats};
+    let (context, mut conn, path, _) = fixture(100);
+    b5_published_baseline(&context, &mut conn, &["pane-h"]);
+    b5_add_hold(&conn, "i", "pane-h");
+    b5_set_marker_to_recovery(&conn);
+    assert_eq!(
+        effective::effective_recovery_disposition(&conn, "i", "pane-h").unwrap(),
+        Disposition::ExplicitHold
+    );
+    conn.execute(
+        "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pane-h','b',1,1,1,100,'fresh','term-pane-h','inc','coherent_enumeration',1)",
+        [],
+    )
+    .unwrap();
+    // Retire the last unresolved seat through the operator command.
+    let command = crate::protocol::commands::OperatorRetire {
+        seat: SeatId::new("s1"),
+        operation: OperationId::new("retire-last"),
+    };
+    seats::mutate_operator(
+        &context,
+        &mut conn,
+        "i",
+        crate::ports::OperatorRequest::Retire(command),
+        b5_actor(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(b5_hold_state(&conn), (0, 0));
+    let disposition = effective::effective_recovery_disposition(&conn, "i", "pane-h").unwrap();
+    assert!(
+        !matches!(
+            disposition,
+            Disposition::ExplicitHold | Disposition::BaselineHeld
+        ),
+        "{disposition:?}"
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn operator_fresh_seat_lifts_when_no_unresolved_remains() {
+    use crate::{
+        ports::{OperatorRequest, OperatorTargetGuard},
+        protocol::commands::{OperatorCommand, OperatorFreshSeat},
+        store::seats,
+    };
+    let (context, mut conn, path, _) = fixture(100);
+    b5_published_baseline(&context, &mut conn, &["new-target"]);
+    b5_add_hold(&conn, "i", "new-target");
+    b5_set_marker_to_recovery(&conn);
+    // The unresolved seat is retired by other means; the hold lingers.
+    conn.execute(
+        "UPDATE seats SET state='retired',retired_at=1 WHERE id='s1'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','new-target','b',1,1,3,100,'fresh','term-new-target','inc','coherent_enumeration',1)",
+        [],
+    )
+    .unwrap();
+    let command = OperatorFreshSeat {
+        target: HostTargetId::new("new-target"),
+        operation: OperationId::new("fresh-lift"),
+    };
+    let guard = OperatorTargetGuard::try_new(
+        "i",
+        &OperatorCommand::FreshSeat(command.clone()),
+        b5_fresh_observation("new-target"),
+    )
+    .unwrap();
+    seats::mutate_operator(
+        &context,
+        &mut conn,
+        "i",
+        OperatorRequest::FreshSeat(command, guard),
+        b5_actor(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(b5_hold_state(&conn), (0, 0));
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn operator_rebind_of_last_unresolved_seat_lifts_holds_in_same_transaction() {
+    use crate::{
+        ports::{OperatorRequest, OperatorTargetGuard},
+        protocol::commands::{OperatorCommand, OperatorRebind},
+        store::seats,
+    };
+    let (context, mut conn, path, _) = fixture(100);
+    b5_published_baseline(&context, &mut conn, &["new-target", "held-elsewhere"]);
+    b5_add_hold(&conn, "i", "held-elsewhere");
+    // Marker lags: the rebind must not lift.
+    conn.execute(
+        "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','new-target','b',1,1,3,100,'fresh','term-new-target','inc','coherent_enumeration',1)",
+        [],
+    )
+    .unwrap();
+    let rebind = |operation: &str| OperatorRebind {
+        seat: SeatId::new("s1"),
+        target: HostTargetId::new("new-target"),
+        operation: OperationId::new(operation),
+    };
+    let command = rebind("rebind-lag");
+    let guard = OperatorTargetGuard::try_new(
+        "i",
+        &OperatorCommand::Rebind(command.clone()),
+        b5_fresh_observation("new-target"),
+    )
+    .unwrap();
+    seats::mutate_operator(
+        &context,
+        &mut conn,
+        "i",
+        OperatorRequest::Rebind(command, guard),
+        b5_actor(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        b5_hold_state(&conn),
+        (1, 1),
+        "rebind with a lagging marker keeps the hold"
+    );
+    // Same shape with the marker current: the rebind itself lifts.
+    let (context, mut conn2, path2, _) = fixture(100);
+    b5_published_baseline(&context, &mut conn2, &["new-target", "held-elsewhere"]);
+    b5_add_hold(&conn2, "i", "held-elsewhere");
+    b5_set_marker_to_recovery(&conn2);
+    conn2.execute(
+        "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','new-target','b',1,1,3,100,'fresh','term-new-target','inc','coherent_enumeration',1)",
+        [],
+    )
+    .unwrap();
+    let command = rebind("rebind-lift");
+    let guard = OperatorTargetGuard::try_new(
+        "i",
+        &OperatorCommand::Rebind(command.clone()),
+        b5_fresh_observation("new-target"),
+    )
+    .unwrap();
+    seats::mutate_operator(
+        &context,
+        &mut conn2,
+        "i",
+        OperatorRequest::Rebind(command, guard),
+        b5_actor(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(b5_hold_state(&conn2), (0, 0));
+    drop(conn);
+    drop(conn2);
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(path2);
+}
+
+#[test]
+fn record_reconciliation_pass_writes_marker_only_for_current_recovery_publication() {
+    use crate::store::seats;
+    let (context, mut conn, path, _) = fixture(100);
+    let first = b5_published_baseline(&context, &mut conn, &["t1"]);
+    let marker = |conn: &Connection| -> (Option<String>, Option<i64>) {
+        conn.query_row(
+            "SELECT reconciled_boot,reconciled_epoch FROM host_instances WHERE id='i'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    let budget = b5_budget();
+    // A publication of another epoch is not the current recovery baseline.
+    let mut other_epoch = first.clone();
+    other_epoch.epoch += 1;
+    assert!(
+        !seats::record_reconciliation_pass(&context, &mut conn, &other_epoch, &budget).unwrap()
+    );
+    assert_eq!(marker(&conn), (None, None));
+    // The current publication writes the marker; s1 is still unresolved, so
+    // the lift inside the same transaction leaves the hold alone.
+    assert!(seats::record_reconciliation_pass(&context, &mut conn, &first, &budget).unwrap());
+    assert_eq!(marker(&conn), (Some("b".into()), Some(1)));
+    assert_eq!(b5_hold_state(&conn).0, 1);
+    // With nothing unresolved the next recorded pass lifts the hold.
+    conn.execute(
+        "UPDATE seats SET state='retired',retired_at=1 WHERE id='s1'",
+        [],
+    )
+    .unwrap();
+    b5_add_hold(&conn, "i", "t1");
+    conn.execute(
+        "UPDATE host_instances SET reconciled_boot=NULL,reconciled_epoch=NULL WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    assert!(seats::record_reconciliation_pass(&context, &mut conn, &first, &budget).unwrap());
+    assert_eq!(b5_hold_state(&conn), (0, 0));
+    // A superseded publication writes nothing.
+    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let second = snapshot_for_test(2, &["t1"]);
+    let stage = staged_test_snapshot(&context, &mut conn, admission, &second, &budget);
+    seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
+    conn.execute(
+        "UPDATE host_instances SET reconciled_boot=NULL,reconciled_epoch=NULL WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    assert!(!seats::record_reconciliation_pass(&context, &mut conn, &first, &budget).unwrap());
+    assert_eq!(marker(&conn), (None, None));
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn daemon_start_clears_stuck_flag_and_open_holds_when_marker_matches() {
+    use crate::store::{SqliteStore, StoreSettings};
+    for (marker_matches, expected) in [(true, (0, 0)), (false, (1, 1))] {
+        let (context, mut conn, path, clock) = fixture(100);
+        b5_published_baseline(&context, &mut conn, &["t1"]);
+        conn.execute(
+            "UPDATE seats SET state='retired',retired_at=1 WHERE id='s1'",
+            [],
+        )
+        .unwrap();
+        b5_add_hold(&conn, "i", "t1");
+        if marker_matches {
+            b5_set_marker_to_recovery(&conn);
+        }
+        assert_eq!(b5_hold_state(&conn), (1, 1));
+        let store = SqliteStore::new(
+            StoreContext::new(path.clone(), clock),
+            "i",
+            StoreSettings::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            b5_hold_state(&conn),
+            expected,
+            "marker_matches={marker_matches}"
+        );
+        drop(store);
+        drop(context);
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+    // A fresh store without the instance row starts cleanly.
+    let (context, conn, path, _) = fixture(100);
+    conn.execute("DELETE FROM seats", []).unwrap();
+    conn.execute("DELETE FROM observed_targets", []).unwrap();
+    conn.execute("DELETE FROM host_instances", []).unwrap();
+    SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn reconciliation_retirement_of_last_unresolved_seat_lifts() {
+    use crate::ports::{GuardedSeatTransition, ReconciliationAction, ReconciliationOutcome};
+    use crate::store::seats;
+    let (context, mut conn, path, _) = fixture(100);
+    conn.execute(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,terminal_id,incarnation,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at) VALUES ('s1',1,'s1','terminal-1','test-incarnation','b',1,1,'codex','native-1','execution-1','verified_current_target',100)",
+        [],
+    )
+    .unwrap();
+    let budget = b5_budget();
+    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let empty = snapshot_for_test(2, &[]);
+    let stage = staged_test_snapshot(&context, &mut conn, admission, &empty, &budget);
+    let publication = seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
+    // Stuck state: a flag and a hold with no unresolved seat, marker current.
+    conn.execute(
+        "UPDATE host_instances SET baseline_hold_unclaimed=1 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    b5_add_hold(&conn, "i", "s1");
+    b5_set_marker_to_recovery(&conn);
+    assert_eq!(b5_hold_state(&conn), (1, 1));
+    let outcome = seats::apply_reconciliation_transition(
+        &context,
+        &mut conn,
+        GuardedSeatTransition {
+            publication,
+            seat: SeatId::new("s1"),
+            expected_binding_generation: 1,
+            expected_target: Some(HostTargetId::new("s1")),
+            expected_terminal: Some(TerminalId::new("terminal-1")),
+            action: ReconciliationAction::BeginRetirement {
+                absent_target: HostTargetId::new("s1"),
+            },
+        },
+        &budget,
+    )
+    .unwrap();
+    assert!(matches!(
+        outcome,
+        ReconciliationOutcome::RetirementStarted(_)
+    ));
+    assert_eq!(b5_hold_state(&conn), (0, 0));
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn reconfirm_structure_of_last_unresolved_seat_lifts_and_not_before() {
+    use crate::ports::{
+        GuardedInvalidationTransition, GuardedSeatTransition, HostInvalidationReason, HostUiState,
+        ReconciliationAction, ReconciliationOutcome, StructuralOccupancy,
+    };
+    use crate::store::seats;
+    let (context, mut conn, path, _) = fixture(100);
+    for seat in ["s1", "s2"] {
+        conn.execute(
+            "INSERT INTO occupant_bindings(seat_id,generation,target_id,terminal_id,incarnation,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES (?1,1,?1,'term-'||?1,'test-incarnation','b',1,1,'codex','plugin_context:x','e-'||?1,'cooperative_top_level',1,1)",
+            [seat],
+        )
+        .unwrap();
+    }
+    let budget = b5_budget();
+    let production = |sequence: u64| {
+        let mut snapshot = snapshot_for_test(sequence, &["s1", "s2"]);
+        for target in &mut snapshot.targets {
+            target.terminal = Some(TerminalId::new(format!("term-{}", target.target.as_str())));
+            target.ui = HostUiState::Unknown;
+            target.occupancy = StructuralOccupancy::Unknown;
+        }
+        snapshot
+    };
+    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let stage = staged_test_snapshot(&context, &mut conn, admission, &production(2), &budget);
+    seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
+    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let fence = seats::invalidate_host_observation(
+        &context,
+        &mut conn,
+        &admission,
+        HostInvalidationReason::HostUnavailable,
+        &budget,
+    )
+    .unwrap()
+    .unwrap();
+    for seat in ["s1", "s2"] {
+        assert_eq!(
+            seats::mark_unresolved_from_invalidation(
+                &context,
+                &mut conn,
+                GuardedInvalidationTransition {
+                    fence: fence.clone(),
+                    seat: SeatId::new(seat),
+                    expected_binding_generation: 1,
+                    expected_target: Some(HostTargetId::new(seat)),
+                    expected_terminal: Some(TerminalId::new(format!("term-{seat}"))),
+                },
+                &budget
+            )
+            .unwrap(),
+            ReconciliationOutcome::Applied
+        );
+    }
+    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let stage = staged_test_snapshot(&context, &mut conn, admission, &production(3), &budget);
+    let publication = seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
+    b5_add_hold(&conn, "i", "s1");
+    b5_set_marker_to_recovery(&conn);
+    assert_eq!(b5_hold_state(&conn), (1, 1));
+    let reconfirm = |seat: &str, conn: &mut Connection| {
+        seats::apply_reconciliation_transition(
+            &context,
+            conn,
+            GuardedSeatTransition {
+                publication: publication.clone(),
+                seat: SeatId::new(seat),
+                expected_binding_generation: 2,
+                expected_target: Some(HostTargetId::new(seat)),
+                expected_terminal: Some(TerminalId::new(format!("term-{seat}"))),
+                action: ReconciliationAction::ReconfirmStructure {
+                    target: HostTargetId::new(seat),
+                    terminal: TerminalId::new(format!("term-{seat}")),
+                },
+            },
+            &budget,
+        )
+        .unwrap()
+    };
+    assert_eq!(reconfirm("s1", &mut conn), ReconciliationOutcome::Applied);
+    assert_eq!(b5_hold_state(&conn), (1, 1), "s2 is still unresolved");
+    assert_eq!(reconfirm("s2", &mut conn), ReconciliationOutcome::Applied);
+    assert_eq!(b5_hold_state(&conn), (0, 0), "no hold after full reconfirm");
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+fn b5_seed_obligations(conn: &Connection, seat: &str, tag: &str) {
+    let (joined, invited) = (format!("{tag}-joined"), format!("{tag}-invited"));
+    for thread in [&joined, &invited] {
+        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)", [thread]).unwrap();
+    }
+    conn.execute(
+        "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES (?1,?2,'joined',0)",
+        [&joined, seat],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,1,1)",
+        [&joined, seat],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO memberships(thread_id,seat_id,state) VALUES (?1,?2,'invited')",
+        [&invited, seat],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES (?1,?2,?3,1,'pending',0,90,90,1)",
+        [&format!("{tag}-invite"), &invited, seat]).unwrap();
+    let message = format!("{tag}-message");
+    conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,?2,1,'ordinary','body',0,?3)", rusqlite::params![message, joined, if tag == "new" { 2 } else { 3 }]).unwrap();
+    conn.execute("UPDATE host_instances SET decision_seq=30 WHERE id='i'", [])
+        .unwrap();
+    conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,?2,?3,'pending',90,0,90)", [&message, &joined, seat]).unwrap();
+    conn.execute("UPDATE threads SET next_sequence=2 WHERE id=?1", [&joined])
+        .unwrap();
+}
+
+fn b5_obligation_states(conn: &Connection, seat: &str) -> (String, String) {
+    let invitation: String = conn
+        .query_row(
+            "SELECT state FROM invitations WHERE seat_id=?1",
+            [seat],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let receipt: String = conn
+        .query_row("SELECT state FROM receipts WHERE seat_id=?1", [seat], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    (invitation, receipt)
+}
+
+fn b5_drain_retirement(
+    context: &StoreContext,
+    conn: &mut Connection,
+    clock: &FixedClock,
+    seat: &str,
+) {
+    use crate::ports::WorkAdmission;
+    clock.0.store(200, Ordering::SeqCst);
+    let job: String = conn
+        .query_row("SELECT id FROM retirements WHERE seat_id=?1", [seat], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    for _ in 0..16 {
+        let progress = advance_retirement(
+            context,
+            conn,
+            RetirementJobId::new(job.clone()),
+            WorkAdmission::Background,
+            &b5_budget(),
+        )
+        .unwrap();
+        if progress.complete {
+            return;
+        }
+    }
+    panic!("retirement did not complete");
+}
+
+#[test]
+fn operator_retire_retires_settles_and_audits() {
+    use crate::{ports::OperatorRequest, protocol::commands::OperatorRetire, store::seats};
+    let (context, mut conn, path, clock) = fixture(100);
+    b5_seed_obligations(&conn, "s2", "rt");
+    conn.execute(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,terminal_id,incarnation,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at) VALUES ('s2',1,'s2','terminal-2','inc','b',1,1,'codex','native-2','execution-2','verified_current_target',100)",
+        [],
+    )
+    .unwrap();
+    let command = OperatorRetire {
+        seat: SeatId::new("s2"),
+        operation: OperationId::new("retire-s2"),
+    };
+    let run = |conn: &mut Connection, command: &OperatorRetire| {
+        seats::mutate_operator(
+            &context,
+            conn,
+            "i",
+            OperatorRequest::Retire(command.clone()),
+            b5_actor(),
+            None,
+        )
+    };
+    assert_eq!(
+        run(&mut conn, &command).unwrap(),
+        CommandResult::OperatorRetired(SeatId::new("s2"))
+    );
+    let seat: (String, i64) = conn
+        .query_row(
+            "SELECT state,(SELECT count(*) FROM occupant_bindings WHERE seat_id='s2' AND ended_at IS NULL) FROM seats WHERE id='s2'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(seat, ("retired".into(), 0));
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM retirements WHERE seat_id='s2'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        b5_obligation_states(&conn, "s2"),
+        ("pending".into(), "pending".into()),
+        "settlement is the retirement worker's bounded work"
+    );
+    b5_drain_retirement(&context, &mut conn, &clock, "s2");
+    assert_eq!(
+        b5_obligation_states(&conn, "s2"),
+        ("recipient_retired".into(), "recipient_retired".into())
+    );
+    let audit: Vec<(String, Option<String>, String)> = conn
+        .prepare("SELECT kind,operator_label,seat_id FROM allocation_decisions")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        audit,
+        vec![(
+            "operator_retire".to_owned(),
+            Some("operator:local-user:501".to_owned()),
+            "s2".to_owned()
+        )]
+    );
+    let labelled: i64 = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM messages WHERE body LIKE '%operator:local-user%' OR coalesce(event_json,'') LIKE '%operator:local-user%')+(SELECT count(*) FROM receipts WHERE coalesce(ack_actor_seat_id,'') LIKE '%operator:local-user%')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(labelled, 0, "the label is audit-only, never on receipts");
+    // Replay with the same key returns the stored result and writes nothing.
+    assert_eq!(
+        run(&mut conn, &command).unwrap(),
+        CommandResult::OperatorRetired(SeatId::new("s2"))
+    );
+    // A different key for the retired seat is refused without a new row.
+    let again = OperatorRetire {
+        operation: OperationId::new("retire-s2-again"),
+        ..command.clone()
+    };
+    assert_eq!(
+        run(&mut conn, &again).unwrap_err().code,
+        ErrorCode::NotFound
+    );
+    let unknown = OperatorRetire {
+        seat: SeatId::new("nobody"),
+        operation: OperationId::new("retire-nobody"),
+    };
+    assert_eq!(
+        run(&mut conn, &unknown).unwrap_err().code,
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM allocation_decisions", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+fn b5_replace_fixture() -> (StoreContext, Connection, PathBuf, Arc<FixedClock>) {
+    let (context, conn, path, clock) = fixture(100);
+    // OLD = s1, unresolved. NEW = s2, resolved on its own pane "s2".
+    conn.execute(
+        "UPDATE seats SET state='unresolved',target_id=NULL WHERE id='s1'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE observed_targets SET observation_sequence=3 WHERE target_id='s2'",
+        [],
+    )
+    .unwrap();
+    b5_seed_obligations(&conn, "s2", "new");
+    b5_seed_obligations(&conn, "s1", "old");
+    (context, conn, path, clock)
+}
+
+fn b5_replace_request(
+    old: &str,
+    pane: &str,
+    new: &str,
+    operation: &str,
+) -> crate::ports::OperatorRequest {
+    use crate::{
+        ports::{OperatorRequest, OperatorTargetGuard},
+        protocol::commands::{OperatorCommand, OperatorReplace},
+    };
+    let command = OperatorReplace {
+        seat: SeatId::new(old),
+        target: HostTargetId::new(pane),
+        replace: SeatId::new(new),
+        operation: OperationId::new(operation),
+    };
+    let guard = OperatorTargetGuard::try_new(
+        "i",
+        &OperatorCommand::Replace(command.clone()),
+        b5_fresh_observation(pane),
+    )
+    .unwrap();
+    OperatorRequest::Replace(command, guard)
+}
+
+#[test]
+fn operator_replace_retires_new_and_rebinds_old_atomically() {
+    use crate::store::seats;
+    let (context, mut conn, path, clock) = b5_replace_fixture();
+    let old_before = (
+        b5_obligation_states(&conn, "s1"),
+        conn.query_row(
+            "SELECT count(*) FROM memberships WHERE seat_id='s1'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap(),
+    );
+    let result = seats::mutate_operator(
+        &context,
+        &mut conn,
+        "i",
+        b5_replace_request("s1", "s2", "s2", "replace-1"),
+        b5_actor(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(result, CommandResult::OperatorRebound(SeatId::new("s1")));
+    let seat_row = |conn: &Connection, seat: &str| -> (String, Option<String>) {
+        conn.query_row(
+            "SELECT state,target_id FROM seats WHERE id=?1",
+            [seat],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        seat_row(&conn, "s1"),
+        ("resolved".into(), Some("s2".into()))
+    );
+    assert_eq!(seat_row(&conn, "s2").0, "retired");
+    // The pane is owned by exactly one live seat, and it is OLD: a concurrent
+    // resolve serializes behind the decision and can only see OLD.
+    let owners: Vec<String> = conn
+        .prepare("SELECT id FROM seats WHERE target_id='s2' AND state='resolved'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(owners, vec!["s1".to_owned()]);
+    assert_eq!(
+        b5_obligation_states(&conn, "s2"),
+        ("pending".into(), "pending".into())
+    );
+    b5_drain_retirement(&context, &mut conn, &clock, "s2");
+    assert_eq!(
+        b5_obligation_states(&conn, "s2"),
+        ("recipient_retired".into(), "recipient_retired".into())
+    );
+    // Nothing moved from NEW to OLD.
+    let old_after = (
+        b5_obligation_states(&conn, "s1"),
+        conn.query_row(
+            "SELECT count(*) FROM memberships WHERE seat_id='s1'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap(),
+    );
+    assert_eq!(old_after, old_before);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM memberships WHERE seat_id='s1' AND thread_id LIKE 'new-%'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    let audit: Vec<(String, String, Option<String>)> = conn
+        .prepare("SELECT kind,seat_id,operator_label FROM allocation_decisions ORDER BY ordinal")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let label = Some("operator:local-user:501".to_owned());
+    assert_eq!(
+        audit,
+        vec![
+            ("operator_retire".to_owned(), "s2".to_owned(), label.clone()),
+            ("operator_rebind".to_owned(), "s1".to_owned(), label),
+        ]
+    );
+    // Replay returns the stored result and writes nothing more.
+    assert_eq!(
+        seats::mutate_operator(
+            &context,
+            &mut conn,
+            "i",
+            b5_replace_request("s1", "s2", "s2", "replace-1"),
+            b5_actor(),
+            None,
+        )
+        .unwrap(),
+        CommandResult::OperatorRebound(SeatId::new("s1"))
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM allocation_decisions", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn operator_replace_refuses_when_new_does_not_own_the_pane_and_writes_nothing() {
+    use crate::store::seats;
+    let (context, mut conn, path, _) = b5_replace_fixture();
+    conn.execute("INSERT INTO seats(id, instance_id, state, role, target_id, generation, target_generation, created_at) VALUES ('s3', 'i', 'resolved', 'native', 's3', 1, 1, 0)", []).unwrap();
+    for (new, operation) in [("s3", "replace-wrong-owner"), ("s1", "replace-self")] {
+        let error = seats::mutate_operator(
+            &context,
+            &mut conn,
+            "i",
+            b5_replace_request("s1", "s2", new, operation),
+            b5_actor(),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::TargetAlreadyOwned, "{new}");
+    }
+    let written: (i64, i64, String, String) = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM allocation_decisions),(SELECT count(*) FROM retirements),(SELECT state FROM seats WHERE id='s1'),(SELECT state FROM seats WHERE id='s2')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(written, (0, 0, "unresolved".into(), "resolved".into()));
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn rebind_onto_owned_target_lists_both_resolutions() {
+    use crate::{
+        ports::{OperatorRequest, OperatorTargetGuard},
+        protocol::commands::{OperatorCommand, OperatorRebind},
+        store::seats,
+    };
+    let (context, mut conn, path, _) = b5_replace_fixture();
+    let command = OperatorRebind {
+        seat: SeatId::new("s1"),
+        target: HostTargetId::new("s2"),
+        operation: OperationId::new("rebind-owned"),
+    };
+    let guard = OperatorTargetGuard::try_new(
+        "i",
+        &OperatorCommand::Rebind(command.clone()),
+        b5_fresh_observation("s2"),
+    )
+    .unwrap();
+    let error = seats::mutate_operator(
+        &context,
+        &mut conn,
+        "i",
+        OperatorRequest::Rebind(command, guard),
+        b5_actor(),
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::TargetAlreadyOwned);
+    assert!(
+        error
+            .detail
+            .contains("herdr-threads seat retire s1 --operator"),
+        "{}",
+        error.detail
+    );
+    assert!(
+        error
+            .detail
+            .contains("herdr-threads seat rebind s1 --pane s2 --replace s2 --operator"),
+        "{}",
+        error.detail
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+// ---- TRUST-POLICY C1 cooperative continuity (ht-rzi.2) ----
+
+fn c1_observe(conn: &Connection, target: &str) {
+    conn.execute(
+        "INSERT OR REPLACE INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,3,100,'fresh','term-'||?1,'inc','coherent_enumeration',1)",
+        [target],
+    )
+    .unwrap();
+}
+
+fn c1_bind(conn: &Connection, seat: &str, generation: i64, harness: &str, session: &str) {
+    conn.execute(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at) VALUES (?1,?2,1,'old-pane','b',1,?3,?4,'exec-'||?1||'-'||?2,'cooperative_top_level',10,10,50)",
+        rusqlite::params![seat, generation, harness, session],
+    )
+    .unwrap();
+}
+
+fn c1_unresolved_seat(conn: &Connection, seat: &str, harness: &str, session: &str) {
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','unresolved','native',NULL,1,1,0)", [seat]).unwrap();
+    c1_bind(conn, seat, 1, harness, session);
+}
+
+fn c1_command(
+    target: &str,
+    session: &str,
+    operation: &str,
+) -> crate::protocol::commands::ContinuityCheckIn {
+    crate::protocol::commands::ContinuityCheckIn {
+        target: HostTargetId::new(target),
+        harness: Harness::Claude,
+        native_session: NativeSessionId::new(session),
+        source: "resume".into(),
+        operation: OperationId::new(operation),
+        execution: ExecutionId::new(format!("exec-{operation}")),
+    }
+}
+
+fn c1_decide(
+    context: &StoreContext,
+    conn: &mut Connection,
+    command: &crate::protocol::commands::ContinuityCheckIn,
+    diagnostic: &'static str,
+) -> Result<CommandResult, crate::protocol::results::ApiError> {
+    let guard = crate::ports::ContinuityTargetGuard::try_new(
+        "i",
+        command,
+        b5_fresh_observation(command.target.as_str()),
+    )
+    .unwrap();
+    crate::store::seats::decide_continuity(
+        context,
+        conn,
+        "i",
+        crate::ports::ContinuityRequest {
+            command: command.clone(),
+            guard,
+            diagnostic,
+        },
+    )
+}
+
+/// Seat `s1` unresolved with a latest `claude`/`sess-1` binding, `held-pane`
+/// observed and held. Marker left NULL (no lift unless a test sets it).
+fn c1_fixture() -> (StoreContext, Connection, PathBuf) {
+    let (context, mut conn, path, _) = fixture(100);
+    b5_published_baseline(&context, &mut conn, &["held-pane"]);
+    c1_bind(&conn, "s1", 1, "claude", "sess-1");
+    b5_add_hold(&conn, "i", "held-pane");
+    c1_observe(&conn, "held-pane");
+    (context, conn, path)
+}
+
+fn c1_tables_mentioning(conn: &Connection, needle: &str) -> Vec<String> {
+    let tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let mut found = Vec::new();
+    for table in tables {
+        let columns: Vec<String> = conn
+            .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let any = columns
+            .iter()
+            .map(|c| format!("CAST(\"{c}\" AS TEXT) LIKE '%{needle}%'"))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let hit: bool = conn
+            .query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM \"{table}\" WHERE {any})"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        if hit {
+            found.push(table);
+        }
+    }
+    found
+}
+
+#[test]
+fn continuity_reattaches_unique_session_match_on_held_target() {
+    let (context, mut conn, path) = c1_fixture();
+    let command = c1_command("held-pane", "sess-1", "c1-op");
+    let result = c1_decide(&context, &mut conn, &command, "match").unwrap();
+    assert_eq!(
+        result,
+        CommandResult::ContinuityReattached(crate::protocol::results::ContinuityReattachment {
+            seat: SeatId::new("s1"),
+            binding_generation: 2,
+        })
+    );
+    let seat: (String, Option<String>, i64) = conn
+        .query_row(
+            "SELECT state,target_id,generation FROM seats WHERE id='s1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(seat, ("resolved".into(), Some("held-pane".into()), 2));
+    let open: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        open, 1,
+        "the deciding transaction opens the successor binding"
+    );
+    let released: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM recovery_holds WHERE target_id='held-pane' AND released_at IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(released, 1);
+    let rows: Vec<(String, String, Option<String>, Option<String>)> = conn
+        .prepare(
+            "SELECT kind,seat_id,operator_label,continuity_diagnostic FROM allocation_decisions",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        rows,
+        vec![(
+            "cooperative_continuity".into(),
+            "s1".into(),
+            None,
+            Some("match".into())
+        )]
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_opens_successor_cooperative_binding_in_the_deciding_transaction() {
+    let (context, mut conn, path) = c1_fixture();
+    let command = c1_command("held-pane", "sess-1", "c1-open");
+    let result = c1_decide(&context, &mut conn, &command, "match").unwrap();
+    let CommandResult::ContinuityReattached(reply) = result else {
+        panic!("wrong result");
+    };
+    assert_eq!(reply.seat.as_str(), "s1");
+    let seat: (String, Option<String>, i64, i64) = conn
+        .query_row(
+            "SELECT state,target_id,generation,unavailability_open FROM seats WHERE id='s1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        seat,
+        (
+            "resolved".into(),
+            Some("held-pane".into()),
+            reply.binding_generation as i64,
+            0
+        )
+    );
+    let open: Vec<(String, String, String, String, i64, bool, String)> = conn
+        .prepare("SELECT observation_provenance,harness,native_session,execution_id,generation,registered_at IS NOT NULL,target_id FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL")
+        .unwrap()
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        open,
+        vec![(
+            "cooperative_top_level".into(),
+            "claude".into(),
+            "sess-1".into(),
+            "exec-c1-open".into(),
+            reply.binding_generation as i64,
+            true,
+            "held-pane".into()
+        )]
+    );
+    let decisions: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity' AND seat_id='s1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(decisions, 1);
+    assert_eq!(
+        crate::store::schema::effective_registered_availability(&conn, "s1", Some("i")).unwrap(),
+        Some("cooperative_top_level".into())
+    );
+    let anchors: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM seat_availability WHERE seat_id='s1' AND binding_generation=?1",
+            [reply.binding_generation as i64],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(anchors, 1);
+    let jobs: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM work_jobs WHERE kind='receipt_timer_materialization'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(jobs, 1);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_without_match_is_retryable_until_reconciled() {
+    use crate::protocol::results::ErrorCode;
+    let (context, mut conn, path) = c1_fixture();
+    conn.execute(
+        "UPDATE host_instances SET recovery_boot='b',recovery_epoch=2,reconciled_boot='b',reconciled_epoch=1 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    let command = c1_command("held-pane", "sess-other", "c1-lag");
+    let lagging = c1_decide(&context, &mut conn, &command, "match").unwrap_err();
+    assert_eq!(lagging.code, ErrorCode::ServiceBusy);
+    assert!(
+        lagging.detail.contains("has not finished"),
+        "{}",
+        lagging.detail
+    );
+    let stored: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM operations WHERE operation_key='c1-lag'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        stored, 0,
+        "a retryable refusal stores nothing under the key"
+    );
+    conn.execute(
+        "UPDATE host_instances SET reconciled_boot=recovery_boot,reconciled_epoch=recovery_epoch WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    let settled = c1_decide(&context, &mut conn, &command, "match").unwrap_err();
+    assert_eq!(settled.code, ErrorCode::NotFound);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_on_unowned_target_reattaches() {
+    let (context, mut conn, path, _) = fixture(100);
+    b5_published_baseline(&context, &mut conn, &["free-pane"]);
+    c1_bind(&conn, "s1", 1, "claude", "sess-1");
+    c1_observe(&conn, "free-pane");
+    let command = c1_command("free-pane", "sess-1", "c1-free");
+    let result = c1_decide(&context, &mut conn, &command, "absent").unwrap();
+    assert!(matches!(
+        result,
+        CommandResult::ContinuityReattached(ref r) if r.seat.as_str() == "s1"
+    ));
+    let state: (String, Option<String>) = conn
+        .query_row("SELECT state,target_id FROM seats WHERE id='s1'", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(state, ("resolved".into(), Some("free-pane".into())));
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_refuses_zero_and_multiple_matches() {
+    use crate::protocol::results::ErrorCode;
+    let (context, mut conn, path) = c1_fixture();
+    // Reconciliation of the current epoch has finished, so "no unresolved
+    // seat" is final (while it lags it is the retryable ServiceBusy).
+    b5_set_marker_to_recovery(&conn);
+    // Zero: no unresolved seat holds this session.
+    let none = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-other", "c1-zero"),
+        "match",
+    )
+    .unwrap_err();
+    assert_eq!(none.code, ErrorCode::NotFound);
+    // Several: a second unresolved seat carries the same last session.
+    c1_unresolved_seat(&conn, "s3", "claude", "sess-1");
+    let many = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-many"),
+        "match",
+    )
+    .unwrap_err();
+    assert_eq!(many.code, ErrorCode::Conflict);
+    assert!(many.detail.contains("seat rebind --operator"));
+    let after: (String, String, i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT state FROM seats WHERE id='s1'),(SELECT state FROM seats WHERE id='s3'),(SELECT count(*) FROM recovery_holds WHERE target_id='held-pane' AND released_at IS NULL),(SELECT count(*) FROM allocation_decisions)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(after, ("unresolved".into(), "unresolved".into(), 1, 0));
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_never_matches_retired_sentinel_human_or_empty_sessions() {
+    use crate::store::seats::continuity_candidates;
+    let (_context, mut conn, path) = c1_fixture();
+    // Retired seat with the session.
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,retired_at,retired_seq) VALUES ('s-retired','i','retired','native',NULL,1,1,0,5,1)", []).unwrap();
+    c1_bind(&conn, "s-retired", 1, "claude", "sess-r");
+    // Sentinel, human and empty values on unresolved seats.
+    c1_unresolved_seat(&conn, "s-sentinel", "claude", "plugin_context:abc");
+    c1_unresolved_seat(&conn, "s-human", "human", "sess-h");
+    c1_unresolved_seat(&conn, "s-empty", "claude", "");
+    // A different harness with the same id, and a superseded (not latest) binding.
+    c1_unresolved_seat(&conn, "s-codex", "codex", "sess-c");
+    c1_unresolved_seat(&conn, "s-old", "claude", "sess-old");
+    c1_bind(&conn, "s-old", 2, "claude", "sess-new");
+    let tx = conn.transaction().unwrap();
+    let ask = |harness: &str, session: &str| {
+        continuity_candidates(&tx, "i", harness, session)
+            .unwrap()
+            .into_iter()
+            .map(|seat| seat.as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert!(ask("claude", "sess-r").is_empty(), "retired seat");
+    assert!(ask("claude", "plugin_context:abc").is_empty(), "sentinel");
+    assert!(ask("human", "sess-h").is_empty(), "human occupant");
+    assert!(ask("claude", "").is_empty(), "empty");
+    assert!(
+        ask("claude", "sess-c").is_empty(),
+        "other harness's session"
+    );
+    assert!(ask("claude", "sess-old").is_empty(), "superseded binding");
+    // Controls: the live matches are found, so the empties above are real.
+    assert_eq!(ask("codex", "sess-c"), vec!["s-codex"]);
+    assert_eq!(ask("claude", "sess-new"), vec!["s-old"]);
+    assert_eq!(ask("claude", "sess-1"), vec!["s1"]);
+    drop(tx);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_refuses_owned_target() {
+    use crate::protocol::results::ErrorCode;
+    let (context, mut conn, path) = c1_fixture();
+    // s2 resolved on target "s2" (fixture): never taken.
+    c1_observe(&conn, "s2");
+    let error = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("s2", "sess-1", "c1-owned"),
+        "match",
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::TargetAlreadyOwned);
+    let state: String = conn
+        .query_row("SELECT state FROM seats WHERE id='s1'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(state, "unresolved");
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_of_last_unresolved_seat_lifts_hold() {
+    let (context, mut conn, path) = c1_fixture();
+    b5_set_marker_to_recovery(&conn);
+    assert_eq!(b5_hold_state(&conn), (1, 1));
+    c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-lift"),
+        "mismatch",
+    )
+    .unwrap();
+    assert_eq!(b5_hold_state(&conn), (0, 0));
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+    // With another unresolved seat left (or the marker lagging) the baseline
+    // flag stays: only the target's own hold is released.
+    let (context, mut conn, path) = c1_fixture();
+    b5_set_marker_to_recovery(&conn);
+    c1_unresolved_seat(&conn, "s3", "claude", "sess-3");
+    c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-nolift"),
+        "match",
+    )
+    .unwrap();
+    assert_eq!(b5_hold_state(&conn), (1, 0));
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_replay_returns_recorded_seat_and_generation() {
+    let (context, mut conn, path) = c1_fixture();
+    let command = c1_command("held-pane", "sess-1", "c1-replay");
+    let first = c1_decide(&context, &mut conn, &command, "match").unwrap();
+    let replayed =
+        crate::store::seats::replay_continuity(&context, "i", &command, &b5_budget()).unwrap();
+    assert_eq!(replayed, Some(first.clone()));
+    // The same key and payload decided again is the recorded result.
+    let again = c1_decide(&context, &mut conn, &command, "absent").unwrap();
+    assert_eq!(again, first);
+    let rows: (i64, Option<String>) = conn
+        .query_row(
+            "SELECT count(*),max(continuity_diagnostic) FROM allocation_decisions WHERE kind='cooperative_continuity'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        rows,
+        (1, Some("match".into())),
+        "no second row, first diagnostic kept"
+    );
+    let bindings: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='s1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(bindings, 2, "replay adds no binding row");
+    // Another payload under the same key is refused, not replayed.
+    let other = c1_command("held-pane", "sess-2", "c1-replay");
+    assert_eq!(
+        crate::store::seats::replay_continuity(&context, "i", &other, &b5_budget())
+            .unwrap_err()
+            .code,
+        crate::protocol::results::ErrorCode::OperationPayloadMismatch
+    );
+    assert_eq!(
+        crate::store::seats::replay_continuity(
+            &context,
+            "i",
+            &c1_command("held-pane", "sess-1", "c1-never-used"),
+            &b5_budget()
+        )
+        .unwrap(),
+        None
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_diagnostic_values_round_trip() {
+    for diagnostic in ["match", "mismatch", "absent", "read_error"] {
+        let (context, mut conn, path) = c1_fixture();
+        c1_decide(
+            &context,
+            &mut conn,
+            &c1_command("held-pane", "sess-1", "c1-diag"),
+            diagnostic,
+        )
+        .unwrap();
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT continuity_diagnostic FROM allocation_decisions",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored.as_deref(), Some(diagnostic));
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn continuity_never_writes_receipts() {
+    let (context, mut conn, path) = c1_fixture();
+    c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-receipts"),
+        "match",
+    )
+    .unwrap();
+    // The value exists in seat history only: no receipt, binding or other
+    // table carries it (A3).
+    assert_eq!(
+        c1_tables_mentioning(&conn, "cooperative_continuity"),
+        vec!["allocation_decisions".to_owned()]
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
 }

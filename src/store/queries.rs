@@ -31,10 +31,10 @@ use crate::protocol::{
         AckProvenance, ApiError, BindingHistory, BoundedError, CleanupState, CommandResult,
         ContinuityStatus, DeliveryAggregates, DeliveryInspection, Diagnostic, ErrorCode,
         HoldSummary, InboxItem, InvitationAcceptance, MappingStatus, MembershipStatus,
-        MessageContent, MessageDetails, MessageKind, MessageSummary, OperationStatus, Participant,
-        PendingReceipt, ReceiptStatus, Recipient, RepairHistory, RetirementStatus, SearchHit,
-        SearchPage, SeatHistoryItem, SeatInspection, SeatSummary, StructuredEvent, ThreadDetails,
-        ThreadSummary, WarningRecipient, WarningRef,
+        MessageContent, MessageDetails, MessageKind, MessageSummary, OpenBindingSummary,
+        OperationStatus, Participant, PendingReceipt, ReceiptStatus, Recipient, RepairHistory,
+        RetirementStatus, SearchHit, SearchPage, SeatHistoryItem, SeatInspection, SeatSummary,
+        StructuredEvent, ThreadDetails, ThreadSummary, WarningRecipient, WarningRef,
     },
     time::{CallBudget, Clock, MonoInstant, UtcMillis},
 };
@@ -331,7 +331,11 @@ pub fn query_operation_status(
                 | CommandResult::Accepted(v)
                 | CommandResult::OperatorInvited(v) => Some(v.as_str().to_owned()),
                 CommandResult::SeatResolved(v)
+                | CommandResult::ContinuityReattached(
+                    crate::protocol::results::ContinuityReattachment { seat: v, .. },
+                )
                 | CommandResult::OperatorRebound(v)
+                | CommandResult::OperatorRetired(v)
                 | CommandResult::OperatorFreshSeat(v) => Some(v.as_str().to_owned()),
                 _ => None,
             };
@@ -649,6 +653,27 @@ fn seat_inspect_cursor(
         .map_err(|e| api_error(ErrorCode::InvalidCursor, e))
 }
 
+/// The seat's open (not ended) binding, or none: the one answer every A4
+/// guard (launch, wake, cooperative check-in) reads.
+pub(crate) fn open_binding(
+    db: &Connection,
+    seat: &str,
+) -> Result<Option<OpenBindingSummary>, ApiError> {
+    db.query_row(
+        "SELECT observation_provenance,harness,target_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC LIMIT 1",
+        [seat],
+        |r| {
+            Ok(OpenBindingSummary {
+                provenance: r.get(0)?,
+                harness: r.get(1)?,
+                target: HostTargetId::new(r.get::<_, String>(2)?),
+            })
+        },
+    )
+    .optional()
+    .map_err(store_error)
+}
+
 fn seat_inspect_argv(q: &SeatInspectQuery, raw: &str) -> Vec<String> {
     vec![
         "herdr-threads".into(),
@@ -720,6 +745,7 @@ fn seat_inspect(
             })
         })
         .transpose()?;
+    let open_binding = open_binding(db, q.seat.as_str())?;
     let filter = digest(&q.seat.as_str())?;
     let cursor = decode_cursor(
         &q.page,
@@ -796,8 +822,18 @@ fn seat_inspect(
             String,
         );
         let binding:Option<BindingRow>=db.query_row("SELECT ordinal,generation,target_id,terminal_id,incarnation,host_boot,host_epoch,native_session,execution_id,observed_at,registered_at,ended_at,observation_provenance FROM occupant_bindings WHERE seat_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT 1",params![q.seat.as_str(),last as i64,binding_high as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?))).optional().map_err(|e|db.map_error(e))?;
-        type RepairRow = (i64, String, String, i64, String, i64, i64, Option<String>);
-        let repair:Option<RepairRow>=db.query_row("SELECT ordinal,target_id,kind,decided_at,host_boot,epoch,generation,operator_label FROM allocation_decisions WHERE seat_id=?1 AND (ordinal>?2 OR (ordinal=?2 AND ?4=0)) AND ordinal<=?3 ORDER BY ordinal LIMIT 1",params![q.seat.as_str(),last as i64,repair_high as i64,last_kind],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional().map_err(|e|db.map_error(e))?;
+        type RepairRow = (
+            i64,
+            String,
+            String,
+            i64,
+            String,
+            i64,
+            i64,
+            Option<String>,
+            Option<String>,
+        );
+        let repair:Option<RepairRow>=db.query_row("SELECT ordinal,target_id,kind,decided_at,host_boot,epoch,generation,operator_label,continuity_diagnostic FROM allocation_decisions WHERE seat_id=?1 AND (ordinal>?2 OR (ordinal=?2 AND ?4=0)) AND ordinal<=?3 ORDER BY ordinal LIMIT 1",params![q.seat.as_str(),last as i64,repair_high as i64,last_kind],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).optional().map_err(|e|db.map_error(e))?;
         let pick_binding = match (&binding, &repair) {
             (Some(b), Some(r)) => b.0 <= r.0,
             (Some(_), None) => true,
@@ -842,8 +878,17 @@ fn seat_inspect(
                 }),
             )
         } else {
-            let (ordinal, target, decision_kind, decided, boot, epoch, generation, operator_label) =
-                repair.unwrap();
+            let (
+                ordinal,
+                target,
+                decision_kind,
+                decided,
+                boot,
+                epoch,
+                generation,
+                operator_label,
+                continuity_diagnostic,
+            ) = repair.unwrap();
             (
                 ordinal as u64,
                 1,
@@ -856,6 +901,7 @@ fn seat_inspect(
                     host_epoch: epoch as u64,
                     generation: generation as u64,
                     operator_label,
+                    continuity_diagnostic,
                 }),
             )
         };
@@ -875,6 +921,7 @@ fn seat_inspect(
             mapping: mapping.clone(),
             hold: hold.clone(),
             retirement: retirement.clone(),
+            open_binding: open_binding.clone(),
             history: page(
                 proposed,
                 Some((raw.clone(), seat_inspect_argv(q, &raw))),
@@ -922,6 +969,7 @@ fn seat_inspect(
         mapping,
         hold,
         retirement,
+        open_binding,
         history: page(items, next, high, stop, output),
     });
     ensure_fit(&result, output, q.page.max_bytes)?;

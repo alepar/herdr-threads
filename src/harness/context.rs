@@ -182,6 +182,17 @@ struct AttentionMark {
     token: crate::protocol::attention::AttentionToken,
 }
 const ATTENTION_MARK_VERSION: u32 = 2;
+/// The person's `me init --operator` override for one human execution
+/// (TRUST-POLICY A4): recorded only after the daemon accepted the operator
+/// check-in; a client-local hint that skips the advisory agent-evidence
+/// checks, never authority.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OperatorMark {
+    version: u32,
+    execution: Uuid,
+}
+const OPERATOR_MARK_VERSION: u32 = 1;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct State {
@@ -686,10 +697,16 @@ impl ContextJournal {
                 }) {
                     return Err(ContextError::Conflict);
                 }
+                // A person's request over an agent's current context is
+                // admitted without touching `current`: the daemon decides
+                // (TRUST-POLICY A4) and `dispatch` replaces `current` only on
+                // success.
+                let person_over_agent = request.context.harness == Harness::Human;
                 if state.current.as_ref().is_some_and(|c| {
                     c.execution == request.context.execution
                         || c.target != request.context.target
-                        || c.harness != request.context.harness
+                        || (c.harness != request.context.harness
+                            && !(person_over_agent && c.harness != Harness::Human))
                 }) || state
                     .completed
                     .iter()
@@ -794,6 +811,30 @@ impl ContextJournal {
         self.save(&state)?;
         Ok(Some(pending))
     }
+    /// TRUST-POLICY C1: install the context a continuity reattachment returned
+    /// for this seat, replacing whatever was saved (a context for another pane
+    /// or an older generation is historical once the service reattached the
+    /// seat). A request still pending for the replaced context is moved to
+    /// `abandoned` and returned so the caller can complete its intent.
+    pub fn install_reattached(
+        &self,
+        context: OccupantContext,
+    ) -> Result<Option<PendingCheckIn>, ContextError> {
+        self.validate_context(&context)?;
+        let _lock = self.lock()?;
+        let mut state = self.load()?;
+        let abandoned = state.pending.take();
+        if let Some(pending) = &abandoned {
+            state.abandoned.push(Abandoned {
+                event_id: pending.event_id.clone(),
+                operation_id: pending.operation_id,
+            });
+        }
+        state.current = Some(context);
+        prune(&mut state, now_millis());
+        self.save(&state)?;
+        Ok(abandoned)
+    }
     /// Clear `current` when the service has moved the seat past it. Only the
     /// exact context the caller observed is cleared, and never while a request
     /// is pending. Completed entries stay for exact replay.
@@ -828,6 +869,57 @@ impl ContextJournal {
         let mark: AttentionMark = serde_json::from_slice(&bytes).ok()?;
         (mark.version == ATTENTION_MARK_VERSION && mark.execution == execution)
             .then_some(mark.token)
+    }
+    /// Execution the person recorded with `me init --operator`; `None` when
+    /// absent, unreadable or of another version.
+    pub fn operator_mark(&self) -> Option<Uuid> {
+        let path = self.directory.join("operator.json");
+        private_metadata(&path, false).ok()?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        secure_options(&mut options);
+        let mut bytes = Vec::new();
+        options
+            .open(path)
+            .ok()?
+            .take((MAX_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        let mark: OperatorMark = serde_json::from_slice(&bytes).ok()?;
+        (mark.version == OPERATOR_MARK_VERSION).then_some(mark.execution)
+    }
+    /// Record the operator override for `execution` atomically (last writer
+    /// wins); it matches only that execution.
+    pub fn set_operator_mark(&self, execution: Uuid) -> Result<(), ContextError> {
+        if execution.is_nil() {
+            return Err(ContextError::Invalid);
+        }
+        let bytes = serde_json::to_vec(&OperatorMark {
+            version: OPERATOR_MARK_VERSION,
+            execution,
+        })
+        .map_err(|_| ContextError::Invalid)?;
+        private_metadata(&self.directory, true)?;
+        let temp = self
+            .directory
+            .join(format!(".operator-{}.tmp", Uuid::new_v4()));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        secure_options(&mut options);
+        let operation = (|| {
+            let mut f = options.open(&temp)?;
+            f.write_all(&bytes)?;
+            let path = self.directory.join("operator.json");
+            if fs::symlink_metadata(&path).is_ok() {
+                private_metadata(&path, false)?;
+            }
+            fs::rename(&temp, path)?;
+            Ok(())
+        })();
+        if operation.is_err() {
+            let _ = fs::remove_file(temp);
+        }
+        operation
     }
     /// Replace the attention mark atomically (last writer wins).
     pub fn set_attention_mark(

@@ -809,6 +809,16 @@ fn documented_mutations_dispatch_exact_typed_command_to_stub() {
             &["invite", "t1", "--seat", "s1", "--operator"],
             "operator_orphan_invite",
         ),
+        (
+            &["seat", "retire", "s1", "--operator"],
+            "operator_retire",
+        ),
+        (
+            &[
+                "seat", "rebind", "s1", "--pane", "p1", "--replace", "s2", "--operator",
+            ],
+            "operator_replace",
+        ),
     ];
     let mut stub = Stub(vec![]);
     for &(args, expected) in rows {
@@ -1126,4 +1136,49 @@ fn read_follow_parses_its_options_and_refuses_page_selectors() {
     ] {
         assert!(parse_argv(refused.clone()).is_err(), "{refused:?}");
     }
+}
+
+#[test]
+fn seat_retire_requires_operator_flag() {
+    let error = parse_argv(["herdr-threads", "seat", "retire", "s1"]).unwrap_err();
+    assert!(error.detail.contains("operator required"), "{}", error.detail);
+    let parsed = parse_argv(["herdr-threads", "seat", "retire", "s1", "--operator"]).unwrap();
+    assert!(
+        matches!(&parsed.action, CliAction::Mutation(MutationSpec::Retire(seat)) if seat.as_str() == "s1"),
+        "{:?}",
+        parsed.action
+    );
+}
+
+#[test]
+fn seat_rebind_replace_parses_to_operator_replace() {
+    let parsed = parse_argv([
+        "herdr-threads",
+        "seat",
+        "rebind",
+        "s1",
+        "--pane",
+        "p1",
+        "--replace",
+        "s2",
+        "--operator",
+    ])
+    .unwrap();
+    assert!(
+        matches!(&parsed.action, CliAction::Mutation(MutationSpec::Replace { seat, pane, replace })
+            if seat.as_str() == "s1" && pane.as_str() == "p1" && replace.as_str() == "s2"),
+        "{:?}",
+        parsed.action
+    );
+    // Without --replace the same form stays a plain rebind; --replace needs --operator.
+    let plain = parse_argv(["herdr-threads", "seat", "rebind", "s1", "--pane", "p1", "--operator"])
+        .unwrap();
+    assert!(matches!(
+        plain.action,
+        CliAction::Mutation(MutationSpec::Rebind { .. })
+    ));
+    assert!(
+        parse_argv(["herdr-threads", "seat", "rebind", "s1", "--pane", "p1", "--replace", "s2"])
+            .is_err()
+    );
 }

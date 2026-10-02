@@ -57,6 +57,7 @@ impl DomainService {
         peer: PeerIdentity,
         budget: &CallBudget,
         read: ReadContext,
+        operator_override: bool,
     ) -> Result<CommandResult, ApiError> {
         let (owner_uid, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
             error(
@@ -70,6 +71,16 @@ impl DomainService {
                 "caller peer does not match elected owner",
             ));
         }
+        let operator = if operator_override {
+            Some(OperatorActor::from_peer(peer, *owner_uid).ok_or_else(|| {
+                error(
+                    ErrorCode::Unauthorized,
+                    "operator peer does not match elected owner",
+                )
+            })?)
+        } else {
+            None
+        };
         let request = crate::store::cooperative_permit_request(&mutation)?;
         if request.claim.instance != self.instance {
             return Err(error(
@@ -114,6 +125,7 @@ impl DomainService {
                     command,
                     registration: None,
                     read,
+                    operator,
                 },
                 permit,
                 budget,
@@ -240,7 +252,21 @@ impl LocalService for DomainService {
                         "command is not an accountable mutation",
                     )
                 })?;
-                self.cooperative_mutation(mutation, peer, budget, read)
+                self.cooperative_mutation(mutation, peer, budget, read, false)
+            }
+            Command::OperatorCheckIn(check) => {
+                if check.claim.harness != crate::protocol::authority::Harness::Human
+                    || !matches!(
+                        check.mode,
+                        crate::protocol::commands::CheckInMode::Lifecycle { .. }
+                    )
+                {
+                    return Err(error(
+                        ErrorCode::InvalidRequest,
+                        "operator check-in is a human lifecycle check-in",
+                    ));
+                }
+                self.cooperative_mutation(PermitMutation::CheckIn(check), peer, budget, read, true)
             }
             Command::ResolveSeat(request) => {
                 let preparation = self.current_target.as_ref().ok_or_else(|| {
@@ -255,7 +281,9 @@ impl LocalService for DomainService {
             }
             command @ (Command::OperatorRebind(_)
             | Command::OperatorFreshSeat(_)
-            | Command::OperatorOrphanInvite(_)) => {
+            | Command::OperatorOrphanInvite(_)
+            | Command::OperatorRetire(_)
+            | Command::OperatorReplace(_)) => {
                 let actor = self
                     .operator_owner_uid
                     .and_then(|uid| OperatorActor::from_peer(peer, uid))
@@ -278,6 +306,33 @@ impl LocalService for DomainService {
                     )
                 })?;
                 preparation.operator(operator, actor, budget)
+            }
+            // Daemon lifecycle check order (TRUST-POLICY A4, C1): (1) the A4
+            // agent-to-human refusal, (2) this C1 reattachment on a held or
+            // unowned target, (3) the existing hold refusal / ordinary path.
+            // The hook sends this seatless command only when the pane has no
+            // resolved seat and the event is a top-level resume, so (1)
+            // (human lifecycle check-ins) never reaches it.
+            Command::ContinuityCheckIn(continuity) => {
+                let (owner_uid, _) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+                    error(
+                        ErrorCode::CallerUnverified,
+                        "cooperative elected runtime unavailable",
+                    )
+                })?;
+                if peer.effective_uid() != *owner_uid {
+                    return Err(error(
+                        ErrorCode::Unauthorized,
+                        "caller peer does not match elected owner",
+                    ));
+                }
+                let identity = self.current_target.as_ref().ok_or_else(|| {
+                    error(
+                        ErrorCode::Unsupported,
+                        "current-target preparation unavailable",
+                    )
+                })?;
+                identity.continuity(continuity, budget)
             }
             Command::LocalIntents(_) => Err(error(
                 ErrorCode::Unsupported,

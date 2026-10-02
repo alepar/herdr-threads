@@ -56,8 +56,29 @@ impl Harness {
 
 /// An agent's cooperative top-level claim (not native attestation).
 pub const COOPERATIVE_TOP_LEVEL_PROVENANCE: &str = "cooperative_top_level";
+
+/// Herdr agent kinds that count as agent evidence in a pane (TRUST-POLICY A4):
+/// the harnesses this plugin supports. Any other detected kind is not
+/// evidence. `me init`, person-pane selection and the launch guard share this.
+pub const HARNESS_AGENT_KINDS: [&str; 2] = ["claude", "codex"];
+
+/// Whether a Herdr-reported agent kind is a supported harness.
+pub fn is_harness_agent_kind(kind: &str) -> bool {
+    HARNESS_AGENT_KINDS.contains(&kind)
+}
 /// A person acting from their own pane identity (`herdr-threads me init`).
 pub const OPERATOR_HUMAN_PROVENANCE: &str = "operator_human";
+/// C4: bindings a structural reconfirmation carries to a new host epoch;
+/// native `verified_current_target` bindings re-register instead. The planner
+/// predicate and the applier both read this one set.
+pub const CARRIED_BINDING_PROVENANCES: [&str; 2] =
+    [COOPERATIVE_TOP_LEVEL_PROVENANCE, OPERATOR_HUMAN_PROVENANCE];
+/// TRUST-POLICY A3/C1: a seat was reattached because a resumed harness
+/// session id matched an unresolved seat's last binding. Seat rebinds only
+/// (the `allocation_decisions.kind` of the reattachment); never on receipts
+/// and never the provenance of a binding (the binding the reattached seat
+/// opens stays `cooperative_top_level`).
+pub const COOPERATIVE_CONTINUITY_PROVENANCE: &str = "cooperative_continuity";
 
 /// Obtained from the local socket kernel credential, never from JSON.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

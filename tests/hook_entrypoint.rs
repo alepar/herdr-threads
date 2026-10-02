@@ -937,6 +937,51 @@ fn rejection_then_generation_bump_then_session_start_registers_new_generation() 
     assert!(tool.stderr.is_empty(), "{}", tool.stderr);
 }
 
+/// TRUST-POLICY A4: an agent's own startup, /clear and resume lifecycle
+/// check-ins on its resolved target always replace its binding. None is
+/// refused and none records a continuity decision.
+#[test]
+fn cooperative_seat_on_own_target_startup_clear_resume_always_replace_binding() {
+    let fx = Fixture::start();
+    let session_start = |session: &str, source: &str| {
+        format!(r#"{{"session_id":"{session}","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"{source}"}}"#).into_bytes()
+    };
+    let mut generation = fx.count("SELECT generation FROM seats WHERE id='seat'");
+    for (session, source) in [("s-a", "startup"), ("s-b", "clear"), ("s-a", "resume")] {
+        let hook = fx.hook("w9:p1", &session_start(session, source));
+        assert_eq!(hook.code, Some(0), "{source}: {}", hook.stderr);
+        let context = context_of(&hook);
+        assert!(
+            context.starts_with("The top-level agent reads pending mail"),
+            "{source}: {context}"
+        );
+        assert!(!context.contains("unavailable"), "{source}: {context}");
+        let next = fx.count("SELECT generation FROM seats WHERE id='seat'");
+        assert!(next > generation, "{source}: {generation} -> {next}");
+        generation = next;
+        assert_eq!(
+            fx.count(
+                "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL"
+            ),
+            1,
+            "{source}"
+        );
+        assert_eq!(
+            fx.count(&format!("SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND generation={generation} AND observation_provenance='cooperative_top_level' AND harness='claude' AND native_session='{session}'")),
+            1,
+            "{source}"
+        );
+    }
+    assert_eq!(
+        fx.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='seat'"),
+        3
+    );
+    assert_eq!(
+        fx.count("SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'"),
+        0
+    );
+}
+
 // Required test 3: offer -> identical second tool call is quiet -> new message
 // is emitted. Kills: no coalescing (every call re-injects the same offer),
 // coalescing on counts or text (an ACK of one message plus a new one in the
@@ -2820,4 +2865,1053 @@ fn user_level_hook_is_silent_outside_its_herdr_instance() {
         "the installed instance's pane was gated out"
     );
     fs::remove_dir_all(&root).unwrap();
+}
+
+/// TRUST-POLICY C1 (ht-rzi.2): cooperative continuity through the installed
+/// hook, the elected production composition (`run_elected`) and a scripted
+/// Herdr host that answers target reads, enumeration and `agent get`.
+mod continuity {
+    use super::*;
+    use herdr_threads::{
+        app::run_elected,
+        client::local::LocalSocketClient,
+        ports::{
+            EnumerationEvidence, EvidenceKind, ExecutionEvidence, HostCallContext,
+            HostLifecycleSubscription, HostObservation, HostPort, HostSnapshot, HostUiState,
+            IncarnationEvidence, NativeLaunchCapability, NativeLaunchOutcome, NativeLaunchRequest,
+            ObservationProvenance, PaneAgentObservation, PromptOutcome, SafeWakeTarget,
+            StructuralOccupancy,
+        },
+        protocol::{
+            ids::{HostBootId, HostCallId, HostTargetId, SeatId, TerminalId},
+            results::{ApiError, ErrorCode},
+        },
+        service::config::ServiceConfig,
+    };
+    use std::{collections::BTreeMap, sync::Mutex};
+
+    /// What Herdr's `agent get` says about one pane.
+    #[derive(Clone)]
+    pub enum Agent {
+        /// Integration reported this session id.
+        Session(String),
+        /// An agent without an `agent_session` report.
+        NoSession,
+        /// No agent record at all.
+        Missing,
+        /// The read itself fails.
+        ReadError,
+        /// The read takes 300 ms (past the 250 ms guard permit) and finds no
+        /// agent record.
+        Slow,
+    }
+
+    struct Herdr {
+        clock: Arc<dyn Clock>,
+        epoch: AtomicU64,
+        sequence: AtomicU64,
+        panes: Mutex<BTreeMap<String, Agent>>,
+    }
+    impl Herdr {
+        fn observation(&self, target: &str, sequence: u64) -> HostObservation {
+            let at = self.clock.monotonic_now();
+            HostObservation {
+                target: HostTargetId::new(target),
+                host_boot: HostBootId::new("host"),
+                epoch: self.epoch.load(Ordering::SeqCst),
+                generation: 1,
+                observed_at_utc: self.clock.utc_now(),
+                observed_at_mono: at,
+                provenance: ObservationProvenance::FreshCurrentTarget,
+                occupant: None,
+                ui: HostUiState::Idle,
+                terminal: Some(TerminalId::new(format!("terminal-{target}"))),
+                occupancy: StructuralOccupancy::EmptyShell,
+                incarnation: IncarnationEvidence::Verified {
+                    identity: "incarnation".into(),
+                    evidence_kind: EvidenceKind::CoherentEnumeration,
+                },
+                execution: ExecutionEvidence::Unknown,
+                call_id: HostCallId::new(format!("call-{sequence}-{target}")),
+                connection_epoch: self.epoch.load(Ordering::SeqCst),
+                observation_sequence: sequence,
+                started_at_mono: at,
+                completed_at_mono: at,
+            }
+        }
+    }
+    impl HostPort for Herdr {
+        fn native_launch_capability(&self) -> NativeLaunchCapability {
+            NativeLaunchCapability::Unsupported
+        }
+        fn observe_current_target(
+            &self,
+            target: &HostTargetId,
+            _: &HostCallContext,
+        ) -> Result<HostObservation, ApiError> {
+            if !self.panes.lock().unwrap().contains_key(target.as_str()) {
+                return Err(ApiError {
+                    code: ErrorCode::NotFound,
+                    detail: "pane not found".into(),
+                    restart_argv: None,
+                    required_minimum_bytes: None,
+                });
+            }
+            let sequence = self.sequence.fetch_add(1, Ordering::SeqCst);
+            Ok(self.observation(target.as_str(), sequence))
+        }
+        fn enumerate_targets(&self, _: &HostCallContext) -> Result<HostSnapshot, ApiError> {
+            let sequence = self.sequence.fetch_add(1, Ordering::SeqCst);
+            let targets: Vec<_> = self
+                .panes
+                .lock()
+                .unwrap()
+                .keys()
+                .map(|pane| {
+                    let mut observation = self.observation(pane, sequence);
+                    observation.provenance = ObservationProvenance::CoherentEnumeration;
+                    observation
+                })
+                .collect();
+            Ok(HostSnapshot {
+                boot: HostBootId::new("host"),
+                epoch: self.epoch.load(Ordering::SeqCst),
+                observation_sequence: sequence,
+                complete: true,
+                enumeration: EnumerationEvidence::CoherentVerified,
+                incarnation: IncarnationEvidence::Verified {
+                    identity: "incarnation".into(),
+                    evidence_kind: EvidenceKind::CoherentEnumeration,
+                },
+                targets,
+            })
+        }
+        fn subscribe_lifecycle(
+            &self,
+            _: &HostCallContext,
+        ) -> Result<Box<dyn HostLifecycleSubscription>, ApiError> {
+            Err(ApiError {
+                code: ErrorCode::Unsupported,
+                detail: "no lifecycle subscription in the scripted host".into(),
+                restart_argv: None,
+                required_minimum_bytes: None,
+            })
+        }
+        fn safe_wake_target(&self, _: &SeatId, _: &HostObservation) -> Option<SafeWakeTarget> {
+            None
+        }
+        fn submit_prompt(
+            &self,
+            _: &SafeWakeTarget,
+            _: &str,
+            _: &HostCallContext,
+        ) -> Result<PromptOutcome, ApiError> {
+            unreachable!("no prompt in a continuity test")
+        }
+        fn launch_native(
+            &self,
+            _: NativeLaunchRequest,
+            _: &HostCallContext,
+        ) -> Result<NativeLaunchOutcome, ApiError> {
+            unreachable!("no launch in a continuity test")
+        }
+        fn observe_pane_agent(
+            &self,
+            target: &HostTargetId,
+            _: &HostCallContext,
+        ) -> Result<Option<PaneAgentObservation>, ApiError> {
+            let agent = self.panes.lock().unwrap().get(target.as_str()).cloned();
+            match agent {
+                Some(Agent::Session(session)) => Ok(Some(PaneAgentObservation {
+                    kind: Some("claude".into()),
+                    agent_session: Some(session),
+                })),
+                Some(Agent::NoSession) => Ok(Some(PaneAgentObservation {
+                    kind: Some("claude".into()),
+                    agent_session: None,
+                })),
+                Some(Agent::Missing) | None => Ok(None),
+                Some(Agent::Slow) => {
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    Ok(None)
+                }
+                Some(Agent::ReadError) => Err(ApiError {
+                    code: ErrorCode::Unauthorized,
+                    detail: "scripted read error".into(),
+                    restart_argv: None,
+                    required_minimum_bytes: None,
+                }),
+            }
+        }
+        fn resume_after_epoch(&self, persisted: u64) {
+            self.epoch.store(persisted + 1, Ordering::SeqCst);
+        }
+    }
+
+    /// Elected daemon (in this process) + scripted Herdr + the installed hook.
+    pub struct Fixture {
+        root: PathBuf,
+        pub host: PathBuf,
+        pub db: PathBuf,
+        pub instance_dir: PathBuf,
+        paths: InstancePaths,
+        pub instance: Uuid,
+        herdr: Arc<Herdr>,
+        clock: Arc<dyn Clock>,
+        descriptor: Option<herdr_threads::daemon::ownership::EndpointDescriptor>,
+        stop: Cancellation,
+        daemon: Option<std::thread::JoinHandle<std::io::Result<bool>>>,
+        claude: String,
+        codex: String,
+    }
+    impl Fixture {
+        /// `panes`: the panes Herdr reports. `seed` writes the saved state the
+        /// daemon starts from (it runs before the daemon exists).
+        pub fn start(
+            panes: &[(&str, Agent)],
+            seed: impl FnOnce(&rusqlite::Connection, &str),
+        ) -> Self {
+            let root = private_root();
+            let state = root.join("state");
+            let host = root.join("host.sock");
+            let context = RuntimeContext::explicit(state.clone(), host.clone(), None).unwrap();
+            let paths = InstancePaths::resolve(&context).unwrap();
+            let owner = OwnerLock::acquire(&paths).unwrap();
+            let instance = owner.instance_uuid();
+            drop(owner);
+            let setup =
+                StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()));
+            let db = setup.open_writer().unwrap();
+            db.execute(
+                "INSERT INTO host_instances(id,created_at) VALUES (?1,0)",
+                [instance.to_string()],
+            )
+            .unwrap();
+            seed(&db, &instance.to_string());
+            drop(db);
+            // Write the pinned version reporters before any thread of this
+            // process can fork (a writer fd inherited by a child makes the
+            // later exec fail with ETXTBSY and the hook refuse the version).
+            let _ = harness_path(&host);
+            let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+            let herdr = Arc::new(Herdr {
+                clock: Arc::clone(&clock),
+                epoch: AtomicU64::new(1),
+                sequence: AtomicU64::new(1),
+                panes: Mutex::new(
+                    panes
+                        .iter()
+                        .map(|(pane, agent)| ((*pane).to_owned(), agent.clone()))
+                        .collect(),
+                ),
+            });
+            let argv = installed_argv(BIN, Some(state.to_str().unwrap()), None, Harness::Claude);
+            let plan = plan_claude(b"{}", &argv).unwrap();
+            let settings: serde_json::Value = serde_json::from_slice(&plan.proposed_bytes).unwrap();
+            let claude = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let codex_argv =
+                installed_argv(BIN, Some(state.to_str().unwrap()), None, Harness::Codex);
+            let codex = herdr_threads::harness::setup::shell_command(&codex_argv).unwrap();
+            let mut fixture = Self {
+                root,
+                host,
+                db: paths.database_path.clone(),
+                instance_dir: paths.instance_dir.clone(),
+                paths,
+                instance,
+                herdr,
+                clock,
+                descriptor: None,
+                stop: Cancellation::default(),
+                daemon: None,
+                claude,
+                codex,
+            };
+            fixture.spawn();
+            fixture
+        }
+
+        fn spawn(&mut self) {
+            self.stop = Cancellation::default();
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            let paths = self.paths.clone();
+            let clock = Arc::clone(&self.clock);
+            let host = Arc::clone(&self.herdr);
+            let stop = self.stop.clone();
+            self.daemon = Some(std::thread::spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(run_elected(
+                        &paths,
+                        clock,
+                        stop,
+                        ServiceConfig::default(),
+                        host,
+                        move |descriptor| {
+                            tx.send(descriptor.clone()).unwrap();
+                            Ok(())
+                        },
+                    ))
+            }));
+            let descriptor = rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap_or_else(|error| {
+                    let log = fs::read_to_string(self.paths.instance_dir.join("daemon.log"))
+                        .unwrap_or_default();
+                    panic!("elected daemon not ready: {error}; {log}");
+                });
+            self.descriptor = Some(descriptor);
+            // The elected daemon installs a quiet panic hook; restore visible failures.
+            std::panic::set_hook(Box::new(|info| eprintln!("{info}")));
+        }
+
+        pub fn stop_daemon(&mut self) {
+            self.stop.cancel();
+            if let Some(daemon) = self.daemon.take() {
+                let _ = daemon.join();
+            }
+        }
+
+        /// Restart the elected daemon on the same state (a new boot).
+        pub fn restart(&mut self) {
+            self.stop_daemon();
+            self.spawn();
+        }
+
+        pub fn db(&self) -> rusqlite::Connection {
+            let db = rusqlite::Connection::open(&self.db).unwrap();
+            db.busy_timeout(Duration::from_secs(5)).unwrap();
+            db
+        }
+        pub fn count(&self, sql: &str) -> i64 {
+            self.db().query_row(sql, [], |r| r.get(0)).unwrap()
+        }
+
+        /// The daemon's first reconciliation pass has finished (marker for
+        /// the current recovery boot/epoch) and a snapshot is published.
+        pub fn wait_reconciled(&self) {
+            let until = Instant::now() + Duration::from_secs(15);
+            while self.count(
+                "SELECT count(*) FROM host_instances WHERE active_snapshot_id IS NOT NULL AND reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch",
+            ) == 0
+            {
+                assert!(
+                    Instant::now() < until,
+                    "daemon never recorded its reconciliation marker"
+                );
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+
+        pub fn client(&self) -> LocalSocketClient {
+            let descriptor = self.descriptor.clone().unwrap();
+            LocalSocketClient::new(
+                descriptor.endpoint,
+                Arc::clone(&self.clock),
+                descriptor.instance_uuid,
+                Some(descriptor.boot_id),
+            )
+        }
+
+        pub fn call(
+            &self,
+            command: Command,
+        ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+            use herdr_threads::ports::LocalClient;
+            self.client().call(
+                command,
+                &CallBudget {
+                    deadline: herdr_threads::protocol::time::MonoInstant(
+                        self.clock.monotonic_now().0 + 5_000,
+                    ),
+                    cancellation: Cancellation::default(),
+                },
+            )
+        }
+
+        pub fn hook(&self, harness: &str, pane: &str, stdin: &[u8]) -> Hook {
+            let command = if harness == "codex" {
+                &self.codex
+            } else {
+                &self.claude
+            };
+            run_hook(command, pane, &self.host, stdin)
+        }
+
+        pub fn context_dir(&self, seat: &str) -> PathBuf {
+            use sha2::Digest;
+            self.instance_dir
+                .join("contexts")
+                .join(format!("{:x}", sha2::Sha256::digest(seat.as_bytes())))
+        }
+        pub fn context_json(&self, seat: &str) -> serde_json::Value {
+            let bytes = fs::read(self.context_dir(seat).join("context.json")).unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        }
+        pub fn intents(&self) -> usize {
+            fs::read_dir(self.instance_dir.join("intents")).map_or(0, |entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|e| e.path().extension().is_some_and(|x| x == "intent"))
+                    .count()
+            })
+        }
+        pub fn seat_inspect(&self, seat: &str) -> serde_json::Value {
+            let CommandResult::SeatInspect(inspection) = self
+                .call(Command::SeatInspect(
+                    herdr_threads::protocol::commands::SeatInspectQuery {
+                        seat: SeatId::new(seat),
+                        page: herdr_threads::protocol::pagination::PageRequest {
+                            cursor: None,
+                            limit: 50,
+                            max_bytes: herdr_threads::protocol::pagination::MAX_PAGE_BYTES,
+                        },
+                    },
+                ))
+                .unwrap()
+            else {
+                panic!("not a seat inspection")
+            };
+            serde_json::to_value(inspection).unwrap()
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            self.stop_daemon();
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// An unresolved saved seat whose latest binding is `harness`/`session`.
+    pub fn saved_seat(
+        db: &rusqlite::Connection,
+        instance: &str,
+        seat: &str,
+        harness: &str,
+        session: &str,
+    ) {
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,?2,'unresolved','native',1,0)", [seat, instance]).unwrap();
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at) VALUES (?1,1,'old-pane','old-boot',1,?2,?3,?4,'cooperative_top_level',1,1,2)",
+            rusqlite::params![seat, harness, session, Uuid::new_v4().to_string()]).unwrap();
+    }
+
+    pub fn session_start(harness: &str, session: &str, source: &str) -> Vec<u8> {
+        match harness {
+            "codex" => format!(r#"{{"session_id":"{session}","turn_id":"t1","hook_event_name":"SessionStart","source":"{source}"}}"#).into_bytes(),
+            _ => format!(r#"{{"session_id":"{session}","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"{source}"}}"#).into_bytes(),
+        }
+    }
+    pub fn tool_event(harness: &str, session: &str) -> Vec<u8> {
+        match harness {
+            "codex" => format!(r#"{{"session_id":"{session}","turn_id":"t9","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{{"command":"ls"}},"tool_use_id":"call_{}"}}"#, Uuid::new_v4().simple()).into_bytes(),
+            _ => super::tool(session, ""),
+        }
+    }
+
+    const HARNESSES: [&str; 2] = ["claude", "codex"];
+    const PANE: &str = "w1:p1";
+
+    fn reattaching_fixture(harness: &str, agent: Agent) -> Fixture {
+        let fx = Fixture::start(
+            &[(PANE, agent), ("w1:p2", Agent::Missing)],
+            |db, instance| saved_seat(db, instance, "saved", harness, "S-1"),
+        );
+        fx.wait_reconciled();
+        fx
+    }
+
+    #[test]
+    fn resume_with_unique_session_match_in_held_pane_reattaches() {
+        for harness in HARNESSES {
+            let fx = reattaching_fixture(harness, Agent::Session("S-1".into()));
+            // The pane is held by the restore baseline until the saved seat is resolved.
+            assert_eq!(
+                fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+                1,
+                "{harness}"
+            );
+            assert_eq!(
+                fx.count("SELECT count(*) FROM seats WHERE state='unresolved'"),
+                1
+            );
+            let resumed = fx.hook(harness, PANE, &session_start(harness, "S-1", "resume"));
+            assert_eq!(resumed.code, Some(0), "{harness}: {}", resumed.stderr);
+            let context = context_of(&resumed);
+            assert!(
+                context.starts_with("The top-level agent reads pending mail"),
+                "{harness}: {context}"
+            );
+            assert_eq!(
+                fx.count("SELECT count(*) FROM seats WHERE id='saved' AND state='resolved' AND target_id='w1:p1'"),
+                1,
+                "{harness}"
+            );
+            // The open binding is the ordinary cooperative top-level one, on the resumed session.
+            assert_eq!(
+                fx.count(&format!("SELECT count(*) FROM occupant_bindings WHERE seat_id='saved' AND ended_at IS NULL AND observation_provenance='cooperative_top_level' AND native_session='S-1' AND harness='{harness}'")),
+                1,
+                "{harness}"
+            );
+            // The client context names the seat and the new binding generation.
+            let state = fx.context_json("saved");
+            assert_eq!(state["current"]["seat"], "saved");
+            assert_eq!(state["current"]["target"], PANE);
+            assert_eq!(
+                state["current"]["binding_generation"],
+                fx.count("SELECT generation FROM seats WHERE id='saved'")
+            );
+            assert!(state["pending"].is_null());
+            // Pane released; the last unresolved seat lifted the restore hold.
+            assert_eq!(
+                fx.count("SELECT count(*) FROM recovery_holds WHERE released_at IS NULL"),
+                0
+            );
+            assert_eq!(
+                fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+                0,
+                "{harness}"
+            );
+            assert_eq!(fx.intents(), 0, "the continuity intent is finished");
+        }
+    }
+
+    #[test]
+    fn startup_clear_and_new_never_reattach() {
+        for (harness, sources) in [
+            ("claude", &["startup", "clear"][..]),
+            ("codex", &["startup", "clear", "compact"][..]),
+        ] {
+            let fx = reattaching_fixture(harness, Agent::Session("S-1".into()));
+            for source in sources {
+                let hook = fx.hook(harness, PANE, &session_start(harness, "S-1", source));
+                assert_eq!(hook.code, Some(0), "{harness} {source}: {}", hook.stderr);
+                assert_eq!(
+                    fx.count("SELECT count(*) FROM seats WHERE id='saved' AND state='unresolved'"),
+                    1,
+                    "{harness} {source}"
+                );
+                assert_eq!(
+                    fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+                    1
+                );
+                assert_eq!(
+                    fx.count("SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'"),
+                    0
+                );
+                assert_eq!(
+                    fx.intents(),
+                    0,
+                    "{harness} {source}: no continuity intent is recorded"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn zero_or_multiple_matches_leave_pane_held_with_todays_diagnostic() {
+        for harness in HARNESSES {
+            // Zero: the resumed session is nobody's last binding.
+            let fx = reattaching_fixture(harness, Agent::Session("S-1".into()));
+            let none = fx.hook(harness, PANE, &session_start(harness, "S-other", "resume"));
+            assert_eq!(none.code, Some(0), "{}", none.stderr);
+            assert!(
+                none.stderr.contains("no resolved seat for pane")
+                    || none.stdout.is_empty()
+                    || context_of(&none).contains("check-in unavailable"),
+                "{harness}: {}",
+                none.stderr
+            );
+            assert_eq!(
+                fx.count("SELECT count(*) FROM seats WHERE id='saved' AND state='unresolved'"),
+                1
+            );
+            assert_eq!(
+                fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+                1
+            );
+            assert_eq!(fx.intents(), 0, "a definitive refusal discards the intent");
+            drop(fx);
+            // Several: a second unresolved seat carries the same last session.
+            let fx = Fixture::start(&[(PANE, Agent::NoSession)], |db, instance| {
+                saved_seat(db, instance, "saved", harness, "S-1");
+                saved_seat(db, instance, "twin", harness, "S-1");
+            });
+            fx.wait_reconciled();
+            let many = fx.hook(harness, PANE, &session_start(harness, "S-1", "resume"));
+            assert_eq!(many.code, Some(0), "{}", many.stderr);
+            assert_eq!(
+                fx.count("SELECT count(*) FROM seats WHERE state='unresolved'"),
+                2,
+                "{harness}"
+            );
+            assert_eq!(
+                fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+                1
+            );
+            assert_eq!(fx.count("SELECT count(*) FROM allocation_decisions"), 0);
+        }
+    }
+
+    #[test]
+    fn herdr_agent_session_diagnostic_is_recorded_for_each_case() {
+        for (name, agent) in [
+            ("match", Agent::Session("S-1".into())),
+            ("mismatch", Agent::Session("some-other-session".into())),
+            ("absent", Agent::NoSession),
+            ("read_error", Agent::ReadError),
+        ] {
+            let fx = reattaching_fixture("claude", agent);
+            let resumed = fx.hook("claude", PANE, &session_start("claude", "S-1", "resume"));
+            assert_eq!(resumed.code, Some(0), "{name}: {}", resumed.stderr);
+            // Every Herdr outcome reattaches on a unique match: it only suggests.
+            assert_eq!(
+                fx.count("SELECT count(*) FROM seats WHERE id='saved' AND state='resolved' AND target_id='w1:p1'"),
+                1,
+                "{name}: {}",
+                resumed.stderr
+            );
+            let inspection = fx.seat_inspect("saved");
+            let repairs: Vec<_> = inspection["history"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|item| item["kind"] == "repair")
+                .collect();
+            assert_eq!(repairs.len(), 1, "{name}: {inspection}");
+            assert_eq!(
+                repairs[0]["data"]["decision_kind"],
+                "cooperative_continuity"
+            );
+            assert_eq!(repairs[0]["data"]["continuity_diagnostic"], name);
+        }
+    }
+
+    /// A diagnostic read slower than the guard's 250 ms permit must not expire
+    /// the guard: it runs before the fresh observation, outside the window.
+    #[test]
+    fn slow_continuity_diagnostic_does_not_expire_the_guard() {
+        let fx = reattaching_fixture("claude", Agent::Slow);
+        let resumed = fx.hook("claude", PANE, &session_start("claude", "S-1", "resume"));
+        assert_eq!(resumed.code, Some(0), "{}", resumed.stderr);
+        assert_eq!(
+            fx.count("SELECT count(*) FROM seats WHERE id='saved' AND state='resolved' AND target_id='w1:p1'"),
+            1,
+            "{}",
+            resumed.stderr
+        );
+        let inspection = fx.seat_inspect("saved");
+        let repairs: Vec<_> = inspection["history"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["kind"] == "repair")
+            .collect();
+        assert_eq!(repairs.len(), 1, "{inspection}");
+        assert_eq!(repairs[0]["data"]["continuity_diagnostic"], "absent");
+    }
+
+    #[test]
+    fn cooperative_continuity_in_history_never_on_receipts() {
+        let fx = reattaching_fixture("claude", Agent::Session("S-1".into()));
+        let resumed = fx.hook("claude", PANE, &session_start("claude", "S-1", "resume"));
+        assert_eq!(resumed.code, Some(0), "{}", resumed.stderr);
+        assert_eq!(
+            fx.count("SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity' AND seat_id='saved' AND operator_label IS NULL"),
+            1
+        );
+        // No other table (receipts, bindings, operations results) carries the value.
+        let db = fx.db();
+        let tables: Vec<String> = db
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+            )
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let mut found = Vec::new();
+        for table in tables {
+            let columns: Vec<String> = db
+                .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            let any = columns
+                .iter()
+                .map(|c| format!("CAST(\"{c}\" AS TEXT) LIKE '%cooperative_continuity%'"))
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            if db
+                .query_row(
+                    &format!("SELECT EXISTS(SELECT 1 FROM \"{table}\" WHERE {any})"),
+                    [],
+                    |r| r.get::<_, bool>(0),
+                )
+                .unwrap()
+            {
+                found.push(table);
+            }
+        }
+        assert_eq!(found, vec!["allocation_decisions".to_owned()]);
+    }
+
+    #[test]
+    fn reattaching_last_unresolved_seat_lifts_hold() {
+        let fx = Fixture::start(
+            &[(PANE, Agent::NoSession), ("w1:p2", Agent::Missing)],
+            |db, instance| {
+                saved_seat(db, instance, "saved", "claude", "S-1");
+                saved_seat(db, instance, "other", "claude", "S-2");
+            },
+        );
+        fx.wait_reconciled();
+        // Two unresolved seats: reattaching one leaves the restore hold on.
+        let first = fx.hook("claude", PANE, &session_start("claude", "S-1", "resume"));
+        assert_eq!(first.code, Some(0), "{}", first.stderr);
+        assert_eq!(
+            fx.count("SELECT count(*) FROM seats WHERE state='unresolved'"),
+            1
+        );
+        assert_eq!(
+            fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+            1
+        );
+        // The other pane is still held; reattaching the last unresolved seat lifts it.
+        let second = fx.hook("claude", "w1:p2", &session_start("claude", "S-2", "resume"));
+        assert_eq!(second.code, Some(0), "{}", second.stderr);
+        assert_eq!(
+            fx.count("SELECT count(*) FROM seats WHERE state='unresolved'"),
+            0
+        );
+        assert_eq!(
+            fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+            0
+        );
+        assert_eq!(
+            fx.count("SELECT count(*) FROM recovery_holds WHERE released_at IS NULL"),
+            0
+        );
+    }
+
+    /// The daemon committed the reattachment and the hook never saw the
+    /// reply: the intent is on disk, the decision is durable.
+    fn commit_with_lost_reply(fx: &Fixture, harness: &str, session: &str) -> String {
+        use herdr_threads::cli::journal::{IntentScope, Journal, SemanticMutation};
+        use herdr_threads::protocol::authority::Harness as Wire;
+        let journal = Journal::open(fx.instance_dir.join("intents")).unwrap();
+        let reference = journal
+            .record(
+                IntentScope::Continuity {
+                    instance: fx.instance.to_string(),
+                    target: HostTargetId::new(PANE),
+                },
+                SemanticMutation::ContinuityCheckIn {
+                    target: HostTargetId::new(PANE),
+                    harness: if harness == "codex" {
+                        Wire::Codex
+                    } else {
+                        Wire::Claude
+                    },
+                    native_session: herdr_threads::protocol::ids::NativeSessionId::new(session),
+                    source: "resume".into(),
+                    event_id: Uuid::new_v4().to_string(),
+                    execution: herdr_threads::protocol::ids::ExecutionId::new(
+                        Uuid::new_v4().to_string(),
+                    ),
+                },
+                1,
+            )
+            .unwrap();
+        let command = journal
+            .load(&reference)
+            .unwrap()
+            .semantic
+            .to_command(reference.operation.clone(), None)
+            .unwrap();
+        // The reply is dropped: nothing reads the result.
+        let committed = fx.call(command).unwrap();
+        assert!(matches!(committed, CommandResult::ContinuityReattached(_)));
+        reference.operation.as_str().to_owned()
+    }
+
+    /// Install a saved client context for `seat` (as an earlier hook would
+    /// have left it) with the given pane and generation.
+    fn save_context(fx: &Fixture, seat: &str, harness: &str, target: &str, generation: u64) {
+        use herdr_threads::harness::context::{
+            ContextJournal, Harness, OccupantContext, Role, SessionReference,
+        };
+        use std::os::unix::fs::DirBuilderExt;
+        let dir = fx.context_dir(seat);
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)
+            .unwrap();
+        ContextJournal::open(&dir, fx.instance, seat, Duration::from_secs(1))
+            .unwrap()
+            .install_reattached(OccupantContext {
+                format_version: 1,
+                instance: fx.instance,
+                seat: seat.into(),
+                target: target.into(),
+                harness: if harness == "codex" {
+                    Harness::Codex
+                } else {
+                    Harness::Claude
+                },
+                binding_generation: generation,
+                execution: Uuid::new_v4(),
+                session: SessionReference::Native("S-0".into()),
+                role: Role::TopLevel,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn resume_into_a_pane_other_than_the_saved_context_reattaches() {
+        for harness in HARNESSES {
+            let fx = reattaching_fixture(harness, Agent::Session("S-1".into()));
+            // A saved context from before the restart: another pane, an old generation.
+            save_context(&fx, "saved", harness, "old-pane", 1);
+            let resumed = fx.hook(harness, PANE, &session_start(harness, "S-1", "resume"));
+            assert_eq!(resumed.code, Some(0), "{harness}: {}", resumed.stderr);
+            assert!(
+                !resumed.stderr.contains("local context differs"),
+                "{harness}: {}",
+                resumed.stderr
+            );
+            assert_eq!(
+                fx.count("SELECT count(*) FROM seats WHERE id='saved' AND state='resolved' AND target_id='w1:p1'"),
+                1,
+                "{harness}"
+            );
+            assert_eq!(
+                fx.count(&format!("SELECT count(*) FROM occupant_bindings WHERE seat_id='saved' AND ended_at IS NULL AND observation_provenance='cooperative_top_level' AND native_session='S-1' AND harness='{harness}' AND target_id='w1:p1'")),
+                1,
+                "{harness}"
+            );
+            let state = fx.context_json("saved");
+            assert_eq!(state["current"]["target"], PANE, "{harness}");
+            assert_eq!(
+                state["current"]["binding_generation"],
+                fx.count("SELECT generation FROM seats WHERE id='saved'")
+            );
+            assert_eq!(fx.intents(), 0);
+        }
+    }
+
+    #[test]
+    fn lost_reply_next_event_takes_the_ordinary_path() {
+        for harness in HARNESSES {
+            let fx = reattaching_fixture(harness, Agent::Session("S-1".into()));
+            // A context from before the restart is still on disk (another pane).
+            save_context(&fx, "saved", harness, "old-pane", 1);
+            commit_with_lost_reply(&fx, harness, "S-1");
+            assert_eq!(fx.intents(), 1);
+            assert_eq!(
+                fx.count("SELECT count(*) FROM seats WHERE id='saved' AND state='resolved'"),
+                1
+            );
+            // The committed binding is the recovery: resolved and bound.
+            let open_binding = format!(
+                "SELECT count(*) FROM occupant_bindings WHERE seat_id='saved' AND ended_at IS NULL AND observation_provenance='cooperative_top_level' AND native_session='S-1' AND harness='{harness}'"
+            );
+            assert_eq!(fx.count(&open_binding), 1, "{harness}");
+            let decisions =
+                "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'";
+            assert_eq!(fx.count(decisions), 1);
+            // A tool event takes the ordinary path: no continuity request, no
+            // scan of the intent journal, quiet exit.
+            let tool = fx.hook(harness, PANE, &tool_event(harness, "S-1"));
+            assert_eq!(tool.code, Some(0), "{harness}: {}", tool.stderr);
+            assert_eq!(fx.intents(), 1, "the intent is untouched");
+            assert_eq!(fx.count(decisions), 1);
+            assert_eq!(fx.count(&open_binding), 1);
+            // The next lifecycle event registers normally against the seat's
+            // current generation and retires the historical context.
+            let start = fx.hook(harness, PANE, &session_start(harness, "S-1", "startup"));
+            assert_eq!(start.code, Some(0), "{harness}: {}", start.stderr);
+            assert!(
+                !start.stderr.contains("local context differs"),
+                "{harness}: {}",
+                start.stderr
+            );
+            let state = fx.context_json("saved");
+            assert_eq!(state["current"]["target"], PANE, "{harness}");
+            assert_eq!(
+                state["current"]["binding_generation"],
+                fx.count("SELECT generation FROM seats WHERE id='saved'"),
+                "{harness}"
+            );
+            assert_eq!(fx.count(decisions), 1, "{harness}: no second decision");
+        }
+    }
+
+    #[test]
+    fn a_different_session_supersedes_a_stale_continuity_intent() {
+        let fx = Fixture::start(
+            &[
+                (PANE, Agent::Session("S-9".into())),
+                ("w1:p2", Agent::Missing),
+            ],
+            |db, instance| {
+                saved_seat(db, instance, "saved", "claude", "S-1");
+                saved_seat(db, instance, "fresh", "claude", "S-9");
+            },
+        );
+        fx.wait_reconciled();
+        // A stale intent for S-1 stays in the pane's journal (an earlier hook
+        // gave up while the daemon had not reconciled).
+        {
+            use herdr_threads::cli::journal::{IntentScope, Journal, SemanticMutation};
+            let journal = Journal::open(fx.instance_dir.join("intents")).unwrap();
+            journal
+                .record(
+                    IntentScope::Continuity {
+                        instance: fx.instance.to_string(),
+                        target: HostTargetId::new(PANE),
+                    },
+                    SemanticMutation::ContinuityCheckIn {
+                        target: HostTargetId::new(PANE),
+                        harness: herdr_threads::protocol::authority::Harness::Claude,
+                        native_session: herdr_threads::protocol::ids::NativeSessionId::new("S-1"),
+                        source: "resume".into(),
+                        event_id: Uuid::new_v4().to_string(),
+                        execution: herdr_threads::protocol::ids::ExecutionId::new(
+                            Uuid::new_v4().to_string(),
+                        ),
+                    },
+                    1,
+                )
+                .unwrap();
+        }
+        assert_eq!(fx.intents(), 1);
+        // A tool event never reads the journal: the stale intent stays.
+        let tool = fx.hook("claude", PANE, &tool_event("claude", "S-9"));
+        assert_eq!(tool.code, Some(0), "{}", tool.stderr);
+        assert_eq!(fx.intents(), 1);
+        // A top-level resume of another session supersedes it: the S-1 intent
+        // is completed unreplayed and only S-9 reattaches.
+        let other = fx.hook("claude", PANE, &session_start("claude", "S-9", "resume"));
+        assert_eq!(other.code, Some(0), "{}", other.stderr);
+        assert_eq!(fx.intents(), 0);
+        assert_eq!(
+            fx.count("SELECT count(*) FROM seats WHERE id='saved' AND state='unresolved'"),
+            1
+        );
+        assert_eq!(
+            fx.count("SELECT count(*) FROM seats WHERE id='fresh' AND state='resolved' AND target_id='w1:p1'"),
+            1
+        );
+        assert_eq!(
+            fx.count(
+                "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn daemon_restart_mid_reattachment_replays_idempotently() {
+        for harness in HARNESSES {
+            let mut fx = reattaching_fixture(harness, Agent::Session("S-1".into()));
+            let operation = commit_with_lost_reply(&fx, harness, "S-1");
+            let seat_generation = fx.count("SELECT generation FROM seats WHERE id='saved'");
+            let decisions =
+                "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'";
+            assert_eq!(fx.count(decisions), 1);
+            // The elected daemon restarts before the hook's next resume. The
+            // seat is already resolved on the pane, so the hook never reaches
+            // the continuity path; the committed binding is the recovery.
+            fx.restart();
+            let resumed = fx.hook(harness, PANE, &session_start(harness, "S-1", "resume"));
+            assert_eq!(resumed.code, Some(0), "{harness}: {}", resumed.stderr);
+            assert_eq!(fx.count(decisions), 1, "{harness}");
+            let state = fx.context_json("saved");
+            assert_eq!(state["current"]["seat"], "saved");
+            assert!(
+                state["current"]["binding_generation"].as_i64().unwrap() >= seat_generation,
+                "{harness}"
+            );
+            // The stale intent of the lost reply is not replayed by the
+            // ordinary path; it is removed only by a resume that reaches the
+            // continuity path or `herdr-threads retry`.
+            assert_eq!(fx.intents(), 1, "{harness}: operation {operation}");
+        }
+    }
+
+    #[test]
+    fn a_resume_after_the_daemon_was_down_reuses_the_pending_intent() {
+        use herdr_threads::cli::journal::{IntentScope, Journal, SemanticMutation};
+        for harness in HARNESSES {
+            let mut fx = reattaching_fixture(harness, Agent::Session("S-1".into()));
+            let decisions =
+                "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'";
+            // An earlier hook gave up with its intent kept (daemon down, or
+            // not yet reconciled): nothing was decided.
+            fx.stop_daemon();
+            let journal = Journal::open(fx.instance_dir.join("intents")).unwrap();
+            let reference = journal
+                .record(
+                    IntentScope::Continuity {
+                        instance: fx.instance.to_string(),
+                        target: HostTargetId::new(PANE),
+                    },
+                    SemanticMutation::ContinuityCheckIn {
+                        target: HostTargetId::new(PANE),
+                        harness: if harness == "codex" {
+                            herdr_threads::protocol::authority::Harness::Codex
+                        } else {
+                            herdr_threads::protocol::authority::Harness::Claude
+                        },
+                        native_session: herdr_threads::protocol::ids::NativeSessionId::new("S-1"),
+                        source: "resume".into(),
+                        event_id: Uuid::new_v4().to_string(),
+                        execution: herdr_threads::protocol::ids::ExecutionId::new(
+                            Uuid::new_v4().to_string(),
+                        ),
+                    },
+                    1,
+                )
+                .unwrap();
+            let execution = journal
+                .load(&reference)
+                .unwrap()
+                .semantic
+                .to_command(reference.operation.clone(), None)
+                .map(|command| match command {
+                    Command::ContinuityCheckIn(request) => request.execution,
+                    _ => unreachable!(),
+                })
+                .unwrap();
+            fx.restart();
+            fx.wait_reconciled();
+            let again = fx.hook(harness, PANE, &session_start(harness, "S-1", "resume"));
+            assert_eq!(again.code, Some(0), "{harness}: {}", again.stderr);
+            // The pending intent was reused under its key and execution: one
+            // decision, the intent finished, the context installed from the reply.
+            assert_eq!(fx.count(decisions), 1, "{harness}");
+            assert_eq!(fx.intents(), 0, "{harness}");
+            let state = fx.context_json("saved");
+            assert_eq!(state["current"]["target"], PANE);
+            assert_eq!(state["current"]["execution"], execution.as_str());
+            assert_eq!(
+                state["current"]["binding_generation"],
+                fx.count("SELECT generation FROM seats WHERE id='saved'")
+            );
+            assert_eq!(
+                fx.count(&format!("SELECT count(*) FROM occupant_bindings WHERE seat_id='saved' AND ended_at IS NULL AND execution_id='{}'", execution.as_str())),
+                1,
+                "{harness}"
+            );
+        }
+    }
 }

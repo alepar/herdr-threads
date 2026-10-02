@@ -77,6 +77,8 @@ Hook installation is per harness environment, so `doctor` (run in that environme
 
 `notes` and the `cooperative` harness value were added to the Health result in protocol 1 without a version change. A newer CLI reads an older daemon's Health (no `notes`); an older CLI cannot decode a newer daemon's Health, so after upgrading run `daemon stop` and `daemon ensure` with the new executable.
 
+Protocol 2 (B5) added the request's expected daemon boot and the B5 commands. An older daemon cannot decode a protocol-2 request, so `daemon ensure`, `doctor`, `daemon stop` and every command from the newer executable stop with `unknown_wire_version` and the stop-then-ensure hint instead of reaching it. Stop the old daemon with the old executable first.
+
 ## Attention digest and notices
 
 [agent-usage.md](agent-usage.md) is authoritative; this is a summary.
@@ -124,7 +126,7 @@ Each mutation gets a durable operation key. The CLI records the intent in a priv
 
 The local reference is not a message ID and cannot be ACKed. The same key with a different payload is rejected (`operation_payload_mismatch`). To send a deliberate second copy, run a new `send`.
 
-The hook's tool-boundary check-in is non-durable: it writes nothing to the local journals and never replays. The lifecycle (SessionStart) check-in is durable and replayed exactly if its response is lost. A pending lifecycle request that the service definitively rejects is recorded as terminal and cleared, so the next SessionStart registers against the current generation.
+The hook's tool-boundary check-in is non-durable: it writes nothing to the local journals and never replays. The lifecycle (SessionStart) check-in is durable and replayed exactly if its response is lost. A pending lifecycle request that the service definitively rejects is recorded as terminal and cleared, so the next SessionStart registers against the current generation. A resumed session's reattachment is decided in one daemon transaction that also opens the new binding; if its reply is lost the seat is already bound and the next SessionStart registers normally.
 
 ## Deadlines, decision time and wake spacing
 
@@ -146,7 +148,7 @@ The hook's tool-boundary check-in is non-durable: it writes nothing to the local
 
 ## A person's own pane (`me init`)
 
-`herdr-threads me init`, run in a shell pane, makes that pane's seat the person's identity: harness `human`, provenance `operator_human` on the binding, its availability and every accountable decision (send, invite, accept, ACK). It is the person's ordinary seat, not operator repair, and has none of the operator forms' powers. Inspect it with `seat inspect SEAT`; in SQLite the current `occupant_bindings` row has `harness='human'`. A person's seat is never sent a wake prompt; required receipts addressed to it wait for a manual `ack` and go overdue like any other. After a daemon restart, re-run `me init` in the pane to mark it available again. If `me init` reports that the seat belongs to an agent, either use your own pane or give this pane a fresh seat with `seat resolve --pane PANE --new-seat --operator`.
+`herdr-threads me init`, run in a shell pane, makes that pane's seat the person's identity: harness `human`, provenance `operator_human` on the binding, its availability and every accountable decision (send, invite, accept, ACK). It is the person's ordinary seat, not operator repair, and has none of the operator forms' powers. Inspect it with `seat inspect SEAT`; in SQLite the current `occupant_bindings` row has `harness='human'`. A person's seat is never sent a wake prompt (a wake goes only to an agent of the seat's bound harness, so a `human` binding has none); required receipts addressed to it wait for a manual `ack` and go overdue like any other. After a daemon restart, re-run `me init` in the pane to mark it available again. If `me init` is refused (agent environment markers `CLAUDECODE`, `CODEX_SANDBOX` or `CODEX_SANDBOX_NETWORK_DISABLED`, a Herdr-reported Claude or Codex agent in the pane, or a seat bound to an agent), use your own shell pane, give this pane a fresh seat with `seat resolve --pane PANE --new-seat --operator`, or override as the local account with `me init --operator` (later commands in that pane then run as you).
 
 `--pane` accepts a Herdr pane ID or a unique pane/tab label; `herdr pane current` inside a pane prints its ID when a name is ambiguous or unknown.
 
@@ -167,7 +169,38 @@ herdr-threads invite THREAD --seat SEAT --operator
 - Plain `seat resolve --pane PANE_ADDRESS` (no `--operator`) allocates an unclaimed empty pane, for example before launching its recipient.
 - The hook never allocates a seat. At SessionStart in a pane whose seat is unresolved it prints `herdr-threads: check-in unavailable (pane seat mapping is Unresolved) …` and the diagnose argv; on tool calls it prints nothing.
 
-The restore-allocation dispute recorded as design escalation F6 remains open; this document does not declare it resolved.
+## Restore holds and repair
+
+Restore holds follow the [trust policy](../TRUST-POLICY.md) (C1 to C3, F6 resolved 2026-10-01). After a Herdr restart the daemon holds every unowned target in the restored baseline, and ordinary resolution (`seat resolve`, `launch`, `me init`) refuses it with inspect, rebind and fresh-seat guidance.
+
+**When a hold lifts.**
+
+- Per target: an operator `seat rebind` or `seat resolve --new-seat` on that target, or cooperative continuity on it (below).
+- Instance-wide: automatically once no unresolved nonretired seat remains and the restored baseline is reconciled. Nothing is left to protect, so panes created before the restart but never claimed become ordinary again. No command is needed.
+
+**Retire a seat.** `herdr-threads seat retire SEAT --operator` abandons the seat. It retires and its pending obligations settle as recipient-retired. Seats are never merged.
+
+**Rebind over a collision.** `seat rebind OLD --pane PANE --operator` refuses with `target_already_owned` when PANE is owned by another live seat NEW. The refusal names exactly two resolutions as ready argv:
+
+```text
+herdr-threads seat retire OLD --operator
+herdr-threads seat rebind OLD --pane PANE --replace NEW --operator
+```
+
+The first abandons the old seat. The second abandons the new role: it retires NEW and rebinds OLD to PANE in one decision, so nobody can claim the target in between. NEW's pending obligations settle as recipient-retired; nothing moves from NEW to OLD.
+
+**Cooperative continuity.** A resumed top-level agent session (SessionStart source `resume`) whose harness session id uniquely matches an unresolved seat's last binding reattaches that seat by itself, with no operator step. It never applies to `startup`, `/clear` or `/new`, which carry a new id, and it never merges seats. Claude does this with `claude --resume`. Codex does it when you run `codex resume` by hand in the pane. Managed `launch` of the Codex `resume` form stays refused (no captured hook evidence), so reattachment is by running it yourself in the pane. If the id matches no unresolved seat, or matches more than one, nothing happens and the seat waits for an operator choice. A resume that arrives before the daemon has reconciled the restored Herdr is retried within the hook; if the hook gives up, the pane stays held and the next `resume` in the pane (or `herdr-threads retry`) finishes it. Evidence: [cooperative continuity](compatibility/cooperative-continuity-resume.md).
+
+**Reading the repair history.** `seat inspect SEAT` shows how the seat's latest repair was decided:
+
+| Row kind | Meaning |
+|---|---|
+| `operator_rebind` | `seat rebind` (including `--replace`), decided as `operator:local-user:<uid>` |
+| `operator_retire` | `seat retire`, or the retire half of `--replace` |
+| `cooperative_continuity` | reattached by a resumed session. The row carries a Herdr `agent_session` diagnostic: `match`, `mismatch`, `absent` or `read_error`. It is a diagnostic only and never decides anything |
+| `operator_human_override` | a person's `me init --operator` replaced an agent binding |
+
+**Daemon restart.** A request carries the daemon boot the client addressed. If the daemon restarted in between, it refuses before dispatch with `daemon_boot_changed` (`DaemonBootChanged`, exit 3, transient) and nothing was applied. Retry the command; the client addresses the daemon's current boot on the next attempt. A joined seat whose pane mapping is structurally reconfirmed after the restart stays available: its open binding carries forward to the new host epoch with no new check-in. The carry lands in the first reconciliation pass, not at `daemon ensure`; a send in between does not wait for it. A recipient whose binding is about to be carried (same Herdr boot and incarnation, a cooperative or operator binding) is staged as not yet available but draws no `recipient_unavailable` warning, and its receipt timer starts when the carry lands, exactly as for a fresh check-in. If the pass does not carry the seat, the ordinary unavailable paths open the outage and later sends warn as usual. A native `verified_current_target` binding is never carried; it re-registers. Availability still ends when the mapping becomes unresolved, the seat retires, or a check-in replaces the binding.
 
 ## Native replacement race
 
