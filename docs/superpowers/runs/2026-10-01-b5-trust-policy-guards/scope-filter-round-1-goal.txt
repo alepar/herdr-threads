@@ -1,0 +1,21 @@
+## Goal
+
+Every guard TRUST-POLICY.md marks **required** is implemented and tested in herdr-threads, so that the
+running daemon and CLI enforce the continuity invariants C2–C4 and the attribution invariants A2 and A4
+(plus the accepted-limits hardening), and the user-facing docs describe the shipped behaviour.
+
+## Scope
+
+In scope: the required guards of C2, C3, C1 (cooperative continuity), C4, A2 (expected daemon boot), A4
+(agent-to-human, second agent, wake harness), the accepted-limits hardening (`allocator.lock` without
+symlink following, refuse `codex resume` launch form), the W5-2 test, the W6-R2 wording, the identifier
+comments, and the operator-facing docs for new commands (`docs/operations.md`, `docs/agent-usage.md`,
+README where it names behaviour).
+
+Non-goals:
+- C5 / P10 and W5-1: deletions owned by the B4 run (bead `ht-p03.2`, other branch). Not touched here.
+- Adversarial verification of any kind (policy principle 1).
+- New harness support beyond Claude and Codex.
+- Native (real Claude/Codex) demonstration runs; deterministic tests with stand-in agents are the bar for
+  this epic, except the evidence capture `ht-rzi.2` needs (see below).
+
