@@ -76,11 +76,21 @@ a break in <event/field>; it has worked here"), never degraded.
   violation_at, violation_event, violation_field, last_seen_at)`, keyed by (harness, version, contract_id), added
   by one migration (number assigned at implementation; B4/B6 also add migrations).
 - **Attribution:** the version is that of the **running harness process**, not the binary currently first on
-  PATH (both harnesses update in the background while old sessions keep running the old build). The hook
-  resolves its parent harness process's executable path (`proc_pidpath` on macOS, `/proc/<ppid>/exe` on Linux),
-  canonicalizes it, and maps it to a version through B6's admission observer cache keyed by path/inode (Claude
-  installs live under a `versions/<v>` path; Codex standalone releases under `releases/<v>-<target>`). When the
-  parent is not a recognized harness executable or the path maps to no observed version, nothing is recorded.
+  PATH (both harnesses update in the background or in place while old sessions keep running the old build).
+  1. *Find the harness process:* walk the hook's ancestors (at most 6 levels) past shells (`sh -c` from
+     shell-form hook registration), `env`, and runtime wrappers, to the first process whose executable is a
+     recognized harness: a `claude`/`codex` native binary, or `node` whose argv runs the Claude/Codex CLI script
+     (npm installs). The Codex shared app-server daemon counts as the Codex harness process. No match → record
+     nothing.
+  2. *Read its version from its own executable:* run `<exe> --version` once per (canonical path, inode, mtime)
+     and cache it (for npm layouts, read the CLI package's `package.json`). This covers per-version layouts
+     (Claude `versions/<v>`, Codex `releases/<v>-<target>`) and fixed-path installs alike.
+  3. *Refuse a replaced image:* if the harness process started before the executable's current mtime (the file at
+     that path was replaced after the process started, e.g. an in-place npm or package-manager upgrade), record
+     nothing for that process.
+  A spike confirms the real ancestry for Claude and Codex (shared daemon and `--no-daemon`) before the
+  attribution code is written; if some supported configuration offers no recognizable harness ancestor, that
+  configuration records nothing and `doctor` says "version evidence unavailable: <reason>".
 - **Recording is cheap and bounded:** a successful lifecycle check-in already reaches the daemon and records
   `lifecycle_ok_at`. For tool events, the hook sends a best-effort, non-blocking "payload ok" note at most once
   per session, and only while the daemon's last reply said this version is not yet verified; once verified the
@@ -98,6 +108,9 @@ a break in <event/field>; it has worked here"), never degraded.
 - **Retention.** The canary writer keeps, per harness, the newest 50 versions plus every `known_broken` row and
   every recipe-listed version; it fails the workflow loudly above 80% of the size cap rather than publishing an
   oversized file.
+- **Rows are per contract.** A row is keyed by (harness, version, contract_id). The canary tests the current
+  `main` contract and the latest release's contract and keeps one row per live contract; a daemon uses only rows
+  whose `contract_id` equals its own and treats the rest as no data.
 - **Format:** `harness-versions.json`, schema_version 2, extending B6's generated file: `generated_at`;
   `latest_release` (herdr-threads); `contracts: {harness: contract_id}`; `rows: [{harness, version, status
   (verified | known_broken), evidence (live | no_model | schema), contract_id, supported_since (oldest
@@ -162,8 +175,11 @@ signing the manifest.
 - Canary manifest writer: offline selftest cases (all pass, payload break, known broken persists, flaky,
   non-payload Tier 0 failure → issue only, retention and size-cap failure, schema-1 baseline upgrade), and a test
   that the writer's `contract_id` equals the binary's.
-- Attribution: a session started on version A keeps attributing to A after the PATH binary is upgraded to B; an
-  unrecognized parent records nothing.
+- Attribution: a session started on version A keeps attributing to A after the PATH binary is upgraded to B
+  (per-version layout); a binary replaced in place at the same path after the session started records nothing;
+  the ancestor walk passes an `sh -c` hop and a `node` wrapper; an unrecognized ancestry records nothing and
+  `doctor` names why.
+- Manifest rows of another `contract_id` are ignored by a client.
 - End to end (stand-in harness): a new unlisted version → no Health line → first payloads → working; a payload
   missing a required field → degraded with the "upgrade to X" action from a fake manifest.
 
