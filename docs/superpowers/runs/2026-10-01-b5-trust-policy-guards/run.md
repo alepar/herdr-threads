@@ -60,3 +60,4 @@ scopeFilter-round-1: [Should-fix] evidence(a) in-scope — clusters c4-carry-for
 scopeFilter-round-1: [Should-fix] evidence(c) in-scope — cluster pre-reconciliation-window
 scope-filter: 12 in-scope · 1 punch-listed
 fixBeads-round-1: ht-rzi.18 (redesign+c), ht-rzi.19 (C4+a+workers test), ht-rzi.20, ht-rzi.21, ht-rzi.22, ht-rzi.23
+resumeChange: 2026-10-01 · "superpowers skills moved to v6.4.2-alepar4.5 (104b54e); adopt at a round boundary" · pending skill-source switch to ~/AleCode/superpowers/skills @ 104b54e (6.4.2-alepar4.5), applied when the fix-loop round-1 super-code re-entry (wf_e4f75cbd-dfc, on 4.3) returns
