@@ -249,8 +249,9 @@ pub struct ResolveSeat {
 }
 /// TRUST-POLICY C1. A resumed top-level session asks the daemon to reattach
 /// the one unresolved seat whose last binding carries its session id onto the
-/// pane's target. It names no seat: the daemon decides the seat, and the
-/// caller then performs an ordinary lifecycle check-in for it.
+/// pane's target. It names no seat: the daemon decides the seat, rebinds it and
+/// opens the successor `cooperative_top_level` binding for `execution` in the
+/// same transaction; there is no follow-up lifecycle check-in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContinuityCheckIn {
@@ -260,6 +261,9 @@ pub struct ContinuityCheckIn {
     /// The hook's SessionStart source. Only `resume` can reattach.
     pub source: String,
     pub operation: OperationId,
+    /// The execution id the successor binding carries; chosen by the client
+    /// once per intent so every retry under the operation key repeats it.
+    pub execution: ExecutionId,
 }
 impl ContinuityCheckIn {
     pub const RESUME_SOURCE: &'static str = "resume";

@@ -124,7 +124,7 @@ Each mutation gets a durable operation key. The CLI records the intent in a priv
 
 The local reference is not a message ID and cannot be ACKed. The same key with a different payload is rejected (`operation_payload_mismatch`). To send a deliberate second copy, run a new `send`.
 
-The hook's tool-boundary check-in is non-durable: it writes nothing to the local journals and never replays. The lifecycle (SessionStart) check-in is durable and replayed exactly if its response is lost. A pending lifecycle request that the service definitively rejects is recorded as terminal and cleared, so the next SessionStart registers against the current generation.
+The hook's tool-boundary check-in is non-durable: it writes nothing to the local journals and never replays. The lifecycle (SessionStart) check-in is durable and replayed exactly if its response is lost. A pending lifecycle request that the service definitively rejects is recorded as terminal and cleared, so the next SessionStart registers against the current generation. A resumed session's reattachment is decided in one daemon transaction that also opens the new binding; if its reply is lost the seat is already bound and the next SessionStart registers normally.
 
 ## Deadlines, decision time and wake spacing
 
@@ -187,7 +187,7 @@ herdr-threads seat rebind OLD --pane PANE --replace NEW --operator
 
 The first abandons the old seat. The second abandons the new role: it retires NEW and rebinds OLD to PANE in one decision, so nobody can claim the target in between. NEW's pending obligations settle as recipient-retired; nothing moves from NEW to OLD.
 
-**Cooperative continuity.** A resumed top-level agent session (SessionStart source `resume`) whose harness session id uniquely matches an unresolved seat's last binding reattaches that seat by itself, with no operator step. It never applies to `startup`, `/clear` or `/new`, which carry a new id, and it never merges seats. Claude does this with `claude --resume`. Codex does it when you run `codex resume` by hand in the pane. Managed `launch` of the Codex `resume` form stays refused (no captured hook evidence), so reattachment is by running it yourself in the pane. If the id matches no unresolved seat, or matches more than one, nothing happens and the seat waits for an operator choice. Evidence: [cooperative continuity](compatibility/cooperative-continuity-resume.md).
+**Cooperative continuity.** A resumed top-level agent session (SessionStart source `resume`) whose harness session id uniquely matches an unresolved seat's last binding reattaches that seat by itself, with no operator step. It never applies to `startup`, `/clear` or `/new`, which carry a new id, and it never merges seats. Claude does this with `claude --resume`. Codex does it when you run `codex resume` by hand in the pane. Managed `launch` of the Codex `resume` form stays refused (no captured hook evidence), so reattachment is by running it yourself in the pane. If the id matches no unresolved seat, or matches more than one, nothing happens and the seat waits for an operator choice. A resume that arrives before the daemon has reconciled the restored Herdr is retried within the hook; if the hook gives up, the pane stays held and the next `resume` in the pane (or `herdr-threads retry`) finishes it. Evidence: [cooperative continuity](compatibility/cooperative-continuity-resume.md).
 
 **Reading the repair history.** `seat inspect SEAT` shows how the seat's latest repair was decided:
 

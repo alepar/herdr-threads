@@ -172,9 +172,11 @@ fn is_deterministic_rejection(code: &ErrorCode) -> bool {
 }
 
 /// A continuity refusal that depends on durable state and identical retry
-/// would repeat (no match, several matches, owned target, a stale or
-/// unusable target). Transient, store, host and uncertain codes keep the
-/// intent so the next hook event replays it under the same operation key.
+/// would repeat (no match, several matches, owned target, an unusable
+/// target). Transient, store, host, uncertain and not-yet-reconciled codes
+/// (`ServiceBusy`, `StaleHostObservation`: a fresh observation or a finished
+/// reconciliation can succeed) keep the intent, which the next resume in the
+/// pane or `herdr-threads retry` replays under the same operation key.
 pub(crate) fn is_continuity_refusal(code: &ErrorCode) -> bool {
     is_deterministic_rejection(code)
         || matches!(
@@ -183,7 +185,6 @@ pub(crate) fn is_continuity_refusal(code: &ErrorCode) -> bool {
                 | ErrorCode::TargetAlreadyOwned
                 | ErrorCode::TargetUnresolved
                 | ErrorCode::TargetUnsafe
-                | ErrorCode::StaleHostObservation
                 | ErrorCode::CallerUnverified
                 | ErrorCode::Unsupported
                 | ErrorCode::SequenceExhausted

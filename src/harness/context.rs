@@ -811,6 +811,30 @@ impl ContextJournal {
         self.save(&state)?;
         Ok(Some(pending))
     }
+    /// TRUST-POLICY C1: install the context a continuity reattachment returned
+    /// for this seat, replacing whatever was saved (a context for another pane
+    /// or an older generation is historical once the service reattached the
+    /// seat). A request still pending for the replaced context is moved to
+    /// `abandoned` and returned so the caller can complete its intent.
+    pub fn install_reattached(
+        &self,
+        context: OccupantContext,
+    ) -> Result<Option<PendingCheckIn>, ContextError> {
+        self.validate_context(&context)?;
+        let _lock = self.lock()?;
+        let mut state = self.load()?;
+        let abandoned = state.pending.take();
+        if let Some(pending) = &abandoned {
+            state.abandoned.push(Abandoned {
+                event_id: pending.event_id.clone(),
+                operation_id: pending.operation_id,
+            });
+        }
+        state.current = Some(context);
+        prune(&mut state, now_millis());
+        self.save(&state)?;
+        Ok(abandoned)
+    }
     /// Clear `current` when the service has moved the seat past it. Only the
     /// exact context the caller observed is cleared, and never while a request
     /// is pending. Completed entries stay for exact replay.

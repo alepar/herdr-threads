@@ -996,6 +996,7 @@ fn continuity_semantic(target: &str, event_id: &str) -> SemanticMutation {
         native_session: NativeSessionId::new("sess-1"),
         source: "resume".into(),
         event_id: event_id.into(),
+        execution: ExecutionId::new("exec-1"),
     }
 }
 fn continuity_scope(instance: &str, target: &str) -> IntentScope {
@@ -1053,6 +1054,7 @@ fn continuity_intent_round_trips_and_is_found_by_instance_and_target() {
             native_session: NativeSessionId::new("sess-1"),
             source: "resume".into(),
             operation: OperationId::new(reference.operation.as_str()),
+            execution: ExecutionId::new("exec-1"),
         })
     );
     // Completion removes it.
@@ -1092,6 +1094,7 @@ fn continuity_intent_refuses_foreign_scope_and_non_resume_source() {
         harness,
         native_session,
         event_id,
+        execution,
         ..
     } = continuity_semantic("w1:p1", "evt")
     else {
@@ -1107,11 +1110,55 @@ fn continuity_intent_refuses_foreign_scope_and_non_resume_source() {
                     native_session,
                     source: "startup".into(),
                     event_id,
+                    execution,
                 },
                 1
             )
             .is_err()
     );
     assert!(journal.page(&Default::default()).unwrap().items.is_empty());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn pending_continuity_skips_vanished_unparsable_fifo_and_symlink_entries() {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let reference = journal
+        .record(
+            continuity_scope("i1", "w1:p1"),
+            continuity_semantic("w1:p1", "evt-1"),
+            7,
+        )
+        .unwrap();
+    // A FIFO with no writer would block a plain open; a symlink to an endless
+    // device would never finish a read; garbage does not parse.
+    let fifo = dir.join(format!("{:020}-fifo.intent", 1));
+    let c_path = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+    std::os::unix::fs::symlink("/dev/zero", dir.join(format!("{:020}-zero.intent", 1))).unwrap();
+    std::os::unix::fs::symlink(
+        dir.join("missing-target"),
+        dir.join(format!("{:020}-dangling.intent", 1)),
+    )
+    .unwrap();
+    std::fs::write(dir.join(format!("{:020}-garbage.intent", 1)), b"not json\n").unwrap();
+    std::fs::write(dir.join(format!("{:020}-empty.intent", 1)), b"").unwrap();
+    let found = journal
+        .pending_continuity("i1", &HostTargetId::new("w1:p1"))
+        .unwrap()
+        .expect("the valid intent is still found");
+    assert_eq!(found.header.reference, reference);
+    // With only bad entries present the scan finds nothing and does not fail.
+    journal.complete(&reference).unwrap();
+    assert!(
+        journal
+            .pending_continuity("i1", &HostTargetId::new("w1:p1"))
+            .unwrap()
+            .is_none()
+    );
+    let _ = std::fs::remove_file(fifo);
     std::fs::remove_dir_all(dir).unwrap();
 }

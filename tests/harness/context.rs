@@ -760,3 +760,40 @@ fn operator_mark_round_trips_and_is_execution_scoped() {
     assert_eq!(j.operator_mark(), Some(b));
     fs::remove_dir_all(path).unwrap();
 }
+
+#[test]
+fn install_reattached_replaces_a_context_for_another_pane_and_abandons_pending() {
+    let path = dir();
+    let instance = Uuid::new_v4();
+    let j = journal(&path, instance);
+    // A saved context for another pane at an older generation, with a request
+    // still pending for it.
+    let mut old = context(instance, Uuid::new_v4(), 3);
+    old.target = "old-pane".into();
+    let pending = PendingCheckIn {
+        context: old,
+        ..request(instance, "start", 3)
+    };
+    j.prepare(pending.clone()).unwrap();
+    let mut fresh = context(instance, Uuid::new_v4(), 5);
+    fresh.target = "new-pane".into();
+    assert_eq!(
+        j.install_reattached(fresh.clone()).unwrap(),
+        Some(pending.clone())
+    );
+    assert_eq!(j.current().unwrap(), Some(fresh.clone()));
+    assert_eq!(j.pending().unwrap(), None);
+    // The abandoned key is never prepared again.
+    assert!(j.prepare(pending).is_err());
+    // Without a pending request nothing is returned and current is replaced
+    // again, whatever its target or generation.
+    let mut later = context(instance, Uuid::new_v4(), 2);
+    later.target = "third".into();
+    assert_eq!(j.install_reattached(later.clone()).unwrap(), None);
+    assert_eq!(j.current().unwrap(), Some(later));
+    // A context for another seat or instance is refused.
+    let mut foreign = context(instance, Uuid::new_v4(), 6);
+    foreign.seat = "other".into();
+    assert!(j.install_reattached(foreign).is_err());
+    let _ = fs::remove_dir_all(path);
+}
