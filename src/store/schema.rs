@@ -3,7 +3,7 @@
 use crate::{
     ports::TimeBasis,
     protocol::{
-        authority::ObligationRef,
+        authority::{CARRIED_BINDING_PROVENANCES, ObligationRef},
         ids::{InvitationId, MessageId, RetirementJobId, SeatId, ThreadId, prefix},
         results::{ApiError, CommandResult, ErrorCode},
         service::EventAuthor,
@@ -1450,6 +1450,37 @@ pub fn effective_registered_availability(
             && observation.epoch == host_epoch
     });
     Ok(confirmed.then_some(provenance))
+}
+
+/// C4 pre-reconciliation window: true while the instance's reconciliation
+/// marker lags the recovery boot/epoch (`reconciled_*` IS NOT `recovery_*`;
+/// publishing a new host epoch always advances `recovery_*`) and the seat's
+/// open registered binding will be structurally carried: resolved seat, a
+/// provenance in `CARRIED_BINDING_PROVENANCES`, the current host boot, an older
+/// host epoch, and an incarnation equal to the seat's structural incarnation.
+/// A send optimistically assumes that carry: the recipient is staged as not yet
+/// available but is not warned about; the carry's availability anchor starts
+/// the receipt timer. If the pass does not carry it, the ordinary unavailable
+/// paths open the episode.
+pub fn carry_pending(db: &Connection, seat: &str, instance: &str) -> Result<bool, ApiError> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM seats s JOIN host_instances h ON h.id=s.instance_id \
+         JOIN occupant_bindings b ON b.seat_id=s.id \
+         WHERE s.id=?1 AND h.id=?2 AND s.state='resolved' \
+           AND (h.reconciled_boot IS NOT h.recovery_boot OR h.reconciled_epoch IS NOT h.recovery_epoch) \
+           AND b.ended_at IS NULL AND b.registered_at IS NOT NULL \
+           AND b.observation_provenance IN (?3,?4) \
+           AND b.host_boot=h.host_boot AND b.host_epoch<h.host_epoch \
+           AND b.incarnation IS NOT NULL AND b.incarnation=s.structural_incarnation)",
+        params![
+            seat,
+            instance,
+            CARRIED_BINDING_PROVENANCES[0],
+            CARRIED_BINDING_PROVENANCES[1]
+        ],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
 }
 
 /// Lazily open one durable seat outage. A global host epoch change invalidates

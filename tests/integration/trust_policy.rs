@@ -1081,6 +1081,93 @@ fn expected_boot_and_carry_forward_give_no_unknown_outcome_across_stop_ensure() 
     assert!(world.warnings(&a).is_empty() && world.warnings(&b).is_empty());
 }
 
+/// C4 pre-reconciliation window (ht-rzi.19): a send immediately after
+/// `daemon ensure`, without waiting for the first reconciliation pass, to a
+/// joined seat whose binding the pass will carry. The send exits 0 and writes
+/// no recipient_unavailable warning; once the pass has run the receipt's timer
+/// exists. (Whether the send lands before or after the pass is a race; the
+/// deterministic pre-pass case is
+/// `send_before_first_pass_to_structurally_continuous_seat_has_no_warning`.)
+#[test]
+fn send_right_after_ensure_before_reconciliation_pass_gives_no_warning_and_a_timer() {
+    let world = World::start(
+        "htpp",
+        vec![pane("w1:p1", "term-a"), pane("w1:p2", "term-b")],
+    );
+    let (a, b) = (world.resolve("w1:p1"), world.resolve("w1:p2"));
+    let (a_pane, b_pane) = (
+        Caller {
+            seat: &a,
+            pane: "w1:p1",
+            harness: "claude",
+        },
+        Caller {
+            seat: &b,
+            pane: "w1:p2",
+            harness: "claude",
+        },
+    );
+    for (caller, event) in [(a_pane, "a-start"), (b_pane, "b-start")] {
+        world
+            .run(
+                None,
+                Some(caller),
+                &["check-in", "--lifecycle-event", event],
+            )
+            .data("check-in");
+    }
+    let thread = world
+        .run(
+            None,
+            Some(a_pane),
+            &["thread", "create", "--topic", "prepass"],
+        )
+        .text("thread create");
+    world
+        .run(None, Some(a_pane), &["invite", &thread, "--seat", &b])
+        .data("invite");
+    world
+        .run(None, Some(b_pane), &["accept", &thread])
+        .data("accept");
+
+    world.stop();
+    world.ensure();
+    // No wait_reconciled before the send.
+    let sent = world.run(
+        None,
+        Some(a_pane),
+        &[
+            "send",
+            &thread,
+            "--body",
+            "right after ensure",
+            "--require-ack",
+            &b,
+        ],
+    );
+    assert_eq!(sent.code, 0, "{}{}", sent.stderr, sent.value);
+    assert!(
+        !sent.stderr.contains("recipient_unavailable")
+            && !sent.value.to_string().contains("recipient_unavailable"),
+        "{}{}",
+        sent.stderr,
+        sent.value
+    );
+    let message = sent.text("send");
+    world.wait_reconciled();
+    let owed = world
+        .pending(&b)
+        .into_iter()
+        .find(|item| item["message"] == message.as_str())
+        .expect("B owes the receipt");
+    assert!(
+        owed["available_at"].as_u64().is_some(),
+        "the carry-forward started the receipt timer: {owed}"
+    );
+    assert!(unavailable_seats(&world, &thread).is_empty());
+    assert!(world.warnings(&a).is_empty() && world.warnings(&b).is_empty());
+}
+
 /// C2 (nothing left to protect) x C1 structural reconfirm: a daemon restart on
 /// the same Herdr incarnation reconfirms every saved seat from its terminal,
 /// so no seat is unresolved and no hold is taken for any target, including an

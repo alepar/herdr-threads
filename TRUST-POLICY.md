@@ -82,7 +82,7 @@ live seat, the refusal offers exactly two resolutions, each as ready argv:
   as recipient-retired; nothing moves from NEW to OLD.
 
 **C4. Availability ends only on evidence.** A joined seat stays available across a daemon restart when its
-mapping is structurally reconfirmed; the open binding carries forward to the new host epoch (implemented). Availability ends when the mapping becomes
+mapping is structurally reconfirmed; the open cooperative or operator binding carries forward to the new host epoch (implemented; a native binding re-registers instead, and a send before the first reconciliation pass assumes the carry rather than warning). Availability ends when the mapping becomes
 unresolved, the seat retires, or a check-in replaces the binding.
 
 **C5. Only producible evidence drives transitions.** The production Herdr adapter reports structure

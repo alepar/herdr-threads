@@ -474,6 +474,9 @@ pub fn plan_page(page: &SnapshotSeatPage) -> Result<Vec<GuardedSeatTransition>, 
             {
                 // C4: same terminal, boot and incarnation in a newer host
                 // epoch; the open registered binding follows the seat.
+                // `bound_epoch` is Some only for a binding whose provenance is
+                // in `authority::CARRIED_BINDING_PROVENANCES`, the single
+                // definition shared with the applier.
                 Some(ReconciliationAction::CarryForward {
                     target: observed.target.clone(),
                     terminal: terminal.clone(),

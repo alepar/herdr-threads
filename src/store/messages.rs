@@ -425,7 +425,10 @@ fn stage_recipient(
         .ok_or_else(|| api_error(ErrorCode::SequenceExhausted, "recipient ordinal exhausted"))?;
     tx.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot,availability_provenance) VALUES (?1,?2,?3,?4,?5,?6,?7)",
         params![prep_id,thread.as_str(),recipient,*count,duration,available,provenance]).map_err(store_error)?;
+    // C4: a seat whose binding the pending reconciliation pass will carry is
+    // not warned about; the carry starts its receipt timer.
     if !available
+        && !schema::carry_pending(tx, recipient, instance)?
         && schema::effective_membership_state(tx, thread, &SeatId::new(recipient))?
             .as_ref()
             .is_some_and(|v| v.state == "joined")

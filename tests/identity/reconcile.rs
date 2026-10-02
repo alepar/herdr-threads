@@ -3612,4 +3612,169 @@ mod carry_forward {
             .unwrap();
         assert_eq!(epoch, 3);
     }
+
+    fn hand_built_carry(publication: &PublishedSnapshot) -> GuardedSeatTransition {
+        GuardedSeatTransition {
+            publication: publication.clone(),
+            seat: SeatId::new("s"),
+            expected_binding_generation: 1,
+            expected_target: Some(HostTargetId::new("pane")),
+            expected_terminal: Some(TerminalId::new("terminal-a")),
+            action: ReconciliationAction::CarryForward {
+                target: HostTargetId::new("pane"),
+                terminal: TerminalId::new("terminal-a"),
+            },
+        }
+    }
+
+    fn count(f: &Fixture, sql: &str) -> i64 {
+        f.conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    // Kills: a planner or applier that carries a native binding (a different
+    // provenance set from the one carry_binding_forward moves), which would
+    // re-plan the seat on every pass without ever moving a row.
+    #[test]
+    fn native_binding_is_never_planned_for_carry_forward() {
+        let mut f = fixture("verified_current_target", false);
+        let publication = publish(&mut f, production(4, 3, "inc-a"));
+        assert!(
+            plan(&f, &publication).is_empty(),
+            "a native binding yields no bound epoch, so no CarryForward"
+        );
+        let revision = |f: &Fixture| {
+            count(
+                f,
+                "SELECT lifecycle_revision FROM host_instances WHERE id='i'",
+            )
+        };
+        let before = revision(&f);
+        let anchors = count(&f, "SELECT COUNT(*) FROM seat_availability");
+        assert_eq!(
+            apply(&mut f, hand_built_carry(&publication)),
+            ReconciliationOutcome::Unchanged
+        );
+        assert_eq!(revision(&f), before, "an unmoved carry bumps no revision");
+        assert_eq!(count(&f, "SELECT COUNT(*) FROM seat_availability"), anchors);
+        assert_eq!(binding(&f.conn).0, 3, "the native binding stays put");
+        // A second pass plans nothing for it either.
+        let next = publish(&mut f, production(4, 4, "inc-a"));
+        assert!(plan(&f, &next).is_empty());
+    }
+
+    // Kills: the planner and applier reading different provenance sets: the
+    // saved-seat snapshot must expose a bound epoch only for a carried one.
+    #[test]
+    fn carry_forward_requires_bound_epoch_from_a_carried_provenance() {
+        let mut native = fixture("verified_current_target", false);
+        let publication = publish(&mut native, production(4, 3, "inc-a"));
+        let page = seats::saved_seats_page(
+            &native.context,
+            &native.conn,
+            &publication.id,
+            0,
+            None,
+            16,
+            &native.budget,
+        )
+        .unwrap();
+        assert_eq!(page.seats[0].bound_epoch, None);
+        assert!(
+            page.seats[0].active_binding_execution.is_some(),
+            "occupant-unavailable planning still sees the native active binding"
+        );
+        let mut coop = fixture("cooperative_top_level", false);
+        let publication = publish(&mut coop, production(4, 3, "inc-a"));
+        let mut page = seats::saved_seats_page(
+            &coop.context,
+            &coop.conn,
+            &publication.id,
+            0,
+            None,
+            16,
+            &coop.budget,
+        )
+        .unwrap();
+        assert_eq!(page.seats[0].bound_epoch, Some(3));
+        assert!(matches!(
+            plan_page(&page).unwrap()[0].action,
+            ReconciliationAction::CarryForward { .. }
+        ));
+        page.seats[0].bound_epoch = None;
+        assert!(plan_page(&page).unwrap().is_empty());
+    }
+
+    // Kills: a carry that moves the binding without the availability anchor
+    // and receipt-timer job a fresh registration writes.
+    #[test]
+    fn carried_binding_writes_availability_anchor_and_timer_job() {
+        let mut f = fixture("cooperative_top_level", false);
+        f.conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
+        // A recipient row staged while the seat was not yet available.
+        f.conn
+            .execute(
+                "INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot,availability_provenance) VALUES ('prep-1','t','s',1,1000,0,NULL)",
+                [],
+            )
+            .unwrap();
+        let staged = count(&f, "SELECT MAX(ordinal) FROM prepared_recipients");
+        let publication = publish(&mut f, production(4, 3, "inc-a"));
+        let transitions = plan(&f, &publication);
+        assert_eq!(
+            apply(&mut f, transitions[0].clone()),
+            ReconciliationOutcome::Applied
+        );
+        let (generation, provenance): (i64, String) = f
+            .conn
+            .query_row(
+                "SELECT binding_generation,observation_provenance FROM seat_availability WHERE seat_id='s'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (generation, provenance.as_str()),
+            (1, "cooperative_top_level")
+        );
+        assert_eq!(
+            count(
+                &f,
+                "SELECT COUNT(*) FROM seat_availability WHERE seat_id='s'"
+            ),
+            1
+        );
+        let (subject, high_water): (String, i64) = f
+            .conn
+            .query_row(
+                "SELECT subject_id,high_water FROM work_jobs WHERE kind='receipt_timer_materialization'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let anchor = count(
+            &f,
+            "SELECT ordinal FROM seat_availability WHERE seat_id='s'",
+        );
+        assert_eq!(subject, anchor.to_string());
+        assert_eq!(
+            high_water, staged,
+            "the job covers the row staged before the carry"
+        );
+        assert_eq!(
+            count(&f, "SELECT unavailability_open FROM seats WHERE id='s'"),
+            0
+        );
+        // Idempotent: the same transition again moves nothing and anchors nothing.
+        assert_eq!(
+            apply(&mut f, transitions[0].clone()),
+            ReconciliationOutcome::Unchanged
+        );
+        assert_eq!(
+            count(
+                &f,
+                "SELECT COUNT(*) FROM seat_availability WHERE seat_id='s'"
+            ),
+            1
+        );
+    }
 }
