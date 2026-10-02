@@ -61,3 +61,5 @@ scopeFilter-round-1: [Should-fix] evidence(c) in-scope — cluster pre-reconcili
 scope-filter: 12 in-scope · 1 punch-listed
 fixBeads-round-1: ht-rzi.18 (redesign+c), ht-rzi.19 (C4+a+workers test), ht-rzi.20, ht-rzi.21, ht-rzi.22, ht-rzi.23
 resumeChange: 2026-10-01 · "superpowers skills moved to v6.4.2-alepar4.5 (104b54e); adopt at a round boundary" · pending skill-source switch to ~/AleCode/superpowers/skills @ 104b54e (6.4.2-alepar4.5), applied when the fix-loop round-1 super-code re-entry (wf_e4f75cbd-dfc, on 4.3) returns
+skillSource: ~/AleCode/superpowers/skills @ 104b54e (6.4.2-alepar4.5)
+migrated: run-state contract diff 4.3→4.5 is wording-only (coverage reviewer count, example token); no field remapped. Switch applied at the fix-loop round-1 boundary: the 4.3 coordinator re-entry wf_e4f75cbd-dfc was stopped while only its planner was in flight (planner dispatch hung 6×15 min with no first response; no task work started), and super-code is relaunched from the new source's coordinator.js.
