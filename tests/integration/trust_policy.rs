@@ -363,6 +363,24 @@ impl World {
         self.herdr.restart(panes);
         self.ensure()
     }
+    /// The Herdr server restarts with `panes` (a new incarnation) while the
+    /// daemon keeps running: nothing here waits for its next capture or
+    /// reconciliation pass, so a hook fired now races both.
+    fn restart_herdr_keeping_daemon(&mut self, panes: Vec<Value>) {
+        *self.stale_marker.borrow_mut() = self.marker();
+        self.herdr.restart(panes);
+    }
+    /// Pending `*.intent` files in the hook's intent journal.
+    fn intents(&self) -> usize {
+        self.find("intents").map_or(0, |dir| {
+            fs::read_dir(dir).map_or(0, |entries| {
+                entries
+                    .flatten()
+                    .filter(|e| e.path().extension().is_some_and(|x| x == "intent"))
+                    .count()
+            })
+        })
+    }
     /// The installed hook, exactly as setup installs it: `sh -c` with the
     /// native JSON on stdin and the pane identity from `HERDR_*`.
     fn hook(&self, harness: &str, pane: &str, stdin: &[u8]) -> (i32, String, String) {
@@ -853,6 +871,54 @@ fn reattached(harness: &str, before: Value, restored: Value) -> (World, String) 
         vec![(harness.into(), "cooperative_top_level".into(), "SA".into())]
     );
     (world, a)
+}
+
+/// TRUST-POLICY C1 (ht-rzi.18): the daemon is kept running across a Herdr
+/// restart that renumbers the panes, and the resumed session's hook fires in
+/// its new pane before the daemon has finished reconciling the new
+/// incarnation: the saved seat is not yet unresolved, so "no unresolved seat"
+/// is pending, not final. The hook retries under one operation key until the
+/// daemon has reconciled, and the seat reattaches in one transaction that also
+/// opens its successor binding on the restored pane.
+#[test]
+fn resume_before_reconciliation_with_daemon_kept_running_is_retried_then_reattaches() {
+    let mut world = World::start(
+        "htrk",
+        vec![claude("w1:p1", "term-a", "SA"), pane("w1:p2", "term-b")],
+    );
+    let a = world.resolve("w1:p1");
+    let (code, _, stderr) =
+        world.hook("claude", "w1:p1", &session_start("claude", "SA", "startup"));
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(world.seat_state(&a), "resolved");
+    // The restored Herdr numbers the session's pane w1:p3; the daemon is not
+    // stopped, and nothing waits for its next capture or reconciliation.
+    world.restart_herdr_keeping_daemon(vec![
+        claude("w1:p3", "term-c", "SA"),
+        pane("w1:p2", "term-b2"),
+    ]);
+    let (code, _, stderr) = world.hook("claude", "w1:p3", &session_start("claude", "SA", "resume"));
+    assert_eq!(code, 0, "{stderr}");
+    world.wait_reconciled();
+    assert_eq!(world.seat_state(&a), "resolved", "{stderr}");
+    assert_eq!(
+        world
+            .count("SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'"),
+        1,
+        "{stderr}"
+    );
+    assert_eq!(
+        world.open_binding(&a),
+        vec![("claude".into(), "cooperative_top_level".into(), "SA".into())],
+        "{stderr}"
+    );
+    assert_eq!(
+        world.count(&format!(
+            "SELECT count(*) FROM seats WHERE id='{a}' AND target_id='w1:p3'"
+        )),
+        1
+    );
+    assert_eq!(world.intents(), 0, "the continuity intent is finished");
 }
 
 /// TRUST-POLICY A4 (agent to human) x C1 (ht-rzi.2 x ht-rzi.3): the seat a

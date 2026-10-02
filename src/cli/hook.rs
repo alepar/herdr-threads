@@ -918,34 +918,21 @@ fn check_in(
         deadline,
         clock: Arc::clone(&clock),
     };
-    // A continuity intent left pending by an earlier hook event of this
-    // pane (the daemon committed the reattachment but its reply was lost)
-    // is finished before anything else (TRUST-POLICY C1, lost reply).
-    if let Some(finished) = call.finish_pending_continuity(event)
-        && !lifecycle
-    {
-        return Ok(finished);
-    }
     // Daemon check order for a lifecycle check-in (TRUST-POLICY A4, C1):
     // (1) A4 agent-to-human refusal, (2) C1 reattachment on a held or
     // unowned target, (3) the existing hold refusal / ordinary path. A
     // person's lifecycle check-in is never sent here; (2) is attempted only
     // when the pane has no resolved seat and the event is a top-level resume.
-    let (seat, generation, continuity) =
-        match find_seat(&client, &target, deadline, clock.as_ref())? {
-            PaneSeat::Resolved(seat, generation) => (seat, generation, None),
-            absent => match call.reattach_by_continuity(event) {
-                Some((seat, generation, intent)) => (seat, generation, Some(intent)),
-                None => return Err(absent.refusal(pane)),
-            },
-        };
-    let checked_in = call.check_in_seat(event, &seat, generation);
-    if let Some((journal, reference)) = continuity {
-        // The follow-up check-in has been attempted; the decision is durable
-        // in the daemon, so the intent has done its work either way.
-        let _ = journal.complete(&reference);
-    }
-    checked_in
+    // The reattachment is one complete check-in (the daemon rebinds the seat
+    // and opens its successor binding), so nothing follows it.
+    let (seat, generation) = match find_seat(&client, &target, deadline, clock.as_ref())? {
+        PaneSeat::Resolved(seat, generation) => (seat, generation),
+        absent => match call.reattach_by_continuity(event) {
+            Some(done) => return Ok(done),
+            None => return Err(absent.refusal(pane)),
+        },
+    };
+    call.check_in_seat(event, &seat, generation)
 }
 
 /// One hook invocation's connection to the daemon for one pane.
@@ -959,26 +946,20 @@ struct PaneCall<'a> {
     clock: Arc<dyn Clock>,
 }
 
-/// A pending continuity intent and how its submission ended.
+/// How a continuity intent's submission ended.
 enum ContinuityOutcome {
-    Reattached {
-        seat: SeatId,
-        generation: u64,
-    },
+    Reattached(crate::protocol::results::ContinuityReattachment),
     /// A definitive refusal; the intent was discarded.
     Refused,
-    /// Transport failure or uncertain outcome; the intent is kept.
-    Uncertain,
+    /// Still retryable when the hook's deadline passed; the intent is kept for
+    /// the next `resume` in the pane or `herdr-threads retry`.
+    Kept,
 }
 
-fn native_harness(harness: crate::protocol::authority::Harness) -> Option<Harness> {
-    use crate::protocol::authority::Harness as Wire;
-    match harness {
-        Wire::Claude => Some(Harness::Claude),
-        Wire::Codex => Some(Harness::Codex),
-        Wire::Human => None,
-    }
-}
+/// First wait between submissions of a retryable continuity request; doubles
+/// up to `CONTINUITY_BACKOFF_CAP`, never past the hook deadline.
+const CONTINUITY_BACKOFF_START: Duration = Duration::from_millis(50);
+const CONTINUITY_BACKOFF_CAP: Duration = Duration::from_millis(400);
 
 fn wire_harness(harness: Harness) -> Option<crate::protocol::authority::Harness> {
     use crate::protocol::authority::Harness as Wire;
@@ -994,63 +975,117 @@ impl PaneCall<'_> {
         super::journal::Journal::open(self.paths.instance_dir.join("intents")).ok()
     }
 
-    /// Submit a recorded continuity intent under its operation key. The
-    /// daemon's idempotent replay returns the recorded seat and generation.
+    /// Submit a recorded continuity intent under its operation key until the
+    /// daemon answers or the hook deadline passes. The same command is sent
+    /// every time, so the daemon's idempotent replay returns the recorded seat
+    /// and generation. A definitive refusal completes the intent; busy,
+    /// stale-observation (a Herdr restart the daemon has not yet caught up
+    /// with), transport and uncertain outcomes retry with backoff.
     fn submit_continuity(
         &self,
         journal: &super::journal::Journal,
         reference: &super::journal::IntentRef,
     ) -> ContinuityOutcome {
         let Ok(pending) = journal.load(reference) else {
-            return ContinuityOutcome::Uncertain;
+            return ContinuityOutcome::Kept;
         };
         let Ok(command) = pending
             .semantic
             .to_command(reference.operation.clone(), None)
         else {
-            return ContinuityOutcome::Uncertain;
+            return ContinuityOutcome::Kept;
         };
-        // One immediate retry when the daemon's own host capture raced the
-        // decision (a transient `StaleHostObservation`): the operation key
-        // makes the second submission idempotent.
-        for attempt in 0..2 {
+        let mut backoff = CONTINUITY_BACKOFF_START;
+        loop {
             match self
                 .client
                 .call_definitive(command.clone(), &budget(self.deadline, self.clock.as_ref()))
             {
                 Ok(Ok(CommandResult::ContinuityReattached(reattached))) => {
-                    return ContinuityOutcome::Reattached {
-                        seat: reattached.seat,
-                        generation: reattached.binding_generation,
-                    };
+                    return ContinuityOutcome::Reattached(reattached);
                 }
-                Ok(Err(rejection))
-                    if attempt == 0 && rejection.code == ErrorCode::StaleHostObservation => {}
                 Ok(Err(rejection)) if super::retry::is_continuity_refusal(&rejection.code) => {
                     // A failed removal leaves an inert, still-refused entry.
                     let _ = journal.complete(reference);
                     return ContinuityOutcome::Refused;
                 }
-                _ => return ContinuityOutcome::Uncertain,
+                Ok(Ok(_)) => return ContinuityOutcome::Kept,
+                _ => {}
+            }
+            let remaining = self.deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return ContinuityOutcome::Kept;
+            }
+            std::thread::sleep(backoff.min(remaining));
+            backoff = (backoff * 2).min(CONTINUITY_BACKOFF_CAP);
+        }
+    }
+
+    /// The pane's continuity intent for this session: a pending one for the
+    /// same harness and session is reused (its operation key and execution, so
+    /// the daemon replays an earlier commit), one for another session or with
+    /// an unusable execution is completed as superseded, and a fresh one is
+    /// recorded when none is left.
+    fn continuity_intent(
+        &self,
+        journal: &super::journal::Journal,
+        event: &LifecycleEvent,
+        harness: crate::protocol::authority::Harness,
+        session: &crate::protocol::ids::NativeSessionId,
+    ) -> Option<(super::journal::IntentRef, uuid::Uuid)> {
+        let instance = self.instance.to_string();
+        while let Ok(Some(pending)) = journal.pending_continuity(&instance, self.target) {
+            let reference = pending.header.reference.clone();
+            if let super::journal::SemanticMutation::ContinuityCheckIn {
+                harness: recorded_harness,
+                native_session,
+                execution,
+                ..
+            } = &pending.semantic
+                && *recorded_harness == harness
+                && native_session == session
+                && let Ok(execution) = uuid::Uuid::parse_str(execution.as_str())
+            {
+                return Some((reference, execution));
+            }
+            if journal.complete(&reference).is_err() {
+                // Cannot clear it: leave it and record alongside.
+                break;
             }
         }
-        ContinuityOutcome::Uncertain
+        let execution = uuid::Uuid::new_v4();
+        let reference = journal
+            .record(
+                super::journal::IntentScope::Continuity {
+                    instance,
+                    target: self.target.clone(),
+                },
+                super::journal::SemanticMutation::ContinuityCheckIn {
+                    target: self.target.clone(),
+                    harness,
+                    native_session: session.clone(),
+                    source: event.source.clone(),
+                    event_id: event.event_id.clone(),
+                    execution: crate::protocol::ids::ExecutionId::new(execution.to_string()),
+                },
+                self.clock.utc_now().0,
+            )
+            .ok()?;
+        Some((reference, execution))
     }
 
     /// C1 attempt: a top-level `resume` in a pane with no resolved seat asks
     /// the daemon to reattach the unresolved seat whose last binding holds
-    /// this session. Returns the seat, its generation and the still-pending
-    /// intent (completed by the caller after the follow-up check-in); `None`
-    /// for anything else, including every refusal, which leaves today's
-    /// diagnostics unchanged.
-    fn reattach_by_continuity(
-        &self,
-        event: &LifecycleEvent,
-    ) -> Option<(
-        SeatId,
-        u64,
-        (super::journal::Journal, super::journal::IntentRef),
-    )> {
+    /// this session. The daemon's one transaction rebinds the seat and opens
+    /// the successor binding; the hook installs the pane context from the
+    /// reply (the reattached seat's journal, replacing whatever it saved,
+    /// whatever its target or generation; another seat's stale context for
+    /// this pane is never consulted, the daemon's mapping locates the pane's
+    /// seat) and presents the seat's pending attention. `None` for anything
+    /// else, including every refusal and an elapsed retry window (intent kept),
+    /// which leaves today's diagnostics unchanged. It runs only on this resume
+    /// path: tool events never read or replay a continuity intent.
+    fn reattach_by_continuity(&self, event: &LifecycleEvent) -> Option<CheckedIn> {
         if event.role != Role::TopLevel || event.kind != EventKind::Resume {
             return None;
         }
@@ -1058,95 +1093,74 @@ impl PaneCall<'_> {
         let session =
             crate::protocol::ids::NativeSessionId::parse(event.native_session.clone()?).ok()?;
         let journal = self.journal()?;
-        let reference = journal
-            .record(
-                super::journal::IntentScope::Continuity {
-                    instance: self.instance.to_string(),
-                    target: self.target.clone(),
-                },
-                super::journal::SemanticMutation::ContinuityCheckIn {
-                    target: self.target.clone(),
-                    harness,
-                    native_session: session,
-                    source: event.source.clone(),
-                    event_id: event.event_id.clone(),
-                },
-                self.clock.utc_now().0,
-            )
-            .ok()?;
-        match self.submit_continuity(&journal, &reference) {
-            ContinuityOutcome::Reattached { seat, generation } => {
-                Some((seat, generation, (journal, reference)))
-            }
-            ContinuityOutcome::Refused | ContinuityOutcome::Uncertain => None,
-        }
-    }
-
-    /// Lost-reply recovery: before `find_seat`, every hook event of the pane
-    /// replays a pending continuity intent under its own operation key and
-    /// runs the ordinary lifecycle check-in for the returned seat, so the
-    /// client context is written. An event of a different top-level session
-    /// supersedes the intent, which is then discarded unreplayed. The result
-    /// is the replayed check-in; a lifecycle event discards it and runs its
-    /// own after this one.
-    fn finish_pending_continuity(&self, event: &LifecycleEvent) -> Option<CheckedIn> {
-        let dir = self.paths.instance_dir.join("intents");
-        if !dir.is_dir() {
-            return None;
-        }
-        let journal = self.journal()?;
-        let pending = journal
-            .pending_continuity(&self.instance.to_string(), self.target)
-            .ok()??;
-        let reference = pending.header.reference.clone();
-        let super::journal::SemanticMutation::ContinuityCheckIn {
-            harness,
-            native_session,
-            source,
-            event_id,
-            ..
-        } = &pending.semantic
-        else {
-            return None;
-        };
-        if event.role == Role::TopLevel
-            && let Some(current) = &event.native_session
-            && current != native_session.as_str()
-        {
-            let _ = journal.complete(&reference);
-            return None;
-        }
-        if event.native_session.as_deref() != Some(native_session.as_str()) {
-            return None;
-        }
-        let ContinuityOutcome::Reattached { seat, .. } =
+        let (reference, execution) = self.continuity_intent(&journal, event, harness, &session)?;
+        let ContinuityOutcome::Reattached(reattached) =
             self.submit_continuity(&journal, &reference)
         else {
             return None;
         };
-        let replayed = LifecycleEvent {
-            harness: native_harness(*harness)?,
-            source: source.clone(),
-            kind: EventKind::Resume,
-            native_session: Some(native_session.as_str().to_owned()),
+        let seat = reattached.seat;
+        let contexts = super::seat_contexts(self.paths, self.instance, &seat).ok()?;
+        let context = OccupantContext {
+            format_version: 1,
+            instance: self.instance,
+            seat: seat.as_str().into(),
+            target: self.target.as_str().into(),
+            harness: event.harness,
+            binding_generation: reattached.binding_generation,
+            execution,
+            session: SessionReference::Native(session.as_str().to_owned()),
             role: Role::TopLevel,
-            event_id: event_id.clone(),
-            capability: event.capability,
         };
-        // The lifecycle check-in that followed the reattachment may already
-        // have advanced the seat: use its present binding generation. A
-        // failed lookup keeps the intent (the replay is idempotent), anything
-        // else has used it up.
-        let checked_in =
-            match find_seat(self.client, self.target, self.deadline, self.clock.as_ref()) {
-                Ok(PaneSeat::Resolved(current, generation)) if current == seat => {
-                    self.check_in_seat(&replayed, &current, generation).ok()
-                }
-                Err(_) => return None,
-                Ok(_) => None,
-            };
+        // On a failed install the intent stays: the daemon replays the same
+        // result on the next resume and the install is tried again.
+        let abandoned = contexts.install_reattached(context).ok()?;
+        if let Some(pending) = abandoned {
+            // The replaced context's request is dead: its intent is spent.
+            let _ = journal.complete_operation(&OperationId::new(pending.operation_id.to_string()));
+        }
         let _ = journal.complete(&reference);
-        checked_in
+        // A presentation, not a lifecycle check-in: one non-durable Current
+        // check-in (a compaction-class copy of the event, which never
+        // coalesces) shows the seat's pending attention and rotates nothing.
+        // Best effort: without it the next tool event presents.
+        let presented = LifecycleEvent {
+            kind: EventKind::Compact,
+            ..event.clone()
+        };
+        let mut done = self
+            .check_in_seat(&presented, &seat, reattached.binding_generation)
+            .unwrap_or_else(|_| CheckedIn {
+                text: Vec::new(),
+                fallback: self.fallback_for(&seat),
+                summary: None,
+                actions: None,
+                overview: None,
+                attention: None,
+            });
+        // A resumed session is a lifecycle start: it gets the standing
+        // instruction a lifecycle check-in presents, ahead of any attention.
+        let mut text = render_context(Role::TopLevel, &[], true)
+            .unwrap_or_default()
+            .into_bytes();
+        text.append(&mut done.text);
+        done.text = text;
+        Some(done)
+    }
+
+    fn fallback_for(&self, seat: &SeatId) -> Vec<String> {
+        let selectors = pane_selectors(
+            Some(&self.context.state_dir),
+            Some(&self.context.host_endpoint),
+            &pane_inputs(),
+        );
+        let mut fallback = cli_prefix(&selectors);
+        fallback.extend([
+            "inbox".to_owned(),
+            "--seat".to_owned(),
+            seat.as_str().to_owned(),
+        ]);
+        fallback
     }
 
     /// The ordinary check-in of `event` for the pane's resolved seat.
@@ -1353,16 +1367,12 @@ fn lifecycle_check_in(
     if let Some(saved) = current.clone() {
         // A replayed lifecycle CheckIn may have advanced past the inspected generation.
         let advanced_by_replay = replay && saved.binding_generation > generation;
-        if saved.target != target.as_str()
-            || (saved.binding_generation > generation && !advanced_by_replay)
-        {
-            return Err(Failure::Unavailable(
-                "local context differs from current service mapping".into(),
-            ));
-        }
         if saved.binding_generation < generation {
-            // The service moved the seat past this context: it is historical.
-            // A deliberately fresh lifecycle request reads the current generation.
+            // The service moved the seat past this context (a reattachment
+            // whose reply was lost, or one that installed in another pane): it
+            // is historical whatever its target, retired before any
+            // comparison with the pane. A deliberately fresh lifecycle request
+            // reads the current generation.
             let retired = contexts
                 .retire_current(&saved)
                 .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))?;
@@ -1372,6 +1382,12 @@ fn lifecycle_check_in(
                 ));
             }
             current = None;
+        } else if saved.target != target.as_str()
+            || (saved.binding_generation > generation && !advanced_by_replay)
+        {
+            return Err(Failure::Unavailable(
+                "local context differs from current service mapping".into(),
+            ));
         } else if saved.harness == crate::harness::context::Harness::Human
             && event.harness != crate::harness::context::Harness::Human
         {

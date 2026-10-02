@@ -473,8 +473,9 @@ pub struct RepairHistory {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuity_diagnostic: Option<String>,
 }
-/// The seat a resumed session was reattached to and the binding generation
-/// the caller's ordinary lifecycle check-in must name.
+/// The seat a resumed session was reattached to and the generation of the
+/// successor binding the same transaction opened; the caller writes its
+/// context from it and sends nothing further.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContinuityReattachment {

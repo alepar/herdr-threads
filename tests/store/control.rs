@@ -9064,6 +9064,7 @@ fn c1_command(
         native_session: NativeSessionId::new(session),
         source: "resume".into(),
         operation: OperationId::new(operation),
+        execution: ExecutionId::new(format!("exec-{operation}")),
     }
 }
 
@@ -9166,8 +9167,8 @@ fn continuity_reattaches_unique_session_match_on_held_target() {
         )
         .unwrap();
     assert_eq!(
-        open, 0,
-        "the lifecycle check-in, not this decision, opens the successor binding"
+        open, 1,
+        "the deciding transaction opens the successor binding"
     );
     let released: i64 = conn
         .query_row(
@@ -9200,6 +9201,123 @@ fn continuity_reattaches_unique_session_match_on_held_target() {
 }
 
 #[test]
+fn continuity_opens_successor_cooperative_binding_in_the_deciding_transaction() {
+    let (context, mut conn, path) = c1_fixture();
+    let command = c1_command("held-pane", "sess-1", "c1-open");
+    let result = c1_decide(&context, &mut conn, &command, "match").unwrap();
+    let CommandResult::ContinuityReattached(reply) = result else {
+        panic!("wrong result");
+    };
+    assert_eq!(reply.seat.as_str(), "s1");
+    let seat: (String, Option<String>, i64, i64) = conn
+        .query_row(
+            "SELECT state,target_id,generation,unavailability_open FROM seats WHERE id='s1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        seat,
+        (
+            "resolved".into(),
+            Some("held-pane".into()),
+            reply.binding_generation as i64,
+            0
+        )
+    );
+    let open: Vec<(String, String, String, String, i64, bool, String)> = conn
+        .prepare("SELECT observation_provenance,harness,native_session,execution_id,generation,registered_at IS NOT NULL,target_id FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL")
+        .unwrap()
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        open,
+        vec![(
+            "cooperative_top_level".into(),
+            "claude".into(),
+            "sess-1".into(),
+            "exec-c1-open".into(),
+            reply.binding_generation as i64,
+            true,
+            "held-pane".into()
+        )]
+    );
+    let decisions: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity' AND seat_id='s1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(decisions, 1);
+    assert_eq!(
+        crate::store::schema::effective_registered_availability(&conn, "s1", Some("i")).unwrap(),
+        Some("cooperative_top_level".into())
+    );
+    let anchors: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM seat_availability WHERE seat_id='s1' AND binding_generation=?1",
+            [reply.binding_generation as i64],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(anchors, 1);
+    let jobs: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM work_jobs WHERE kind='receipt_timer_materialization'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(jobs, 1);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_without_match_is_retryable_until_reconciled() {
+    use crate::protocol::results::ErrorCode;
+    let (context, mut conn, path) = c1_fixture();
+    conn.execute(
+        "UPDATE host_instances SET recovery_boot='b',recovery_epoch=2,reconciled_boot='b',reconciled_epoch=1 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    let command = c1_command("held-pane", "sess-other", "c1-lag");
+    let lagging = c1_decide(&context, &mut conn, &command, "match").unwrap_err();
+    assert_eq!(lagging.code, ErrorCode::ServiceBusy);
+    assert!(
+        lagging.detail.contains("has not finished"),
+        "{}",
+        lagging.detail
+    );
+    let stored: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM operations WHERE operation_key='c1-lag'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        stored, 0,
+        "a retryable refusal stores nothing under the key"
+    );
+    conn.execute(
+        "UPDATE host_instances SET reconciled_boot=recovery_boot,reconciled_epoch=recovery_epoch WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    let settled = c1_decide(&context, &mut conn, &command, "match").unwrap_err();
+    assert_eq!(settled.code, ErrorCode::NotFound);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn continuity_on_unowned_target_reattaches() {
     let (context, mut conn, path, _) = fixture(100);
     b5_published_baseline(&context, &mut conn, &["free-pane"]);
@@ -9225,6 +9343,9 @@ fn continuity_on_unowned_target_reattaches() {
 fn continuity_refuses_zero_and_multiple_matches() {
     use crate::protocol::results::ErrorCode;
     let (context, mut conn, path) = c1_fixture();
+    // Reconciliation of the current epoch has finished, so "no unresolved
+    // seat" is final (while it lags it is the retryable ServiceBusy).
+    b5_set_marker_to_recovery(&conn);
     // Zero: no unresolved seat holds this session.
     let none = c1_decide(
         &context,
@@ -9375,6 +9496,14 @@ fn continuity_replay_returns_recorded_seat_and_generation() {
         (1, Some("match".into())),
         "no second row, first diagnostic kept"
     );
+    let bindings: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='s1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(bindings, 2, "replay adds no binding row");
     // Another payload under the same key is refused, not replayed.
     let other = c1_command("held-pane", "sess-2", "c1-replay");
     assert_eq!(

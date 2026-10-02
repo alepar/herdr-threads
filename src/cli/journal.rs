@@ -71,13 +71,15 @@ pub enum SemanticMutation {
         target: HostTargetId,
     },
     /// TRUST-POLICY C1: resume-only seatless reattachment request. `event_id`
-    /// is the hook event the follow-up lifecycle check-in belongs to.
+    /// is the hook event that recorded it; `execution` is the successor
+    /// binding's execution id, fixed once so every retry sends the same value.
     ContinuityCheckIn {
         target: HostTargetId,
         harness: crate::protocol::authority::Harness,
         native_session: NativeSessionId,
         source: String,
         event_id: String,
+        execution: ExecutionId,
     },
     CheckIn,
     CreateThread {
@@ -234,6 +236,7 @@ impl SemanticMutation {
                 native_session,
                 source,
                 event_id,
+                execution,
             } => {
                 if event_id.is_empty()
                     || event_id.len() > 1024
@@ -247,6 +250,7 @@ impl SemanticMutation {
                     native_session: native_session.clone(),
                     source: source.clone(),
                     operation: OperationId::new("validation"),
+                    execution: execution.clone(),
                 }
                 .validate()
                 .map_err(invalid)
@@ -366,6 +370,7 @@ impl SemanticMutation {
                 harness,
                 native_session,
                 source,
+                execution,
                 ..
             } => Command::ContinuityCheckIn(ContinuityCheckIn {
                 target: target.clone(),
@@ -373,6 +378,7 @@ impl SemanticMutation {
                 native_session: native_session.clone(),
                 source: source.clone(),
                 operation,
+                execution: execution.clone(),
             }),
             Self::CheckIn => Command::CheckIn(CheckIn {
                 mode: crate::protocol::commands::CheckInMode::Current,
@@ -764,8 +770,13 @@ impl Journal {
         Ok(None)
     }
     /// The pending continuity intent of this pane under `instance`, if a
-    /// previous hook recorded one and did not finish it (lost reply, crash).
-    /// Oldest first; it carries the operation key the daemon replays by.
+    /// previous hook recorded one and did not finish it (lost reply, crash,
+    /// retry window elapsed). Oldest first; it carries the operation key the
+    /// daemon replays by. Called only on the resume path. The journal
+    /// directory is shared with entries this scan does not own, so every read
+    /// is hardened: `O_NOFOLLOW|O_NONBLOCK`, regular files only, a capped
+    /// header read, and a vanished, unreadable or unparsable entry is skipped
+    /// rather than failing the scan.
     pub fn pending_continuity(
         &self,
         instance: &str,
@@ -776,26 +787,24 @@ impl Journal {
             target: target.clone(),
         };
         let _lock = self.lock()?;
-        let mut found: Option<(u64, IntentRef)> = None;
+        let mut found: Vec<IntentRef> = Vec::new();
         for entry in fs::read_dir(&self.root)? {
-            let path = entry?.path();
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) != Some("intent") {
                 continue;
             }
-            let mut line = String::new();
-            BufReader::new(File::open(&path)?).read_line(&mut line)?;
-            let header: IntentHeader = serde_json::from_str(&line)?;
-            if header.scope == scope
-                && found
-                    .as_ref()
-                    .is_none_or(|(ordinal, _)| header.reference.ordinal < *ordinal)
-            {
-                found = Some((header.reference.ordinal, header.reference));
+            let Some(header) = read_intent_header(&path) else {
+                continue;
+            };
+            if header.scope == scope {
+                found.push(header.reference);
             }
         }
-        found
-            .map(|(_, reference)| self.load(&reference))
-            .transpose()
+        found.sort_by_key(|reference| reference.ordinal);
+        Ok(found
+            .into_iter()
+            .find_map(|reference| self.load(&reference).ok()))
     }
     fn record_locked(
         &self,
@@ -1233,6 +1242,25 @@ fn private_new(path: &Path) -> io::Result<File> {
 }
 /// Sandbox-writable (Codex) instance directory: never follow a leaf
 /// symlink (TRUST-POLICY Accepted limits), like the context journal.
+/// Header line of one intent file for a scan, or `None` for anything that is
+/// not a readable intent: a vanished entry, a symlink, a FIFO or device (opened
+/// without blocking and rejected by `is_file`), a read error or garbage.
+fn read_intent_header(path: &Path) -> Option<IntentHeader> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    let file = options.open(path).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut line = String::new();
+    BufReader::new(file.take(64 * 1024))
+        .read_line(&mut line)
+        .ok()?;
+    serde_json::from_str(&line).ok()
+}
+
 fn private_open(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true);

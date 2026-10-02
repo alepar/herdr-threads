@@ -3640,9 +3640,10 @@ pub fn mutate_operator(
 }
 
 /// The seat-side half of a rebind of an unresolved seat onto `target`: one
-/// generation step, the open binding ended (the next lifecycle check-in opens
-/// the successor), its warning offer dropped and an unavailability episode
-/// open. Shared by operator repair and TRUST-POLICY C1 continuity.
+/// generation step, the open binding ended, its warning offer dropped and an
+/// unavailability episode open. Operator repair leaves the successor binding to
+/// the agent's next check-in; TRUST-POLICY C1 continuity opens it in the same
+/// transaction (`decide_continuity`).
 fn rebind_unresolved_seat(
     tx: &Transaction<'_>,
     instance: &str,
@@ -3748,6 +3749,7 @@ pub fn continuity_digest(
         &command.target,
         &command.harness,
         &command.native_session,
+        &command.execution,
     ))
 }
 
@@ -3805,12 +3807,17 @@ pub fn replay_continuity(
 
 /// TRUST-POLICY C1: reattach the one unresolved seat whose last binding holds
 /// the resumed session id onto the (held or unowned) target, in one deciding
-/// transaction. The match is cooperative and structural only: Herdr's
-/// `agent_session` (`diagnostic`) is recorded, never consulted. The seat's open
-/// binding is ended and not replaced here; the caller's ordinary lifecycle
-/// check-in opens the successor binding as `cooperative_top_level`. The
-/// `cooperative_continuity` value is written to seat history
-/// (`allocation_decisions`) only, never to a receipt.
+/// transaction that is a complete lifecycle check-in. The match is cooperative
+/// and structural only: Herdr's `agent_session` (`diagnostic`) is recorded,
+/// never consulted. The seat's old binding is ended and the successor
+/// `cooperative_top_level` binding (the command's harness, session and
+/// execution, a new generation) is opened with its availability anchor in the
+/// same transaction; the reply is idempotent under the operation key and a lost
+/// reply is recovered by the committed binding. The `cooperative_continuity`
+/// value is written to seat history (`allocation_decisions`) only, never to a
+/// receipt or the binding. With no matching unresolved seat while the host
+/// epoch's reconciliation lags its recovery marker, the refusal is the
+/// retryable `ServiceBusy`, not `NotFound`.
 pub fn decide_continuity(
     context: &StoreContext,
     conn: &mut Connection,
@@ -3878,10 +3885,30 @@ pub fn decide_continuity(
             let candidates = continuity_candidates(tx, &instance, harness, session)?;
             let [seat] = candidates.as_slice() else {
                 return Err(if candidates.is_empty() {
-                    api_error(
-                        ErrorCode::NotFound,
-                        "no unresolved seat matches this resumed session",
-                    )
+                    // Until the first reconciliation pass of the current
+                    // recovery epoch has run, "no unresolved seat" only says the
+                    // daemon has not yet rebuilt the seats a Herdr restart
+                    // unresolved: pending, not final.
+                    let lagging: bool = tx
+                        .query_row(
+                            "SELECT recovery_boot IS NOT reconciled_boot OR recovery_epoch IS NOT reconciled_epoch FROM host_instances WHERE id=?1",
+                            [&instance],
+                            |r| r.get(0),
+                        )
+                        .optional()
+                        .map_err(store_error)?
+                        .unwrap_or(false);
+                    if lagging {
+                        api_error(
+                            ErrorCode::ServiceBusy,
+                            "recovery reconciliation of the current host epoch has not finished; retry",
+                        )
+                    } else {
+                        api_error(
+                            ErrorCode::NotFound,
+                            "no unresolved seat matches this resumed session",
+                        )
+                    }
                 } else {
                     api_error(
                         ErrorCode::Conflict,
@@ -3971,6 +3998,43 @@ pub fn decide_continuity(
                     |r| r.get(0),
                 )
                 .map_err(store_error)?;
+            // The successor binding opens here, so the reply is a complete
+            // check-in: the seat is resolved, bound and available when this
+            // transaction commits. Evidence is the structural proof when the
+            // guard carries one, else the fresh observation of the same target.
+            let (terminal, incarnation) = match &structural_proof {
+                Some(proof) => (
+                    proof.terminal().as_str().to_owned(),
+                    proof.incarnation().to_owned(),
+                ),
+                None => {
+                    let (terminal, incarnation) = binding_evidence(
+                        fresh.terminal_id.as_deref(),
+                        fresh.incarnation.as_deref(),
+                    )?;
+                    (terminal.to_owned(), incarnation.to_owned())
+                }
+            };
+            tx.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?12,?13)",
+                params![seat.as_str(),new_generation,target.as_str(),expected_boot.as_str(),expected_epoch_sql,expected_generation_sql,
+                    command.harness.as_str(),command.native_session.as_str(),command.execution.as_str(),
+                    crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE,at.utc.0,terminal,incarnation]).map_err(store_error)?;
+            tx.execute("UPDATE wake_work SET binding_generation=?1 WHERE seat_id=?2 AND reservation_id IS NULL",
+                params![new_generation,seat.as_str()]).map_err(store_error)?;
+            let seq = schema::next_decision_seq(tx, &instance)?;
+            anchor_seat_availability(
+                tx,
+                seat,
+                seq,
+                at.utc,
+                new_generation,
+                crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE,
+            )?;
+            tx.execute(
+                "UPDATE seats SET unavailability_open=0 WHERE id=?1",
+                [seat.as_str()],
+            )
+            .map_err(store_error)?;
             tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label,continuity_diagnostic) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,NULL,?9)",
                 params![instance,target.as_str(),seat.as_str(),crate::protocol::authority::COOPERATIVE_CONTINUITY_PROVENANCE,at.utc.0,expected_boot.as_str(),expected_epoch_sql,expected_generation_sql,diagnostic]).map_err(store_error)?;
             release_claimed_target(tx, &instance, target.as_str(), at.utc)?;

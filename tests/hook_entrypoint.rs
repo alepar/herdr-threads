@@ -3623,6 +3623,9 @@ mod continuity {
                     native_session: herdr_threads::protocol::ids::NativeSessionId::new(session),
                     source: "resume".into(),
                     event_id: Uuid::new_v4().to_string(),
+                    execution: herdr_threads::protocol::ids::ExecutionId::new(
+                        Uuid::new_v4().to_string(),
+                    ),
                 },
                 1,
             )
@@ -3639,67 +3642,134 @@ mod continuity {
         reference.operation.as_str().to_owned()
     }
 
+    /// Install a saved client context for `seat` (as an earlier hook would
+    /// have left it) with the given pane and generation.
+    fn save_context(fx: &Fixture, seat: &str, harness: &str, target: &str, generation: u64) {
+        use herdr_threads::harness::context::{
+            ContextJournal, Harness, OccupantContext, Role, SessionReference,
+        };
+        use std::os::unix::fs::DirBuilderExt;
+        let dir = fx.context_dir(seat);
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)
+            .unwrap();
+        ContextJournal::open(&dir, fx.instance, seat, Duration::from_secs(1))
+            .unwrap()
+            .install_reattached(OccupantContext {
+                format_version: 1,
+                instance: fx.instance,
+                seat: seat.into(),
+                target: target.into(),
+                harness: if harness == "codex" {
+                    Harness::Codex
+                } else {
+                    Harness::Claude
+                },
+                binding_generation: generation,
+                execution: Uuid::new_v4(),
+                session: SessionReference::Native("S-0".into()),
+                role: Role::TopLevel,
+            })
+            .unwrap();
+    }
+
     #[test]
-    fn lost_reply_is_replayed_on_next_hook_event() {
+    fn resume_into_a_pane_other_than_the_saved_context_reattaches() {
         for harness in HARNESSES {
             let fx = reattaching_fixture(harness, Agent::Session("S-1".into()));
+            // A saved context from before the restart: another pane, an old generation.
+            save_context(&fx, "saved", harness, "old-pane", 1);
+            let resumed = fx.hook(harness, PANE, &session_start(harness, "S-1", "resume"));
+            assert_eq!(resumed.code, Some(0), "{harness}: {}", resumed.stderr);
+            assert!(
+                !resumed.stderr.contains("local context differs"),
+                "{harness}: {}",
+                resumed.stderr
+            );
+            assert_eq!(
+                fx.count("SELECT count(*) FROM seats WHERE id='saved' AND state='resolved' AND target_id='w1:p1'"),
+                1,
+                "{harness}"
+            );
+            assert_eq!(
+                fx.count(&format!("SELECT count(*) FROM occupant_bindings WHERE seat_id='saved' AND ended_at IS NULL AND observation_provenance='cooperative_top_level' AND native_session='S-1' AND harness='{harness}' AND target_id='w1:p1'")),
+                1,
+                "{harness}"
+            );
+            let state = fx.context_json("saved");
+            assert_eq!(state["current"]["target"], PANE, "{harness}");
+            assert_eq!(
+                state["current"]["binding_generation"],
+                fx.count("SELECT generation FROM seats WHERE id='saved'")
+            );
+            assert_eq!(fx.intents(), 0);
+        }
+    }
+
+    #[test]
+    fn lost_reply_next_event_takes_the_ordinary_path() {
+        for harness in HARNESSES {
+            let fx = reattaching_fixture(harness, Agent::Session("S-1".into()));
+            // A context from before the restart is still on disk (another pane).
+            save_context(&fx, "saved", harness, "old-pane", 1);
             commit_with_lost_reply(&fx, harness, "S-1");
             assert_eq!(fx.intents(), 1);
             assert_eq!(
                 fx.count("SELECT count(*) FROM seats WHERE id='saved' AND state='resolved'"),
                 1
             );
-            assert!(!fx.context_dir("saved").join("context.json").exists());
-            // The next event in the pane is an ordinary tool call.
-            let tool = fx.hook(harness, PANE, &tool_event(harness, "S-1"));
-            assert!(
-                fx.context_dir("saved").join("context.json").exists(),
-                "{harness}: no context written; stderr={} elapsed={:?}",
-                tool.stderr,
-                tool.elapsed
+            // The committed binding is the recovery: resolved and bound.
+            let open_binding = format!(
+                "SELECT count(*) FROM occupant_bindings WHERE seat_id='saved' AND ended_at IS NULL AND observation_provenance='cooperative_top_level' AND native_session='S-1' AND harness='{harness}'"
             );
+            assert_eq!(fx.count(&open_binding), 1, "{harness}");
+            let decisions =
+                "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'";
+            assert_eq!(fx.count(decisions), 1);
+            // A tool event takes the ordinary path: no continuity request, no
+            // scan of the intent journal, quiet exit.
+            let tool = fx.hook(harness, PANE, &tool_event(harness, "S-1"));
             assert_eq!(tool.code, Some(0), "{harness}: {}", tool.stderr);
+            assert_eq!(fx.intents(), 1, "the intent is untouched");
+            assert_eq!(fx.count(decisions), 1);
+            assert_eq!(fx.count(&open_binding), 1);
+            // The next lifecycle event registers normally against the seat's
+            // current generation and retires the historical context.
+            let start = fx.hook(harness, PANE, &session_start(harness, "S-1", "startup"));
+            assert_eq!(start.code, Some(0), "{harness}: {}", start.stderr);
             assert!(
-                !tool.stderr.contains("no registered execution"),
+                !start.stderr.contains("local context differs"),
                 "{harness}: {}",
-                tool.stderr
+                start.stderr
             );
             let state = fx.context_json("saved");
-            assert_eq!(state["current"]["seat"], "saved");
-            assert_eq!(state["current"]["target"], PANE);
+            assert_eq!(state["current"]["target"], PANE, "{harness}");
             assert_eq!(
                 state["current"]["binding_generation"],
-                fx.count("SELECT generation FROM seats WHERE id='saved'")
+                fx.count("SELECT generation FROM seats WHERE id='saved'"),
+                "{harness}"
             );
-            assert_eq!(
-                fx.count(&format!("SELECT count(*) FROM occupant_bindings WHERE seat_id='saved' AND ended_at IS NULL AND observation_provenance='cooperative_top_level' AND native_session='S-1' AND harness='{harness}'")),
-                1
-            );
-            assert_eq!(fx.intents(), 0, "the replayed intent is finished");
-            assert_eq!(
-                fx.count(
-                    "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'"
-                ),
-                1
-            );
-            // And the pane keeps working: a second tool call is quiet.
-            let quiet = fx.hook(harness, PANE, &tool_event(harness, "S-1"));
-            assert_eq!(quiet.code, Some(0), "{}", quiet.stderr);
-            assert!(
-                !quiet.stderr.contains("no registered execution"),
-                "{}",
-                quiet.stderr
-            );
+            assert_eq!(fx.count(decisions), 1, "{harness}: no second decision");
         }
     }
 
     #[test]
     fn a_different_session_supersedes_a_stale_continuity_intent() {
-        let mut fx = reattaching_fixture("claude", Agent::Session("S-1".into()));
-        // The daemon is unreachable when the first hook decides: the intent stays.
-        fx.stop_daemon();
-        let state_before = fx.db();
-        drop(state_before);
+        let fx = Fixture::start(
+            &[
+                (PANE, Agent::Session("S-9".into())),
+                ("w1:p2", Agent::Missing),
+            ],
+            |db, instance| {
+                saved_seat(db, instance, "saved", "claude", "S-1");
+                saved_seat(db, instance, "fresh", "claude", "S-9");
+            },
+        );
+        fx.wait_reconciled();
+        // A stale intent for S-1 stays in the pane's journal (an earlier hook
+        // gave up while the daemon had not reconciled).
         {
             use herdr_threads::cli::journal::{IntentScope, Journal, SemanticMutation};
             let journal = Journal::open(fx.instance_dir.join("intents")).unwrap();
@@ -3715,59 +3785,133 @@ mod continuity {
                         native_session: herdr_threads::protocol::ids::NativeSessionId::new("S-1"),
                         source: "resume".into(),
                         event_id: Uuid::new_v4().to_string(),
+                        execution: herdr_threads::protocol::ids::ExecutionId::new(
+                            Uuid::new_v4().to_string(),
+                        ),
                     },
                     1,
                 )
                 .unwrap();
         }
-        fx.restart();
-        // A tool event of another session in the pane discards the stale intent unreplayed.
-        let other = fx.hook("claude", PANE, &tool_event("claude", "S-9"));
+        assert_eq!(fx.intents(), 1);
+        // A tool event never reads the journal: the stale intent stays.
+        let tool = fx.hook("claude", PANE, &tool_event("claude", "S-9"));
+        assert_eq!(tool.code, Some(0), "{}", tool.stderr);
+        assert_eq!(fx.intents(), 1);
+        // A top-level resume of another session supersedes it: the S-1 intent
+        // is completed unreplayed and only S-9 reattaches.
+        let other = fx.hook("claude", PANE, &session_start("claude", "S-9", "resume"));
         assert_eq!(other.code, Some(0), "{}", other.stderr);
         assert_eq!(fx.intents(), 0);
         assert_eq!(
             fx.count("SELECT count(*) FROM seats WHERE id='saved' AND state='unresolved'"),
             1
         );
-        assert_eq!(fx.count("SELECT count(*) FROM allocation_decisions"), 0);
+        assert_eq!(
+            fx.count("SELECT count(*) FROM seats WHERE id='fresh' AND state='resolved' AND target_id='w1:p1'"),
+            1
+        );
+        assert_eq!(
+            fx.count(
+                "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'"
+            ),
+            1
+        );
     }
 
     #[test]
     fn daemon_restart_mid_reattachment_replays_idempotently() {
         for harness in HARNESSES {
             let mut fx = reattaching_fixture(harness, Agent::Session("S-1".into()));
-            commit_with_lost_reply(&fx, harness, "S-1");
-            let (seat_generation, decisions) = (
-                fx.count("SELECT generation FROM seats WHERE id='saved'"),
-                fx.count(
-                    "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'",
-                ),
-            );
-            assert_eq!(decisions, 1);
-            // The elected daemon restarts before the hook's next event.
+            let operation = commit_with_lost_reply(&fx, harness, "S-1");
+            let seat_generation = fx.count("SELECT generation FROM seats WHERE id='saved'");
+            let decisions =
+                "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'";
+            assert_eq!(fx.count(decisions), 1);
+            // The elected daemon restarts before the hook's next resume. The
+            // seat is already resolved on the pane, so the hook never reaches
+            // the continuity path; the committed binding is the recovery.
             fx.restart();
-            let tool = fx.hook(harness, PANE, &tool_event(harness, "S-1"));
-            assert_eq!(tool.code, Some(0), "{harness}: {}", tool.stderr);
-            assert!(
-                !tool.stderr.contains("no registered execution"),
-                "{}",
-                tool.stderr
-            );
+            let resumed = fx.hook(harness, PANE, &session_start(harness, "S-1", "resume"));
+            assert_eq!(resumed.code, Some(0), "{harness}: {}", resumed.stderr);
+            assert_eq!(fx.count(decisions), 1, "{harness}");
             let state = fx.context_json("saved");
             assert_eq!(state["current"]["seat"], "saved");
-            // The replay returned the recorded seat (the lifecycle check-in then advanced the binding); no second decision.
             assert!(
                 state["current"]["binding_generation"].as_i64().unwrap() >= seat_generation,
                 "{harness}"
             );
+            // The stale intent of the lost reply is not replayed by the
+            // ordinary path; it is removed only by a resume that reaches the
+            // continuity path or `herdr-threads retry`.
+            assert_eq!(fx.intents(), 1, "{harness}: operation {operation}");
+        }
+    }
+
+    #[test]
+    fn a_resume_after_the_daemon_was_down_reuses_the_pending_intent() {
+        use herdr_threads::cli::journal::{IntentScope, Journal, SemanticMutation};
+        for harness in HARNESSES {
+            let mut fx = reattaching_fixture(harness, Agent::Session("S-1".into()));
+            let decisions =
+                "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'";
+            // An earlier hook gave up with its intent kept (daemon down, or
+            // not yet reconciled): nothing was decided.
+            fx.stop_daemon();
+            let journal = Journal::open(fx.instance_dir.join("intents")).unwrap();
+            let reference = journal
+                .record(
+                    IntentScope::Continuity {
+                        instance: fx.instance.to_string(),
+                        target: HostTargetId::new(PANE),
+                    },
+                    SemanticMutation::ContinuityCheckIn {
+                        target: HostTargetId::new(PANE),
+                        harness: if harness == "codex" {
+                            herdr_threads::protocol::authority::Harness::Codex
+                        } else {
+                            herdr_threads::protocol::authority::Harness::Claude
+                        },
+                        native_session: herdr_threads::protocol::ids::NativeSessionId::new("S-1"),
+                        source: "resume".into(),
+                        event_id: Uuid::new_v4().to_string(),
+                        execution: herdr_threads::protocol::ids::ExecutionId::new(
+                            Uuid::new_v4().to_string(),
+                        ),
+                    },
+                    1,
+                )
+                .unwrap();
+            let execution = journal
+                .load(&reference)
+                .unwrap()
+                .semantic
+                .to_command(reference.operation.clone(), None)
+                .map(|command| match command {
+                    Command::ContinuityCheckIn(request) => request.execution,
+                    _ => unreachable!(),
+                })
+                .unwrap();
+            fx.restart();
+            fx.wait_reconciled();
+            let again = fx.hook(harness, PANE, &session_start(harness, "S-1", "resume"));
+            assert_eq!(again.code, Some(0), "{harness}: {}", again.stderr);
+            // The pending intent was reused under its key and execution: one
+            // decision, the intent finished, the context installed from the reply.
+            assert_eq!(fx.count(decisions), 1, "{harness}");
+            assert_eq!(fx.intents(), 0, "{harness}");
+            let state = fx.context_json("saved");
+            assert_eq!(state["current"]["target"], PANE);
+            assert_eq!(state["current"]["execution"], execution.as_str());
             assert_eq!(
-                fx.count(
-                    "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'"
-                ),
+                state["current"]["binding_generation"],
+                fx.count("SELECT generation FROM seats WHERE id='saved'")
+            );
+            assert_eq!(
+                fx.count(&format!("SELECT count(*) FROM occupant_bindings WHERE seat_id='saved' AND ended_at IS NULL AND execution_id='{}'", execution.as_str())),
                 1,
                 "{harness}"
             );
-            assert_eq!(fx.intents(), 0);
         }
     }
 }
