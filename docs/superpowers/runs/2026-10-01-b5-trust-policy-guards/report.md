@@ -5,7 +5,7 @@ metrics: docs/superpowers/runs/2026-10-01-b5-trust-policy-guards/upstream-feedba
 
 Run state: `run.md` (this directory). Epic `ht-rzi`, branch `trust-model-invariants`, base `main@55512edb`.
 Normative design: `TRUST-POLICY.md`; implementation design: `2026-10-01-b5-trust-policy-guards-design.md`.
-Ledger: `.superpowers/sdd/ht-rzi-plan/progress.md` in the integration worktree.
+Ledger: `ledger/progress.md` (copied from the integration worktree at teardown).
 
 ## Implemented
 
