@@ -26,6 +26,7 @@ struct Plugin {
 impl Plugin {
     fn command(&self) -> Command {
         let mut command = Command::new(BIN);
+        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
         command
             .arg("--state-dir")
             .arg(&self.state)

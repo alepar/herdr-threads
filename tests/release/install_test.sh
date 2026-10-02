@@ -37,6 +37,21 @@ cleanup() {
     if [ "${KEEP:-0}" = 1 ]; then echo "kept $root"; else rm -rf "$root"; fi
 }
 trap cleanup EXIT
+# Fatal signals exit through the EXIT trap, so cleanup runs for them too.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+# SIGKILL runs no trap: a detached watchdog, started once the private server
+# is up, stops it and any daemon from this root once this script is gone.
+start_watchdog() {
+    local owner=$$ server=$server_pid
+    (
+        trap '' HUP INT TERM
+        while kill -0 "$owner" 2>/dev/null; do sleep 1; done
+        if [ -n "$server" ]; then kill -9 "$server" 2>/dev/null || true; fi
+        pkill -9 -f "daemon run --state-dir $root/" 2>/dev/null || true
+    ) < /dev/null > /dev/null 2>&1 &
+}
 
 checks=0
 pass() { checks=$((checks + 1)); printf 'ok %d - %s\n' "$checks" "$1"; }
@@ -143,12 +158,14 @@ not_registered() { ! registered; }
 daemons() { pgrep -f "daemon run --state-dir $root/" 2>/dev/null | wc -l | tr -d ' '; }
 
 if [ -n "$real_herdr" ]; then
-    (cd "$root" && "${run_env[@]}" "$real_herdr" server > "$root/server.log" 2>&1 < /dev/null) &
+    # exec: $! is then the server itself, so cleanup and the watchdog stop it.
+    (cd "$root" && exec "${run_env[@]}" "$real_herdr" server > "$root/server.log" 2>&1 < /dev/null) &
     server_pid=$!
     for _ in $(seq 100); do [ -S "$root/h.sock" ] && grep -q "api socket" "$root/server.log" && break; sleep 0.1; done
     grep -qF "api socket: $root/h.sock" "$root/server.log" || fail "private Herdr server did not start" "$(cat "$root/server.log")"
     pass "private Herdr server owns $root/h.sock"
 fi
+start_watchdog
 
 # --- 1. pinned install ------------------------------------------------------
 install --version v0.1.0

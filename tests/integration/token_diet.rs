@@ -20,6 +20,7 @@ impl Plugin {
         // The plugin environment an agent's pane provides, so continuation
         // commands carry no explicit selectors (as in a real pane).
         let mut command = Command::new(BIN);
+        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
         command
             .env("HERDR_PLUGIN_STATE_DIR", &self.state)
             .env("HERDR_SOCKET_PATH", &self.host)

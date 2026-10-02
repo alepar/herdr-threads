@@ -54,6 +54,7 @@ fn run_in_pane(
     cwd: Option<&Path>,
 ) -> Output {
     let mut command = Command::new(BIN);
+    command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
     command
         .arg("--state-dir")
         .arg(state)
@@ -78,6 +79,7 @@ fn run_in_pane(
 /// it, so its harness observation sees only what `path` holds).
 fn run_with_path(state: &Path, host: &Path, args: &[&str], path: &Path) -> Output {
     let mut command = Command::new(BIN);
+    command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
     command
         .arg("--state-dir")
         .arg(state)
@@ -146,6 +148,7 @@ fn help_and_version_exit_zero_with_plain_stdout() {
     assert!(!stdout.contains("ApiError"), "{stdout}");
 
     let sub = Command::new(BIN)
+        .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
         .args(["daemon", "--help"])
         .output()
         .unwrap();
@@ -213,6 +216,7 @@ fn errors_are_human_readable_with_stable_exit_statuses() {
 /// the scratch HOME can name the instance.
 fn plain_shell(root: &Path) -> Command {
     let mut command = Command::new(BIN);
+    command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
     command
         .current_dir(root)
         .env("HOME", root.join("home"))
@@ -603,6 +607,7 @@ fn doctor_reports_codex_schema_matched_admission() {
     ] {
         let bin = codex_on_path(&scratch.0, label, version, tail);
         let output = Command::new(BIN)
+            .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
             .arg("--state-dir")
             .arg(&state)
             .arg("--host-endpoint")
@@ -645,6 +650,7 @@ fn doctor_reports_codex_schema_matched_admission() {
     }
     let bin = codex_on_path(&scratch.0, "text", "0.160.0", &schemas);
     let output = Command::new(BIN)
+        .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
         .arg("--state-dir")
         .arg(&state)
         .arg("--host-endpoint")
@@ -781,6 +787,7 @@ fn unsafe_state_root_is_invalid_local_context_for_ensure_and_doctor() {
 fn bare_invocation_prints_usage_with_status_two() {
     let scratch = Scratch::new();
     let output = Command::new(BIN)
+        .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
         .current_dir(&scratch.0)
         .env_remove("HERDR_PLUGIN_STATE_DIR")
         .env_remove("HERDR_SOCKET_PATH")
@@ -1031,6 +1038,7 @@ fn setup_codex_sandbox_allowance_names_the_stable_daemon_socket() {
     let codex_home = scratch.0.join("codex-home");
     let setup = || {
         let mut command = Command::new(BIN);
+        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
         command
             .arg("--state-dir")
             .arg(&state)
@@ -1135,6 +1143,7 @@ fn setup_codex_sandbox_allowance_names_the_stable_daemon_socket() {
     herdr_threads::harness::codex_config::install(&config_path, &manifest, &socket, &[]).unwrap();
     let status = |verb: &str| {
         let mut command = Command::new(BIN);
+        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
         command
             .arg("--state-dir")
             .arg(&state)
@@ -1157,6 +1166,7 @@ fn setup_codex_sandbox_allowance_names_the_stable_daemon_socket() {
         "{old}"
     );
     let mut command = Command::new(BIN);
+    command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
     command
         .arg("--state-dir")
         .arg(&state)
@@ -1196,6 +1206,7 @@ fn setup_codex_sandbox_allowance_names_the_stable_daemon_socket() {
     // Without a known (or detectable) host endpoint nothing is guessed:
     // setup refuses (status 2) and writes nothing more.
     let mut command = Command::new(BIN);
+    command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
     command
         .arg("--state-dir")
         .arg(&state)
@@ -1235,6 +1246,7 @@ fn setup_codex_withholds_sandbox_allowance_on_unmeasured_versions() {
         let codex = bin.join("codex").display().to_string();
         let setup = |verb: &str| {
             let mut command = Command::new(BIN);
+            command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
             command
                 .arg("--state-dir")
                 .arg(&state)
@@ -1308,6 +1320,7 @@ fn codex_allowance_on_an_unmeasured_version_warns_in_setup_status_and_doctor() {
     let upgraded = codex_on_path(&scratch.0, "upgraded", "0.160.0", &schemas);
     let invoke = |bin: &Path, args: &[&str]| {
         let mut command = Command::new(BIN);
+        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
         command
             .arg("--state-dir")
             .arg(&state)
@@ -1439,5 +1452,107 @@ fn codex_allowance_on_an_unmeasured_version_warns_in_setup_status_and_doctor() {
     assert!(
         after["hooks"]["codex"]["sandbox_warning"].is_null(),
         "{after}"
+    );
+}
+
+/// Pids of `daemon run` processes serving `state`.
+fn daemon_pids(state: &Path) -> Vec<u32> {
+    let needle = format!("daemon run --state-dir {} ", state.display());
+    let ps = Command::new("/bin/ps")
+        .args(["-axo", "pid=,command="])
+        .output()
+        .unwrap();
+    text(&ps.stdout)
+        .lines()
+        .filter(|line| line.contains(&needle))
+        .filter_map(|line| line.split_whitespace().next()?.parse().ok())
+        .collect()
+}
+
+/// Waits up to `limit` for no daemon to serve `state`.
+fn daemons_gone_within(state: &Path, limit: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        if daemon_pids(state).is_empty() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// A daemon started for a test exits once its owning test process dies, even
+/// when the owner is SIGKILLed and no guard or Drop runs (ht-6y1). The owner
+/// is a stand-in process named by the test-owner variable, killed abruptly.
+/// Kills: dropping the owner watch from `daemon run`, or `daemon ensure`'s
+/// detached spawn not inheriting the variable.
+#[cfg(feature = "test-support")]
+#[test]
+fn daemon_exits_when_its_killed_test_owner_is_gone() {
+    use herdr_threads::daemon::lifecycle::TEST_OWNER_PID_ENV as OWNER_PID_ENV;
+    use std::time::Duration;
+    let scratch = Scratch::new();
+    let state = scratch.0.join("state");
+    let host = scratch.0.join("host.sock");
+    // Backstop only: the assertion below is what proves the owner watch.
+    let _guard = DaemonGuard {
+        state: state.clone(),
+        host: host.clone(),
+    };
+    let mut owner = Command::new("/bin/sleep").arg("600").spawn().unwrap();
+    let mut command = Command::new(BIN);
+    command
+        .arg("--state-dir")
+        .arg(&state)
+        .arg("--host-endpoint")
+        .arg(&host)
+        .args(["daemon", "ensure"])
+        .env_remove("HERDR_PLUGIN_STATE_DIR")
+        .env_remove("HERDR_SOCKET_PATH")
+        .env_remove("HERDR_PANE_ID")
+        .env_remove("HERDR_BIN_PATH")
+        .env(OWNER_PID_ENV, owner.id().to_string());
+    scratch_homes(&mut command, &state);
+    let ensure = command.output().unwrap();
+    assert_eq!(ensure.status.code(), Some(0), "{}", text(&ensure.stderr));
+    assert_eq!(daemon_pids(&state).len(), 1, "one detached daemon runs");
+    // While the owner lives, the daemon keeps running.
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(daemon_pids(&state).len(), 1, "daemon outlives a live owner");
+
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    assert!(
+        daemons_gone_within(&state, Duration::from_secs(5)),
+        "daemon {:?} outlived its killed owner",
+        daemon_pids(&state)
+    );
+}
+
+/// A panic inside a test still stops the daemon it started: the guard's Drop
+/// runs on unwind. Kills: a guard that does not stop the daemon on drop.
+#[test]
+fn daemon_guard_stops_the_daemon_on_panic_unwind() {
+    let scratch = Scratch::new();
+    let state = scratch.0.join("state");
+    let host = scratch.0.join("host.sock");
+    let (state_in, host_in) = (state.clone(), host.clone());
+    let unwound = std::panic::catch_unwind(move || {
+        let _guard = DaemonGuard {
+            state: state_in.clone(),
+            host: host_in.clone(),
+        };
+        let ensure = run(&state_in, &host_in, &["daemon", "ensure"], None);
+        assert_eq!(ensure.status.code(), Some(0), "{}", text(&ensure.stderr));
+        assert_eq!(daemon_pids(&state_in).len(), 1);
+        panic!("simulated test failure");
+    });
+    assert!(unwound.is_err());
+    assert!(
+        daemons_gone_within(&state, std::time::Duration::from_secs(5)),
+        "daemon {:?} outlived the panicking test",
+        daemon_pids(&state)
     );
 }

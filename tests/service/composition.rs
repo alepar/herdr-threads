@@ -166,6 +166,7 @@ fn daemon_rejects_invalid_instance_settings_before_endpoint_publication() {
     fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).unwrap();
     let mut child = TestChild(
         std::process::Command::new(env!("CARGO_BIN_EXE_herdr-threads"))
+            .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
             .args([
                 "daemon",
                 "run",
@@ -734,6 +735,7 @@ fn elected_service_fixture(custom_settings: bool) {
     }
     let mut child = TestChild(
         std::process::Command::new(env!("CARGO_BIN_EXE_herdr-threads"))
+            .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
             .args([
                 "daemon",
                 "run",
@@ -1082,6 +1084,7 @@ fn elected_service_fixture(custom_settings: bool) {
     );
     assert_eq!(output["result"]["data"]["state"], "degraded");
     let binary = std::process::Command::new(env!("CARGO_BIN_EXE_herdr-threads"))
+        .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
         .args([
             "--json",
             "--state-dir",

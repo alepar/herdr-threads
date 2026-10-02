@@ -295,6 +295,7 @@ impl World {
         env: &[(&str, &str)],
     ) -> Output {
         let mut command = Command::new(BIN);
+        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
         command
             .arg("--json")
             .arg("--state-dir")
@@ -390,6 +391,7 @@ impl World {
             &self.claude_hook
         };
         let mut child = Command::new("/bin/sh")
+            .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
             .arg("-c")
             .arg(command)
             .env("HERDR_ENV", "1")
