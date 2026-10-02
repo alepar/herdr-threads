@@ -903,6 +903,10 @@ fn check_in(
         .ok_or_else(|| Failure::Unavailable("daemon namespace unavailable".into()))?;
     let descriptor = read_descriptor(&paths, instance)
         .map_err(|e| Failure::Unavailable(format!("daemon endpoint: {:?}", e.kind())))?;
+    // Under version skew the daemon would drop this request at decode and the
+    // hook would wait out its whole budget; fail fast like every CLI client.
+    crate::daemon::lifecycle::check_protocol(&descriptor)
+        .map_err(|error| api_failure("daemon protocol", &error))?;
     let client = LocalSocketClient::new(
         descriptor.endpoint,
         Arc::clone(&clock),

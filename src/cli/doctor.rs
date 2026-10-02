@@ -72,8 +72,8 @@ fn probe_daemon(paths: &InstancePaths) -> Result<Daemon, String> {
     };
     if descriptor.protocol_version != PROTOCOL_VERSION {
         return Ok(Daemon::Unreachable(format!(
-            "daemon protocol {} differs from executable protocol {PROTOCOL_VERSION}; run `daemon stop` with the older executable, then `daemon ensure`",
-            descriptor.protocol_version
+            "daemon protocol {} differs from executable protocol {PROTOCOL_VERSION}; run `daemon stop` with the older executable (if it is gone, stop the daemon process, pid {}, by hand), then `daemon ensure`",
+            descriptor.protocol_version, descriptor.pid
         )));
     }
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());

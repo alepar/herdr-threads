@@ -9,12 +9,14 @@
 #   1. detects the OS (macOS, Linux) and architecture (aarch64, x86_64);
 #   2. downloads herdr-threads-OS-ARCH.tar.gz and SHA256SUMS from the release
 #      (latest, or --version) and verifies the checksum;
-#   3. installs the package into ~/.local/share/herdr-threads (replaced
+#   3. on an upgrade, stops the running daemon with the still-installed old
+#      executable (Herdr's stop action) and warns with its pid if it cannot;
+#      installs the package into ~/.local/share/herdr-threads (replaced
 #      atomically; an identical install is left alone) and links
 #      ~/.local/bin/herdr-threads to its executable;
 #   4. registers the package with Herdr (`herdr plugin link`; Herdr does not
 #      build a linked plugin, and the package's build command keeps the
-#      prebuilt binary), and on an upgrade restarts the daemon if Herdr runs;
+#      prebuilt binary), and ensures the daemon if Herdr runs;
 #   5. optionally runs `herdr-threads setup` (every detected harness)
 #      (claude, codex): asks on a terminal, or --setup / --no-setup;
 #   6. prints next steps.
@@ -168,6 +170,24 @@ bare_setup() {
     "$installed_binary" setup --help 2>/dev/null | grep -qi 'sets up every detected harness'
 }
 
+# PIDs of live herdr-threads daemons published under Herdr's default plugin
+# state directory (the `pid` in each instance's endpoint.json), one per line.
+# Best effort: a daemon run with another --state-dir is not found.
+daemon_pids() {
+    local state descriptor pid
+    for state in "${XDG_STATE_HOME:-$HOME/.local/state}/herdr/plugins/$PLUGIN_ID" \
+        "$HOME/.local/state/herdr/plugins/$PLUGIN_ID"; do
+        for descriptor in "$state"/instances/*/endpoint.json; do
+            [ -f "$descriptor" ] || continue
+            pid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$descriptor" 2>/dev/null | head -n 1)
+            [ -n "$pid" ] || continue
+            kill -0 "$pid" 2>/dev/null || continue
+            ps -p "$pid" -o command= 2>/dev/null | grep -qF herdr-threads || continue
+            printf '%s\n' "$pid"
+        done
+    done | sort -u
+}
+
 can_prompt() {
     # Under `curl | bash` stdin is the script, so ask on /dev/tty, but only
     # when output goes to a terminal too (a person is watching).
@@ -306,6 +326,31 @@ if [ -e "$install_dir" ]; then
     fi
 fi
 
+# --- stop the old daemon (upgrade) -------------------------------------------
+# Before the files are replaced, stop the running daemon with the executable
+# that is still installed: a newer executable never takes over an older
+# daemon, and across a wire-protocol change it cannot even stop it (the old
+# daemon cannot decode its request). Herdr runs the `stop` action from the
+# registered plugin root, which still holds the old package here.
+old_stopped=0
+if [ "$changed" = 1 ] && [ -n "$previous_version" ] && [ -x "$installed_binary" ]; then
+    if [ "$register" = 1 ] && [ "$(registered_root)" = "local:$install_dir" ] && server_running; then
+        if herdr_action stop; then
+            old_stopped=1
+            say "stopped the running daemon with the installed $previous_version executable"
+        fi
+    fi
+    if [ "$old_stopped" = 0 ]; then
+        old_pids=$(daemon_pids | tr '\n' ' ')
+        old_pids=${old_pids% }
+        if [ -n "$old_pids" ]; then
+            warn "could not stop the running daemon (pid $old_pids, from its endpoint.json) with the installed $previous_version executable"
+            warn "if the new version cannot take it over (\`herdr-threads doctor\` reports a version or protocol mismatch),"
+            warn "stop it by hand: kill $old_pids, then herdr plugin action invoke ensure --plugin $PLUGIN_ID"
+        fi
+    fi
+fi
+
 if [ "$changed" = 1 ]; then
     mkdir -p "$(dirname "$install_dir")"
     rm -rf "$install_dir.new" "$install_dir.old"
@@ -375,8 +420,11 @@ else
         fi
     fi
     if [ "$registered" = 1 ] && server_running; then
-        if [ "$changed" = 1 ] && [ -n "$previous_version" ]; then
-            # A newer executable never takes over an older running daemon.
+        if [ "$changed" = 1 ] && [ -n "$previous_version" ] && [ "$old_stopped" = 0 ]; then
+            # The old executable did not stop the daemon (warned above if
+            # one is still running). Within one wire protocol the new
+            # executable can stop it; across a protocol change it cannot,
+            # and ensure below then reports the mismatch.
             herdr_action stop || true
         fi
         if herdr_action ensure; then
@@ -384,6 +432,12 @@ else
             say "daemon is running (Herdr action ensure)"
         else
             warn "the ensure action failed; run \`herdr plugin action invoke doctor --plugin $PLUGIN_ID\`"
+            old_pids=$(daemon_pids | tr '\n' ' ')
+            old_pids=${old_pids% }
+            if [ -n "$old_pids" ] && [ -n "$previous_version" ] && [ "$changed" = 1 ]; then
+                warn "a daemon is still running (pid $old_pids, from its endpoint.json); if doctor reports a version or protocol mismatch,"
+                warn "stop it by hand: kill $old_pids, then herdr plugin action invoke ensure --plugin $PLUGIN_ID"
+            fi
         fi
     elif [ "$registered" = 1 ]; then
         say "Herdr server is not running; the daemon starts with the next Herdr server start"
