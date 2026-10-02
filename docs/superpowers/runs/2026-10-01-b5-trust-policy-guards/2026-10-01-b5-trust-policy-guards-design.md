@@ -93,3 +93,12 @@ Non-goals:
 The B4 run (`.worktrees/remaining-herdr-threads-findings`) edits `src/ports.rs`, `src/store/seats.rs`,
 `src/identity/reconcile.rs` and adds a migration. Whichever branch lands on `main` second resolves the
 conflicts; this run does not wait on it.
+
+## Post-Implementation Notes
+
+**Changes vs. original design (2026-10-01).**
+- Decision 3 (C1): continuity is decided in one transaction that also opens the successor binding (code roast round 1 redesign); the lost-reply per-event intent scan was removed. Before the first reconciliation pass of a recovery epoch, "no matching unresolved seat" is retryable.
+- Decision 6 (C4): carry-forward also writes the availability anchor and receipt timers, and a send before the first pass treats a structurally continuous seat as pending carry rather than unavailable.
+- A2: the wire protocol was bumped to version 2 with a client-side check.
+- A4 client rule: a 3-variable agent-marker allowlist (not any `CODEX_*`); `--operator` is honored after the daemon accepts.
+- Open follow-ups (parked beads): `ht-kqz` (reused continuity intent replays a stale reattachment), `ht-p63` (same-pane-id resume while the daemon keeps running is untested), `ht-6ry` (install.sh stops the old daemon after the binary swap), `ht-4rt` (small follow-ups), `ht-6y1` (test-daemon leak).
