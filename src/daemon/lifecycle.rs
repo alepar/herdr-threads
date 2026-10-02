@@ -94,6 +94,17 @@ impl<S: DiagnosticSink> Drop for OwnerSession<S> {
 
 const ENSURE_WAIT: Duration = Duration::from_secs(5);
 
+/// Names the pid of the test process that owns any daemon started under it.
+/// Inherited through `daemon ensure`'s detached spawn; honored only by
+/// `test-support` builds (see `test_support::owner_watch`), ignored otherwise.
+pub const TEST_OWNER_PID_ENV: &str = "HERDR_THREADS_TEST_OWNER_PID";
+
+/// `(TEST_OWNER_PID_ENV, <this process id>)`, for tests to pass with
+/// `Command::envs([test_owner_env()])` on anything that may start a daemon.
+pub fn test_owner_env() -> (&'static str, String) {
+    (TEST_OWNER_PID_ENV, std::process::id().to_string())
+}
+
 fn record_owner_error<S: DiagnosticSink>(owner: &mut OwnerSession<S>, error: &io::Error) {
     let detail = format!("daemon owner error: {error}\n");
     let _ = owner.emit(DiagnosticSource::Daemon, detail.as_bytes());

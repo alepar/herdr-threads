@@ -63,6 +63,7 @@ fn elected_health_sees_late_retirement_and_keeps_exact_error_on_seat_inspect() {
 
     let child = TestChild(
         std::process::Command::new(env!("CARGO_BIN_EXE_herdr-threads"))
+            .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
             .args([
                 "daemon",
                 "run",

@@ -83,6 +83,7 @@ impl Scratch {
     /// or in the environment (detection uses the fake `herdr`, if any).
     fn command(&self, cwd: &Path) -> Command {
         let mut command = Command::new(BIN);
+        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
         command
             .current_dir(cwd)
             .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
@@ -817,6 +818,7 @@ fn codex_setup_refuses_a_hook_command_a_config_layer_already_runs() {
 fn setup_help_documents_scope_and_exit_statuses() {
     for command in ["setup", "unsetup", "setup-status"] {
         let help = Command::new(BIN)
+            .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
             .args([command, "--help"])
             .output()
             .unwrap();

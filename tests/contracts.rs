@@ -1268,6 +1268,7 @@ fn production_entry_rejects_missing_command_without_creating_state() {
     let temp = std::env::temp_dir().join(format!("herdr-threads-contract-{}", std::process::id()));
     std::fs::create_dir_all(&temp).unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_herdr-threads"))
+        .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
         .current_dir(&temp)
         .output()
         .unwrap();
