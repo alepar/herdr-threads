@@ -81,6 +81,7 @@ impl ResolutionHost {
     fn observation(&self, sequence: u64) -> HostObservation {
         let at = self.clock.monotonic_now();
         HostObservation {
+            focused: false,
             target: HostTargetId::new("pane"),
             host_boot: HostBootId::new("host"),
             epoch: 1,
@@ -2614,6 +2615,7 @@ impl LaunchHost {
     fn observation(&self) -> HostObservation {
         let sequence = self.sequence.fetch_add(1, Ordering::SeqCst);
         HostObservation {
+            focused: false,
             target: HostTargetId::new("pane"),
             host_boot: HostBootId::new("host"),
             epoch: 1,

@@ -1,0 +1,80 @@
+ │       {
+ │         "type": "blocker",
+ │         "ref": "ht-72",
+ │         "description": "Flaky fixture in tests/export_roundtrip blocking test seat"
+ │       },
+ │       {
+ │         "type": "commitment",
+ │         "actor": "build_seat",
+ │         "type": "commitment",
+ │         "actor": "build_seat",
+ │         "detail": "Build seat owns the cache layer rollback runbook, located at docs/runbooks/cache-rollback.md.
+ │ This clarifies operational responsibility for emergency procedures."
+ │       },
+ │       {
+ │         "id": 37,
+ │         "title": "Release 7 Deployment Approach",
+ │         "detail": "Release 7 ships behind the rollout-7 flag, enabled progressively by region starting with eu-west.
+ │ This provides controlled blast radius and rollback capability."
+ │       }
+ │     ],
+ │     "open_commitments": [
+ │       {
+ │         "id": 32,
+ │         "assigned_to": "Build seat",
+ │         "commitment": "Quarantine export_roundtrip test for rc-7.1 only (reopen for rc-7.2) and commit IDs to
+ │ thread",
+ │         "status": "pending",
+ │         "ticket": "ht-72"
+ │       }
+ │     ],
+ │     "pending_asks": [
+ │       {
+ │         "id": 38,
+ │         "assigned_to": "Build seat",
+ │         "ask": "Produce release candidate rc-7.1 from commit 9f3a2c1 and publish its checksum in thread"
+ │       }
+ │     ],
+ │       }
+ │     ],
+ │       }
+ │     ],
+ │         "sequence": 25,
+ │         "actor": "build-seat",
+ │         "content": "Build seat commits to the quarantine of export_roundtrip within the hour and will cite commit
+ │ ids"
+ │       }
+ │     ],
+ │     "questions_answered": [
+ │       {
+ │         "id": "question-22",
+ │         "sequence": 27,
+ │         "question": "Who owns the rollback runbook for the cache layer, and where does it live (ht-73)?",
+ │         "answer": "Build seat owns it; docs/runbooks/cache-rollback.md"
+ │       }
+ │     ],
+ │     "notes": [
+ │       {
+ │         "id": "note-24",
+ │         "sequence": 29,
+ │         "content": "Dashboard for rollout-7 shows error rate per region; alert threshold stays at 2 percent"
+ │       }
+ │     ],
+ │     "status_metrics": {
+ │       "earliest_queue_depth": 233,
+ │       "latest_queue_depth": 275,
+ │       "earliest_latency_p95_ms": 59,
+ │       "latest_latency_p95_ms": 65
+ │     }
+ │   }
+ │ }
+ │ EOF
+ │
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Contains brace with quote character (expansion obfuscation)
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend

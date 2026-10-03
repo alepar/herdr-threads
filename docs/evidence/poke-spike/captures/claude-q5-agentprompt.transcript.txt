@@ -1,0 +1,11 @@
+2026-10-02T19:16:33.558Z USER Run three Bash tool calls one after another, each in the foreground and never in the background: sleep 15 then echo one; sleep 15 then echo 
+2026-10-02T19:16:38.630Z ASSISTANT tool_use Bash {"command": "sleep 15; echo one", "description": "Sleep 15 seconds then echo one"}
+2026-10-02T19:16:47.971Z QUEUE enqueue POKE-TEST-claude-B
+2026-10-02T19:16:53.698Z QUEUE remove POKE-TEST-claude-B
+2026-10-02T19:16:53.694Z TOOL_RESULT one
+2026-10-02T19:16:47.971Z ATTACH queued_command POKE-TEST-claude-B | {'source_uuid': '875b88f6-cb13-4184-b1fd-01cf19145813', 'delivery_id': '0cf19e85-917d-4fe1-8461-b3c8
+2026-10-02T19:16:55.332Z ASSISTANT tool_use Bash {"command": "sleep 15; echo two", "description": "Sleep 15 seconds then echo two"}
+2026-10-02T19:17:10.405Z TOOL_RESULT two
+2026-10-02T19:17:11.556Z ASSISTANT tool_use Bash {"command": "sleep 15; echo three", "description": "Sleep 15 seconds then echo three"}
+2026-10-02T19:17:26.621Z TOOL_RESULT three
+2026-10-02T19:17:27.811Z ASSISTANT text done (Also received: POKE-TEST-claude-B)

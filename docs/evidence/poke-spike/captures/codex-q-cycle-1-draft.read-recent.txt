@@ -1,0 +1,80 @@
+
+  Worked for 40s • 12:23
+
+
+› say ok again
+
+
+• ok
+
+  Worked for <1s • 12:24
+
+
+› TOOLS run three steps
+
+
+• Ran sleep 15; echo step1
+  └ step1
+
+
+› POKE-TEST-codex-B
+
+
+• Ran sleep 15; echo step2
+  └ step2
+
+• Ran sleep 15; echo step3
+  └ step3
+
+• ok
+
+  Worked for 47s • 12:25
+
+
+› TOOLS second run
+
+
+• Ran sleep 15; echo step1
+  └ step1
+
+
+› POKE-TEST-codex-C
+
+
+• Ran sleep 15; echo step2
+  └ step2
+
+• Ran sleep 15; echo step3
+  └ step3
+
+• ok
+
+  Worked for 47s • 12:26
+
+
+› TOOLS third run
+
+
+• Ran sleep 15; echo step1
+  └ step1
+
+
+› DRAFT-TEXT-xyzPOKE-TEST-codex-D
+
+
+• Ran sleep 15; echo step2
+  └ step2
+
+• Ran sleep 15; echo step3
+  └ step3
+
+• ok
+
+  Worked for 46s • 12:27
+
+
+› draft line A
+  draft line B
+
+  mockmodel medium · Context 0% used · /private/tmp/ht-poke-spike/codex
+                                                      ⚠ 1 warning · f2 to view

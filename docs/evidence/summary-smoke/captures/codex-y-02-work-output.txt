@@ -1,0 +1,32 @@
+--- 2026-10-03T00:33:43.746Z tool output: Script completed
+Wall time 0.2 seconds
+Output:
+
+summary thread-DWKSdAn7 frontier #193: work (7 jobs)
+job sj-ca50c578-35c7-412d-891d-cee5b1e2ae5f L0 #123-#132 lease until 00:34Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-ca50c578-35c7-412d-891d-cee5b1e2ae5f --lease c2439d83-f229-446e-937a-75760edbc73c
+  submit: herdr-threads summary submit sj-ca50c578-35c7-412d-891d-cee5b1e2ae5f --lease c2439d83-f229-446e-937a-75760edbc73c < submission.json
+job sj-1dda12fd-1920-4575-9979-5ecf76db6b23 L0 #133-#139 lease until 00:34Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-1dda12fd-1920-4575-9979-5ecf76db6b23 --lease 15f1f5c2-f7ce-47cd-a70c-52b6a8c3743a
+  submit: herdr-threads summary submit sj-1dda12fd-1920-4575-9979-5ecf76db6b23 --lease 15f1f5c2-f7ce-47cd-a70c-52b6a8c3743a < submission.json
+job sj-82651d96-ce46-4daa-8d5a-0fe1d530703b L0 #140-#150 lease until 00:34Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-82651d96-ce46-4daa-8d5a-0fe1d530703b --lease 5b9ae0c5-e8bb-4a89-8a87-8a9ed79e277b
+  submit: herdr-threads summary submit sj-82651d96-ce46-4daa-8d5a-0fe1d530703b --lease 5b9ae0c5-e8bb-4a89-8a87-8a9ed79e277b < submission.json
+job sj-50b548bd-91fb-453a-8f0b-4805341812fa L0 #151-#161 lease until 00:34Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-50b548bd-91fb-453a-8f0b-4805341812fa --lease 16a61405-69d5-461a-9aec-85863734f353
+  submit: herdr-threads summary submit sj-50b548bd-91fb-453a-8f0b-4805341812fa --lease 16a61405-69d5-461a-9aec-85863734f353 < submission.json
+job sj-060fcf5b-f5e7-416b-bcc2-71d8d52e8a4f L0 #162-#168 lease until 00:34Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-060fcf5b-f5e7-416b-bcc2-71d8d52e8a4f --lease 5a639a12-67c6-4aaa-a959-d1c3efce58c3
+  submit: herdr-threads summary submit sj-060fcf5b-f5e7-416b-bcc2-71d8d52e8a4f --lease 5a639a12-67c6-4aaa-a959-d1c3efce58c3 < submission.json
+job sj-b1323ccb-0952-4ce6-b6c2-eaa40f21c437 L0 #169-#178 lease until 00:34Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-b1323ccb-0952-4ce6-b6c2-eaa40f21c437 --lease 3f89ca36-84ac-46a7-a7c3-805a9f3e104c
+  submit: herdr-threads summary submit sj-b1323ccb-0952-4ce6-b6c2-eaa40f21c437 --lease 3f89ca36-84ac-46a7-a7c3-805a9f3e104c < submission.json
+job sj-9337dd5e-aa44-4d59-9591-fe12b1d1dab5 L0 #179-#187 lease until 00:34Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-9337dd5e-aa44-4d59-9591-fe12b1d1dab5 --lease 4658dd5d-093e-488c-a9f3-84bb7df487f7
+  submit: herdr-threads summary submit sj-9337dd5e-aa44-4d59-9591-fe12b1d1dab5 --lease 4658dd5d-093e-488c-a9f3-84bb7df487f7 < submission.json
+then: herdr-threads summary thread-DWKSdAn7
+
+
+--- 2026-10-03T00:33:44.507Z message[assistant]: summary thread-DWKSdAn7 frontier #193: work (7 jobs)
+
+--- 2026-10-03T00:33:44.510Z event task_complete: {"type": "task_complete", "turn_id": "01a0ff2e-5766-7c03-8322-144cc784ebf5", "last_agent_message": "summary thread-DWKSdAn7 frontier #193: work (7 jobs)", "started_at": 1790987622, "completed_at": 1790987624, "duration_ms": 2260, "time_to_first_token_ms": 1002}

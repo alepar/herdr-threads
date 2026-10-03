@@ -31,7 +31,7 @@ fn unknown_claude_version_refusal_names_recipes_and_health_stays_unsupported() {
     let message = claude::check_version("2.1.282").unwrap_err();
     assert!(message.contains("claude 2.1.282"), "{message}");
     assert!(
-        message.contains("claude-hooks-2.1.283 [2.1.283, 2.1.287]"),
+        message.contains("claude-hooks-2.1.283 [2.1.283, 2.1.286]"),
         "{message}"
     );
     assert!(
@@ -42,7 +42,11 @@ fn unknown_claude_version_refusal_names_recipes_and_health_stays_unsupported() {
     assert_eq!(claude::check_version("2.1.284"), Ok(&claude::RECIPES[0]));
     assert_eq!(claude::check_version("2.1.285"), Ok(&claude::RECIPES[0]));
     assert_eq!(claude::check_version("2.1.286"), Ok(&claude::RECIPES[0]));
-    assert_eq!(claude::check_version("2.1.287"), Ok(&claude::RECIPES[0]));
+    assert_eq!(claude::check_version("2.1.287"), Ok(&claude::RECIPES[1]));
+    assert!(
+        message.contains("claude-hooks-2.1.287 {2.1.287}"),
+        "{message}"
+    );
     assert_eq!(
         claude::health_capability(),
         crate::protocol::results::CapabilityState::Unsupported
@@ -62,7 +66,7 @@ fn production_claude_entries_refuse_unknown_versions_with_the_recipe_message() {
         let refused = claude::check_version(version).unwrap_err();
         assert!(refused.contains(needle), "{refused}");
         assert!(
-            refused.contains("supported recipes: claude-hooks-2.1.283 [2.1.283, 2.1.287]"),
+            refused.contains("supported recipes: claude-hooks-2.1.283 [2.1.283, 2.1.286]"),
             "{refused}"
         );
         let expected = Err(ContextError::UnsupportedVersion(refused));
@@ -134,7 +138,8 @@ fn pinned_claude_lifecycle_and_child_shapes_are_normalized() {
     for bytes in [br#"{"hook_event_name":"SessionStart","source":"compact","session_id":"s"}"#.as_slice(), br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"t","session_id":"s","agent_type":"worker"}"#, br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"t","session_id":"s","agent_id":null}"#, br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"t","session_id":"s","agent_id":"child"}"#] {
         assert!(claude::parse_versioned_event(bytes, "2.1.283", "external").is_err());
     }
-    // 2.1.284 through 2.1.286 are admitted by capture evidence; the next release is not.
+    // 2.1.284 through 2.1.286 (and 2.1.287 under its own recipe) are admitted by
+    // capture evidence; the release before 2.1.283 is not.
     assert!(
         claude::parse_versioned_event(
             br#"{"hook_event_name":"SessionStart","source":"startup","session_id":"s"}"#,
@@ -161,28 +166,65 @@ fn pinned_claude_lifecycle_and_child_shapes_are_normalized() {
     assert_eq!(accepted.role, Role::TopLevel);
 }
 
-// Kills: dropping 2.1.287 (or 2.1.283) from the recipe (shrinking the
-// interval, e.g. leaving max at 2.1.286), widening the interval to 2.1.282 or
-// 2.1.288 (listing them), and widening the listed set to a prefix/pattern
-// (e.g. any 2.1.28x or 2.1.x) or non-canonical text. Versions newer than the
-// verified max are not listed but are admitted optimistically (ladder row 6a).
+// Kills: dropping 2.1.286 (or 2.1.283) from the interval recipe (shrinking
+// the interval, e.g. leaving max at 2.1.285), widening the interval to 2.1.282
+// or 2.1.287, folding 2.1.287 into the interval recipe (compact would then be
+// claimed for versions with no compact evidence), listing 2.1.288, and
+// widening the listed set to a prefix/pattern (e.g. any 2.1.28x or 2.1.x) or
+// non-canonical text. Versions newer than the verified max are not listed but
+// are admitted optimistically (ladder row 6a) under the 2.1.287 recipe.
 #[test]
 fn claude_version_gate_is_the_exact_evidence_backed_set() {
-    assert_eq!(claude::RECIPES.len(), 1);
+    assert_eq!(claude::RECIPES.len(), 2);
     let recipe = &claude::RECIPES[0];
+    let recipe_287 = &claude::RECIPES[1];
+    assert_eq!(recipe_287.id, "claude-hooks-2.1.287");
+    const V287: &[crate::harness::recipe::Version] =
+        &[crate::harness::recipe::Version::new(2, 1, 287)];
+    assert_eq!(
+        recipe_287.versions,
+        crate::harness::recipe::VersionSet::Exact(V287)
+    );
+    assert_eq!(claude::recipe_for("2.1.287"), Ok(recipe_287));
+    assert!(claude::is_supported_version("2.1.287"));
+    assert_eq!(
+        recipe_287.profile.session_start_compact,
+        claude::NativeSupport::Supported
+    );
+    assert_eq!(
+        recipe.profile.session_start_compact,
+        claude::NativeSupport::Unsupported
+    );
+    // The spike (docs/evidence/poke-spike/findings.md) tested 2.1.287 only.
+    assert_eq!(
+        recipe_287.profile.composer_stash,
+        claude::NativeSupport::Supported
+    );
+    assert_eq!(
+        recipe_287.profile.poke_during_turn,
+        claude::NativeSupport::Supported
+    );
+    assert_eq!(
+        recipe.profile.composer_stash,
+        claude::NativeSupport::Unsupported
+    );
+    assert_eq!(
+        recipe.profile.poke_during_turn,
+        claude::NativeSupport::Unsupported
+    );
     assert_eq!(recipe.id, "claude-hooks-2.1.283");
     assert_eq!(
         recipe.versions,
         crate::harness::recipe::VersionSet::Interval {
             min: Some(crate::harness::recipe::Version::new(2, 1, 283)),
-            max: Some(crate::harness::recipe::Version::new(2, 1, 287)),
+            max: Some(crate::harness::recipe::Version::new(2, 1, 286)),
         }
     );
     assert_eq!(
         recipe.profile.input_schema,
         claude::InputSchema::Hooks2_1_283
     );
-    for version in ["2.1.283", "2.1.284", "2.1.285", "2.1.286", "2.1.287"] {
+    for version in ["2.1.283", "2.1.284", "2.1.285", "2.1.286"] {
         assert_eq!(claude::recipe_for(version), Ok(recipe), "{version}");
         assert!(claude::is_supported_version(version), "{version}");
         assert!(
@@ -233,12 +275,16 @@ fn claude_version_gate_is_the_exact_evidence_backed_set() {
     for version in ["2.1.288", "2.1.289", "2.1.2870", "2.1.2834", "2.2.283"] {
         assert!(!claude::is_supported_version(version), "{version:?}");
         let admitted = claude::admit(version).unwrap();
-        assert_eq!(admitted.recipe, recipe, "{version:?}");
+        assert_eq!(admitted.recipe, recipe_287, "{version:?}");
         assert!(
             matches!(admitted.admission, claude::ClaudeAdmission::Optimistic(_)),
             "{version:?}"
         );
-        assert_eq!(claude::check_version(version), Ok(recipe), "{version:?}");
+        assert_eq!(
+            claude::check_version(version),
+            Ok(recipe_287),
+            "{version:?}"
+        );
         let event = claude::parse_event(version, START, "external").unwrap();
         assert_eq!(
             event.capability,
@@ -552,6 +598,137 @@ fn captured_claude_286_payloads_parse_and_encode_as_applied() {
     );
     assert!(
         claude::encode_tool_response(&input, "2.1.282", "ctx_probe-c286f4", "mail", 4096).is_err()
+    );
+}
+
+const CAPTURED_287_STARTUP: &[u8] =
+    include_bytes!("../fixtures/claude-2.1.287/01-sessionstart-startup.json");
+const CAPTURED_287_ROOT_BASH: &[u8] =
+    include_bytes!("../fixtures/claude-2.1.287/02-pretooluse-bash-root.json");
+const CAPTURED_287_RESUME: &[u8] =
+    include_bytes!("../fixtures/claude-2.1.287/03-sessionstart-resume.json");
+const CAPTURED_287_CHILD_BASH: &[u8] =
+    include_bytes!("../fixtures/claude-2.1.287/04-pretooluse-bash-subagent.json");
+const CAPTURED_287_COMPACT: &[u8] =
+    include_bytes!("../fixtures/claude-2.1.287/05-sessionstart-compact.json");
+const CAPTURED_287_SESSION: &str = "e3272da9-a6a2-4d99-bd8d-e552b74d87f0";
+
+// Actual Claude Code 2.1.287 hook stdin (binary SHA-256 6eab8333...fcb41ea),
+// captured in claude-compact-capture. 01-04 have the same keys and value types
+// as the 2.1.286 payloads; 05 is the SessionStart `source: compact` payload of
+// a print-mode `/compact`, after which the compact `additionalContext` was
+// attached to the transcript.
+// Kills: a missing or mis-ranged 2.1.287 recipe; a parser that rejects the
+// captured compact source or maps it to another kind; a parser that accepts
+// compact under 2.1.282 (older than every recipe).
+#[test]
+fn captured_claude_287_payloads_parse_including_compact() {
+    for (bytes, source, kind, role) in [
+        (
+            CAPTURED_287_STARTUP,
+            "startup",
+            EventKind::Startup,
+            Role::TopLevel,
+        ),
+        (
+            CAPTURED_287_ROOT_BASH,
+            "PreToolUse",
+            EventKind::Tool,
+            Role::TopLevel,
+        ),
+        (
+            CAPTURED_287_RESUME,
+            "resume",
+            EventKind::Resume,
+            Role::TopLevel,
+        ),
+        (
+            CAPTURED_287_CHILD_BASH,
+            "PreToolUse",
+            EventKind::Tool,
+            Role::Subagent,
+        ),
+        (
+            CAPTURED_287_COMPACT,
+            "compact",
+            EventKind::Compact,
+            Role::TopLevel,
+        ),
+    ] {
+        let event = claude::parse_event("2.1.287", bytes, "external").unwrap();
+        assert_eq!(event.kind, kind);
+        assert_eq!(event.role, role);
+        assert_eq!(event.source, source);
+        assert_eq!(event.native_session.as_deref(), Some(CAPTURED_287_SESSION));
+        assert!(claude::parse_event("2.1.287", bytes, "").is_err());
+        assert!(claude::parse_event("2.1.282", bytes, "external").is_err());
+    }
+}
+
+// Kills: the 2.1.283 profile claiming compact (the interval recipe has no
+// compact evidence), and a startup regression under the old recipe.
+#[test]
+fn compact_is_refused_where_no_recipe_admits_it() {
+    use crate::harness::context::ContextError;
+    for version in ["2.1.283", "2.1.284", "2.1.285", "2.1.286"] {
+        assert_eq!(
+            claude::parse_event(version, CAPTURED_287_COMPACT, "external"),
+            Err(ContextError::Invalid),
+            "{version}"
+        );
+        assert_eq!(
+            claude::encode_lifecycle_response(CAPTURED_287_COMPACT, version, "mail", 4096),
+            Err(ContextError::Invalid),
+            "{version}"
+        );
+    }
+    assert_eq!(
+        claude::parse_event("2.1.286", CAPTURED_287_STARTUP, "external")
+            .unwrap()
+            .kind,
+        EventKind::Startup
+    );
+}
+
+// Kills: compact returning `{}` for the root session (no recovery context),
+// an `hookEventName` other than SessionStart, and a child compact that is not
+// suppressed.
+#[test]
+fn compact_session_start_returns_additional_context() {
+    let response =
+        claude::encode_lifecycle_response(CAPTURED_287_COMPACT, "2.1.287", "mail changed", 4096)
+            .unwrap();
+    let v: Value = serde_json::from_slice(&response).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["hookEventName"], "SessionStart");
+    assert!(
+        v["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .is_some_and(|text| text.contains("mail changed")),
+        "{v}"
+    );
+    let mut child: Value = serde_json::from_slice(CAPTURED_287_COMPACT).unwrap();
+    child["agent_id"] = json!("child");
+    child["agent_type"] = json!("worker");
+    assert_eq!(
+        claude::encode_lifecycle_response(
+            &serde_json::to_vec(&child).unwrap(),
+            "2.1.287",
+            "mail changed",
+            4096
+        )
+        .unwrap(),
+        b"{}"
+    );
+}
+
+// Kills: doctor reporting compaction recovery as supported for versions
+// without compact evidence, or dropping the supported 2.1.287 recipe.
+#[test]
+fn recipes_report_compaction_recovery() {
+    assert_eq!(
+        claude::compaction_recovery(),
+        "claude-hooks-2.1.283: unsupported (resume/clear and herdr-threads summary); \
+         claude-hooks-2.1.287: supported"
     );
 }
 

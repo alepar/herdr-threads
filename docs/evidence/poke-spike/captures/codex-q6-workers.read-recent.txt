@@ -1,0 +1,80 @@
+  Worked for 47s • 12:25
+
+
+› TOOLS second run
+
+
+• Ran sleep 15; echo step1
+  └ step1
+
+
+› POKE-TEST-codex-C
+
+
+• Ran sleep 15; echo step2
+  └ step2
+
+• Ran sleep 15; echo step3
+  └ step3
+
+• ok
+
+  Worked for 47s • 12:26
+
+
+› TOOLS third run
+
+
+• Ran sleep 15; echo step1
+  └ step1
+
+
+› DRAFT-TEXT-xyzPOKE-TEST-codex-D
+
+
+• Ran sleep 15; echo step2
+  └ step2
+
+• Ran sleep 15; echo step3
+  └ step3
+
+• ok
+
+  Worked for 46s • 12:27
+
+
+› POKE-TEST-codex-E
+
+
+• ok
+
+  Worked for <1s • 12:27
+
+
+› draft line A
+  draft line BWORKERS go
+
+
+• ok
+
+  Worked for <1s • 12:28
+
+
+› WORKERS go
+
+
+• Spawned 01a0fe16-b76e-7c51-a69e-c309dcb7eb8c (gpt-6-luna medium)
+  └ CHILD worker-a run the shell command: echo worker-a
+
+• Spawned 01a0fe16-b793-7d11-bca1-70f363d603a2 (gpt-6-luna medium)
+  └ CHILD worker-b run the shell command: echo worker-b
+
+• ok
+
+  Worked for <1s • 12:28
+
+
+› Ask Codex to do anything
+
+  mockmodel medium · Context 0% used · /private/tmp/ht-poke-spike/codex · Main…
+  ? for shortcuts                                     ⚠ 1 warning · f2 to view

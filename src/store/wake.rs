@@ -3,20 +3,36 @@
 use super::{
     connection::{StoreContext, api_error, store_error},
     effective::{self, EffectiveSeatAttention},
+    poke,
 };
 use crate::{
     ports::{
-        LogicalAttentionFrontier, LogicalPublicationKey, PriorLadder, RefusalCause,
-        ReservedWakeAuthority, WakeAttentionWitness, WakeCandidate, WakeOutcome,
-        WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation, WarningOfferFrontier,
+        LogicalAttentionFrontier, LogicalPublicationKey, PokeDue, PokeReceipt, PokeReservation,
+        PriorLadder, RefusalCause, ReservedWakeAuthority, WakeAttentionWitness, WakeCandidate,
+        WakeOutcome, WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation,
+        WarningOfferFrontier,
     },
     protocol::{
         ids::{ExecutionId, HostBootId, HostTargetId, SeatId, TerminalId, WakeAttemptId},
         results::{ApiError, ErrorCode},
+        summary::SummarySettings,
         time::{CallBudget, MonoInstant, UtcMillis},
     },
 };
 use rusqlite::{Connection, OptionalExtension, params};
+
+/// The write every new-attention producer makes: set the attention reason bit
+/// and advance `attention_version` so the dispatcher re-derives the seat's
+/// wake reasons. Catch-up release (ht-1ip.6) calls it in the row-end
+/// transaction.
+pub fn note_new_attention(tx: &rusqlite::Transaction<'_>, seat: &SeatId) -> Result<(), ApiError> {
+    tx.execute(
+        "INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES (?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",
+        [seat.as_str()],
+    )
+    .map_err(store_error)?;
+    Ok(())
+}
 
 fn nonnegative(value: i64) -> Result<u64, ApiError> {
     u64::try_from(value).map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative wake scalar"))
@@ -202,6 +218,28 @@ pub fn load_candidate(
     })
 }
 
+/// SQL true when an open binding on `seat_expr` belongs to a person (`me init`):
+/// such a seat is never prompted (TRUST-POLICY A4).
+pub(super) fn human_bound_sql(seat_expr: &str) -> String {
+    format!(
+        "EXISTS(SELECT 1 FROM occupant_bindings hb WHERE hb.seat_id={seat_expr} AND hb.ended_at IS NULL AND hb.harness='human')"
+    )
+}
+
+/// SQL true when `seat_expr` can pass a wake or poke reservation without its
+/// own state changing first: resolved, with a target that has no unreleased
+/// recovery hold, and not bound to a person. The observation-dependent half
+/// of the authority (boot, epoch, generation, UI) is rechecked at
+/// reservation time only.
+pub(super) fn reservable_seat_sql(seat_expr: &str) -> String {
+    format!(
+        "(EXISTS(SELECT 1 FROM seats rs WHERE rs.id={seat_expr} AND rs.state='resolved' AND rs.target_id IS NOT NULL \
+         AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.instance_id=rs.instance_id AND rh.target_id=rs.target_id AND rh.released_at IS NULL)) \
+         AND NOT {})",
+        human_bound_sql(seat_expr)
+    )
+}
+
 // Allowed: authority lookup keyed by every component of the wake reservation.
 #[allow(clippy::too_many_arguments)]
 fn current_authority(
@@ -218,7 +256,7 @@ fn current_authority(
     // for the person to read and ACK it by hand.
     let human: bool = db
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND harness='human')",
+            &format!("SELECT {}", human_bound_sql("?1")),
             [seat.as_str()],
             |r| r.get(0),
         )
@@ -550,6 +588,34 @@ pub fn complete(
     refused_restore: Option<&PriorLadder>,
     budget: &CallBudget,
 ) -> Result<bool, ApiError> {
+    complete_with_pokes(
+        context,
+        db,
+        attempt,
+        daemon_boot,
+        outcome,
+        refused_restore,
+        budget,
+        &[],
+    )
+}
+
+/// [`complete`] for a poke (or a wake that carried the poke text): when the
+/// reservation settles `submitted` in this transaction, `soft_poked_at` is set
+/// on exactly `receipts`. A stale, foreign-boot or non-submitted completion
+/// marks nothing, so an abandoned poke leaves its receipts to be poked again.
+// Allowed: `complete`'s inputs plus the receipts the poke marks.
+#[allow(clippy::too_many_arguments)]
+pub fn complete_with_pokes(
+    context: &StoreContext,
+    db: &mut Connection,
+    attempt: &WakeAttemptId,
+    daemon_boot: &uuid::Uuid,
+    outcome: WakeOutcome,
+    refused_restore: Option<&PriorLadder>,
+    budget: &CallBudget,
+    receipts: &[PokeReceipt],
+) -> Result<bool, ApiError> {
     if attempt.as_str().is_empty() || daemon_boot.is_nil() {
         return Err(api_error(
             ErrorCode::InvalidRequest,
@@ -597,8 +663,71 @@ pub fn complete(
                         invitation_seq,invitation_offset,receipt_seq,receipt_offset,warning_seq,warning_offset]).map_err(store_error)?
             }
         };
+        if changed==1 && disposition=="submitted" {
+            poke::mark_soft_poked(tx,receipts,at.utc)?;
+        }
         Ok(restore.is_some() && changed==1)
     })
+}
+
+/// Reserves the seat's single wake slot for a soft-deadline poke (spec §10):
+/// the same reservation id/boot/lease columns as a wake, refused while any
+/// reservation is active. Unlike `reserve` it needs no attention advance and
+/// leaves every retry/frontier column alone, so a poke never shifts the wake
+/// guard's history. The receipts still due are rechecked inside the
+/// reserving transaction; the reservation's attention witness asserts only
+/// the pending receipt the poke was selected for (never a complete scan).
+pub fn reserve_poke(
+    context: &StoreContext,
+    db: &mut Connection,
+    instance: &str,
+    due: &PokeDue,
+    daemon_boot: uuid::Uuid,
+    settings: &SummarySettings,
+) -> Result<Option<PokeReservation>, ApiError> {
+    if daemon_boot.is_nil() {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "invalid wake configuration",
+        ));
+    }
+    let seat = &due.seat;
+    let committed=context.execute_decision(db,|tx|{
+        type RowColumns = Option<(i64,i64,i64,i64,Option<String>,i64,String,i64)>;
+        let row:RowColumns=tx.query_row(
+            "SELECT h.decision_seq,s.unavailability_episode,s.unavailability_open,s.generation,s.target_id,s.target_generation,h.host_boot,h.host_epoch FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
+            params![seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional().map_err(store_error)?;
+        let Some((decision_seq,episode,open,generation,target,target_generation,boot,host_epoch))=row else {return Ok(None)};
+        let Some(target)=target.map(HostTargetId::new) else {return Ok(None)};
+        // Only the receipts still due now are covered, never a stale selection.
+        let now=context.clock().utc_now().0;
+        let Some(current_due)=poke::due_pokes_for_seat(tx,seat,now,settings)? else {return Ok(None)};
+        let receipts:Vec<PokeReceipt>=due.receipts.iter().filter(|r|current_due.receipts.iter().any(|c|c.message==r.message&&c.source==r.source)).cloned().collect();
+        if receipts.is_empty() {return Ok(None)}
+        let attention=EffectiveSeatAttention {has_pending_invitation:false,has_pending_receipt:true,latest_warning_seq:None,frontier:LogicalAttentionFrontier::default()};
+        let current=load_candidate(tx,instance,seat,&attention,decision_seq)?;
+        if current.effectively_retired || !current.continuity_resolved || current.reservation_id.is_some() {return Ok(None)}
+        let boot=HostBootId::new(boot);
+        let Some(authority)=current_authority(tx,instance,seat,&target,nonnegative(generation)?,nonnegative(target_generation)?,&boot,nonnegative(host_epoch)?)? else {return Ok(None)};
+        let witness=WakeAttentionWitness::from_complete(instance.into(),seat.clone(),nonnegative(decision_seq)?,false,true,None,nonnegative(episode)?,open!=0,LogicalAttentionFrontier::default());
+        Ok(Some((target,boot,nonnegative(host_epoch)?,nonnegative(target_generation)?,authority,current,witness,receipts)))
+    },|tx,at,prepared|{
+        let Some((target,host_boot,host_epoch,target_generation,authority,current,witness,receipts))=prepared else {return Ok(None)};
+        at.monotonic.0.checked_add(5_000).ok_or_else(||api_error(ErrorCode::InvalidRequest,"wake lease overflow"))?;
+        let attempt=WakeAttemptId::new(uuid::Uuid::new_v4().to_string());
+        let binding_generation=match &authority {ReservedWakeAuthority::Registered {binding_generation,..}|ReservedWakeAuthority::Cooperative {binding_generation:Some(binding_generation),..}=>Some(i64::try_from(*binding_generation).map_err(|_|api_error(ErrorCode::StoreCorrupt,"binding generation overflow"))?),_=>None};
+        tx.execute("INSERT INTO wake_work(seat_id,binding_generation,reservation_id,reservation_boot,reserved_at_utc) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(seat_id) DO UPDATE SET binding_generation=excluded.binding_generation,reservation_id=excluded.reservation_id,reservation_boot=excluded.reservation_boot,reserved_at_utc=excluded.reserved_at_utc",
+            params![seat.as_str(),binding_generation,attempt.as_str(),daemon_boot.to_string(),at.utc.0]).map_err(store_error)?;
+        Ok(Some(PokeReservation {reservation:WakeReservation {attempt,daemon_boot,seat:seat.clone(),reasons:vec!["soft_deadline".into()],
+            retained_effective_delay_ms:current.effective_delay_ms,lease_until:at.monotonic,retained_minimum_delay_ms:current.minimum_delay_ms,reserved_at_utc:at.utc,
+            host_boot,host_epoch,target,target_generation,attention_witness:witness,authority},receipts}))
+    })?;
+    // A slow COMMIT must not consume the dispatcher lease before it starts.
+    Ok(committed.map(|mut reserved| {
+        reserved.reservation.lease_until =
+            MonoInstant(context.clock().monotonic_now().0.saturating_add(5_000));
+        reserved
+    }))
 }
 
 /// Settle only the exact reservation left by a different daemon boot. The

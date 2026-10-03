@@ -1224,6 +1224,44 @@ fn seat_rebind_replace_parses_to_operator_replace() {
 }
 
 #[test]
+fn send_relays_user_flag_reaches_the_command_and_is_off_by_default() {
+    let send_command = |extra: &[&str]| {
+        let mut argv = vec!["herdr-threads", "send", "t1", "--body", "x"];
+        argv.extend_from_slice(extra);
+        let parsed = parse_argv(argv).unwrap();
+        let CliAction::Mutation(spec) = parsed.action else {
+            panic!("expected send mutation")
+        };
+        let flag = matches!(spec, MutationSpec::Send { relays_user, .. } if relays_user);
+        let command = spec
+            .into_command(
+                Some(claim()),
+                crate::protocol::ids::OperationId::new("op-relay"),
+            )
+            .unwrap();
+        let crate::protocol::commands::Command::SendMessage(send) = command else {
+            panic!("expected typed send request")
+        };
+        (flag, send.relays_user)
+    };
+    assert_eq!(send_command(&["--relays-user"]), (true, true));
+    assert_eq!(send_command(&[]), (false, false));
+}
+
+#[test]
+fn send_help_names_relays_user() {
+    use clap::CommandFactory;
+    let mut cli = Cli::command();
+    let help = cli
+        .find_subcommand_mut("send")
+        .unwrap()
+        .render_long_help()
+        .to_string();
+    assert!(help.contains("--relays-user"));
+    assert!(help.contains("instruction from your user"));
+}
+
+#[test]
 fn contract_id_and_harness_version_parse_as_local_actions() {
     use crate::harness::context::Harness;
     let parsed = parse_argv(["herdr-threads", "contract-id"]).unwrap();

@@ -18,6 +18,49 @@ pub enum NativeSupport {
     Supported,
 }
 
+/// Per-harness soft-deadline poke capabilities (spec §10). A recipe declares a
+/// capability only from captured evidence; every harness reports `NONE` until
+/// such evidence lands, so an undeclared capability means the poke is skipped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PokeCapabilities {
+    /// The adapter can stash and later restore the composer's typed text.
+    pub composer_stash: NativeSupport,
+    /// A prompt submitted during an active turn is queued and safe.
+    pub poke_during_turn: NativeSupport,
+}
+
+impl PokeCapabilities {
+    pub const NONE: Self = Self {
+        composer_stash: NativeSupport::Unsupported,
+        poke_during_turn: NativeSupport::Unsupported,
+    };
+}
+
+/// The poke capabilities of the recipe covering `installed` for `harness`.
+/// No recipe, an unobserved or unrecognized version, or a harness without
+/// recipes (a person) reports `NONE`: an undeclared capability skips the poke.
+pub fn poke_capabilities(
+    harness: crate::protocol::authority::Harness,
+    installed: Option<&str>,
+) -> PokeCapabilities {
+    use crate::protocol::authority::Harness;
+    let Some(installed) = installed else {
+        return PokeCapabilities::NONE;
+    };
+    match harness {
+        Harness::Claude => super::claude::recipe_for(installed).map(|recipe| PokeCapabilities {
+            composer_stash: recipe.profile.composer_stash,
+            poke_during_turn: recipe.profile.poke_during_turn,
+        }),
+        Harness::Codex => super::codex::recipe_for(installed).map(|recipe| PokeCapabilities {
+            composer_stash: recipe.profile.composer_stash,
+            poke_during_turn: recipe.profile.poke_during_turn,
+        }),
+        Harness::Human => return PokeCapabilities::NONE,
+    }
+    .unwrap_or(PokeCapabilities::NONE)
+}
+
 /// A canonical installed-harness version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Version {

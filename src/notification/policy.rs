@@ -4,9 +4,10 @@
 //! fields. This module neither queries history nor treats UTC projections as a
 //! wake clock. The runtime anchors each durable reservation after commit.
 
+use crate::harness::recipe::{NativeSupport, PokeCapabilities};
 use crate::ports::{HostObservation, HostUiState, ObservationProvenance, WakeCandidate};
 use crate::protocol::{
-    ids::{HostBootId, HostTargetId},
+    ids::{HostBootId, HostTargetId, ThreadId},
     time::MonoInstant,
 };
 
@@ -106,6 +107,12 @@ impl RetryConfig {
             return Err(RetryError::InvalidMinimum);
         }
         Ok(Self { minimum_delay_ms })
+    }
+}
+
+impl RetryConfig {
+    pub fn minimum_delay_ms(self) -> u64 {
+        self.minimum_delay_ms
     }
 }
 
@@ -275,6 +282,79 @@ impl RetryGuard {
         self.shortened = true;
         self.earliest()?;
         Ok(self)
+    }
+}
+
+/// Most thread ids a coalesced poke names before `+k more`.
+pub const POKE_MAX_THREADS: usize = 8;
+
+/// Spec §10: `effective_deadline - ceil((1 - soft_fraction) * window)`, with
+/// the window the receipt's frozen duration. Evaluated on every tick from the
+/// current effective deadline, so an extension moves it with no re-arm event.
+pub fn soft_point(effective_deadline: i64, window_ms: i64, soft_fraction: f64) -> i64 {
+    // The epsilon keeps an exactly representable product from rounding up.
+    let remaining = ((1.0 - soft_fraction) * window_ms as f64 - 1e-6).ceil() as i64;
+    effective_deadline.saturating_sub(remaining.max(0))
+}
+
+/// The fixed reminder: thread ids only, at most `POKE_MAX_THREADS` then
+/// `+k more`; seconds are the ceiling of the smallest remaining effective
+/// time, never negative.
+pub fn poke_text(due_in_ms: i64, threads: &[ThreadId]) -> String {
+    let seconds = due_in_ms.max(0).saturating_add(999) / 1000;
+    let mut ids = threads
+        .iter()
+        .take(POKE_MAX_THREADS)
+        .map(ThreadId::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if threads.len() > POKE_MAX_THREADS {
+        ids.push_str(&format!(" +{} more", threads.len() - POKE_MAX_THREADS));
+    }
+    format!("herdr-threads: receipt due in {seconds}s on {ids}; run herdr-threads inbox")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PokeDecision {
+    /// Submit the poke prompt now.
+    Submit,
+    /// Stash the typed composer text, submit, then restore it.
+    Stash,
+    /// Send nothing this tick; the reason is a diagnostic label.
+    Skip(&'static str),
+}
+
+/// Spec §10 eligibility on a fresh observation. Undeclared capabilities skip.
+pub fn poke_eligibility(
+    observation: &HostObservation,
+    bound_native_agent: bool,
+    recognized: bool,
+    caps: PokeCapabilities,
+) -> PokeDecision {
+    if !bound_native_agent {
+        return PokeDecision::Skip("not the bound native agent");
+    }
+    if !recognized {
+        return PokeDecision::Skip("occupant not recognized");
+    }
+    if observation.provenance != ObservationProvenance::FreshCurrentTarget {
+        return PokeDecision::Skip("observation not fresh");
+    }
+    if observation.focused {
+        return PokeDecision::Skip("pane focused");
+    }
+    match observation.ui {
+        HostUiState::Idle => PokeDecision::Submit,
+        HostUiState::ActiveTurn if caps.poke_during_turn == NativeSupport::Supported => {
+            PokeDecision::Submit
+        }
+        HostUiState::ActiveTurn => PokeDecision::Skip("active turn without poke_during_turn"),
+        HostUiState::HumanInput if caps.composer_stash == NativeSupport::Supported => {
+            PokeDecision::Stash
+        }
+        HostUiState::HumanInput => PokeDecision::Skip("typed input without composer_stash"),
+        HostUiState::ApprovalOrQuestion => PokeDecision::Skip("approval or question pending"),
+        HostUiState::Unknown => PokeDecision::Skip("ui state unknown"),
     }
 }
 

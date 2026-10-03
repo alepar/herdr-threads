@@ -84,6 +84,10 @@ mod operator_text;
 /// Herdr endpoint.
 #[path = "integration/operator_ux.rs"]
 mod operator_ux;
+/// ht-1ip.16: the summary flow (job leasing, catch-up, hold, deadline
+/// extension, recovery text) on a real daemon, driven through the CLI.
+#[path = "integration/summary_flow.rs"]
+mod summary_flow;
 #[path = "integration/sweep.rs"]
 mod sweep;
 /// ht-p03.51: the root integration sweep's cross-bucket paths (send-to-wake

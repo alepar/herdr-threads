@@ -1,0 +1,14 @@
+2026-10-02T19:20:39.637Z USER Use the Agent tool to launch two subagents in parallel in a single message, both with the model parameter set to haiku. Subagent one runs th
+2026-10-02T19:20:42.518Z ASSISTANT tool_use Agent {"description": "Run shell command echo worker-a", "prompt": "Run the shell command: echo worker-a and return its output.", "model": "haiku"}
+2026-10-02T19:20:42.527Z TOOL_RESULT [{'type': 'text', 'text': "Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, 
+2026-10-02T19:20:43.067Z ASSISTANT tool_use Agent {"description": "Run shell command echo worker-b", "prompt": "Run the shell command: echo worker-b and return its output.", "model": "haiku"}
+2026-10-02T19:20:43.073Z TOOL_RESULT [{'type': 'text', 'text': "Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, 
+2026-10-02T19:20:45.016Z ASSISTANT text Both subagents have been launched in parallel. Worker-a (agent ID: a4d697f56c7aee0af) and worker-b (agent ID: afb376b17a2665b97) are running
+2026-10-02T19:20:45.176Z QUEUE enqueue <task-notification> <task-id>a4d697f56c7aee0af</task-id> <to
+2026-10-02T19:20:45.179Z QUEUE dequeue 
+2026-10-02T19:20:45.182Z USER <task-notification> <task-id>a4d697f56c7aee0af</task-id> <tool-use-id>toolu_01QJA9Sg2oFR8UnnJomcBsWj</tool-use-id> <output-file>/private/tmp
+2026-10-02T19:20:45.711Z QUEUE enqueue <task-notification> <task-id>afb376b17a2665b97</task-id> <to
+2026-10-02T19:20:46.346Z QUEUE dequeue 
+2026-10-02T19:20:46.321Z ASSISTANT text Worker-a has completed with output: `worker-a` Waiting for worker-b to complete...
+2026-10-02T19:20:46.349Z USER <task-notification> <task-id>afb376b17a2665b97</task-id> <tool-use-id>toolu_01TN4HQGmk4QTD7HzMgtvjPe</tool-use-id> <output-file>/private/tmp
+2026-10-02T19:20:47.545Z ASSISTANT text Both agents have completed. Here are the outputs: **Worker-a output:** `worker-a` **Worker-b output:** `worker-b`

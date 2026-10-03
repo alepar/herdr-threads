@@ -515,7 +515,19 @@ fn doctor_reports_context_daemon_and_owned_hook_installation() {
         "{report}"
     );
     assert!(
-        report.contains("hooks.claude.recipes: claude-hooks-2.1.283 [2.1.283, 2.1.287]\n"),
+        report.contains(
+            "hooks.claude.recipes: claude-hooks-2.1.283 [2.1.283, 2.1.286]; claude-hooks-2.1.287 {2.1.287}\n"
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "hooks.claude.compaction_recovery: claude-hooks-2.1.283: unsupported (resume/clear and herdr-threads summary); claude-hooks-2.1.287: supported\n"
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains("skill.summary_procedure: present\n"),
         "{report}"
     );
     assert!(
@@ -582,6 +594,10 @@ fn doctor_reports_context_daemon_and_owned_hook_installation() {
     assert_eq!(
         value["doctor"]["hooks"]["codex"]["recipes"],
         "codex-hooks-v1 {0.157.1, 0.158.0, 0.159.3}"
+    );
+    assert_eq!(
+        value["doctor"]["skill"],
+        serde_json::json!({"summary_procedure": "present"})
     );
     // Cooperative is the designed mode, distinct from unsupported (absent).
     assert_eq!(value["doctor"]["daemon"]["harness_claude"], "cooperative");

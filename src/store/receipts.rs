@@ -7,9 +7,10 @@ use crate::{
         commands::Ack,
         ids::{MessageId, SeatId, ThreadId},
         results::{AckResult, ApiError, CommandResult, ErrorCode},
+        time::UtcMillis,
     },
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -133,8 +134,7 @@ pub fn ack(
                     .ok_or_else(|| {
                         api_error(ErrorCode::StoreCorrupt, "validated receipt disappeared")
                     })?;
-                if receipt
-                    .deadline_at
+                if effective_deadline(tx, &receipt)?
                     .is_some_and(|deadline| deadline <= decision.utc.0)
                 {
                     schema::record_overdue_if_pending(
@@ -229,6 +229,17 @@ pub struct ReceiptDueCursor {
     pub sparse_after_message: Option<String>,
     pub sparse_after_seat: Option<String>,
     pub next_sparse: bool,
+    /// Extension-lapse recheck state (`scan_extension_lapses`). `scan_due`
+    /// carries it through every cursor reset; it is not part of the due scan.
+    pub extension: ExtensionLapseCursor,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ExtensionLapseCursor {
+    /// Every row with extension_until <= through was rechecked by a completed walk.
+    pub through: Option<i64>,
+    /// Keyset position (extension_until, seat_id, thread_id) inside the walk in progress.
+    pub after: Option<(i64, String, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,7 +300,7 @@ pub fn scan_due(
             for (source_high,candidates) in [(physical_high,physical),(sparse_high,sparse)] {
                 for (ordinal,message,seat,deadline) in candidates {
                     let receipt=effective::effective_receipt(tx,message.as_str(),seat.as_str())?;
-                    if ordinal<=source_high && deadline<=decision.utc.0 && receipt.as_ref().is_some_and(|v|v.state==EffectiveReceiptState::Pending && v.deadline_at.is_some_and(|at|at<=decision.utc.0)) {
+                    if ordinal<=source_high && deadline<=decision.utc.0 && match receipt.as_ref() { Some(v) if v.state==EffectiveReceiptState::Pending => effective_deadline(tx,v)?.is_some_and(|at|at<=decision.utc.0), _ => false } {
                         let outcome=schema::record_overdue_if_pending(tx,&ObligationRef::Receipt{message:message.clone(),seat:seat.clone()},&TimeBasis::Decision,decision.utc)?;
                         if outcome.inserted {
                             let (thread,instance):(String,String)=tx.query_row("SELECT m.thread_id,t.instance_id FROM messages m JOIN threads t ON t.id=m.thread_id WHERE m.id=?1",[message.as_str()],|r|Ok((r.get(0)?,r.get(1)?))).map_err(store_error)?;
@@ -310,11 +321,228 @@ pub fn scan_due(
                 sparse_after_message:sparse_after.as_ref().map(|v|v.1.clone()).or(current.sparse_after_message.clone()),
                 sparse_after_seat:sparse_after.map(|v|v.2).or(current.sparse_after_seat.clone()),
                 next_sparse:!current.next_sparse,
-            }} else {ReceiptDueCursor::default()};
+                extension:current.extension.clone(),
+            }} else {ReceiptDueCursor{extension:current.extension.clone(),..ReceiptDueCursor::default()}};
             Ok((DueScanResult{warnings:inserted,inspected,more,next_ordinal:next.after_ordinal},next))
         })?;
     *cursor = next;
     Ok(result)
+}
+
+/// Spec §8: max(frozen deadline, extension_until of the catch-up row for the
+/// receipt's (seat, thread)). The (seat, thread) primary key makes that row
+/// the latest one. Every overdue, warning, pending-receipt and soft-point
+/// comparison goes through this. An ended row's past extension is harmless:
+/// it is at or before now, so the receipt is overdue on its own.
+pub fn effective_deadline(
+    conn: &Connection,
+    receipt: &effective::EffectiveReceipt,
+) -> Result<Option<i64>, ApiError> {
+    effective_deadline_for(
+        conn,
+        &receipt.seat_id,
+        &receipt.thread_id,
+        receipt.deadline_at,
+    )
+}
+
+/// `effective_deadline` for a receipt known only by its (seat, thread, frozen
+/// deadline).
+pub fn effective_deadline_for(
+    conn: &Connection,
+    seat: &str,
+    thread: &str,
+    frozen: Option<i64>,
+) -> Result<Option<i64>, ApiError> {
+    let Some(frozen) = frozen else {
+        return Ok(None);
+    };
+    let extension: Option<i64> = conn
+        .query_row(
+            "SELECT extension_until FROM catch_up WHERE seat_id=?1 AND thread_id=?2",
+            params![seat, thread],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?
+        .flatten();
+    Ok(Some(extension.map_or(frozen, |until| frozen.max(until))))
+}
+
+fn extension_end(base: UtcMillis, add_ms: u64) -> i64 {
+    base.0
+        .saturating_add(i64::try_from(add_ms).unwrap_or(i64::MAX))
+}
+
+/// Extension hooks the catch-up lifecycle calls (spec §7, §8). These own every
+/// `catch_up.extension_until` write. Entry: entered_at + p99, never lowering.
+pub fn extension_on_entry(
+    tx: &Transaction<'_>,
+    seat: &SeatId,
+    thread: &ThreadId,
+    entered_at: UtcMillis,
+    p99_ms: u64,
+) -> Result<(), ApiError> {
+    tx.execute(
+        "UPDATE catch_up SET extension_until=MAX(COALESCE(extension_until,0),?3) WHERE seat_id=?1 AND thread_id=?2",
+        params![seat.as_str(), thread.as_str(), extension_end(entered_at, p99_ms)],
+    )
+    .map_err(store_error)?;
+    Ok(())
+}
+
+/// Progress: now + p99 for every seat in active catch-up on the thread.
+pub fn extension_on_progress(
+    tx: &Transaction<'_>,
+    thread: &ThreadId,
+    now: UtcMillis,
+    p99_ms: u64,
+) -> Result<(), ApiError> {
+    tx.execute(
+        "UPDATE catch_up SET extension_until=MAX(COALESCE(extension_until,0),?2) WHERE thread_id=?1 AND state='active'",
+        params![thread.as_str(), extension_end(now, p99_ms)],
+    )
+    .map_err(store_error)?;
+    Ok(())
+}
+
+/// Exit: the grace window after the row ends is set (spec §7), not raised.
+pub fn extension_on_exit(
+    tx: &Transaction<'_>,
+    seat: &SeatId,
+    thread: &ThreadId,
+    now: UtcMillis,
+    exit_grace_ms: u64,
+) -> Result<(), ApiError> {
+    tx.execute(
+        "UPDATE catch_up SET extension_until=?3 WHERE seat_id=?1 AND thread_id=?2",
+        params![
+            seat.as_str(),
+            thread.as_str(),
+            extension_end(now, exit_grace_ms)
+        ],
+    )
+    .map_err(store_error)?;
+    Ok(())
+}
+
+const EXTENSION_RECHECK_ROWS: i64 = 100;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtensionLapseResult {
+    pub warnings: u16,
+    pub inspected: u16,
+    pub more: bool,
+}
+
+/// Rechecks receipts whose extension has lapsed (spec §8). `scan_due` skips a
+/// candidate whose effective deadline is still in the future and moves on, so
+/// the lapse itself is found here: a bounded walk of `catch_up` through
+/// `catch_up_extension_until` over `(through, now]`, re-evaluating each
+/// row's pending, unwarned receipts on both receipt tables. Pages are keyed by
+/// `(extension_until, seat_id, thread_id)` (`cursor.extension.after`); a short
+/// page completes the walk and sets `cursor.extension.through` to `now - 1`, so
+/// a completed walk is not repeated and only later lapses are scanned. The
+/// `- 1` re-walks rows lapsing in that exact millisecond, which is idempotent
+/// because warnings are unique per obligation. `through == None` (first run,
+/// restart) walks everything once, paged. A UTC step backwards can leave a
+/// later write's `extension_until <= through`; that lapse is still found
+/// because `scan_due` re-walks every pending, unwarned, frozen-past receipt on
+/// each completed pass and checks its effective deadline.
+pub fn scan_extension_lapses(
+    context: &StoreContext,
+    conn: &mut Connection,
+    cursor: &mut ReceiptDueCursor,
+) -> Result<ExtensionLapseResult, ApiError> {
+    let through = cursor.extension.through;
+    let after = cursor.extension.after.clone();
+    let (result, next_extension) = context.execute_decision(
+        conn,
+        |_| Ok(()),
+        |tx, decision, ()| {
+            let rows: Vec<(i64, String, String)> = {
+                let mut stmt = tx
+                    .prepare("SELECT extension_until,seat_id,thread_id FROM catch_up WHERE extension_until IS NOT NULL AND extension_until<=?1 AND (?2 IS NULL OR extension_until>?2) AND (?3 IS NULL OR extension_until>?3 OR (extension_until=?3 AND (seat_id>?4 OR (seat_id=?4 AND thread_id>?5)))) ORDER BY extension_until,seat_id,thread_id LIMIT ?6")
+                    .map_err(store_error)?;
+                stmt.query_map(params![
+                    decision.utc.0,
+                    through,
+                    after.as_ref().map(|k| k.0),
+                    after.as_ref().map(|k| k.1.as_str()),
+                    after.as_ref().map(|k| k.2.as_str()),
+                    EXTENSION_RECHECK_ROWS
+                ], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
+                .map_err(store_error)?
+                .collect::<Result<_, _>>()
+                .map_err(store_error)?
+            };
+            let mut warnings = 0u16;
+            let mut inspected = 0u16;
+            for (_, seat, thread) in &rows {
+                let mut stmt = tx
+                    .prepare("SELECT message_id FROM receipts WHERE seat_id=?1 AND thread_id=?2 AND state='pending' AND warning_message_id IS NULL AND deadline_at IS NOT NULL AND deadline_at<=?3 UNION SELECT s.message_id FROM receipt_state s JOIN messages m ON m.id=s.message_id WHERE s.seat_id=?1 AND m.thread_id=?2 AND s.state='pending' AND s.warning_message_id IS NULL AND s.deadline_at IS NOT NULL AND s.deadline_at<=?3")
+                    .map_err(store_error)?;
+                let messages: Vec<String> = stmt
+                    .query_map(params![seat, thread, decision.utc.0], |r| r.get(0))
+                    .map_err(store_error)?
+                    .collect::<Result<_, _>>()
+                    .map_err(store_error)?;
+                for message in messages {
+                    inspected = inspected.saturating_add(1);
+                    let outcome = schema::record_overdue_if_pending(
+                        tx,
+                        &ObligationRef::Receipt {
+                            message: MessageId::new(message),
+                            seat: SeatId::new(seat.clone()),
+                        },
+                        &TimeBasis::Decision,
+                        decision.utc,
+                    )?;
+                    if outcome.inserted {
+                        bump_overdue_filters(tx, seat, thread)?;
+                        warnings = warnings.saturating_add(1);
+                    }
+                }
+            }
+            let more = rows.len() as i64 == EXTENSION_RECHECK_ROWS;
+            let next = if more {
+                ExtensionLapseCursor {
+                    through,
+                    after: rows.last().cloned(),
+                }
+            } else {
+                ExtensionLapseCursor {
+                    through: Some(decision.utc.0 - 1),
+                    after: None,
+                }
+            };
+            Ok((
+                ExtensionLapseResult {
+                    warnings,
+                    inspected,
+                    more,
+                },
+                next,
+            ))
+        },
+    )?;
+    cursor.extension = next_extension;
+    Ok(result)
+}
+
+fn bump_overdue_filters(tx: &Transaction<'_>, seat: &str, thread: &str) -> Result<(), ApiError> {
+    let instance: String = tx
+        .query_row(
+            "SELECT instance_id FROM threads WHERE id=?1",
+            [thread],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    schema::bump_filter_revision(tx, &instance, "inbox", seat)?;
+    schema::bump_filter_revision(tx, &instance, "directory", thread)?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -71,6 +71,7 @@ fn send_request() -> SendMessage {
             execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
             target: HostTargetId::new("pa"),
         },
+        relays_user: false,
     }
 }
 

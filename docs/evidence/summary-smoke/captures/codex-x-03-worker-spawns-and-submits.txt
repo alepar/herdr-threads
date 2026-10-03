@@ -1,0 +1,2 @@
+--- 2026-10-03T00:13:51.424Z custom_tool_call exec: const r=await tools.multi_agent_v1__spawn_agent({model:"gpt-6-luna",reasoning_effort:"low",message:"Run herdr-threads summary job sj-dde7f70b-fb86-416f-b583-7056a02d3c95 --lease 2a36e436-3500-4426-9188-5090a5da6e3a, then pipe a valid summary JSON to herdr-threads summary submit sj-dde7f70b-fb86-416f-b583-7056a02d3c95 --lease 2a36e436-3500-4426-91
+--- submit results seen in the transcript

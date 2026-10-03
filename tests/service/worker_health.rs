@@ -653,6 +653,33 @@ fn production_health_redacts_wake_callback_identity_and_detail() {
         "unverified wake driver recovery: StoreCorrupt",
         &["private wake scan lock detail"],
     );
+
+    // A poke driver error is observed too (a different code, so the render
+    // proves it was this error that was recorded), redacted, with its detail
+    // in the private tail only. A successful poke drive records nothing.
+    // Kills: `let _ = scheduler.drive_pokes(..)` discarding the error.
+    observed.observe_poke_drive(&Err(api_error(
+        ErrorCode::StoreBusy,
+        "private poke scan detail",
+    )));
+    production.assert_redacted(
+        "unverified wake driver recovery: StoreBusy",
+        &["private poke scan detail"],
+    );
+    assert!(
+        wake.last_diagnostic()
+            .unwrap()
+            .contains("unverified poke driver recovery")
+            && wake
+                .last_diagnostic()
+                .unwrap()
+                .contains("private poke scan detail")
+    );
+    observed.observe_poke_drive(&Ok(crate::scheduler::PokeDriveOutcome::default()));
+    production.assert_redacted(
+        "unverified wake driver recovery: StoreBusy",
+        &["private poke scan detail"],
+    );
 }
 
 #[test]
@@ -744,6 +771,7 @@ impl ObservedHost {
         use crate::protocol::ids::*;
         let at = self.clock.monotonic_now();
         HostObservation {
+            focused: false,
             target: HostTargetId::new("pane"),
             host_boot: HostBootId::new("host"),
             epoch: 1,

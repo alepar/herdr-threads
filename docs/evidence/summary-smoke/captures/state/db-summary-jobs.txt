@@ -1,0 +1,3 @@
+thread_id|jobs|stored|rejections|attempts
+thread-DWKSdAn7|20|13|17|31
+thread-I2SWujnv|15|14|14|33

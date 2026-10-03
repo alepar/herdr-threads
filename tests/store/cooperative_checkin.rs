@@ -15,7 +15,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-struct TestClock(AtomicU64);
+pub(crate) struct TestClock(AtomicU64);
 impl Clock for TestClock {
     fn utc_now(&self) -> UtcMillis {
         UtcMillis(self.0.load(Ordering::SeqCst) as i64)
@@ -31,8 +31,8 @@ impl Drop for PrivateDirectory {
     }
 }
 // Field order drops the SQLite owner before the last directory reference.
-struct OwnedFixture<T> {
-    value: T,
+pub(crate) struct OwnedFixture<T> {
+    pub(crate) value: T,
     _directory: Arc<PrivateDirectory>,
 }
 impl<T> std::ops::Deref for OwnedFixture<T> {
@@ -46,7 +46,7 @@ impl<T> std::ops::DerefMut for OwnedFixture<T> {
         &mut self.value
     }
 }
-fn fixture() -> (
+pub(crate) fn fixture() -> (
     OwnedFixture<SqliteStore>,
     OwnedFixture<Connection>,
     Arc<TestClock>,
@@ -88,7 +88,7 @@ fn fixture_with_context() -> (
         StoreContext::new(directory_path, clock),
     )
 }
-fn claim() -> CallerClaim {
+pub(crate) fn claim() -> CallerClaim {
     CallerClaim {
         instance: "i".into(),
         seat: SeatId::new("s"),
@@ -100,7 +100,7 @@ fn claim() -> CallerClaim {
         target: HostTargetId::new("p"),
     }
 }
-fn budget() -> CallBudget {
+pub(crate) fn budget() -> CallBudget {
     CallBudget {
         deadline: MonoInstant(1000),
         cancellation: Default::default(),
@@ -153,7 +153,7 @@ fn mapped_generation_zero_can_issue_cooperative_permit_without_native_attestatio
         .unwrap();
     assert_eq!(verified, None);
 }
-fn check_in(
+pub(crate) fn check_in(
     store: &SqliteStore,
     command: CheckIn,
 ) -> Result<crate::protocol::results::CheckInResult, crate::protocol::results::ApiError> {
@@ -183,7 +183,7 @@ fn check_in_as(
     };
     Ok(result)
 }
-fn lifecycle(context: CallerClaim, operation: &str) -> CheckIn {
+pub(crate) fn lifecycle(context: CallerClaim, operation: &str) -> CheckIn {
     CheckIn {
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: context.binding_generation,
@@ -370,6 +370,7 @@ fn cooperative_send_uses_claim_context_and_keeps_exact_replay() {
         invited_recipients: vec![],
         deadline_millis: None,
         operation: OperationId::new("send"),
+        relays_user: false,
     };
     loop {
         match store
@@ -639,7 +640,7 @@ fn legacy_v1_startup_adds_index_and_preserves_rows_for_bounded_execution_lookup(
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        12
+        14
     );
 }
 fn dispatch_check_in(
@@ -1370,6 +1371,7 @@ fn independent_current_and_issuance_budgets_stop_accountable_sqlite_waits() {
                         invited_recipients: vec![],
                         deadline_millis: None,
                         operation: OperationId::new("send"),
+                        relays_user: false,
                     };
                     loop {
                         match store
@@ -2009,7 +2011,7 @@ fn programmatic_notices_settle_page_by_page_for_the_current_occupant() {
     assert_eq!(pending_notices(&conn), ((6, false), 22));
 }
 
-fn human_claim(from: &CallerClaim, generation: u64) -> CallerClaim {
+pub(crate) fn human_claim(from: &CallerClaim, generation: u64) -> CallerClaim {
     CallerClaim {
         harness: Harness::Human,
         native_session: NativeSessionId::new("plugin_context:person"),

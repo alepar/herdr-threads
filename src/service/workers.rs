@@ -18,13 +18,13 @@ use crate::service::pacer::{Pacer, Wake};
 use crate::{
     notification::{dispatch::NativeWakeDispatcher, policy::RetryConfig},
     ports::{
-        DuePhaseProgress, DueScanProgress, DueScanRequest, DurableWorkAdmission, HostPort,
-        RetirementProgress, StorePort, WakeCandidate, WakeOutcome, WakeRecoveryCandidate,
-        WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation, WorkAdmission, WorkCandidate,
-        WorkProgress,
+        DuePhaseProgress, DueScanProgress, DueScanRequest, DurableWorkAdmission, HostPort, PokeDue,
+        PokeReceipt, PokeReservation, RetirementProgress, StorePort, WakeCandidate, WakeOutcome,
+        WakeRecoveryCandidate, WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation,
+        WorkAdmission, WorkCandidate, WorkProgress,
     },
     protocol::{
-        ids::RetirementJobId,
+        ids::{RetirementJobId, SeatId},
         pagination::{Page, PageRequest},
         results::RetirementStatus,
         time::Cancellation,
@@ -1193,6 +1193,34 @@ impl WakePort for ScheduledStore {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
         self.store.recover_wake_reservation(request, budget)
     }
+    fn poke_candidates(&self, limit: u16, budget: &CallBudget) -> Result<Vec<PokeDue>, ApiError> {
+        self.store.poke_candidates(limit, budget)
+    }
+    fn poke_for_wake(
+        &self,
+        seat: &SeatId,
+        budget: &CallBudget,
+    ) -> Result<Option<PokeDue>, ApiError> {
+        self.store.poke_for_wake(seat, budget)
+    }
+    fn reserve_poke(
+        &self,
+        due: &PokeDue,
+        budget: &CallBudget,
+    ) -> Result<Option<PokeReservation>, ApiError> {
+        let _turn = self.writer.enter_background(budget, self.store.clock())?;
+        self.store.reserve_poke(due, budget)
+    }
+    fn complete_poke(
+        &self,
+        attempt: crate::protocol::ids::WakeAttemptId,
+        outcome: WakeOutcome,
+        receipts: &[PokeReceipt],
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        let _turn = self.writer.enter_background(budget, self.store.clock())?;
+        self.store.complete_poke(attempt, outcome, receipts, budget)
+    }
 }
 
 /// Observe actual store callbacks, including no-reservation decisions. A
@@ -1233,10 +1261,23 @@ impl<'a, P: WakePort + ?Sized> ObservedWakePort<'a, P> {
                 }
             }
         }
-        if let Err(error) = result
-            && !self
-                .callback_failed
-                .load(std::sync::atomic::Ordering::Relaxed)
+        if let Err(error) = result {
+            self.observe_driver_error("unverified wake driver recovery", error);
+        }
+    }
+    /// Poke driver errors reach worker health like wake driver errors.
+    pub fn observe_poke_drive(
+        &self,
+        result: &Result<crate::scheduler::PokeDriveOutcome, ApiError>,
+    ) {
+        if let Err(error) = result {
+            self.observe_driver_error("unverified poke driver recovery", error);
+        }
+    }
+    fn observe_driver_error(&self, context: &str, error: &ApiError) {
+        if !self
+            .callback_failed
+            .load(std::sync::atomic::Ordering::Relaxed)
         {
             if matches!(
                 error.code,
@@ -1251,7 +1292,7 @@ impl<'a, P: WakePort + ?Sized> ObservedWakePort<'a, P> {
                     FailureKey::General,
                     Some((
                         RedactedFailure::WakeDriver(error.code.clone()),
-                        error_diagnostic("unverified wake driver recovery", error),
+                        error_diagnostic(context, error),
                     )),
                 );
             }
@@ -1341,6 +1382,45 @@ impl<P: WakePort + ?Sized> WakePort for ObservedWakePort<'_, P> {
             self.port.recover_wake_reservation(request, budget),
         )
     }
+    fn poke_candidates(&self, limit: u16, budget: &CallBudget) -> Result<Vec<PokeDue>, ApiError> {
+        self.observed(
+            WakePhase::Discovery,
+            None,
+            self.port.poke_candidates(limit, budget),
+        )
+    }
+    fn poke_for_wake(
+        &self,
+        seat: &SeatId,
+        budget: &CallBudget,
+    ) -> Result<Option<PokeDue>, ApiError> {
+        // Advisory: an ordinary wake never fails because of it.
+        self.port.poke_for_wake(seat, budget)
+    }
+    fn reserve_poke(
+        &self,
+        due: &PokeDue,
+        budget: &CallBudget,
+    ) -> Result<Option<PokeReservation>, ApiError> {
+        self.observed(
+            WakePhase::Reservation,
+            Some(due.seat.as_str().into()),
+            self.port.reserve_poke(due, budget),
+        )
+    }
+    fn complete_poke(
+        &self,
+        attempt: crate::protocol::ids::WakeAttemptId,
+        outcome: WakeOutcome,
+        receipts: &[PokeReceipt],
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        self.observed(
+            WakePhase::Completion,
+            Some(attempt.as_str().into()),
+            self.port.complete_poke(attempt, outcome, receipts, budget),
+        )
+    }
 }
 
 /// The wake driver owns every physical attempt until the host call exits. It
@@ -1357,6 +1437,7 @@ pub fn start_wake_worker(
     pacer: Arc<Pacer>,
     cancellation: Cancellation,
     status: Arc<WorkerStatus>,
+    poke_capabilities: Arc<dyn crate::ports::PokeCapabilitySource>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("herdr-wakes".into())
@@ -1367,7 +1448,8 @@ pub fn start_wake_worker(
             let port = ScheduledStore::new(store, writer);
             let notifier = NativeWakeDispatcher::new(host.as_ref(), &port, port.store.clock());
             let observed = ObservedWakePort::new(&port, &status);
-            let scheduler = Scheduler::new(instance, &port, &observed, &notifier, retry, boot);
+            let scheduler = Scheduler::new(instance, &port, &observed, &notifier, retry, boot)
+                .with_poke_capabilities(poke_capabilities.as_ref());
             let safety_tick = Duration::from_millis(WAKE_SAFETY_TICK_MILLIS);
             // The first pass runs at boot, before the first wait.
             let mut next_due_at: Option<crate::protocol::time::MonoInstant> = None;
@@ -1381,6 +1463,7 @@ pub fn start_wake_worker(
                 }
                 waited = true;
                 next_due_at = None;
+                let mut wakes_failed = false;
                 loop {
                     let budget = CallBudget {
                         deadline: crate::protocol::time::MonoInstant(
@@ -1400,6 +1483,7 @@ pub fn start_wake_worker(
                                 pacer.on_failure();
                                 status.record_failure(Lane::Wakes, &error);
                             }
+                            wakes_failed = true;
                             break;
                         }
                         Ok(outcome) => {
@@ -1412,6 +1496,26 @@ pub fn start_wake_worker(
                         }
                     }
                 }
+                if cancellation.is_cancelled() {
+                    break;
+                }
+                // A failed wake pass leaves its retained completion to the
+                // wake path's next tick (no back-off for a store-callback
+                // failure); the poke drive waits for a clean pass.
+                if wakes_failed {
+                    continue;
+                }
+                // Spec §10: soft-deadline pokes share the wake dispatcher and
+                // its limits, once per pass (a pass runs at least every
+                // safety tick); store callback failures are observed per
+                // phase and driver errors are recorded in worker health.
+                let poke_budget = CallBudget {
+                    deadline: crate::protocol::time::MonoInstant(
+                        port.store.clock().monotonic_now().0.saturating_add(5_000),
+                    ),
+                    cancellation: cancellation.clone(),
+                };
+                observed.observe_poke_drive(&scheduler.drive_pokes(&poke_budget));
             }
         })
 }

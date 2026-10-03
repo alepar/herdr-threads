@@ -1,0 +1,7 @@
+#!/bin/sh
+# herdr client against the private smoke server
+unset HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_AGENT
+export HERDR_SOCKET_PATH=/private/tmp/ht-summary-smoke/h.sock
+export HERDR_CONFIG_PATH=/private/tmp/ht-summary-smoke/cfg/herdr.toml
+export XDG_CONFIG_HOME=/private/tmp/ht-summary-smoke/xcfg XDG_STATE_HOME=/private/tmp/ht-summary-smoke/xst XDG_RUNTIME_DIR=/private/tmp/ht-summary-smoke/xrt
+exec /Users/USER/.local/bin/herdr "$@"

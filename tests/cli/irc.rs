@@ -22,6 +22,9 @@ fn summary(seq: u64, author: &str, body: &str) -> MessageSummary {
         thread: ThreadId::new("thread-Ab12Cd34"),
         author: Some(SeatId::new(author)),
         event_author: None,
+        author_role: None,
+        relays_user: false,
+        author_role_backfilled: false,
         kind: MessageKind::Ordinary,
         sequence: seq,
         // 2026-09-30 12:34:56Z
@@ -345,4 +348,26 @@ fn clock_is_hours_and_minutes() {
     crate::protocol::output::with_render_now(UtcMillis(1), || {
         assert_eq!(clock(UtcMillis(0), false), "00:00");
     });
+}
+
+#[test]
+fn follow_lines_mark_human_and_relayed_messages() {
+    use crate::protocol::summary::AuthorRole;
+    let mut human_row = summary(1, "seat-Person01", "hello");
+    human_row.author_role = Some(AuthorRole::Human);
+    assert_eq!(
+        render(&human_row, &mut party()),
+        "[12:34] <you·human> [human] hello\n"
+    );
+    let mut relayed = summary(2, "seat-Alice001", "do it");
+    relayed.author_role = Some(AuthorRole::Agent);
+    relayed.relays_user = true;
+    assert_eq!(
+        render(&relayed, &mut party()),
+        "[12:34] <alice·claude> [relays user] do it\n"
+    );
+    assert_eq!(
+        render(&summary(3, "seat-Alice001", "plain"), &mut party()),
+        "[12:34] <alice·claude> plain\n"
+    );
 }

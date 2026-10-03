@@ -74,6 +74,9 @@ id!(HostBootId);
 id!(NativeSessionId);
 id!(ExecutionId);
 id!(WakeAttemptId);
+id!(SummaryJobId);
+id!(SummaryBlockId);
+id!(LeaseToken);
 
 /// Private journal lookup token; it never names a server receipt or message.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]

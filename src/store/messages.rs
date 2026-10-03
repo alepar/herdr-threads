@@ -63,8 +63,12 @@ impl Default for MessageLimits {
 
 /// The caller claim and transient operation key are excluded from semantic replay identity.
 pub fn send_payload(request: &SendMessage) -> Value {
-    json!({"kind":"send_message","thread":request.thread,"body":request.body,
-        "invited_recipients":request.invited_recipients,"deadline_millis":request.deadline_millis,"claim":request.claim})
+    let mut payload = json!({"kind":"send_message","thread":request.thread,"body":request.body,
+        "invited_recipients":request.invited_recipients,"deadline_millis":request.deadline_millis,"claim":request.claim});
+    if request.relays_user {
+        payload["relays_user"] = json!(true);
+    }
+    payload
 }
 
 /// One hidden preparation quantum. The caller yields the writer between steps.
@@ -590,7 +594,8 @@ pub fn publish_send(
             }
             let id = MessageId::new(prep_id.replacen("prep-", "msg-", 1));
             let observation = actor.observation(decision.utc.0);
-            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9)",params![id.as_str(),instance,request.thread.as_str(),base,seat.as_str(),observation,request.body,decision.utc.0,decision_seq as i64]).map_err(store_error)?;
+            let author_role = schema::open_binding_role(tx, &seat)?;
+            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11)",params![id.as_str(),instance,request.thread.as_str(),base,seat.as_str(),observation,request.body,decision.utc.0,decision_seq as i64,author_role,request.relays_user as i64]).map_err(store_error)?;
             tx.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![prep_id,id.as_str(),instance,request.thread.as_str(),decision_seq as i64,decision.utc.0,base,high_water,recipient_count,warning_count]).map_err(store_error)?;
             tx.execute(
                 "UPDATE threads SET next_sequence=?1,updated_at=?2 WHERE id=?3",
@@ -617,3 +622,7 @@ pub fn publish_send(
 #[cfg(test)]
 #[path = "../../tests/store/messages.rs"]
 mod messages_tests;
+
+#[cfg(test)]
+#[path = "../../tests/store/author_role.rs"]
+mod author_role_tests;

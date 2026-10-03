@@ -81,6 +81,9 @@ fn message(sequence: u64, author: SeatId) -> MessageSummary {
         thread: thread(),
         author: Some(author),
         event_author: None,
+        author_role: None,
+        relays_user: false,
+        author_role_backfilled: false,
         kind: MessageKind::Ordinary,
         sequence,
         // 2026-09-30 12:34:56Z

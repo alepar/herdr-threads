@@ -38,6 +38,13 @@ pub enum Command {
     PendingReceipts(PendingReceiptsQuery),
     /// Read-only seat attention digest; never mutates receipts, ACK or checkpoints.
     AttentionDigest(AttentionDigestQuery),
+    /// Read-only hot threads of a seat for the recovery hook text (spec §9).
+    HotThreads(HotThreadsQuery),
+    /// Thread summary protocol (spec §4). Each carries the seat's claim; a
+    /// declared subagent (summary worker) may issue all three.
+    Summary(crate::protocol::summary::SummaryRequest),
+    SummaryJob(crate::protocol::summary::SummaryJobRequest),
+    SummarySubmit(crate::protocol::summary::SummarySubmitRequest),
     LocalIntents(LocalIntentsQuery),
     Search(SearchQuery),
     Message(MessageQuery),
@@ -360,6 +367,13 @@ pub struct AttentionDigestQuery {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct HotThreadsQuery {
+    pub seat: SeatId,
+    /// Hot threads returned in full, `1..=8`; the rest come back as overflow ids.
+    pub limit: u32,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DiagnosticsQuery {
     pub seat: Option<SeatId>,
     pub thread: Option<ThreadId>,
@@ -514,6 +528,10 @@ pub struct SendMessage {
     pub deadline_millis: Option<u64>,
     pub operation: OperationId,
     pub claim: CallerClaim,
+    /// Spec §1: the sender claims this message relays its user's instruction
+    /// (`send --relays-user`). A cooperative claim (TRUST-POLICY A1, A3); service sends record 0.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub relays_user: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -643,6 +661,14 @@ impl Command {
             }
             Self::Invite(invite) if invite.deadline_millis == Some(0) => {
                 Err("deadline must be positive")
+            }
+            Self::SummarySubmit(submit) if !submit.submission.is_object() => {
+                Err("summary submission must be a JSON object")
+            }
+            Self::HotThreads(query)
+                if query.limit == 0 || query.limit > crate::protocol::results::MAX_HOT_THREADS =>
+            {
+                Err("invalid hot thread limit")
             }
             Self::AcceptRequired(accept) => accept.validate(),
             Self::ContinuityCheckIn(continuity) => continuity.validate(),

@@ -9,7 +9,7 @@
 - A Rust toolchain with Cargo. CI pins Rust 1.94.0 (edition 2024), the version used for local checks.
 - `Cargo.lock` is committed and every build uses `--locked`.
 - A harness version an adapter recipe admits (setup, the hook and `launch` refuse any other; `doctor` prints both registries):
-  - Claude Code 2.1.283 to 2.1.287 inclusive (recipe `claude-hooks-2.1.283`).
+  - Claude Code 2.1.283 to 2.1.286 inclusive (recipe `claude-hooks-2.1.283`) and 2.1.287 (recipe `claude-hooks-2.1.287`, which also recovers context after compaction).
   - Codex exactly 0.157.1 or 0.158.0 (recipe `codex-hooks-v1`), or an unlisted version whose embedded hook schemas match that recipe's fingerprint. Codex 0.159.2 is admitted that way and reported as **schema-matched, live-unverified**. The sandbox socket allowance is printed only for 0.159.2 (see [below](#codex-sandbox-socket-allowance)).
 - `herdr-threads` on the agent's `PATH`: the hook's ready commands name it bare.
 
@@ -109,7 +109,7 @@ Observed on this build (merge of integration `38a31f5`) with a missing host sock
 
 - `doctor` before ensure exits 3 (`daemon: not_running`, `result: unavailable`).
 - `daemon ensure` exits 0 and prints health with `state: "degraded"`, `unresolved_seats: 0`, and a limitation for the unavailable host; admitted harnesses are `cooperative` and their facts are `notes`.
-- `doctor` then exits 0 with `result: degraded` (the host is unavailable), and lists `hooks.claude.recipes: claude-hooks-2.1.283 [2.1.283, 2.1.287]` and `hooks.codex.recipes: codex-hooks-v1 {0.157.1, 0.158.0, 0.159.3}`.
+- `doctor` then exits 0 with `result: degraded` (the host is unavailable), and lists `hooks.claude.recipes: claude-hooks-2.1.283 [2.1.283, 2.1.286]; claude-hooks-2.1.287 {2.1.287}`, `hooks.claude.compaction_recovery: claude-hooks-2.1.283: unsupported (resume/clear and herdr-threads summary); claude-hooks-2.1.287: supported` and `hooks.codex.recipes: codex-hooks-v1 {0.157.1, 0.158.0, 0.159.3}`.
 - `daemon stop` exits 0 with `stop_accepted`, and `daemon health` afterwards exits 3 with `host_unavailable`.
 - With `instances/` changed to 0755, `doctor` exits 2 (`result: unsafe_state_dir`) and `daemon ensure` exits 2 (`unsafe private directory`).
 
@@ -130,6 +130,17 @@ Instance-wide defaults come from an optional `settings.json` in the instance dir
 - The daemon reads it at start. Edits apply after `daemon stop` then `daemon ensure`. `daemon health` prints the effective `settings`.
 - The chosen duration is frozen on each invitation and message when it is created.
 
+An optional nested `"summary"` object tunes thread summaries, catch-up and soft-deadline pokes. Every key is optional:
+
+```json
+{"summary": {"chunk_bytes": 24576, "display_bytes": 40960, "narrative_bytes": 3072, "bundle_bytes": 49152, "fold_display_bytes": 24576, "max_new_leases": 8, "tracker_prefixes": ["ht-"], "fan_in": 8, "hot_window_ms": 86400000, "exit_grace_ms": 60000, "p99_cold_ms": 90000, "soft_fraction": 0.6}}
+```
+
+- Unknown keys inside `"summary"` are rejected, like the top level.
+- Every number must be positive. `soft_fraction` must be strictly between 0 and 1. `fan_in` is fixed at 8 in this version.
+- `tracker_prefixes` holds 1 to 8 entries of 1 to 16 ASCII letters, digits, `-` or `_` (for example `ht-`, `bd-`).
+- Changing `chunk_bytes` or `tracker_prefixes` starts a new summary block generation: blocks made under the old values stay stored but are no longer used.
+
 Observed on the earlier docs draft (base `a54008e`), not re-run at this commit: a 0600 file with `receipt_default_ms: 600000` and `invitation_default_ms: 120000` was reflected in health after ensure. With the file changed to 0644, `daemon ensure` failed with exit 3 ("daemon did not become ready within five seconds").
 
 ## Harness hooks
@@ -149,7 +160,8 @@ Recipes in this build (the registry is `harness::recipe`; `doctor` prints both):
 
 | Harness | Recipe and versions | Evidence scope |
 | --- | --- | --- |
-| Claude Code | `claude-hooks-2.1.283`: closed interval [2.1.283, 2.1.287], exactly those five versions | 2.1.283: Bash PreToolUse input and `updatedInput` rewrite observed; SessionStart startup/clear/resume input observed. 2.1.284: SessionStart startup/resume and root/subagent Bash PreToolUse input captured and parsed unchanged; hook-output application unverified. 2.1.285: same inputs parsed unchanged; in print mode root Bash `updatedInput` executed and SessionStart/PreToolUse `additionalContext` delivered. 2.1.286: the same, re-captured. 2.1.287: the native matrix manual and managed core-flow cells (ht-p03.20; [validation report](validation/report.md)). 2.1.285 and 2.1.286 permission-check a rewritten command; the production hook does not rewrite. An unattended (print-mode) session needs the allow rule `Bash(herdr-threads *)` that `setup claude` installs, or the hook's ready commands are denied. Recipe profile: model receipt unsupported for all five (see below). |
+| Claude Code | `claude-hooks-2.1.283`: closed interval [2.1.283, 2.1.286], exactly those four versions | 2.1.283: Bash PreToolUse input and `updatedInput` rewrite observed; SessionStart startup/clear/resume input observed. 2.1.284: SessionStart startup/resume and root/subagent Bash PreToolUse input captured and parsed unchanged; hook-output application unverified. 2.1.285: same inputs parsed unchanged; in print mode root Bash `updatedInput` executed and SessionStart/PreToolUse `additionalContext` delivered. 2.1.286: the same, re-captured. 2.1.285 and 2.1.286 permission-check a rewritten command; the production hook does not rewrite. An unattended (print-mode) session needs the allow rule `Bash(herdr-threads *)` that `setup claude` installs, or the hook's ready commands are denied. Recipe profile: model receipt unsupported for all four (see below). |
+| Claude Code | `claude-hooks-2.1.287`: exactly {2.1.287} | 2.1.287: startup/resume and root/subagent Bash input unchanged from 2.1.286; SessionStart `compact` payload captured and its `additionalContext` delivered after compaction (print mode, [capture](evidence/claude-compact-capture/report.md)); the native matrix manual and managed core-flow cells (ht-p03.20; [validation report](validation/report.md)). Recipe profile: compact supported, model receipt unsupported. |
 | Codex | `codex-hooks-v1`: exactly {0.157.1, 0.158.0, 0.159.3} | 0.157.1: pinned source contract and native root/child PreToolUse probe. 0.158.0: embedded hook schemas byte-identical to 0.157.1; live SessionStart startup/resume, SubagentStart and root/child Bash PreToolUse input captured; context-only `additionalContext` delivery observed for SessionStart and PreToolUse (not SubagentStart). 0.159.3: the native matrix manual and managed core-flow cells (ht-p03.20; [validation report](validation/report.md)). SessionStart `fork` is refused. Invocation transport and model receipt unsupported. |
 
 The recipe profiles are what this build declares, and they still mark model receipt (and Codex invocation transport) unsupported, so daemon health reports both harnesses `unsupported`. Separately, native validation recorded cooperative model-issued accepts and ACKs joined to SQLite receipts on Claude Code 2.1.285 and 2.1.286 and on Codex 0.159.2 (schema-matched, live-unverified), with every required scenario passing and open gaps; none ran on Claude 2.1.283/2.1.284 or Codex 0.157.1/0.158.0. See the [validation report](validation/report.md).

@@ -241,6 +241,7 @@ impl LocalService for DomainService {
             | Command::DeliveryInspect(_)
             | Command::PendingReceipts(_)
             | Command::AttentionDigest(_)
+            | Command::HotThreads(_)
             | Command::Message(_)
             | Command::Diagnostics(_)
             | Command::RetirementJobs(_) => self.store.query(&command, &read, budget),
@@ -349,6 +350,40 @@ impl LocalService for DomainService {
                 })?;
                 identity.continuity(continuity, budget)
             }
+            // Spec §4 summary protocol. The store decides entitlement against the
+            // canonical view (A2); here only the elected owner's peer is admitted.
+            // A declared subagent (a summary worker) may issue all three.
+            command
+            @ (Command::Summary(_) | Command::SummaryJob(_) | Command::SummarySubmit(_)) => {
+                let (owner_uid, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+                    error(
+                        ErrorCode::CallerUnverified,
+                        "cooperative elected runtime unavailable",
+                    )
+                })?;
+                if peer.effective_uid() != *owner_uid {
+                    return Err(error(
+                        ErrorCode::Unauthorized,
+                        "caller peer does not match elected owner",
+                    ));
+                }
+                let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+                match command {
+                    Command::Summary(request) => self
+                        .store
+                        .summary(&request, budget)
+                        .map(CommandResult::Summary),
+                    Command::SummaryJob(request) => self
+                        .store
+                        .summary_job(&request, budget)
+                        .map(CommandResult::SummaryJob),
+                    Command::SummarySubmit(request) => self
+                        .store
+                        .summary_submit(&request, budget)
+                        .map(CommandResult::SummarySubmitted),
+                    _ => unreachable!("matched a summary command"),
+                }
+            }
             Command::LocalIntents(_) => Err(error(
                 ErrorCode::Unsupported,
                 "local intents are client-owned",
@@ -410,6 +445,145 @@ mod operator_tests {
             },
         );
         assert_eq!(result.unwrap_err().code, ErrorCode::Unauthorized);
+        let db = rusqlite::Connection::open(&path).unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM operations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        drop(domain);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn summary_commands_reach_the_store() {
+        use crate::protocol::{
+            authority::{CallerClaim, CallerRole, Harness},
+            ids::{ExecutionId, LeaseToken, NativeSessionId, SeatId, SummaryJobId, ThreadId},
+            summary::{SummaryJobRequest, SummaryOutcome, SummaryRequest, SummarySubmitRequest},
+        };
+        let path = std::env::temp_dir().join(format!("summary-route-{}.db", uuid::Uuid::new_v4()));
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        let store = Arc::new(
+            SqliteStore::new(
+                StoreContext::new(path.clone(), clock.clone()),
+                "i",
+                StoreSettings::default(),
+            )
+            .unwrap(),
+        );
+        {
+            let db = rusqlite::Connection::open(&path).unwrap();
+            db.execute_batch(
+                "INSERT OR IGNORE INTO host_instances(id,created_at) VALUES ('i',0);\
+                 INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0);\
+                 INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);",
+            )
+            .unwrap();
+        }
+        let domain = DomainService::new("i".into(), store, clock.clone())
+            .with_cooperative_owner(501, Arc::new(FairWriter::new(8)));
+        let claim = CallerClaim {
+            instance: "i".into(),
+            seat: SeatId::new("s"),
+            binding_generation: 0,
+            role: CallerRole::Subagent,
+            harness: Harness::Codex,
+            native_session: NativeSessionId::new("n"),
+            execution: ExecutionId::new("e"),
+            target: HostTargetId::new("p"),
+        };
+        let budget = || CallBudget {
+            deadline: MonoInstant(clock.monotonic_now().0 + 5000),
+            cancellation: Cancellation::default(),
+        };
+        let summary = |claim: CallerClaim| {
+            Command::Summary(SummaryRequest {
+                thread: ThreadId::new("t"),
+                claim,
+            })
+        };
+        // A declared subagent of a seat that may read the thread gets an answer.
+        match domain
+            .handle(
+                summary(claim.clone()),
+                PeerIdentity::from_kernel(501),
+                &budget(),
+            )
+            .unwrap()
+        {
+            CommandResult::Summary(SummaryOutcome::Ready(ready)) => assert_eq!(ready.frontier, 0),
+            other => panic!("expected a Ready summary, got {other:?}"),
+        }
+        // A job and a submission for a job nobody leased reach the store and are
+        // refused there (not found), not by the route.
+        let job = Command::SummaryJob(SummaryJobRequest {
+            job_id: SummaryJobId::new("j"),
+            lease_token: LeaseToken::new("l"),
+            claim: claim.clone(),
+        });
+        let submit = Command::SummarySubmit(SummarySubmitRequest {
+            job_id: SummaryJobId::new("j"),
+            lease_token: LeaseToken::new("l"),
+            submission: serde_json::json!({}),
+            claim: claim.clone(),
+        });
+        for command in [job, submit] {
+            let err = domain
+                .handle(command, PeerIdentity::from_kernel(501), &budget())
+                .unwrap_err();
+            assert_eq!(err.code, ErrorCode::NotFound);
+        }
+        // The peer must be the elected owner, for every summary command.
+        let err = domain
+            .handle(
+                summary(claim.clone()),
+                PeerIdentity::from_kernel(502),
+                &budget(),
+            )
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::Unauthorized);
+        // A claim for another instance is unverified.
+        let mut foreign = claim;
+        foreign.instance = "other".into();
+        let err = domain
+            .handle(summary(foreign), PeerIdentity::from_kernel(501), &budget())
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::CallerUnverified);
+        // Without an elected runtime the route is closed.
+        let bare = DomainService::new(
+            "i".into(),
+            Arc::new(
+                SqliteStore::new(
+                    StoreContext::new(path.clone(), clock.clone()),
+                    "i",
+                    StoreSettings::default(),
+                )
+                .unwrap(),
+            ),
+            clock.clone(),
+        );
+        let err = bare
+            .handle(
+                Command::Summary(SummaryRequest {
+                    thread: ThreadId::new("t"),
+                    claim: CallerClaim {
+                        instance: "i".into(),
+                        seat: SeatId::new("s"),
+                        binding_generation: 0,
+                        role: CallerRole::TopLevel,
+                        harness: Harness::Codex,
+                        native_session: NativeSessionId::new("n"),
+                        execution: ExecutionId::new("e"),
+                        target: HostTargetId::new("p"),
+                    },
+                }),
+                PeerIdentity::from_kernel(501),
+                &budget(),
+            )
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::CallerUnverified);
         let db = rusqlite::Connection::open(&path).unwrap();
         assert_eq!(
             db.query_row("SELECT count(*) FROM operations", [], |r| r

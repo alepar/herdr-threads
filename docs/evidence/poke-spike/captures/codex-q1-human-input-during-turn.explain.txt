@@ -1,0 +1,5 @@
+agent: codex
+state: working
+manifest: remote:~/.local/state/herdr/agent-detection/remote/codex.toml 2026.10.01.1
+rule: osc_title_working (region=osc_title priority=1050)
+evidence: "⠴ codex"

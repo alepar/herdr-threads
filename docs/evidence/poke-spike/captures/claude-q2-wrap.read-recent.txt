@@ -1,0 +1,50 @@
+
+ ▐▛███▛█   Claude Code v2.1.287
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /private/tmp/ht-poke-spike/claude
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+❯ wrapword01 wrapword02 wrapword03 wrapword04 wrapword05 wrapword06 wrapword07
+  wrapword08 wrapword09 wrapword10 wrapword11 wrapword12 wrapword13
+  wrapword14 wrapword15 wrapword16 wrapword17 wrapword18 wrapword19 wrapword20
+  END
+────────────────────────────────────────────────────────────────────────────────
+  ░░░░░░░░░░░░░░░░░░░░ 200k | Haiku 4.5 | CL:50%/48%/?/$0
+  ⏸ manual mode on

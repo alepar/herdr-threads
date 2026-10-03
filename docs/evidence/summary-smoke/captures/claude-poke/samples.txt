@@ -1,0 +1,731 @@
+=== T+0 23:52:32
+--- w1:p4 focused=false status=idle
+
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=idle
+
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted
+=== T+10 23:52:42
+--- w1:p4 focused=false status=working
+✽ Embellishing… (8s · ↓ 651 tokens · thinking)
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · esc to interrupt · ← for agents
+--- w1:p5 focused=false status=done
+✻ Baked for 7s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|2|2026-10-02 23:52:34|submitted
+seat-dI6CZeba|2|2026-10-02 23:52:33|submitted
+=== T+21 23:52:53
+--- w1:p4 focused=false status=done
+✻ Worked for 10s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Baked for 7s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|2|2026-10-02 23:52:34|submitted
+seat-dI6CZeba|2|2026-10-02 23:52:33|submitted
+=== T+31 23:53:03
+--- w1:p4 focused=false status=done
+✻ Worked for 10s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Baked for 7s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|2|2026-10-02 23:52:34|submitted
+seat-dI6CZeba|2|2026-10-02 23:52:33|submitted
+=== T+41 23:53:13
+--- w1:p4 focused=false status=done
+✻ Worked for 10s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Baked for 7s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|2|2026-10-02 23:52:34|submitted
+seat-dI6CZeba|2|2026-10-02 23:52:33|submitted
+=== T+51 23:53:23
+--- w1:p4 focused=false status=done
+✻ Worked for 10s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Baked for 7s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|2|2026-10-02 23:52:34|submitted
+seat-dI6CZeba|2|2026-10-02 23:52:33|submitted
+=== T+61 23:53:33
+--- w1:p4 focused=false status=done
+✻ Worked for 10s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Baked for 7s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|2|2026-10-02 23:52:34|submitted
+seat-dI6CZeba|2|2026-10-02 23:52:33|submitted
+=== T+71 23:53:43
+--- w1:p4 focused=false status=done
+✻ Worked for 10s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Baked for 7s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|2|2026-10-02 23:52:34|submitted
+seat-dI6CZeba|2|2026-10-02 23:52:33|submitted
+=== T+81 23:53:53
+--- w1:p4 focused=false status=done
+✻ Worked for 10s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Baked for 7s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|2|2026-10-02 23:52:34|submitted
+seat-dI6CZeba|2|2026-10-02 23:52:33|submitted
+=== T+91 23:54:03
+--- w1:p4 focused=false status=done
+✻ Worked for 10s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Baked for 7s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|2|2026-10-02 23:52:34|submitted
+seat-dI6CZeba|2|2026-10-02 23:52:33|submitted
+=== T+101 23:54:13
+--- w1:p4 focused=false status=done
+✻ Worked for 10s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Baked for 7s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|2|2026-10-02 23:52:34|submitted
+seat-dI6CZeba|2|2026-10-02 23:52:33|submitted
+=== T+111 23:54:23
+--- w1:p4 focused=false status=done
+✻ Worked for 10s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Baked for 7s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|2|2026-10-02 23:52:34|submitted
+seat-dI6CZeba|2|2026-10-02 23:52:33|submitted
+=== T+121 23:54:33
+--- w1:p4 focused=false status=done
+✻ Worked for 10s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Baked for 7s · done 4:52 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|2|2026-10-02 23:52:34|submitted
+seat-dI6CZeba|2|2026-10-02 23:52:33|submitted
+=== T+132 23:54:44
+--- w1:p4 focused=false status=done
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+142 23:54:54
+--- w1:p4 focused=false status=done
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+152 23:55:04
+--- w1:p4 focused=false status=done
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+162 23:55:14
+--- w1:p4 focused=false status=done
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+172 23:55:24
+--- w1:p4 focused=false status=done
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+182 23:55:34
+--- w1:p4 focused=false status=done
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+192 23:55:44
+--- w1:p4 focused=false status=done
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+202 23:55:54
+--- w1:p4 focused=false status=idle
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=true status=idle
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+212 23:56:04
+--- w1:p4 focused=false status=idle
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=true status=idle
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+222 23:56:14
+--- w1:p4 focused=false status=idle
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=true status=idle
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+232 23:56:24
+--- w1:p4 focused=false status=idle
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=true status=idle
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+242 23:56:34
+--- w1:p4 focused=false status=idle
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=true status=idle
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+252 23:56:44
+--- w1:p4 focused=false status=idle
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=true status=idle
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+263 23:56:55
+--- w1:p4 focused=false status=idle
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=true status=idle
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+273 23:57:05
+--- w1:p4 focused=false status=idle
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=true status=idle
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+283 23:57:15
+--- w1:p4 focused=false status=idle
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=true status=idle
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+293 23:57:25
+--- w1:p4 focused=false status=idle
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=true status=idle
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+303 23:57:35
+--- w1:p4 focused=false status=idle
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=true status=idle
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+313 23:57:45
+--- w1:p4 focused=false status=idle
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=true status=idle
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+323 23:57:55
+--- w1:p4 focused=false status=idle
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=true status=idle
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+333 23:58:05
+--- w1:p4 focused=false status=idle
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=idle
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+343 23:58:15
+--- w1:p4 focused=false status=idle
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=idle
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+353 23:58:25
+--- w1:p4 focused=false status=idle
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=idle
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+363 23:58:35
+--- w1:p4 focused=false status=idle
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=idle
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+373 23:58:45
+--- w1:p4 focused=false status=idle
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=idle
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+384 23:58:56
+--- w1:p4 focused=false status=idle
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=idle
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+394 23:59:06
+--- w1:p4 focused=false status=idle
+✻ Churned for 3s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=idle
+✻ Cogitated for 2s · done 4:54 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:54:35|submitted
+seat-dI6CZeba|3|2026-10-02 23:54:34|submitted
+=== T+404 23:59:16
+--- w1:p4 focused=false status=working
+     /desktop
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · esc to interrupt · ← for agents
+--- w1:p5 focused=false status=working
+     /desktop
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · esc to interrupt · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:59:14|submitted
+seat-dI6CZeba|3|2026-10-02 23:59:14|submitted
+=== T+414 23:59:26
+--- w1:p4 focused=false status=done
+✻ Churned for 5s · done 4:59 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Sautéed for 5s · done 4:59 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:59:14|submitted
+seat-dI6CZeba|3|2026-10-02 23:59:14|submitted
+=== T+424 23:59:36
+--- w1:p4 focused=false status=done
+✻ Churned for 5s · done 4:59 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Sautéed for 5s · done 4:59 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|3|2026-10-02 23:59:14|submitted
+seat-dI6CZeba|3|2026-10-02 23:59:14|submitted

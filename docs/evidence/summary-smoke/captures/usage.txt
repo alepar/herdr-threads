@@ -1,0 +1,2 @@
+claude: 39 transcript files, tokens {"input": 3064, "output": 63353, "cache_read": 15923164, "cache_write": 843637}, estimated cost at Haiku 4.5 list price: $2.97
+codex: 25 rollouts, tokens {"input_tokens": 11237026, "cached_input_tokens": 10516224, "output_tokens": 54416, "reasoning_output_tokens": 5498} (gpt-5.6-luna, no price assumed)

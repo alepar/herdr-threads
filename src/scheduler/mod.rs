@@ -10,14 +10,16 @@ use self::deadlines::{DeadlineDriver, DeadlinePort, DriveOutcome};
 use crate::{
     notification::{
         dispatch::{DispatchState, MAX_ACTIVE_PROMPTS},
-        policy::{AttentionSnapshot, DurableRetry, RetryConfig},
+        policy::{AttentionSnapshot, DurableRetry, RetryConfig, poke_text},
     },
     ports::{
-        HostCallContext, NotificationPort, PriorLadder, WakeCandidate, WakeOutcome,
-        WakeRecoveryCandidate, WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation,
+        HostCallContext, NoPokeCapabilities, NotificationPort, PokeAttempt, PokeCapabilitySource,
+        PokeDue, PokeMode, PokePlan, PokeReceipt, PokeReservation, PriorLadder, WakeCandidate,
+        WakeOutcome, WakeRecoveryCandidate, WakeRecoveryOutcome, WakeRecoveryRequest,
+        WakeReservation,
     },
     protocol::{
-        ids::{SeatId, WakeAttemptId},
+        ids::{SeatId, ThreadId, WakeAttemptId},
         pagination::{Page, PageRequest},
         results::{ApiError, ErrorCode},
         time::{CallBudget, Cancellation, Clock, MonoInstant},
@@ -31,6 +33,13 @@ const MAX_ATTEMPT_MILLIS: u64 = 5_000;
 const COMPLETION_BUDGET_MILLIS: u64 = 2_000;
 const WAKE_PAGE_LIMIT: u16 = 16;
 const WAKE_PAGE_BYTES: u32 = 16_384;
+/// Admitted seats a tick attempts a soft poke for (spec §10). Applied after
+/// the in-memory admission filter, so seats that cannot be poked now never
+/// crowd out ones that can.
+const POKE_SEAT_LIMIT: u16 = 16;
+/// Due seats asked of the store per tick. The store's scan is bounded by its
+/// own per-source row cap, so asking for every due seat adds no store work.
+const POKE_CANDIDATE_LIMIT: u16 = u16::MAX;
 
 /// The narrow store boundary between the wake lane and its store: production
 /// implements it with `ScheduledStore` (and `ObservedWakePort`); tests with
@@ -64,6 +73,37 @@ pub trait WakePort: Send + Sync {
         request: WakeRecoveryRequest,
         budget: &CallBudget,
     ) -> Result<WakeRecoveryOutcome, ApiError>;
+    /// Soft-deadline poke boundary (spec §10). The defaults have no pokes, so
+    /// a port that predates them keeps its behavior.
+    fn poke_candidates(&self, _limit: u16, _budget: &CallBudget) -> Result<Vec<PokeDue>, ApiError> {
+        Ok(Vec::new())
+    }
+    fn poke_for_wake(
+        &self,
+        _seat: &SeatId,
+        _budget: &CallBudget,
+    ) -> Result<Option<PokeDue>, ApiError> {
+        Ok(None)
+    }
+    fn reserve_poke(
+        &self,
+        _due: &PokeDue,
+        _budget: &CallBudget,
+    ) -> Result<Option<PokeReservation>, ApiError> {
+        Ok(None)
+    }
+    fn complete_poke(
+        &self,
+        attempt: WakeAttemptId,
+        outcome: WakeOutcome,
+        _receipts: &[PokeReceipt],
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        // A port without pokes can only settle the slot as an ordinary wake;
+        // a poke never advanced the ladder, so there is nothing to restore.
+        self.complete_wake(attempt, outcome, None, budget)
+            .map(|_| ())
+    }
 }
 #[derive(Default)]
 struct WakeScanState {
@@ -129,6 +169,12 @@ pub fn outcome_for_verification(v: SubmissionVerification) -> WakeOutcome {
     }
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PokeDriveOutcome {
+    pub examined: u16,
+    pub attempted: u16,
+}
+
 /// The deadline and wake lanes have separate locks. A caller can drive due
 /// work on another worker while a synchronous host call is still returning.
 /// The host adapter must honor its absolute deadline and cancellation token.
@@ -163,6 +209,61 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
             daemon_boot,
             recovery: Mutex::new(RecoveryScanState::default()),
             scan: Mutex::new(WakeScanState::default()),
+        }
+    }
+
+    /// Supplies the harness recipes' poke capability evidence.
+    pub fn with_poke_capabilities(mut self, caps: &'a dyn PokeCapabilitySource) -> Self {
+        self.wakes.caps = caps;
+        self
+    }
+
+    /// Spec §10: examines the seats whose receipts are past their soft point
+    /// and attempts one coalesced poke each, through the wake dispatcher's
+    /// limits. Evaluated lazily every tick, but a seat whose reservation was
+    /// refused, or whose attempt was skipped or failed, is not re-attempted before the minimum spacing
+    /// elapses; it leaves `soft_poked_at` unset, so it is re-evaluated until
+    /// the hard deadline. Seats that cannot be admitted now (spec §10 limits
+    /// only, never the wake retry backoff) are filtered out before the
+    /// per-tick cap of `POKE_SEAT_LIMIT`.
+    pub fn drive_pokes(&self, budget: &CallBudget) -> Result<PokeDriveOutcome, ApiError> {
+        if budget.is_exhausted(self.wakes.store.clock()) {
+            return Err(error(
+                ErrorCode::DeadlineExceeded,
+                "poke scan deadline exhausted",
+            ));
+        }
+        let completion_error = self.wakes.retry_completions(budget)?;
+        let mut outcome = PokeDriveOutcome::default();
+        let candidates = self
+            .wakes
+            .store
+            .poke_candidates(POKE_CANDIDATE_LIMIT, budget)?;
+        let admitted: Vec<PokeDue> = {
+            let state = self
+                .wakes
+                .state
+                .lock()
+                .map_err(|_| error(ErrorCode::StoreCorrupt, "wake state lock poisoned"))?;
+            let now = self.wakes.store.clock().monotonic_now();
+            candidates
+                .into_iter()
+                .filter(|due| !due.receipts.is_empty() && poke_admissible(&state, &due.seat, now))
+                .take(usize::from(POKE_SEAT_LIMIT))
+                .collect()
+        };
+        for due in admitted {
+            if budget.is_exhausted(self.wakes.store.clock()) {
+                break;
+            }
+            outcome.examined += 1;
+            if self.wakes.try_poke(&due, budget)?.is_some() {
+                outcome.attempted += 1;
+            }
+        }
+        match completion_error {
+            Some(err) => Err(err),
+            None => Ok(outcome),
         }
     }
 
@@ -387,6 +488,8 @@ pub struct WakeRunner<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> {
     store: &'a S,
     notifier: &'a N,
     state: Mutex<WakeRunnerState>,
+    /// Evidence-backed poke capabilities per harness (default: none declared).
+    caps: &'a dyn PokeCapabilitySource,
 }
 
 #[derive(Clone)]
@@ -394,9 +497,33 @@ struct PendingCompletion {
     seat: SeatId,
     attempt: WakeAttemptId,
     outcome: WakeOutcome,
-    /// Pre-reservation ladder row, restored by a Refused completion.
-    prior: PriorLadder,
+    /// Pre-reservation ladder row, restored by a Refused completion. A
+    /// scheduled poke never moved the ladder and carries none.
+    prior: Option<PriorLadder>,
     claimed: bool,
+    /// Set when the accepted prompt carried the poke text: only then does a
+    /// `Submitted` settlement mark these receipts.
+    receipts: Option<Vec<PokeReceipt>>,
+}
+
+/// A poke-carrying attempt: the text and receipts, and whether it is a
+/// scheduled poke or rides an ordinary wake.
+struct PokeJob<'p> {
+    plan: &'p PokePlan,
+    mode: PokeMode,
+    caps: &'p dyn PokeCapabilitySource,
+}
+
+/// The in-memory admission a soft poke needs under the state lock: no pending
+/// completion for the seat, room under the active-prompt limit, and the
+/// dispatcher's spec §10 poke limits (never the wake retry backoff).
+fn poke_admissible(state: &WakeRunnerState, seat: &SeatId, now: MonoInstant) -> bool {
+    !state
+        .pending
+        .iter()
+        .any(|completion| &completion.seat == seat)
+        && state.pending.len() + state.dispatch.active_count() < MAX_ACTIVE_PROMPTS
+        && state.dispatch.can_reserve_poke(seat, now)
 }
 
 struct WakeRunnerState {
@@ -416,6 +543,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
         Self {
             store,
             notifier,
+            caps: &NoPokeCapabilities,
             state: Mutex::new(WakeRunnerState {
                 dispatch: DispatchState::new(config, boot_mono, daemon_boot),
                 pending: VecDeque::new(),
@@ -526,44 +654,29 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             )?;
             return Err(dispatch_error(cause));
         }
-        let lease_end = committed_at
-            .0
-            .saturating_add(MAX_ATTEMPT_MILLIS)
-            .min(budget.deadline.0)
-            .min(reservation.lease_until.0);
-        let outcome = if budget.cancellation.is_cancelled() {
-            WakeOutcome::Cancelled
-        } else if lease_end <= committed_at.0 {
-            WakeOutcome::TimedOut
-        } else {
-            let owned_cancellation = Cancellation::default();
-            let context = HostCallContext {
-                budget: CallBudget {
-                    deadline: MonoInstant(lease_end),
-                    cancellation: owned_cancellation.clone(),
-                },
-                expected_boot: Some(reservation.host_boot.clone()),
-                expected_epoch: Some(reservation.host_epoch),
-            };
-            match self.run_owned_attempt(
-                reservation.clone(),
-                context,
-                budget,
-                lease_end,
-                owned_cancellation,
-            ) {
-                Ok(outcome) => outcome,
-                Err(err) => match err.code {
-                    ErrorCode::Cancelled => WakeOutcome::Cancelled,
-                    ErrorCode::DeadlineExceeded => WakeOutcome::TimedOut,
-                    ErrorCode::TargetUnsafe | ErrorCode::TargetUnresolved => WakeOutcome::Unsafe,
-                    ErrorCode::HostUnavailable | ErrorCode::UnsupportedHarness => {
-                        WakeOutcome::Unavailable
-                    }
-                    _ => WakeOutcome::OutcomeUnknown,
-                },
-            }
-        };
+        // Spec §10: when a poke is also due for this seat, one prompt goes out
+        // with the poke text. The poke is advisory: no read error blocks the
+        // wake, and an ineligible poke state falls back to the ordinary marker.
+        let due_poke = self
+            .store
+            .poke_for_wake(&seat, budget)
+            .ok()
+            .flatten()
+            .filter(|due| !due.receipts.is_empty());
+        let plan = due_poke
+            .as_ref()
+            .map(|due| poke_plan(&due.receipts, reservation.reserved_at_utc.0));
+        let job = plan.as_ref().map(|plan| PokeJob {
+            plan,
+            mode: PokeMode::WithWake,
+            caps: self.caps,
+        });
+        let attempt = self.run_attempt(&reservation, job.as_ref(), budget, committed_at);
+        let outcome = attempt.outcome;
+        let receipts = attempt
+            .poked
+            .then(|| plan.map(|plan| plan.receipts))
+            .flatten();
         // A crash here follows the prompt but precedes its attempt record.
         failpoint!("wake.after_prompt", reservation.daemon_boot.to_string());
         let completed_at = self.store.clock().monotonic_now();
@@ -586,8 +699,163 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
                 seat,
                 attempt: reservation.attempt.clone(),
                 outcome,
-                prior,
+                prior: Some(prior),
                 claimed: true,
+                receipts,
+            };
+            state.pending.push_back(completion.clone());
+            drop(state);
+            self.settle_claimed(completion, &self.completion_budget())?;
+        }
+        Ok(Some(outcome))
+    }
+
+    /// Runs one committed reservation's host attempt inside its lease and maps
+    /// a host error to the outcome it records.
+    fn run_attempt(
+        &self,
+        reservation: &WakeReservation,
+        job: Option<&PokeJob<'_>>,
+        budget: &CallBudget,
+        committed_at: MonoInstant,
+    ) -> PokeAttempt {
+        let simple = |outcome| PokeAttempt {
+            outcome,
+            poked: false,
+            diagnostic: None,
+        };
+        let lease_end = committed_at
+            .0
+            .saturating_add(MAX_ATTEMPT_MILLIS)
+            .min(budget.deadline.0)
+            .min(reservation.lease_until.0);
+        if budget.cancellation.is_cancelled() {
+            return simple(WakeOutcome::Cancelled);
+        }
+        if lease_end <= committed_at.0 {
+            return simple(WakeOutcome::TimedOut);
+        }
+        let owned_cancellation = Cancellation::default();
+        let context = HostCallContext {
+            budget: CallBudget {
+                deadline: MonoInstant(lease_end),
+                cancellation: owned_cancellation.clone(),
+            },
+            expected_boot: Some(reservation.host_boot.clone()),
+            expected_epoch: Some(reservation.host_epoch),
+        };
+        match self.run_owned_attempt(
+            reservation.clone(),
+            job,
+            context,
+            budget,
+            lease_end,
+            owned_cancellation,
+        ) {
+            Ok(attempt) => attempt,
+            Err(err) => simple(match err.code {
+                ErrorCode::Cancelled => WakeOutcome::Cancelled,
+                ErrorCode::DeadlineExceeded => WakeOutcome::TimedOut,
+                ErrorCode::TargetUnsafe | ErrorCode::TargetUnresolved => WakeOutcome::Unsafe,
+                ErrorCode::HostUnavailable | ErrorCode::UnsupportedHarness => {
+                    WakeOutcome::Unavailable
+                }
+                _ => WakeOutcome::OutcomeUnknown,
+            }),
+        }
+    }
+
+    /// One seat's soft poke through the wake limits: the seat's single
+    /// reservation slot (`reserve_poke`), the in-memory four-active and
+    /// per-seat limits, then the same owned attempt as a wake. A skipped
+    /// attempt (focused, unsafe state, undeclared capability) completes
+    /// without marking anything and does not advance the wake retry guard; the
+    /// seat is re-evaluated after the wake retry spacing
+    /// (`DispatchState::can_reserve_poke`), not on the next tick.
+    pub fn try_poke(
+        &self,
+        due: &PokeDue,
+        budget: &CallBudget,
+    ) -> Result<Option<WakeOutcome>, ApiError> {
+        if budget.is_exhausted(self.store.clock()) {
+            return Err(error(
+                ErrorCode::DeadlineExceeded,
+                "poke admission deadline exhausted",
+            ));
+        }
+        if due.receipts.is_empty() {
+            return Ok(None);
+        }
+        let seat = due.seat.clone();
+        // Like a wake, admission and the durable reservation share one hold of
+        // the state lock, so concurrent seats cannot all pass the active limit
+        // and then collide after their reservations commit.
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| error(ErrorCode::StoreCorrupt, "wake state lock poisoned"))?;
+        if !poke_admissible(&state, &seat, self.store.clock().monotonic_now()) {
+            return Ok(None);
+        }
+        let Some(reserved) = self.store.reserve_poke(due, budget)? else {
+            state
+                .dispatch
+                .poke_unreserved(&seat, self.store.clock().monotonic_now());
+            return Ok(None);
+        };
+        let PokeReservation {
+            reservation,
+            receipts,
+        } = reserved;
+        failpoint!(
+            "wake.after_reservation",
+            reservation.daemon_boot.to_string()
+        );
+        let committed_at = self.store.clock().monotonic_now();
+        let local = state.dispatch.poke_reserved(
+            seat.clone(),
+            reservation.attempt.clone(),
+            reservation.daemon_boot,
+        );
+        drop(state);
+        if let Err(cause) = local {
+            self.store.complete_poke(
+                reservation.attempt,
+                WakeOutcome::OutcomeUnknown,
+                &[],
+                &self.completion_budget(),
+            )?;
+            return Err(dispatch_error(cause));
+        }
+        let plan = poke_plan(&receipts, reservation.reserved_at_utc.0);
+        let job = PokeJob {
+            plan: &plan,
+            mode: PokeMode::PokeOnly,
+            caps: self.caps,
+        };
+        let attempt = self.run_attempt(&reservation, Some(&job), budget, committed_at);
+        let outcome = attempt.outcome;
+        failpoint!("wake.after_prompt", reservation.daemon_boot.to_string());
+        let completed_at = self.store.clock().monotonic_now();
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| error(ErrorCode::StoreCorrupt, "wake state lock poisoned"))?;
+        let current = state.dispatch.poke_finished(
+            &seat,
+            &reservation.attempt,
+            &reservation.daemon_boot,
+            outcome == WakeOutcome::Submitted && attempt.poked,
+            completed_at,
+        );
+        if current {
+            let completion = PendingCompletion {
+                seat,
+                attempt: reservation.attempt.clone(),
+                outcome,
+                prior: None,
+                claimed: true,
+                receipts: attempt.poked.then_some(receipts),
             };
             state.pending.push_back(completion.clone());
             drop(state);
@@ -660,15 +928,27 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
         budget: &CallBudget,
     ) -> Result<(), ApiError> {
         let refused_restore = match completion.outcome {
-            WakeOutcome::Refused(_) => Some(&completion.prior),
+            WakeOutcome::Refused(_) => completion.prior.as_ref(),
             _ => None,
         };
-        let result = self.store.complete_wake(
-            completion.attempt.clone(),
-            completion.outcome,
-            refused_restore,
-            budget,
-        );
+        let result = match &completion.receipts {
+            // A poke never advanced the ladder: nothing to restore.
+            Some(receipts) => self
+                .store
+                .complete_poke(
+                    completion.attempt.clone(),
+                    completion.outcome,
+                    receipts,
+                    budget,
+                )
+                .map(|()| false),
+            None => self.store.complete_wake(
+                completion.attempt.clone(),
+                completion.outcome,
+                refused_restore,
+                budget,
+            ),
+        };
         let mut state = self
             .state
             .lock()
@@ -733,16 +1013,36 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
     fn run_owned_attempt(
         &self,
         reservation: WakeReservation,
+        job: Option<&PokeJob<'_>>,
         context: HostCallContext,
         caller_budget: &CallBudget,
         lease_end: u64,
         cancellation: Cancellation,
-    ) -> Result<WakeOutcome, ApiError> {
+    ) -> Result<PokeAttempt, ApiError> {
+        let unknown = || PokeAttempt {
+            outcome: WakeOutcome::OutcomeUnknown,
+            poked: false,
+            diagnostic: None,
+        };
         std::thread::scope(|scope| {
             let (sender, receiver) = mpsc::sync_channel(1);
             let notifier = self.notifier;
             let worker = scope.spawn(move || {
-                let _ = sender.send(notifier.attempt_wake(reservation, &context));
+                let result = match job {
+                    None => {
+                        notifier
+                            .attempt_wake(reservation, &context)
+                            .map(|outcome| PokeAttempt {
+                                outcome,
+                                poked: false,
+                                diagnostic: None,
+                            })
+                    }
+                    Some(job) => {
+                        notifier.attempt_poke(reservation, job.plan, job.mode, job.caps, &context)
+                    }
+                };
+                let _ = sender.send(result);
             });
             let mut expired = false;
             let result = loop {
@@ -762,9 +1062,9 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             };
             let joined = worker.join().is_ok();
             if !joined || expired || self.store.clock().monotonic_now().0 >= lease_end {
-                return Ok(WakeOutcome::OutcomeUnknown);
+                return Ok(unknown());
             }
-            result.unwrap_or(Ok(WakeOutcome::OutcomeUnknown))
+            result.unwrap_or_else(|| Ok(unknown()))
         })
     }
 
@@ -779,6 +1079,26 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             ),
             cancellation: Cancellation::default(),
         }
+    }
+}
+
+/// The coalesced prompt for `receipts` (ordered by effective deadline): the
+/// thread ids once each, and the smallest remaining effective time.
+fn poke_plan(receipts: &[PokeReceipt], now_utc: i64) -> PokePlan {
+    let mut threads: Vec<ThreadId> = Vec::new();
+    for receipt in receipts {
+        if !threads.contains(&receipt.thread) {
+            threads.push(receipt.thread.clone());
+        }
+    }
+    let soonest = receipts
+        .iter()
+        .map(|receipt| receipt.effective_deadline)
+        .min()
+        .unwrap_or(now_utc);
+    PokePlan {
+        text: poke_text(soonest.saturating_sub(now_utc), &threads),
+        receipts: receipts.to_vec(),
     }
 }
 
@@ -805,6 +1125,9 @@ fn dispatch_error(err: crate::notification::dispatch::DispatchError) -> ApiError
     )
 }
 
+#[cfg(test)]
+#[path = "../../tests/scheduler/poke_flow.rs"]
+mod poke_flow;
 #[cfg(test)]
 #[path = "../../tests/scheduler/dispatch.rs"]
 mod tests;

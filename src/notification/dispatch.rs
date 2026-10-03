@@ -6,14 +6,18 @@ use uuid::Uuid;
 use crate::service::pacer::Backoff;
 
 use crate::{
-    notification::policy::{DurableRetry, MARKER, RetryConfig, RetryError, RetryGuard},
+    harness::recipe::PokeCapabilities,
+    notification::policy::{
+        DurableRetry, MARKER, PokeDecision, RetryConfig, RetryError, RetryGuard, poke_eligibility,
+    },
     ports::{
-        AgentComposerState, EvidenceKind, ExecutionEvidence, HostCallContext, HostPort,
-        HostUiState, IncarnationEvidence, NotificationPort, ObservationProvenance, PromptOutcome,
-        RefusalCause, ReservedWakeAuthority, StructuralOccupancy, WakeOutcome, WakeReservation,
-        WakeTargetBasis,
+        AgentComposerState, ComposerStash, EvidenceKind, ExecutionEvidence, HostCallContext,
+        HostPort, HostUiState, IncarnationEvidence, NotificationPort, ObservationProvenance,
+        PokeAttempt, PokeCapabilitySource, PokeMode, PokePlan, PromptOutcome, RefusalCause,
+        ReservedWakeAuthority, StructuralOccupancy, WakeOutcome, WakeReservation, WakeTargetBasis,
     },
     protocol::{
+        authority::Harness,
         ids::{SeatId, WakeAttemptId},
         results::{ApiError, ErrorCode},
         time::{CallBudget, Clock, MonoInstant},
@@ -115,22 +119,56 @@ fn refusal_for_error(err: &ApiError) -> Result<WakeOutcome, ApiError> {
     };
     Ok(WakeOutcome::Refused(cause))
 }
-
-impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NotificationPort
-    for NativeWakeDispatcher<'_, H, C>
-{
-    fn attempt_wake(
+impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_, H, C> {
+    /// One reserved attempt. `poke: None` is an ordinary wake. With a poke the
+    /// same identity, fence and prompt-budget checks apply; the poke text is
+    /// submitted only when `poke_eligibility` accepts a fresh observation.
+    ///
+    /// Every exit of a wake (including a wake that carries poke text) before
+    /// `submit_prompt` is a `Refused` (pacer D5): nothing was sent, so the
+    /// scheduler restores the ladder and retries on the refusal backoff. A
+    /// scheduled `PokeOnly` attempt never moved the ladder, so its pre-send
+    /// skips keep their plain outcomes and leave `soft_poked_at` unset.
+    fn attempt(
         &self,
         reservation: WakeReservation,
+        poke: Option<PokeRequest<'_>>,
         context: &HostCallContext,
-    ) -> Result<WakeOutcome, ApiError> {
+    ) -> Result<PokeAttempt, ApiError> {
+        // A scheduled poke decides the UI state itself (`poke_eligibility`),
+        // so its identity check carries no UI exclusion.
+        let poke_only = poke
+            .as_ref()
+            .is_some_and(|request| request.mode == PokeMode::PokeOnly);
+        let outcome = |outcome| {
+            Ok(PokeAttempt {
+                outcome,
+                poked: false,
+                diagnostic: None,
+            })
+        };
+        // A pre-send exit: `Refused(cause)` for a wake, the plain outcome
+        // (`poke_skip`) for a scheduled poke.
+        let refuse = |cause: RefusalCause, poke_skip: WakeOutcome| {
+            outcome(if poke_only {
+                poke_skip
+            } else {
+                WakeOutcome::Refused(cause)
+            })
+        };
+        let refuse_error = |err: ApiError| {
+            if poke_only {
+                return Err(err);
+            }
+            refusal_for_error(&err).and_then(outcome)
+        };
         if context.expected_boot.as_ref() != Some(&reservation.host_boot)
             || context.expected_epoch != Some(reservation.host_epoch)
         {
-            return Ok(WakeOutcome::Refused(RefusalCause::Unsafe));
+            return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
         }
         if context.budget.is_exhausted(self.clock) {
-            return Ok(WakeOutcome::Refused(RefusalCause::TimedOut));
+            return refuse(RefusalCause::TimedOut, WakeOutcome::TimedOut);
         }
         let read_deadline = context.budget.deadline.0.min(
             self.clock
@@ -146,15 +184,21 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NotificationPort
             expected_boot: Some(reservation.host_boot.clone()),
             expected_epoch: Some(reservation.host_epoch),
         };
-        let observation = match self
-            .host
-            .observe_current_target(&reservation.target, &read_context)
-        {
+        // Only a poke classifies the composer; an ordinary wake never pays for
+        // (or depends on) that read.
+        let observed = if poke.is_some() {
+            self.host
+                .observe_current_target_for_poke(&reservation.target, &read_context)
+        } else {
+            self.host
+                .observe_current_target(&reservation.target, &read_context)
+        };
+        let observation = match observed {
             Ok(observation) => observation,
-            Err(err) => return refusal_for_error(&err),
+            Err(err) => return refuse_error(err),
         };
         if read_context.budget.is_exhausted(self.clock) {
-            return Ok(WakeOutcome::Refused(RefusalCause::TimedOut));
+            return refuse(RefusalCause::TimedOut, WakeOutcome::TimedOut);
         }
         let cooperative = matches!(
             reservation.authority,
@@ -164,11 +208,15 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NotificationPort
             // Cooperative native policy: structural identity only; the
             // adapter's own recheck decides the occupant immediately before
             // submission (recognized idle harness, never shell/blocked).
-            reservation.matches_cooperative_identity(&observation)
+            if poke_only {
+                reservation.matches_cooperative_structure(&observation)
+            } else {
+                reservation.matches_cooperative_identity(&observation)
+            }
         } else {
             reservation.matches_fresh_identity(&observation)
                 && observation.provenance == ObservationProvenance::FreshCurrentTarget
-                && observation.ui == HostUiState::Idle
+                && (poke_only || observation.ui == HostUiState::Idle)
                 && observation.occupancy == StructuralOccupancy::Occupied
                 && matches!(
                     observation.incarnation,
@@ -186,17 +234,22 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NotificationPort
                 )
         };
         if !identity_ok {
-            return Ok(WakeOutcome::Refused(RefusalCause::Unsafe));
+            return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
         }
-        let Some(mut target) = self.host.safe_wake_target(&reservation.seat, &observation) else {
-            return Ok(WakeOutcome::Refused(RefusalCause::Unsafe));
+        let selected = if poke.is_some() {
+            self.host.safe_poke_target(&reservation.seat, &observation)
+        } else {
+            self.host.safe_wake_target(&reservation.seat, &observation)
+        };
+        let Some(mut target) = selected else {
+            return refuse(RefusalCause::Unsafe, WakeOutcome::Unavailable);
         };
         // The host cannot know the bound harness; the reservation does
         // (TRUST-POLICY A4 wake rule). No bound harness, no prompt: a
         // pre-send refusal, so the reminder ladder does not climb (pacer D5).
         if let ReservedWakeAuthority::Cooperative { harness, .. } = &reservation.authority {
             if harness.is_none() {
-                return Ok(WakeOutcome::Refused(RefusalCause::Unsafe));
+                return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
             }
             target.bound_harness = harness.clone();
         }
@@ -218,15 +271,54 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NotificationPort
             || !basis_ok
             || observation.terminal.as_ref() != Some(&target.terminal)
         {
-            return Ok(WakeOutcome::Refused(RefusalCause::Unsafe));
+            return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
         }
+        // Spec §10: decided from this fresh observation, immediately before
+        // the prompt. A skip sends nothing and leaves `soft_poked_at` unset;
+        // the next tick re-evaluates until the hard deadline.
+        let decision = poke.as_ref().map(|request| {
+            let bound_native_agent = match &reservation.authority {
+                ReservedWakeAuthority::Registered { .. } => true,
+                ReservedWakeAuthority::Cooperative { harness, .. } => harness.is_some(),
+                ReservedWakeAuthority::RecoveryHint { .. } => false,
+            };
+            // Cooperative native reads never name an occupant (Herdr's cached
+            // agent is not proof); the adapter's own agent-kind recheck
+            // against the bound harness stands in for recognition there.
+            let recognized = observation
+                .occupant
+                .as_ref()
+                .is_some_and(|occupant| occupant.is_top_level)
+                || (cooperative && target.bound_harness.is_some());
+            let harness = observation
+                .occupant
+                .as_ref()
+                .map(|occupant| occupant.harness)
+                .or(match target.bound_harness.as_deref() {
+                    Some("codex") => Some(Harness::Codex),
+                    Some("claude") => Some(Harness::Claude),
+                    _ => None,
+                });
+            let caps = harness.map_or(PokeCapabilities::NONE, |harness| {
+                request.caps.capabilities(harness)
+            });
+            poke_eligibility(&observation, bound_native_agent, recognized, caps)
+        });
+        // A wake that carries a poke never stashes: over typed input it sends the
+        // plain marker, as any ordinary wake does, and the receipts stay unpoked for
+        // their own PokeOnly attempt.
+        let using_poke = match (&decision, poke_only) {
+            (Some(PokeDecision::Submit), _) | (Some(PokeDecision::Stash), true) => true,
+            (_, true) => return outcome(WakeOutcome::Unsafe),
+            _ => false,
+        };
         match self.check.is_current(&reservation, &context.budget) {
             Ok(true) => {}
-            Ok(false) => return Ok(WakeOutcome::Refused(RefusalCause::Unsafe)),
-            Err(err) => return refusal_for_error(&err),
+            Ok(false) => return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe),
+            Err(err) => return refuse_error(err),
         }
         if context.budget.is_exhausted(self.clock) {
-            return Ok(WakeOutcome::Refused(RefusalCause::TimedOut));
+            return refuse(RefusalCause::TimedOut, WakeOutcome::TimedOut);
         }
         let prompt_deadline = context
             .budget
@@ -238,19 +330,106 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NotificationPort
                 deadline: MonoInstant(prompt_deadline),
                 cancellation: context.budget.cancellation.clone(),
             },
-            expected_boot: Some(reservation.host_boot),
+            expected_boot: Some(reservation.host_boot.clone()),
             expected_epoch: Some(reservation.host_epoch),
         };
-        match self.host.submit_prompt(&target, MARKER, &prompt_context)? {
+        let text = match (&poke, using_poke) {
+            (Some(request), true) => request.plan.text.as_str(),
+            _ => MARKER,
+        };
+        let mut saved = None;
+        if poke_only && decision == Some(PokeDecision::Stash) {
+            match self.host.stash_composer(&target, &prompt_context)? {
+                ComposerStash::Saved(typed) => saved = Some(typed),
+                // Nothing was stashed: skip before any prompt.
+                ComposerStash::Unsupported | ComposerStash::Failed(_) => {
+                    return outcome(WakeOutcome::Unsafe);
+                }
+            }
+        }
+        // A poke accepted for a running turn queues into it; the host's
+        // recheck then allows `working` for this call only.
+        let during_turn = using_poke && observation.ui == HostUiState::ActiveTurn;
+        let submitted = if during_turn {
+            self.host
+                .submit_prompt_during_turn(&target, text, &prompt_context)
+        } else {
+            self.host.submit_prompt(&target, text, &prompt_context)
+        };
+        let mut diagnostic = None;
+        let restored = saved.is_some();
+        if let Some(typed) = saved {
+            // Put the person's typed text back whether or not the prompt was
+            // accepted; a failed restore must not lose it silently.
+            if let Err(error) = self.host.restore_composer(&target, &typed, &prompt_context) {
+                let detail = format!(
+                    "composer restore failed ({}); typed text was {typed:?}",
+                    error.detail
+                );
+                eprintln!("herdr-threads: warning: {detail}");
+                diagnostic = Some(detail);
+            }
+        }
+        match submitted? {
+            // Post-send verification (Wave 28) reads the composer and may
+            // press the submit key once. It is skipped when the composer
+            // legitimately holds text after the send: a prompt queued into a
+            // running turn, or a person's typed text restored after a stash
+            // (a submit key there would send the person's draft).
+            PromptOutcome::Submitted if during_turn || restored => Ok(PokeAttempt {
+                outcome: WakeOutcome::Submitted,
+                poked: using_poke,
+                diagnostic,
+            }),
             PromptOutcome::Submitted => {
                 let verification = self.verify_submission(&target, context);
                 if let Ok(mut verifications) = self.verifications.lock() {
                     verifications.insert(reservation.seat.clone(), verification);
                 }
-                Ok(outcome_for_verification(verification))
+                let outcome = outcome_for_verification(verification);
+                Ok(PokeAttempt {
+                    outcome,
+                    poked: using_poke && outcome == WakeOutcome::Submitted,
+                    diagnostic,
+                })
             }
-            PromptOutcome::OutcomeUnknown => Ok(WakeOutcome::OutcomeUnknown),
+            PromptOutcome::OutcomeUnknown => Ok(PokeAttempt {
+                outcome: WakeOutcome::OutcomeUnknown,
+                poked: false,
+                diagnostic,
+            }),
         }
+    }
+}
+
+/// What a poke-carrying attempt needs beyond the reservation.
+struct PokeRequest<'a> {
+    plan: &'a PokePlan,
+    mode: PokeMode,
+    caps: &'a dyn PokeCapabilitySource,
+}
+
+impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NotificationPort
+    for NativeWakeDispatcher<'_, H, C>
+{
+    fn attempt_wake(
+        &self,
+        reservation: WakeReservation,
+        context: &HostCallContext,
+    ) -> Result<WakeOutcome, ApiError> {
+        self.attempt(reservation, None, context)
+            .map(|attempt| attempt.outcome)
+    }
+
+    fn attempt_poke(
+        &self,
+        reservation: WakeReservation,
+        plan: &PokePlan,
+        mode: PokeMode,
+        caps: &dyn PokeCapabilitySource,
+        context: &HostCallContext,
+    ) -> Result<PokeAttempt, ApiError> {
+        self.attempt(reservation, Some(PokeRequest { plan, mode, caps }), context)
     }
 
     fn take_verification(&self, seat: &SeatId) -> Option<SubmissionVerification> {
@@ -264,6 +443,21 @@ impl From<RetryError> for DispatchError {
     }
 }
 
+/// A seat's soft-poke state. A poke takes the seat's single in-flight slot and
+/// counts toward the shared four-active limit, but never advances the wake
+/// retry guard. A skipped attempt is re-evaluated once the wake retry spacing
+/// has elapsed since it ended (`last_skipped`), so a seat that stays
+/// ineligible costs one observation per spacing, not one per tick.
+#[derive(Default)]
+struct PokeSeat {
+    active: Option<(WakeAttemptId, Uuid)>,
+    last_submitted: Option<MonoInstant>,
+    /// When the seat's last attempt ended without a submitted poke (a skip,
+    /// an unsafe or failed attempt, or a reservation the store refused). In memory only, like `last_submitted`: a
+    /// restart re-evaluates every seat once.
+    last_skipped: Option<MonoInstant>,
+}
+
 struct SeatAttempt {
     guard: RetryGuard,
     /// The guard as it was before the in-flight reservation; restored (no
@@ -273,6 +467,10 @@ struct SeatAttempt {
     refusal: Backoff,
     active: Option<(WakeAttemptId, Uuid)>,
     seen_frontier: Option<crate::ports::LogicalAttentionFrontier>,
+    /// When the seat's last wake attempt was reserved or finished, for the
+    /// per-seat elapsed spacing a poke honours without the wake retry backoff.
+    /// After a restart, `boot_mono` when the seat was ever reserved.
+    last_attempt_at: Option<MonoInstant>,
 }
 
 /// Reconstructed before dispatch on boot. Only a committed store reservation
@@ -282,6 +480,7 @@ pub struct DispatchState {
     boot_mono: MonoInstant,
     daemon_boot: Uuid,
     seats: HashMap<SeatId, SeatAttempt>,
+    pokes: HashMap<SeatId, PokeSeat>,
     active: usize,
     refusal_seed: Option<u64>,
 }
@@ -293,6 +492,7 @@ impl DispatchState {
             boot_mono,
             daemon_boot,
             seats: HashMap::new(),
+            pokes: HashMap::new(),
             active: 0,
             refusal_seed: None,
         }
@@ -316,6 +516,7 @@ impl DispatchState {
                 Err(DispatchError::Retry(RetryError::InvalidHistory))
             };
         }
+        let last_attempt_at = durable.ever_reserved.then_some(self.boot_mono);
         let refusal = match self.refusal_seed {
             Some(seed) => Backoff::with_seed(seed.wrapping_add(self.seats.len() as u64)),
             None => Backoff::new(),
@@ -328,6 +529,7 @@ impl DispatchState {
                 refusal,
                 active: None,
                 seen_frontier: None,
+                last_attempt_at,
             },
         );
         Ok(())
@@ -335,6 +537,10 @@ impl DispatchState {
 
     pub fn can_reserve(&self, seat: &SeatId, now: MonoInstant) -> bool {
         self.active < MAX_ACTIVE_PROMPTS
+            && self
+                .pokes
+                .get(seat)
+                .is_none_or(|poke| poke.active.is_none())
             && self.seats.get(seat).is_some_and(|state| {
                 state.active.is_none()
                     && state.guard.eligible(now)
@@ -417,6 +623,83 @@ impl DispatchState {
             .min_by_key(|at| at.0)
     }
 
+    /// Spec §10 limits only: four active prompts, one in-flight attempt per seat
+    /// (poke or wake), the configured minimum since the seat's last wake attempt,
+    /// and the same minimum after the seat's last submitted or skipped poke.
+    /// Never the wake retry backoff (`RetryGuard::eligible`): a seat whose wakes
+    /// back off to 300 s is still poked inside its soft window (ht-2i4).
+    pub fn can_reserve_poke(&self, seat: &SeatId, now: MonoInstant) -> bool {
+        if self.active >= MAX_ACTIVE_PROMPTS {
+            return false;
+        }
+        let spacing = self.config.minimum_delay_ms();
+        let spaced =
+            |at: Option<MonoInstant>| at.is_none_or(|at| now.0 >= at.0.saturating_add(spacing));
+        let poke = self.pokes.get(seat);
+        if poke.is_some_and(|poke| poke.active.is_some())
+            || !spaced(poke.and_then(|poke| poke.last_submitted.max(poke.last_skipped)))
+        {
+            return false;
+        }
+        self.seats
+            .get(seat)
+            .is_none_or(|state| state.active.is_none() && spaced(state.last_attempt_at))
+    }
+
+    /// The durable poke reservation has already committed.
+    pub fn poke_reserved(
+        &mut self,
+        seat: SeatId,
+        attempt: WakeAttemptId,
+        boot: Uuid,
+    ) -> Result<(), DispatchError> {
+        if self.active >= MAX_ACTIVE_PROMPTS {
+            return Err(DispatchError::ActiveLimit);
+        }
+        if boot != self.daemon_boot {
+            return Err(DispatchError::WrongBoot);
+        }
+        self.pokes.entry(seat).or_default().active = Some((attempt, boot));
+        self.active += 1;
+        Ok(())
+    }
+
+    /// The store refused the poke reservation (no current authority, the
+    /// receipts no longer due, a reservation already active): back off like a
+    /// skipped attempt. Never touches an active slot or the active count.
+    pub fn poke_unreserved(&mut self, seat: &SeatId, now: MonoInstant) {
+        let poke = self.pokes.entry(seat.clone()).or_default();
+        if poke.active.is_none() {
+            poke.last_skipped = Some(now);
+        }
+    }
+
+    /// Late old-attempt/boot results cannot clear a successor's slot.
+    pub fn poke_finished(
+        &mut self,
+        seat: &SeatId,
+        attempt: &WakeAttemptId,
+        boot: &Uuid,
+        submitted: bool,
+        now: MonoInstant,
+    ) -> bool {
+        let Some(poke) = self.pokes.get_mut(seat) else {
+            return false;
+        };
+        if poke.active.as_ref() != Some(&(attempt.clone(), *boot)) {
+            return false;
+        }
+        poke.active = None;
+        if submitted {
+            poke.last_submitted = Some(now);
+            poke.last_skipped = None;
+        } else {
+            poke.last_skipped = Some(now);
+        }
+        self.active -= 1;
+        true
+    }
+
     pub fn has_seat(&self, seat: &SeatId) -> bool {
         self.seats.contains_key(seat)
     }
@@ -445,6 +728,7 @@ impl DispatchState {
         state.prior_guard = Some(prior);
         state.guard = guard;
         state.active = Some((attempt, boot));
+        state.last_attempt_at = Some(now);
         self.active += 1;
         Ok(durable)
     }
@@ -463,6 +747,7 @@ impl DispatchState {
         }
         state.guard = state.guard.complete(now)?;
         state.active = None;
+        state.last_attempt_at = Some(now);
         self.active -= 1;
         Ok(true)
     }

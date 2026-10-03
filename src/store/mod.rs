@@ -1,5 +1,6 @@
 //! SQLite-backed production store dispatch.
 pub mod attention;
+pub mod catch_up;
 pub mod connection;
 pub mod control;
 pub mod effective;
@@ -9,6 +10,7 @@ pub mod materialization;
 pub mod messages;
 pub mod operator;
 pub mod page_fit;
+pub mod poke;
 pub(crate) mod public_ids;
 pub mod queries;
 pub mod receipts;
@@ -18,6 +20,7 @@ pub mod seats;
 pub mod service_controls;
 pub mod service_events;
 pub mod service_substrate;
+pub mod summary;
 pub mod wake;
 pub mod work;
 
@@ -29,13 +32,14 @@ use crate::{
         ClosureEvidence, DuePhase, DuePhaseCursor, DuePhaseProgress, DueScanProgress,
         DueScanRequest, DurableWorkAdmission, GuardedInvalidationTransition, GuardedSeatTransition,
         HostInvalidationFence, HostInvalidationReason, HostObservation, HostObservationAdmission,
-        InvalidationSeatPage, OperationReadScope, OperatorRequest, PriorLadder, PruneProgress,
-        PublishedSnapshot, ReadContext, ReceiptSparseCursor, ReconciliationOutcome,
-        RegisterAvailableRequest, RetirementJob, RetirementProgress, RetirementSummary,
-        SendPreparationProgress, SnapshotCleanupProgress, SnapshotGenerationId, SnapshotHeader,
-        SnapshotSeatPage, SnapshotStage, SnapshotStageProgress, StorePort, WakeCandidate,
-        WakeOutcome, WakeRecoveryCandidate, WakeRecoveryOutcome, WakeRecoveryRequest,
-        WakeReservation, WorkAdmission, WorkCandidate, WorkKind, WorkProgress,
+        InvalidationSeatPage, OperationReadScope, OperatorRequest, PokeDue, PokeReceipt,
+        PokeReservation, PriorLadder, PruneProgress, PublishedSnapshot, ReadContext,
+        ReceiptSparseCursor, ReconciliationOutcome, RegisterAvailableRequest, RetirementJob,
+        RetirementProgress, RetirementSummary, SendPreparationProgress, SnapshotCleanupProgress,
+        SnapshotGenerationId, SnapshotHeader, SnapshotSeatPage, SnapshotStage,
+        SnapshotStageProgress, StorePort, WakeCandidate, WakeOutcome, WakeRecoveryCandidate,
+        WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation, WorkAdmission, WorkCandidate,
+        WorkKind, WorkProgress,
     },
     protocol::{
         authority::{MutationPermit, OperatorActor},
@@ -59,6 +63,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+/// Rows the catch-up stall scan ends per receipts due pass.
+const CATCH_UP_STALL_SCAN_ROWS: u16 = 100;
+
 #[derive(Debug, Clone)]
 pub struct StoreSettings {
     pub invitation_default_ms: Option<u64>,
@@ -66,6 +73,7 @@ pub struct StoreSettings {
     /// The elected daemon run's boot identity, supplied by the service factory.
     pub daemon_boot: Option<uuid::Uuid>,
     pub minimum_wake_delay_ms: u64,
+    pub summary: crate::protocol::summary::SummarySettings,
 }
 impl Default for StoreSettings {
     fn default() -> Self {
@@ -74,6 +82,7 @@ impl Default for StoreSettings {
             message_limits: messages::MessageLimits::default(),
             daemon_boot: None,
             minimum_wake_delay_ms: 30_000,
+            summary: crate::protocol::summary::SummarySettings::default(),
         }
     }
 }
@@ -186,6 +195,29 @@ impl Drop for WriterProgressGuard<'_> {
     }
 }
 impl SqliteStore {
+    /// Spec §9 join hint: a committed (or replayed) plain accept names the
+    /// thread when it already holds one full summary chunk. Computed after the
+    /// commit from a fresh read and never stored; a failed read means no hint,
+    /// never a failed accept.
+    fn with_join_hint(
+        &self,
+        result: CommandResult,
+        thread: &crate::protocol::ids::ThreadId,
+        budget: &CallBudget,
+    ) -> CommandResult {
+        let CommandResult::Accepted(mut accepted) = result else {
+            return result;
+        };
+        let full = self
+            .context
+            .open_query(budget.clone())
+            .and_then(|db| summary::thread_has_full_chunk(&db, thread, &self.settings.summary));
+        if full.unwrap_or(false) {
+            accepted.summary_available = Some(thread.clone());
+        }
+        CommandResult::Accepted(accepted)
+    }
+
     pub fn new(
         context: StoreContext,
         instance: impl Into<String>,
@@ -387,6 +419,16 @@ fn receipt_cursor(value: &DuePhaseCursor) -> Result<receipts::ReceiptDueCursor, 
         sparse_after_seat: sparse
             .and_then(|c| c.after_seat.as_ref().map(|id| id.as_str().to_owned())),
         next_sparse: sparse.is_some_and(|c| c.next_sparse),
+        extension: receipts::ExtensionLapseCursor {
+            through: value.extension_through.map(|at| at.0),
+            after: value.extension_after.as_ref().map(|k| {
+                (
+                    k.until.0,
+                    k.seat.as_str().to_owned(),
+                    k.thread.as_str().to_owned(),
+                )
+            }),
+        },
     })
 }
 fn exported_receipt_cursor(value: &receipts::ReceiptDueCursor) -> Result<DuePhaseCursor, ApiError> {
@@ -406,6 +448,14 @@ fn exported_receipt_cursor(value: &receipts::ReceiptDueCursor) -> Result<DuePhas
                 .map(crate::protocol::ids::MessageId::new),
             after_seat: value.sparse_after_seat.as_ref().map(SeatId::new),
             next_sparse: value.next_sparse,
+        }),
+        extension_through: value.extension.through.map(UtcMillis),
+        extension_after: value.extension.after.as_ref().map(|(until, seat, thread)| {
+            crate::ports::ExtensionLapseKey {
+                until: UtcMillis(*until),
+                seat: SeatId::new(seat),
+                thread: crate::protocol::ids::ThreadId::new(thread),
+            }
         }),
     })
 }
@@ -1265,6 +1315,17 @@ impl StorePort for SqliteStore {
             crate::protocol::output::encode_selected(&result, &read.output)?;
             return Ok(result);
         }
+        if let Command::HotThreads(q) = command {
+            let result = queries::hot_threads(
+                &self.context,
+                &self.instance,
+                q,
+                self.settings.summary.hot_window_ms,
+                budget,
+            )?;
+            crate::protocol::output::encode_selected(&result, &read.output)?;
+            return Ok(result);
+        }
         let mut selected = command.clone();
         let needs_seat = matches!(&selected,Command::Inbox(q) if q.seat.is_none())
             || matches!(&selected,Command::Directory(q) if q.membership.is_none() && q.membership_filter!=DirectoryMembership::All);
@@ -1334,7 +1395,8 @@ impl StorePort for SqliteStore {
                 self.settings.invitation_default_ms,
             ),
             PermitMutation::Accept(v) => {
-                control::accept(&self.context, &mut writer, budget, &v, permit)
+                let result = control::accept(&self.context, &mut writer, budget, &v, permit)?;
+                Ok(self.with_join_hint(result, &v.thread, budget))
             }
             PermitMutation::AcceptRequired(v) => {
                 control::accept_required(&self.context, &mut writer, budget, &v, permit)
@@ -1957,6 +2019,8 @@ impl StorePort for SqliteStore {
                                 after_deadline: Some(UtcMillis(next.after_deadline)),
                                 after_ordinal: next.after_ordinal as u64,
                                 receipt_sparse: None,
+                                extension_through: None,
+                                extension_after: None,
                             });
                             invitation_phase = if state.invitations.is_some() {
                                 DuePhaseProgress::More
@@ -1979,11 +2043,40 @@ impl StorePort for SqliteStore {
                         .map(receipt_cursor)
                         .transpose()?
                         .unwrap_or_default();
-                    match receipts::scan_due(&self.context, &mut writer, cap, &mut cursor) {
+                    // Catch-up stall scan (spec §7): rows whose extension lapsed
+                    // end `stalled` and release what they held, in their own
+                    // short decision, before the receipt scan.
+                    let stalled = self.context.execute_decision(
+                        &mut writer,
+                        |_| Ok(()),
+                        |tx, at, ()| catch_up::stall_scan(tx, at.utc, CATCH_UP_STALL_SCAN_ROWS),
+                    );
+                    let scanned = match stalled {
+                        Ok(ended) => {
+                            examined += ended;
+                            receipts::scan_due(&self.context, &mut writer, cap, &mut cursor)
+                                .and_then(|mut due| {
+                                    // Extension lapses (spec §8): scan_due skips
+                                    // candidates whose effective deadline is
+                                    // future; the lapse itself is found here.
+                                    let lapses = receipts::scan_extension_lapses(
+                                        &self.context,
+                                        &mut writer,
+                                        &mut cursor,
+                                    )?;
+                                    due.warnings = due.warnings.saturating_add(lapses.warnings);
+                                    due.inspected = due.inspected.saturating_add(lapses.inspected);
+                                    due.more |= lapses.more;
+                                    Ok(due)
+                                })
+                        }
+                        Err(error) => Err(error),
+                    };
+                    match scanned {
                         Ok(result) => {
                             examined += result.inspected;
                             warnings += result.warnings;
-                            state.receipts = if result.more {
+                            state.receipts = if result.more || cursor.extension.through.is_some() {
                                 Some(exported_receipt_cursor(&cursor)?)
                             } else {
                                 None
@@ -2076,6 +2169,69 @@ impl StorePort for SqliteStore {
     }
     fn retirement_summary(&self, budget: &CallBudget) -> Result<RetirementSummary, ApiError> {
         queries::retirement_summary(&self.context, &self.instance, budget)
+    }
+    fn summary(
+        &self,
+        request: &crate::protocol::summary::SummaryRequest,
+        budget: &CallBudget,
+    ) -> Result<crate::protocol::summary::SummaryOutcome, ApiError> {
+        let mut writer = self.writer(budget)?;
+        self.context.execute_budgeted_decision(
+            &mut writer,
+            budget,
+            |_| Ok(()),
+            |tx, decision, ()| {
+                summary::summary(
+                    tx,
+                    &self.instance,
+                    request,
+                    &self.settings.summary,
+                    decision.utc,
+                )
+            },
+        )
+    }
+    fn summary_job(
+        &self,
+        request: &crate::protocol::summary::SummaryJobRequest,
+        budget: &CallBudget,
+    ) -> Result<crate::protocol::summary::SummaryJobOutcome, ApiError> {
+        let mut writer = self.writer(budget)?;
+        self.context.execute_budgeted_decision(
+            &mut writer,
+            budget,
+            |_| Ok(()),
+            |tx, decision, ()| {
+                summary::summary_job(
+                    tx,
+                    &self.instance,
+                    request,
+                    &self.settings.summary,
+                    decision.utc,
+                )
+            },
+        )
+    }
+    fn summary_submit(
+        &self,
+        request: &crate::protocol::summary::SummarySubmitRequest,
+        budget: &CallBudget,
+    ) -> Result<crate::protocol::summary::SubmitOutcome, ApiError> {
+        let mut writer = self.writer(budget)?;
+        self.context.execute_budgeted_decision(
+            &mut writer,
+            budget,
+            |_| Ok(()),
+            |tx, decision, ()| {
+                summary::summary_submit(
+                    tx,
+                    &self.instance,
+                    request,
+                    &self.settings.summary,
+                    decision.utc,
+                )
+            },
+        )
     }
     fn wake_candidates(
         &self,
@@ -2181,6 +2337,81 @@ impl StorePort for SqliteStore {
             refused_restore,
             budget,
         )
+    }
+    fn poke_candidates(&self, limit: u16, budget: &CallBudget) -> Result<Vec<PokeDue>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        poke::due_pokes(
+            &db,
+            self.context.clock().utc_now().0,
+            &self.settings.summary,
+            limit,
+        )
+    }
+    fn poke_for_wake(
+        &self,
+        seat: &SeatId,
+        budget: &CallBudget,
+    ) -> Result<Option<PokeDue>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        poke::due_pokes_for_seat(
+            &db,
+            seat,
+            self.context.clock().utc_now().0,
+            &self.settings.summary,
+        )
+    }
+    fn reserve_poke(
+        &self,
+        due: &PokeDue,
+        budget: &CallBudget,
+    ) -> Result<Option<PokeReservation>, ApiError> {
+        let Some(daemon_boot) = self.settings.daemon_boot else {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "elected daemon boot required",
+            ));
+        };
+        let mut writer = self.writer(budget)?;
+        wake::reserve_poke(
+            &self.context,
+            &mut writer,
+            &self.instance,
+            due,
+            daemon_boot,
+            &self.settings.summary,
+        )
+    }
+    fn complete_poke(
+        &self,
+        attempt: WakeAttemptId,
+        outcome: WakeOutcome,
+        receipts: &[PokeReceipt],
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        let Some(daemon_boot) = &self.settings.daemon_boot else {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "elected daemon boot required",
+            ));
+        };
+        let mut writer = self.writer(budget)?;
+        // A poke reservation never advanced the wake ladder, so there is no
+        // prior ladder row to restore on a refusal.
+        wake::complete_with_pokes(
+            &self.context,
+            &mut writer,
+            &attempt,
+            daemon_boot,
+            outcome,
+            None,
+            budget,
+            receipts,
+        )
+        .map(|_| ())
     }
 }
 

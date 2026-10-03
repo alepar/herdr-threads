@@ -1,0 +1,5 @@
+seat_id|thread_id|frontier_seq|entered|extension_until|state|end_reason|ended|release_seq
+seat-oJLhtZuC|thread-I2SWujnv|134|2026-10-02 23:28:27|2026-10-02 23:29:53|ended|ready|2026-10-02 23:29:38|159
+seat-tJDlgi2m|thread-I2SWujnv|144|2026-10-02 23:36:13|2026-10-02 23:38:13|ended|stalled|2026-10-02 23:38:13|192
+seat-5E7sEMcK|thread-DWKSdAn7|193|2026-10-03 00:33:43|2026-10-03 00:35:43|ended|stalled|2026-10-03 00:35:44|487
+seat-RJ7yryH6|thread-DWKSdAn7|193|2026-10-03 00:33:44|2026-10-03 00:35:44|ended|stalled|2026-10-03 00:35:45|488

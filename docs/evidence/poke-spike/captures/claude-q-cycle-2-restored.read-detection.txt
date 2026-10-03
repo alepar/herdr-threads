@@ -1,0 +1,50 @@
+⏺ done
+
+  (Also received: POKE-TEST-claude-B)
+
+✻ Brewed for 54s · done 12:17 PM
+
+❯ Run three Bash tool calls one after another, each in the foreground and never
+  in the background: sleep 15 then echo one; sleep 15 then echo two; sleep 15
+  then echo three. Reply done after the third.
+
+  Ran 1 shell command
+
+❯ POKE-TEST-claude-C
+
+  Ran 2 shell commands
+
+⏺ done
+
+  (Also received: POKE-TEST-claude-C)
+
+✻ Cogitated for 50s · done 12:19 PM
+
+❯ Run three Bash tool calls one after another, each in the foreground and never
+  in the background: sleep 15 then echo one; sleep 15 then echo two; sleep 15
+  then echo three. Reply done after the third.
+
+  Ran 1 shell command
+
+❯ DRAFT-TEXT-xyzPOKE-TEST-claude-D
+
+  Ran 2 shell commands
+
+⏺ done
+
+  (Also received: DRAFT-TEXT-xyzPOKE-TEST-claude-D)
+
+✻ Sautéed for 50s · done 12:20 PM
+
+❯ POKE-TEST-claude-E reply with the word ok
+
+⏺ ok
+
+✻ Churned for 0s · done 12:20 PM
+                                                        ctrl+g to edit in Nvim
+────────────────────────────────────────────────────────────────────────────────
+❯ draft line A
+  draft line B
+────────────────────────────────────────────────────────────────────────────────
+  ████░░░░░░░░░░░░░░░░ 200k | Haiku 4.5 | CL:51%/49%/?/$0
+  ⏸ manual mode on

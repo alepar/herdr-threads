@@ -1826,6 +1826,45 @@ pub fn effective_receipt(
         .transpose()
 }
 
+/// The physical row a receipt's `soft_poked_at` lives on (spec §10): a
+/// manifest receipt's `receipt_state` row, or a legacy `receipts` row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoftPoked {
+    /// The effective receipt has no physical row of that source yet (a staged
+    /// manifest receipt that is not materialized): it cannot carry the mark.
+    NoRow,
+    Unpoked,
+    Poked(i64),
+}
+
+/// `soft_poked_at` through the effective receipt projection (spec §10; r3):
+/// `source` is the effective receipt's own `source`, so the read always lands
+/// on the row `poke::mark_soft_poked` writes.
+pub fn receipt_soft_poked_at(
+    db: &Connection,
+    message_id: &str,
+    seat_id: &str,
+    source: ReceiptSource,
+) -> Result<SoftPoked, ApiError> {
+    let sql = match source {
+        ReceiptSource::Manifest => {
+            "SELECT soft_poked_at FROM receipt_state WHERE message_id=?1 AND seat_id=?2"
+        }
+        ReceiptSource::Physical => {
+            "SELECT soft_poked_at FROM receipts WHERE message_id=?1 AND seat_id=?2"
+        }
+    };
+    let row: Option<Option<i64>> = db
+        .query_row(sql, params![message_id, seat_id], |r| r.get(0))
+        .optional()
+        .map_err(store_error)?;
+    Ok(match row {
+        None => SoftPoked::NoRow,
+        Some(None) => SoftPoked::Unpoked,
+        Some(Some(at)) => SoftPoked::Poked(at),
+    })
+}
+
 fn receipt_state(state: Option<&str>, retired: bool) -> Result<EffectiveReceiptState, ApiError> {
     match state.unwrap_or("pending") {
         "acked" => Ok(EffectiveReceiptState::Acknowledged),

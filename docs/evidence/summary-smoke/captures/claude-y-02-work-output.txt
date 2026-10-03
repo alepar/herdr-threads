@@ -1,0 +1,5 @@
+--- top result: summary thread-I2SWujnv frontier #134: work (1 jobs)
+job sj-e9d8c39d-1252-45c1-b2a4-0bacec15c893 L0 #123-#133 lease until 23:29Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-e9d8c39d-1252-45c1-b2a4-0bacec15c893 --lease b559f660-2feb-4d18-aa1b-8fbe0af202ed
+  submit: herdr-threads summary submit sj-e9d8c39d-1252-45c1-b2a4-0bacec15c893 --lease b559f660-2feb-4d18-aa1b-8fbe0af202ed < submission.json
+then: herdr-threads summary thread-I2SWujnv

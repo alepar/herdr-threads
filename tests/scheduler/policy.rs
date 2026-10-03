@@ -198,6 +198,7 @@ fn coalesces_current_reasons_and_silences_info_and_offered_warnings() {
 #[test]
 fn target_requires_fresh_resolved_native_idle_without_known_input() {
     let observation = HostObservation {
+        focused: false,
         target: HostTargetId::new("pane"),
         host_boot: HostBootId::new("boot"),
         epoch: 1,
@@ -485,6 +486,158 @@ fn raised_and_lowered_minimums_preserve_prior_frozen_floor() {
             .eligible(MonoInstant(301_000))
     );
     assert!(RetryConfig::new(29_999).is_err());
+}
+
+fn thread_ids(n: usize) -> Vec<ThreadId> {
+    (1..=n).map(|i| ThreadId::new(format!("t{i}"))).collect()
+}
+
+#[test]
+fn soft_point_math() {
+    assert_eq!(soft_point(1_000_000, 100_000, 0.6), 960_000);
+    assert_eq!(soft_point(1_000_000, 100_000, 0.5), 950_000);
+    // An extension moves the effective deadline; the soft point follows.
+    assert_eq!(soft_point(1_100_000, 100_000, 0.6), 1_060_000);
+    // Never later than the deadline itself, never earlier than the window allows.
+    assert_eq!(soft_point(1_000, 0, 0.6), 1_000);
+}
+
+#[test]
+fn poke_text_coalesces() {
+    assert_eq!(
+        poke_text(40_000, &thread_ids(1)),
+        "herdr-threads: receipt due in 40s on t1; run herdr-threads inbox"
+    );
+    assert_eq!(
+        poke_text(40_001, &thread_ids(1)),
+        "herdr-threads: receipt due in 41s on t1; run herdr-threads inbox"
+    );
+    assert_eq!(
+        poke_text(-5, &thread_ids(2)),
+        "herdr-threads: receipt due in 0s on t1, t2; run herdr-threads inbox"
+    );
+    assert_eq!(
+        poke_text(10_000, &thread_ids(8)),
+        "herdr-threads: receipt due in 10s on t1, t2, t3, t4, t5, t6, t7, t8; run herdr-threads inbox"
+    );
+    assert_eq!(
+        poke_text(10_000, &thread_ids(10)),
+        "herdr-threads: receipt due in 10s on t1, t2, t3, t4, t5, t6, t7, t8 +2 more; run herdr-threads inbox"
+    );
+}
+
+fn poke_observation(ui: HostUiState, focused: bool) -> HostObservation {
+    HostObservation {
+        focused,
+        target: HostTargetId::new("pane"),
+        host_boot: HostBootId::new("boot"),
+        epoch: 1,
+        generation: 7,
+        observed_at_utc: UtcMillis(1),
+        observed_at_mono: MonoInstant(1),
+        provenance: ObservationProvenance::FreshCurrentTarget,
+        occupant: Some(NativeOccupant {
+            harness: Harness::Codex,
+            session: NativeSessionId::new("session"),
+            execution: ExecutionId::new("exec"),
+            is_top_level: true,
+        }),
+        ui,
+        terminal: None,
+        occupancy: StructuralOccupancy::Occupied,
+        incarnation: IncarnationEvidence::Unknown,
+        execution: ExecutionEvidence::Unknown,
+        call_id: HostCallId::new("test-call"),
+        connection_epoch: 0,
+        observation_sequence: 0,
+        started_at_mono: MonoInstant(1),
+        completed_at_mono: MonoInstant(1),
+    }
+}
+
+#[test]
+fn eligibility_matrix() {
+    use crate::harness::recipe::NativeSupport::{Supported, Unsupported};
+    let states = [
+        HostUiState::Idle,
+        HostUiState::ActiveTurn,
+        HostUiState::HumanInput,
+        HostUiState::ApprovalOrQuestion,
+        HostUiState::Unknown,
+    ];
+    let mut submits = 0;
+    let mut stashes = 0;
+    for ui in states {
+        for focused in [false, true] {
+            for during_turn in [Unsupported, Supported] {
+                for stash in [Unsupported, Supported] {
+                    let caps = PokeCapabilities {
+                        composer_stash: stash,
+                        poke_during_turn: during_turn,
+                    };
+                    let decision =
+                        poke_eligibility(&poke_observation(ui, focused), true, true, caps);
+                    let expected = if focused {
+                        None
+                    } else {
+                        match ui {
+                            HostUiState::Idle => Some(PokeDecision::Submit),
+                            HostUiState::ActiveTurn => {
+                                (during_turn == Supported).then_some(PokeDecision::Submit)
+                            }
+                            HostUiState::HumanInput => {
+                                (stash == Supported).then_some(PokeDecision::Stash)
+                            }
+                            HostUiState::ApprovalOrQuestion | HostUiState::Unknown => None,
+                        }
+                    };
+                    match expected {
+                        Some(expected) => assert_eq!(decision, expected, "{ui:?} {focused}"),
+                        None => assert!(
+                            matches!(decision, PokeDecision::Skip(_)),
+                            "{ui:?} focused={focused} {during_turn:?} {stash:?} -> {decision:?}"
+                        ),
+                    }
+                    submits += usize::from(decision == PokeDecision::Submit);
+                    stashes += usize::from(decision == PokeDecision::Stash);
+                }
+            }
+        }
+    }
+    // Idle unfocused (4 capability combos) + ActiveTurn unfocused with the
+    // capability (2); HumanInput unfocused with the capability (2).
+    assert_eq!((submits, stashes), (6, 2));
+}
+
+#[test]
+fn eligibility_requires_bound_recognized_fresh_observation() {
+    let caps = PokeCapabilities::NONE;
+    let idle = poke_observation(HostUiState::Idle, false);
+    assert_eq!(
+        poke_eligibility(&idle, true, true, caps),
+        PokeDecision::Submit
+    );
+    assert!(matches!(
+        poke_eligibility(&idle, false, true, caps),
+        PokeDecision::Skip(_)
+    ));
+    assert!(matches!(
+        poke_eligibility(&idle, true, false, caps),
+        PokeDecision::Skip(_)
+    ));
+    for provenance in [
+        ObservationProvenance::CoherentEnumeration,
+        ObservationProvenance::UncharacterizedCache,
+    ] {
+        let stale = HostObservation {
+            provenance,
+            ..idle.clone()
+        };
+        assert!(matches!(
+            poke_eligibility(&stale, true, true, caps),
+            PokeDecision::Skip(_)
+        ));
+    }
 }
 
 mod refusal_backoff {

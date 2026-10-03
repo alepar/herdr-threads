@@ -1,0 +1,50 @@
+› TOOLS run three steps
+• Ran sleep 15; echo step1
+  └ step1
+
+
+› POKE-TEST-codex-B
+
+
+• Ran sleep 15; echo step2
+  └ step2
+
+• Ran sleep 15; echo step3
+  └ step3
+
+• ok
+
+  Worked for 47s • 12:25
+
+
+› TOOLS second run
+
+
+• Ran sleep 15; echo step1
+  └ step1
+
+
+› POKE-TEST-codex-C
+
+
+• Ran sleep 15; echo step2
+  └ step2
+
+• Ran sleep 15; echo step3
+  └ step3
+
+• ok
+
+  Worked for 47s • 12:26
+
+
+› TOOLS third run
+
+
+• Working (8s • esc to interrupt) · 1 background terminal running · /ps to vie…
+
+
+› DRAFT-TEXT-xyz
+
+  mockmodel medium · Context 0% used · /private/tmp/ht-poke-spike/codex
+  tab to queue message

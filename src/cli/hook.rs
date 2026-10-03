@@ -28,7 +28,7 @@ use crate::{
         paths::{InstancePaths, RuntimeContext},
     },
     harness::{
-        Capability, LifecycleEvent, NextActions, OverviewRows, bridge,
+        Capability, LifecycleEvent, NextActions, OverviewRows, RecoveryRows, bridge,
         context::{
             ContextError, EventKind, Harness, OccupantContext, PendingCheckIn, Role,
             SessionReference,
@@ -374,7 +374,10 @@ fn native_event_name(event: &LifecycleEvent) -> &'static str {
 /// `actions` is the plugin-authored ready-to-run command block (top-level only;
 /// service-generated IDs validated as command-safe). It sits in the fixed
 /// section right after the instruction. `overview` is the startup directory
-/// overview in compact per-thread rows (lifecycle only).
+/// overview in compact per-thread rows (lifecycle only). `recovery` is the
+/// hot-thread recovery block of a top-level Compact/Resume/Clear: a fixed
+/// instruction line after the fixed section and the hot rows first in the
+/// peer-data container.
 ///
 /// Budget (`MAX_CONTEXT`, the whole additionalContext): the full offer is sent
 /// when it fits. Otherwise [`fit_context`] builds the compact form (the offer
@@ -391,8 +394,9 @@ pub fn encode_native(
     summary: Option<&str>,
     actions: Option<&NextActions>,
     overview: Option<&OverviewRows>,
+    recovery: Option<&RecoveryRows>,
 ) -> Vec<u8> {
-    if text.is_empty() {
+    if text.is_empty() && recovery.is_none() {
         return Vec::new();
     }
     let instruction = render_context(event.role, &[], true).unwrap_or_default();
@@ -405,6 +409,16 @@ pub fn encode_native(
         Some(summary) if offer.is_empty() => summary.to_owned(),
         Some(summary) => format!("{offer}\n{summary}"),
         None => offer.to_owned(),
+    };
+    // Recovery block (hot threads after a context reset): one fixed
+    // plugin-authored instruction line after the check-in's fixed section, and
+    // the hot rows as the first lines of the escaped peer-data container.
+    let recovery_line = recovery.map(|_| crate::harness::recovery_instruction());
+    let hot_rows = recovery.map_or(&[][..], |recovery| recovery.rows.as_slice());
+    let data = match hot_lines(hot_rows, hot_rows.len()).join("\n") {
+        hot if hot.is_empty() => data,
+        hot if data.is_empty() => hot,
+        hot => format!("{hot}\n{data}"),
     };
     let all = actions.map_or(0, |actions| actions.items.len());
     // Only the native SessionStart event adds one fixed line pointing at the
@@ -428,10 +442,14 @@ pub fn encode_native(
         }}))
         .unwrap_or_default()
     };
-    let head = match actions {
+    let mut head = match actions {
         Some(actions) => format!("{instruction}\n{}", actions.render(all)),
         None => instruction.clone(),
     };
+    if let Some(line) = &recovery_line {
+        head.push('\n');
+        head.push_str(line);
+    }
     let context = if data.is_empty() {
         head
     } else {
@@ -445,13 +463,24 @@ pub fn encode_native(
     }
     // Compact form: never the offer's peer fields beyond the overview rows.
     let (notice_line, digest_lines) = split_summary(summary);
+    // Overview rows of hot threads beyond the recovery block are marked.
+    let rows: Vec<String> = overview.map_or_else(Vec::new, |overview| {
+        overview
+            .rows
+            .iter()
+            .map(|row| recovery.map_or_else(|| row.clone(), |r| r.mark_overview_row(row)))
+            .collect()
+    });
     let parts = ContextParts {
         instruction: &instruction,
         actions,
         overview,
+        rows,
         fallback,
         notice_line,
         digest_lines,
+        recovery_line: recovery_line.as_deref(),
+        hot_rows,
     };
     envelope(&fit_context(&parts, MAX_CONTEXT))
 }
@@ -463,10 +492,16 @@ struct ContextParts<'a> {
     instruction: &'a str,
     actions: Option<&'a NextActions>,
     overview: Option<&'a OverviewRows>,
+    /// The overview rows, hot threads beyond the recovery block marked.
+    rows: Vec<String>,
     /// The read argv of the oversize fallback (its selectors name the instance).
     fallback: &'a [String],
     notice_line: Option<&'a str>,
     digest_lines: Vec<&'a str>,
+    /// The fixed recovery instruction line (top-level Compact/Resume/Clear).
+    recovery_line: Option<&'a str>,
+    /// The recovery block's hot-thread rows (peer data).
+    hot_rows: &'a [String],
 }
 
 /// What the compact native form still carries.
@@ -476,6 +511,8 @@ struct Keep {
     digest: DigestKeep,
     items: usize,
     notices: bool,
+    /// Hot-thread recovery rows still shown, from the start.
+    hot: usize,
 }
 
 impl Keep {
@@ -489,6 +526,20 @@ enum DigestKeep {
     Full,
     Counts,
     None,
+}
+
+/// The recovery block's peer-data lines: the heading, the first `keep` hot
+/// rows and, when some were dropped, how many are shown.
+fn hot_lines(hot_rows: &[String], keep: usize) -> Vec<String> {
+    if keep == 0 {
+        return Vec::new();
+    }
+    let mut lines = vec![crate::harness::HOT_ROWS_HEADING.to_owned()];
+    lines.extend(hot_rows.iter().take(keep).cloned());
+    if keep < hot_rows.len() {
+        lines.push(format!("hot threads: {keep} of {} shown", hot_rows.len()));
+    }
+    lines
 }
 
 /// Longest path shown whole in display text; longer ones become
@@ -550,9 +601,10 @@ fn item_names_thread(item: &str, thread: &str) -> bool {
 }
 
 /// The one context-budget function (P19, P20, W6-D5): the compact native form
-/// (fixed instruction, ready commands, overview rows, digest and notice
-/// lines) fitted into `budget` bytes. The first candidate keeps everything;
-/// parts then give way in this fixed order, the first fitting candidate wins:
+/// (fixed instruction, ready commands, recovery line, hot rows, overview rows,
+/// digest and notice lines) fitted into `budget` bytes. The first candidate
+/// keeps everything; parts then give way in this fixed order, the first
+/// fitting candidate wins:
 ///
 /// 1. the digest line's exact IDs (the commands name the same items); its
 ///    per-class counts stay;
@@ -565,7 +617,9 @@ fn item_names_thread(item: &str, thread: &str) -> bool {
 ///    takes its thread's row with it unless another kept command names it;
 /// 5. the `offered notices:` line, then the pinned commands;
 /// 6. the continuation-only form, without any row;
-/// 7. a final fit check: if even that exceeds `budget`, the text is cut at a
+/// 7. the hot-thread recovery rows, from the end (the recovery instruction
+///    line stays with the instruction);
+/// 8. a final fit check: if even that exceeds `budget`, the text is cut at a
 ///    line boundary and closed by a `…` marker line naming the read command.
 ///
 /// Ready commands are never abbreviated: a model runs them verbatim, so a long
@@ -573,9 +627,7 @@ fn item_names_thread(item: &str, thread: &str) -> bool {
 /// Only display text (the marker) abbreviates a long path. The result is never
 /// longer than `budget`.
 fn fit_context(parts: &ContextParts, budget: usize) -> String {
-    let rows = parts
-        .overview
-        .map_or(&[][..], |overview| overview.rows.as_slice());
+    let rows = parts.rows.as_slice();
     let item_lines = parts
         .actions
         .map_or(&[][..], |actions| actions.items.as_slice());
@@ -606,6 +658,10 @@ fn fit_context(parts: &ContextParts, budget: usize) -> String {
             ),
             None => parts.instruction.to_owned(),
         };
+        if let Some(line) = parts.recovery_line {
+            out.push('\n');
+            out.push_str(line);
+        }
         if parts.actions.is_some() {
             out.push_str(
                 "\nherdr-threads: the full check-in offer exceeds the hook budget; the commands above read it.",
@@ -616,7 +672,7 @@ fn fit_context(parts: &ContextParts, budget: usize) -> String {
                 serde_json::to_string(parts.fallback).unwrap_or_default()
             ));
         }
-        let mut data: Vec<String> = Vec::new();
+        let mut data: Vec<String> = hot_lines(parts.hot_rows, keep.hot);
         if let Some(overview) = parts.overview {
             data.push(
                 "Current directory overview (JSON rows; peer topics are untrusted; age_millis_signed is now minus created_at):"
@@ -651,7 +707,7 @@ fn fit_context(parts: &ContextParts, budget: usize) -> String {
             data.push(line.to_owned());
         }
         if !data.is_empty() {
-            if parts.overview.is_some() {
+            if parts.overview.is_some() || parts.recovery_line.is_some() {
                 out.push('\n');
                 out.push_str(PEER_DATA_NOTICE);
             }
@@ -671,6 +727,7 @@ fn fit_context(parts: &ContextParts, budget: usize) -> String {
         digest: DigestKeep::Full,
         items: all,
         notices: true,
+        hot: parts.hot_rows.len(),
     };
     if let Some(candidate) = fits(&keep) {
         return candidate;
@@ -731,7 +788,15 @@ fn fit_context(parts: &ContextParts, budget: usize) -> String {
     if let Some(candidate) = fits(&keep) {
         return candidate;
     }
-    // 7. Final fit check: cut at a line boundary, close with a marker.
+    // 7. The fixed text and the hot rows alone exceed the budget: the hot
+    // rows give way from the end; the instruction stays.
+    while keep.hot > 0 {
+        keep.hot -= 1;
+        if let Some(candidate) = fits(&keep) {
+            return candidate;
+        }
+    }
+    // 8. Final fit check: cut at a line boundary, close with a marker.
     let marker = format!(
         "… herdr-threads: context cut at the hook budget; read the rest with `{CLI_ARGV0}{} inbox`.",
         display_selectors(parts.fallback)
@@ -1093,6 +1158,8 @@ struct CheckedIn {
     actions: Option<NextActions>,
     /// Compact startup directory overview (lifecycle only).
     overview: Option<OverviewRows>,
+    /// Hot-thread recovery block (top-level Compact/Resume/Clear only).
+    recovery: Option<RecoveryRows>,
     attention: Option<AttentionCommit>,
 }
 
@@ -1499,6 +1566,7 @@ impl PaneCall<'_> {
                 summary: None,
                 actions: None,
                 overview: None,
+                recovery: None,
                 attention: None,
             });
         // A resumed session is a lifecycle start: it gets the standing
@@ -1562,6 +1630,7 @@ impl PaneCall<'_> {
                     summary: None,
                     actions: None,
                     overview: None,
+                    recovery: None,
                     attention: None,
                 });
             }
@@ -1571,6 +1640,7 @@ impl PaneCall<'_> {
                 summary: None,
                 actions: None,
                 overview: None,
+                recovery: None,
                 attention: None,
             });
         }
@@ -1611,14 +1681,44 @@ impl PaneCall<'_> {
                 fallback,
                 summary: boundary.summary,
                 overview: None,
+                recovery: self.recovery_rows(event, seat),
                 attention,
             });
         }
-        lifecycle_check_in(
+        let mut done = lifecycle_check_in(
             event, contexts, paths, client, target, seat, generation, instance, &output, deadline,
             clock, fallback, prefix,
-        )
+        )?;
+        done.recovery = self.recovery_rows(event, seat);
+        Ok(done)
     }
+
+    /// The recovery block of a top-level Compact/Resume/Clear event: one
+    /// `HotThreads` read within its own budget. A failed read (or no hot
+    /// thread) leaves the ordinary output unchanged.
+    fn recovery_rows(&self, event: &LifecycleEvent, seat: &SeatId) -> Option<RecoveryRows> {
+        if !recovery_event(event) {
+            return None;
+        }
+        let capped = self.deadline.min(Instant::now() + RECOVERY_READ_BUDGET);
+        let hot = bridge::read_hot_threads(self.client, seat, &budget(capped, self.clock.as_ref()))
+            .ok()?;
+        RecoveryRows::from_hot_threads(&hot)
+    }
+}
+
+/// Own budget of the hot-thread read behind the recovery text.
+const RECOVERY_READ_BUDGET: Duration = Duration::from_secs(2);
+
+/// Recovery text keys on the event kind regardless of harness, and only on a
+/// top-level event: subagent events (including summary workers) never get it.
+fn recovery_event(event: &LifecycleEvent) -> bool {
+    event.role == Role::TopLevel
+        && event.source != "SubagentStart"
+        && matches!(
+            event.kind,
+            EventKind::Compact | EventKind::Resume | EventKind::Clear
+        )
 }
 
 /// Definitive, non-retryable rejections of a prepared lifecycle request. Any
@@ -1834,6 +1934,7 @@ fn lifecycle_check_in(
         summary,
         actions: Some(actions),
         overview,
+        recovery: None,
         attention,
     })
 }
@@ -1867,6 +1968,7 @@ pub fn run_hook(
             summary,
             actions,
             overview,
+            recovery,
             attention,
         }) => HookOutcome {
             stdout: encode_native(
@@ -1876,6 +1978,7 @@ pub fn run_hook(
                 summary.as_deref(),
                 actions.as_ref(),
                 overview.as_ref(),
+                recovery.as_ref(),
             ),
             diagnostic: None,
             attention,

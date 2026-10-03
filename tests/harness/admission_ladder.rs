@@ -87,6 +87,7 @@ use Expect::{Listed, Optimistic, Refused, SchemaMatched};
 use Fp::{Differs, Match, Unreadable};
 
 const CLAUDE: &str = "claude-hooks-2.1.283";
+const CLAUDE_287: &str = "claude-hooks-2.1.287";
 const CODEX: &str = "codex-hooks-v1";
 
 fn claude_case(version: &'static str, expect: Expect) -> Case<ClaudeProfile> {
@@ -130,13 +131,15 @@ fn claude_rows() {
         ("2.1.284", Listed(CLAUDE)),
         ("2.1.285", Listed(CLAUDE)),
         ("2.1.286", Listed(CLAUDE)),
-        ("2.1.287", Listed(CLAUDE)),
+        ("2.1.287", Listed(CLAUDE_287)),
         ("2.1.282", Refused(Kind::Older)),
         ("1.0.0", Refused(Kind::Older)),
-        ("2.1.288", newer(CLAUDE, false)),
-        ("2.1.301", newer(CLAUDE, false)),
-        ("2.2.0", newer(CLAUDE, false)),
-        ("3.0.0", newer(CLAUDE, true)),
+        // Newer than every recipe: the recipe with the greatest max (the
+        // 2.1.287 recipe) is assumed.
+        ("2.1.288", newer(CLAUDE_287, false)),
+        ("2.1.301", newer(CLAUDE_287, false)),
+        ("2.2.0", newer(CLAUDE_287, false)),
+        ("3.0.0", newer(CLAUDE_287, true)),
         ("v2.1.286", Refused(Kind::Unparsable)),
         ("2.1", Refused(Kind::Unparsable)),
         ("02.1.286", Refused(Kind::Unparsable)),
@@ -178,6 +181,9 @@ fn codex_rows() {
 const PROFILE: ClaudeProfile = ClaudeProfile {
     input_schema: InputSchema::Hooks2_1_283,
     model_receipt: NativeSupport::Unsupported,
+    session_start_compact: NativeSupport::Unsupported,
+    composer_stash: NativeSupport::Unsupported,
+    poke_during_turn: NativeSupport::Unsupported,
 };
 
 const fn planted(

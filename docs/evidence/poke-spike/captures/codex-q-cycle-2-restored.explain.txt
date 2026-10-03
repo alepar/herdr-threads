@@ -1,0 +1,5 @@
+agent: codex
+state: idle
+manifest: remote:~/.local/state/herdr/agent-detection/remote/codex.toml 2026.10.01.1
+rule: osc_title_idle (region=osc_title priority=100)
+evidence: "codex"

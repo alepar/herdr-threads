@@ -127,6 +127,7 @@ pub(crate) fn begin_retirement_fence(
             params![cutover.0, seat.as_str()],
         )
         .map_err(store_error)?;
+        super::catch_up::supersede_stale(tx, &seat, cutover)?;
         tx.execute(
             "DELETE FROM warning_offer WHERE seat_id=?1",
             [seat.as_str()],
@@ -454,7 +455,7 @@ pub fn accept(
                 )
                 .map_err(store_error)?;
             if state == "accepted" {
-                return Ok(CommandResult::Accepted(invitation.clone()));
+                return Ok(CommandResult::Accepted(invitation.clone().into()));
             }
             if state != "pending" {
                 return Err(api_error(ErrorCode::Conflict, "invitation is terminal"));
@@ -524,7 +525,7 @@ pub fn accept(
             schema::bump_filter_revision(tx, &instance, "directory", "all")?;
             bump_member_directory(tx, &instance, &caller)?;
             schema::bump_filter_revision(tx, &instance, "inbox", caller.as_str())?;
-            Ok(CommandResult::Accepted(invitation.clone()))
+            Ok(CommandResult::Accepted(invitation.clone().into()))
         },
     )
 }

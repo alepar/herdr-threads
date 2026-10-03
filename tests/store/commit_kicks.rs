@@ -173,6 +173,10 @@ const INSERTS: &[(&str, &str)] = &[
         "receipt_state",
         "INSERT INTO receipt_state(message_id,seat_id,state) VALUES ('m','s1','pending')",
     ),
+    (
+        "catch_up",
+        "INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state) VALUES ('s1','t',1,0,'e',0,'active')",
+    ),
 ];
 
 const WAKE_INSERT: &str = "INSERT INTO wake_work(seat_id) VALUES ('s1')";

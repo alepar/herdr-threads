@@ -353,9 +353,14 @@ fn no_hardcoded_harness_versions() {
         .lines()
         .filter(|line| line.starts_with("| `claude-hooks-") || line.starts_with("| `codex-hooks-"))
         .collect();
+    // The registry table (version column generated) has one row per recipe;
+    // the poke-capability table names recipes too, never their versions.
+    let recipes = claude::RECIPES.len() + crate::harness::codex::RECIPES.len();
     assert_eq!(
-        rows.len(),
-        2,
+        rows.iter()
+            .filter(|row| row.contains("harness-versions.json"))
+            .count(),
+        recipes,
         "the recipe registry table has one row per recipe"
     );
     for row in rows {

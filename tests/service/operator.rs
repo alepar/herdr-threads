@@ -41,6 +41,7 @@ impl Host {
     fn observation(&self, target: &str, sequence: u64) -> HostObservation {
         let at = self.clock.monotonic_now();
         HostObservation {
+            focused: false,
             target: HostTargetId::new(target),
             host_boot: HostBootId::new("host"),
             epoch: 1,

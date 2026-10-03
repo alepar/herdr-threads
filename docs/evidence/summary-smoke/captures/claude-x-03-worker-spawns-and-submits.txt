@@ -1,0 +1,44 @@
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=None description=Process Release 7 thread summary job #1 (messages 1-10)
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=None description=Process Release 7 thread summary job #2 (messages 11-17)
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=None description=Process Release 7 thread summary job #3 (messages 18-23)
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=None description=Process Release 7 thread summary job #4 (messages 24-30)
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=None description=Process Release 7 thread summary job #5 (messages 31-36)
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=None description=Process Release 7 thread summary job #6 (messages 37-43)
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=None description=Process Release 7 thread summary job #2 (messages 11-17)
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-ca16aef2 messages 11-17
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-dbec4865 messages 18-23
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-426ec252 messages 24-30
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-22aab3eb messages 31-36
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-678d219a messages 37-43
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-0c7d1664 messages 44-56
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-034af6ad messages 57-67
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-a7922fb3 messages 68-78
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-3f15bb21 messages 79-89
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-ccdae529 messages 90-100
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-946a1e57 messages 101-111
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-73968910 messages 112-122
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-dbec4865 messages 18-23 retry
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-426ec252 messages 24-30 retry
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-22aab3eb messages 31-36 retry
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-678d219a messages 37-43 retry
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-0c7d1664 messages 44-56 retry
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-dbec4865 messages 18-23 final
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-22aab3eb messages 31-36 final
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-dbec4865 messages 18-23 retry2
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-22aab3eb messages 31-36 retry2
+--- top AGENT SPAWN (claude-haiku-4-5-20251001): model=haiku description=Summary worker job sj-dbec4865 messages 18-23 final retry
+--- submit results seen in the transcript
+--- sub result: stored sb-a664b360-20cb-40e6-8595-acfeae1cd6a9 (fallback)
+--- sub result: stored sb-5860d8e8-82a0-4f4f-a9c3-a99387aec5ef (fallback)
+--- sub result: stored sb-8505662d-3bd1-403c-86da-5d490a0286ff
+--- sub result: stored sb-5860d8e8-82a0-4f4f-a9c3-a99387aec5ef (fallback)
+--- sub result: stored sb-3115b120-ad10-4f26-8e19-7bac9d532188
+--- sub result: stored sb-d6c690ee-6aca-4553-ae07-ea03ab4a9230
+--- sub result: stored sb-d77310cd-9bf3-4435-80bb-ebb176977caa
+--- sub result: stored sb-899af4e6-2665-4e42-9b77-14898eb87de1
+--- sub result: stored sb-d51dba4f-e29a-44aa-8961-c1d14088274b
+--- sub result: stored sb-384256d7-b990-4595-aa53-8f17538e8cc1 (fallback)
+--- sub result: stored sb-11d6dd66-765d-4638-9c75-62d5cd269f86 (fallback)
+--- sub result: stored sb-c0822ab1-4a5c-4245-98f4-ba09879c7213
+--- sub result: stored sb-d88d07de-9583-43e2-aab9-63df2c40fc74 (fallback)
+--- sub result: stored sb-0f77a165-cd3f-4404-906a-fbcc560ed256 (fallback)

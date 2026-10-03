@@ -1,0 +1,40 @@
+cli_auth_credentials_store = "file"
+
+[tui]
+screen_reader_detection_done = true
+status_line = ["model-with-reasoning", "context-window-size", "context-used", "weekly-limit", "current-dir", "thread-title"]
+status_line_use_colors = true
+
+[tui.model_availability_nux]
+"gpt-6.1-sol" = 4
+
+[agents]
+max_concurrent_threads_per_session = 10
+
+[projects."/private/tmp/ht-summary-smoke/proj-codex"]
+trust_level = "trusted"
+
+# Added by hand for the smoke (setup omits it on codex 0.160.0): the allowance setup writes on 0.159.x, after verifying on
+# 0.160.0 that curl https://example.com fails with this allowance (CONNECT tunnel failed, response 403).
+[sandbox_workspace_write]
+network_access = true
+writable_roots = ["/private/tmp/ht-summary-smoke/state/instances/9639634cd008ed0f1c61a379dd666732a771ab7f17494af1af87036b37bf06a6/intents", "/private/tmp/ht-summary-smoke/state/instances/9639634cd008ed0f1c61a379dd666732a771ab7f17494af1af87036b37bf06a6/contexts"]
+
+[features.network_proxy]
+enabled = true
+
+[features.network_proxy.unix_sockets]
+"/private/tmp/herdr-threads-501/c321e0234144f0f3.sock" = "allow"
+
+# Smoke: the agent's shell must resolve herdr-threads to the build under test, not the installed release.
+[shell_environment_policy]
+inherit = "all"
+set = { PATH = "/private/tmp/ht-summary-smoke/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/USER/.local/bin", HERDR_PLUGIN_STATE_DIR = "/private/tmp/ht-summary-smoke/state" }
+
+[hooks.state]
+
+[hooks.state."/private/tmp/ht-summary-smoke/codex-home/hooks.json:pre_tool_use:0:0"]
+
+[hooks.state."/private/tmp/ht-summary-smoke/codex-home/hooks.json:session_start:0:0"]
+
+[hooks.state."/private/tmp/ht-summary-smoke/codex-home/hooks.json:subagent_start:0:0"]

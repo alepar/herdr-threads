@@ -345,7 +345,9 @@ fn unsupported_harness_version_is_refused_with_status_four() {
         assert!(stderr.starts_with("herdr-threads: "), "{stderr}");
         assert!(stderr.contains(expect), "{line}: {stderr}");
         assert!(
-            stderr.contains("claude-hooks-2.1.283 [2.1.283, 2.1.287]"),
+            stderr.contains(
+                "claude-hooks-2.1.283 [2.1.283, 2.1.286]; claude-hooks-2.1.287 {2.1.287}"
+            ),
             "{stderr}"
         );
         assert!(stderr.contains("(unsupported_harness)"), "{stderr}");
@@ -382,8 +384,9 @@ fn newer_unlisted_harness_version_is_admitted_optimistically() {
     let report = json(&out);
     assert_eq!(report["harness_version"]["supported"], true, "{report}");
     assert_eq!(report["harness_version"]["version"], "2.1.288", "{report}");
+    // Newer than every recipe: the recipe with the greatest max is assumed.
     assert_eq!(
-        report["harness_version"]["recipe"], "claude-hooks-2.1.283",
+        report["harness_version"]["recipe"], "claude-hooks-2.1.287",
         "{report}"
     );
     assert_ne!(fs::read(s.settings()).unwrap(), ORIGINAL);

@@ -16,6 +16,8 @@ pub struct NativePane {
     pub tab_id: String,
     pub revision: u64,
     pub status: String,
+    /// Herdr's pane focus at read time (spec §10 skips pokes into a focused pane).
+    pub focused: bool,
     pub agent: Option<String>,
     /// Herdr may retain this value after native execution replacement.
     pub cached_session: Option<String>,
@@ -109,7 +111,7 @@ fn parse_pane(value: &Value) -> Result<NativePane, ApiError> {
     ) {
         return Err(invalid("unknown agent status"));
     }
-    value
+    let focused = value
         .get("focused")
         .and_then(Value::as_bool)
         .ok_or_else(|| invalid("missing focused field"))?;
@@ -141,6 +143,7 @@ fn parse_pane(value: &Value) -> Result<NativePane, ApiError> {
         tab_id,
         revision,
         status,
+        focused,
         agent,
         cached_session,
         cwd,

@@ -1,5 +1,6 @@
 //! Validated process timing shared by the store and scheduler.
 
+use crate::protocol::summary::SummarySettings;
 use crate::{
     daemon::paths::{InstancePaths, effective_uid},
     scheduler::config::SchedulerTiming,
@@ -18,10 +19,11 @@ const O_NOFOLLOW: i32 = 0x0000_0100;
 #[cfg(target_os = "linux")]
 const O_NOFOLLOW: i32 = 0x0002_0000;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ServiceConfig {
     timing: SchedulerTiming,
     minimum_wake_delay_ms: u64,
+    summary: SummarySettings,
 }
 
 impl Default for ServiceConfig {
@@ -29,6 +31,7 @@ impl Default for ServiceConfig {
         Self {
             timing: SchedulerTiming::default(),
             minimum_wake_delay_ms: crate::daemon::settings::DEFAULT_MINIMUM_WAKE_DELAY_MS,
+            summary: SummarySettings::default(),
         }
     }
 }
@@ -158,6 +161,7 @@ impl ServiceConfig {
             settings.receipt_default_ms,
             settings.minimum_wake_delay_ms,
         )
+        .and_then(|config| config.with_summary(settings.summary.clone()))
     }
 
     pub fn new(
@@ -172,15 +176,27 @@ impl ServiceConfig {
         Ok(Self {
             timing,
             minimum_wake_delay_ms,
+            summary: SummarySettings::default(),
         })
     }
 
-    pub fn retry_config(self) -> crate::notification::policy::RetryConfig {
+    /// Replace the summary settings after validating them (spec §13).
+    pub fn with_summary(mut self, summary: SummarySettings) -> Result<Self, &'static str> {
+        summary.validate()?;
+        self.summary = summary;
+        Ok(self)
+    }
+
+    pub fn summary(&self) -> &SummarySettings {
+        &self.summary
+    }
+
+    pub fn retry_config(&self) -> crate::notification::policy::RetryConfig {
         crate::notification::policy::RetryConfig::new(self.minimum_wake_delay_ms)
             .expect("validated service minimum wake spacing")
     }
 
-    pub fn health_settings(self) -> crate::protocol::results::HealthSettings {
+    pub fn health_settings(&self) -> crate::protocol::results::HealthSettings {
         crate::protocol::results::HealthSettings {
             invitation_default_ms: self.timing.invitation.as_millis() as u64,
             receipt_default_ms: self.timing.receipt.as_millis() as u64,
@@ -188,11 +204,11 @@ impl ServiceConfig {
         }
     }
 
-    pub fn timing(self) -> SchedulerTiming {
+    pub fn timing(&self) -> SchedulerTiming {
         self.timing
     }
 
-    pub fn store_settings(self, daemon_boot: Uuid) -> StoreSettings {
+    pub fn store_settings(&self, daemon_boot: Uuid) -> StoreSettings {
         StoreSettings {
             invitation_default_ms: Some(self.timing.invitation.as_millis() as u64),
             message_limits: MessageLimits {
@@ -201,6 +217,7 @@ impl ServiceConfig {
             },
             daemon_boot: Some(daemon_boot),
             minimum_wake_delay_ms: self.minimum_wake_delay_ms,
+            summary: self.summary.clone(),
         }
     }
 }

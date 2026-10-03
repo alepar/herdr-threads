@@ -1,0 +1,20 @@
+› Run herdr-threads summary thread-DWKSdAn7 once and stop …
+  Worked for 3s • 17:33
+
+
+› herdr-threads: attention pending; run herdr-threads inbox
+
+
+• Ran herdr-threads inbox
+  └ inbox
+    thread-DWKSdAn7 receipts=60 warnings=128
+
+• inbox: thread-DWKSdAn7 receipts=60 warnings=128
+
+  Worked for 6s • 17:37
+
+
+› Ask Codex to do anything
+
+  GPT-5.6-Luna low · 258K window · Context 31% used · weekl…
+  ? for shortcuts

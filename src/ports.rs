@@ -368,6 +368,19 @@ pub struct DuePhaseCursor {
     /// Receipt phase only: the independently retained sparse materialized
     /// receipt index position. Invitation cursors leave this absent.
     pub receipt_sparse: Option<ReceiptSparseCursor>,
+    /// Receipt phase only: every catch-up row with `extension_until` at or
+    /// before this was rechecked by a completed walk (spec §8). Absent means
+    /// the recheck starts from the beginning.
+    pub extension_through: Option<UtcMillis>,
+    /// Receipt phase only: keyset position inside the recheck walk in
+    /// progress. Absent means the walk starts from the beginning.
+    pub extension_after: Option<ExtensionLapseKey>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionLapseKey {
+    pub until: UtcMillis,
+    pub seat: SeatId,
+    pub thread: ThreadId,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceiptSparseCursor {
@@ -684,6 +697,9 @@ pub struct HostObservation {
     pub provenance: ObservationProvenance,
     pub occupant: Option<NativeOccupant>,
     pub ui: HostUiState,
+    /// Herdr's pane focus at observation time; spec §10 skips pokes into a
+    /// focused pane.
+    pub focused: bool,
     pub terminal: Option<TerminalId>,
     pub occupancy: StructuralOccupancy,
     pub incarnation: IncarnationEvidence,
@@ -1849,9 +1865,22 @@ impl WakeReservation {
     /// Cooperative structural recheck against a new host read: the same
     /// target, boot, epoch, generation, terminal and verified server
     /// incarnation, from a fresh current-target read with no positive
-    /// evidence of an empty shell, an active turn, blocked UI or human input.
+    /// evidence of an empty shell, an active turn or blocked UI. Typed
+    /// composer input (`HumanInput`) never refuses an ordinary wake
+    /// (TRUST-POLICY A4), as before the composer reader existed.
     /// A verified execution is never downgraded to this path.
     pub fn matches_cooperative_identity(&self, observation: &HostObservation) -> bool {
+        self.matches_cooperative_structure(observation)
+            && !matches!(
+                observation.ui,
+                HostUiState::ActiveTurn | HostUiState::ApprovalOrQuestion
+            )
+    }
+    /// The structural half of [`Self::matches_cooperative_identity`], without
+    /// the UI exclusions: a soft-deadline poke decides the UI state itself
+    /// (`poke_eligibility`) and may act in an active turn or typed input where
+    /// the harness recipe declares it.
+    pub fn matches_cooperative_structure(&self, observation: &HostObservation) -> bool {
         let ReservedWakeAuthority::Cooperative {
             terminal,
             incarnation,
@@ -1872,10 +1901,6 @@ impl WakeReservation {
             } if identity == incarnation)
             && !matches!(observation.execution, ExecutionEvidence::Verified { .. })
             && observation.occupancy != StructuralOccupancy::EmptyShell
-            && !matches!(
-                observation.ui,
-                HostUiState::ActiveTurn | HostUiState::ApprovalOrQuestion | HostUiState::HumanInput
-            )
     }
     /// Structural and execution recheck against a new host read. Store-side
     /// binding generation and live reservation CAS are separate requirements.
@@ -2118,6 +2143,89 @@ pub enum WakeOutcome {
     /// retries on a per-seat refusal backoff instead.
     Refused(RefusalCause),
 }
+
+/// Which physical receipt row holds a receipt's `soft_poked_at` (spec §10):
+/// legacy `receipts` rows, or the `receipt_state` row a send manifest
+/// materializes. The store reads it through the effective receipt projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PokeSource {
+    Receipts,
+    ReceiptState,
+}
+
+/// One receipt past its soft point and before its effective deadline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PokeReceipt {
+    pub message: MessageId,
+    pub seat: SeatId,
+    pub thread: ThreadId,
+    pub source: PokeSource,
+    /// `receipts::effective_deadline` when the store selected it.
+    pub effective_deadline: i64,
+}
+
+/// A seat's due soft pokes, ordered by effective deadline then message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PokeDue {
+    pub seat: SeatId,
+    pub receipts: Vec<PokeReceipt>,
+}
+
+/// A committed poke reservation: the wake slot (same columns, reason
+/// `soft_deadline`) plus the receipts still due when it committed. Only these
+/// are marked when the host accepts the prompt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PokeReservation {
+    pub reservation: WakeReservation,
+    pub receipts: Vec<PokeReceipt>,
+}
+
+/// The prompt a poke submits and the receipts it covers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PokePlan {
+    pub text: String,
+    pub receipts: Vec<PokeReceipt>,
+}
+
+/// `PokeOnly` is a scheduled soft-deadline poke: no eligible state, no prompt.
+/// `WithWake` rides an ordinary wake that is due for the same seat: the poke
+/// text replaces the marker only when the poke itself is eligible to submit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PokeMode {
+    PokeOnly,
+    WithWake,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PokeAttempt {
+    pub outcome: WakeOutcome,
+    /// The accepted prompt carried the poke text.
+    pub poked: bool,
+    /// A diagnostic the attempt kept, for example a failed composer restore
+    /// (which carries the saved text so a person can recover it).
+    pub diagnostic: Option<String>,
+}
+
+/// Composer-stash result (spec §10 HumanInput path).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComposerStash {
+    /// The adapter cannot stash typed input; the poke is skipped.
+    Unsupported,
+    /// The typed text, to be restored after the poke prompt.
+    Saved(String),
+    Failed(String),
+}
+
+/// Evidence-backed poke capabilities per harness. The default reports none, so
+/// ActiveTurn and HumanInput pokes are skipped until a recipe declares them.
+pub trait PokeCapabilitySource: Send + Sync {
+    fn capabilities(&self, _harness: Harness) -> crate::harness::recipe::PokeCapabilities {
+        crate::harness::recipe::PokeCapabilities::NONE
+    }
+}
+/// No capability evidence anywhere: every capability is `Unsupported`.
+pub struct NoPokeCapabilities;
+impl PokeCapabilitySource for NoPokeCapabilities {}
 
 /// Why a pre-send wake refusal happened. Stored with the existing
 /// `unsafe` / `unavailable` / `timed_out` last_outcome strings.
@@ -2443,6 +2551,30 @@ pub trait StorePort: Send + Sync {
         budget: &CallBudget,
     ) -> Result<UnresolvedSeatSummary, ApiError>;
     fn retirement_summary(&self, _budget: &CallBudget) -> Result<RetirementSummary, ApiError>;
+    /// Thread summary protocol (spec §4): plan, lease and assemble.
+    fn summary(
+        &self,
+        _request: &crate::protocol::summary::SummaryRequest,
+        _budget: &CallBudget,
+    ) -> Result<crate::protocol::summary::SummaryOutcome, ApiError> {
+        Err(ApiError::unsupported("thread summaries are unavailable"))
+    }
+    /// Fetch a leased job's bundle; the fetch starts the lease clock.
+    fn summary_job(
+        &self,
+        _request: &crate::protocol::summary::SummaryJobRequest,
+        _budget: &CallBudget,
+    ) -> Result<crate::protocol::summary::SummaryJobOutcome, ApiError> {
+        Err(ApiError::unsupported("thread summaries are unavailable"))
+    }
+    /// Validate and store a job submission (idempotent per job and token).
+    fn summary_submit(
+        &self,
+        _request: &crate::protocol::summary::SummarySubmitRequest,
+        _budget: &CallBudget,
+    ) -> Result<crate::protocol::summary::SubmitOutcome, ApiError> {
+        Err(ApiError::unsupported("thread summaries are unavailable"))
+    }
     fn wake_candidates(
         &self,
         page: PageRequest,
@@ -2498,6 +2630,44 @@ pub trait StorePort: Send + Sync {
         refused_restore: Option<&PriorLadder>,
         budget: &CallBudget,
     ) -> Result<bool, ApiError>;
+    /// Seats with receipts past their soft point (spec §10), at most `limit`
+    /// seats, evaluated lazily from each receipt's effective deadline.
+    fn poke_candidates(&self, _limit: u16, _budget: &CallBudget) -> Result<Vec<PokeDue>, ApiError> {
+        Err(unsupported_poke())
+    }
+    /// Takes the seat's single wake reservation slot for a poke (reason
+    /// `soft_deadline`). `None`: the slot is busy or nothing is still due.
+    fn reserve_poke(
+        &self,
+        _due: &PokeDue,
+        _budget: &CallBudget,
+    ) -> Result<Option<PokeReservation>, ApiError> {
+        Err(unsupported_poke())
+    }
+    /// Settles a poke (or a wake that carried poke text) and, only on
+    /// `Submitted`, sets `soft_poked_at` on exactly `receipts` in the same
+    /// transaction. Any other outcome marks nothing.
+    fn complete_poke(
+        &self,
+        _attempt: WakeAttemptId,
+        _outcome: WakeOutcome,
+        _receipts: &[PokeReceipt],
+        _budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        Err(unsupported_poke())
+    }
+    /// Seat-scoped due pokes, for an ordinary wake that can carry the poke text.
+    fn poke_for_wake(
+        &self,
+        _seat: &SeatId,
+        _budget: &CallBudget,
+    ) -> Result<Option<PokeDue>, ApiError> {
+        Err(unsupported_poke())
+    }
+}
+
+fn unsupported_poke() -> ApiError {
+    ApiError::unsupported("soft-deadline pokes are unavailable")
 }
 
 /// Every call has an absolute monotonic deadline and cancellation token. Host calls
@@ -2521,18 +2691,55 @@ pub trait HostPort: Send + Sync {
         target: &HostTargetId,
         context: &HostCallContext,
     ) -> Result<HostObservation, ApiError>;
+    /// [`Self::observe_current_target`] for an attempt that carries a
+    /// soft-deadline poke: the one place the adapter may spend a composer read
+    /// to classify the UI (`Idle`, `HumanInput`, `ActiveTurn`). An ordinary
+    /// wake never calls this, so it decides on Herdr's agent status and the
+    /// structural identity alone (TRUST-POLICY A4). The default is the plain
+    /// observation.
+    fn observe_current_target_for_poke(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<HostObservation, ApiError> {
+        self.observe_current_target(target, context)
+    }
     fn enumerate_targets(&self, context: &HostCallContext) -> Result<HostSnapshot, ApiError>;
     fn safe_wake_target(
         &self,
         seat: &SeatId,
         observation: &HostObservation,
     ) -> Option<SafeWakeTarget>;
+    /// The target a soft-deadline poke may reach. A poke decides the UI state
+    /// itself (`poke_eligibility`) and may act in an active turn or typed
+    /// input where a recipe declares it, so the default is the wake target;
+    /// an adapter whose wake target excludes those UI states overrides it.
+    fn safe_poke_target(
+        &self,
+        seat: &SeatId,
+        observation: &HostObservation,
+    ) -> Option<SafeWakeTarget> {
+        self.safe_wake_target(seat, observation)
+    }
     fn submit_prompt(
         &self,
         target: &SafeWakeTarget,
         text: &str,
         context: &HostCallContext,
     ) -> Result<PromptOutcome, ApiError>;
+    /// A soft-deadline poke into a running turn (spec §10 `poke_during_turn`):
+    /// the prompt is queued into the current turn, so the adapter's recheck
+    /// accepts a `working` agent for this call only. Ordinary wakes keep
+    /// `submit_prompt`'s idle/done recheck. Adapters without the mode submit
+    /// as an ordinary wake, which refuses a working agent.
+    fn submit_prompt_during_turn(
+        &self,
+        target: &SafeWakeTarget,
+        text: &str,
+        context: &HostCallContext,
+    ) -> Result<PromptOutcome, ApiError> {
+        self.submit_prompt(target, text, context)
+    }
     fn launch_native(
         &self,
         request: NativeLaunchRequest,
@@ -2580,6 +2787,26 @@ pub trait HostPort: Send + Sync {
     fn safe_prompt_capability(&self) -> crate::protocol::results::CapabilityState {
         crate::protocol::results::CapabilityState::Unsupported
     }
+    /// Composer-stash hook for a poke into typed input (spec §10). A recipe
+    /// that declares `composer_stash` from captured evidence overrides it; the
+    /// inert default reports `Unsupported`, which skips the poke before any
+    /// prompt is submitted.
+    fn stash_composer(
+        &self,
+        _target: &SafeWakeTarget,
+        _context: &HostCallContext,
+    ) -> Result<ComposerStash, ApiError> {
+        Ok(ComposerStash::Unsupported)
+    }
+    /// Restores text saved by `stash_composer` after the poke prompt.
+    fn restore_composer(
+        &self,
+        _target: &SafeWakeTarget,
+        _saved: &str,
+        _context: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        Err(unsupported_poke())
+    }
 }
 #[derive(Debug, Clone)]
 pub struct HostCallContext {
@@ -2594,6 +2821,34 @@ pub trait NotificationPort: Send + Sync {
         reservation: WakeReservation,
         context: &HostCallContext,
     ) -> Result<WakeOutcome, ApiError>;
+    /// A soft-deadline poke (spec §10) through the same reservation checks as
+    /// a wake. The default cannot poke: `PokeOnly` is unavailable and
+    /// `WithWake` is an ordinary wake.
+    fn attempt_poke(
+        &self,
+        reservation: WakeReservation,
+        plan: &PokePlan,
+        mode: PokeMode,
+        caps: &dyn PokeCapabilitySource,
+        context: &HostCallContext,
+    ) -> Result<PokeAttempt, ApiError> {
+        let _ = (plan, caps);
+        match mode {
+            PokeMode::PokeOnly => Ok(PokeAttempt {
+                outcome: WakeOutcome::Unavailable,
+                poked: false,
+                diagnostic: None,
+            }),
+            PokeMode::WithWake => {
+                self.attempt_wake(reservation, context)
+                    .map(|outcome| PokeAttempt {
+                        outcome,
+                        poked: false,
+                        diagnostic: None,
+                    })
+            }
+        }
+    }
     /// The post-send verification of the last wake attempt for `seat`, taken
     /// once (ht-p03.30). Notifiers that do not verify report nothing.
     fn take_verification(
@@ -2775,6 +3030,7 @@ mod allocation_tests {
     #[test]
     fn wake_reservation_rechecks_committed_target_and_binding_identity() {
         let observation = HostObservation {
+            focused: false,
             target: HostTargetId::new("pane"),
             host_boot: HostBootId::new("boot"),
             epoch: 3,
@@ -2911,6 +3167,7 @@ mod allocation_tests {
     fn operator_repair_requires_fresh_matching_target_but_orphan_invite_does_not() {
         use crate::protocol::commands::{OperatorFreshSeat, OperatorOrphanInvite, OperatorRebind};
         let observation = HostObservation {
+            focused: false,
             target: HostTargetId::new("p1"),
             host_boot: HostBootId::new("b1"),
             epoch: 4,
@@ -2992,6 +3249,7 @@ mod allocation_tests {
 
     fn operator_observation(target: &str) -> HostObservation {
         HostObservation {
+            focused: false,
             target: HostTargetId::new(target),
             host_boot: HostBootId::new("b1"),
             epoch: 4,
@@ -3212,6 +3470,7 @@ mod allocation_tests {
             operation: OperationId::new("op1"),
         };
         let observation = HostObservation {
+            focused: false,
             target: request.target.clone(),
             host_boot: HostBootId::new("b1"),
             epoch: 4,
@@ -3347,6 +3606,7 @@ mod contract_adapter_tests {
         ) -> Result<HostObservation, ApiError> {
             let call = self.observations.fetch_add(1, Ordering::SeqCst);
             Ok(HostObservation {
+                focused: false,
                 target: target.clone(),
                 host_boot: HostBootId::new("b1"),
                 epoch: 4,

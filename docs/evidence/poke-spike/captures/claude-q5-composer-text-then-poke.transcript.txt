@@ -1,0 +1,7 @@
+2026-10-02T19:19:31.984Z QUEUE remove DRAFT-TEXT-xyzPOKE-TEST-claude-D
+2026-10-02T19:19:31.980Z TOOL_RESULT one
+2026-10-02T19:19:33.278Z ASSISTANT tool_use Bash {"command": "sleep 15; echo two", "description": "Sleep 15 seconds then echo two"}
+2026-10-02T19:19:48.340Z TOOL_RESULT two
+2026-10-02T19:19:49.527Z ASSISTANT tool_use Bash {"command": "sleep 15; echo three", "description": "Sleep 15 seconds then echo three"}
+2026-10-02T19:20:04.574Z TOOL_RESULT three
+2026-10-02T19:20:05.581Z ASSISTANT text done (Also received: DRAFT-TEXT-xyzPOKE-TEST-claude-D)

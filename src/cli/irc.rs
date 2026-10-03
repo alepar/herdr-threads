@@ -221,9 +221,12 @@ pub fn render_message(summary: &MessageSummary, lookup: &mut dyn Lookup, style: 
         MessageKind::Ordinary => {
             let nick =
                 author(summary, lookup).map_or_else(|| "system".to_owned(), |nick| nick.display());
-            let prefix_plain = format!("{time} <{nick}> ");
-            let prefix_shown =
-                format!("{time_shown} <{}> ", paint(&nick, nick_color(&nick), style));
+            let markers = summary.author_markers();
+            let prefix_plain = format!("{time} <{nick}>{markers} ");
+            let prefix_shown = format!(
+                "{time_shown} <{}>{markers} ",
+                paint(&nick, nick_color(&nick), style)
+            );
             let (body, hint) = ordinary_body(summary, lookup);
             emit(
                 &prefix_plain,

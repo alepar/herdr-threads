@@ -86,6 +86,9 @@ mod fixtures {
             thread: ThreadId::new("t-1"),
             author: Some(SeatId::new(author)),
             event_author: None,
+            author_role: None,
+            relays_user: false,
+            author_role_backfilled: false,
             kind: MessageKind::Ordinary,
             sequence,
             created_at: at,
@@ -197,6 +200,8 @@ mod fixtures {
             available_at: None,
             deadline,
             overdue,
+            effective_deadline: None,
+            deferred_until: None,
         };
         page(
             vec![

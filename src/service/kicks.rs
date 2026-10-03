@@ -92,6 +92,8 @@ const DEADLINE_TABLES: &[&str] = &[
     "invitation_cancellations",
     "receipts",
     "receipt_state",
+    // Catch-up rows move effective receipt deadlines (TRUST-POLICY A6).
+    "catch_up",
 ];
 /// Tables that explicitly kick no lane. `host_instances`,
 /// `snapshot_generations` and `snapshot_targets` are classified 'none' by
@@ -132,6 +134,13 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "service_notification_recipients",
     "snapshot_generations",
     "snapshot_targets",
+    // Thread summaries (epic ht-1ip): derived data; a stored block's deadline
+    // effect is written to `catch_up`, which kicks the deadline lane.
+    "summary_blocks",
+    "summary_items",
+    "summary_job_durations",
+    "summary_jobs",
+    "summary_transitions",
     "threads",
     "sqlite_sequence",
 ];

@@ -876,6 +876,30 @@ pub fn read_digest<C: LocalClient + ?Sized>(
     Ok(digest)
 }
 
+/// Read the seat's hot threads for the recovery hook text (spec §9): one
+/// read-only, seat-scoped query. A failure is the caller's to degrade on.
+pub fn read_hot_threads<C: LocalClient + ?Sized>(
+    client: &C,
+    seat: &SeatId,
+    budget: &CallBudget,
+) -> Result<crate::protocol::results::HotThreads, ApiError> {
+    let limit = crate::protocol::results::MAX_HOT_THREADS;
+    let result = client.call(
+        Command::HotThreads(crate::protocol::commands::HotThreadsQuery {
+            seat: seat.clone(),
+            limit,
+        }),
+        budget,
+    )?;
+    let invalid =
+        |detail: &str| ApiError::new(crate::protocol::results::ErrorCode::StoreCorrupt, detail);
+    let CommandResult::HotThreads(hot) = result else {
+        return Err(invalid("service returned no hot threads"));
+    };
+    hot.validate(limit).map_err(invalid)?;
+    Ok(hot)
+}
+
 /// Seed for the tool-boundary mark from a completed lifecycle offer. `run`
 /// performs the lifecycle CheckIn; the digest is read strictly before it when
 /// that CheckIn is fresh, so the seeded token never covers a publication the

@@ -1243,7 +1243,9 @@ fn explicit_model_accept_and_ack_are_separate_calls_after_hook_registration() {
         ) -> Result<CommandResult, crate::protocol::results::ApiError> {
             self.0.lock().unwrap().push(command.clone());
             Ok(match command {
-                Command::Accept(_) => CommandResult::Accepted(InvitationId::new("invitation")),
+                Command::Accept(_) => {
+                    CommandResult::Accepted(InvitationId::new("invitation").into())
+                }
                 Command::Ack(ack) => CommandResult::Acknowledged(AckResult {
                     acknowledged: ack.messages,
                     already_acknowledged: vec![],
@@ -1828,4 +1830,117 @@ fn compaction_re_presents_without_lowering_the_mark() {
         "nothing pending"
     );
     fs::remove_dir_all(root).unwrap();
+}
+
+// ---- recovery hot-thread read (spec §9, ht-1ip.9) ----
+
+struct HotClient {
+    reply: std::sync::Mutex<
+        Option<Result<crate::protocol::results::CommandResult, crate::protocol::results::ApiError>>,
+    >,
+    seen: std::sync::Mutex<Vec<Command>>,
+}
+impl HotClient {
+    fn new(
+        reply: Result<crate::protocol::results::CommandResult, crate::protocol::results::ApiError>,
+    ) -> Self {
+        Self {
+            reply: std::sync::Mutex::new(Some(reply)),
+            seen: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+impl crate::ports::LocalClient for HotClient {
+    fn call_with_output(
+        &self,
+        command: Command,
+        _: &crate::protocol::output::OutputSpec,
+        budget: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::protocol::results::CommandResult, crate::protocol::results::ApiError> {
+        self.call(command, budget)
+    }
+    fn call(
+        &self,
+        command: Command,
+        _budget: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::protocol::results::CommandResult, crate::protocol::results::ApiError> {
+        self.seen.lock().unwrap().push(command);
+        self.reply
+            .lock()
+            .unwrap()
+            .take()
+            .expect("one scripted reply")
+    }
+}
+fn hot_row(thread: &str, topic: &str) -> crate::protocol::results::HotThread {
+    crate::protocol::results::HotThread {
+        thread: crate::protocol::ids::ThreadId::new(thread),
+        topic_data: topic.into(),
+        reason: crate::protocol::results::HotReason::Recent,
+        effective_deadline: None,
+        last_activity: crate::protocol::time::UtcMillis(1),
+    }
+}
+fn hot_budget() -> crate::protocol::time::CallBudget {
+    crate::protocol::time::CallBudget {
+        deadline: crate::protocol::time::MonoInstant(u64::MAX),
+        cancellation: crate::protocol::time::Cancellation::default(),
+    }
+}
+
+// Kills: a read that names another seat or an out-of-range limit, a result
+// kind other than HotThreads accepted as one, and an over-bound or oversized
+// answer trusted as it came.
+#[test]
+fn read_hot_threads_asks_for_the_seat_and_validates_the_answer() {
+    use crate::protocol::results::{ApiError, CommandResult, ErrorCode, HotThreads};
+    let seat = crate::protocol::ids::SeatId::new("seat");
+    let good = HotThreads {
+        hot: vec![hot_row("t1", "a"), hot_row("t2", "b")],
+        overflow: vec![crate::protocol::ids::ThreadId::new("t3")],
+    };
+    let client = HotClient::new(Ok(CommandResult::HotThreads(good.clone())));
+    assert_eq!(
+        read_hot_threads(&client, &seat, &hot_budget()).unwrap(),
+        good
+    );
+    assert_eq!(
+        *client.seen.lock().unwrap(),
+        [Command::HotThreads(
+            crate::protocol::commands::HotThreadsQuery {
+                seat: seat.clone(),
+                limit: 8
+            }
+        )]
+    );
+    let too_many = HotThreads {
+        hot: (0..9).map(|n| hot_row(&format!("t{n}"), "x")).collect(),
+        overflow: vec![],
+    };
+    for bad in [
+        CommandResult::HotThreads(too_many),
+        CommandResult::HotThreads(HotThreads {
+            hot: vec![hot_row("t1", &"x".repeat(81))],
+            overflow: vec![],
+        }),
+        CommandResult::Left(crate::protocol::ids::ThreadId::new("t")),
+    ] {
+        let client = HotClient::new(Ok(bad));
+        assert_eq!(
+            read_hot_threads(&client, &seat, &hot_budget())
+                .unwrap_err()
+                .code,
+            ErrorCode::StoreCorrupt
+        );
+    }
+    let client = HotClient::new(Err(ApiError::new(
+        ErrorCode::ReadBudgetExhausted,
+        "bounded read exhausted",
+    )));
+    assert_eq!(
+        read_hot_threads(&client, &seat, &hot_budget())
+            .unwrap_err()
+            .code,
+        ErrorCode::ReadBudgetExhausted
+    );
 }

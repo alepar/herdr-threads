@@ -108,7 +108,7 @@ fn doctor_classifies_claude_on_path() {
     let got = newer.installed(no_env);
     assert_eq!(got.admission, AdmissionState::Optimistic);
     assert_eq!(got.version.as_deref(), Some("2.1.299"));
-    assert_eq!(got.recipe.as_deref(), Some("claude-hooks-2.1.283"));
+    assert_eq!(got.recipe.as_deref(), Some("claude-hooks-2.1.287"));
 
     let broken = PathCase::new("broken");
     write_stub_harness(&broken.dir, "claude", "2.1.286");
@@ -203,7 +203,12 @@ fn doctor_optimistic_warning() {
     let case = PathCase::new("optimistic");
     write_stub_harness(&case.dir, "claude", "2.1.299");
     let warning = warning_for(&case).expect("an optimistic claude earns a warning");
-    let recipe = crate::harness::claude::RECIPES[0].id;
+    // Newer than every recipe: the recipe with the greatest max is assumed.
+    let recipe = crate::harness::claude::RECIPES
+        .iter()
+        .max_by_key(|recipe| recipe.max_version())
+        .unwrap()
+        .id;
     assert!(
         warning.starts_with("claude 2.1.299: optimistic \u{2014} newer than verified "),
         "{warning}"

@@ -1077,6 +1077,7 @@ fn public_facade_operator_fresh_and_rebind_keep_provenance_without_receipt_autho
     StorePort::seal_snapshot_stage(&store, &stage.id, &budget()).unwrap();
     StorePort::publish_snapshot_stage(&store, &stage.id, &budget()).unwrap();
     let observe = |target: &str, sequence: u64| HostObservation {
+        focused: false,
         target: HostTargetId::new(target),
         host_boot: HostBootId::new("b"),
         epoch: 1,
@@ -1544,6 +1545,7 @@ fn public_facade_creates_invites_sends_accepts_acks_and_archives_with_stable_ids
         deadline_millis: None,
         operation: OperationId::new("send"),
         claim: fixture_claim("s1", "s1"),
+        relays_user: false,
     };
     loop {
         match StorePort::prepare_send_step(
@@ -1576,7 +1578,7 @@ fn public_facade_creates_invites_sends_accepts_acks_and_archives_with_stable_ids
     else {
         panic!()
     };
-    assert_eq!(accepted, invitation);
+    assert_eq!(accepted.invitation, invitation);
     let ack = Ack {
         messages: vec![message.clone()],
         operation: OperationId::new("ack"),
@@ -1704,4 +1706,125 @@ fn default_directory_and_inbox_resolve_only_the_trusted_selected_seat() {
     assert!(StorePort::query(&store, &inbox, &unscoped, &budget()).is_err());
     drop(store);
     let _ = std::fs::remove_file(path);
+}
+
+// ---- join hint (spec §9, ht-1ip.9) ----
+
+/// A store with `chunk_bytes` 1000, a thread by s1 holding `bodies` ordinary
+/// 300-byte messages, and a pending invitation for s2: (store, db path,
+/// accept request, invitation, thread).
+fn join_hint_fixture(
+    bodies: usize,
+) -> (
+    SqliteStore,
+    std::path::PathBuf,
+    Accept,
+    crate::protocol::ids::InvitationId,
+) {
+    let path = std::env::temp_dir().join(format!("herdr-join-hint-{}.db", uuid::Uuid::new_v4()));
+    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let db = context.open_writer().unwrap();
+    db.execute(
+        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1)",
+        [],
+    )
+    .unwrap();
+    for seat in ["s1", "s2"] {
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?1,1,1,0)",[seat]).unwrap();
+        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)",[seat]).unwrap();
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,1,?1,'b',1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-'||?1,'inc')",[seat]).unwrap();
+    }
+    drop(db);
+    let settings = StoreSettings {
+        summary: crate::protocol::summary::SummarySettings {
+            chunk_bytes: 1000,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let store = SqliteStore::new(context, "i", settings).unwrap();
+    let create = CreateThread {
+        topic: "topic".into(),
+        goal: "goal".into(),
+        operation: OperationId::new("create"),
+        claim: fixture_claim("s1", "s1"),
+    };
+    let CommandResult::ThreadCreated(thread) =
+        permitted(&store, PermitMutation::CreateThread(create.clone())).unwrap()
+    else {
+        panic!()
+    };
+    let invite = Invite {
+        thread: thread.clone(),
+        seat: SeatId::new("s2"),
+        deadline_millis: Some(1000),
+        operation: OperationId::new("invite"),
+        claim: fixture_claim("s1", "s1"),
+    };
+    let CommandResult::Invitation(invitation) =
+        permitted(&store, PermitMutation::Invite(invite.clone())).unwrap()
+    else {
+        panic!()
+    };
+    // Raw ordinary messages after the thread's events; the chunker sees them
+    // through the published head.
+    let raw = connection::StoreContext::new(path.clone(), Arc::new(FixedClock))
+        .open_writer()
+        .unwrap();
+    for n in 0..bodies {
+        raw.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('i',(SELECT MAX(decision_seq)+1 FROM messages WHERE instance_id='i'),?1,?2,(SELECT next_sequence FROM threads WHERE id=?2),'ordinary','s1',?3,50)", rusqlite::params![format!("raw-{n}"), thread.as_str(), "x".repeat(300)]).unwrap();
+        raw.execute(
+            "UPDATE threads SET next_sequence=next_sequence+1 WHERE id=?1",
+            [thread.as_str()],
+        )
+        .unwrap();
+    }
+    drop(raw);
+    let accept = Accept {
+        thread,
+        operation: OperationId::new("accept"),
+        claim: fixture_claim("s2", "s2"),
+    };
+    (store, path, accept, invitation)
+}
+
+fn join_hint_accept(
+    store: &SqliteStore,
+    accept: &Accept,
+    _invitation: &crate::protocol::ids::InvitationId,
+) -> CommandResult {
+    permitted(store, PermitMutation::Accept(accept.clone())).unwrap()
+}
+
+/// Kills: a hint on a thread below one full chunk (two ~300-byte messages plus
+/// the thread's events stay under 1000 rendered bytes), a missing hint at one
+/// full chunk, a hint that is not the thread id, and a replay that loses it.
+#[test]
+fn accept_hints_summary_only_once_the_thread_holds_a_full_chunk() {
+    let (store, path, accept, invitation) = join_hint_fixture(2);
+    assert_eq!(
+        join_hint_accept(&store, &accept, &invitation),
+        CommandResult::Accepted(invitation.clone().into()),
+        "below one full chunk"
+    );
+    drop(store);
+    let (store, path2, accept, invitation) = join_hint_fixture(3);
+    let expected = CommandResult::Accepted(crate::protocol::results::AcceptedInvitation {
+        invitation: invitation.clone(),
+        summary_available: Some(accept.thread.clone()),
+    });
+    assert_eq!(
+        join_hint_accept(&store, &accept, &invitation),
+        expected,
+        "one full chunk"
+    );
+    assert_eq!(
+        join_hint_accept(&store, &accept, &invitation),
+        expected,
+        "a replay gets the hint too"
+    );
+    drop(store);
+    for p in [path, path2] {
+        let _ = std::fs::remove_file(p);
+    }
 }

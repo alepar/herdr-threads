@@ -3,8 +3,9 @@
 //! real process holding the real owner lock, socket and descriptor) with a
 //! `daemon run --state-dir <state>` command line, which is what the skew-tolerant
 //! `daemon stop` identifies an owner by. "Old" is the real release skew pair:
-//! a protocol-1 daemon or CLI against this protocol-2 build (protocol 2 is
-//! B5's `expected_boot`, ht-rzi.23).
+//! a protocol-2 daemon or CLI against this protocol-3 build; the protocol-1 CLI
+//! frame is still exercised by `old_cli_gets_a_decodable_skew_error` and by the
+//! frozen frames in `wire_compat`.
 //! Mounted from tests/integration.rs.
 
 use herdr_threads::test_support::spawn::SpawnOwned;
@@ -38,13 +39,14 @@ use std::{
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
 const FAKE_ENV: &str = "HT_FAKE_OTHER_VERSION_DAEMON";
 const FAKE_SOFTWARE: &str = "0.0.1";
-/// The protocol of the last release before this build's (B5 moved to 2).
-const OLD_PROTOCOL: u16 = 1;
+/// The protocol of the last release before this build's: B5 moved the wire to
+/// 2 (ht-rzi.23); thread summaries (ht-1ip) moved it to 3.
+const OLD_PROTOCOL: u16 = 2;
 
 /// Kills: a protocol bump that leaves the skew tests on a synthetic pair.
 #[test]
 fn skew_tests_use_the_real_release_pair() {
-    assert_eq!(PROTOCOL_VERSION, 2);
+    assert_eq!(PROTOCOL_VERSION, 3);
     assert_eq!(OLD_PROTOCOL, PROTOCOL_VERSION - 1);
 }
 
@@ -272,36 +274,44 @@ fn old_cli_gets_a_decodable_skew_error() {
     let scratch = Scratch::new();
     let descriptor = ensure(&scratch).expect("this version starts");
     assert_eq!(descriptor.protocol_version, PROTOCOL_VERSION);
-    // A request in the protocol-1 wire shape: no `output`, no `expected_boot`.
-    let body = format!(
-        r#"{{"version":1,"request_id":"old-cli-1","expected_instance":"{}","command":{{"kind":"health"}}}}"#,
-        descriptor.instance_uuid
+    // One exchange per frame, one connection each: the reply decodes with the
+    // response type an older CLI uses and echoes that frame's own version.
+    let exchange = |version: u16, request_id: &str, extra: &str| {
+        let body = format!(
+            r#"{{"version":{version},"request_id":"{request_id}","expected_instance":"{}"{extra},"command":{{"kind":"health"}}}}"#,
+            descriptor.instance_uuid
+        );
+        let mut stream = UnixStream::connect(&descriptor.endpoint).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        stream
+            .write_all(&(body.len() as u32).to_be_bytes())
+            .unwrap();
+        stream.write_all(body.as_bytes()).unwrap();
+        let mut prefix = [0_u8; 4];
+        stream
+            .read_exact(&mut prefix)
+            .expect("a reply, not a close");
+        let mut reply = vec![0_u8; u32::from_be_bytes(prefix) as usize];
+        stream.read_exact(&mut reply).unwrap();
+        let response: WireResponse = serde_json::from_slice(&reply).expect("decodable");
+        assert_eq!(response.version, version, "echoes the sender's version");
+        assert_eq!(response.request_id, request_id);
+        assert_eq!(response.instance, descriptor.instance_uuid.to_string());
+        let error = response.result.unwrap_err();
+        assert_eq!(error.code, ErrorCode::UnknownWireVersion);
+        assert!(error.detail.contains("daemon stop"), "{}", error.detail);
+    };
+    // Protocol 1: no `output`, no `expected_boot`.
+    exchange(1, "old-cli-1", "");
+    // Protocol 2: the same body plus `expected_boot`. The version check runs
+    // first, so the boot never matters.
+    exchange(
+        OLD_PROTOCOL,
+        "old-cli-2",
+        &format!(r#","expected_boot":"{}""#, descriptor.boot_id),
     );
-    let mut stream = UnixStream::connect(&descriptor.endpoint).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(3)))
-        .unwrap();
-    stream
-        .write_all(&(body.len() as u32).to_be_bytes())
-        .unwrap();
-    stream.write_all(body.as_bytes()).unwrap();
-    let mut prefix = [0_u8; 4];
-    stream
-        .read_exact(&mut prefix)
-        .expect("a reply, not a close");
-    let mut reply = vec![0_u8; u32::from_be_bytes(prefix) as usize];
-    stream.read_exact(&mut reply).unwrap();
-    // The reply decodes with the response type an older CLI uses.
-    let response: WireResponse = serde_json::from_slice(&reply).expect("decodable");
-    assert_eq!(
-        response.version, OLD_PROTOCOL,
-        "echoes the sender's version"
-    );
-    assert_eq!(response.request_id, "old-cli-1");
-    assert_eq!(response.instance, descriptor.instance_uuid.to_string());
-    let error = response.result.unwrap_err();
-    assert_eq!(error.code, ErrorCode::UnknownWireVersion);
-    assert!(error.detail.contains("daemon stop"), "{}", error.detail);
 }
 
 /// Pulls the backticked commands out of a remedy line, in order.

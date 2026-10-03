@@ -3521,6 +3521,7 @@ mod continuity {
         fn observation(&self, target: &str, sequence: u64) -> HostObservation {
             let at = self.clock.monotonic_now();
             HostObservation {
+                focused: false,
                 target: HostTargetId::new(target),
                 host_boot: HostBootId::new("host"),
                 epoch: self.epoch.load(Ordering::SeqCst),
@@ -4533,4 +4534,92 @@ mod continuity {
             );
         }
     }
+}
+
+// Spec §9 recovery text (ht-1ip.9), over a real elected service. Kills: no
+// recovery block after a Claude `clear` or a Codex `compact` (a quiet
+// tool-boundary event included), one on `startup` or on an ordinary tool call,
+// hot rows outside the escaped peer-data container, or a thread that is not
+// the seat's hot thread.
+#[test]
+fn clear_and_codex_compact_emit_recovery_text_but_startup_and_tool_calls_do_not() {
+    let fx = Fixture::start();
+    let instruction = herdr_threads::harness::recovery_instruction();
+    for (pane, session) in [("w9:p1", "sess-1"), ("w9:p2", "peer-sess")] {
+        let hook = fx.hook(pane, &start(session));
+        assert_eq!(hook.code, Some(0), "{}", hook.stderr);
+    }
+    let codex = fx.codex_hook(
+        "w9:p3",
+        br#"{"session_id":"cx-sess","turn_id":"t1","hook_event_name":"SessionStart","source":"startup"}"#,
+    );
+    assert_eq!(codex.code, Some(0), "{}", codex.stderr);
+    let thread = fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["thread", "create", "--topic", "recover me"],
+    )["result"]["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "cx"]);
+    fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", &thread, "--body", "hello", "--require-ack", "seat"],
+    );
+    let peer_data = |context: &str| -> String {
+        let (_, data) = context.split_once("\nuntrusted_peer_data: ").unwrap();
+        serde_json::from_str(data.lines().next().unwrap()).unwrap()
+    };
+    let assert_recovery = |label: &str, context: &str| {
+        let fixed = context.split("\nuntrusted_peer_data: ").next().unwrap();
+        assert!(
+            fixed.lines().any(|line| line == instruction),
+            "{label}: {context}"
+        );
+        let data = peer_data(context);
+        assert!(data.contains(&thread), "{label}: {data}");
+        assert!(data.contains("recover me"), "{label}: {data}");
+        // The peer-chosen topic never reaches the fixed section (thread ids may,
+        // in the check-in's own ready commands).
+        assert!(!fixed.contains("recover me"), "{label}: {fixed}");
+    };
+
+    // Not a reset: startup and ordinary tool calls carry no recovery text.
+    let started = fx.hook("w9:p1", &start("sess-2"));
+    assert_eq!(started.code, Some(0), "{}", started.stderr);
+    assert!(
+        !context_of(&started).contains("Context was reset"),
+        "{}",
+        context_of(&started)
+    );
+    let tool_call = fx.hook("w9:p1", &tool("sess-2"));
+    assert!(
+        !String::from_utf8_lossy(&tool_call.stdout).contains("Context was reset"),
+        "{}",
+        String::from_utf8_lossy(&tool_call.stdout)
+    );
+
+    // Claude clear: lifecycle class.
+    let cleared = fx.hook(
+        "w9:p1",
+        br#"{"session_id":"sess-3","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"clear"}"#,
+    );
+    assert_eq!(cleared.code, Some(0), "{}", cleared.stderr);
+    assert_recovery("clear", &context_of(&cleared));
+
+    // Codex compact: tool-boundary class, the seat's only attention is an
+    // already-offered invitation, so the check-in itself is quiet.
+    let compact = fx.codex_hook(
+        "w9:p3",
+        br#"{"session_id":"cx-sess","turn_id":"t2","hook_event_name":"SessionStart","source":"compact"}"#,
+    );
+    assert_eq!(compact.code, Some(0), "{}", compact.stderr);
+    assert_eq!(
+        compact.context()["hookSpecificOutput"]["hookEventName"],
+        "SessionStart"
+    );
+    assert_recovery("codex compact", &context_of(&compact));
 }

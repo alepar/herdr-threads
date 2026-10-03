@@ -1680,6 +1680,7 @@ fn sqlite_actual_wake_worker_retries_completion_and_yields_to_foreground() {
         pacer.clone(),
         cancellation.clone(),
         status.clone(),
+        Arc::new(crate::ports::NoPokeCapabilities),
     )
     .unwrap();
     let cleanup = WakeWorkerCleanup {
@@ -2959,6 +2960,7 @@ impl HostPort for FakeNativeHost {
 }
 fn fresh_observation() -> HostObservation {
     HostObservation {
+        focused: false,
         target: HostTargetId::new("target"),
         host_boot: HostBootId::new("boot"),
         epoch: 1,
@@ -3563,7 +3565,6 @@ fn cooperative_reservation_rechecks_structure_and_never_crosses_bases() {
             "approval",
             Box::new(|o| o.ui = HostUiState::ApprovalOrQuestion),
         ),
-        ("human input", Box::new(|o| o.ui = HostUiState::HumanInput)),
         ("active turn", Box::new(|o| o.ui = HostUiState::ActiveTurn)),
         (
             "empty shell",
@@ -4769,4 +4770,1655 @@ fn cooperative_reservation_without_harness_is_not_prompted() {
         WakeOutcome::Refused(RefusalCause::Unsafe)
     );
     assert!(host.prompted.lock().unwrap().is_empty());
+}
+
+/// A cooperative host that answers the plain observation with an unclassified
+/// UI (`Unknown`, what Herdr's status alone gives) and the poke observation
+/// with the composer-classified `Idle`, counting each call.
+struct ComposerReadHost {
+    inner: CooperativeRecordingHost,
+    plain_reads: AtomicU64,
+    poke_reads: AtomicU64,
+}
+impl ComposerReadHost {
+    fn new() -> Self {
+        let mut observation = fresh_observation();
+        observation.occupant = None;
+        observation.ui = HostUiState::Unknown;
+        observation.occupancy = StructuralOccupancy::Unknown;
+        observation.execution = ExecutionEvidence::Unknown;
+        Self {
+            inner: CooperativeRecordingHost {
+                observation,
+                prompted: std::sync::Mutex::new(vec![]),
+            },
+            plain_reads: AtomicU64::new(0),
+            poke_reads: AtomicU64::new(0),
+        }
+    }
+}
+impl HostPort for ComposerReadHost {
+    fn native_launch_capability(&self) -> NativeLaunchCapability {
+        self.inner.native_launch_capability()
+    }
+    fn observe_current_target(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<HostObservation, ApiError> {
+        self.plain_reads.fetch_add(1, Ordering::SeqCst);
+        self.inner.observe_current_target(target, context)
+    }
+    fn observe_current_target_for_poke(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<HostObservation, ApiError> {
+        self.poke_reads.fetch_add(1, Ordering::SeqCst);
+        let mut observation = self.inner.observe_current_target(target, context)?;
+        observation.ui = HostUiState::Idle;
+        Ok(observation)
+    }
+    fn enumerate_targets(&self, context: &HostCallContext) -> Result<HostSnapshot, ApiError> {
+        self.inner.enumerate_targets(context)
+    }
+    fn safe_wake_target(
+        &self,
+        seat: &SeatId,
+        observation: &HostObservation,
+    ) -> Option<SafeWakeTarget> {
+        self.inner.safe_wake_target(seat, observation)
+    }
+    fn submit_prompt(
+        &self,
+        target: &SafeWakeTarget,
+        text: &str,
+        context: &HostCallContext,
+    ) -> Result<PromptOutcome, ApiError> {
+        self.inner.submit_prompt(target, text, context)
+    }
+    fn launch_native(
+        &self,
+        request: NativeLaunchRequest,
+        context: &HostCallContext,
+    ) -> Result<NativeLaunchOutcome, ApiError> {
+        self.inner.launch_native(request, context)
+    }
+    fn pane_agent_state(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<crate::ports::AgentComposerState, ApiError> {
+        self.inner.pane_agent_state(target, context)
+    }
+    fn send_submit_key(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        self.inner.send_submit_key(target, context)
+    }
+}
+
+/// The root cause of ht-1ip.55: an ordinary wake observed the target through
+/// the composer-classifying read, so a Herdr that cannot answer the composer
+/// read (UI `Unknown`) cost the wake an extra host round trip and widened its
+/// stale-witness window (TRUST-POLICY A4: an ordinary wake never depends on
+/// composer classification). Kills: an ordinary wake that calls the poke
+/// observation (counted), or one refused for an `Unknown` UI. The same host
+/// still serves a poke its composer classification, so a poke that fell back
+/// to the plain observation would skip (`Unsafe`) instead of submitting.
+#[test]
+fn ordinary_wake_never_reads_the_composer_but_a_poke_does() {
+    let clock = FakeClock(AtomicU64::new(0));
+    let context = HostCallContext {
+        budget: CallBudget {
+            deadline: MonoInstant(5_000),
+            cancellation: Cancellation::default(),
+        },
+        expected_boot: Some(HostBootId::new("boot")),
+        expected_epoch: Some(1),
+    };
+    let check = FakeReservationCheck {
+        current: true,
+        calls: AtomicU64::new(0),
+    };
+    let cooperative = |reservation: WakeReservation| WakeReservation {
+        authority: ReservedWakeAuthority::Cooperative {
+            terminal: TerminalId::new("terminal"),
+            incarnation: "incarnation".into(),
+            binding_generation: None,
+            harness: Some("codex".into()),
+        },
+        ..reservation
+    };
+
+    let host = ComposerReadHost::new();
+    let dispatch = NativeWakeDispatcher::new(&host, &check, &clock);
+    assert_eq!(
+        dispatch
+            .attempt_wake(cooperative(test_reservation()), &context)
+            .unwrap(),
+        WakeOutcome::Submitted,
+        "an unclassified UI never refuses an ordinary wake"
+    );
+    assert_eq!(host.plain_reads.load(Ordering::SeqCst), 1);
+    assert_eq!(host.poke_reads.load(Ordering::SeqCst), 0);
+
+    let host = ComposerReadHost::new();
+    let dispatch = NativeWakeDispatcher::new(&host, &check, &clock);
+    let attempt = dispatch
+        .attempt_poke(
+            cooperative(poke_reservation("seat", "a")),
+            &poke_plan_for_tests(),
+            PokeMode::PokeOnly,
+            &STASH,
+            &dispatch_context(),
+        )
+        .unwrap();
+    assert_eq!(attempt.outcome, WakeOutcome::Submitted);
+    assert!(attempt.poked);
+    assert_eq!(host.plain_reads.load(Ordering::SeqCst), 0);
+    assert_eq!(host.poke_reads.load(Ordering::SeqCst), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Soft-deadline pokes (spec §10): fake host and store matrix.
+// ---------------------------------------------------------------------------
+use crate::{
+    harness::recipe::{NativeSupport, PokeCapabilities},
+    ports::{
+        ComposerStash, PokeCapabilitySource, PokeDue, PokeMode, PokePlan, PokeReceipt,
+        PokeReservation, PokeSource,
+    },
+    protocol::ids::{MessageId, ThreadId},
+};
+use std::collections::HashMap;
+
+fn poke_receipt(message: &str, thread: &str, effective_deadline: i64) -> PokeReceipt {
+    PokeReceipt {
+        message: MessageId::new(message),
+        seat: SeatId::new("seat"),
+        thread: ThreadId::new(thread),
+        source: PokeSource::ReceiptState,
+        effective_deadline,
+    }
+}
+fn poke_due(seat: &str, receipts: Vec<PokeReceipt>) -> PokeDue {
+    PokeDue {
+        seat: SeatId::new(seat),
+        receipts: receipts
+            .into_iter()
+            .map(|mut r| {
+                r.seat = SeatId::new(seat);
+                r
+            })
+            .collect(),
+    }
+}
+fn poke_reservation(seat: &str, attempt: &str) -> WakeReservation {
+    WakeReservation {
+        attempt: WakeAttemptId::new(attempt),
+        seat: SeatId::new(seat),
+        attention_witness: test_witness(false, true),
+        reasons: vec!["soft_deadline".into()],
+        // Outlives the retry spacings the poke tests step the clock over.
+        lease_until: MonoInstant(10_000_000),
+        authority: ReservedWakeAuthority::Registered {
+            binding_generation: 1,
+            execution: ExecutionId::new("execution"),
+        },
+        ..test_reservation()
+    }
+}
+
+/// A store holding due pokes. `held` is the seats' single reservation slot,
+/// shared by wake and poke reservations exactly like `wake_work`.
+struct PokeStore {
+    clock: Arc<FakeClock>,
+    due: Mutex<Vec<PokeDue>>,
+    marked: Mutex<Vec<String>>,
+    log: Mutex<Vec<String>>,
+    held: Mutex<HashMap<String, SeatId>>,
+    wake: Mutex<Vec<WakeCandidate>>,
+    seq: AtomicU64,
+    /// The largest `limit` `poke_candidates` was asked for.
+    asked_limit: AtomicU64,
+}
+impl PokeStore {
+    fn new(clock: Arc<FakeClock>, due: Vec<PokeDue>) -> Self {
+        Self {
+            clock,
+            due: Mutex::new(due),
+            marked: Mutex::new(Vec::new()),
+            log: Mutex::new(Vec::new()),
+            held: Mutex::new(HashMap::new()),
+            wake: Mutex::new(Vec::new()),
+            seq: AtomicU64::new(0),
+            asked_limit: AtomicU64::new(0),
+        }
+    }
+    /// Due pokes minus the receipts a submitted attempt marked.
+    fn remaining(&self) -> Vec<PokeDue> {
+        let marked = self.marked.lock().unwrap();
+        self.due
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|due| {
+                let receipts: Vec<_> = due
+                    .receipts
+                    .iter()
+                    .filter(|r| !marked.iter().any(|m| m == r.message.as_str()))
+                    .cloned()
+                    .collect();
+                (!receipts.is_empty()).then(|| PokeDue {
+                    seat: due.seat.clone(),
+                    receipts,
+                })
+            })
+            .collect()
+    }
+    fn next_attempt(&self, seat: &SeatId) -> Option<WakeAttemptId> {
+        let mut held = self.held.lock().unwrap();
+        if held.values().any(|s| s == seat) {
+            return None;
+        }
+        let attempt = format!("attempt-{}", self.seq.fetch_add(1, Ordering::SeqCst));
+        held.insert(attempt.clone(), seat.clone());
+        Some(WakeAttemptId::new(attempt))
+    }
+    fn release(&self, attempt: &WakeAttemptId) {
+        self.held.lock().unwrap().remove(attempt.as_str());
+    }
+    fn log(&self) -> Vec<String> {
+        self.log.lock().unwrap().clone()
+    }
+}
+impl WakePort for PokeStore {
+    fn clock(&self) -> &dyn Clock {
+        self.clock.as_ref()
+    }
+    fn wake_candidates(
+        &self,
+        _: PageRequest,
+        _: &CallBudget,
+    ) -> Result<Page<WakeCandidate>, ApiError> {
+        Ok(Page {
+            items: self.wake.lock().unwrap().clone(),
+            next_cursor: None,
+            next_argv: None,
+            high_water_ordinal: 1,
+            scope_revision: None,
+            has_more: false,
+            stop_reason: StopReason::Complete,
+            consistency: Consistency::BoundedLive,
+        })
+    }
+    fn reserve_wake(
+        &self,
+        candidate: &WakeCandidate,
+        _: &CallBudget,
+    ) -> Result<Option<WakeReservation>, ApiError> {
+        let Some(attempt) = self.next_attempt(&candidate.seat) else {
+            return Ok(None);
+        };
+        self.log.lock().unwrap().push("reserve_wake".into());
+        Ok(Some(WakeReservation {
+            attention_witness: candidate.attention_witness.clone().unwrap(),
+            ..poke_reservation(candidate.seat.as_str(), attempt.as_str())
+        }))
+    }
+    fn complete_wake(
+        &self,
+        attempt: WakeAttemptId,
+        outcome: WakeOutcome,
+        _: Option<&crate::ports::PriorLadder>,
+        _: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        self.release(&attempt);
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("complete_wake:{outcome:?}"));
+        Ok(false)
+    }
+    fn wake_recovery_candidates(
+        &self,
+        _: PageRequest,
+        _: &CallBudget,
+    ) -> Result<Page<WakeRecoveryCandidate>, ApiError> {
+        Ok(empty_recovery_page())
+    }
+    fn recover_wake_reservation(
+        &self,
+        _: WakeRecoveryRequest,
+        _: &CallBudget,
+    ) -> Result<WakeRecoveryOutcome, ApiError> {
+        unreachable!()
+    }
+    fn poke_candidates(&self, limit: u16, _: &CallBudget) -> Result<Vec<PokeDue>, ApiError> {
+        self.asked_limit
+            .fetch_max(u64::from(limit), Ordering::SeqCst);
+        // Like the real store: soonest effective deadline first, then `limit`.
+        let mut due = self.remaining();
+        due.sort_by_key(|due| {
+            (
+                due.receipts.iter().map(|r| r.effective_deadline).min(),
+                due.seat.clone(),
+            )
+        });
+        due.truncate(usize::from(limit));
+        Ok(due)
+    }
+    fn poke_for_wake(&self, seat: &SeatId, _: &CallBudget) -> Result<Option<PokeDue>, ApiError> {
+        Ok(self.remaining().into_iter().find(|due| &due.seat == seat))
+    }
+    fn reserve_poke(
+        &self,
+        due: &PokeDue,
+        _: &CallBudget,
+    ) -> Result<Option<PokeReservation>, ApiError> {
+        let Some(attempt) = self.next_attempt(&due.seat) else {
+            return Ok(None);
+        };
+        self.log.lock().unwrap().push("reserve_poke".into());
+        Ok(Some(PokeReservation {
+            reservation: poke_reservation(due.seat.as_str(), attempt.as_str()),
+            receipts: due.receipts.clone(),
+        }))
+    }
+    fn complete_poke(
+        &self,
+        attempt: WakeAttemptId,
+        outcome: WakeOutcome,
+        receipts: &[PokeReceipt],
+        _: &CallBudget,
+    ) -> Result<(), ApiError> {
+        self.release(&attempt);
+        if outcome == WakeOutcome::Submitted {
+            self.marked
+                .lock()
+                .unwrap()
+                .extend(receipts.iter().map(|r| r.message.as_str().to_owned()));
+        }
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("complete_poke:{outcome:?}:{}", receipts.len()));
+        Ok(())
+    }
+}
+
+/// A native host whose observation, prompt result and focus the test drives.
+/// It leaves the composer-stash hook at its inert default.
+struct PokeHost {
+    observation: Mutex<HostObservation>,
+    prompts: Mutex<Vec<String>>,
+    submit: Mutex<Result<PromptOutcome, ErrorCode>>,
+    gate: Option<(Mutex<bool>, Condvar)>,
+    entered: AtomicU64,
+}
+impl PokeHost {
+    fn new(ui: HostUiState, focused: bool) -> Self {
+        let mut observation = fresh_observation();
+        observation.ui = ui;
+        observation.focused = focused;
+        Self {
+            observation: Mutex::new(observation),
+            prompts: Mutex::new(Vec::new()),
+            submit: Mutex::new(Ok(PromptOutcome::Submitted)),
+            gate: None,
+            entered: AtomicU64::new(0),
+        }
+    }
+    fn set(&self, ui: HostUiState, focused: bool) {
+        let mut observation = self.observation.lock().unwrap();
+        observation.ui = ui;
+        observation.focused = focused;
+    }
+    fn prompts(&self) -> Vec<String> {
+        self.prompts.lock().unwrap().clone()
+    }
+}
+impl HostPort for PokeHost {
+    fn native_launch_capability(&self) -> NativeLaunchCapability {
+        NativeLaunchCapability::Unsupported
+    }
+    fn observe_current_target(
+        &self,
+        _: &HostTargetId,
+        _: &HostCallContext,
+    ) -> Result<HostObservation, ApiError> {
+        Ok(self.observation.lock().unwrap().clone())
+    }
+    fn enumerate_targets(&self, _: &HostCallContext) -> Result<HostSnapshot, ApiError> {
+        unreachable!()
+    }
+    fn pane_agent_state(
+        &self,
+        _target: &SafeWakeTarget,
+        _context: &HostCallContext,
+    ) -> Result<crate::ports::AgentComposerState, ApiError> {
+        Ok(crate::ports::AgentComposerState::Submitted)
+    }
+    fn send_submit_key(&self, _: &SafeWakeTarget, _: &HostCallContext) -> Result<(), ApiError> {
+        Ok(())
+    }
+    fn safe_wake_target(
+        &self,
+        seat: &SeatId,
+        observation: &HostObservation,
+    ) -> Option<SafeWakeTarget> {
+        FakeNativeHost {
+            observation: observation.clone(),
+            submitted: AtomicU64::new(0),
+            submit_keys: AtomicU64::new(0),
+            pane_states: Default::default(),
+        }
+        .safe_wake_target(seat, observation)
+    }
+    fn submit_prompt(
+        &self,
+        _: &SafeWakeTarget,
+        text: &str,
+        _: &HostCallContext,
+    ) -> Result<PromptOutcome, ApiError> {
+        self.entered.fetch_add(1, Ordering::SeqCst);
+        if let Some((open, condvar)) = &self.gate {
+            let mut open = open.lock().unwrap();
+            while !*open {
+                open = condvar.wait(open).unwrap();
+            }
+        }
+        self.prompts.lock().unwrap().push(text.to_owned());
+        match &*self.submit.lock().unwrap() {
+            Ok(outcome) => Ok(*outcome),
+            Err(code) => Err(ApiError::new(code.clone(), "injected")),
+        }
+    }
+    fn launch_native(
+        &self,
+        _: NativeLaunchRequest,
+        _: &HostCallContext,
+    ) -> Result<NativeLaunchOutcome, ApiError> {
+        unreachable!()
+    }
+}
+
+/// `PokeHost` with a stash-capable adapter: records stash and restore calls.
+struct StashingHost {
+    inner: PokeHost,
+    stash: ComposerStash,
+    restore_fails: bool,
+    stash_calls: AtomicU64,
+    restored: Mutex<Vec<String>>,
+}
+impl StashingHost {
+    fn new(inner: PokeHost, stash: ComposerStash) -> Self {
+        Self {
+            inner,
+            stash,
+            restore_fails: false,
+            stash_calls: AtomicU64::new(0),
+            restored: Mutex::new(Vec::new()),
+        }
+    }
+}
+impl HostPort for StashingHost {
+    fn native_launch_capability(&self) -> NativeLaunchCapability {
+        self.inner.native_launch_capability()
+    }
+    fn observe_current_target(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<HostObservation, ApiError> {
+        self.inner.observe_current_target(target, context)
+    }
+    fn enumerate_targets(&self, context: &HostCallContext) -> Result<HostSnapshot, ApiError> {
+        self.inner.enumerate_targets(context)
+    }
+    fn pane_agent_state(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<crate::ports::AgentComposerState, ApiError> {
+        self.inner.pane_agent_state(target, context)
+    }
+    fn send_submit_key(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        self.inner.send_submit_key(target, context)
+    }
+    fn safe_wake_target(
+        &self,
+        seat: &SeatId,
+        observation: &HostObservation,
+    ) -> Option<SafeWakeTarget> {
+        self.inner.safe_wake_target(seat, observation)
+    }
+    fn submit_prompt(
+        &self,
+        target: &SafeWakeTarget,
+        text: &str,
+        context: &HostCallContext,
+    ) -> Result<PromptOutcome, ApiError> {
+        self.inner.submit_prompt(target, text, context)
+    }
+    fn launch_native(
+        &self,
+        request: NativeLaunchRequest,
+        context: &HostCallContext,
+    ) -> Result<NativeLaunchOutcome, ApiError> {
+        self.inner.launch_native(request, context)
+    }
+    fn stash_composer(
+        &self,
+        _: &SafeWakeTarget,
+        _: &HostCallContext,
+    ) -> Result<ComposerStash, ApiError> {
+        self.stash_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(self.stash.clone())
+    }
+    fn restore_composer(
+        &self,
+        _: &SafeWakeTarget,
+        saved: &str,
+        _: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        self.restored.lock().unwrap().push(saved.to_owned());
+        if self.restore_fails {
+            return Err(ApiError::new(ErrorCode::HostUnavailable, "restore refused"));
+        }
+        Ok(())
+    }
+}
+
+/// Capability evidence the test declares for every harness.
+struct Declared(PokeCapabilities);
+impl PokeCapabilitySource for Declared {
+    fn capabilities(&self, _: Harness) -> PokeCapabilities {
+        self.0
+    }
+}
+const STASH: Declared = Declared(PokeCapabilities {
+    composer_stash: NativeSupport::Supported,
+    poke_during_turn: NativeSupport::Unsupported,
+});
+const DURING_TURN: Declared = Declared(PokeCapabilities {
+    composer_stash: NativeSupport::Unsupported,
+    poke_during_turn: NativeSupport::Supported,
+});
+
+fn poke_budget() -> CallBudget {
+    CallBudget {
+        deadline: MonoInstant(10_000),
+        cancellation: Cancellation::default(),
+    }
+}
+
+/// A budget that outlives the retry spacings tests step the clock over.
+fn long_poke_budget() -> CallBudget {
+    CallBudget {
+        deadline: MonoInstant(10_000_000),
+        cancellation: Cancellation::default(),
+    }
+}
+
+/// Steps the fake clock past one wake retry spacing.
+fn pass_retry_spacing(store: &PokeStore) {
+    store.clock.0.fetch_add(
+        RetryConfig::default().minimum_delay_ms(),
+        std::sync::atomic::Ordering::SeqCst,
+    );
+}
+
+/// One scheduler over `store` and `host`, kept across ticks so the in-memory
+/// wake limits persist between them.
+fn with_scheduler<H: HostPort, R>(
+    store: &PokeStore,
+    host: &H,
+    caps: &dyn PokeCapabilitySource,
+    f: impl FnOnce(
+        &Scheduler<
+            '_,
+            FakeDeadlinePort,
+            PokeStore,
+            NativeWakeDispatcher<'_, H, FakeReservationCheck>,
+        >,
+    ) -> R,
+) -> R {
+    let due = FakeDeadlinePort {
+        clock: store.clock.clone(),
+        due_calls: AtomicU64::new(0),
+    };
+    let check = FakeReservationCheck {
+        current: true,
+        calls: AtomicU64::new(0),
+    };
+    let dispatcher = NativeWakeDispatcher::new(host, &check, store.clock.as_ref());
+    let scheduler = Scheduler::new(
+        "i".into(),
+        &due,
+        store,
+        &dispatcher,
+        RetryConfig::default(),
+        daemon_boot(),
+    )
+    .with_poke_capabilities(caps);
+    f(&scheduler)
+}
+
+fn one_seat_due() -> Vec<PokeDue> {
+    vec![poke_due(
+        "seat",
+        vec![
+            poke_receipt("m1", "t1", 40_000),
+            poke_receipt("m2", "t2", 50_000),
+            poke_receipt("m3", "t1", 60_000),
+        ],
+    )]
+}
+const POKE_TEXT: &str = "herdr-threads: receipt due in 40s on t1, t2; run herdr-threads inbox";
+
+#[test]
+fn idle_unfocused_target_gets_one_coalesced_poke() {
+    let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+    let store = PokeStore::new(clock, one_seat_due());
+    let host = PokeHost::new(HostUiState::Idle, false);
+    with_scheduler(
+        &store,
+        &host,
+        &crate::ports::NoPokeCapabilities,
+        |scheduler| {
+            let outcome = scheduler.drive_pokes(&poke_budget()).unwrap();
+            assert_eq!((outcome.examined, outcome.attempted), (1, 1));
+            assert_eq!(host.prompts(), [POKE_TEXT]);
+            // soft_poked_at is set for every coalesced receipt, and only those.
+            assert_eq!(*store.marked.lock().unwrap(), ["m1", "m2", "m3"]);
+            // The next tick finds nothing due: one poke per soft point.
+            let outcome = scheduler.drive_pokes(&poke_budget()).unwrap();
+            assert_eq!((outcome.examined, outcome.attempted), (0, 0));
+            assert_eq!(host.prompts().len(), 1);
+        },
+    );
+    assert_eq!(
+        store.log(),
+        ["reserve_poke", "complete_poke:Submitted:3"],
+        "one reservation, settled once with the receipts it covered"
+    );
+}
+
+#[test]
+fn focused_or_unsafe_states_skip_and_retry_after_the_spacing() {
+    let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+    let store = PokeStore::new(clock, one_seat_due());
+    let host = PokeHost::new(HostUiState::Idle, true);
+    with_scheduler(
+        &store,
+        &host,
+        &crate::ports::NoPokeCapabilities,
+        |scheduler| {
+            // Focused, then each state the recipe does not allow: nothing is sent,
+            // nothing is marked, and the seat is re-evaluated once the wake
+            // retry spacing has passed (a skip does not advance the wake guard).
+            for (ui, focused) in [
+                (HostUiState::Idle, true),
+                (HostUiState::ActiveTurn, false),
+                (HostUiState::HumanInput, false),
+                (HostUiState::ApprovalOrQuestion, false),
+                (HostUiState::Unknown, false),
+            ] {
+                host.set(ui, focused);
+                let outcome = scheduler.drive_pokes(&long_poke_budget()).unwrap();
+                assert_eq!(
+                    outcome.attempted, 1,
+                    "{ui:?} focused={focused} re-evaluated"
+                );
+                assert!(host.prompts().is_empty(), "{ui:?} focused={focused}");
+                assert!(store.marked.lock().unwrap().is_empty());
+                // Before the spacing passes the seat is not attempted again.
+                let outcome = scheduler.drive_pokes(&long_poke_budget()).unwrap();
+                assert_eq!(outcome.attempted, 0, "{ui:?} backs off");
+                pass_retry_spacing(&store);
+            }
+            // Focus leaves: the next evaluation sends.
+            host.set(HostUiState::Idle, false);
+            scheduler.drive_pokes(&long_poke_budget()).unwrap();
+            assert_eq!(host.prompts(), [POKE_TEXT]);
+            assert_eq!(store.marked.lock().unwrap().len(), 3);
+        },
+    );
+    let log = store.log();
+    assert_eq!(
+        log.iter().filter(|l| *l == "complete_wake:Unsafe").count(),
+        5,
+        "every skip releases the slot unmarked: {log:?}"
+    );
+}
+
+#[test]
+fn failed_submission_leaves_soft_poked_at_unset() {
+    let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+    let store = PokeStore::new(clock, one_seat_due());
+    let host = PokeHost::new(HostUiState::Idle, false);
+    with_scheduler(
+        &store,
+        &host,
+        &crate::ports::NoPokeCapabilities,
+        |scheduler| {
+            for failure in [
+                Err(ErrorCode::TargetUnsafe),
+                Err(ErrorCode::HostUnavailable),
+                Ok(PromptOutcome::OutcomeUnknown),
+            ] {
+                *host.submit.lock().unwrap() = failure;
+                scheduler.drive_pokes(&long_poke_budget()).unwrap();
+                assert!(
+                    store.marked.lock().unwrap().is_empty(),
+                    "a prompt the host did not accept is never marked"
+                );
+                pass_retry_spacing(&store);
+            }
+            *host.submit.lock().unwrap() = Ok(PromptOutcome::Submitted);
+            // The receipts were never lost: the next evaluation pokes them.
+            scheduler.drive_pokes(&long_poke_budget()).unwrap();
+            assert_eq!(store.marked.lock().unwrap().len(), 3);
+        },
+    );
+}
+
+#[test]
+fn human_input_with_stash_capability_uses_inert_hook_and_skips() {
+    let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+    let store = PokeStore::new(clock, one_seat_due());
+    // The default HostPort hook reports Unsupported: the poke is skipped.
+    let host = StashingHost::new(
+        PokeHost::new(HostUiState::HumanInput, false),
+        ComposerStash::Unsupported,
+    );
+    with_scheduler(&store, &host, &STASH, |scheduler| {
+        scheduler.drive_pokes(&poke_budget()).unwrap();
+    });
+    assert_eq!(host.stash_calls.load(Ordering::SeqCst), 1);
+    assert!(host.inner.prompts().is_empty());
+    assert!(store.marked.lock().unwrap().is_empty());
+
+    // The same state through the unmodified default hook (no override at all).
+    let plain = PokeHost::new(HostUiState::HumanInput, false);
+    with_scheduler(&store, &plain, &STASH, |scheduler| {
+        scheduler.drive_pokes(&poke_budget()).unwrap();
+    });
+    assert!(plain.prompts().is_empty());
+    assert!(store.marked.lock().unwrap().is_empty());
+
+    // Without a declared capability the hook is not even consulted.
+    let host = StashingHost::new(
+        PokeHost::new(HostUiState::HumanInput, false),
+        ComposerStash::Saved("typed".into()),
+    );
+    with_scheduler(
+        &store,
+        &host,
+        &crate::ports::NoPokeCapabilities,
+        |scheduler| {
+            scheduler.drive_pokes(&poke_budget()).unwrap();
+        },
+    );
+    assert_eq!(host.stash_calls.load(Ordering::SeqCst), 0);
+    assert!(host.inner.prompts().is_empty());
+}
+
+fn dispatch_context() -> HostCallContext {
+    HostCallContext {
+        budget: poke_budget(),
+        expected_boot: Some(HostBootId::new("boot")),
+        expected_epoch: Some(1),
+    }
+}
+fn poke_plan_for_tests() -> PokePlan {
+    PokePlan {
+        text: POKE_TEXT.into(),
+        receipts: vec![poke_receipt("m1", "t1", 40_000)],
+    }
+}
+
+#[test]
+fn dispatcher_matrix_decides_submit_stash_or_skip() {
+    let clock = FakeClock(AtomicU64::new(0));
+    let check = FakeReservationCheck {
+        current: true,
+        calls: AtomicU64::new(0),
+    };
+    let states = [
+        HostUiState::Idle,
+        HostUiState::ActiveTurn,
+        HostUiState::HumanInput,
+        HostUiState::ApprovalOrQuestion,
+        HostUiState::Unknown,
+    ];
+    let mut cases = 0;
+    for ui in states {
+        for focused in [false, true] {
+            for during_turn in [NativeSupport::Unsupported, NativeSupport::Supported] {
+                for stash in [NativeSupport::Unsupported, NativeSupport::Supported] {
+                    let caps = Declared(PokeCapabilities {
+                        composer_stash: stash,
+                        poke_during_turn: during_turn,
+                    });
+                    let host = StashingHost::new(
+                        PokeHost::new(ui, focused),
+                        ComposerStash::Saved("typed".into()),
+                    );
+                    let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
+                    let attempt = dispatcher
+                        .attempt_poke(
+                            poke_reservation("seat", "a"),
+                            &poke_plan_for_tests(),
+                            PokeMode::PokeOnly,
+                            &caps,
+                            &dispatch_context(),
+                        )
+                        .unwrap();
+                    let supported = |s| s == NativeSupport::Supported;
+                    let (submits, stashes) = match (ui, focused) {
+                        (_, true) => (false, false),
+                        (HostUiState::Idle, _) => (true, false),
+                        (HostUiState::ActiveTurn, _) => (supported(during_turn), false),
+                        (HostUiState::HumanInput, _) => (supported(stash), supported(stash)),
+                        _ => (false, false),
+                    };
+                    let label =
+                        format!("{ui:?} focused={focused} turn={during_turn:?} stash={stash:?}");
+                    assert_eq!(host.inner.prompts().len(), usize::from(submits), "{label}");
+                    assert_eq!(
+                        host.stash_calls.load(Ordering::SeqCst),
+                        u64::from(stashes),
+                        "{label}"
+                    );
+                    assert_eq!(
+                        *host.restored.lock().unwrap(),
+                        if stashes {
+                            vec!["typed".to_owned()]
+                        } else {
+                            vec![]
+                        },
+                        "{label}"
+                    );
+                    assert_eq!(attempt.poked, submits, "{label}");
+                    assert_eq!(
+                        attempt.outcome,
+                        if submits {
+                            WakeOutcome::Submitted
+                        } else {
+                            WakeOutcome::Unsafe
+                        },
+                        "{label}"
+                    );
+                    cases += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 40);
+}
+
+#[test]
+fn stash_restore_failure_is_kept_as_a_diagnostic_with_the_typed_text() {
+    let clock = FakeClock(AtomicU64::new(0));
+    let check = FakeReservationCheck {
+        current: true,
+        calls: AtomicU64::new(0),
+    };
+    let mut host = StashingHost::new(
+        PokeHost::new(HostUiState::HumanInput, false),
+        ComposerStash::Saved("half-typed words".into()),
+    );
+    host.restore_fails = true;
+    let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
+    let attempt = dispatcher
+        .attempt_poke(
+            poke_reservation("seat", "a"),
+            &poke_plan_for_tests(),
+            PokeMode::PokeOnly,
+            &STASH,
+            &dispatch_context(),
+        )
+        .unwrap();
+    // The prompt was accepted; the failed restore does not undo it.
+    assert_eq!(attempt.outcome, WakeOutcome::Submitted);
+    assert!(attempt.poked);
+    let diagnostic = attempt.diagnostic.expect("restore failure kept");
+    assert!(diagnostic.contains("half-typed words"), "{diagnostic}");
+    // A failed stash skips before any prompt.
+    let host = StashingHost::new(
+        PokeHost::new(HostUiState::HumanInput, false),
+        ComposerStash::Failed("composer busy".into()),
+    );
+    let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
+    let attempt = dispatcher
+        .attempt_poke(
+            poke_reservation("seat", "a"),
+            &poke_plan_for_tests(),
+            PokeMode::PokeOnly,
+            &STASH,
+            &dispatch_context(),
+        )
+        .unwrap();
+    assert_eq!(attempt.outcome, WakeOutcome::Unsafe);
+    assert!(host.inner.prompts().is_empty());
+}
+
+#[test]
+fn unbound_target_is_not_poked() {
+    let clock = FakeClock(AtomicU64::new(0));
+    let check = FakeReservationCheck {
+        current: true,
+        calls: AtomicU64::new(0),
+    };
+    // A recovery-hint seat (no registered binding) is not a bound native agent.
+    let host = PokeHost::new(HostUiState::Idle, false);
+    let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
+    let hint = WakeReservation {
+        authority: ReservedWakeAuthority::RecoveryHint {
+            execution: ExecutionId::new("execution"),
+        },
+        ..poke_reservation("seat", "a")
+    };
+    let attempt = dispatcher
+        .attempt_poke(
+            hint,
+            &poke_plan_for_tests(),
+            PokeMode::PokeOnly,
+            &crate::ports::NoPokeCapabilities,
+            &dispatch_context(),
+        )
+        .unwrap();
+    assert_eq!(attempt.outcome, WakeOutcome::Unsafe);
+    assert!(host.prompts().is_empty());
+}
+
+fn wake_and_poke_store(clock: Arc<FakeClock>) -> PokeStore {
+    let store = PokeStore::new(clock, one_seat_due());
+    *store.wake.lock().unwrap() = vec![due_candidate()];
+    store
+}
+
+#[test]
+fn poke_and_wake_due_send_one_prompt_with_poke_text() {
+    let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+    let store = wake_and_poke_store(clock);
+    let host = PokeHost::new(HostUiState::Idle, false);
+    with_scheduler(
+        &store,
+        &host,
+        &crate::ports::NoPokeCapabilities,
+        |scheduler| {
+            assert_eq!(scheduler.drive_wakes(&poke_budget()).unwrap().attempted, 1);
+            // Pokes run right after the wake in the same tick: nothing is left.
+            assert_eq!(scheduler.drive_pokes(&poke_budget()).unwrap().attempted, 0);
+        },
+    );
+    assert_eq!(
+        host.prompts(),
+        [POKE_TEXT],
+        "one prompt, with the poke text"
+    );
+    assert_eq!(*store.marked.lock().unwrap(), ["m1", "m2", "m3"]);
+    assert_eq!(
+        store.log(),
+        ["reserve_wake", "complete_poke:Submitted:3"],
+        "the wake's own settlement carried the poke's receipts"
+    );
+}
+
+#[test]
+fn wake_without_an_eligible_poke_keeps_the_plain_marker_and_marks_nothing() {
+    let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+    let store = wake_and_poke_store(clock);
+    // A focused pane still gets the ordinary wake marker (as before), but the
+    // poke is not eligible, so no receipt is marked.
+    let host = PokeHost::new(HostUiState::Idle, true);
+    with_scheduler(
+        &store,
+        &host,
+        &crate::ports::NoPokeCapabilities,
+        |scheduler| {
+            assert_eq!(scheduler.drive_wakes(&poke_budget()).unwrap().attempted, 1);
+        },
+    );
+    assert_eq!(host.prompts(), [crate::notification::policy::MARKER]);
+    assert!(store.marked.lock().unwrap().is_empty());
+    assert_eq!(store.log(), ["reserve_wake", "complete_wake:Submitted"]);
+}
+
+#[test]
+fn dispatch_state_applies_the_wake_limits_to_pokes() {
+    let mut state = DispatchState::new(RetryConfig::default(), MonoInstant(0), daemon_boot());
+    let seat = |n: usize| SeatId::new(format!("seat-{n}"));
+    // An unknown seat has no wake guard: a poke may take the slot.
+    assert!(state.can_reserve_poke(&seat(0), MonoInstant(0)));
+    state
+        .poke_reserved(seat(0), WakeAttemptId::new("p0"), daemon_boot())
+        .unwrap();
+    // One in flight per seat: neither a second poke nor a wake may start.
+    assert!(!state.can_reserve_poke(&seat(0), MonoInstant(0)));
+    state.restore(seat(0), fresh()).unwrap();
+    assert!(!state.can_reserve(&seat(0), MonoInstant(0)));
+    // A foreign boot is refused.
+    assert_eq!(
+        state.poke_reserved(seat(1), WakeAttemptId::new("p1"), old_daemon_boot()),
+        Err(DispatchError::WrongBoot)
+    );
+    // Four active prompts overall, pokes and wakes alike.
+    for n in 1..4 {
+        state
+            .poke_reserved(seat(n), WakeAttemptId::new(format!("p{n}")), daemon_boot())
+            .unwrap();
+    }
+    assert_eq!(state.active_count(), 4);
+    assert!(!state.can_reserve_poke(&seat(9), MonoInstant(0)));
+    assert_eq!(
+        state.poke_reserved(seat(9), WakeAttemptId::new("p9"), daemon_boot()),
+        Err(DispatchError::ActiveLimit)
+    );
+    // A late result for another attempt cannot free the slot.
+    assert!(!state.poke_finished(
+        &seat(0),
+        &WakeAttemptId::new("other"),
+        &daemon_boot(),
+        true,
+        MonoInstant(5)
+    ));
+    assert_eq!(state.active_count(), 4);
+    // A skipped attempt frees the slot but holds the seat for the retry
+    // spacing (see `skipped_poke_waits_the_retry_spacing`); an accepted
+    // prompt holds it for the configured minimum between pokes.
+    assert!(state.poke_finished(
+        &seat(1),
+        &WakeAttemptId::new("p1"),
+        &daemon_boot(),
+        false,
+        MonoInstant(100)
+    ));
+    assert_eq!(state.active_count(), 3);
+    assert!(state.poke_finished(
+        &seat(0),
+        &WakeAttemptId::new("p0"),
+        &daemon_boot(),
+        true,
+        MonoInstant(100)
+    ));
+    assert!(!state.can_reserve_poke(&seat(0), MonoInstant(100 + 29_999)));
+    assert!(state.can_reserve_poke(&seat(0), MonoInstant(100 + 30_000)));
+}
+
+/// Kills: re-attempting a skipped seat on the next tick (one reservation and
+/// one host read per ~100 ms wake loop per ineligible seat), a backoff that
+/// never expires, one off by a millisecond at the spacing, and a submitted
+/// poke that leaves the skip backoff in place.
+#[test]
+fn skipped_poke_waits_the_retry_spacing() {
+    let config = RetryConfig::default();
+    let spacing = config.minimum_delay_ms();
+    assert!(spacing > 1, "a spacing of at most 1 ms cannot be probed");
+    let mut state = DispatchState::new(config, MonoInstant(0), daemon_boot());
+    let seat = SeatId::new("seat");
+    let reserve = |state: &mut DispatchState, n: u32| {
+        let attempt = WakeAttemptId::new(format!("p{n}"));
+        state
+            .poke_reserved(seat.clone(), attempt.clone(), daemon_boot())
+            .unwrap();
+        attempt
+    };
+    let t = 1_000;
+    let attempt = reserve(&mut state, 0);
+    assert!(state.poke_finished(&seat, &attempt, &daemon_boot(), false, MonoInstant(t)));
+    assert!(!state.can_reserve_poke(&seat, MonoInstant(t)));
+    assert!(!state.can_reserve_poke(&seat, MonoInstant(t + 100)));
+    assert!(!state.can_reserve_poke(&seat, MonoInstant(t + spacing - 1)));
+    assert!(state.can_reserve_poke(&seat, MonoInstant(t + spacing)));
+    // A second skip restarts the spacing from its own end.
+    let later = t + spacing;
+    let attempt = reserve(&mut state, 1);
+    assert!(state.poke_finished(&seat, &attempt, &daemon_boot(), false, MonoInstant(later)));
+    assert!(!state.can_reserve_poke(&seat, MonoInstant(later + spacing - 1)));
+    assert!(state.can_reserve_poke(&seat, MonoInstant(later + spacing)));
+    // A submitted poke clears the skip: only the submit spacing applies, and
+    // it is measured from the submit, not from the earlier skip.
+    let now = later + spacing;
+    let attempt = reserve(&mut state, 2);
+    assert!(state.poke_finished(&seat, &attempt, &daemon_boot(), true, MonoInstant(now)));
+    assert!(!state.can_reserve_poke(&seat, MonoInstant(now + spacing - 1)));
+    assert!(state.can_reserve_poke(&seat, MonoInstant(now + spacing)));
+    // A late result for a past attempt does not start a backoff.
+    assert!(!state.poke_finished(
+        &seat,
+        &attempt,
+        &daemon_boot(),
+        false,
+        MonoInstant(now + spacing)
+    ));
+    assert!(state.can_reserve_poke(&seat, MonoInstant(now + spacing)));
+}
+
+/// Kills: a poke gated by the wake guard's retry backoff (`eligible`), a poke
+/// that ignores the restart spacing, and one that ignores the spacing after a
+/// wake attempt.
+#[test]
+fn poke_ignores_the_wake_retry_backoff() {
+    let config = RetryConfig::default();
+    let spacing = config.minimum_delay_ms();
+    let mut state = DispatchState::new(config, MonoInstant(0), daemon_boot());
+    let seat = SeatId::new("seat");
+    state
+        .restore(
+            seat.clone(),
+            DurableRetry {
+                retry_step: 3,
+                minimum_delay_ms: spacing,
+                effective_delay_ms: 300_000,
+                ever_reserved: true,
+            },
+        )
+        .unwrap();
+    assert_eq!(spacing, 30_000);
+    assert!(!state.can_reserve_poke(&seat, MonoInstant(spacing - 1)));
+    assert!(state.can_reserve_poke(&seat, MonoInstant(spacing)));
+    assert!(
+        !state.can_reserve(&seat, MonoInstant(spacing)),
+        "300 s wake backoff"
+    );
+
+    // A wake attempt restarts the elapsed spacing, not the backoff.
+    let t = 400_000;
+    let attempt = WakeAttemptId::new("w1");
+    state
+        .reserved(seat.clone(), attempt.clone(), daemon_boot(), MonoInstant(t))
+        .unwrap();
+    assert!(
+        !state.can_reserve_poke(&seat, MonoInstant(t + 5_000)),
+        "in flight"
+    );
+    assert!(
+        state
+            .finish(&seat, &attempt, &daemon_boot(), MonoInstant(t + 1_000))
+            .unwrap()
+    );
+    assert!(!state.can_reserve_poke(&seat, MonoInstant(t + 1_000 + spacing - 1)));
+    assert!(state.can_reserve_poke(&seat, MonoInstant(t + 1_000 + spacing)));
+    assert!(!state.can_reserve(&seat, MonoInstant(t + 1_000 + spacing)));
+}
+
+/// Kills: `can_reserve_poke` requiring `guard.eligible` (ht-2i4): a seat whose
+/// wakes sit at the 300 s step never got a poke inside its soft window.
+#[test]
+fn seat_in_wake_backoff_past_its_soft_point_is_poked() {
+    let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+    let store = PokeStore::new(clock, one_seat_due());
+    let mut candidate = due_candidate();
+    candidate.retry_step = 3;
+    candidate.minimum_delay_ms = 30_000;
+    candidate.effective_delay_ms = 300_000;
+    candidate.last_reservation_id = Some(WakeAttemptId::new("prior"));
+    candidate.last_reservation_boot = Some(HostBootId::new("old-boot"));
+    *store.wake.lock().unwrap() = vec![candidate];
+    let host = PokeHost::new(HostUiState::Idle, false);
+    with_scheduler(
+        &store,
+        &host,
+        &crate::ports::NoPokeCapabilities,
+        |scheduler| {
+            // The wake loop restores the seat's guard: backed off until 300 s.
+            assert_eq!(
+                scheduler
+                    .drive_wakes(&long_poke_budget())
+                    .unwrap()
+                    .attempted,
+                0
+            );
+            store.clock.0.store(30_000, Ordering::SeqCst);
+            assert_eq!(
+                scheduler
+                    .drive_wakes(&long_poke_budget())
+                    .unwrap()
+                    .attempted,
+                0
+            );
+            let outcome = scheduler.drive_pokes(&long_poke_budget()).unwrap();
+            assert_eq!((outcome.examined, outcome.attempted), (1, 1));
+            assert_eq!(host.prompts(), [POKE_TEXT]);
+            assert_eq!(*store.marked.lock().unwrap(), ["m1", "m2", "m3"]);
+            // The wake is still refused by its own backoff.
+            assert_eq!(
+                scheduler
+                    .drive_wakes(&long_poke_budget())
+                    .unwrap()
+                    .attempted,
+                0
+            );
+        },
+    );
+    assert_eq!(store.log(), ["reserve_poke", "complete_poke:Submitted:3"]);
+}
+
+/// Kills: cutting the due list to `POKE_SEAT_LIMIT` before the in-memory
+/// admission, so 16 seats inside their skip spacing hide a 17th eligible one.
+#[test]
+fn ineligible_seats_do_not_crowd_out_an_eligible_one() {
+    let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+    let seat_due = |n: usize| {
+        poke_due(
+            &format!("seat-{n:02}"),
+            vec![poke_receipt(&format!("m{n}"), "t1", 40_000 + n as i64)],
+        )
+    };
+    let store = PokeStore::new(clock, (0..16).map(seat_due).collect());
+    let host = PokeHost::new(HostUiState::Idle, true);
+    with_scheduler(
+        &store,
+        &host,
+        &crate::ports::NoPokeCapabilities,
+        |scheduler| {
+            // All 16 are skipped (focused) and held by the skip spacing.
+            let outcome = scheduler.drive_pokes(&poke_budget()).unwrap();
+            assert_eq!((outcome.examined, outcome.attempted), (16, 16));
+            assert!(host.prompts().is_empty());
+            // A 17th seat, later in deadline order, becomes due and eligible.
+            store.due.lock().unwrap().push(seat_due(16));
+            host.set(HostUiState::Idle, false);
+            let outcome = scheduler.drive_pokes(&poke_budget()).unwrap();
+            assert_eq!((outcome.examined, outcome.attempted), (1, 1));
+            assert_eq!(host.prompts().len(), 1);
+            assert_eq!(*store.marked.lock().unwrap(), ["m16"]);
+        },
+    );
+    assert!(
+        store.asked_limit.load(Ordering::SeqCst) > 16,
+        "the store was asked for more than the per-tick cap"
+    );
+}
+
+#[test]
+fn a_seat_with_an_active_wake_reservation_gets_no_poke() {
+    let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+    let store = PokeStore::new(clock, one_seat_due());
+    // The seat's slot is held by a wake attempt (store-side `wake_work`).
+    store
+        .held
+        .lock()
+        .unwrap()
+        .insert("wake-attempt".into(), SeatId::new("seat"));
+    let host = PokeHost::new(HostUiState::Idle, false);
+    with_scheduler(
+        &store,
+        &host,
+        &crate::ports::NoPokeCapabilities,
+        |scheduler| {
+            assert_eq!(scheduler.drive_pokes(&poke_budget()).unwrap().attempted, 0);
+        },
+    );
+    assert!(host.prompts().is_empty());
+    assert!(store.log().is_empty());
+}
+
+#[test]
+fn five_due_seats_send_at_most_four_active_prompts() {
+    let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+    let due = (0..5)
+        .map(|n| {
+            poke_due(
+                &format!("seat-{n}"),
+                vec![poke_receipt(&format!("m{n}"), "t1", 40_000)],
+            )
+        })
+        .collect::<Vec<_>>();
+    let store = PokeStore::new(clock.clone(), due.clone());
+    let mut host = PokeHost::new(HostUiState::Idle, false);
+    host.gate = Some((Mutex::new(false), Condvar::new()));
+    let due_port = FakeDeadlinePort {
+        clock: clock.clone(),
+        due_calls: AtomicU64::new(0),
+    };
+    let check = FakeReservationCheck {
+        current: true,
+        calls: AtomicU64::new(0),
+    };
+    let dispatcher = NativeWakeDispatcher::new(&host, &check, clock.as_ref());
+    let runner = WakeRunner::new(&store, &dispatcher, RetryConfig::default(), daemon_boot());
+    let _ = &due_port;
+    let results = std::thread::scope(|scope| {
+        let handles: Vec<_> = due
+            .iter()
+            .map(|due| {
+                let runner = &runner;
+                scope.spawn(move || runner.try_poke(due, &poke_budget()))
+            })
+            .collect();
+        // Four attempts reach the host while the fifth is refused admission.
+        wait_for_condition(
+            || host.entered.load(Ordering::SeqCst) == 4,
+            "four pokes in flight",
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(
+            host.entered.load(Ordering::SeqCst),
+            4,
+            "a fifth never reaches the host while four are active"
+        );
+        let (open, condvar) = host.gate.as_ref().unwrap();
+        *open.lock().unwrap() = true;
+        condvar.notify_all();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap().unwrap())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        results.iter().filter(|r| r.is_some()).count(),
+        4,
+        "{results:?}"
+    );
+    assert_eq!(host.prompts().len(), 4);
+    assert_eq!(store.marked.lock().unwrap().len(), 4);
+}
+
+#[test]
+fn active_turn_is_poked_only_where_the_recipe_declares_it() {
+    let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+    let store = PokeStore::new(clock, one_seat_due());
+    let host = PokeHost::new(HostUiState::ActiveTurn, false);
+    with_scheduler(
+        &store,
+        &host,
+        &crate::ports::NoPokeCapabilities,
+        |scheduler| {
+            scheduler.drive_pokes(&poke_budget()).unwrap();
+        },
+    );
+    assert!(host.prompts().is_empty(), "undeclared: skipped");
+    with_scheduler(&store, &host, &DURING_TURN, |scheduler| {
+        scheduler.drive_pokes(&poke_budget()).unwrap();
+    });
+    assert_eq!(host.prompts(), [POKE_TEXT], "declared poke_during_turn");
+    assert_eq!(store.marked.lock().unwrap().len(), 3);
+}
+
+#[test]
+fn unreserved_poke_waits_the_retry_spacing() {
+    let mut state = DispatchState::new(RetryConfig::default(), MonoInstant(0), daemon_boot());
+    let seat = SeatId::new("seat-0");
+    let spacing = RetryConfig::default().minimum_delay_ms();
+    let t = 1_000;
+    state.poke_unreserved(&seat, MonoInstant(t));
+    assert!(!state.can_reserve_poke(&seat, MonoInstant(t + spacing - 1)));
+    assert!(state.can_reserve_poke(&seat, MonoInstant(t + spacing)));
+    assert_eq!(state.active_count(), 0);
+
+    // While a poke is active the slot and the count are left alone.
+    let other = SeatId::new("seat-1");
+    state
+        .poke_reserved(other.clone(), WakeAttemptId::new("p1"), daemon_boot())
+        .unwrap();
+    state.poke_unreserved(&other, MonoInstant(t));
+    assert_eq!(state.active_count(), 1);
+    assert!(state.poke_finished(
+        &other,
+        &WakeAttemptId::new("p1"),
+        &daemon_boot(),
+        true,
+        MonoInstant(t + 10)
+    ));
+    assert_eq!(state.active_count(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Composer content never refuses an ordinary wake (TRUST-POLICY A4, ht-1ip.46).
+// ---------------------------------------------------------------------------
+
+/// A cooperative-basis host over typed composer input that records prompt
+/// texts and stash/restore calls.
+struct CooperativeStashingHost {
+    observation: HostObservation,
+    stash: ComposerStash,
+    prompts: Mutex<Vec<String>>,
+    stash_calls: AtomicU64,
+    restored: Mutex<Vec<String>>,
+}
+impl CooperativeStashingHost {
+    fn over_typed_input(stash: ComposerStash) -> Self {
+        let mut observation = fresh_observation();
+        observation.occupant = None;
+        observation.occupancy = StructuralOccupancy::Unknown;
+        observation.execution = ExecutionEvidence::Unknown;
+        observation.focused = false;
+        observation.ui = HostUiState::HumanInput;
+        Self {
+            observation,
+            stash,
+            prompts: Mutex::new(Vec::new()),
+            stash_calls: AtomicU64::new(0),
+            restored: Mutex::new(Vec::new()),
+        }
+    }
+}
+impl HostPort for CooperativeStashingHost {
+    fn native_launch_capability(&self) -> NativeLaunchCapability {
+        NativeLaunchCapability::HostGuardedStart
+    }
+    fn observe_current_target(
+        &self,
+        _: &HostTargetId,
+        _: &HostCallContext,
+    ) -> Result<HostObservation, ApiError> {
+        Ok(self.observation.clone())
+    }
+    fn enumerate_targets(&self, _: &HostCallContext) -> Result<HostSnapshot, ApiError> {
+        unreachable!()
+    }
+    fn pane_agent_state(
+        &self,
+        _target: &SafeWakeTarget,
+        _context: &HostCallContext,
+    ) -> Result<crate::ports::AgentComposerState, ApiError> {
+        Ok(crate::ports::AgentComposerState::Submitted)
+    }
+    fn send_submit_key(&self, _: &SafeWakeTarget, _: &HostCallContext) -> Result<(), ApiError> {
+        Ok(())
+    }
+    fn safe_wake_target(
+        &self,
+        seat: &SeatId,
+        observation: &HostObservation,
+    ) -> Option<SafeWakeTarget> {
+        let IncarnationEvidence::Verified { identity, .. } = &observation.incarnation else {
+            return None;
+        };
+        Some(SafeWakeTarget {
+            seat: seat.clone(),
+            target: observation.target.clone(),
+            host_boot: observation.host_boot.clone(),
+            generation: observation.generation,
+            terminal: observation.terminal.clone()?,
+            incarnation: identity.clone(),
+            basis: crate::ports::WakeTargetBasis::CooperativeAgent,
+            epoch: observation.epoch,
+            observation_sequence: observation.observation_sequence,
+            bound_harness: None,
+        })
+    }
+    fn submit_prompt(
+        &self,
+        _: &SafeWakeTarget,
+        text: &str,
+        _: &HostCallContext,
+    ) -> Result<PromptOutcome, ApiError> {
+        self.prompts.lock().unwrap().push(text.to_owned());
+        Ok(PromptOutcome::Submitted)
+    }
+    fn launch_native(
+        &self,
+        _: NativeLaunchRequest,
+        _: &HostCallContext,
+    ) -> Result<NativeLaunchOutcome, ApiError> {
+        unreachable!()
+    }
+    fn stash_composer(
+        &self,
+        _: &SafeWakeTarget,
+        _: &HostCallContext,
+    ) -> Result<ComposerStash, ApiError> {
+        self.stash_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(self.stash.clone())
+    }
+    fn restore_composer(
+        &self,
+        _: &SafeWakeTarget,
+        saved: &str,
+        _: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        self.restored.lock().unwrap().push(saved.to_owned());
+        Ok(())
+    }
+}
+
+fn cooperative_reservation() -> WakeReservation {
+    WakeReservation {
+        authority: ReservedWakeAuthority::Cooperative {
+            terminal: TerminalId::new("terminal"),
+            incarnation: "incarnation".into(),
+            binding_generation: None,
+            harness: Some("claude".into()),
+        },
+        ..test_reservation()
+    }
+}
+
+/// Kills: composer content refusing an ordinary wake, and a skipped poke
+/// that is not confined to the poke.
+#[test]
+fn typed_draft_skips_the_poke_but_not_the_ordinary_wake() {
+    let clock = FakeClock(AtomicU64::new(0));
+    let check = FakeReservationCheck {
+        current: true,
+        calls: AtomicU64::new(0),
+    };
+    let stash_failed = || {
+        CooperativeStashingHost::over_typed_input(ComposerStash::Failed(
+            crate::harness::composer::CLAUDE_NOT_KNOWN_EMPTY.into(),
+        ))
+    };
+    let host = stash_failed();
+    let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
+    assert_eq!(
+        dispatcher
+            .attempt_wake(cooperative_reservation(), &dispatch_context())
+            .unwrap(),
+        WakeOutcome::Submitted
+    );
+    assert_eq!(
+        *host.prompts.lock().unwrap(),
+        [crate::notification::policy::MARKER]
+    );
+    assert_eq!(host.stash_calls.load(Ordering::SeqCst), 0);
+
+    // The poke over the same draft: its stash is refused, nothing is sent.
+    let host = stash_failed();
+    let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
+    let attempt = dispatcher
+        .attempt_poke(
+            cooperative_reservation(),
+            &poke_plan_for_tests(),
+            PokeMode::PokeOnly,
+            &STASH,
+            &dispatch_context(),
+        )
+        .unwrap();
+    assert_eq!(attempt.outcome, WakeOutcome::Unsafe);
+    assert!(!attempt.poked);
+    assert!(host.prompts.lock().unwrap().is_empty());
+    assert_eq!(host.stash_calls.load(Ordering::SeqCst), 1);
+
+    // Without a declared stash the hook is not consulted: still skipped.
+    let host = stash_failed();
+    let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
+    let attempt = dispatcher
+        .attempt_poke(
+            cooperative_reservation(),
+            &poke_plan_for_tests(),
+            PokeMode::PokeOnly,
+            &crate::ports::NoPokeCapabilities,
+            &dispatch_context(),
+        )
+        .unwrap();
+    assert_eq!(attempt.outcome, WakeOutcome::Unsafe);
+    assert!(host.prompts.lock().unwrap().is_empty());
+    assert_eq!(host.stash_calls.load(Ordering::SeqCst), 0);
+}
+
+/// Kills: a wake that carries a poke typing the poke text into a draft by way
+/// of a stash.
+#[test]
+fn with_wake_over_typed_input_sends_the_plain_marker_without_stash() {
+    let clock = FakeClock(AtomicU64::new(0));
+    let check = FakeReservationCheck {
+        current: true,
+        calls: AtomicU64::new(0),
+    };
+    let host = CooperativeStashingHost::over_typed_input(ComposerStash::Saved("typed".into()));
+    let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
+    let attempt = dispatcher
+        .attempt_poke(
+            cooperative_reservation(),
+            &poke_plan_for_tests(),
+            PokeMode::WithWake,
+            &STASH,
+            &dispatch_context(),
+        )
+        .unwrap();
+    assert_eq!(attempt.outcome, WakeOutcome::Submitted);
+    assert!(!attempt.poked);
+    assert_eq!(
+        *host.prompts.lock().unwrap(),
+        [crate::notification::policy::MARKER]
+    );
+    assert_eq!(host.stash_calls.load(Ordering::SeqCst), 0);
+    assert!(host.restored.lock().unwrap().is_empty());
+}
+
+/// Kills: a skipped poke advancing the wake retry step or its spacing.
+#[test]
+fn skipped_poke_leaves_the_wake_guard_unchanged() {
+    let boot = daemon_boot();
+    let seat = SeatId::new("seat");
+    let mut state = DispatchState::new(RetryConfig::default(), MonoInstant(0), boot);
+    state.restore(seat.clone(), fresh()).unwrap();
+    let attempt = WakeAttemptId::new("wake");
+    let durable = state
+        .reserved(seat.clone(), attempt.clone(), boot, MonoInstant(0))
+        .unwrap();
+    assert!(
+        state
+            .finish(&seat, &attempt, &boot, MonoInstant(2_000))
+            .unwrap()
+    );
+    let eligible = |state: &DispatchState| {
+        (
+            state.can_reserve(&seat, MonoInstant(31_999)),
+            state.can_reserve(&seat, MonoInstant(32_000)),
+        )
+    };
+    assert_eq!(eligible(&state), (false, true));
+    let poke = WakeAttemptId::new("poke");
+    state
+        .poke_reserved(seat.clone(), poke.clone(), boot)
+        .unwrap();
+    assert!(state.poke_finished(&seat, &poke, &boot, false, MonoInstant(40_000)));
+    assert_eq!(eligible(&state), (false, true));
+    // The durable retry is the one the wake left: restoring it is accepted
+    // only when the guard still holds exactly that.
+    state.restore(seat.clone(), durable).unwrap();
 }

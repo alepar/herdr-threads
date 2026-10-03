@@ -25,6 +25,7 @@ pub mod protocol;
 pub mod scheduler;
 pub mod service;
 pub mod store;
+pub mod summary;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod view;

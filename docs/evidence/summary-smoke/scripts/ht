@@ -1,0 +1,4 @@
+#!/bin/sh
+# herdr-threads against the private smoke instance
+export HERDR_SOCKET_PATH=/private/tmp/ht-summary-smoke/h.sock
+exec /private/tmp/ht-summary-smoke/bin/herdr-threads --state-dir /private/tmp/ht-summary-smoke/state --host-endpoint /private/tmp/ht-summary-smoke/h.sock "$@"

@@ -34,6 +34,11 @@ pub enum CommandResult {
     DeliveryInspect(DeliveryInspection),
     PendingReceipts(Page<PendingReceipt>),
     AttentionDigest(crate::protocol::attention::AttentionDigest),
+    /// Hot threads for the context-recovery hook text (spec §9).
+    HotThreads(HotThreads),
+    Summary(crate::protocol::summary::SummaryOutcome),
+    SummaryJob(crate::protocol::summary::SummaryJobOutcome),
+    SummarySubmitted(crate::protocol::summary::SubmitOutcome),
     LocalIntents(Page<LocalIntent>),
     Search(SearchPage),
     Message(MessageDetails),
@@ -49,7 +54,7 @@ pub enum CommandResult {
     ThreadCreated(ThreadId),
     Invitation(InvitationId),
     AlreadyJoined(AlreadyJoined),
-    Accepted(InvitationId),
+    Accepted(AcceptedInvitation),
     RequiredAccepted(RequiredMembership),
     MessageSent(MessageId),
     Acknowledged(AckResult),
@@ -61,6 +66,124 @@ pub enum CommandResult {
     OperatorFreshSeat(SeatId),
     OperatorInvited(InvitationId),
     OperatorRetired(SeatId),
+}
+
+/// The result of a plain `accept`: the invitation, plus the thread when it
+/// already holds one full summary chunk (spec §9 join hint). The hint is
+/// computed after the commit and never stored.
+///
+/// Wire form: the bare invitation-id string when there is no hint (byte
+/// identical to the earlier `Accepted(InvitationId)`, so stored operation
+/// results and journals stay readable), else
+/// `{"invitation":..,"summary_available":..}`. Both forms deserialize.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedInvitation {
+    pub invitation: InvitationId,
+    pub summary_available: Option<ThreadId>,
+}
+impl From<InvitationId> for AcceptedInvitation {
+    fn from(invitation: InvitationId) -> Self {
+        Self {
+            invitation,
+            summary_available: None,
+        }
+    }
+}
+impl Serialize for AcceptedInvitation {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        match &self.summary_available {
+            None => self.invitation.serialize(serializer),
+            Some(thread) => {
+                let mut out = serializer.serialize_struct("AcceptedInvitation", 2)?;
+                out.serialize_field("invitation", &self.invitation)?;
+                out.serialize_field("summary_available", thread)?;
+                out.end()
+            }
+        }
+    }
+}
+impl<'de> Deserialize<'de> for AcceptedInvitation {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Bare(InvitationId),
+            Full(Full),
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Full {
+            invitation: InvitationId,
+            #[serde(default)]
+            summary_available: Option<ThreadId>,
+        }
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::Bare(invitation) => Self::from(invitation),
+            Wire::Full(full) => Self {
+                invitation: full.invitation,
+                summary_available: full.summary_available,
+            },
+        })
+    }
+}
+
+/// Most hot threads one recovery query returns, and most overflow ids.
+pub const MAX_HOT_THREADS: u32 = 8;
+pub const MAX_HOT_OVERFLOW: usize = 32;
+/// Longest hot-thread topic, in bytes (control characters stripped).
+pub const HOT_TOPIC_BYTES: usize = 80;
+
+/// Why a thread is hot, in ordering priority (spec §9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HotReason {
+    PendingReceipt,
+    Attention,
+    Recent,
+}
+impl HotReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PendingReceipt => "pending_receipt",
+            Self::Attention => "attention",
+            Self::Recent => "recent",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HotThread {
+    pub thread: ThreadId,
+    /// Peer-controlled: control characters stripped, at most `HOT_TOPIC_BYTES`.
+    pub topic_data: String,
+    pub reason: HotReason,
+    /// Earliest effective deadline of the seat's pending receipts in the thread.
+    pub effective_deadline: Option<UtcMillis>,
+    pub last_activity: UtcMillis,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HotThreads {
+    pub hot: Vec<HotThread>,
+    /// Hot threads past the limit (at most `MAX_HOT_OVERFLOW`), same order.
+    pub overflow: Vec<ThreadId>,
+}
+impl HotThreads {
+    pub fn validate(&self, limit: u32) -> Result<(), &'static str> {
+        if self.hot.len() > limit.min(MAX_HOT_THREADS) as usize
+            || self.overflow.len() > MAX_HOT_OVERFLOW
+            || self
+                .hot
+                .iter()
+                .any(|h| h.topic_data.len() > HOT_TOPIC_BYTES)
+        {
+            return Err("invalid hot thread bound");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -673,6 +796,15 @@ pub struct MessageSummary {
     pub author: Option<SeatId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_author: Option<EventAuthor>,
+    /// Spec §1: recorded (or, for pre-migration rows, backfilled) author role. Absent = NULL, read as agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_role: Option<crate::protocol::summary::AuthorRole>,
+    /// The sender's cooperative `send --relays-user` claim.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub relays_user: bool,
+    /// The role was derived at migration, not recorded at send.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub author_role_backfilled: bool,
     pub kind: MessageKind,
     pub sequence: u64,
     pub created_at: UtcMillis,
@@ -680,6 +812,21 @@ pub struct MessageSummary {
     pub preview_data: String,
     pub preview_omitted: bool,
     pub preview_detail_argv: Option<Vec<String>>,
+}
+impl MessageSummary {
+    /// Fixed-text authorship markers for renderers: `[human]` and/or
+    /// `[relays user]`, each preceded by one space; empty when neither applies.
+    /// Never derived from peer data.
+    pub fn author_markers(&self) -> String {
+        let mut markers = String::new();
+        if self.author_role == Some(crate::protocol::summary::AuthorRole::Human) {
+            markers.push_str(" [human]");
+        }
+        if self.relays_user {
+            markers.push_str(" [relays user]");
+        }
+        markers
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -791,6 +938,15 @@ pub struct Recipient {
     pub retirement_cutover: Option<UtcMillis>,
     pub cleanup_state: Option<CleanupState>,
     pub ack_provenance: Option<AckProvenance>,
+    /// Frozen deadline of a pending receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<UtcMillis>,
+    /// Later deadline while a catch-up extension is in force (spec §8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_deadline: Option<UtcMillis>,
+    /// The effective deadline while it is still ahead of now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred_until: Option<UtcMillis>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -824,6 +980,12 @@ pub struct PendingReceipt {
     pub available_at: Option<UtcMillis>,
     pub deadline: Option<UtcMillis>,
     pub overdue: bool,
+    /// Later deadline while a catch-up extension is in force (spec §8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_deadline: Option<UtcMillis>,
+    /// The effective deadline while it is still ahead of now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred_until: Option<UtcMillis>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

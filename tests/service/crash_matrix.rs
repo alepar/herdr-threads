@@ -335,6 +335,7 @@ impl Matrix {
             deadline_millis: None,
             operation: OperationId::new(op),
             claim: claim.clone(),
+            relays_user: false,
         }))
         .map(|result| match result {
             CommandResult::MessageSent(id) => id,
@@ -1475,6 +1476,7 @@ impl FlakyHost {
             HostShape::VerifiedOccupant => execution,
         };
         HostObservation {
+            focused: false,
             target: HostTargetId::new(target),
             host_boot: HostBootId::new("b"),
             epoch: 1,
@@ -2578,6 +2580,7 @@ fn failpoints_cannot_be_armed_through_requests_or_foreign_scopes() {
             deadline_millis: None,
             operation: OperationId::new("wire"),
             claim: s.clone(),
+            relays_user: false,
         }),
     };
     let encoded = serde_json::to_value(&base).unwrap();

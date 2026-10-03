@@ -369,12 +369,18 @@ fn request_inner(
                         return Err(error);
                     }
                     let expected = match method {
-                        "pane.get" => "pane_info",
-                        "pane.read" => "pane_read",
-                        "session.snapshot" => "session_snapshot",
-                        "agent.prompt" => "agent_prompted",
-                        "agent.start" => "agent_started",
-                        "agent.get" => "agent_info",
+                        "pane.get" => Some("pane_info"),
+                        "pane.read" => Some("pane_read"),
+                        "session.snapshot" => Some("session_snapshot"),
+                        "agent.prompt" => Some("agent_prompted"),
+                        "agent.start" => Some("agent_started"),
+                        "agent.get" => Some("agent_info"),
+                        "agent.read" => Some("pane_read"),
+                        // Composer input sends carry no data the adapter
+                        // uses: a structured error was refused above, and a
+                        // mutation that already happened must not be
+                        // reported as failed over an unmodelled result type.
+                        "pane.send_keys" | "pane.send_text" => None,
                         _ => {
                             return Err(error(
                                 ErrorCode::InvalidRequest,
@@ -382,7 +388,9 @@ fn request_inner(
                             ));
                         }
                     };
-                    if result.pointer("/result/type").and_then(Value::as_str) != Some(expected) {
+                    if expected.is_some_and(|expected| {
+                        result.pointer("/result/type").and_then(Value::as_str) != Some(expected)
+                    }) {
                         return Err(error(
                             ErrorCode::StaleHostObservation,
                             "unexpected host API result type",

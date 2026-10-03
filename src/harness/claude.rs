@@ -4,7 +4,10 @@
 //! applies hook output is not verified. 2.1.285 input shapes were captured
 //! unchanged and, in a print-mode run, 2.1.285 applied the adapter-shaped
 //! `updatedInput` and delivered both `additionalContext` markers; 2.1.286
-//! repeated both results with unchanged input shapes. Model receipt and
+//! repeated both results with unchanged input shapes. 2.1.287 repeated the
+//! input shapes and, in a print-mode `/compact`, SessionStart `source: compact`
+//! was captured and its `additionalContext` delivered after compaction, so
+//! only the 2.1.287 recipe admits compact (spec §9). Model receipt and
 //! durable receipts remain separate, unqualified gates.
 use super::admission::{self, OptimisticAdmission, Refusal, Row};
 use super::context::{ContextError, EventKind, Harness, Role};
@@ -61,7 +64,9 @@ pub const CONTRACT: HarnessContract = HarnessContract {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputSchema {
     /// SessionStart startup/clear/resume and Bash PreToolUse, as observed in
-    /// 2.1.283 and captured unchanged in 2.1.284, 2.1.285 and 2.1.286.
+    /// 2.1.283 and captured unchanged in 2.1.284 through 2.1.287. Whether
+    /// SessionStart `compact` is admitted is a per-recipe capability, not part
+    /// of the schema.
     Hooks2_1_283,
 }
 
@@ -70,48 +75,108 @@ pub enum InputSchema {
 pub struct ClaudeProfile {
     pub input_schema: InputSchema,
     pub model_receipt: NativeSupport,
+    /// SessionStart `source: compact` admitted by captured evidence; spec §9.
+    pub session_start_compact: NativeSupport,
+    /// Typed composer text can be read, cleared and retyped around a poke
+    /// (spec §10), from `docs/evidence/poke-spike/findings.md`.
+    pub composer_stash: NativeSupport,
+    /// A prompt sent during a running turn is queued and steered into it.
+    pub poke_during_turn: NativeSupport,
 }
 
 pub type ClaudeRecipe = Recipe<ClaudeProfile>;
 
-/// Evidence-backed Claude Code recipes. The interval is closed and, being five
-/// consecutive patch releases, admits exactly 2.1.283 through 2.1.287.
-pub const RECIPES: &[ClaudeRecipe] = &[Recipe {
-    id: "claude-hooks-2.1.283",
-    versions: VersionSet::Interval {
-        min: Some(Version::new(2, 1, 283)),
-        max: Some(Version::new(2, 1, 287)),
-    },
-    evidence: &[
-        "docs/compatibility/claude-probe.md",
-        "docs/compatibility/claude-lifecycle-probe.md",
-        "docs/evidence/claude-284-hook-capture/report.md",
-        "docs/evidence/claude-285-hook-capture/report.md",
-        "docs/evidence/claude-286-hook-capture/report.md",
-        "docs/validation/report.md",
-    ],
-    scope: "2.1.283: Bash PreToolUse input and updatedInput rewrite observed, SessionStart \
+/// Evidence-backed Claude Code recipes. The first interval is closed and, being
+/// four consecutive patch releases, admits exactly 2.1.283, 2.1.284, 2.1.285
+/// and 2.1.286, with compact unsupported (no compact evidence exists for
+/// them). 2.1.287 is its own recipe because the compact capability is per
+/// profile and was captured only there; its native-matrix validation
+/// (ht-p03.20) is recorded on that recipe.
+pub const RECIPES: &[ClaudeRecipe] = &[
+    Recipe {
+        id: "claude-hooks-2.1.283",
+        versions: VersionSet::Interval {
+            min: Some(Version::new(2, 1, 283)),
+            max: Some(Version::new(2, 1, 286)),
+        },
+        evidence: &[
+            "docs/compatibility/claude-probe.md",
+            "docs/compatibility/claude-lifecycle-probe.md",
+            "docs/evidence/claude-284-hook-capture/report.md",
+            "docs/evidence/claude-285-hook-capture/report.md",
+            "docs/evidence/claude-286-hook-capture/report.md",
+        ],
+        scope: "2.1.283: Bash PreToolUse input and updatedInput rewrite observed, SessionStart \
             startup/clear/resume input observed; 2.1.284: SessionStart startup/resume and \
             root/subagent Bash PreToolUse input captured and parsed unchanged, hook-output \
             application unverified; 2.1.285: same input captured and parsed unchanged, and in \
             print mode root Bash updatedInput applied and SessionStart/PreToolUse \
             additionalContext delivered; 2.1.286: same input captured and parsed unchanged, \
-            and the same print-mode output application observed; 2.1.287: the ht-p03.20 native \
-            matrix manual and managed core-flow cells, run from the fixed versioned binary on \
-            the evidence SHA in docs/validation/report.md. Model receipt unqualified for all five",
-    evidence_levels: &[
-        (Version::new(2, 1, 283), Evidence::Live),
-        (Version::new(2, 1, 284), Evidence::NoModel),
-        (Version::new(2, 1, 285), Evidence::Live),
-        (Version::new(2, 1, 286), Evidence::Live),
-        (Version::new(2, 1, 287), Evidence::Live),
-    ],
-    known_broken: &[],
-    profile: ClaudeProfile {
-        input_schema: InputSchema::Hooks2_1_283,
-        model_receipt: NativeSupport::Unsupported,
+            and the same print-mode output application observed. Model receipt unqualified \
+            for all four",
+        evidence_levels: &[
+            (Version::new(2, 1, 283), Evidence::Live),
+            (Version::new(2, 1, 284), Evidence::NoModel),
+            (Version::new(2, 1, 285), Evidence::Live),
+            (Version::new(2, 1, 286), Evidence::Live),
+        ],
+        known_broken: &[],
+        profile: ClaudeProfile {
+            input_schema: InputSchema::Hooks2_1_283,
+            model_receipt: NativeSupport::Unsupported,
+            session_start_compact: NativeSupport::Unsupported,
+            composer_stash: NativeSupport::Unsupported,
+            poke_during_turn: NativeSupport::Unsupported,
+        },
     },
-}];
+    Recipe {
+        id: "claude-hooks-2.1.287",
+        versions: VersionSet::Exact(&[Version::new(2, 1, 287)]),
+        evidence: &[
+            "docs/evidence/claude-compact-capture/report.md",
+            "docs/evidence/poke-spike/findings.md",
+            "docs/validation/report.md",
+        ],
+        scope: "2.1.287: SessionStart startup/resume/compact and root/subagent Bash \
+                PreToolUse input captured; startup/resume/Bash shapes unchanged from \
+                2.1.286; SessionStart additionalContext returned on compact delivered \
+                after compaction (print mode); the ht-p03.20 native matrix manual and \
+                managed core-flow cells, run from the fixed versioned binary on the \
+                evidence SHA in docs/validation/report.md. Model receipt unqualified. Poke \
+                spike (findings.md Q2-Q5): the composer reads via `agent read --source \
+                detection`, clears with ctrl+u, retypes with send-text and no Enter, and \
+                a prompt sent during a turn is steered into it, so composer_stash and \
+                poke_during_turn are declared for this exact version only",
+        evidence_levels: &[(Version::new(2, 1, 287), Evidence::Live)],
+        known_broken: &[],
+        profile: ClaudeProfile {
+            input_schema: InputSchema::Hooks2_1_283,
+            model_receipt: NativeSupport::Unsupported,
+            session_start_compact: NativeSupport::Supported,
+            composer_stash: NativeSupport::Supported,
+            poke_during_turn: NativeSupport::Supported,
+        },
+    },
+];
+
+/// Per-recipe compaction recovery, for `doctor`: where SessionStart `compact`
+/// is admitted the hook delivers recovery context after compaction; elsewhere
+/// recovery is the next resume/clear or the on-demand summary command.
+pub fn compaction_recovery() -> String {
+    RECIPES
+        .iter()
+        .map(|recipe| {
+            let state = match recipe.profile.session_start_compact {
+                NativeSupport::Supported => "supported",
+                NativeSupport::Unsupported => {
+                    "unsupported (resume/clear and herdr-threads summary)"
+                }
+            };
+            format!("{}: {state}", recipe.id)
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
 
 /// The recipe covering an installed Claude Code version string, if any.
 pub fn recipe_for(installed_version: &str) -> Result<&'static ClaudeRecipe, LookupError> {
@@ -250,8 +315,11 @@ pub fn parse_versioned_event(
     event_id: &str,
 ) -> Result<LifecycleEvent, ContextError> {
     let admitted = admit(installed_version).map_err(ContextError::UnsupportedVersion)?;
-    let mut event = match admitted.recipe.profile.input_schema {
-        InputSchema::Hooks2_1_283 => parse_hooks_2_1_283(bytes, event_id)?,
+    let profile = admitted.recipe.profile;
+    let mut event = match profile.input_schema {
+        InputSchema::Hooks2_1_283 => {
+            parse_hooks_2_1_283(bytes, event_id, profile.session_start_compact)?
+        }
     };
     if matches!(admitted.admission, ClaudeAdmission::Optimistic(_)) {
         event.capability = Capability::OptimisticInput;
@@ -259,7 +327,11 @@ pub fn parse_versioned_event(
     Ok(event)
 }
 
-fn parse_hooks_2_1_283(bytes: &[u8], event_id: &str) -> Result<LifecycleEvent, ContextError> {
+fn parse_hooks_2_1_283(
+    bytes: &[u8],
+    event_id: &str,
+    compact: NativeSupport,
+) -> Result<LifecycleEvent, ContextError> {
     let value = input(bytes, event_id)?;
     let name = field(&value, "hook_event_name")?.ok_or(ContextError::Invalid)?;
     let native_session = field(&value, "session_id")?.ok_or(ContextError::Invalid)?;
@@ -292,6 +364,7 @@ fn parse_hooks_2_1_283(bytes: &[u8], event_id: &str) -> Result<LifecycleEvent, C
                 "startup" => EventKind::Startup,
                 "clear" => EventKind::Clear,
                 "resume" => EventKind::Resume,
+                "compact" if compact == NativeSupport::Supported => EventKind::Compact,
                 _ => return Err(ContextError::Invalid),
             };
             (source, kind)
@@ -472,7 +545,8 @@ pub fn encode_tool_response(
 /// SessionStart can present a compact prompt, but cannot claim receipt. It
 /// applies the same installed-version gate and child suppression as the tool
 /// path: the role comes from the parsed input, a child gets `{}`, and only a
-/// `startup`/`clear`/`resume` SessionStart is accepted. The whole envelope is
+/// `startup`/`clear`/`resume` SessionStart (plus `compact` where the recipe
+/// admits it) is accepted. The whole envelope is
 /// a hint response and must fit `min(max_bytes, MAX_HOOK_OUTPUT)`.
 pub fn encode_lifecycle_response(
     input_bytes: &[u8],

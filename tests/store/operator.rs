@@ -256,6 +256,7 @@ fn guarded_repair_cannot_choose_foreign_replay_scope() {
         unreachable!()
     };
     let observation = HostObservation {
+        focused: false,
         target: command.target.clone(),
         host_boot: HostBootId::new("b"),
         epoch: 1,

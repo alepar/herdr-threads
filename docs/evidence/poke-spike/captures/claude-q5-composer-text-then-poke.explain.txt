@@ -1,0 +1,5 @@
+agent: claude
+state: working
+manifest: remote:~/.local/state/herdr/agent-detection/remote/claude.toml 2026.09.11.1
+rule: osc_title_working (region=osc_title priority=1100)
+evidence: "◑ Image colour identification"

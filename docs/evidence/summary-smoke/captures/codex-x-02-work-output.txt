@@ -1,0 +1,208 @@
+--- 2026-10-03T00:08:29.681Z tool output: Script completed
+Wall time 0.2 seconds
+Output:
+
+inbox
+thread-DWKSdAn7 receipts=38 warnings=1
+summary thread-DWKSdAn7 frontier #52: work (6 jobs)
+job sj-bd3c7295-aacb-4601-9bce-74002a0a2228 L0 #1-#10 lease until 00:09Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-bd3c7295-aacb-4601-9bce-74002a0a2228 --lease 2c3d4b5f-81d9-470b-a8a3-0e3bf78cbcff
+  submit: herdr-threads summary submit sj-bd3c7295-aacb-4601-9bce-74002a0a2228 --lease 2c3d4b5f-81d9-470b-a8a3-0e3bf78cbcff < submission.json
+job sj-dde7f70b-fb86-416f-b583-7056a02d3c95 L0 #11-#17 lease until 00:09Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-dde7f70b-fb86-416f-b583-7056a02d3c95 --lease 7ffff113-5d8a-48e6-a79c-584a696350b1
+  submit: herdr-threads summary submit sj-dde7f70b-fb86-416f-b583-7056a02d3c95 --lease 7ffff113-5d8a-48e6-a79c-584a696350b1 < submission.json
+job sj-7e7e503d-72b7-4076-ae6f-f9b5a568abf6 L0 #18-#23 lease until 00:09Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-7e7e503d-72b7-4076-ae6f-f9b5a568abf6 --lease 014cd436-331c-4919-9521-aa4a1c54de7e
+  submit: herdr-threads summary submit sj-7e7e503d-72b7-4076-ae6f-f9b5a568abf6 --lease 014cd436-331c-4919-9521-aa4a1c54de7e < submission.json
+job sj-93ac5609-7034-461d-a915-712b0c351041 L0 #24-#30 lease until 00:09Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-93ac5609-7034-461d-a915-712b0c351041 --lease fba5f641-1dfc-41cc-b6e7-20810432bc7e
+  submit: herdr-threads summary submit sj-93ac5609-7034-461d-a915-712b0c351041 --lease fba5f641-1dfc-41cc-b6e7-20810432bc7e < submission.json
+job sj-3ca05c65-cef6-4d07-afdc-f8e73e6a2177 L0 #31-#36 lease until 00:09Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-3ca05c65-cef6-4d07-afdc-f8e73e6a2177 --lease dc44e589-30ef-4560-838f-a91b8a5bf5e7
+  submit: herdr-threads summary submit sj-3ca05c65-cef6-4d07-afdc-f8e73e6a2177 --lease dc44e589-30ef-4560-838f-a91b8a5bf5e7 < submission.json
+job sj-3f0e7f41-80b7-46c2-b79e-ff6ea08eee0b L0 #37-#43 lease until 00:09Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-3f0e7f41-80b7-46c2-b79e-ff6ea08eee0b --lease 5f947321-a8a0-4168-b4c9-4d60476e2681
+  submit: herdr-threads summary submit sj-3f0e7f41-80b7-46c2-b79e-ff6ea08eee0b --lease 5f947321-a8a0-4168-b4c9-4d60476e2681 < submission.json
+then: herdr-threads summary thread-DWKSdAn7
+history
+#52 overdue_receipt warn seat-5E7sEMcK
+#51 ack seat-RJ7yryH6 msg-DIWmvysw
+#50 ack seat-RJ7yryH6 msg-hF3dJiUg
+#49 ack seat-RJ7yryH6 msg-971bO1Uw
+#48 ack seat-RJ7yryH6 msg-yPKGUbb8
+#47 msg-DIWmvysw seat-5E7sEMcK 00:07Z [relays user]: User instruction relayed by build seat: the release candidate must be signed with the release-7 key before any region is enabled.
+#46 msg-hF3dJiUg seat-h1qtN6Hb 00:05Z [human]: Please confirm you have read this thread: acknowledge the rollout checklist for ht-71 before you touch the cache flush. I need your receipt.
+#45 msg-971bO1Uw seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-971bO1Uw]: [question 40] Does the docs seat know whether the changelog for ht-71 needs the migration warning in the first paragraph? Update 40: status check recorded for region step 2; the on-call notes mention queue depth 380 and latency p95 80 ms, nothing else chan
+#44 msg-yPKGUbb8 seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-yPKGUbb8]: [commitment 39] Test seat commits to running the full regression suite against rc-7.1 and reporting failures with test names. Update 39: status check recorded for region step 1; the on-call notes mention queue depth 373 and latency p95 79 ms, nothing else 
+#43 msg-6l8lxwii seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-6l8lxwii]: [ask 38] Build seat: please produce the release candidate rc-7.1 from commit 9f3a2c1 and publish its checksum in this thread. Update 38: status check recorded for region step 3; the on-call notes mention queue depth 366 and latency p95 78 ms, nothing else 
+#42 msg-v8IQCHJ9 seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-v8IQCHJ9]: [decision 37] We will ship Release 7 behind the flag rollout-7, enabled per region, starting with region eu-west. Update 37: status check recorded for region step 2; the on-call notes mention queue depth 359 and latency p95 77 ms, nothing else changed sinc
+#41 msg-vaYWnmeZ seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-vaYWnmeZ]: [note 36] Reminder: the dashboard for rollout-7 shows error rate per region; alert threshold stays at 2 percent. Update 36: status check recorded for region step 1; the on-call notes mention queue depth 352 and latency p95 76 ms, nothing else changed since
+#40 msg-uCMtdkc4 seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-uCMtdkc4]: [decision 35] The rollback runbook for the cache layer is owned by the build seat and lives in docs/runbooks/cache-rollback.md. Update 35: status check recorded for region step 3; the on-call notes mention queue depth 345 and latency p95 75 ms, nothing els
+#39 msg-SAP8qeYs seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-SAP8qeYs]: [question 34] Who owns the rollback runbook for the cache layer, and where does it live (ht-73)? Update 34: status check recorded for region step 2; the on-call notes mention queue depth 338 and latency p95 74 ms, nothing else changed since the previous up
+#38 msg-C2RNhgVQ seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-C2RNhgVQ]: [decision 33] Region order is eu-west, us-east, ap-south; each region soaks for 30 minutes before the next one starts. Update 33: status check recorded for region step 1; the on-call notes mention queue depth 331 and latency p95 73 ms, nothing else changed
+#37 msg-9iDxIjGP seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-9iDxIjGP]: [commitment 32] Build seat commits to the quarantine of export_roundtrip within the hour and will cite commit ids here. Update 32: status check recorded for region step 3; the on-call notes mention queue depth 324 and latency p95 72 ms, nothing else change
+#36 msg-E9rcPbRr seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-E9rcPbRr]: [ask 31] Build seat: please quarantine export_roundtrip for rc-7.1 only and reopen it for rc-7.2 (ht-72). Update 31: status check recorded for region step 2; the on-call notes mention queue depth 317 and latency p95 71 ms, nothing else changed since the pr
+#35 msg-XXQyGSrc seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-XXQyGSrc]: [blocker 30] Test seat is blocked on a flaky fixture in tests/export_roundtrip; ticket ht-72 tracks the fix. Update 30: status check recorded for region step 1; the on-call notes mention queue depth 310 and latency p95 70 ms, nothing else changed since the
+#34 msg-7aKVS62n seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-7aKVS62n]: [decision 29] Changelog for ht-71 gets the migration warning in the first paragraph; docs seat owns the wording. Update 29: status check recorded for region step 3; the on-call notes mention queue depth 303 and latency p95 69 ms, nothing else changed since
+#33 msg-9zjQDwEA seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-9zjQDwEA]: [question 28] Does the docs seat know whether the changelog for ht-71 needs the migration warning in the first paragraph? Update 28: status check recorded for region step 2; the on-call notes mention queue depth 296 and latency p95 68 ms, nothing else chan
+next: herdr-threads read thread-DWKSdAn7 --cursor c3:BgEBIRMY6kUzRbE
+
+
+--- 2026-10-03T00:08:39.377Z tool output: Script completed
+Wall time 0.2 seconds
+Output:
+
+inbox
+thread-DWKSdAn7 receipts=34 warnings=1
+summary thread-DWKSdAn7 frontier #52: work (6 jobs)
+job sj-bd3c7295-aacb-4601-9bce-74002a0a2228 L0 #1-#10 lease until 00:09Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-bd3c7295-aacb-4601-9bce-74002a0a2228 --lease 2c3d4b5f-81d9-470b-a8a3-0e3bf78cbcff
+  submit: herdr-threads summary submit sj-bd3c7295-aacb-4601-9bce-74002a0a2228 --lease 2c3d4b5f-81d9-470b-a8a3-0e3bf78cbcff < submission.json
+job sj-dde7f70b-fb86-416f-b583-7056a02d3c95 L0 #11-#17 lease until 00:09Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-dde7f70b-fb86-416f-b583-7056a02d3c95 --lease 7ffff113-5d8a-48e6-a79c-584a696350b1
+  submit: herdr-threads summary submit sj-dde7f70b-fb86-416f-b583-7056a02d3c95 --lease 7ffff113-5d8a-48e6-a79c-584a696350b1 < submission.json
+job sj-7e7e503d-72b7-4076-ae6f-f9b5a568abf6 L0 #18-#23 lease until 00:09Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-7e7e503d-72b7-4076-ae6f-f9b5a568abf6 --lease 014cd436-331c-4919-9521-aa4a1c54de7e
+  submit: herdr-threads summary submit sj-7e7e503d-72b7-4076-ae6f-f9b5a568abf6 --lease 014cd436-331c-4919-9521-aa4a1c54de7e < submission.json
+job sj-93ac5609-7034-461d-a915-712b0c351041 L0 #24-#30 lease until 00:09Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-93ac5609-7034-461d-a915-712b0c351041 --lease fba5f641-1dfc-41cc-b6e7-20810432bc7e
+  submit: herdr-threads summary submit sj-93ac5609-7034-461d-a915-712b0c351041 --lease fba5f641-1dfc-41cc-b6e7-20810432bc7e < submission.json
+job sj-3ca05c65-cef6-4d07-afdc-f8e73e6a2177 L0 #31-#36 lease until 00:09Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-3ca05c65-cef6-4d07-afdc-f8e73e6a2177 --lease dc44e589-30ef-4560-838f-a91b8a5bf5e7
+  submit: herdr-threads summary submit sj-3ca05c65-cef6-4d07-afdc-f8e73e6a2177 --lease dc44e589-30ef-4560-838f-a91b8a5bf5e7 < submission.json
+job sj-3f0e7f41-80b7-46c2-b79e-ff6ea08eee0b L0 #37-#43 lease until 00:09Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-3f0e7f41-80b7-46c2-b79e-ff6ea08eee0b --lease 5f947321-a8a0-4168-b4c9-4d60476e2681
+  submit: herdr-threads summary submit sj-3f0e7f41-80b7-46c2-b79e-ff6ea08eee0b --lease 5f947321-a8a0-4168-b4c9-4d60476e2681 < submission.json
+then: herdr-threads summary thread-DWKSdAn7
+history
+#56 ack seat-RJ7yryH6 msg-v8IQCHJ9
+#55 ack seat-RJ7yryH6 msg-uCMtdkc4
+#54 ack seat-RJ7yryH6 msg-vaYWnmeZ
+#53 ack seat-RJ7yryH6 msg-6l8lxwii
+#52 overdue_receipt warn seat-5E7sEMcK
+#51 ack seat-RJ7yryH6 msg-DIWmvysw
+#50 ack seat-RJ7yryH6 msg-hF3dJiUg
+#49 ack seat-RJ7yryH6 msg-971bO1Uw
+#48 ack seat-RJ7yryH6 msg-yPKGUbb8
+#47 msg-DIWmvysw seat-5E7sEMcK 00:07Z [relays user]: User instruction relayed by build seat: the release candidate must be signed with the release-7 key before any region is enabled.
+#46 msg-hF3dJiUg seat-h1qtN6Hb 00:05Z [human]: Please confirm you have read this thread: acknowledge the rollout checklist for ht-71 before you touch the cache flush. I need your receipt.
+#45 msg-971bO1Uw seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-971bO1Uw]: [question 40] Does the docs seat know whether the changelog for ht-71 needs the migration warning in the first paragraph? Update 40: status check recorded for region step 2; the on-call notes mention queue depth 380 and latency p95 80 ms, nothing else chan
+#44 msg-yPKGUbb8 seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-yPKGUbb8]: [commitment 39] Test seat commits to running the full regression suite against rc-7.1 and reporting failures with test names. Update 39: status check recorded for region step 1; the on-call notes mention queue depth 373 and latency p95 79 ms, nothing else 
+#43 msg-6l8lxwii seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-6l8lxwii]: [ask 38] Build seat: please produce the release candidate rc-7.1 from commit 9f3a2c1 and publish its checksum in this thread. Update 38: status check recorded for region step 3; the on-call notes mention queue depth 366 and latency p95 78 ms, nothing else 
+#42 msg-v8IQCHJ9 seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-v8IQCHJ9]: [decision 37] We will ship Release 7 behind the flag rollout-7, enabled per region, starting with region eu-west. Update 37: status check recorded for region step 2; the on-call notes mention queue depth 359 and latency p95 77 ms, nothing else changed sinc
+#41 msg-vaYWnmeZ seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-vaYWnmeZ]: [note 36] Reminder: the dashboard for rollout-7 shows error rate per region; alert threshold stays at 2 percent. Update 36: status check recorded for region step 1; the on-call notes mention queue depth 352 and latency p95 76 ms, nothing else changed since
+#40 msg-uCMtdkc4 seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-uCMtdkc4]: [decision 35] The rollback runbook for the cache layer is owned by the build seat and lives in docs/runbooks/cache-rollback.md. Update 35: status check recorded for region step 3; the on-call notes mention queue depth 345 and latency p95 75 ms, nothing els
+#39 msg-SAP8qeYs seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-SAP8qeYs]: [question 34] Who owns the rollback runbook for the cache layer, and where does it live (ht-73)? Update 34: status check recorded for region step 2; the on-call notes mention queue depth 338 and latency p95 74 ms, nothing else changed since the previous up
+#38 msg-C2RNhgVQ seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-C2RNhgVQ]: [decision 33] Region order is eu-west, us-east, ap-south; each region soaks for 30 minutes before the next one starts. Update 33: status check recorded for region step 1; the on-call notes mention queue depth 331 and latency p95 73 ms, nothing else changed
+#37 msg-9iDxIjGP seat-h1qtN6Hb 00:05Z [human] [more: herdr-threads body msg-9iDxIjGP]: [commitment 32] Build seat commits to the quarantine of export_roundtrip within the hour and will cite commit ids here. Update 32: status check recorded for region step 3; the on-call notes mention queue depth 324 and latency p95 72 ms, nothing else change
+next: herdr-threads read thread-DWKSdAn7 --cursor c3:BgEBJRPCdGcdsWQ
+
+
+--- 2026-10-03T00:10:05.808Z tool output: Script completed
+Wall time 0.2 seconds
+Output:
+
+summary thread-DWKSdAn7 frontier #52: work (6 jobs)
+job sj-bd3c7295-aacb-4601-9bce-74002a0a2228 L0 #1-#10 lease until 00:11Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-bd3c7295-aacb-4601-9bce-74002a0a2228 --lease 1f86713f-9764-4ac7-8228-85eb0a908a30
+  submit: herdr-threads summary submit sj-bd3c7295-aacb-4601-9bce-74002a0a2228 --lease 1f86713f-9764-4ac7-8228-85eb0a908a30 < submission.json
+job sj-dde7f70b-fb86-416f-b583-7056a02d3c95 L0 #11-#17 lease until 00:11Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-dde7f70b-fb86-416f-b583-7056a02d3c95 --lease 2a36e436-3500-4426-9188-5090a5da6e3a
+  submit: herdr-threads summary submit sj-dde7f70b-fb86-416f-b583-7056a02d3c95 --lease 2a36e436-3500-4426-9188-5090a5da6e3a < submission.json
+job sj-7e7e503d-72b7-4076-ae6f-f9b5a568abf6 L0 #18-#23 lease until 00:11Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-7e7e503d-72b7-4076-ae6f-f9b5a568abf6 --lease 21f93002-6f20-4a59-a28c-1c80724ad0ff
+  submit: herdr-threads summary submit sj-7e7e503d-72b7-4076-ae6f-f9b5a568abf6 --lease 21f93002-6f20-4a59-a28c-1c80724ad0ff < submission.json
+job sj-93ac5609-7034-461d-a915-712b0c351041 L0 #24-#30 lease until 00:11Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-93ac5609-7034-461d-a915-712b0c351041 --lease 4b750bc0-afca-41aa-9efa-aab4dab603ee
+  submit: herdr-threads summary submit sj-93ac5609-7034-461d-a915-712b0c351041 --lease 4b750bc0-afca-41aa-9efa-aab4dab603ee < submission.json
+job sj-3ca05c65-cef6-4d07-afdc-f8e73e6a2177 L0 #31-#36 lease until 00:11Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-3ca05c65-cef6-4d07-afdc-f8e73e6a2177 --lease 29586479-ebef-4548-9969-960755a0b32c
+  submit: herdr-threads summary submit sj-3ca05c65-cef6-4d07-afdc-f8e73e6a2177 --lease 29586479-ebef-4548-9969-960755a0b32c < submission.json
+job sj-3f0e7f41-80b7-46c2-b79e-ff6ea08eee0b L0 #37-#43 lease until 00:11Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-3f0e7f41-80b7-46c2-b79e-ff6ea08eee0b --lease e49fb405-3f60-4218-8d90-eb35757535b7
+  submit: herdr-threads summary submit sj-3f0e7f41-80b7-46c2-b79e-ff6ea08eee0b --lease e49fb405-3f60-4218-8d90-eb35757535b7 < submission.json
+then: herdr-threads summary thread-DWKSdAn7
+
+
+--- 2026-10-03T00:13:07.871Z tool output: Script completed
+Wall time 0.2 seconds
+Output:
+
+summary thread-DWKSdAn7 frontier #131: work (8 jobs)
+job sj-dde7f70b-fb86-416f-b583-7056a02d3c95 L0 #11-#17 lease until 00:14Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-dde7f70b-fb86-416f-b583-7056a02d3c95 --lease 2a36e436-3500-4426-9188-5090a5da6e3a
+  submit: herdr-threads summary submit sj-dde7f70b-fb86-416f-b583-7056a02d3c95 --lease 2a36e436-3500-4426-9188-5090a5da6e3a < submission.json
+job sj-6bd1dd64-2da1-4f99-9c64-dfde017e6b18 L0 #44-#56 lease until 00:14Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-6bd1dd64-2da1-4f99-9c64-dfde017e6b18 --lease 1afa26d7-de87-4f31-ae1a-596b924425f3
+  submit: herdr-threads summary submit sj-6bd1dd64-2da1-4f99-9c64-dfde017e6b18 --lease 1afa26d7-de87-4f31-ae1a-596b924425f3 < submission.json
+job sj-576551a3-e79c-402d-8bd5-7589b85e9487 L0 #57-#67 lease until 00:14Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-576551a3-e79c-402d-8bd5-7589b85e9487 --lease 5c29b0a8-6074-4d6c-817a-d442ae14fe61
+  submit: herdr-threads summary submit sj-576551a3-e79c-402d-8bd5-7589b85e9487 --lease 5c29b0a8-6074-4d6c-817a-d442ae14fe61 < submission.json
+job sj-3a05252d-8e6a-4746-a423-412714ec7af2 L0 #68-#78 lease until 00:14Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-3a05252d-8e6a-4746-a423-412714ec7af2 --lease 240c235d-e6b3-47e0-9813-fb30644c8559
+  submit: herdr-threads summary submit sj-3a05252d-8e6a-4746-a423-412714ec7af2 --lease 240c235d-e6b3-47e0-9813-fb30644c8559 < submission.json
+job sj-3fe086a7-9852-4ab7-bfd8-db75e064d0e2 L0 #79-#89 lease until 00:14Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-3fe086a7-9852-4ab7-bfd8-db75e064d0e2 --lease f03fc5c8-9e19-4706-bb18-fb1e43b4dcf9
+  submit: herdr-threads summary submit sj-3fe086a7-9852-4ab7-bfd8-db75e064d0e2 --lease f03fc5c8-9e19-4706-bb18-fb1e43b4dcf9 < submission.json
+job sj-6ae83bf7-7508-4648-b738-60a01c9c436f L0 #90-#100 lease until 00:14Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-6ae83bf7-7508-4648-b738-60a01c9c436f --lease d158c32e-43c4-4ff1-bfa9-a44b5fa1ff83
+  submit: herdr-threads summary submit sj-6ae83bf7-7508-4648-b738-60a01c9c436f --lease d158c32e-43c4-4ff1-bfa9-a44b5fa1ff83 < submission.json
+job sj-75f8e32a-ad1f-4ea8-9a92-f18725dbcf15 L0 #101-#111 lease until 00:14Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-75f8e32a-ad1f-4ea8-9a92-f18725dbcf15 --lease 14745b99-a0e1-4b29-9cb3-968cd87c78ae
+  submit: herdr-threads summary submit sj-75f8e32a-ad1f-4ea8-9a92-f18725dbcf15 --lease 14745b99-a0e1-4b29-9cb3-968cd87c78ae < submission.json
+job sj-9dfae8fa-b381-4337-957f-b259baee560f L0 #112-#122 lease until 00:14Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-9dfae8fa-b381-4337-957f-b259baee560f --lease 5b9d45ae-17fd-4520-814b-4de70b9f40a4
+  submit: herdr-threads summary submit sj-9dfae8fa-b381-4337-957f-b259baee560f --lease 5b9d45ae-17fd-4520-814b-4de70b9f40a4 < submission.json
+then: herdr-threads summary thread-DWKSdAn7
+
+
+--- 2026-10-03T00:14:25.049Z tool output: Script completed
+Wall time 0.2 seconds
+Output:
+
+01a0ff1c-160e-7a80-b3ac-81a628625e85 {"previous_status":{"completed":"sj-576551a3-e79c-402d-8bd5-7589b85e9487 stored"}}
+01a0ff1c-1668-7130-9428-8a972c9296ac {"previous_status":{"completed":"sj-3fe086a7-9852-4ab7-bfd8-db75e064d0e2 stored"}}
+summary thread-DWKSdAn7 frontier #131: work (4 jobs)
+job sj-dde7f70b-fb86-416f-b583-7056a02d3c95 L0 #11-#17 lease until 00:15Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-dde7f70b-fb86-416f-b583-7056a02d3c95 --lease d8aa92ff-8f45-4de3-88a5-5be4f9f858ab
+  submit: herdr-threads summary submit sj-dde7f70b-fb86-416f-b583-7056a02d3c95 --lease d8aa92ff-8f45-4de3-88a5-5be4f9f858ab < submission.json
+job sj-6ae83bf7-7508-4648-b738-60a01c9c436f L0 #90-#100 lease until 00:18Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-6ae83bf7-7508-4648-b738-60a01c9c436f --lease d158c32e-43c4-4ff1-bfa9-a44b5fa1ff83
+  submit: herdr-threads summary submit sj-6ae83bf7-7508-4648-b738-60a01c9c436f --lease d158c32e-43c4-4ff1-bfa9-a44b5fa1ff83 < submission.json
+job sj-75f8e32a-ad1f-4ea8-9a92-f18725dbcf15 L0 #101-#111 lease until 00:15Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-75f8e32a-ad1f-4ea8-9a92-f18725dbcf15 --lease 60da0e64-25dd-47c8-89cd-34874615f43e
+  submit: herdr-threads summary submit sj-75f8e32a-ad1f-4ea8-9a92-f18725dbcf15 --lease 60da0e64-25dd-47c8-89cd-34874615f43e < submission.json
+job sj-9dfae8fa-b381-4337-957f-b259baee560f L0 #112-#122 lease until 00:15Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-9dfae8fa-b381-4337-957f-b259baee560f --lease eb261463-ad39-42f6-bedc-d9a874ef02dc
+  submit: herdr-threads summary submit sj-9dfae8fa-b381-4337-957f-b259baee560f --lease eb261463-ad39-42f6-bedc-d9a874ef02dc < submission.json
+then: herdr-threads summary thread-DWKSdAn7
+
+
+--- 2026-10-03T00:17:26.998Z tool output: Script completed
+Wall time 0.2 seconds
+Output:
+
+summary thread-DWKSdAn7 frontier #139: work (2 jobs)
+job sj-ca50c578-35c7-412d-891d-cee5b1e2ae5f L0 #123-#132 lease until 00:18Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-ca50c578-35c7-412d-891d-cee5b1e2ae5f --lease a786f613-5312-498b-abab-2b269500f1ae
+  submit: herdr-threads summary submit sj-ca50c578-35c7-412d-891d-cee5b1e2ae5f --lease a786f613-5312-498b-abab-2b269500f1ae < submission.json
+job sj-1dda12fd-1920-4575-9979-5ecf76db6b23 L0 #133-#139 lease until 00:18Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-1dda12fd-1920-4575-9979-5ecf76db6b23 --lease 37963484-31c6-484c-aacc-efea912b416f
+  submit: herdr-threads summary submit sj-1dda12fd-1920-4575-9979-5ecf76db6b23 --lease 37963484-31c6-484c-aacc-efea912b416f < submission.json
+then: herdr-threads summary thread-DWKSdAn7
+
+
+--- 2026-10-03T00:33:44.814Z tool output: Script completed
+Wall time 0.2 seconds
+Output:
+
+summary thread-DWKSdAn7 frontier #193: work (0 jobs)
+leased elsewhere: sj-ca50c578-35c7-412d-891d-cee5b1e2ae5f L0 #123-#132 until 00:34Z
+leased elsewhere: sj-1dda12fd-1920-4575-9979-5ecf76db6b23 L0 #133-#139 until 00:34Z
+leased elsewhere: sj-82651d96-ce46-4daa-8d5a-0fe1d530703b L0 #140-#150 until 00:34Z
+leased elsewhere: sj-50b548bd-91fb-453a-8f0b-4805341812fa L0 #151-#161 until 00:34Z
+leased elsewhere: sj-060fcf5b-f5e7-416b-bcc2-71d8d52e8a4f L0 #162-#168 until 00:34Z
+leased elsewhere: sj-b1323ccb-0952-4ce6-b6c2-eaa40f21c437 L0 #169-#178 until 00:34Z
+leased elsewhere: sj-9337dd5e-aa44-4d59-9591-fe12b1d1dab5 L0 #179-#187 until 00:34Z
+then: herdr-threads summary thread-DWKSdAn7
+

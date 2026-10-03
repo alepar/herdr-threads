@@ -61,6 +61,20 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
         }
         CommandResult::Thread(details) => thread(details, &mut out),
         CommandResult::CheckedIn(check) => checked_in(check, spec, &mut out),
+        // Only the join hint needs a form; a bare accept keeps the generic one.
+        CommandResult::Accepted(accepted) if accepted.summary_available.is_some() => {
+            out.push_str("accepted\nvalue: ");
+            out.push_str(&text_json(&Value::from(accepted.invitation.as_str())));
+            out.push('\n');
+            if let Some(thread) = &accepted.summary_available {
+                out.push_str("summary available: ");
+                out.push_str(&format_command_argv(&detail_argv(
+                    spec,
+                    &["summary", thread.as_str()],
+                )));
+                out.push('\n');
+            }
+        }
         CommandResult::Message(details) => message_body(details, &mut out),
         CommandResult::AlreadyJoined(joined) => out.push_str(&format!(
             "already_joined {} {}: no invitation sent\n",
@@ -159,6 +173,7 @@ fn message_row(summary: &MessageSummary, spec: &OutputSpec, out: &mut String) {
     if summary.kind == MessageKind::Warn {
         out.push_str(" warn");
     }
+    out.push_str(&summary.author_markers());
     if summary.preview_omitted {
         let argv = summary
             .preview_detail_argv
@@ -360,7 +375,7 @@ fn inbox_rows(page: &Page<InboxItem>, spec: &OutputSpec, out: &mut String) {
 }
 
 /// `pending_receipts [SEAT]`, then `MSG THREAD#SEQ from SENDER [due HH:MMZ]
-/// [overdue]`; the seat is on the header when every row shares it.
+/// [overdue] [deferred: recipient catching up (until HH:MMZ)]`; the seat is on the header when every row shares it.
 fn pending_receipts(page: &Page<PendingReceipt>, out: &mut String) {
     let shared = page
         .items
@@ -392,6 +407,12 @@ fn pending_receipts(page: &Page<PendingReceipt>, out: &mut String) {
         }
         if item.overdue {
             out.push_str(" overdue");
+        }
+        if let Some(until) = item.deferred_until {
+            out.push_str(&format!(
+                " deferred: recipient catching up (until {})",
+                clock(until)
+            ));
         }
         out.push('\n');
     }

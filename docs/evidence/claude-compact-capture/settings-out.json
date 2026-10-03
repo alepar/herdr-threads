@@ -1,0 +1,6 @@
+{
+  "permissions": {"allow": ["Bash(echo *)", "Task", "Agent"]},
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "<scratch>/hook_out.py SessionStart", "timeout": 10}]}]
+  }
+}

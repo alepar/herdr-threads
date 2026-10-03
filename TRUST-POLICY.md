@@ -3,7 +3,7 @@
 Status: adopted 2026-10-01; B5 guards implemented (epic `ht-rzi`). Normative for seat continuity, caller
 attribution, receipt provenance and operator repair. Where an older design document requires adversarial
 proof of who is calling, this policy supersedes it. C5's guard is owned by B4 (`ht-p03.2`) and is the one
-guard still marked **required**.
+guard still marked **required**. Amended 2026-10-02 for thread summaries and deadline extension (epic ht-1ip).
 
 ## Abstract
 
@@ -123,6 +123,18 @@ Client-local state (`contexts/`, `intents/`) only selects what to ask; it never 
 | `operator_human` | bindings, receipts | A person declared this pane human with `me init` and acted from it. Best effort: refused where the system sees evidence of an agent (A4). |
 | `cooperative_continuity` | seat rebinds only | The seat was reattached because a resumed harness session id matched (C1). Never on receipts. |
 | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. |
+| `derived_summary` | summary blocks only | The block was written by an agent acting for the seat (the top-level agent or a child summary worker, which the CLI cannot tell apart) under the seat's claim, with the model it declared. Never on receipts, never delivery, and never authority for any state change other than storing that block. Submission validation bounds what a block can claim. |
+
+**Recorded message claims.** `messages.author_role` (`human`, `agent`, `service`) and `messages.relays_user`
+are claims recorded at send time in the deciding transaction: `author_role` is `service` for a programmatic
+sender, otherwise it comes from the sender's open binding (a `human` harness binding, i.e.
+`operator_human`, gives `human`; any other binding gives `agent`); a sender with no open binding and seat-less
+system events record none. Messages written before the
+summary migration carry a **backfilled** role (`author_role_backfilled = 1`) derived from the sender's binding
+covering the message's decision time, and none (read as `agent`) where no binding covers it. `relays_user` is
+set by `send --relays-user`; like everything an agent sends it is a cooperative claim (A1); service sends
+record 0 and pre-migration rows are 0. Neither field authorizes anything; together they only rank a message as
+*priority* for summaries and for the catch-up hold bypass.
 
 **A4. Binding-kind transitions.**
 - *Human to agent*: a hooked agent's lifecycle check-in replaces a human binding. Allowed.
@@ -137,6 +149,63 @@ Client-local state (`contexts/`, `intents/`) only selects what to ask; it never 
 - *Second agent*: `launch` refuses to start an agent for a seat whose bound agent Herdr reports live in
   another pane (implemented).
 - *Wake*: a wake prompt goes only to an agent of the bound harness (implemented).
+- *Poke*: a soft-deadline poke is the fixed reminder
+  `herdr-threads: receipt due in <N>s on <thread-ids>; run herdr-threads inbox` (thread ids only),
+  submitted through the wake dispatcher and its limits to the seat's bound native agent of the bound
+  harness. It is decided from a fresh observation immediately before the prompt, only when the pane is not
+  focused and the agent is idle, or in an active turn or with typed input only where the harness recipe
+  declares `poke_during_turn` or `composer_stash` from captured evidence
+  (`docs/evidence/poke-spike/findings.md`; the recipe that lists the installed version the daemon's
+  admission observer last observed, re-observed when the binary changes, so an unobserved version or one
+  the admission ladder admits only optimistically, or one it refuses, declares neither; harness version
+  evidence (verified by use) never adds a declaration). It is never sent in an approval or
+  question state or an unknown state. A poke carries no authority and changes no receipt state other than
+  `soft_poked_at`, which is set only when the host accepts the prompt; the hard-deadline warning stays the
+  backstop. When an ordinary wake is due for the same seat, one prompt goes out with the poke text, and only
+  when the poke itself is eligible and needs no stash.
+  - *Idle is read, not assumed.* Herdr's `agent_status` does not show typed input, so the adapter also reads
+    the composer (`agent read --source detection`). The state is idle only when `agent_status` is `idle` or
+    `done` and the composer is empty; composer text is typed input (human input); a `working` status with an
+    empty composer is an active turn, and with composer text it is unknown (a poke would merge into the
+    draft); `blocked` is an approval or question. Claude's placeholder counts as empty only when it is exactly
+    a captured placeholder (`docs/evidence/poke-spike/findings.md`); any other placeholder-shaped row is
+    unknown and skipped. Claude Code draws a prompt suggestion in the composer after a turn, and the
+    detection text cannot tell it from typed input; until its styling is captured, any Claude composer text
+    other than a captured empty marker is not known empty and is never stashed. An unreadable composer, a failed read or any other status is
+    unknown and skipped. The same reader classifies the pane and drives the stash, so they cannot disagree.
+    Ordinary wakes are unchanged: composer content never refuses an ordinary wake or advances its retry
+    step. An ordinary wake goes out over typed input or a prompt suggestion as it did before the composer
+    reader existed (it merges with a draft; see Accepted limits); an active turn or an approval or question
+    refuses it, as Herdr's idle/done recheck always did. Only a poke is skipped when the composer cannot be
+    classified or stashed with confidence, and the skip is for that poke only.
+  - *Composer stash.* Where a recipe declares `composer_stash`, a poke into a pane with typed, unsent input
+    first reads and clears that input, then submits the poke, then retypes the saved text without submitting
+    it. A failure before the poke aborts it with nothing submitted; a failed retype is recorded as a
+    diagnostic and the saved text is kept in the daemon log for the operator, never discarded. The stash is
+    refused (the poke skipped) when the composer holds an image or pasted-text placeholder, which does not
+    survive a retype, when a composer row's display width (Unicode width, East Asian ambiguous characters counted
+    wide) lies within 12 columns of the pane width (a soft wrap cannot be told from a newline), when a row
+    holds a character whose rendered width cannot be determined (a control character, an emoji variation
+    selector or joiner), when a composer row ends in whitespace, when the pane width is unknown and the
+    harness shows no rule from which to infer it, or when the harness is Claude and the composer holds any
+    text (not known empty, above).
+    The stash clears with a bounded `ctrl+u` loop and proceeds only when a second read shows the composer
+    empty; if that never happens the poke is aborted and the typed text, which may already be partly cleared,
+    is kept in the daemon log.
+  - *During a turn.* Where a recipe declares `poke_during_turn`, the poke is submitted with `agent prompt`,
+    which queues it into the running turn at the next tool boundary (steering, not a separate user turn). The
+    adapter's recheck allows a working agent for that call only.
+  - *Post-send verification.* The wake path's one-shot post-send check (read the composer, press the
+    submit key once if the prompt is still held) is skipped for a poke queued into a running turn and for a
+    poke whose stashed draft was retyped: there the composer legitimately holds text, and a submit key
+    would send the person's draft.
+  - *Declarations.* Claude 2.1.287 declares both (spike evidence). No Codex recipe declares either: the
+    spike tested Codex 0.160.0 (mock provider), which no recipe covers, so Codex seats are poked only when
+    idle with an empty composer. Claude's `composer_stash` declaration currently never stashes, because no
+    Claude composer text is known to be a typed draft.
+  - *Retry spacing.* A seat whose poke was skipped or failed is re-evaluated no sooner than the wake retry
+    spacing afterwards, so an ineligible seat costs one observation per spacing rather than one per tick.
+    The spacing is in memory; a restart re-evaluates once.
 
 **A5. Who may do what.**
 
@@ -145,9 +214,18 @@ Client-local state (`contexts/`, `intents/`) only selects what to ask; it never 
 | ACK, accept, send, leave, archive, reopen | the seat's current binding (top-level agent or declared human) |
 | check in | the pane's top-level agent (hook) or a human via `me init` |
 | rebind, fresh seat, retire, replace, orphan-thread invite | operator |
+| summary, summary job, summary submit | the seat's binding or its children (summary workers), all under the seat's claim: read-mostly; submit only stores a validated block for a live lease issued to the seat |
 | anything else on behalf of another seat | nobody by design; possible by spoofing (Accepted limits) |
 
 The operator never ACKs, accepts, sends or advances a checkpoint.
+
+**A6. Effective receipt deadlines.** A receipt's effective deadline is the later of its frozen deadline and
+the `extension_until` of the latest catch-up row for the receipt's (seat, thread). The daemon decides it (A2)
+from catch-up state the seat itself entered through its accountable claim (a `summary` call that returned
+work). It is extended only by stored summary progress (entry, each newly stored block, and the exit grace),
+never on heuristic evidence, and frozen deadlines are never rewritten: they stay stored and displayed beside
+the effective one. Overdue classification, warnings, pending receipts and the soft-deadline poke use the
+effective deadline.
 
 ## Accepted limits
 
@@ -163,6 +241,31 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   Launch forms without captured hook evidence are refused (implemented for `codex resume`).
 - **Restore costs operator time.** A genuinely new role in a restored pane waits for an explicit choice when
   cooperative continuity does not apply.
+- **Any invocation of a seat can enter catch-up.** CLI calls cannot tell a seat's top-level agent from its
+  child workers, so any `summary` call by the seat may open its catch-up row. Harmless: workers exist only
+  after the parent's own `summary` entered the row, and an active row keeps its frontier, so repeated or
+  worker calls never move it.
+- **Summary blocks name the seat, not the invocation.** A block records its author seat and declared model;
+  it does not record whether a child wrote it, because the CLI cannot know.
+- **No poke into typed input or a running turn where no recipe declares it.** A harness version whose
+  recipe declares neither `composer_stash` nor `poke_during_turn` (every Codex version, and every Claude
+  version except 2.1.287; see docs/evidence/poke-spike/findings.md): a seat whose agent is working or whose
+  composer holds typed input is skipped, and only the hard-deadline warning reaches it. Where `composer_stash`
+  is declared, a draft with an image or pasted-text placeholder, a row whose display width is near the pane width or cannot be determined, or an unknown
+  pane width (Codex shows no rule to infer it from) is skipped the same way.
+- **Pokes skip Claude panes that show composer text.** A Claude pane whose composer shows a prompt
+  suggestion (or any typed text) is not poked: the suggestion cannot be told from a draft without captured
+  styling. The skip is for that poke only and is retried after the wake retry spacing; only the
+  hard-deadline warning reaches a pane that keeps showing a suggestion (ht-1ip.46).
+- **Ordinary wakes merge with a draft.** An ordinary wake into an idle agent pane that holds a typed, unsent
+  draft submits the wake text merged with the draft (`agent prompt` merges, poke spike Q5), as before the
+  composer reader existed; only soft-deadline pokes stash and restore a draft.
+- **Composer reads see the screen, not the buffer.** Herdr's detection read shows composer rows without
+  trailing whitespace, so whitespace typed at the end of a draft row is invisible: a stashed draft is retyped
+  without it, and a draft of only spaces reads as empty and is poked over. A draft typed to match a captured
+  Claude placeholder exactly reads as empty the same way. A Claude placeholder that was never captured reads
+  as unknown, so that pane is not poked (only the hard-deadline warning reaches it) until the placeholder is
+  captured and listed.
 - **Probabilistic identifiers.** Pagination cursor binding tags are 48 bits (about 2^-48 acceptance per forged
   or stale cursor; scope, direction and order are still compared exactly). Send-preparation ids are drawn from
   62^8 ≈ 2^47.6; reuse of a retired id has probability about (retired ids) × 2^-47.6 and is harmless once
@@ -180,6 +283,12 @@ collisions only by explicit abandonment (C3). Rejected: optimistic allocation wi
 misattribution this policy exists to prevent); narrowing holds by address or terminal hints (unreliable across
 an incarnation, so either F6 again or the same holds); no reservation (loses obligations on every Herdr
 restart).
+
+### Thread summaries and deadline extension (2026-10-02)
+
+Summaries are agent-produced, daemon-validated data under `derived_summary`; priority comes from recorded
+claims (`author_role`, `relays_user`), not from the text. Catch-up extends effective deadlines only on stored
+progress (A6). The A4 poke rule (soft-deadline pokes) is defined with its behaviour above.
 
 ### Residual trust-edge findings (bucket B5)
 

@@ -636,6 +636,7 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
     let mut claude = json!({
         "scope": "user",
         "recipes": crate::harness::recipe::describe(crate::harness::claude::RECIPES),
+        "compaction_recovery": crate::harness::claude::compaction_recovery(),
         "observed": observed_claude,
     });
     // Problems found in this environment (the one the harnesses run in):
@@ -835,6 +836,13 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
             })),
         },
     });
+    report["skill"] = json!({
+        "summary_procedure": if crate::cli::skill::has_summary_procedure(crate::cli::skill::SKILL_MD) {
+            "present"
+        } else {
+            "missing"
+        },
+    });
     report["result"] = json!(result);
     (report, code)
 }
@@ -951,6 +959,10 @@ pub fn render_text(report: &Value) -> String {
                 out.push_str(&format!("daemon.note: {}\n", scalar(note)));
             }
         }
+        out.push_str(&format!(
+            "skill.summary_procedure: {}\n",
+            scalar(&report["skill"]["summary_procedure"])
+        ));
         let claude = &report["hooks"]["claude"];
         out.push_str(&format!(
             "hooks.claude.settings: {}\n",
@@ -1014,6 +1026,10 @@ pub fn render_text(report: &Value) -> String {
         out.push_str(&format!(
             "hooks.claude.recipes: {}\n",
             scalar(&claude["recipes"])
+        ));
+        out.push_str(&format!(
+            "hooks.claude.compaction_recovery: {}\n",
+            scalar(&claude["compaction_recovery"])
         ));
         if !claude["error"].is_null() {
             out.push_str(&format!(

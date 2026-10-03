@@ -18,6 +18,7 @@ pub mod panes;
 pub mod retry;
 pub mod setup;
 pub mod skill;
+pub mod summary;
 
 use crate::{
     app::SystemClock,
@@ -597,6 +598,7 @@ where
         CliAction::Launch(_) => unreachable!("launch is handled after context resolution"),
         CliAction::MeInit { .. } => unreachable!("me init is handled after context resolution"),
         CliAction::Follow(_) => unreachable!("follow is handled after context resolution"),
+        CliAction::Summary(_) => unreachable!("summary always derives a caller selection"),
         CliAction::View { once, page } => {
             if !once {
                 return Err(unsupported(
@@ -789,6 +791,9 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         harness::context::{OccupantContext, SessionReference},
         protocol::{commands::SeatInspectQuery, pagination::PageRequest, results::CommandResult},
     };
+    if matches!(&parsed.action, CliAction::Summary(_)) {
+        return summary::run(parsed, selection, paths, instance, client, clock, writer);
+    }
     let request = Command::SeatInspect(SeatInspectQuery {
         seat: selection.seat.clone(),
         page: PageRequest {
@@ -1160,7 +1165,7 @@ fn caller_need(action: &CliAction, paths: &InstancePaths) -> Result<CallerNeed, 
                 CallerNeed::Selection
             }
         }
-        CliAction::CachedCheckIn(_) => CallerNeed::Selection,
+        CliAction::CachedCheckIn(_) | CliAction::Summary(_) => CallerNeed::Selection,
         CliAction::Retry(recovery) => {
             // Retry needs the daemon; report it unavailable (exit 3, intent
             // kept) before inspecting the local journal.
@@ -1822,11 +1827,13 @@ fn cooperative_semantic(mutation: MutationSpec) -> io::Result<SemanticMutation> 
             body,
             require_ack,
             deadline_millis,
+            relays_user,
         } => SemanticMutation::SendMessage {
             thread,
             body,
             invited_recipients: require_ack,
             deadline_millis,
+            relays_user,
         },
         MutationSpec::Ack(messages) => SemanticMutation::Ack { messages },
         MutationSpec::Archive(thread) => SemanticMutation::Archive { thread },

@@ -1,0 +1,33 @@
+{
+ "hooks": {
+  "PreToolUse": [
+   {
+    "hooks": [
+     {
+      "command": "'/private/tmp/ht-summary-smoke/bin/herdr-threads' '--state-dir' '/private/tmp/ht-summary-smoke/state' '--host-endpoint' '/private/tmp/ht-summary-smoke/h.sock' 'hook' 'claude' # herdr-threads-owner:df431266-3fb7-4560-99c8-f143da804793",
+      "timeout": 10,
+      "type": "command"
+     }
+    ],
+    "matcher": "Bash"
+   }
+  ],
+  "SessionStart": [
+   {
+    "hooks": [
+     {
+      "command": "'/private/tmp/ht-summary-smoke/bin/herdr-threads' '--state-dir' '/private/tmp/ht-summary-smoke/state' '--host-endpoint' '/private/tmp/ht-summary-smoke/h.sock' 'hook' 'claude' # herdr-threads-owner:df431266-3fb7-4560-99c8-f143da804793",
+      "timeout": 10,
+      "type": "command"
+     }
+    ]
+   }
+  ]
+ },
+ "permissions": {
+  "allow": [
+   "Bash(herdr-threads *)"
+  ]
+ },
+ "promptSuggestionEnabled": false
+}

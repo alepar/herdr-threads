@@ -214,9 +214,11 @@ pub fn query_with_output(
         Command::Participants(q) => participants(&db, instance, q, output),
         Command::Seats(q) => seats(&db, instance, q, output),
         Command::Diagnostics(q) => diagnostics(&db, instance, q, store.clock().utc_now(), output),
-        Command::Recipients(q) => recipients(&db, instance, q, output),
+        Command::Recipients(q) => recipients(&db, instance, q, store.clock().utc_now(), output),
         Command::SeatInspect(q) => seat_inspect(&db, instance, q, output),
-        Command::DeliveryInspect(q) => delivery_inspect(&db, instance, q, output),
+        Command::DeliveryInspect(q) => {
+            delivery_inspect(&db, instance, q, store.clock().utc_now(), output)
+        }
         Command::Thread(q) => thread_details(&db, instance, q, output),
         Command::RetirementJobs(q) => retirement_jobs(&db, instance, q, output),
         Command::Warnings(q) => warnings(&db, instance, q, output),
@@ -330,9 +332,10 @@ pub fn query_operation_status(
                 | CommandResult::Archived(v)
                 | CommandResult::Reopened(v) => Some(v.as_str().to_owned()),
                 CommandResult::MessageSent(v) => Some(v.as_str().to_owned()),
-                CommandResult::Invitation(v)
-                | CommandResult::Accepted(v)
-                | CommandResult::OperatorInvited(v) => Some(v.as_str().to_owned()),
+                CommandResult::Invitation(v) | CommandResult::OperatorInvited(v) => {
+                    Some(v.as_str().to_owned())
+                }
+                CommandResult::Accepted(v) => Some(v.invitation.as_str().to_owned()),
                 CommandResult::SeatResolved(v)
                 | CommandResult::ContinuityReattached(
                     crate::protocol::results::ContinuityReattachment { seat: v, .. },
@@ -2835,6 +2838,30 @@ fn message_summary(
             |r| r.get(0),
         )
         .map_err(|e| db.map_error(e))?;
+    let (author_role, relays_user, author_role_backfilled) = if physical {
+        db.query_row(
+            "SELECT author_role,relays_user,author_role_backfilled FROM messages WHERE id=?1",
+            [id],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, i64>(1)? != 0,
+                    r.get::<_, i64>(2)? != 0,
+                ))
+            },
+        )
+        .map_err(|e| db.map_error(e))
+        .map(|(role, relays, backfilled)| {
+            (
+                role.as_deref()
+                    .and_then(crate::protocol::summary::AuthorRole::from_column),
+                relays,
+                backfilled,
+            )
+        })?
+    } else {
+        (None, false, false)
+    };
     let event_author = if physical {
         Some(super::service_substrate::message_author(
             db,
@@ -2856,6 +2883,9 @@ fn message_summary(
         thread: thread.clone(),
         author: author.map(SeatId::new),
         event_author,
+        author_role,
+        relays_user,
+        author_role_backfilled,
         kind,
         sequence: seq as u64,
         created_at: UtcMillis(at),
@@ -2878,10 +2908,43 @@ fn receipt_status(state: &str) -> Result<ReceiptStatus, ApiError> {
     }
 }
 
+/// Frozen deadline, the later effective deadline while a catch-up extension is
+/// in force (spec §8), and the deferral end while that extension is still
+/// ahead of `now`. `overdue` is judged against the effective deadline.
+struct DeadlineDisplay {
+    effective: Option<UtcMillis>,
+    deferred_until: Option<UtcMillis>,
+    overdue: bool,
+}
+
+fn deadline_display(
+    db: &QueryConnection,
+    receipt: &super::effective::EffectiveReceipt,
+    now: UtcMillis,
+) -> Result<DeadlineDisplay, ApiError> {
+    let effective = super::receipts::effective_deadline(db, receipt)?;
+    let extended = effective.filter(|at| Some(*at) > receipt.deadline_at);
+    Ok(DeadlineDisplay {
+        effective: extended.map(UtcMillis),
+        deferred_until: extended.filter(|at| *at > now.0).map(UtcMillis),
+        overdue: effective.is_some_and(|at| at <= now.0),
+    })
+}
+
 fn recipient_item(
     db: &QueryConnection,
     receipt: &super::effective::EffectiveReceipt,
+    now: UtcMillis,
 ) -> Result<Recipient, ApiError> {
+    let display = if receipt.state == EffectiveReceiptState::Pending {
+        deadline_display(db, receipt, now)?
+    } else {
+        DeadlineDisplay {
+            effective: None,
+            deferred_until: None,
+            overdue: false,
+        }
+    };
     let effective_status = match receipt.state {
         EffectiveReceiptState::Pending => ReceiptStatus::Pending,
         EffectiveReceiptState::Acknowledged => ReceiptStatus::Acknowledged,
@@ -2951,6 +3014,13 @@ fn recipient_item(
         retirement_cutover: receipt.retired_at.map(UtcMillis),
         cleanup_state,
         ack_provenance,
+        deadline: if receipt.state == EffectiveReceiptState::Pending {
+            receipt.deadline_at.map(UtcMillis)
+        } else {
+            None
+        },
+        effective_deadline: display.effective,
+        deferred_until: display.deferred_until,
     })
 }
 
@@ -2961,6 +3031,7 @@ fn recipient_collection<F, A>(
     instance: &str,
     message: &MessageId,
     request: &PageRequest,
+    now: UtcMillis,
     output: &OutputSpec,
     scope: CursorScope,
     wrap: F,
@@ -3004,7 +3075,7 @@ where
         }
         visited += slice.visited as usize;
         for receipt in &slice.items {
-            let item = recipient_item(db, receipt)?;
+            let item = recipient_item(db, receipt, now)?;
             let raw = receipt_cursor(instance, scope, message.as_str(), &filter, &slice.position)?;
             let high = slice
                 .position
@@ -3068,6 +3139,7 @@ fn recipients(
     db: &QueryConnection,
     instance: &str,
     q: &RecipientsQuery,
+    now: UtcMillis,
     output: &OutputSpec,
 ) -> Result<CommandResult, ApiError> {
     if let Some(warning) = effective_warning_by_id(db, q.message.as_str())? {
@@ -3091,6 +3163,7 @@ fn recipients(
         instance,
         &q.message,
         &q.page,
+        now,
         output,
         CursorScope::Recipients,
         CommandResult::Recipients,
@@ -3243,6 +3316,7 @@ fn delivery_inspect(
     db: &QueryConnection,
     instance: &str,
     q: &DeliveryInspectQuery,
+    now: UtcMillis,
     output: &OutputSpec,
 ) -> Result<CommandResult, ApiError> {
     if !message_owned(db, instance, &q.message)? {
@@ -3317,6 +3391,7 @@ fn delivery_inspect(
         instance,
         &q.message,
         &q.page,
+        now,
         output,
         CursorScope::DeliveryInspect,
         |page| {
@@ -3565,7 +3640,8 @@ fn diagnostics(
                 examined += slice.visited as usize;
                 for receipt in &slice.items {
                     if receipt.state != EffectiveReceiptState::Pending
-                        || receipt.deadline_at.is_none_or(|d| d > now.0)
+                        || super::receipts::effective_deadline(db, receipt)?
+                            .is_none_or(|d| d > now.0)
                         || q.seat
                             .as_ref()
                             .is_some_and(|s| s.as_str() != receipt.seat_id)
@@ -4409,6 +4485,7 @@ fn pending_receipts(
                 .flatten();
             let sender = sender
                 .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "receipt sender missing"))?;
+            let display = deadline_display(db, receipt, now)?;
             let item = PendingReceipt {
                 message: MessageId::new(&receipt.message_id),
                 thread: ThreadId::new(&receipt.thread_id),
@@ -4418,7 +4495,9 @@ fn pending_receipts(
                 decision_at: UtcMillis(receipt.decision_at),
                 available_at: receipt.available_at.map(UtcMillis),
                 deadline: receipt.deadline_at.map(UtcMillis),
-                overdue: receipt.deadline_at.is_some_and(|d| d <= now.0),
+                overdue: display.overdue,
+                effective_deadline: display.effective,
+                deferred_until: display.deferred_until,
             };
             let raw = receipt_cursor(
                 instance,
@@ -4489,6 +4568,169 @@ fn pending_receipts(
         output,
         q.page.max_bytes,
     )?))
+}
+
+/// Hot threads of one seat for the recovery hook text (spec §9), computed in
+/// one read transaction: threads with a pending receipt (earliest effective
+/// deadline first), then other pending attention (invitations, actionable
+/// warnings), then joined threads whose latest ordinary message is newer than
+/// `hot_window_ms`, newest first. The first `q.limit` are returned in full,
+/// up to `MAX_HOT_OVERFLOW` more as bare ids.
+pub fn hot_threads(
+    store: &StoreContext,
+    instance: &str,
+    q: &crate::protocol::commands::HotThreadsQuery,
+    hot_window_ms: u64,
+    budget: &CallBudget,
+) -> Result<CommandResult, ApiError> {
+    Command::HotThreads(q.clone())
+        .validate()
+        .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
+    let db = store.open_query(budget.clone())?;
+    db.execute_batch("BEGIN DEFERRED")
+        .map_err(|e| db.map_error(e))?;
+    let now = store.clock().utc_now().0;
+    let result = hot_threads_in(&db, instance, q, now, hot_window_ms, &|| db.check_budget());
+    result.map_err(|error| read_budget_error(error, budget, store.clock()))
+}
+
+/// A hot-thread topic: control characters stripped, cut to `HOT_TOPIC_BYTES`
+/// at a char boundary.
+pub fn hot_topic(topic: &str) -> String {
+    let mut out = String::new();
+    for c in topic.chars().filter(|c| !c.is_control()) {
+        if out.len() + c.len_utf8() > crate::protocol::results::HOT_TOPIC_BYTES {
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn hot_threads_in(
+    db: &Connection,
+    instance: &str,
+    q: &crate::protocol::commands::HotThreadsQuery,
+    now: i64,
+    hot_window_ms: u64,
+    check_budget: &dyn Fn() -> Result<(), ApiError>,
+) -> Result<CommandResult, ApiError> {
+    use crate::protocol::results::{HotReason, HotThread, HotThreads, MAX_HOT_OVERFLOW};
+    use std::collections::BTreeMap;
+    let seat = q.seat.as_str();
+    let decision_seq: i64 = db
+        .query_row(
+            "SELECT h.decision_seq FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
+            params![seat, instance],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?
+        .ok_or_else(|| api_error(ErrorCode::NotFound, "seat not found"))?;
+    // thread -> (reason, earliest effective deadline of its pending receipts)
+    let mut found: BTreeMap<String, (HotReason, Option<i64>)> = BTreeMap::new();
+    let receipts = super::attention::pending_receipts(db, seat, None)?;
+    check_budget()?;
+    for item in &receipts.items {
+        let deadline = match super::effective::effective_receipt(db, &item.id, seat)? {
+            Some(receipt) => super::receipts::effective_deadline(db, &receipt)?,
+            None => None,
+        };
+        let entry = found
+            .entry(item.thread_id.clone())
+            .or_insert((HotReason::PendingReceipt, deadline));
+        entry.1 = match (entry.1, deadline) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+    }
+    let invitations = super::attention::pending_invitations(db, seat, None, decision_seq)?;
+    check_budget()?;
+    let warnings = super::attention::seat_pending_warnings(db, seat, check_budget)?;
+    check_budget()?;
+    for item in invitations.items.iter().chain(&warnings.items) {
+        found
+            .entry(item.thread_id.clone())
+            .or_insert((HotReason::Attention, None));
+    }
+    let since = now.saturating_sub(i64::try_from(hot_window_ms).unwrap_or(i64::MAX));
+    let latest = |thread: &str| -> Result<i64, ApiError> {
+        Ok(db
+            .query_row(
+                "SELECT decision_at FROM messages WHERE thread_id=?1 AND kind='ordinary' ORDER BY sequence DESC LIMIT 1",
+                [thread],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?
+            .unwrap_or(0))
+    };
+    let joined: Vec<String> = {
+        let mut stmt = db
+            .prepare(
+                "SELECT t.id FROM memberships ms JOIN threads t ON t.id=ms.thread_id WHERE ms.seat_id=?1 AND ms.state='joined' AND t.instance_id=?2 AND t.archived=0 ORDER BY ms.ordinal DESC LIMIT 512",
+            )
+            .map_err(store_error)?;
+        stmt.query_map(params![seat, instance], |r| r.get(0))
+            .map_err(store_error)?
+            .collect::<Result<_, _>>()
+            .map_err(store_error)?
+    };
+    check_budget()?;
+    for thread in joined {
+        if !found.contains_key(&thread) && latest(&thread)? > since {
+            found.insert(thread, (HotReason::Recent, None));
+        }
+    }
+    let mut rows = Vec::with_capacity(found.len());
+    for (thread, (reason, deadline)) in found {
+        let topic: String = db
+            .query_row(
+                "SELECT topic FROM threads WHERE id=?1 AND instance_id=?2",
+                params![thread, instance],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?
+            .unwrap_or_default();
+        let last_activity = latest(&thread)?;
+        rows.push(HotThread {
+            thread: ThreadId::new(thread),
+            topic_data: hot_topic(&topic),
+            reason,
+            effective_deadline: deadline.map(UtcMillis),
+            last_activity: UtcMillis(last_activity),
+        });
+    }
+    let rank = |reason: HotReason| match reason {
+        HotReason::PendingReceipt => 0,
+        HotReason::Attention => 1,
+        HotReason::Recent => 2,
+    };
+    rows.sort_by(|a, b| {
+        rank(a.reason)
+            .cmp(&rank(b.reason))
+            // A receipt without a deadline sorts after every dated one.
+            .then_with(|| {
+                a.effective_deadline
+                    .map_or((1, 0), |d| (0, d.0))
+                    .cmp(&b.effective_deadline.map_or((1, 0), |d| (0, d.0)))
+            })
+            .then_with(|| b.last_activity.0.cmp(&a.last_activity.0))
+            .then_with(|| a.thread.as_str().cmp(b.thread.as_str()))
+    });
+    let limit = q.limit as usize;
+    let overflow = rows
+        .iter()
+        .skip(limit)
+        .take(MAX_HOT_OVERFLOW)
+        .map(|row| row.thread.clone())
+        .collect();
+    rows.truncate(limit);
+    Ok(CommandResult::HotThreads(HotThreads {
+        hot: rows,
+        overflow,
+    }))
 }
 
 #[cfg(test)]

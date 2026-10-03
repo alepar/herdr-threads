@@ -100,6 +100,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "tests" / "native" / "support"))
 from fixture import NativeFixture  # noqa: E402
 
+WIRE_VERSION = 3  # src/protocol/wire.rs PROTOCOL_VERSION
 PROMPT = "Check your herdr-threads mail and follow its instructions."
 # --scenario child (ht-910 delegation): the launch prompt itself asks for one reading subagent; everything else
 # (accept, ACK) stays with the top-level agent. Never names a command or an ID.
@@ -735,7 +736,7 @@ class ServiceClient:
 
     def call(self, service):
         self.sequence += 1
-        request = {"version": 2, "request_id": f"ht-demo-{self.sequence}-{secrets.token_hex(3)}",
+        request = {"version": WIRE_VERSION, "request_id": f"ht-demo-{self.sequence}-{secrets.token_hex(3)}",
                    "expected_instance": self.instance, "service": service}
         self.sock.sendall(encode_frame(request))
         size = int.from_bytes(self._read_exact(4), "big")

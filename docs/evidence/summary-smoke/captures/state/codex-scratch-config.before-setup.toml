@@ -1,0 +1,12 @@
+cli_auth_credentials_store = "file"
+
+[tui]
+screen_reader_detection_done = true
+status_line = ["model-with-reasoning", "context-window-size", "context-used", "weekly-limit", "current-dir", "thread-title"]
+status_line_use_colors = true
+
+[agents]
+max_concurrent_threads_per_session = 10
+
+[projects."/private/tmp/ht-summary-smoke/proj-codex"]
+trust_level = "trusted"

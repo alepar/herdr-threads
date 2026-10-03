@@ -105,6 +105,8 @@ pub enum SemanticMutation {
         body: String,
         invited_recipients: Vec<SeatId>,
         deadline_millis: Option<u64>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        relays_user: bool,
     },
     Ack {
         messages: Vec<MessageId>,
@@ -425,6 +427,7 @@ impl SemanticMutation {
                 body,
                 invited_recipients,
                 deadline_millis,
+                relays_user,
             } => Command::SendMessage(SendMessage {
                 thread: thread.clone(),
                 body: body.clone(),
@@ -432,6 +435,7 @@ impl SemanticMutation {
                 deadline_millis: *deadline_millis,
                 operation,
                 claim: native()?,
+                relays_user: *relays_user,
             }),
             Self::Ack { messages } => Command::Ack(Ack {
                 messages: messages.clone(),

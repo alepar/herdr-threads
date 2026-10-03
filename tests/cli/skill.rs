@@ -30,8 +30,16 @@ fn skill_file_is_a_well_formed_concise_guide() {
     assert_eq!(lines.next(), Some("name: herdr-threads"));
     assert!(lines.next().unwrap().starts_with("description: "));
     assert_eq!(lines.next(), Some("---"));
-    assert!(SKILL_MD.lines().count() < 150);
+    assert!(SKILL_MD.lines().count() < 200);
+    let summary_header = format!("## {}", crate::protocol::summary::SUMMARY_PROCEDURE_REF);
     for needle in [
+        summary_header.as_str(),
+        "summary job",
+        "summary submit",
+        "--relays-user",
+        SUMMARY_PROMPT_VERSION,
+        "Summary, one job, Summary",
+        "never ACK",
         "cooperative, not enforced",
         "receipt only",
         "never** run `ack`",
@@ -43,6 +51,17 @@ fn skill_file_is_a_well_formed_concise_guide() {
     ] {
         assert!(SKILL_MD.contains(needle), "{needle}");
     }
+}
+
+// Kills: a detector that accepts any mention of the title, or one that misses
+// the section header.
+#[test]
+fn summary_section_is_detected() {
+    assert!(has_summary_procedure(SKILL_MD));
+    let header = format!("## {}\n", crate::protocol::summary::SUMMARY_PROCEDURE_REF);
+    assert!(SKILL_MD.contains(&header));
+    let without = SKILL_MD.replace(&header, "");
+    assert!(!has_summary_procedure(&without));
 }
 
 // Kills: dropping the AI pointer from the top-level help, or replacing the

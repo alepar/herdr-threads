@@ -96,8 +96,17 @@ pub fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String> {
             joined.seat.as_str(),
             joined.thread.as_str()
         )),
-        CommandResult::Accepted(invitation) => {
-            out.push_str(&format!("Accepted invitation {}.\n", invitation.as_str()))
+        CommandResult::Accepted(accepted) => {
+            out.push_str(&format!(
+                "Accepted invitation {}.\n",
+                accepted.invitation.as_str()
+            ));
+            if let Some(thread) = &accepted.summary_available {
+                out.push_str(&format!(
+                    "summary available: herdr-threads summary {}\n",
+                    thread.as_str()
+                ));
+            }
         }
         CommandResult::RequiredAccepted(required) => out.push_str(&format!(
             "Accepted required membership in thread {} (invitation {}).\n",
@@ -253,10 +262,11 @@ fn chat_line(summary: &MessageSummary, out: &mut String) {
         MessageKind::Warn => "[warn] ",
     };
     out.push_str(&format!(
-        "#{} {} {}: {}{}\n",
+        "#{} {} {}{}: {}{}\n",
         summary.sequence,
         timestamp(summary.created_at),
         author(summary),
+        summary.author_markers(),
         marker,
         one_line(&summary.preview_data, summary.preview_omitted, usize::MAX)
     ));
@@ -418,7 +428,13 @@ fn pending(page: &Page<PendingReceipt>, out: &mut String) {
                 receipt.sender.as_str().to_owned(),
                 timestamp(receipt.decision_at),
                 receipt.deadline.map_or_else(|| "-".to_owned(), timestamp)
-                    + if receipt.overdue { " (overdue)" } else { "" },
+                    + if receipt.overdue { " (overdue)" } else { "" }
+                    + &receipt.deferred_until.map_or_else(String::new, |until| {
+                        format!(
+                            " deferred: recipient catching up (until {})",
+                            &timestamp(until)[11..]
+                        )
+                    }),
             ]
         })
         .collect();

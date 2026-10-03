@@ -1,0 +1,32 @@
+[
+ {
+  "argv_tag": "SessionStart",
+  "source": "resume",
+  "returned": {
+   "hookSpecificOutput": {
+    "additionalContext": "HT-SS-MARKER-c287cp",
+    "hookEventName": "SessionStart"
+   }
+  }
+ },
+ {
+  "argv_tag": "SessionStart",
+  "source": "compact",
+  "returned": {
+   "hookSpecificOutput": {
+    "additionalContext": "HT-COMPACT-MARKER-c287cp",
+    "hookEventName": "SessionStart"
+   }
+  }
+ },
+ {
+  "argv_tag": "SessionStart",
+  "source": "resume",
+  "returned": {
+   "hookSpecificOutput": {
+    "additionalContext": "HT-SS-MARKER-c287cp",
+    "hookEventName": "SessionStart"
+   }
+  }
+ }
+]

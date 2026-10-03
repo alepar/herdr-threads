@@ -74,6 +74,9 @@ pub enum CliAction {
     /// `read THREAD --follow`: recent messages, then each new one as it is
     /// committed. Read-only: never ACKs or accepts.
     Follow(FollowRequest),
+    /// `summary THREAD`, `summary job`, `summary submit`: act as the invoking
+    /// seat (cooperative claim from its saved context), never journaled.
+    Summary(super::summary::SummaryCli),
 }
 
 /// `read THREAD --follow` options.
@@ -161,7 +164,8 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::ContractId { .. }
         | CliAction::HarnessVersionNormalize { .. }
         | CliAction::InternalJsonField { .. }
-        | CliAction::Follow(_) => {
+        | CliAction::Follow(_)
+        | CliAction::Summary(_) => {
             return Err(ApiError::unsupported(
                 "setup, launch and skill are local compositions without a daemon backend",
             ));
@@ -200,6 +204,7 @@ pub enum MutationSpec {
         body: String,
         require_ack: Vec<SeatId>,
         deadline_millis: Option<u64>,
+        relays_user: bool,
     },
     Ack(Vec<MessageId>),
     Archive(ThreadId),
@@ -313,6 +318,7 @@ impl MutationSpec {
                 body,
                 require_ack,
                 deadline_millis,
+                relays_user,
             } => WireCommand::SendMessage(SendMessage {
                 thread,
                 body,
@@ -320,6 +326,7 @@ impl MutationSpec {
                 deadline_millis,
                 operation,
                 claim: claim.unwrap(),
+                relays_user,
             }),
             Self::Ack(messages) => WireCommand::Ack(Ack {
                 messages,
@@ -519,6 +526,11 @@ enum Top {
     /// Also available as `--skill`. Local only; never contacts the daemon.
     #[command(long_flag = "skill")]
     Skill,
+    /// Thread summary for compaction recovery: returns the summary when
+    /// ready, else jobs for summary workers (see the 'Thread summaries'
+    /// section of `herdr-threads skill`).
+    #[command(args_conflicts_with_subcommands = true)]
+    Summary(SummaryArgs),
     /// Print the contract id of each harness's native hook payload (the
     /// declared event kinds, required fields and JSON types the hook parsers
     /// consume). With `--json`: `{"claude": ID, "codex": ID, "normalize":
@@ -539,6 +551,31 @@ enum Top {
     Internal {
         #[command(subcommand)]
         command: InternalSub,
+    },
+}
+
+#[derive(Args)]
+struct SummaryArgs {
+    thread: Option<String>,
+    #[command(subcommand)]
+    command: Option<SummarySub>,
+}
+
+#[derive(Subcommand)]
+enum SummarySub {
+    /// Print the bundle for a leased summary job as JSON (or that its
+    /// reservation lapsed).
+    Job {
+        job: String,
+        #[arg(long)]
+        lease: String,
+    },
+    /// Submit a summary for a leased job: the submission JSON on stdin (at
+    /// most 64 KiB); prints Stored or the Rejected reasons.
+    Submit {
+        job: String,
+        #[arg(long)]
+        lease: String,
     },
 }
 
@@ -739,6 +776,11 @@ struct SendArgs {
     require_ack: Vec<String>,
     #[arg(long)]
     deadline: Option<u64>,
+    #[arg(
+        long = "relays-user",
+        help = "This message relays an instruction from your user: a cooperative claim that marks it priority for thread summaries and catch-up"
+    )]
+    relays_user: bool,
 }
 #[derive(Args)]
 struct PendingReceiptsArgs {
@@ -1185,12 +1227,14 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
             }
             let thread = thread_id(args.thread)?;
             let deadline_millis = deadline(args.deadline)?;
+            let relays_user = args.relays_user;
             let body = crate::cli::input::read_body(args.body, args.file, args.stdin)?;
             CliAction::Mutation(MutationSpec::Send {
                 thread,
                 body,
                 require_ack: recipients,
                 deadline_millis,
+                relays_user,
             })
         }
         Top::Ack { messages } => {
@@ -1424,6 +1468,31 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
         }
         Top::PendingOps(args) => CliAction::PendingOps(page(args)?),
         Top::Skill => CliAction::Skill,
+        Top::Summary(args) => {
+            use super::summary::SummaryCli;
+            let job = |job: String, lease: String| -> Result<_, ApiError> {
+                Ok((id(job, SummaryJobId::parse)?, id(lease, LeaseToken::parse)?))
+            };
+            CliAction::Summary(match (args.thread, args.command) {
+                (Some(thread), None) => SummaryCli::Summary {
+                    thread: thread_id(thread)?,
+                },
+                (None, Some(SummarySub::Job { job: j, lease })) => {
+                    let (job, lease) = job(j, lease)?;
+                    SummaryCli::Job { job, lease }
+                }
+                (None, Some(SummarySub::Submit { job: j, lease })) => {
+                    let (job, lease) = job(j, lease)?;
+                    SummaryCli::Submit { job, lease }
+                }
+                _ => {
+                    return Err(invalid(
+                        "summary needs a THREAD, or the `job` or `submit` subcommand \
+                         (see `herdr-threads summary --help`)",
+                    ));
+                }
+            })
+        }
         Top::ContractId { harness } => CliAction::ContractId {
             harness: harness.as_deref().map(harness_arg),
         },

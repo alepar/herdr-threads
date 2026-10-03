@@ -10,9 +10,21 @@ use std::io::{self, Write};
 /// 1: the original request/response envelope.
 /// 2: `WireRequest.expected_boot`, the B5 commands `OperatorRetire`,
 ///    `OperatorReplace`, `OperatorCheckIn` and `ContinuityCheckIn`, and the
-///    `DaemonBootChanged` refusal. A version-1 daemon rejects a version-2
-///    request at decode, so the descriptor check reports the skew first.
-pub const PROTOCOL_VERSION: u16 = 2;
+///    `DaemonBootChanged` refusal; the remaining-findings epic (ht-p03) added
+///    the `Capabilities` and `HookParseFailure` commands, the `Capabilities`
+///    result and `HistoryQuery.full_bodies` within version 2 (unreleased
+///    then). A version-1 daemon rejects a version-2 request at decode, so the
+///    descriptor check reports the skew first.
+/// 3: the thread-summary commands `HotThreads`, `Summary`, `SummaryJob` and
+///    `SummarySubmit`, the `relays_user` field on the `SendMessage` request (a
+///    `deny_unknown_fields` struct) and their result shapes (epic ht-1ip). The
+///    harness version evidence epic (ht-xoc) added the capability-gated
+///    `HarnessEvidence` and `HarnessStates` commands and their results
+///    (capabilities `hook.harness_evidence`, `harness.states`) within version
+///    2 on main; version 3 carries both sets. A version-2 daemon rejects a
+///    version-3 request at decode, so the descriptor check reports the skew
+///    first.
+pub const PROTOCOL_VERSION: u16 = 3;
 pub const MAX_WIRE_FRAME_BYTES: usize = 1_048_576;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

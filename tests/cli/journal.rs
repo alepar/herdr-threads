@@ -36,6 +36,7 @@ fn send() -> SemanticMutation {
         body: "body secret\n".into(),
         invited_recipients: vec![],
         deadline_millis: None,
+        relays_user: false,
     }
 }
 fn scope() -> IntentScope {
@@ -784,6 +785,7 @@ fn invalid_semantic_batch_does_not_reserve_ordinal_or_publish_intent() {
                         .map(|n| SeatId::new(format!("seat-{n}")))
                         .collect(),
                     deadline_millis: None,
+                    relays_user: false,
                 },
                 2
             )
@@ -1172,4 +1174,42 @@ fn pending_continuity_skips_vanished_unparsable_fifo_and_symlink_entries() {
     );
     let _ = std::fs::remove_file(fifo);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn send_relays_user_is_journaled_only_when_set_and_old_intents_still_load() {
+    let relayed = match send() {
+        SemanticMutation::SendMessage {
+            thread,
+            body,
+            invited_recipients,
+            deadline_millis,
+            ..
+        } => SemanticMutation::SendMessage {
+            thread,
+            body,
+            invited_recipients,
+            deadline_millis,
+            relays_user: true,
+        },
+        _ => unreachable!(),
+    };
+    let relayed_json = serde_json::to_value(&relayed).unwrap();
+    assert_eq!(relayed_json["relays_user"], true);
+    let plain_json = serde_json::to_value(send()).unwrap();
+    assert!(plain_json.get("relays_user").is_none());
+    // An intent journaled before the flag existed has no key and reads as false.
+    let old: SemanticMutation = serde_json::from_value(plain_json).unwrap();
+    assert_eq!(old, send());
+    let back: SemanticMutation = serde_json::from_value(relayed_json).unwrap();
+    let command = back
+        .to_command(
+            crate::protocol::ids::OperationId::new("op-relay"),
+            Some(claim()),
+        )
+        .unwrap();
+    let Command::SendMessage(sent) = command else {
+        panic!("wrong command")
+    };
+    assert!(sent.relays_user);
 }

@@ -1,0 +1,9 @@
+seats
+item: {"continuity":"resolved","created_at":1790982615825,"generation":2,"retired_at":null,"seat":"seat-uEdSD2gM","target":"w1:p1"}
+item: {"continuity":"resolved","created_at":1790982615921,"generation":3,"retired_at":null,"seat":"seat-tJDlgi2m","target":"w1:p2"}
+item: {"continuity":"resolved","created_at":1790982619657,"generation":3,"retired_at":null,"seat":"seat-oJLhtZuC","target":"w1:p3"}
+item: {"continuity":"resolved","created_at":1790984802969,"generation":3,"retired_at":null,"seat":"seat-dI6CZeba","target":"w1:p4"}
+item: {"continuity":"resolved","created_at":1790984806781,"generation":3,"retired_at":null,"seat":"seat-KqDe0evQ","target":"w1:p5"}
+item: {"continuity":"resolved","created_at":1790985755033,"generation":2,"retired_at":null,"seat":"seat-h1qtN6Hb","target":"w2:p1"}
+item: {"continuity":"resolved","created_at":1790985770248,"generation":3,"retired_at":null,"seat":"seat-RJ7yryH6","target":"w2:p2"}
+item: {"continuity":"resolved","created_at":1790985851396,"generation":3,"retired_at":null,"seat":"seat-5E7sEMcK","target":"w2:p3"}

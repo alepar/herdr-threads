@@ -62,6 +62,7 @@ impl LaneHost {
         let at = self.clock.monotonic_now();
         HostObservation {
             target: HostTargetId::new("pane"),
+            focused: false,
             host_boot: HostBootId::new("host"),
             epoch: 1,
             generation: 1,

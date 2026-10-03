@@ -369,9 +369,10 @@ fn registration_request_binds_operation_and_selected_offer_context() {
 #[test]
 fn due_receipt_cursor_retains_both_physical_and_sparse_positions() {
     use herdr_threads::ports::{
-        DuePhase, DuePhaseCursor, DueScanRequest, DueScanState, ReceiptSparseCursor,
+        DuePhase, DuePhaseCursor, DueScanRequest, DueScanState, ExtensionLapseKey,
+        ReceiptSparseCursor,
     };
-    use herdr_threads::protocol::ids::{MessageId, SeatId};
+    use herdr_threads::protocol::ids::{MessageId, SeatId, ThreadId};
     let cursor = DuePhaseCursor {
         high_water_ordinal: 70,
         after_deadline: Some(UtcMillis(100)),
@@ -382,6 +383,12 @@ fn due_receipt_cursor_retains_both_physical_and_sparse_positions() {
             after_message: Some(MessageId::new("m")),
             after_seat: Some(SeatId::new("s")),
             next_sparse: true,
+        }),
+        extension_through: Some(UtcMillis(102)),
+        extension_after: Some(ExtensionLapseKey {
+            until: UtcMillis(103),
+            seat: SeatId::new("s"),
+            thread: ThreadId::new("t"),
         }),
     };
     let request = DueScanRequest {
@@ -694,6 +701,7 @@ fn fresh_structure_does_not_imply_verified_execution() {
     };
     use herdr_threads::protocol::ids::{HostBootId, HostCallId, HostTargetId, TerminalId};
     let mut observed = HostObservation {
+        focused: false,
         target: HostTargetId::new("p"),
         host_boot: HostBootId::new("boot"),
         epoch: 1,
@@ -1363,6 +1371,17 @@ fn all_command_variants_round_trip_without_actor_fields() {
                 json!({"thread":"t1","body":"body","invited_recipients":["s1"],"deadline_millis":null,"operation":"o1","claim":c}),
             ),
         ),
+        ("summary", Some(json!({"thread":"t1","claim":c}))),
+        (
+            "summary_job",
+            Some(json!({"job_id":"j1","lease_token":"l1","claim":c})),
+        ),
+        (
+            "summary_submit",
+            Some(
+                json!({"job_id":"j1","lease_token":"l1","submission":{"submission_schema":1,"narrative":"n","prompt_version":"p","model":"m"},"claim":c}),
+            ),
+        ),
         (
             "ack",
             Some(json!({"messages":["m1"],"operation":"o1","claim":c})),
@@ -1407,6 +1426,56 @@ fn all_command_variants_round_trip_without_actor_fields() {
         let out = serde_json::to_value(&parsed).unwrap();
         assert_eq!(out, raw, "{kind}");
     }
+}
+
+#[test]
+fn send_message_relays_user_is_optional_and_round_trips() {
+    use serde_json::json;
+    let c = json!({"instance":"i","seat":"s1","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n1","execution":"e1","target":"p1"});
+    let mut send = json!({"thread":"t1","body":"body","invited_recipients":["s1"],"deadline_millis":null,"operation":"o1","claim":c});
+    let Command::SendMessage(plain) =
+        serde_json::from_value::<Command>(json!({"kind":"send_message","args":send.clone()}))
+            .unwrap()
+    else {
+        panic!("not a send")
+    };
+    assert!(!plain.relays_user);
+    send["relays_user"] = json!(true);
+    let raw = json!({"kind":"send_message","args":send});
+    let Command::SendMessage(relayed) = serde_json::from_value::<Command>(raw.clone()).unwrap()
+    else {
+        panic!("not a send")
+    };
+    assert!(relayed.relays_user);
+    assert_eq!(
+        serde_json::to_value(Command::SendMessage(relayed)).unwrap(),
+        raw
+    );
+}
+
+#[test]
+fn summary_commands_accept_subagent_claims() {
+    use serde_json::json;
+    let claim = |role: &str| json!({"instance":"i","seat":"s1","binding_generation":0,"role":role,"harness":"codex","native_session":"n1","execution":"e1","target":"p1"});
+    let submission =
+        json!({"submission_schema":1,"narrative":"n","prompt_version":"p","model":"m"});
+    let commands = [
+        json!({"kind":"summary","args":{"thread":"t1","claim":claim("subagent")}}),
+        json!({"kind":"summary_job","args":{"job_id":"j1","lease_token":"l1","claim":claim("subagent")}}),
+        json!({"kind":"summary_submit","args":{"job_id":"j1","lease_token":"l1","submission":submission,"claim":claim("subagent")}}),
+    ];
+    for raw in commands {
+        let command: Command = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(command.validate(), Ok(()), "{raw}");
+    }
+    let not_object: Command = serde_json::from_value(
+        json!({"kind":"summary_submit","args":{"job_id":"j1","lease_token":"l1","submission":"text","claim":claim("top_level")}}),
+    )
+    .unwrap();
+    assert_eq!(
+        not_object.validate(),
+        Err("summary submission must be a JSON object")
+    );
 }
 
 #[test]
@@ -1878,4 +1947,139 @@ fn pending_warning_count_flags_are_on_the_wire_and_default_to_false() {
         (checked_in.warning_count, checked_in.warning_count_has_more),
         (3, false)
     );
+}
+
+#[test]
+fn message_summary_author_fields_default_and_round_trip() {
+    use herdr_threads::protocol::{results::MessageSummary, summary::AuthorRole};
+    let mut raw = serde_json::json!({
+        "message":"m","thread":"t","author":"s","kind":"ordinary",
+        "sequence":1,"created_at":1,"actor_label":null,"preview_data":"short",
+        "preview_omitted":false,"preview_detail_argv":null
+    });
+    let old: MessageSummary = serde_json::from_value(raw.clone()).unwrap();
+    assert_eq!(old.author_role, None);
+    assert!(!old.relays_user && !old.author_role_backfilled);
+    assert_eq!(serde_json::to_value(&old).unwrap(), raw);
+    raw["author_role"] = serde_json::json!("human");
+    raw["relays_user"] = serde_json::json!(true);
+    raw["author_role_backfilled"] = serde_json::json!(true);
+    let new: MessageSummary = serde_json::from_value(raw.clone()).unwrap();
+    assert_eq!(new.author_role, Some(AuthorRole::Human));
+    assert!(new.relays_user && new.author_role_backfilled);
+    assert_eq!(serde_json::to_value(&new).unwrap(), raw);
+}
+
+// Kills: a hint-less Accepted that no longer serializes as the bare
+// invitation id (stored operation results and journals would stop parsing), a
+// hinted one that loses its thread, or a legacy stored string that stops
+// deserializing.
+#[test]
+fn accepted_without_hint_is_the_bare_invitation_id_and_with_hint_round_trips() {
+    use herdr_threads::protocol::{
+        ids::{InvitationId, ThreadId},
+        results::{AcceptedInvitation, CommandResult},
+    };
+    let bare = CommandResult::Accepted(InvitationId::new("inv-1").into());
+    let encoded = serde_json::to_value(&bare).unwrap();
+    assert_eq!(
+        encoded,
+        serde_json::json!({"kind":"accepted","data":"inv-1"})
+    );
+    // A stored result from before the hint existed.
+    let legacy: CommandResult =
+        serde_json::from_str(r#"{"kind":"accepted","data":"inv-1"}"#).unwrap();
+    assert_eq!(legacy, bare);
+    let hinted = CommandResult::Accepted(AcceptedInvitation {
+        invitation: InvitationId::new("inv-1"),
+        summary_available: Some(ThreadId::new("t-9")),
+    });
+    let encoded = serde_json::to_value(&hinted).unwrap();
+    assert_eq!(
+        encoded,
+        serde_json::json!({"kind":"accepted","data":{"invitation":"inv-1","summary_available":"t-9"}})
+    );
+    assert_eq!(
+        serde_json::from_value::<CommandResult>(encoded).unwrap(),
+        hinted
+    );
+    // The object form without a hint is accepted too; unknown fields are not.
+    let object: CommandResult =
+        serde_json::from_str(r#"{"kind":"accepted","data":{"invitation":"inv-1"}}"#).unwrap();
+    assert_eq!(object, bare);
+    assert!(
+        serde_json::from_str::<CommandResult>(
+            r#"{"kind":"accepted","data":{"invitation":"inv-1","extra":1}}"#
+        )
+        .is_err()
+    );
+}
+
+// Kills: wire types that drift (the hot query and its result must round trip),
+// a limit outside 1..=8 reaching the store, or an unbounded overflow.
+#[test]
+fn hot_threads_wire_types_round_trip_and_bound_the_limit() {
+    use herdr_threads::protocol::{
+        commands::{Command, HotThreadsQuery},
+        ids::{SeatId, ThreadId},
+        results::{CommandResult, HotReason, HotThread, HotThreads},
+    };
+    let query = Command::HotThreads(HotThreadsQuery {
+        seat: SeatId::new("s"),
+        limit: 8,
+    });
+    let encoded = serde_json::to_value(&query).unwrap();
+    assert_eq!(
+        encoded,
+        serde_json::json!({"kind":"hot_threads","args":{"seat":"s","limit":8}})
+    );
+    assert_eq!(serde_json::from_value::<Command>(encoded).unwrap(), query);
+    assert!(query.validate().is_ok());
+    for limit in [0, 9] {
+        let bad = Command::HotThreads(HotThreadsQuery {
+            seat: SeatId::new("s"),
+            limit,
+        });
+        assert!(bad.validate().is_err(), "limit {limit}");
+    }
+    let result = CommandResult::HotThreads(HotThreads {
+        hot: vec![HotThread {
+            thread: ThreadId::new("t1"),
+            topic_data: "topic".into(),
+            reason: HotReason::PendingReceipt,
+            effective_deadline: Some(UtcMillis(7)),
+            last_activity: UtcMillis(5),
+        }],
+        overflow: vec![ThreadId::new("t2")],
+    });
+    let encoded = serde_json::to_value(&result).unwrap();
+    assert_eq!(encoded["data"]["hot"][0]["reason"], "pending_receipt");
+    assert_eq!(
+        serde_json::from_value::<CommandResult>(encoded).unwrap(),
+        result
+    );
+}
+
+#[test]
+fn deadline_extension_fields_are_additive_on_pending_receipts_and_recipients() {
+    use herdr_threads::protocol::results::{PendingReceipt, Recipient};
+    // Old JSON without the new fields parses and serializes unchanged.
+    let old = serde_json::json!({"message":"m","thread":"t","seat":"s","sequence":4,"sender":"author","decision_at":5,"available_at":0,"deadline":60_000,"overdue":true});
+    let parsed: PendingReceipt = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(parsed.effective_deadline, None);
+    assert_eq!(parsed.deferred_until, None);
+    assert_eq!(serde_json::to_value(parsed).unwrap(), old);
+    // New fields round-trip.
+    let extended = serde_json::json!({"message":"m","thread":"t","seat":"s","sequence":4,"sender":"author","decision_at":5,"available_at":0,"deadline":60_000,"overdue":false,"effective_deadline":120_000,"deferred_until":120_000});
+    let parsed: PendingReceipt = serde_json::from_value(extended.clone()).unwrap();
+    assert_eq!(parsed.deferred_until.map(|at| at.0), Some(120_000));
+    assert_eq!(serde_json::to_value(parsed).unwrap(), extended);
+    let old = serde_json::json!({"seat":"s","status":"pending","physical_status":"pending","effective_status":"pending","retirement_cutover":null,"cleanup_state":null,"ack_provenance":null});
+    let parsed: Recipient = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(parsed.deadline, None);
+    assert_eq!(serde_json::to_value(parsed).unwrap(), old);
+    let extended = serde_json::json!({"seat":"s","status":"pending","physical_status":"pending","effective_status":"pending","retirement_cutover":null,"cleanup_state":null,"ack_provenance":null,"deadline":60_000,"effective_deadline":120_000,"deferred_until":120_000});
+    let parsed: Recipient = serde_json::from_value(extended.clone()).unwrap();
+    assert_eq!(parsed.effective_deadline.map(|at| at.0), Some(120_000));
+    assert_eq!(serde_json::to_value(parsed).unwrap(), extended);
 }

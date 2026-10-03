@@ -1,0 +1,5 @@
+agent: claude
+state: idle
+manifest: remote:~/.local/state/herdr/agent-detection/remote/claude.toml 2026.09.11.1
+rule: live_prompt_box (region=prompt_box_body priority=950)
+evidence: "❯\u{a0}line one\n  line two\n"

@@ -124,6 +124,7 @@ pub fn scan_effective_seat_attention(
         }
     };
     let mut visited = 0u16;
+    let mut hold = crate::store::catch_up::HoldCache::new(seat_id);
     while !position.invitations_done && visited < max_candidates {
         let row:Option<(i64,i64,String)> = db.query_row(
             "SELECT i.created_decision_seq,i.ordinal,CASE WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END FROM invitations i LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.seat_id=?1 AND (i.created_decision_seq,i.ordinal)>(?2,?3) AND i.created_decision_seq<=?4 ORDER BY i.created_decision_seq,i.ordinal LIMIT 1",
@@ -175,6 +176,19 @@ pub fn scan_effective_seat_attention(
                         "invalid receipt publication key",
                     ));
                 }
+                // The oracle applies the same catch-up hold and release key as
+                // the digest and wake source (spec §7), through the same
+                // helper.
+                let Some((seq, _)) = hold.attention_key(
+                    db,
+                    &receipt.thread_id,
+                    &receipt.message_id,
+                    receipt.sequence,
+                    (seq, 0),
+                )?
+                else {
+                    continue;
+                };
                 position.has_pending_receipt = true;
                 position.receipt_frontier_seq = Some(
                     position

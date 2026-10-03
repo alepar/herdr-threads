@@ -1,0 +1,50 @@
+  /permissions - choose what Codex is allowed to do
+  /model - choose what model and reasoning effort to use
+  /review - review any changes and find issues
+
+
+› say ok
+
+
+• ok
+
+  Worked for <1s • 12:22
+
+
+› SLOW turn please
+
+
+• chunk0 chunk1 chunk2 chunk3 chunk4 chunk5 chunk6 chunk7 chunk8 chunk9 chunk10
+  chunk11 chunk12 chunk13 chunk14 chunk15 chunk16 chunk17 chunk18 chunk19
+
+
+› POKE-TEST-codex-A
+
+
+• ok
+
+  Worked for 40s • 12:23
+
+
+› say ok again
+
+
+• ok
+
+  Worked for <1s • 12:24
+
+
+› TOOLS run three steps
+
+
+• Working (12s • esc to interrupt) · 1 background terminal running · /ps to vi…
+
+• Messages to be submitted after next tool call (press esc to interrupt and
+  send immediately)
+  ↳ POKE-TEST-codex-B
+
+
+› Ask Codex to do anything
+
+  mockmodel medium · Context 0% used · /private/tmp/ht-poke-spike/codex
+  ? for shortcuts                                     ⚠ 1 warning · f2 to view

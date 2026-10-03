@@ -7,5 +7,6 @@ pub mod output;
 pub mod pagination;
 pub mod results;
 pub mod service;
+pub mod summary;
 pub mod time;
 pub mod wire;

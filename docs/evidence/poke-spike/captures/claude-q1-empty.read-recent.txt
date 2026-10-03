@@ -1,0 +1,80 @@
+
+✻ Brewed for 54s · done 12:17 PM
+
+❯ Run three Bash tool calls one after another, each in the foreground and never
+  in the background: sleep 15 then echo one; sleep 15 then echo two; sleep 15
+  then echo three. Reply done after the third.
+
+  Ran 1 shell command
+
+❯ POKE-TEST-claude-C
+
+  Ran 2 shell commands
+
+⏺ done
+
+  (Also received: POKE-TEST-claude-C)
+
+✻ Cogitated for 50s · done 12:19 PM
+
+❯ Run three Bash tool calls one after another, each in the foreground and never
+  in the background: sleep 15 then echo one; sleep 15 then echo two; sleep 15
+  then echo three. Reply done after the third.
+
+  Ran 1 shell command
+
+❯ DRAFT-TEXT-xyzPOKE-TEST-claude-D
+
+  Ran 2 shell commands
+
+⏺ done
+
+  (Also received: DRAFT-TEXT-xyzPOKE-TEST-claude-D)
+
+✻ Sautéed for 50s · done 12:20 PM
+
+❯ POKE-TEST-claude-E reply with the word ok
+
+⏺ ok
+
+✻ Churned for 0s · done 12:20 PM
+
+❯ Use the Agent tool to launch two subagents in parallel in a single message,
+  both with the model parameter set to haiku. Subagent one runs the shell
+  command echo worker-a and returns its output. Subagent two runs echo worker-b
+  and returns its output. Then report both outputs.
+
+⏺ 2 background agents launched (↓ to manage)
+   ├ Run shell command echo worker-a
+   └ Run shell command echo worker-b
+
+⏺ Both subagents have been launched in parallel. Worker-a (agent ID:
+  a4d697f56c7aee0af) and worker-b (agent ID: afb376b17a2665b97) are running in
+  the background. I'll report their outputs once they complete and I receive the
+  completion notifications.
+
+✻ Waiting for 2 background agents to finish
+
+⏺ Agent "Run shell command echo worker-a" finished · 2s
+
+⏺ Worker-a has completed with output: worker-a
+
+  Waiting for worker-b to complete...
+
+✻ Waiting for 1 background agent to finish
+
+⏺ Agent "Run shell command echo worker-b" finished · 2s
+
+⏺ Both agents have completed. Here are the outputs:
+
+  Worker-a output: worker-a
+
+  Worker-b output: worker-b
+
+✻ Crunched for 7s · done 12:20 PM
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ████░░░░░░░░░░░░░░░░ 200k | Haiku 4.5 | CL:51%/49%/?/$0
+  ⏸ manual mode on · /tasks to see subagents · ← for agents

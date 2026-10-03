@@ -1,0 +1,5 @@
+01-sessionstart-startup: 5 paths vs 5 paths; symmetric difference: empty
+02-pretooluse-bash-root: 10 paths vs 10 paths; symmetric difference: empty
+03-sessionstart-resume: 9 paths vs 9 paths; symmetric difference: empty
+04-pretooluse-bash-subagent: 12 paths vs 12 paths; symmetric difference: empty
+RESULT: identical key paths and types

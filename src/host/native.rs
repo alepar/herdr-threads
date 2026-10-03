@@ -4,9 +4,10 @@ use super::continuity::LocalEndpointWitness;
 use super::observation::{
     NativePane, NativeSnapshot, normalize_pane, normalize_snapshot, structured_host_error,
 };
+use crate::harness::composer::{self, ComposerRead};
 use crate::ports::{
-    self, CorrelatedStartup, EnumerationEvidence, EvidenceKind, ExecutionEvidence, HostCallContext,
-    HostObservation, HostPort, HostSnapshot, HostUiState, IncarnationEvidence,
+    self, ComposerStash, CorrelatedStartup, EnumerationEvidence, EvidenceKind, ExecutionEvidence,
+    HostCallContext, HostObservation, HostPort, HostSnapshot, HostUiState, IncarnationEvidence,
     NativeLaunchCapability, NativeLaunchOutcome, NativeLaunchRequest, ObservationProvenance,
     SafeWakeTarget, StructuralOccupancy, WakeTargetBasis,
 };
@@ -46,6 +47,13 @@ const PROMPT_RECHECK_MILLIS: u64 = 750;
 const PROMPT_SUBMIT_MILLIS: u64 = 2_000;
 /// Smallest budget a wake prompt submission is started with.
 const MIN_PROMPT_MILLIS: u64 = 250;
+/// Ceiling of one composer read or composer key/text send.
+const COMPOSER_CALL_MILLIS: u64 = 750;
+/// The key that deletes the composer's text one row or line at a time
+/// (poke spike Q3).
+const COMPOSER_CLEAR_KEY: &str = "ctrl+u";
+/// Clears beyond one per composer line before a stash gives up.
+const COMPOSER_CLEAR_SLACK: usize = 2;
 /// Settle time before the composer is read back after a send, so the harness
 /// has cleared its composer when the prompt was accepted.
 const COMPOSER_SETTLE_MILLIS: u64 = 250;
@@ -600,6 +608,18 @@ impl NativeCli {
             ["pane", "get", target] => ("pane.get", serde_json::json!({"pane_id":target})),
             ["api", "snapshot"] => ("session.snapshot", serde_json::json!({})),
             ["agent", "get", target] => ("agent.get", serde_json::json!({"target":target})),
+            ["agent", "read", target, "--source", source] => (
+                "agent.read",
+                serde_json::json!({"target":target,"source":source}),
+            ),
+            ["pane", "send-keys", target, keys @ ..] if !keys.is_empty() => (
+                "pane.send_keys",
+                serde_json::json!({"pane_id":target,"keys":keys}),
+            ),
+            ["pane", "send-text", target, text] => (
+                "pane.send_text",
+                serde_json::json!({"pane_id":target,"text":text}),
+            ),
             ["pane", "read", target] => (
                 "pane.read",
                 serde_json::json!({
@@ -760,26 +780,15 @@ impl HostPort for NativeCli {
         target: &HostTargetId,
         context: &HostCallContext,
     ) -> Result<HostObservation, ApiError> {
-        self.check_context(context)?;
-        let epoch = self.epoch();
-        let started = self.clock.monotonic_now();
-        let (pane, witness) = self.pane_witnessed(target.as_str(), &context.budget)?;
-        self.check_epoch(epoch)?;
-        let incarnation = witness
-            .as_ref()
-            .map(ServerIncarnation::from_witness)
-            .transpose()?;
-        self.check_boot(context, incarnation.as_ref())?;
-        let sequence = self.next_sequence();
-        Ok(self.observation(
-            pane,
-            epoch,
-            started,
-            incarnation.as_ref(),
-            ObservationProvenance::FreshCurrentTarget,
-            EvidenceKind::NativeCurrentTarget,
-            sequence,
-        ))
+        self.observe_target(target, context, false)
+    }
+
+    fn observe_current_target_for_poke(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<HostObservation, ApiError> {
+        self.observe_target(target, context, true)
     }
 
     /// Herdr 0.9.1 builds `session.snapshot` in one `&self` call on its
@@ -842,45 +851,37 @@ impl HostPort for NativeCli {
     /// Cooperative native policy: Herdr 0.9.1 cannot prove the current
     /// native execution, so the target is structural (a fresh current-target
     /// read of the same terminal in the same verified server incarnation, no
-    /// positive evidence of an empty shell, active turn, blocked UI or human
-    /// input). Whether the occupant is a recognized idle harness is rechecked
+    /// positive evidence of an empty shell, active turn or blocked UI). Typed
+    /// composer input never refuses an ordinary wake (TRUST-POLICY A4): it
+    /// merges with the draft, as before the composer reader existed. Whether
+    /// the occupant is a recognized idle harness is rechecked
     /// by `submit_prompt` immediately before submission.
     fn safe_wake_target(
         &self,
         seat: &SeatId,
         observation: &HostObservation,
     ) -> Option<SafeWakeTarget> {
-        if self.safe_prompt_capability() != CapabilityState::Supported
-            || observation.provenance != ObservationProvenance::FreshCurrentTarget
-            || observation.generation == 0
-            || matches!(observation.execution, ExecutionEvidence::Verified { .. })
-            || observation.occupancy == StructuralOccupancy::EmptyShell
-            || matches!(
-                observation.ui,
-                HostUiState::ActiveTurn | HostUiState::ApprovalOrQuestion | HostUiState::HumanInput
-            )
-        {
+        if matches!(
+            observation.ui,
+            HostUiState::ActiveTurn | HostUiState::ApprovalOrQuestion
+        ) {
             return None;
         }
-        let IncarnationEvidence::Verified {
-            identity,
-            evidence_kind: EvidenceKind::NativeCurrentTarget,
-        } = &observation.incarnation
-        else {
+        self.cooperative_target(seat, observation)
+    }
+
+    /// A poke decides the UI state itself (`poke_eligibility`), so only an
+    /// open approval or question is excluded here; the structural checks are
+    /// the wake target's.
+    fn safe_poke_target(
+        &self,
+        seat: &SeatId,
+        observation: &HostObservation,
+    ) -> Option<SafeWakeTarget> {
+        if observation.ui == HostUiState::ApprovalOrQuestion {
             return None;
-        };
-        Some(SafeWakeTarget {
-            seat: seat.clone(),
-            target: observation.target.clone(),
-            host_boot: observation.host_boot.clone(),
-            generation: observation.generation,
-            terminal: observation.terminal.clone()?,
-            incarnation: identity.clone(),
-            basis: WakeTargetBasis::CooperativeAgent,
-            epoch: observation.epoch,
-            observation_sequence: observation.observation_sequence,
-            bound_harness: None,
-        })
+        }
+        self.cooperative_target(seat, observation)
     }
 
     /// Fresh witnessed `agent.get` recheck immediately before a witnessed
@@ -897,113 +898,77 @@ impl HostPort for NativeCli {
         text: &str,
         context: &HostCallContext,
     ) -> Result<ports::PromptOutcome, ApiError> {
-        let refuse = |detail: &str| {
-            error(
-                ErrorCode::TargetUnsafe,
-                format!("wake prompt refused before submission: {detail}"),
-            )
+        self.submit_prompt_mode(target, text, context, false)
+    }
+
+    /// Poke spike Q5: `agent.prompt` during a running turn is queued and
+    /// steered into it at the next tool boundary. Only a recipe declaring
+    /// `poke_during_turn` reaches this; the recheck allows `working`.
+    fn submit_prompt_during_turn(
+        &self,
+        target: &SafeWakeTarget,
+        text: &str,
+        context: &HostCallContext,
+    ) -> Result<ports::PromptOutcome, ApiError> {
+        self.submit_prompt_mode(target, text, context, true)
+    }
+
+    /// Reads the composer (`agent read --source detection`), clears it with a
+    /// bounded `ctrl+u` loop until a second read shows it empty, and returns
+    /// the saved text; the dispatcher then submits the poke and calls
+    /// [`Self::restore_composer`]. Any failure before the composer is empty
+    /// aborts with nothing submitted; once a key was sent, the saved text is
+    /// kept in the daemon log because the composer may already be partly
+    /// cleared.
+    fn stash_composer(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<ComposerStash, ApiError> {
+        self.composer_fence(target, context, "composer stash")?;
+        let Some(harness) = target.bound_harness.as_deref().and_then(bound_harness) else {
+            return Ok(ComposerStash::Failed("no bound harness".into()));
         };
-        if target.basis != WakeTargetBasis::CooperativeAgent {
-            return Err(refuse("native execution is unverified"));
-        }
-        if self.safe_prompt_capability() != CapabilityState::Supported {
-            return Err(refuse("no server incarnation witness on this platform"));
-        }
-        if context.expected_boot.as_ref() != Some(&target.host_boot)
-            || context.expected_epoch != Some(target.epoch)
-            || self.epoch() != target.epoch
-        {
-            return Err(refuse("host context changed"));
-        }
-        let budget = &context.budget;
-        let remaining = |this: &Self| {
-            budget
-                .deadline
-                .0
-                .saturating_sub(this.clock.monotonic_now().0)
-        };
-        if budget.cancellation.is_cancelled() {
-            return Err(error(ErrorCode::Cancelled, "wake prompt cancelled"));
-        }
-        let left = remaining(self);
-        if left <= 2 * MIN_PROMPT_MILLIS {
-            return Err(error(
-                ErrorCode::DeadlineExceeded,
-                "insufficient wake prompt budget",
-            ));
-        }
-        let recheck_limit = Duration::from_millis(
-            left.saturating_sub(MIN_PROMPT_MILLIS)
-                .min(PROMPT_RECHECK_MILLIS),
-        );
-        let (raw, witness) = match self.run_witnessed(
-            &["agent", "get", target.target.as_str()],
-            budget,
-            recheck_limit,
-        ) {
-            Ok(response) => response,
+        let first = match self.read_composer(&target.target, harness, context) {
+            Ok(read) => read,
+            Err(failure) if composer_call_aborts(&failure) => return Err(failure),
             Err(failure) => {
-                return Err(match failure.code {
-                    ErrorCode::Cancelled
-                    | ErrorCode::DeadlineExceeded
-                    | ErrorCode::HostUnavailable => failure,
-                    _ => refuse(&failure.detail),
-                });
+                return Ok(ComposerStash::Failed(format!(
+                    "composer read failed: {}",
+                    failure.detail
+                )));
             }
         };
-        if !self.same_incarnation(witness.as_ref(), target) || self.epoch() != target.epoch {
-            return Err(refuse("host server incarnation or epoch changed"));
-        }
-        let agent = serde_json::from_str::<serde_json::Value>(&raw)
-            .ok()
-            .and_then(|value| value.pointer("/result/agent").cloned())
-            .ok_or_else(|| refuse("unreadable agent recheck"))?;
-        if let Err(detail) = cooperative_wake_ready(&agent, target) {
-            return Err(refuse(&detail));
-        }
-        if budget.cancellation.is_cancelled() {
-            return Err(error(ErrorCode::Cancelled, "wake prompt cancelled"));
-        }
-        let left = remaining(self);
-        if left < MIN_PROMPT_MILLIS {
-            return Err(error(
-                ErrorCode::DeadlineExceeded,
-                "insufficient wake prompt budget",
-            ));
-        }
-        let limit = Duration::from_millis(left.min(PROMPT_SUBMIT_MILLIS));
-        let (raw, witness) = match self.run_witnessed(
-            &["agent", "prompt", target.target.as_str(), text],
-            budget,
-            limit,
-        ) {
-            Ok(response) => response,
-            // Herdr answers these before typing anything (a blocked agent is
-            // rejected "before any input is sent"; a missing agent or pane
-            // has nowhere to type); an invalid request never left us.
-            Err(failure)
-                if matches!(
-                    failure.code,
-                    ErrorCode::TargetUnsafe | ErrorCode::NotFound | ErrorCode::InvalidRequest
-                ) =>
-            {
-                return Err(refuse(&failure.detail));
+        let text = match first {
+            ComposerRead::Empty => return Ok(ComposerStash::Saved(String::new())),
+            ComposerRead::Text(text) => text,
+            ComposerRead::Unsafe { reason, .. } => {
+                return Ok(ComposerStash::Failed(reason.into()));
             }
-            Err(_) => return Ok(ports::PromptOutcome::OutcomeUnknown),
+            ComposerRead::Unreadable => {
+                return Ok(ComposerStash::Failed("composer unreadable".into()));
+            }
         };
-        let prompted = serde_json::from_str::<serde_json::Value>(&raw)
-            .ok()
-            .and_then(|value| value.pointer("/result/agent").cloned());
-        let correlated = prompted.as_ref().is_some_and(|agent| {
-            agent.get("pane_id").and_then(serde_json::Value::as_str) == Some(target.target.as_str())
-                && agent.get("terminal_id").and_then(serde_json::Value::as_str)
-                    == Some(target.terminal.as_str())
-        });
-        if correlated && self.same_incarnation(witness.as_ref(), target) {
-            Ok(ports::PromptOutcome::Submitted)
-        } else {
-            Ok(ports::PromptOutcome::OutcomeUnknown)
+        self.clear_composer(target, harness, text, context)
+    }
+
+    /// Retypes the stashed text with `pane send-text` (real newlines) and
+    /// never an Enter, so the person's draft is not submitted (Q4).
+    fn restore_composer(
+        &self,
+        target: &SafeWakeTarget,
+        saved: &str,
+        context: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        if saved.is_empty() {
+            return Ok(());
         }
+        self.composer_fence(target, context, "composer restore")?;
+        self.composer_call(
+            &["pane", "send-text", target.target.as_str(), saved],
+            context,
+        )
+        .map(|_| ())
     }
 
     /// Advisory read: unfenced, never moves the epoch. The settle wait ends
@@ -1160,6 +1125,7 @@ impl HostPort for NativeCli {
 fn cooperative_wake_ready(
     agent: &serde_json::Value,
     target: &SafeWakeTarget,
+    during_turn: bool,
 ) -> Result<(), String> {
     let text = |name: &str| agent.get(name).and_then(serde_json::Value::as_str);
     if text("pane_id") != Some(target.target.as_str())
@@ -1187,7 +1153,10 @@ fn cooperative_wake_ready(
         _ => {}
     }
     let status = text("agent_status");
-    if !status.is_some_and(|status| WAKE_READY_STATUSES.contains(&status)) {
+    let ready = status.is_some_and(|status| {
+        WAKE_READY_STATUSES.contains(&status) || (during_turn && status == "working")
+    });
+    if !ready {
         return Err(format!(
             "agent is not awaiting input (status {})",
             status
@@ -1201,6 +1170,338 @@ fn cooperative_wake_ready(
 }
 
 impl NativeCli {
+    fn submit_prompt_mode(
+        &self,
+        target: &SafeWakeTarget,
+        text: &str,
+        context: &HostCallContext,
+        during_turn: bool,
+    ) -> Result<ports::PromptOutcome, ApiError> {
+        let refuse = |detail: &str| {
+            error(
+                ErrorCode::TargetUnsafe,
+                format!("wake prompt refused before submission: {detail}"),
+            )
+        };
+        if target.basis != WakeTargetBasis::CooperativeAgent {
+            return Err(refuse("native execution is unverified"));
+        }
+        if self.safe_prompt_capability() != CapabilityState::Supported {
+            return Err(refuse("no server incarnation witness on this platform"));
+        }
+        if context.expected_boot.as_ref() != Some(&target.host_boot)
+            || context.expected_epoch != Some(target.epoch)
+            || self.epoch() != target.epoch
+        {
+            return Err(refuse("host context changed"));
+        }
+        let budget = &context.budget;
+        let remaining = |this: &Self| {
+            budget
+                .deadline
+                .0
+                .saturating_sub(this.clock.monotonic_now().0)
+        };
+        if budget.cancellation.is_cancelled() {
+            return Err(error(ErrorCode::Cancelled, "wake prompt cancelled"));
+        }
+        let left = remaining(self);
+        if left <= 2 * MIN_PROMPT_MILLIS {
+            return Err(error(
+                ErrorCode::DeadlineExceeded,
+                "insufficient wake prompt budget",
+            ));
+        }
+        let recheck_limit = Duration::from_millis(
+            left.saturating_sub(MIN_PROMPT_MILLIS)
+                .min(PROMPT_RECHECK_MILLIS),
+        );
+        let (raw, witness) = match self.run_witnessed(
+            &["agent", "get", target.target.as_str()],
+            budget,
+            recheck_limit,
+        ) {
+            Ok(response) => response,
+            Err(failure) => {
+                return Err(match failure.code {
+                    ErrorCode::Cancelled
+                    | ErrorCode::DeadlineExceeded
+                    | ErrorCode::HostUnavailable => failure,
+                    _ => refuse(&failure.detail),
+                });
+            }
+        };
+        if !self.same_incarnation(witness.as_ref(), target) || self.epoch() != target.epoch {
+            return Err(refuse("host server incarnation or epoch changed"));
+        }
+        let agent = serde_json::from_str::<serde_json::Value>(&raw)
+            .ok()
+            .and_then(|value| value.pointer("/result/agent").cloned())
+            .ok_or_else(|| refuse("unreadable agent recheck"))?;
+        if let Err(detail) = cooperative_wake_ready(&agent, target, during_turn) {
+            return Err(refuse(&detail));
+        }
+        if budget.cancellation.is_cancelled() {
+            return Err(error(ErrorCode::Cancelled, "wake prompt cancelled"));
+        }
+        let left = remaining(self);
+        if left < MIN_PROMPT_MILLIS {
+            return Err(error(
+                ErrorCode::DeadlineExceeded,
+                "insufficient wake prompt budget",
+            ));
+        }
+        let limit = Duration::from_millis(left.min(PROMPT_SUBMIT_MILLIS));
+        let (raw, witness) = match self.run_witnessed(
+            &["agent", "prompt", target.target.as_str(), text],
+            budget,
+            limit,
+        ) {
+            Ok(response) => response,
+            // Herdr answers these before typing anything (a blocked agent is
+            // rejected "before any input is sent"; a missing agent or pane
+            // has nowhere to type); an invalid request never left us.
+            Err(failure)
+                if matches!(
+                    failure.code,
+                    ErrorCode::TargetUnsafe | ErrorCode::NotFound | ErrorCode::InvalidRequest
+                ) =>
+            {
+                return Err(refuse(&failure.detail));
+            }
+            Err(_) => return Ok(ports::PromptOutcome::OutcomeUnknown),
+        };
+        let prompted = serde_json::from_str::<serde_json::Value>(&raw)
+            .ok()
+            .and_then(|value| value.pointer("/result/agent").cloned());
+        let correlated = prompted.as_ref().is_some_and(|agent| {
+            agent.get("pane_id").and_then(serde_json::Value::as_str) == Some(target.target.as_str())
+                && agent.get("terminal_id").and_then(serde_json::Value::as_str)
+                    == Some(target.terminal.as_str())
+        });
+        if correlated && self.same_incarnation(witness.as_ref(), target) {
+            Ok(ports::PromptOutcome::Submitted)
+        } else {
+            Ok(ports::PromptOutcome::OutcomeUnknown)
+        }
+    }
+
+    /// The structural target of a cooperative wake or poke: a fresh verified
+    /// terminal in a witnessed server incarnation with no verified execution.
+    /// UI exclusions are the callers' (a wake and a poke differ).
+    fn cooperative_target(
+        &self,
+        seat: &SeatId,
+        observation: &HostObservation,
+    ) -> Option<SafeWakeTarget> {
+        if self.safe_prompt_capability() != CapabilityState::Supported
+            || observation.provenance != ObservationProvenance::FreshCurrentTarget
+            || observation.generation == 0
+            || matches!(observation.execution, ExecutionEvidence::Verified { .. })
+            || observation.occupancy == StructuralOccupancy::EmptyShell
+        {
+            return None;
+        }
+        let IncarnationEvidence::Verified {
+            identity,
+            evidence_kind: EvidenceKind::NativeCurrentTarget,
+        } = &observation.incarnation
+        else {
+            return None;
+        };
+        Some(SafeWakeTarget {
+            seat: seat.clone(),
+            target: observation.target.clone(),
+            host_boot: observation.host_boot.clone(),
+            generation: observation.generation,
+            terminal: observation.terminal.clone()?,
+            incarnation: identity.clone(),
+            basis: WakeTargetBasis::CooperativeAgent,
+            epoch: observation.epoch,
+            observation_sequence: observation.observation_sequence,
+            bound_harness: None,
+        })
+    }
+
+    /// One fresh witnessed read. Only `composer_ui` (a soft-deadline poke)
+    /// spends the composer read that classifies the UI; an ordinary wake never
+    /// does, so a composer read that Herdr cannot answer cannot change a wake
+    /// decision or slow it, and it decides on `agent_status` and structure
+    /// alone as before the composer reader existed (TRUST-POLICY A4).
+    fn observe_target(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+        composer_ui: bool,
+    ) -> Result<HostObservation, ApiError> {
+        self.check_context(context)?;
+        let epoch = self.epoch();
+        let started = self.clock.monotonic_now();
+        let (pane, witness) = self.pane_witnessed(target.as_str(), &context.budget)?;
+        self.check_epoch(epoch)?;
+        let incarnation = witness
+            .as_ref()
+            .map(ServerIncarnation::from_witness)
+            .transpose()?;
+        self.check_boot(context, incarnation.as_ref())?;
+        // Herdr's `agent_status` is not a composer: an idle agent may hold
+        // typed text, so a poke's UI state also needs the composer read.
+        let ui = if composer_ui {
+            self.observed_ui(&pane, context)
+        } else {
+            status_ui(&pane)
+        };
+        let sequence = self.next_sequence();
+        let mut observation = self.observation(
+            pane,
+            epoch,
+            started,
+            incarnation.as_ref(),
+            ObservationProvenance::FreshCurrentTarget,
+            EvidenceKind::NativeCurrentTarget,
+            sequence,
+        );
+        observation.ui = ui;
+        Ok(observation)
+    }
+
+    /// The UI state a pane shows: Herdr's agent status plus, for an idle,
+    /// done or working claude/codex agent, a composer read. A failed or
+    /// timed-out read never fails the observation; it yields `Unknown`.
+    fn observed_ui(&self, pane: &NativePane, context: &HostCallContext) -> HostUiState {
+        let Some(harness) = pane.agent.as_deref().and_then(bound_harness) else {
+            return HostUiState::Unknown;
+        };
+        let status = pane.status.as_str();
+        match status {
+            "blocked" => composer::observed_ui(Some(status), None),
+            "idle" | "done" | "working" => {
+                let read = self.read_composer(&pane.target, harness, context).ok();
+                composer::observed_ui(Some(status), read.as_ref())
+            }
+            _ => HostUiState::Unknown,
+        }
+    }
+
+    /// One bounded `agent read --source detection`, composer-parsed. The pane
+    /// width is not in Herdr's pane record; Claude's rule length stands in.
+    fn read_composer(
+        &self,
+        target: &HostTargetId,
+        harness: Harness,
+        context: &HostCallContext,
+    ) -> Result<ComposerRead, ApiError> {
+        let limit = composer_limit(self, context)?;
+        let started = Instant::now();
+        let raw = self.run_unfenced(
+            &["agent", "read", target.as_str(), "--source", "detection"],
+            &context.budget,
+            limit,
+        )?;
+        let parsed: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|_| error(ErrorCode::InvalidRequest, "unreadable composer read"))?;
+        let read = parsed
+            .pointer("/result/read")
+            .ok_or_else(|| error(ErrorCode::InvalidRequest, "composer read has no read"))?;
+        let text = |name: &str| read.get(name).and_then(serde_json::Value::as_str);
+        if text("pane_id") != Some(target.as_str()) || text("source") != Some("detection") {
+            return Err(error(
+                ErrorCode::InvalidRequest,
+                "composer read answers another pane or source",
+            ));
+        }
+        let text = text("text")
+            .ok_or_else(|| error(ErrorCode::InvalidRequest, "composer read has no text"))?;
+        self.check_after_parse_unfenced(&context.budget, started, limit)?;
+        Ok(composer::read_composer(harness, text, None))
+    }
+
+    /// Clears the composer with a bounded `ctrl+u` loop until a read shows it
+    /// empty; `text` is what the first read saved. Called by `stash_composer`
+    /// only after the fence and a `Text` read.
+    fn clear_composer(
+        &self,
+        target: &SafeWakeTarget,
+        harness: Harness,
+        text: String,
+        context: &HostCallContext,
+    ) -> Result<ComposerStash, ApiError> {
+        let attempts = text.lines().count() + COMPOSER_CLEAR_SLACK;
+        for _ in 0..attempts {
+            let cleared = self
+                .composer_call(
+                    &[
+                        "pane",
+                        "send-keys",
+                        target.target.as_str(),
+                        COMPOSER_CLEAR_KEY,
+                    ],
+                    context,
+                )
+                .and_then(|_| self.read_composer(&target.target, harness, context));
+            match cleared {
+                Ok(ComposerRead::Empty) => return Ok(ComposerStash::Saved(text)),
+                Ok(_) => {}
+                Err(failure) => {
+                    eprintln!(
+                        "herdr-threads: warning: composer clear failed ({}); typed text was {text:?}",
+                        failure.detail
+                    );
+                    return if composer_call_aborts(&failure) {
+                        Err(failure)
+                    } else {
+                        Ok(ComposerStash::Failed(format!(
+                            "composer clear failed: {}",
+                            failure.detail
+                        )))
+                    };
+                }
+            }
+        }
+        eprintln!(
+            "herdr-threads: warning: composer not empty after clearing; typed text was {text:?}"
+        );
+        Ok(ComposerStash::Failed(
+            "composer not empty after clearing".into(),
+        ))
+    }
+
+    /// A composer key or text send, fenced like a prompt: a timeout or a
+    /// stale host invalidates the connection epoch.
+    fn composer_call(&self, args: &[&str], context: &HostCallContext) -> Result<String, ApiError> {
+        let limit = composer_limit(self, context)?;
+        self.run(args, &context.budget, limit)
+    }
+
+    /// The identity fence of a composer stash or restore, as a prompt's: the
+    /// seat's cooperative terminal in the same server incarnation and epoch.
+    fn composer_fence(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+        what: &str,
+    ) -> Result<(), ApiError> {
+        let refuse = |detail: &str| {
+            error(
+                ErrorCode::TargetUnsafe,
+                format!("{what} refused before any input: {detail}"),
+            )
+        };
+        if target.basis != WakeTargetBasis::CooperativeAgent {
+            return Err(refuse("native execution is unverified"));
+        }
+        if self.safe_prompt_capability() != CapabilityState::Supported {
+            return Err(refuse("no server incarnation witness on this platform"));
+        }
+        if context.expected_boot.as_ref() != Some(&target.host_boot)
+            || context.expected_epoch != Some(target.epoch)
+            || self.epoch() != target.epoch
+        {
+            return Err(refuse("host context changed"));
+        }
+        Ok(())
+    }
+
     fn same_incarnation(
         &self,
         witness: Option<&LocalEndpointWitness>,
@@ -1301,6 +1602,7 @@ impl NativeCli {
             provenance,
             occupant: None,
             ui: HostUiState::Unknown,
+            focused: pane.focused,
             terminal,
             occupancy: StructuralOccupancy::Unknown,
             incarnation,
@@ -1312,6 +1614,54 @@ impl NativeCli {
             completed_at_mono: completed,
         }
     }
+}
+
+/// The harness a Herdr agent kind or a seat's bound harness names, when its
+/// composer is readable.
+fn bound_harness(kind: &str) -> Option<Harness> {
+    match kind {
+        "claude" => Some(Harness::Claude),
+        "codex" => Some(Harness::Codex),
+        _ => None,
+    }
+}
+
+/// The bound for one composer call: the ceiling or what the budget has left.
+/// The UI state Herdr's `agent_status` alone shows: an open approval or
+/// question is `blocked`; everything else is `Unknown`, as on every ordinary
+/// wake before the composer reader existed.
+fn status_ui(pane: &NativePane) -> HostUiState {
+    if pane.agent.as_deref().and_then(bound_harness).is_some() && pane.status == "blocked" {
+        HostUiState::ApprovalOrQuestion
+    } else {
+        HostUiState::Unknown
+    }
+}
+
+fn composer_limit(cli: &NativeCli, context: &HostCallContext) -> Result<Duration, ApiError> {
+    if context.budget.cancellation.is_cancelled() {
+        return Err(error(ErrorCode::Cancelled, "composer call cancelled"));
+    }
+    let left = context
+        .budget
+        .deadline
+        .0
+        .saturating_sub(cli.clock.monotonic_now().0);
+    if left < MIN_PROMPT_MILLIS {
+        return Err(error(
+            ErrorCode::DeadlineExceeded,
+            "insufficient composer call budget",
+        ));
+    }
+    Ok(Duration::from_millis(left.min(COMPOSER_CALL_MILLIS)))
+}
+
+/// A failure that ends the whole attempt rather than skipping the stash.
+fn composer_call_aborts(failure: &ApiError) -> bool {
+    matches!(
+        failure.code,
+        ErrorCode::Cancelled | ErrorCode::DeadlineExceeded | ErrorCode::StaleHostObservation
+    )
 }
 
 /// Whether pane text shows `kind` echoed at a shell prompt and a shell prompt
@@ -1491,6 +1841,7 @@ mod tests {
             expected_epoch: Some(3),
         };
         let observation = HostObservation {
+            focused: false,
             target,
             host_boot: boot,
             epoch: 3,
@@ -2159,17 +2510,45 @@ mod tests {
         }
         agent
     }
+    /// A `pane.get` whose agent status is not one the composer read applies
+    /// to, so the observation makes no further host call; the recheck that
+    /// matters to these wake tests is the `agent.get` before the prompt.
     fn pane_exchange() -> Exchange {
-        Box::new(|stream: &mut UnixStream, request: Value| {
+        pane_exchange_with("unknown")
+    }
+    fn pane_exchange_with(status: &'static str) -> Exchange {
+        Box::new(move |stream: &mut UnixStream, request: Value| {
             assert_eq!(request["method"], "pane.get");
             answer(
                 stream,
                 &request,
                 json!({"type":"pane_info","pane":{"pane_id":"w4:p1","terminal_id":"term_1",
                     "workspace_id":"w4","tab_id":"w4:t1","focused":false,
-                    "agent_status":"idle","agent":"claude","revision":2}}),
+                    "agent_status":status,"agent":"claude","revision":2}}),
             );
         })
+    }
+    #[test]
+    fn observation_carries_the_panes_focus_flag() {
+        for focused in [true, false] {
+            let exchange: Exchange = Box::new(move |stream: &mut UnixStream, request: Value| {
+                assert_eq!(request["method"], "pane.get");
+                answer(
+                    stream,
+                    &request,
+                    json!({"type":"pane_info","pane":{"pane_id":"w4:p1","terminal_id":"term_1",
+                        "workspace_id":"w4","tab_id":"w4:t1","focused":focused,
+                        "agent_status":"unknown","agent":"claude","revision":2}}),
+                );
+            });
+            let (socket, cli, worker) = serve_sequence(vec![exchange]);
+            let observation = cli
+                .observe_current_target_for_poke(&HostTargetId::new("w4:p1"), &pane_agent_context())
+                .unwrap();
+            worker.join().unwrap();
+            fs::remove_file(socket).unwrap();
+            assert_eq!(observation.focused, focused);
+        }
     }
     fn recheck_exchange(agent: Value) -> Exchange {
         Box::new(move |stream: &mut UnixStream, request: Value| {
@@ -2241,7 +2620,7 @@ mod tests {
             expected_epoch: None,
         };
         let observation = cli
-            .observe_current_target(&HostTargetId::new("w4:p1"), &base)
+            .observe_current_target_for_poke(&HostTargetId::new("w4:p1"), &base)
             .unwrap();
         let mut target = cli
             .safe_wake_target(&SeatId::new("seat_1"), &observation)
@@ -2572,7 +2951,7 @@ mod tests {
             expected_epoch: None,
         };
         let observation = cli
-            .observe_current_target(&HostTargetId::new("w4:p1"), &context)
+            .observe_current_target_for_poke(&HostTargetId::new("w4:p1"), &context)
             .unwrap();
         let target = cli
             .safe_wake_target(&SeatId::new("seat_1"), &observation)
@@ -2733,7 +3112,6 @@ mod tests {
                 "approval",
                 Box::new(|o| o.ui = HostUiState::ApprovalOrQuestion),
             ),
-            ("human input", Box::new(|o| o.ui = HostUiState::HumanInput)),
             ("active turn", Box::new(|o| o.ui = HostUiState::ActiveTurn)),
             ("generation 0", Box::new(|o| o.generation = 0)),
         ];
@@ -2742,6 +3120,13 @@ mod tests {
             change(&mut changed);
             assert!(cli.safe_wake_target(&seat, &changed).is_none(), "{label}");
         }
+        let mut typed = observation.clone();
+        typed.ui = HostUiState::HumanInput;
+        assert_eq!(
+            cli.safe_wake_target(&seat, &typed).is_some(),
+            cfg!(target_os = "macos"),
+            "typed input is a safe wake target"
+        );
         let Some(target) = target else { return };
         let context = wake_context(&observation);
         let mut verified = target.clone();
@@ -2769,6 +3154,505 @@ mod tests {
         );
         assert_eq!(cli.epoch(), 3, "no host call was attempted");
     }
+
+    // ---- composer observation, stash and poke-during-turn ----
+
+    const CLAUDE_EMPTY: &str =
+        include_str!("../../docs/evidence/poke-spike/captures/claude-q1-empty.read-detection.txt");
+    const CLAUDE_DRAFT: &str = include_str!(
+        "../../docs/evidence/poke-spike/captures/claude-q1-q2-single.read-detection.txt"
+    );
+    const CLAUDE_IMAGE: &str = include_str!(
+        "../../docs/evidence/poke-spike/captures/claude-q2-image-placeholder.read-detection.txt"
+    );
+    const CODEX_EMPTY: &str =
+        include_str!("../../docs/evidence/poke-spike/captures/codex-q6-workers.read-detection.txt");
+
+    /// A Claude screen whose composer holds `rows`.
+    fn claude_screen(rows: &[&str]) -> String {
+        let rule = "─".repeat(80);
+        let mut body = String::new();
+        for (index, row) in rows.iter().enumerate() {
+            body.push_str(if index == 0 { "❯ " } else { "  " });
+            body.push_str(row);
+            body.push('\n');
+        }
+        format!("\n{rule}\n{body}{rule}\n  footer\n")
+    }
+
+    fn detection_exchange(text: impl Into<String>) -> Exchange {
+        let text = text.into();
+        Box::new(move |stream: &mut UnixStream, request: Value| {
+            assert_eq!(request["method"], "agent.read");
+            assert_eq!(
+                request["params"],
+                json!({"target":"w4:p1","source":"detection"})
+            );
+            answer(
+                stream,
+                &request,
+                json!({"type":"pane_read","read":{"pane_id":"w4:p1","source":"detection",
+                    "format":"text","text":text,"revision":0,"truncated":false}}),
+            );
+        })
+    }
+    fn failing_detection_exchange() -> Exchange {
+        Box::new(|stream: &mut UnixStream, request: Value| {
+            assert_eq!(request["method"], "agent.read");
+            refuse(stream, &request, "agent_not_found");
+        })
+    }
+    fn clear_exchange() -> Exchange {
+        Box::new(|stream: &mut UnixStream, request: Value| {
+            assert_eq!(request["method"], "pane.send_keys");
+            assert_eq!(
+                request["params"],
+                json!({"pane_id":"w4:p1","keys":["ctrl+u"]})
+            );
+            answer(stream, &request, json!({"type":"ok"}));
+        })
+    }
+    fn retype_exchange(text: &'static str, ok: bool) -> Exchange {
+        Box::new(move |stream: &mut UnixStream, request: Value| {
+            assert_eq!(request["method"], "pane.send_text");
+            assert_eq!(request["params"], json!({"pane_id":"w4:p1","text":text}));
+            if ok {
+                answer(stream, &request, json!({"type":"ok"}));
+            } else {
+                refuse(stream, &request, "pane_not_found");
+            }
+        })
+    }
+    fn prompt_exchange(text: &'static str) -> Exchange {
+        Box::new(move |stream: &mut UnixStream, request: Value| {
+            assert_eq!(request["method"], "agent.prompt");
+            assert_eq!(request["params"], json!({"target":"w4:p1","text":text}));
+            answer(
+                stream,
+                &request,
+                json!({"type":"agent_prompted","agent":wake_agent("idle", Some("claude"), "term_1")}),
+            );
+        })
+    }
+
+    /// Observes `w4:p1` (a `pane.get` the composer read does not follow),
+    /// derives the poke target for a claude-bound seat, and hands the adapter,
+    /// target and context to `act` while the scripted exchanges serve. Returns
+    /// `act`'s result and the methods the host saw, in order.
+    #[cfg(target_os = "macos")]
+    fn poke_session<T>(
+        rest: Vec<Exchange>,
+        act: impl FnOnce(&NativeCli, &SafeWakeTarget, &HostCallContext) -> T,
+    ) -> (T, Vec<String>) {
+        let methods = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut exchanges = vec![pane_exchange()];
+        exchanges.extend(rest);
+        let exchanges = exchanges
+            .into_iter()
+            .map(|exchange| {
+                let methods = Arc::clone(&methods);
+                Box::new(move |stream: &mut UnixStream, request: Value| {
+                    methods
+                        .lock()
+                        .unwrap()
+                        .push(request["method"].as_str().unwrap().to_owned());
+                    exchange(stream, request)
+                }) as Exchange
+            })
+            .collect();
+        let (socket, cli, worker) = serve_sequence(exchanges);
+        let base = HostCallContext {
+            budget: CallBudget {
+                deadline: MonoInstant(10_000),
+                cancellation: Cancellation::default(),
+            },
+            expected_boot: None,
+            expected_epoch: None,
+        };
+        let observation = cli
+            .observe_current_target_for_poke(&HostTargetId::new("w4:p1"), &base)
+            .unwrap();
+        let mut target = cli
+            .safe_poke_target(&SeatId::new("seat_1"), &observation)
+            .expect("a fresh verified terminal is a poke target");
+        target.bound_harness = Some("claude".into());
+        let context = wake_context(&observation);
+        let result = act(&cli, &target, &context);
+        worker.join().unwrap();
+        fs::remove_file(socket).unwrap();
+        let methods = methods.lock().unwrap().clone();
+        (result, methods)
+    }
+
+    /// Kills: a clear that skips the verifying read, sends the poke before
+    /// the composer is empty, retypes with a different text or presses Enter
+    /// after retyping.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clear_verifies_before_the_poke() {
+        let ((stash, prompt, restore), methods) = poke_session(
+            vec![
+                clear_exchange(),
+                detection_exchange(CLAUDE_EMPTY),
+                recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
+                prompt_exchange("poke text"),
+                retype_exchange("hello world one", true),
+            ],
+            |cli, target, context| {
+                let stash =
+                    cli.clear_composer(target, Harness::Claude, "hello world one".into(), context);
+                let prompt = cli.submit_prompt(target, "poke text", context);
+                let restore = cli.restore_composer(target, "hello world one", context);
+                (stash, prompt, restore)
+            },
+        );
+        assert_eq!(
+            stash.unwrap(),
+            ComposerStash::Saved("hello world one".into())
+        );
+        assert_eq!(prompt.unwrap(), ports::PromptOutcome::Submitted);
+        restore.unwrap();
+        assert_eq!(
+            methods,
+            [
+                "pane.get",
+                "pane.send_keys",
+                "agent.read",
+                "agent.get",
+                "agent.prompt",
+                "pane.send_text",
+            ],
+            "clear, verify, then the poke, then the retype; never an Enter"
+        );
+    }
+
+    /// A multi-line draft needs one clear per line; the stash keeps clearing
+    /// until a read shows the composer empty. Kills: a single fixed clear.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stash_clears_until_the_composer_reads_empty() {
+        let (stash, methods) = poke_session(
+            vec![
+                clear_exchange(),
+                detection_exchange(claude_screen(&["line one"])),
+                clear_exchange(),
+                detection_exchange(CLAUDE_EMPTY),
+            ],
+            |cli, target, context| {
+                cli.clear_composer(
+                    target,
+                    Harness::Claude,
+                    "line one\nline two".into(),
+                    context,
+                )
+            },
+        );
+        assert_eq!(
+            stash.unwrap(),
+            ComposerStash::Saved("line one\nline two".into())
+        );
+        assert_eq!(methods.iter().filter(|m| *m == "pane.send_keys").count(), 2);
+    }
+
+    /// Kills: a stash that continues after a failed composer read.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn read_failure_aborts_before_any_input() {
+        let (stash, methods) = poke_session(
+            vec![failing_detection_exchange()],
+            |cli, target, context| cli.stash_composer(target, context),
+        );
+        assert!(matches!(stash.unwrap(), ComposerStash::Failed(_)));
+        assert_eq!(methods, ["pane.get", "agent.read"]);
+    }
+
+    /// Kills: treating a composer that never empties as stashed (the poke
+    /// would merge into the person's text). The cap is one clear per line
+    /// plus the slack, and the typed text is not lost silently.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clear_not_verified_aborts() {
+        let mut exchanges = vec![];
+        for _ in 0..(1 + COMPOSER_CLEAR_SLACK) {
+            exchanges.push(clear_exchange());
+            exchanges.push(detection_exchange(CLAUDE_DRAFT));
+        }
+        let (stash, methods) = poke_session(exchanges, |cli, target, context| {
+            cli.clear_composer(target, Harness::Claude, "hello world one".into(), context)
+        });
+        assert_eq!(
+            stash.unwrap(),
+            ComposerStash::Failed("composer not empty after clearing".into())
+        );
+        assert!(!methods.iter().any(|m| m == "agent.prompt"));
+        assert_eq!(
+            methods.iter().filter(|m| *m == "pane.send_keys").count(),
+            1 + COMPOSER_CLEAR_SLACK
+        );
+    }
+
+    /// A failed clear key is a stash failure, not a skipped step.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clear_key_failure_aborts() {
+        let failing_keys: Exchange = Box::new(|stream: &mut UnixStream, request: Value| {
+            assert_eq!(request["method"], "pane.send_keys");
+            refuse(stream, &request, "pane_not_found");
+        });
+        let (stash, methods) = poke_session(vec![failing_keys], |cli, target, context| {
+            cli.clear_composer(target, Harness::Claude, "hello world one".into(), context)
+        });
+        assert!(matches!(
+            stash.unwrap(),
+            ComposerStash::Failed(detail) if detail.contains("clear failed")
+        ));
+        assert_eq!(methods, ["pane.get", "pane.send_keys"]);
+    }
+
+    /// Claude text may be a prompt suggestion, so the stash refuses before
+    /// any key (the poke is skipped for that poke only).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn claude_text_fails_stash_before_any_key() {
+        for screen in [
+            CLAUDE_DRAFT.to_owned(),
+            claude_screen(&["herdr-threads pending-receipts"]),
+        ] {
+            let (stash, methods) =
+                poke_session(vec![detection_exchange(screen)], |cli, target, context| {
+                    cli.stash_composer(target, context)
+                });
+            assert_eq!(
+                stash.unwrap(),
+                ComposerStash::Failed(composer::CLAUDE_NOT_KNOWN_EMPTY.into())
+            );
+            assert_eq!(methods, ["pane.get", "agent.read"], "no pane.send_keys");
+        }
+    }
+
+    /// Findings Q4: a retyped image placeholder comes back as literal text, so
+    /// the stash refuses before sending any key. Kills: stashing past it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unsafe_condition_from_findings_fails_stash() {
+        let (stash, methods) = poke_session(
+            vec![detection_exchange(CLAUDE_IMAGE)],
+            |cli, target, context| cli.stash_composer(target, context),
+        );
+        assert_eq!(
+            stash.unwrap(),
+            ComposerStash::Failed("image placeholder in the composer".into())
+        );
+        assert_eq!(methods, ["pane.get", "agent.read"]);
+    }
+
+    /// A failed retype is an error for the dispatcher, which logs the saved
+    /// text and keeps the poke counted (see the dispatcher's own test).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn retype_failure_is_returned_for_the_dispatcher_to_log() {
+        let (restore, methods) = poke_session(
+            vec![retype_exchange("half-typed words", false)],
+            |cli, target, context| cli.restore_composer(target, "half-typed words", context),
+        );
+        assert!(restore.is_err());
+        assert_eq!(methods, ["pane.get", "pane.send_text"]);
+    }
+
+    /// Kills: an unfenced stash or restore (a changed host epoch must refuse
+    /// before any input).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stash_and_restore_refuse_a_changed_host_context() {
+        let (results, methods) = poke_session(vec![], |cli, target, context| {
+            let mut stale = context.clone();
+            stale.expected_epoch = Some(context.expected_epoch.unwrap() + 1);
+            (
+                cli.stash_composer(target, &stale),
+                cli.restore_composer(target, "text", &stale),
+            )
+        });
+        assert_eq!(results.0.unwrap_err().code, ErrorCode::TargetUnsafe);
+        assert_eq!(results.1.unwrap_err().code, ErrorCode::TargetUnsafe);
+        assert_eq!(methods, ["pane.get"]);
+    }
+
+    /// Kills: `poke_during_turn` leaking into ordinary wakes. A working agent
+    /// is prompted only through the during-turn mode; `submit_prompt` still
+    /// refuses it before any prompt.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn active_turn_poke_uses_the_declared_primitive() {
+        let working = || recheck_exchange(wake_agent("working", Some("claude"), "term_1"));
+        let ((ordinary, during_turn), methods) = poke_session(
+            vec![working(), working(), prompt_exchange("poke text")],
+            |cli, target, context| {
+                (
+                    cli.submit_prompt(target, "poke text", context),
+                    cli.submit_prompt_during_turn(target, "poke text", context),
+                )
+            },
+        );
+        let refused = ordinary.unwrap_err();
+        assert_eq!(refused.code, ErrorCode::TargetUnsafe);
+        assert!(refused.detail.contains("not awaiting input"), "{refused:?}");
+        assert_eq!(during_turn.unwrap(), ports::PromptOutcome::Submitted);
+        assert_eq!(
+            methods,
+            ["pane.get", "agent.get", "agent.get", "agent.prompt"],
+            "the ordinary wake sent no prompt"
+        );
+    }
+
+    /// Blocked UI is refused even in the during-turn mode.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn during_turn_mode_still_refuses_a_blocked_agent() {
+        let (result, methods) = poke_session(
+            vec![recheck_exchange(wake_agent(
+                "blocked",
+                Some("claude"),
+                "term_1",
+            ))],
+            |cli, target, context| cli.submit_prompt_during_turn(target, "poke text", context),
+        );
+        assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+        assert_eq!(methods, ["pane.get", "agent.get"]);
+    }
+
+    /// One `observe_current_target` over a pane in `status` of `kind`, with
+    /// `rest` exchanges after the `pane.get`; returns the observed UI state
+    /// and the methods the host saw.
+    fn observe_ui(
+        status: &'static str,
+        kind: &'static str,
+        rest: Vec<Exchange>,
+    ) -> (HostUiState, Vec<String>) {
+        observe_ui_as(true, status, kind, rest)
+    }
+
+    /// [`observe_ui`] for an ordinary wake (`poke: false`: the plain
+    /// observation) or a poke (`poke: true`: the composer-classified one).
+    fn observe_ui_as(
+        poke: bool,
+        status: &'static str,
+        kind: &'static str,
+        rest: Vec<Exchange>,
+    ) -> (HostUiState, Vec<String>) {
+        let methods = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let pane: Exchange = Box::new(move |stream: &mut UnixStream, request: Value| {
+            assert_eq!(request["method"], "pane.get");
+            answer(
+                stream,
+                &request,
+                json!({"type":"pane_info","pane":{"pane_id":"w4:p1","terminal_id":"term_1",
+                    "workspace_id":"w4","tab_id":"w4:t1","focused":false,
+                    "agent_status":status,"agent":kind,"revision":2}}),
+            );
+        });
+        let mut exchanges = vec![pane];
+        exchanges.extend(rest);
+        let exchanges = exchanges
+            .into_iter()
+            .map(|exchange| {
+                let methods = Arc::clone(&methods);
+                Box::new(move |stream: &mut UnixStream, request: Value| {
+                    methods
+                        .lock()
+                        .unwrap()
+                        .push(request["method"].as_str().unwrap().to_owned());
+                    exchange(stream, request)
+                }) as Exchange
+            })
+            .collect();
+        let (socket, cli, worker) = serve_sequence(exchanges);
+        let target = HostTargetId::new("w4:p1");
+        let observation = if poke {
+            cli.observe_current_target_for_poke(&target, &pane_agent_context())
+        } else {
+            cli.observe_current_target(&target, &pane_agent_context())
+        }
+        .expect("a composer read never fails the observation");
+        worker.join().unwrap();
+        fs::remove_file(socket).unwrap();
+        let methods = methods.lock().unwrap().clone();
+        (observation.ui, methods)
+    }
+
+    /// An ordinary wake's observation is one `pane.get`: no composer read for
+    /// any status, so an unreadable composer cannot change or slow a wake
+    /// (TRUST-POLICY A4, ht-1ip.55). Kills: the plain observation issuing
+    /// `agent.read`, and a blocked pane losing its approval classification.
+    #[test]
+    fn ordinary_observation_makes_no_composer_read() {
+        for (status, expected) in [
+            ("idle", HostUiState::Unknown),
+            ("done", HostUiState::Unknown),
+            ("working", HostUiState::Unknown),
+            ("blocked", HostUiState::ApprovalOrQuestion),
+        ] {
+            let (ui, methods) = observe_ui_as(false, status, "codex", vec![]);
+            assert_eq!(ui, expected, "{status}");
+            assert_eq!(methods, ["pane.get"], "{status}");
+        }
+    }
+
+    /// Production-shaped observations (spike captures): the idle/draft/working
+    /// split. Kills: reporting Unknown for a readable pane, and an idle agent
+    /// with typed text reading as Idle.
+    #[test]
+    fn observation_classifies_idle_draft_and_working_panes() {
+        let (ui, methods) = observe_ui("idle", "claude", vec![detection_exchange(CLAUDE_EMPTY)]);
+        assert_eq!(ui, HostUiState::Idle);
+        assert_eq!(methods, ["pane.get", "agent.read"]);
+        let (ui, _) = observe_ui("idle", "claude", vec![detection_exchange(CLAUDE_DRAFT)]);
+        assert_eq!(ui, HostUiState::HumanInput);
+        // Suggestion-shaped text: same classification; the wake no longer refuses it.
+        let (ui, _) = observe_ui(
+            "idle",
+            "claude",
+            vec![detection_exchange(claude_screen(&[
+                "Run herdr-threads summary thread-x once and stop.",
+            ]))],
+        );
+        assert_eq!(ui, HostUiState::HumanInput);
+        let (ui, _) = observe_ui("done", "codex", vec![detection_exchange(CODEX_EMPTY)]);
+        assert_eq!(ui, HostUiState::Idle);
+        let (ui, _) = observe_ui("working", "claude", vec![detection_exchange(CLAUDE_EMPTY)]);
+        assert_eq!(ui, HostUiState::ActiveTurn);
+        let (ui, _) = observe_ui("working", "claude", vec![detection_exchange(CLAUDE_DRAFT)]);
+        assert_eq!(ui, HostUiState::Unknown);
+    }
+
+    /// A failed detection read leaves the observation intact with Unknown.
+    #[test]
+    fn observation_survives_a_failed_composer_read_as_unknown() {
+        let (ui, methods) = observe_ui("idle", "claude", vec![failing_detection_exchange()]);
+        assert_eq!(ui, HostUiState::Unknown);
+        assert_eq!(methods, ["pane.get", "agent.read"]);
+        let (ui, _) = observe_ui(
+            "idle",
+            "claude",
+            vec![detection_exchange("no composer on this screen\n")],
+        );
+        assert_eq!(ui, HostUiState::Unknown);
+    }
+
+    /// Blocked needs no composer read, and an unrecognized agent or status is
+    /// never read. Kills: a detection read for every pane.
+    #[test]
+    fn blocked_and_unrecognized_panes_make_no_composer_read() {
+        let (ui, methods) = observe_ui("blocked", "claude", vec![]);
+        assert_eq!(ui, HostUiState::ApprovalOrQuestion);
+        assert_eq!(methods, ["pane.get"]);
+        let (ui, methods) = observe_ui("idle", "pi", vec![]);
+        assert_eq!(ui, HostUiState::Unknown);
+        assert_eq!(methods, ["pane.get"]);
+        let (ui, methods) = observe_ui("unknown", "claude", vec![]);
+        assert_eq!(ui, HostUiState::Unknown);
+        assert_eq!(methods, ["pane.get"]);
+    }
+
     /// Serves ping+operation exchanges, answering each request through
     /// `answer_for` until it returns `true` (the last exchange); every wire
     /// request is recorded.

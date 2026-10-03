@@ -161,6 +161,16 @@ fn installed_version_witness_is_only_produced_by_observing_the_binary() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+fn codex_profile_declares_no_poke_capability_without_a_covering_recipe() {
+    // The spike tested Codex 0.160.0, which no recipe covers.
+    assert!(codex::recipe_for("0.160.0").is_err());
+    for recipe in codex::RECIPES {
+        assert_eq!(recipe.profile.composer_stash, NativeSupport::Unsupported);
+        assert_eq!(recipe.profile.poke_during_turn, NativeSupport::Unsupported);
+    }
+}
+
 /// A Codex hook entry that cannot obtain a witness refuses with the same
 /// actionable text for all three refusal kinds (`Unsupported`,
 /// `Unrecognized` and `Unavailable`), and converts into the shared
@@ -1202,6 +1212,8 @@ const SUPPORTED_RECIPES: &[codex::CodexRecipe] = &[crate::harness::recipe::Recip
         input_mapping: Capability::ObservedInput,
         invocation_transport: NativeSupport::Supported,
         model_receipt: NativeSupport::Supported,
+        composer_stash: NativeSupport::Unsupported,
+        poke_during_turn: NativeSupport::Unsupported,
     },
 }];
 

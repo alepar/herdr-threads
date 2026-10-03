@@ -12,6 +12,7 @@ use crate::protocol::time::{MonoInstant, UtcMillis};
 fn target(id: &str, terminal: &str, execution: Option<&str>, sequence: u64) -> HostObservation {
     let execution_id = execution.map(ExecutionId::new);
     HostObservation {
+        focused: false,
         target: HostTargetId::new(id),
         host_boot: HostBootId::new("boot-a"),
         epoch: 1,

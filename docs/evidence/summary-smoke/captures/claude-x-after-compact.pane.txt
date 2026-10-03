@@ -1,0 +1,45 @@
+user@host proj-claude % claude --setting-sources project,local --settings /private/tmp/ht-summary-smoke/claude-config/settings.json --model claude-haiku-4-5-20251001
+ ▐▛███▛█   Claude Code v2.1.287
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /private/tmp/ht-summary-smoke/proj-claude
+
+
+❯ herdr-threads: attention pending; run herdr-threads inbox
+
+⏺ I'll check your pending messages now.
+
+⏺ Bash(herdr-threads inbox)
+  ⎿  inbox
+     thread-I2SWujnv invitations=1
+
+⏺ You have 1 pending invitation in thread thread-I2SWujnv. Let me read it to see what you're being invited to.
+
+⏺ Bash(herdr-threads thread show thread-I2SWujnv)
+  ⎿  thread thread-I2SWujnv messages=3 ordinary=0 joined=1 participants=3 pending_receipts=0
+     topic: Release 7 rollout
+     goal: Coordinate the Release 7 rollout across the build, test and docs seats
+     … +4 lines (ctrl+o to expand)
+
+⏺ Pending invitation:
+  - Thread: thread-I2SWujnv — Release 7 rollout
+  - Goal: Coordinate the Release 7 rollout across the build, test and docs seats
+  - Participants: 1 already joined, 2 invited (including you)
+ ▐▛███▛█   Claude Code v2.1.287
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /private/tmp/ht-summary-smoke/proj-claude
+
+
+✻ Conversation compacted (ctrl+o for history)
+
+
+⏺ Accepted thread-I2SWujnv (Release 7 rollout).
+
+✻ Churned for 2s · done 4:11 PM
+
+❯ /compact
+  ⎿  Compacted (ctrl+o to see full summary)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents

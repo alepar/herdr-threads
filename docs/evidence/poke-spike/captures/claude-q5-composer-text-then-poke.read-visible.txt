@@ -1,0 +1,50 @@
+
+  Ran 1 shell command
+
+❯ POKE-TEST-claude-B
+
+  Ran 2 shell commands
+
+⏺ done
+
+  (Also received: POKE-TEST-claude-B)
+
+✻ Brewed for 54s · done 12:17 PM
+
+❯ Run three Bash tool calls one after another, each in the foreground and never
+  in the background: sleep 15 then echo one; sleep 15 then echo two; sleep 15
+  then echo three. Reply done after the third.
+
+  Ran 1 shell command
+
+❯ POKE-TEST-claude-C
+
+  Ran 2 shell commands
+
+⏺ done
+
+  (Also received: POKE-TEST-claude-C)
+
+✻ Cogitated for 50s · done 12:19 PM
+
+❯ Run three Bash tool calls one after another, each in the foreground and never
+  in the background: sleep 15 then echo one; sleep 15 then echo two; sleep 15
+  then echo three. Reply done after the third.
+
+⏺ Sleeping 15 seconds then echo one · 8s
+  ⎿  $ sleep 15; echo one (8s)
+     (ctrl+b to run in background)
+
+❯ DRAFT-TEXT-xyzPOKE-TEST-claude-D
+  ctrl+enter to send now
+
+· Fluttering… (10s · ↓ 132 tokens)
+  ⎿  Tip: Want a side agent watching your back while Claude works? Turn on You
+     should know:
+     /plugin enable cc-plugin-you-should-know@builtin
+
+────────────────────────────────────────────────────────────────────────────────
+❯ Press up to edit queued messages
+────────────────────────────────────────────────────────────────────────────────
+  ████░░░░░░░░░░░░░░░░ 200k | Haiku 4.5 | CL:51%/49%/?/$0
+  ⏸ manual mode on · ← for agents

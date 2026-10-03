@@ -521,7 +521,7 @@ pub(crate) fn publish_notify_internal(
         NotificationSeverity::Warn => "warn",
     };
     let now = context.clock().utc_now();
-    tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,actor_label,event_json,decision_seq,decision_at,author_kind,author_service_id) VALUES(?1,?2,?3,?4,?5,?6,'herdr-graph',?7,?8,?9,'programmatic',?10)",
+    tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,actor_label,event_json,decision_seq,decision_at,author_kind,author_service_id,author_role) VALUES(?1,?2,?3,?4,?5,?6,'herdr-graph',?7,?8,?9,'programmatic',?10,'service')",
         params![message.as_str(),instance,request.thread.as_str(),next_sequence,kind,format!("system_notify:{}",message.as_str()),body,seq as i64,now.0,decision.author().as_str()]).map_err(store_error)?;
     tx.execute("INSERT INTO service_notification_publications(preparation_id,message_id,decision_seq,recipient_count) VALUES(?1,?2,?3,?4)",params![id,message.as_str(),seq as i64,count]).map_err(store_error)?;
     tx.execute(
@@ -565,6 +565,9 @@ pub(crate) fn publish_notify_internal(
             event_author: Some(crate::protocol::service::EventAuthor::Programmatic(
                 decision.author().clone(),
             )),
+            author_role: Some(crate::protocol::summary::AuthorRole::Service),
+            relays_user: false,
+            author_role_backfilled: false,
         },
         author: decision.author().clone(),
     });
@@ -1885,6 +1888,22 @@ mod tests {
             )))
         );
         assert_eq!(system.author, None);
+        // Spec §1: a programmatic notification records the service role, never a relay.
+        let recorded: (Option<String>, i64) = db
+            .query_row(
+                "SELECT author_role,relays_user FROM messages WHERE id=?1",
+                [notice.summary.message.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(recorded, (Some("service".to_owned()), 0));
+        assert_eq!(
+            (system.author_role, system.relays_user),
+            (Some(crate::protocol::summary::AuthorRole::Service), false)
+        );
+        assert_eq!(notice.summary.author_role, system.author_role);
+        // The raw row has no recorded role and reads as NULL (agent).
+        assert_eq!(native.author_role, None);
         assert_eq!(
             system.event_author,
             Some(crate::protocol::service::EventAuthor::Programmatic(

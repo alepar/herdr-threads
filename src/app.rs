@@ -10,6 +10,7 @@ use crate::{
     },
     ports::{HostPort, LocalService, StorePort},
     protocol::{
+        authority::Harness,
         results::{CapabilityState, HealthSettings},
         time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis},
     },
@@ -134,9 +135,47 @@ pub(crate) struct HarnessObservations {
     pub(crate) claude: HarnessStatus,
     pub(crate) codex: HarnessStatus,
     /// The canonical `X.Y.Z` each binary on `PATH` reported (`None` when it
-    /// reported none): what doctor's detected-version line is about.
+    /// reported none), also for a version refused as below the floor or known
+    /// broken: what doctor's detected-version line is about. Poke
+    /// capabilities follow the recipe of exactly this version, and only while
+    /// the matching status admits it (see [`ObservedPokeCapabilities`]).
     pub(crate) claude_version: Option<String>,
     pub(crate) codex_version: Option<String>,
+}
+
+/// Soft-deadline poke capabilities (spec §10) from the installed harness
+/// versions the admission observer last observed (re-observed when a binary
+/// changes). No observation, no recipe for the
+/// observed version, or a harness without recipes reports `NONE`.
+pub(crate) struct ObservedPokeCapabilities {
+    observed: Arc<Mutex<HarnessObservations>>,
+}
+
+impl ObservedPokeCapabilities {
+    pub(crate) fn new(observed: Arc<Mutex<HarnessObservations>>) -> Self {
+        Self { observed }
+    }
+}
+
+impl crate::ports::PokeCapabilitySource for ObservedPokeCapabilities {
+    fn capabilities(&self, harness: Harness) -> crate::harness::recipe::PokeCapabilities {
+        let observed = self.observed.lock().ok();
+        // The detected version is also recorded for a refused binary (below
+        // the floor or known broken) so doctor can name it; a refused
+        // version never declares poke capabilities.
+        let version = observed.as_deref().and_then(|observed| {
+            let (status, version) = match harness {
+                Harness::Claude => (&observed.claude, observed.claude_version.as_deref()),
+                Harness::Codex => (&observed.codex, observed.codex_version.as_deref()),
+                Harness::Human => return None,
+            };
+            match status {
+                HarnessStatus::Refused(_) | HarnessStatus::VersionRefused(_) => None,
+                _ => version,
+            }
+        });
+        crate::harness::recipe::poke_capabilities(harness, version)
+    }
 }
 
 impl HarnessObservations {
@@ -382,6 +421,8 @@ pub(crate) fn claude_status_in(
 /// an observation, not a failed pass: the status carries the refusal. The
 /// admission-observer lane (`start_admission_observer`) runs
 /// [`AdmissionReobserver::pass`] on its Pacer; Health never waits for it.
+/// The `--version` the installed harness reported travels with its status:
+/// poke capabilities follow the recipe of exactly that version.
 fn observe_claude(
     path: Option<&std::ffi::OsStr>,
     timeout: Duration,
@@ -466,6 +507,7 @@ impl HarnessStatus {
 struct ObservedBinary {
     identity: Option<crate::harness::BinaryIdentity>,
     status: HarnessStatus,
+    /// The `--version` the binary reported, reused with `status`.
     version: Option<String>,
 }
 
@@ -1000,6 +1042,9 @@ where
             let incarnation_witness = host.incarnation_witness();
             let safe_prompt = host.safe_prompt_capability();
             let writer = Arc::new(FairWriter::new(32));
+            // The admission observer fills this slot; the wake lane reads poke
+            // capabilities from the versions it observed.
+            let harnesses = Arc::new(Mutex::new(HarnessObservations::default()));
             let register_lane = |lane: Lane| {
                 let pacer = Arc::new(Pacer::new(
                     lane.name(),
@@ -1031,6 +1076,7 @@ where
                 register_lane(Lane::Wakes),
                 factory_stop.clone(),
                 Arc::clone(&factory_wake_status),
+                Arc::new(ObservedPokeCapabilities::new(Arc::clone(&harnesses))),
             )?);
             let observation_pacer = Arc::new(Pacer::new(
                 Lane::Observation.name(),
@@ -1074,7 +1120,6 @@ where
                     Arc::new(move |line: &str| log.write_line(line))
                 },
             ));
-            let harnesses = Arc::new(Mutex::new(HarnessObservations::default()));
             let states_harnesses = Arc::clone(&harnesses);
             let observer_manifest = Arc::clone(&manifest);
             let observer_store = Arc::clone(&store);
@@ -1328,6 +1373,77 @@ mod lane_liveness_tests {
                 assert!(detail.contains("observation"), "{detail}")
             }
             other => panic!("expected degraded, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod poke_capability_source_tests {
+    use super::*;
+    use crate::{
+        harness::recipe::{NativeSupport, PokeCapabilities},
+        ports::PokeCapabilitySource,
+    };
+
+    fn source(claude: Option<&str>, codex: Option<&str>) -> ObservedPokeCapabilities {
+        ObservedPokeCapabilities::new(Arc::new(Mutex::new(HarnessObservations {
+            claude_version: claude.map(str::to_owned),
+            codex_version: codex.map(str::to_owned),
+            ..Default::default()
+        })))
+    }
+
+    /// Kills: a source ignoring the observed version, and one inventing a
+    /// capability for an unobserved harness.
+    #[test]
+    fn observed_versions_select_the_recipe_pair_and_unobserved_is_none() {
+        let declared = PokeCapabilities {
+            composer_stash: NativeSupport::Supported,
+            poke_during_turn: NativeSupport::Supported,
+        };
+        let observed = source(Some("2.1.287"), Some("0.160.0"));
+        assert_eq!(observed.capabilities(Harness::Claude), declared);
+        assert_eq!(
+            observed.capabilities(Harness::Codex),
+            PokeCapabilities::NONE
+        );
+        assert_eq!(
+            observed.capabilities(Harness::Human),
+            PokeCapabilities::NONE
+        );
+        let older = source(Some("2.1.286"), None);
+        assert_eq!(older.capabilities(Harness::Claude), PokeCapabilities::NONE);
+        let unobserved = source(None, None);
+        assert_eq!(
+            unobserved.capabilities(Harness::Claude),
+            PokeCapabilities::NONE
+        );
+        // The slot starts empty and is filled later by the background probe.
+        let slot = Arc::new(Mutex::new(HarnessObservations::default()));
+        let late = ObservedPokeCapabilities::new(Arc::clone(&slot));
+        assert_eq!(late.capabilities(Harness::Claude), PokeCapabilities::NONE);
+        slot.lock().unwrap().claude_version = Some("2.1.287".into());
+        assert_eq!(late.capabilities(Harness::Claude), declared);
+    }
+
+    /// Kills: a source that declares poke capabilities for a detected
+    /// version the admission ladder refused (recorded for doctor only).
+    #[test]
+    fn refused_status_declares_no_poke_capabilities() {
+        for status in [
+            HarnessStatus::VersionRefused("known broken".into()),
+            HarnessStatus::Refused("unrecognized".into()),
+        ] {
+            let refused =
+                ObservedPokeCapabilities::new(Arc::new(Mutex::new(HarnessObservations {
+                    claude: status,
+                    claude_version: Some("2.1.287".into()),
+                    ..Default::default()
+                })));
+            assert_eq!(
+                refused.capabilities(Harness::Claude),
+                PokeCapabilities::NONE
+            );
         }
     }
 }

@@ -1,0 +1,72 @@
+user@host proj-claude % claude --setting-sources project,local --settings /private/tmp/ht-summary-smoke/claude-config/settings.json --model claude-haiku-4-5-20251001
+ ▐▛███▛█   Claude Code v2.1.287
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /private/tmp/ht-summary-smoke/proj-claude
+
+
+❯ herdr-threads: attention pending; run herdr-threads inbox
+
+⏺ I'll check your pending messages now.
+
+⏺ Bash(herdr-threads inbox)
+  ⎿  inbox
+     thread-I2SWujnv invitations=1
+
+⏺ You have 1 pending invitation in thread thread-I2SWujnv. Let me read it to see what you're being invited to.
+
+⏺ Bash(herdr-threads thread show thread-I2SWujnv)
+  ⎿  thread thread-I2SWujnv messages=3 ordinary=0 joined=1 participants=3 pending_receipts=0
+     topic: Release 7 rollout
+     goal: Coordinate the Release 7 rollout across the build, test and docs seats
+     … +4 lines (ctrl+o to expand)
+
+⏺ Pending invitation:
+  - Thread: thread-I2SWujnv — Release 7 rollout
+  - Goal: Coordinate the Release 7 rollout across the build, test and docs seats
+  - Participants: 1 already joined, 2 invited (including you)
+ ▐▛███▛█   Claude Code v2.1.287
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /private/tmp/ht-summary-smoke/proj-claude
+
+
+✻ Conversation compacted (ctrl+o for history)
+
+
+⏺ Accepted thread-I2SWujnv (Release 7 rollout).
+
+✻ Churned for 2s · done 4:11 PM
+
+❯ /compact
+  ⎿  Compacted (ctrl+o to see full summary)
+
+❯ Your context was reset. Please catch up on the Release 7 rollout thread and continue.
+
+⏺ Bash(herdr-threads summary thread-I2SWujnv)
+  ⎿  summary thread-I2SWujnv frontier #51: work (6 jobs)
+     job sj-7ec6b0ec-159a-48c8-89e3-e79a5dd545df L0 #1-#10 lease until 23:15Z budget 11264 bytes
+       fetch: herdr-threads summary job sj-7ec6b0ec-159a-48c8-89e3-e79a5dd545df --lease bee6a251-5695-4006-8802-e82
+     … +18 lines (ctrl+o to expand)
+
+⏺ Bash(herdr-threads read thread-I2SWujnv --recent 20)
+  ⎿  history
+     #51 ack seat-oJLhtZuC msg-8ghfN7je
+     #50 ack seat-oJLhtZuC msg-T5ZtmkKU
+     … +47 lines (ctrl+o to expand)
+
+⏺ Bash(herdr-threads ack msg-3qazczdH && herdr-threads ack msg-tPITIGd4 && herdr-threads ack msg-5FZCMSJE &&
+      herdr-threads ack msg-T5ZtmkKU)
+  ⎿  acknowledged
+     acknowledged: ["msg-3qazczdH"]
+     already_acknowledged: []
+     … +9 lines (ctrl+o to expand)
+
+⏺ Caught up on Release 7 rollout thread—ACKed all four pending messages. The thread is coordinating a regional rollout
+  (eu-west → us-east → ap-south, 30 min soak each) behind the rollout-7 flag, with outstanding asks for the test seat on
+  regression suite runs and build seat on release candidate production and quarantining export_roundtrip. What's next?
+
+✻ Cogitated for 16s · done 4:14 PM
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents

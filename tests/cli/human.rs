@@ -33,6 +33,9 @@ fn summary(seq: u64, preview: &str) -> MessageSummary {
         thread: ThreadId::new("thread-Ab12Cd34"),
         author: Some(SeatId::new("seat-Xy98Zw76")),
         event_author: None,
+        author_role: None,
+        relays_user: false,
+        author_role_backfilled: false,
         kind: MessageKind::Ordinary,
         sequence: seq,
         // 2026-09-30 12:34:56Z
@@ -108,7 +111,9 @@ fn mutations_are_one_line_confirmations() {
         "Sent message msg-Q1w2E3r4.\n"
     );
     assert_eq!(
-        human(&CommandResult::Accepted(InvitationId::new("inv-Q1w2E3r4"))),
+        human(&CommandResult::Accepted(
+            InvitationId::new("inv-Q1w2E3r4").into()
+        )),
         "Accepted invitation inv-Q1w2E3r4.\n"
     );
     assert_eq!(
@@ -235,6 +240,84 @@ fn presentation_flags_parse_and_conflict_with_json() {
     assert!(parsed(&["herdr-threads", "--json", "--human", "inbox"]).is_err());
     assert!(parsed(&["herdr-threads", "--json", "--machine", "inbox"]).is_err());
     assert!(parsed(&["herdr-threads", "--human", "--machine", "inbox"]).is_err());
+}
+
+#[test]
+fn history_marks_human_and_relayed_messages_after_the_author() {
+    use crate::protocol::summary::AuthorRole;
+    let mut human_row = summary(1, "from the human");
+    human_row.author_role = Some(AuthorRole::Human);
+    let mut relayed = summary(2, "relayed");
+    relayed.author_role = Some(AuthorRole::Agent);
+    relayed.relays_user = true;
+    let mut both = summary(3, "both [human]");
+    both.author_role = Some(AuthorRole::Human);
+    both.relays_user = true;
+    let mut service = summary(4, "svc");
+    service.author_role = Some(AuthorRole::Service);
+    let out = human(&CommandResult::History(page(vec![
+        human_row,
+        relayed,
+        both,
+        service,
+        summary(5, "plain"),
+    ])));
+    assert_eq!(
+        out,
+        "[12:34] <seat-Xy98Zw76> [human] from the human\n\
+         [12:34] <seat-Xy98Zw76> [relays user] relayed\n\
+         [12:34] <seat-Xy98Zw76> [human] [relays user] both [human]\n\
+         [12:34] <seat-Xy98Zw76> svc\n\
+         [12:34] <seat-Xy98Zw76> plain\n"
+    );
+}
+
+// Kills: a join hint missing from the human renderer, or one printed for an
+// accept whose thread holds no full chunk.
+#[test]
+fn accepted_prints_the_summary_hint_only_when_present() {
+    use crate::protocol::results::AcceptedInvitation;
+    let hinted = CommandResult::Accepted(AcceptedInvitation {
+        invitation: InvitationId::new("inv-Q1w2E3r4"),
+        summary_available: Some(ThreadId::new("thr-9")),
+    });
+    assert_eq!(
+        human(&hinted),
+        "Accepted invitation inv-Q1w2E3r4.\nsummary available: herdr-threads summary thr-9\n"
+    );
+    assert!(
+        !human(&CommandResult::Accepted(
+            InvitationId::new("inv-Q1w2E3r4").into()
+        ))
+        .contains("summary")
+    );
+}
+
+#[test]
+fn pending_table_carries_the_deferral_line() {
+    use crate::protocol::{results::PendingReceipt, time::UtcMillis};
+    let receipt = |deferred_until: Option<i64>| PendingReceipt {
+        message: MessageId::new("m1"),
+        thread: ThreadId::new("t1"),
+        seat: SeatId::new("s1"),
+        sequence: 4,
+        sender: SeatId::new("S1"),
+        decision_at: UtcMillis(0),
+        available_at: Some(UtcMillis(0)),
+        deadline: Some(UtcMillis(12 * 3_600_000)),
+        overdue: false,
+        effective_deadline: deferred_until.map(UtcMillis),
+        deferred_until: deferred_until.map(UtcMillis),
+    };
+    let deferred = human(&CommandResult::PendingReceipts(page(vec![receipt(Some(
+        12 * 3_600_000 + 5 * 60_000,
+    ))])));
+    assert!(
+        deferred.contains("1970-01-01 12:00Z deferred: recipient catching up (until 12:05Z)"),
+        "{deferred}"
+    );
+    let plain = human(&CommandResult::PendingReceipts(page(vec![receipt(None)])));
+    assert!(!plain.contains("deferred"), "{plain}");
 }
 
 #[test]

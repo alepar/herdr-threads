@@ -1,0 +1,173 @@
+--- top result: summary thread-I2SWujnv frontier #51: work (6 jobs)
+job sj-7ec6b0ec-159a-48c8-89e3-e79a5dd545df L0 #1-#10 lease until 23:15Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-7ec6b0ec-159a-48c8-89e3-e79a5dd545df --lease bee6a251-5695-4006-8802-e82a3a25ce6b
+  submit: herdr-threads summary submit sj-7ec6b0ec-159a-48c8-89e3-e79a5dd545df --lease bee6a251-5695-4006-8802-e82a3a25ce6b < submission.json
+job sj-ca16aef2-4df3-44d1-8017-bc0d8f2d8c7d L0 #11-#17 lease until 23:15Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-ca16aef2-4df3-44d1-8017-bc0d8f2d8c7d --lease 5092299f-8bbf-4c82-b5b3-3dd05f2e82f4
+  submit: herdr-threads summary submit sj-ca16aef2-4df3-44d1-8017-bc0d8f2d8c7d --lease 5092299f-8bbf-4c82-b5b3-3dd05f2e82f4 < submission.json
+job sj-dbec4865-b3bb-40c2-a170-b70b1069c974 L0 #18-#23 lease until 23:15Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-dbec4865-b3bb-40c2-a170-b70b1069c974 --lease 25902b6b-cf7b-41ab-8407-a816040ea75e
+  submit: herdr-threads summary submit sj-dbec4865-b3bb-40c2-a170-b70b1069c974 --lease 25902b6b-cf7b-41ab-8407-a816040ea75e < submission.json
+job sj-426ec252-7a44-4413-8187-b35a6f35b582 L0 #24-#30 lease until 23:15Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-426ec252-7a44-4413-8187-b35a6f35b582 --lease c629bd77-2b72-4e34-a95b-1f8af70b8db4
+  submit: herdr-threads summary submit sj-426ec252-7a44-4413-8187-b35a6f35b582 --lease c629bd77-2b72-4e34-a95b-1f8af70b8db4 < submission.json
+job sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c L0 #31-#36 lease until 23:15Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c --lease b13f68ab-b5a9-4fb7-be6b-50cb5a58c402
+  submit: herdr-threads summary submit sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c --lease b13f68ab-b5a9-4fb7-be6b-50cb5a58c402 < submission.json
+job sj-678d219a-73bd-4909-8c85-0e50984390cc L0 #37-#43 lease until 23:15Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-678d219a-73bd-4909-8c85-0e50984390cc --lease cf2bd118-ae1c-496f-a876-8544cfce2f83
+  submit: herdr-threads summary submit sj-678d219a-73bd-4909-8c85-0e50984390cc --lease cf2bd118-ae1c-496f-a876-8544cfce2f83 < submission.json
+then: herdr-threads summary thread-I2SWujnv
+
+--- top result: summary thread-I2SWujnv frontier #55: work (6 jobs)
+job sj-7ec6b0ec-159a-48c8-89e3-e79a5dd545df L0 #1-#10 lease until 23:15Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-7ec6b0ec-159a-48c8-89e3-e79a5dd545df --lease bee6a251-5695-4006-8802-e82a3a25ce6b
+  submit: herdr-threads summary submit sj-7ec6b0ec-159a-48c8-89e3-e79a5dd545df --lease bee6a251-5695-4006-8802-e82a3a25ce6b < submission.json
+job sj-ca16aef2-4df3-44d1-8017-bc0d8f2d8c7d L0 #11-#17 lease until 23:15Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-ca16aef2-4df3-44d1-8017-bc0d8f2d8c7d --lease 5092299f-8bbf-4c82-b5b3-3dd05f2e82f4
+  submit: herdr-threads summary submit sj-ca16aef2-4df3-44d1-8017-bc0d8f2d8c7d --lease 5092299f-8bbf-4c82-b5b3-3dd05f2e82f4 < submission.json
+job sj-dbec4865-b3bb-40c2-a170-b70b1069c974 L0 #18-#23 lease until 23:15Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-dbec4865-b3bb-40c2-a170-b70b1069c974 --lease 25902b6b-cf7b-41ab-8407-a816040ea75e
+  submit: herdr-threads summary submit sj-dbec4865-b3bb-40c2-a170-b70b1069c974 --lease 25902b6b-cf7b-41ab-8407-a816040ea75e < submission.json
+job sj-426ec252-7a44-4413-8187-b35a6f35b582 L0 #24-#30 lease until 23:15Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-426ec252-7a44-4413-8187-b35a6f35b582 --lease c629bd77-2b72-4e34-a95b-1f8af70b8db4
+  submit: herdr-threads summary submit sj-426ec252-7a44-4413-8187-b35a6f35b582 --lease c629bd77-2b72-4e34-a95b-1f8af70b8db4 < submission.json
+job sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c L0 #31-#36 lease until 23:15Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c --lease b13f68ab-b5a9-4fb7-be6b-50cb5a58c402
+  submit: herdr-threads summary submit sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c --lease b13f68ab-b5a9-4fb7-be6b-50cb5a58c402 < submission.json
+job sj-678d219a-73bd-4909-8c85-0e50984390cc L0 #37-#43 lease until 23:15Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-678d219a-73bd-4909-8c85-0e50984390cc --lease cf2bd118-ae1c-496f-a876-8544cfce2f83
+  submit: herdr-threads summary submit sj-678d219a-73bd-4909-8c85-0e50984390cc --lease cf2bd118-ae1c-496f-a876-8544cfce2f83 < submission.json
+then: herdr-threads summary thread-I2SWujnv
+
+--- top result: summary thread-I2SWujnv frontier #131: work (8 jobs)
+job sj-ca16aef2-4df3-44d1-8017-bc0d8f2d8c7d L0 #11-#17 lease until 23:18Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-ca16aef2-4df3-44d1-8017-bc0d8f2d8c7d --lease 1314b92c-87ef-4b74-826c-76f080a05c7e
+  submit: herdr-threads summary submit sj-ca16aef2-4df3-44d1-8017-bc0d8f2d8c7d --lease 1314b92c-87ef-4b74-826c-76f080a05c7e < submission.json
+job sj-dbec4865-b3bb-40c2-a170-b70b1069c974 L0 #18-#23 lease until 23:18Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-dbec4865-b3bb-40c2-a170-b70b1069c974 --lease 7a32127c-efd9-4bc2-91f9-fa28ec214182
+  submit: herdr-threads summary submit sj-dbec4865-b3bb-40c2-a170-b70b1069c974 --lease 7a32127c-efd9-4bc2-91f9-fa28ec214182 < submission.json
+job sj-426ec252-7a44-4413-8187-b35a6f35b582 L0 #24-#30 lease until 23:18Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-426ec252-7a44-4413-8187-b35a6f35b582 --lease 150ba19f-baf6-4a85-9466-b5f03633458a
+  submit: herdr-threads summary submit sj-426ec252-7a44-4413-8187-b35a6f35b582 --lease 150ba19f-baf6-4a85-9466-b5f03633458a < submission.json
+job sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c L0 #31-#36 lease until 23:18Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c --lease b8337556-e97a-456f-a0d8-c34ab452ef9f
+  submit: herdr-threads summary submit sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c --lease b8337556-e97a-456f-a0d8-c34ab452ef9f < submission.json
+job sj-678d219a-73bd-4909-8c85-0e50984390cc L0 #37-#43 lease until 23:18Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-678d219a-73bd-4909-8c85-0e50984390cc --lease e24ce266-62ef-4ab8-bb26-fed468879563
+  submit: herdr-threads summary submit sj-678d219a-73bd-4909-8c85-0e50984390cc --lease e24ce266-62ef-4ab8-bb26-fed468879563 < submission.json
+job sj-0c7d1664-ccc6-41e8-a735-a0014a4ea02e L0 #44-#56 lease until 23:18Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-0c7d1664-ccc6-41e8-a735-a0014a4ea02e --lease ab0194ee-9dcd-47fb-82f1-3a4ba494a33e
+  submit: herdr-threads summary submit sj-0c7d1664-ccc6-41e8-a735-a0014a4ea02e --lease ab0194ee-9dcd-47fb-82f1-3a4ba494a33e < submission.json
+job sj-034af6ad-51ca-43b5-a038-b225af9cbe36 L0 #57-#67 lease until 23:18Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-034af6ad-51ca-43b5-a038-b225af9cbe36 --lease e3869d6f-18e0-4c82-85b6-c8adb1243206
+  submit: herdr-threads summary submit sj-034af6ad-51ca-43b5-a038-b225af9cbe36 --lease e3869d6f-18e0-4c82-85b6-c8adb1243206 < submission.json
+job sj-a7922fb3-920f-4a1d-8a0f-56852f7b04d7 L0 #68-#78 lease until 23:18Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-a7922fb3-920f-4a1d-8a0f-56852f7b04d7 --lease 99990c93-79dd-4abc-9dbc-2f7d11acbb1a
+  submit: herdr-threads summary submit sj-a7922fb3-920f-4a1d-8a0f-56852f7b04d7 --lease 99990c93-79dd-4abc-9dbc-2f7d11acbb1a < submission.json
+then: herdr-threads summary thread-I2SWujnv
+
+--- top result: summary thread-I2SWujnv frontier #131: work (12 jobs)
+job sj-ca16aef2-4df3-44d1-8017-bc0d8f2d8c7d L0 #11-#17 lease until 23:18Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-ca16aef2-4df3-44d1-8017-bc0d8f2d8c7d --lease 1314b92c-87ef-4b74-826c-76f080a05c7e
+  submit: herdr-threads summary submit sj-ca16aef2-4df3-44d1-8017-bc0d8f2d8c7d --lease 1314b92c-87ef-4b74-826c-76f080a05c7e < submission.json
+job sj-dbec4865-b3bb-40c2-a170-b70b1069c974 L0 #18-#23 lease until 23:18Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-dbec4865-b3bb-40c2-a170-b70b1069c974 --lease 7a32127c-efd9-4bc2-91f9-fa28ec214182
+  submit: herdr-threads summary submit sj-dbec4865-b3bb-40c2-a170-b70b1069c974 --lease 7a32127c-efd9-4bc2-91f9-fa28ec214182 < submission.json
+job sj-426ec252-7a44-4413-8187-b35a6f35b582 L0 #24-#30 lease until 23:18Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-426ec252-7a44-4413-8187-b35a6f35b582 --lease 150ba19f-baf6-4a85-9466-b5f03633458a
+  submit: herdr-threads summary submit sj-426ec252-7a44-4413-8187-b35a6f35b582 --lease 150ba19f-baf6-4a85-9466-b5f03633458a < submission.json
+job sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c L0 #31-#36 lease until 23:18Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c --lease b8337556-e97a-456f-a0d8-c34ab452ef9f
+  submit: herdr-threads summary submit sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c --lease b8337556-e97a-456f-a0d8-c34ab452ef9f < submission.json
+job sj-678d219a-73bd-4909-8c85-0e50984390cc L0 #37-#43 lease until 23:18Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-678d219a-73bd-4909-8c85-0e50984390cc --lease e24ce266-62ef-4ab8-bb26-fed468879563
+  submit: herdr-threads summary submit sj-678d219a-73bd-4909-8c85-0e50984390cc --lease e24ce266-62ef-4ab8-bb26-fed468879563 < submission.json
+job sj-0c7d1664-ccc6-41e8-a735-a0014a4ea02e L0 #44-#56 lease until 23:18Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-0c7d1664-ccc6-41e8-a735-a0014a4ea02e --lease ab0194ee-9dcd-47fb-82f1-3a4ba494a33e
+  submit: herdr-threads summary submit sj-0c7d1664-ccc6-41e8-a735-a0014a4ea02e --lease ab0194ee-9dcd-47fb-82f1-3a4ba494a33e < submission.json
+job sj-034af6ad-51ca-43b5-a038-b225af9cbe36 L0 #57-#67 lease until 23:18Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-034af6ad-51ca-43b5-a038-b225af9cbe36 --lease e3869d6f-18e0-4c82-85b6-c8adb1243206
+  submit: herdr-threads summary submit sj-034af6ad-51ca-43b5-a038-b225af9cbe36 --lease e3869d6f-18e0-4c82-85b6-c8adb1243206 < submission.json
+job sj-a7922fb3-920f-4a1d-8a0f-56852f7b04d7 L0 #68-#78 lease until 23:18Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-a7922fb3-920f-4a1d-8a0f-56852f7b04d7 --lease 99990c93-79dd-4abc-9dbc-2f7d11acbb1a
+  submit: herdr-threads summary submit sj-a7922fb3-920f-4a1d-8a0f-56852f7b04d7 --lease 99990c93-79dd-4abc-9dbc-2f7d11acbb1a < submission.json
+job sj-3f15bb21-77ad-43e7-a6cf-d3308f88ff0e L0 #79-#89 lease until 23:19Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-3f15bb21-77ad-43e7-a6cf-d3308f88ff0e --lease 68a52e46-ff97-4f07-b113-e99cd8da2e73
+  submit: herdr-threads summary submit sj-3f15bb21-77ad-43e7-a6cf-d3308f88ff0e --lease 68a52e46-ff97-4f07-b113-e99cd8da2e73 < submission.json
+job sj-ccdae529-b72e-41ed-acab-5ba3c610f0a2 L0 #90-#100 lease until 23:19Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-ccdae529-b72e-41ed-acab-5ba3c610f0a2 --lease e6841854-d774-41b7-9fb9-0f89bb38aabf
+  submit: herdr-threads summary submit sj-ccdae529-b72e-41ed-acab-5ba3c610f0a2 --lease e6841854-d774-41b7-9fb9-0f89bb38aabf < submission.json
+job sj-946a1e57-7d5b-4c2a-a9cd-6f29d2dfcf97 L0 #101-#111 lease until 23:19Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-946a1e57-7d5b-4c2a-a9cd-6f29d2dfcf97 --lease 48051827-1644-48bd-9691-6b7e73a49833
+  submit: herdr-threads summary submit sj-946a1e57-7d5b-4c2a-a9cd-6f29d2dfcf97 --lease 48051827-1644-48bd-9691-6b7e73a49833 < submission.json
+job sj-73968910-40a4-41c1-b55f-981400c809ed L0 #112-#122 lease until 23:19Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-73968910-40a4-41c1-b55f-981400c809ed --lease 5788998c-0216-4afa-8c70-711c136bd123
+  submit: herdr-threads summary submit sj-73968910-40a4-41c1-b55f-981400c809ed --lease 5788998c-0216-4afa-8c70-711c136bd123 < submission.json
+then: herdr-threads summary thread-I2SWujnv
+
+--- top result: summary thread-I2SWujnv frontier #131: work (5 jobs)
+job sj-dbec4865-b3bb-40c2-a170-b70b1069c974 L0 #18-#23 lease until 23:21Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-dbec4865-b3bb-40c2-a170-b70b1069c974 --lease 2d15f5eb-c853-4c19-b034-75a0d0b78280
+  submit: herdr-threads summary submit sj-dbec4865-b3bb-40c2-a170-b70b1069c974 --lease 2d15f5eb-c853-4c19-b034-75a0d0b78280 < submission.json
+job sj-426ec252-7a44-4413-8187-b35a6f35b582 L0 #24-#30 lease until 23:21Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-426ec252-7a44-4413-8187-b35a6f35b582 --lease dac69079-3bd9-4100-9683-824d7874b163
+  submit: herdr-threads summary submit sj-426ec252-7a44-4413-8187-b35a6f35b582 --lease dac69079-3bd9-4100-9683-824d7874b163 < submission.json
+job sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c L0 #31-#36 lease until 23:21Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c --lease 527ab75d-baf9-4690-a838-18576218ea9a
+  submit: herdr-threads summary submit sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c --lease 527ab75d-baf9-4690-a838-18576218ea9a < submission.json
+job sj-678d219a-73bd-4909-8c85-0e50984390cc L0 #37-#43 lease until 23:21Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-678d219a-73bd-4909-8c85-0e50984390cc --lease 78eedbc2-19f2-4b0b-adfe-a299e2ef4fc8
+  submit: herdr-threads summary submit sj-678d219a-73bd-4909-8c85-0e50984390cc --lease 78eedbc2-19f2-4b0b-adfe-a299e2ef4fc8 < submission.json
+job sj-0c7d1664-ccc6-41e8-a735-a0014a4ea02e L0 #44-#56 lease until 23:21Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-0c7d1664-ccc6-41e8-a735-a0014a4ea02e --lease b5ed35c4-9c2e-4d80-b41d-25788dd11520
+  submit: herdr-threads summary submit sj-0c7d1664-ccc6-41e8-a735-a0014a4ea02e --lease b5ed35c4-9c2e-4d80-b41d-25788dd11520 < submission.json
+then: herdr-threads summary thread-I2SWujnv
+
+--- top result: summary thread-I2SWujnv frontier #131: work (2 jobs)
+job sj-dbec4865-b3bb-40c2-a170-b70b1069c974 L0 #18-#23 lease until 23:23Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-dbec4865-b3bb-40c2-a170-b70b1069c974 --lease 37a8df18-476c-44db-bacd-0ce97acf113e
+  submit: herdr-threads summary submit sj-dbec4865-b3bb-40c2-a170-b70b1069c974 --lease 37a8df18-476c-44db-bacd-0ce97acf113e < submission.json
+job sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c L0 #31-#36 lease until 23:23Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c --lease 7034b029-6852-4ddd-85bd-ad81cd956da8
+  submit: herdr-threads summary submit sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c --lease 7034b029-6852-4ddd-85bd-ad81cd956da8 < submission.json
+then: herdr-threads summary thread-I2SWujnv
+
+--- top result: summary thread-I2SWujnv frontier #132: work (2 jobs)
+job sj-dbec4865-b3bb-40c2-a170-b70b1069c974 L0 #18-#23 lease until 23:24Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-dbec4865-b3bb-40c2-a170-b70b1069c974 --lease aed691a4-1fa6-40e1-a7db-5ef423f94506
+  submit: herdr-threads summary submit sj-dbec4865-b3bb-40c2-a170-b70b1069c974 --lease aed691a4-1fa6-40e1-a7db-5ef423f94506 < submission.json
+job sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c L0 #31-#36 lease until 23:24Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c --lease 2e191e0f-e2d5-41ca-93d4-72206d581eb0
+  submit: herdr-threads summary submit sj-22aab3eb-7dbd-4ce9-a339-68f91ac7079c --lease 2e191e0f-e2d5-41ca-93d4-72206d581eb0 < submission.json
+then: herdr-threads summary thread-I2SWujnv
+
+--- top result: summary thread-I2SWujnv frontier #132: work (1 jobs)
+job sj-dbec4865-b3bb-40c2-a170-b70b1069c974 L0 #18-#23 lease until 23:26Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-dbec4865-b3bb-40c2-a170-b70b1069c974 --lease d6a5c5de-2dc5-4dc0-80e3-f956bd251154
+  submit: herdr-threads summary submit sj-dbec4865-b3bb-40c2-a170-b70b1069c974 --lease d6a5c5de-2dc5-4dc0-80e3-f956bd251154 < submission.json
+then: herdr-threads summary thread-I2SWujnv
+
+--- top result: summary thread-I2SWujnv frontier #142: work (1 jobs)
+job sj-e4a00c4e-1be4-4750-9c95-809295ea7eb2 L0 #134-#140 lease until 23:34Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-e4a00c4e-1be4-4750-9c95-809295ea7eb2 --lease a9b2e72b-4b5c-4fd7-94df-7cd98121898e
+  submit: herdr-threads summary submit sj-e4a00c4e-1be4-4750-9c95-809295ea7eb2 --lease a9b2e72b-4b5c-4fd7-94df-7cd98121898e < submission.json
+then: herdr-threads summary thread-I2SWujnv
+
+--- top result: summary thread-I2SWujnv frontier #142: work (1 jobs)
+job sj-e4a00c4e-1be4-4750-9c95-809295ea7eb2 L0 #134-#140 lease until 23:36Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-e4a00c4e-1be4-4750-9c95-809295ea7eb2 --lease 86f4edc0-6caf-4c7a-a5f9-7dc48f74fb96
+  submit: herdr-threads summary submit sj-e4a00c4e-1be4-4750-9c95-809295ea7eb2 --lease 86f4edc0-6caf-4c7a-a5f9-7dc48f74fb96 < submission.json
+then: herdr-threads summary thread-I2SWujnv
+
+--- top result: summary thread-I2SWujnv frontier #144: work (1 jobs)
+job sj-e4a00c4e-1be4-4750-9c95-809295ea7eb2 L0 #134-#140 lease until 23:37Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-e4a00c4e-1be4-4750-9c95-809295ea7eb2 --lease 83f1f316-25f2-4152-8158-923cfe3e5ccc
+  submit: herdr-threads summary submit sj-e4a00c4e-1be4-4750-9c95-809295ea7eb2 --lease 83f1f316-25f2-4152-8158-923cfe3e5ccc < submission.json
+then: herdr-threads summary thread-I2SWujnv
+
+--- top result: summary thread-I2SWujnv frontier #144: work (1 jobs)
+job sj-e4a00c4e-1be4-4750-9c95-809295ea7eb2 L0 #134-#140 lease until 23:38Z budget 11264 bytes
+  fetch: herdr-threads summary job sj-e4a00c4e-1be4-4750-9c95-809295ea7eb2 --lease 0e817180-115e-4701-900c-f2caab84279d
+  submit: herdr-threads summary submit sj-e4a00c4e-1be4-4750-9c95-809295ea7eb2 --lease 0e817180-115e-4701-900c-f2caab84279d < submission.json
+then: herdr-threads summary thread-I2SWujnv

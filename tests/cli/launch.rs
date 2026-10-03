@@ -45,6 +45,7 @@ impl FakeHost {
     fn observation(&self) -> HostObservation {
         let sequence = self.sequence.fetch_add(1, Ordering::SeqCst);
         HostObservation {
+            focused: false,
             target: HostTargetId::new("w9:p1"),
             host_boot: HostBootId::new("boot"),
             epoch: 1,

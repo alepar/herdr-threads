@@ -265,6 +265,7 @@ fn prepare(kind: &str) -> (Fixture, Input) {
             Input::Target(
                 a,
                 HostObservation {
+                    focused: false,
                     target: HostTargetId::new("p"),
                     host_boot: HostBootId::new("b"),
                     epoch: 1,

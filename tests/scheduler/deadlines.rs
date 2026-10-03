@@ -506,6 +506,8 @@ fn zero_warning_progress_retains_exact_due_cursor_and_continues() {
                     after_deadline: Some(UtcMillis(300_000)),
                     after_ordinal: (call + 1) * 100,
                     receipt_sparse: None,
+                    extension_through: None,
+                    extension_after: None,
                 })
             } else {
                 None
@@ -584,6 +586,8 @@ fn failed_invitation_phase_backs_off_while_receipts_keep_scanning() {
                 after_deadline: Some(UtcMillis(10)),
                 after_ordinal: (call + 1) as u64,
                 receipt_sparse: None,
+                extension_through: None,
+                extension_after: None,
             });
             Ok(progress)
         }

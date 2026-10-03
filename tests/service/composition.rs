@@ -161,6 +161,64 @@ fn private_instance_settings_load_overrides_and_reject_unsafe_files() {
 }
 
 #[test]
+fn summary_settings_load_from_the_instance_settings_file() {
+    use herdr_threads::protocol::summary::SummarySettings;
+    let root = std::env::temp_dir().join(format!("herdr-summary-settings-{}", Uuid::new_v4()));
+    fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+    let context =
+        RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
+    let paths = InstancePaths::resolve(&context).unwrap();
+    let boot = Uuid::new_v4();
+    assert_eq!(
+        ServiceConfig::load(&paths)
+            .unwrap()
+            .store_settings(boot)
+            .summary,
+        SummarySettings::default()
+    );
+    paths.prepare_instance_dir().unwrap();
+    let file = paths.instance_dir.join("settings.json");
+    let write = |body: &str| {
+        fs::write(&file, body).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+    };
+    write(
+        r#"{"summary":{"chunk_bytes":4096,"tracker_prefixes":["ht-","bd-"],"soft_fraction":0.5}}"#,
+    );
+    let loaded = ServiceConfig::load(&paths)
+        .unwrap()
+        .store_settings(boot)
+        .summary;
+    assert_eq!(loaded.chunk_bytes, 4096);
+    assert_eq!(loaded.tracker_prefixes, vec!["ht-", "bd-"]);
+    assert_eq!(loaded.soft_fraction, 0.5);
+    assert_eq!(
+        SummarySettings {
+            chunk_bytes: 4096,
+            tracker_prefixes: vec!["ht-".into(), "bd-".into()],
+            soft_fraction: 0.5,
+            ..SummarySettings::default()
+        },
+        loaded
+    );
+    for bad in [
+        r#"{"summary":{"fan_in":10}}"#,
+        r#"{"summary":{"chunk_bytes":0}}"#,
+        r#"{"summary":{"unknown":1}}"#,
+    ] {
+        write(bad);
+        assert!(ServiceConfig::load(&paths).is_err(), "{bad}");
+    }
+    write(
+        r#"{"invitation_default_ms":120000,"receipt_default_ms":240000,"minimum_wake_delay_ms":45000}"#,
+    );
+    let legacy = ServiceConfig::load(&paths).unwrap().store_settings(boot);
+    assert_eq!(legacy.invitation_default_ms, Some(120_000));
+    assert_eq!(legacy.summary, SummarySettings::default());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn daemon_rejects_invalid_instance_settings_before_endpoint_publication() {
     let root = std::env::temp_dir().join(format!("herdr-config-child-{}", Uuid::new_v4()));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();

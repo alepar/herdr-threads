@@ -45,6 +45,7 @@
 //!     `send_attention` job is outstanding, each judged by
 //!     `is_warning_recipient` and `warning_condition_actionable`.
 use super::{
+    catch_up,
     connection::{api_error, store_error},
     effective::{self, EffectiveReceiptState, ReceiptSource},
 };
@@ -430,6 +431,7 @@ pub fn pending_receipts(
     const PHYSICAL: &str = "SELECT message_id FROM receipts INDEXED BY receipts_seat_state_ordinal WHERE seat_id=?1 AND state='pending' ORDER BY ordinal DESC LIMIT ?2";
     const PHYSICAL_THREAD: &str = "SELECT message_id FROM receipts INDEXED BY receipts_thread_seat_pending WHERE seat_id=?1 AND thread_id=?3 AND state='pending' ORDER BY ordinal DESC LIMIT ?2";
     let mut gather = Gather::default();
+    let mut hold = catch_up::HoldCache::new(seat_id);
     for (source, seat_sql, thread_sql) in [
         (ReceiptSource::Manifest, MATERIALIZED, MATERIALIZED_THREAD),
         (ReceiptSource::Manifest, STAGED, STAGED_THREAD),
@@ -461,10 +463,23 @@ pub fn pending_receipts(
                     "invalid receipt publication key",
                 ));
             }
+            // Catch-up hold (spec §7): ordinary messages above an active
+            // row's frontier are not pushed; a released range takes the row's
+            // release key. Explicit reads never come through here.
+            let Some(key) = hold.attention_key(
+                db,
+                &receipt.thread_id,
+                &receipt.message_id,
+                receipt.sequence,
+                (seq, 0),
+            )?
+            else {
+                continue;
+            };
             gather.add(PendingItem {
                 id: receipt.message_id,
                 thread_id: receipt.thread_id,
-                key: (seq, 0),
+                key,
             });
         }
     }

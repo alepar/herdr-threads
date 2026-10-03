@@ -151,6 +151,7 @@ impl LaunchHookInspector for FakeHooks {
 }
 fn observation(sequence: u64) -> HostObservation {
     HostObservation {
+        focused: false,
         target: HostTargetId::new("pane_1"),
         host_boot: HostBootId::new("boot_1"),
         epoch: 1,

@@ -14,6 +14,9 @@
 //!   (default 300000): default invitation and receipt deadlines.
 //! - `"minimum_wake_delay_ms"` (default 30000, at least 30000): minimum
 //!   spacing between wake attempts.
+//! - `"summary"`: thread summary, catch-up and soft-deadline poke settings
+//!   (`crate::protocol::summary::SummarySettings`; every key optional,
+//!   unknown keys rejected, validated by `ServiceConfig::from_settings`).
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -32,13 +35,14 @@ pub const DEFAULT_INVITATION_MS: u64 = 300_000;
 pub const DEFAULT_RECEIPT_MS: u64 = 300_000;
 pub const DEFAULT_MINIMUM_WAKE_DELAY_MS: u64 = 30_000;
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct InstanceSettings {
     pub harness_manifest: HarnessManifestSetting,
     pub invitation_default_ms: u64,
     pub receipt_default_ms: u64,
     pub minimum_wake_delay_ms: u64,
+    pub summary: crate::protocol::summary::SummarySettings,
 }
 
 impl Default for InstanceSettings {
@@ -48,6 +52,7 @@ impl Default for InstanceSettings {
             invitation_default_ms: DEFAULT_INVITATION_MS,
             receipt_default_ms: DEFAULT_RECEIPT_MS,
             minimum_wake_delay_ms: DEFAULT_MINIMUM_WAKE_DELAY_MS,
+            summary: crate::protocol::summary::SummarySettings::default(),
         }
     }
 }

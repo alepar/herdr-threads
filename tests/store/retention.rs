@@ -172,6 +172,7 @@ fn set(items: &[&str]) -> BTreeSet<String> {
 fn observation(target: &str, sequence: u64) -> HostObservation {
     HostObservation {
         target: HostTargetId::new(target),
+        focused: false,
         host_boot: HostBootId::new("b"),
         epoch: 1,
         generation: 1,
@@ -687,6 +688,7 @@ fn rerunning_send_attention_producer_does_not_reenqueue() {
         deadline_millis: None,
         operation: OperationId::new("send"),
         claim: fixture_claim("s1"),
+        relays_user: false,
     };
     loop {
         match StorePort::prepare_send_step(

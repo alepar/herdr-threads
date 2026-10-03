@@ -176,6 +176,7 @@ impl Drop for LaneFx {
 fn observation(sequence: u64) -> HostObservation {
     HostObservation {
         target: HostTargetId::new("pane"),
+        focused: false,
         host_boot: HostBootId::new("b"),
         epoch: 1,
         generation: 1,

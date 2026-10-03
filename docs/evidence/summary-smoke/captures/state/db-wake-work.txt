@@ -1,0 +1,9 @@
+seat_id|reason_bits|retry_step|effective_delay_ms|last_wake|last_outcome
+seat-tJDlgi2m|1|3|300000|2026-10-02 23:45:51|unsafe
+seat-oJLhtZuC|1|3|300000|2026-10-02 23:45:51|unsafe
+seat-uEdSD2gM|0|0|0||
+seat-dI6CZeba|1|3|300000|2026-10-03 00:39:29|submitted
+seat-KqDe0evQ|1|3|300000|2026-10-03 00:39:30|submitted
+seat-RJ7yryH6|1|3|300000|2026-10-03 00:37:30|submitted
+seat-5E7sEMcK|1|3|300000|2026-10-03 00:37:30|submitted
+seat-h1qtN6Hb|0|0|0||

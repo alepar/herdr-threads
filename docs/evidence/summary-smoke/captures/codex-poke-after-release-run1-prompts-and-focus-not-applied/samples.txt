@@ -1,0 +1,403 @@
+=== T+0 00:26:12
+--- w2:p2 focused=false status=idle
+  Worked for 4s • 17:25
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 4s • 17:25
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:25:09|submitted
+=== T+11 00:26:23
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+22 00:26:34
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+32 00:26:44
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+43 00:26:55
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+54 00:27:06
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+65 00:27:17
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+75 00:27:27
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+86 00:27:38
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+97 00:27:49
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+108 00:28:00
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+118 00:28:10
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+129 00:28:21
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+140 00:28:32
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+151 00:28:43
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+161 00:28:53
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+172 00:29:04
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+183 00:29:15
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+194 00:29:26
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+204 00:29:36
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+215 00:29:47
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+226 00:29:58
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+236 00:30:09
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+247 00:30:19
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+258 00:30:30
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+269 00:30:41
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+280 00:30:52
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+290 00:31:02
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+301 00:31:13
+--- w2:p2 focused=false status=idle
+  Worked for 6s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 29% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 2s • 17:26
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 8% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:26:15|submitted
+=== T+312 00:31:24
+--- w2:p2 focused=false status=idle
+  Worked for 5s • 17:31
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 30% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 3s • 17:31
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 9% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:31:16|submitted
+=== T+323 00:31:35
+--- w2:p2 focused=false status=idle
+  Worked for 5s • 17:31
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 30% used · weekl…
+  ? for shortcuts
+--- w2:p3 focused=false status=idle
+  Worked for 3s • 17:31
+› Ask Codex to do anything
+  GPT-5.6-Luna low · 258K window · Context 9% used · weekly…
+  ? for shortcuts
+seat-RJ7yryH6|ended|stalled|2026-10-03 00:19:26
+seat-RJ7yryH6|3|2026-10-03 00:31:16|submitted

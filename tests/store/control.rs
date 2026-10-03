@@ -73,6 +73,7 @@ fn snapshot_for_test(sequence: u64, targets: &[&str]) -> crate::ports::HostSnaps
         targets: targets
             .iter()
             .map(|target| HostObservation {
+                focused: false,
                 target: HostTargetId::new(*target),
                 host_boot: HostBootId::new("b"),
                 epoch: 1,
@@ -1241,6 +1242,7 @@ fn snapshot_stage_is_hidden_bounded_and_allows_a_foreground_writer() {
     };
     let targets: Vec<_> = (0..17)
         .map(|index| HostObservation {
+            focused: false,
             target: HostTargetId::new(format!("stage-{index}")),
             host_boot: HostBootId::new("b"),
             epoch: 1,
@@ -1615,7 +1617,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
             )
         )
         .unwrap(),
-        CommandResult::Accepted(ordinary.invitation.clone())
+        CommandResult::Accepted(ordinary.invitation.clone().into())
     );
     assert_eq!(conn.query_row("SELECT count(*) FROM membership_intervals WHERE thread_id=?1 AND seat_id='s2' AND left_seq IS NULL",[thread.as_str()],|r|r.get::<_,i64>(0)).unwrap(),1);
     assert_eq!(conn.query_row("SELECT episode,joined_seq,(SELECT joined_at FROM memberships WHERE thread_id=?1 AND seat_id='s2') FROM membership_intervals WHERE thread_id=?1 AND seat_id='s2' AND left_seq IS NULL",[thread.as_str()],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?))).unwrap(),original);
@@ -1675,7 +1677,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
             )
         )
         .unwrap(),
-        CommandResult::Accepted(ordinary.invitation.clone())
+        CommandResult::Accepted(ordinary.invitation.clone().into())
     );
     let fresh_repeat = Accept {
         operation: OperationId::new("accept-ordinary-two-again"),
@@ -1696,7 +1698,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
             )
         )
         .unwrap(),
-        CommandResult::Accepted(ordinary.invitation.clone())
+        CommandResult::Accepted(ordinary.invitation.clone().into())
     );
     assert_eq!(
         conn.query_row(
@@ -1765,7 +1767,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
             )
         )
         .unwrap(),
-        CommandResult::Accepted(reverse_ordinary.invitation.clone())
+        CommandResult::Accepted(reverse_ordinary.invitation.clone().into())
     );
     let reverse_interval:(i64,i64,i64)=conn.query_row("SELECT episode,joined_seq,(SELECT joined_at FROM memberships WHERE thread_id=?1 AND seat_id='s2') FROM membership_intervals WHERE thread_id=?1 AND seat_id='s2' AND left_seq IS NULL",[reverse.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
     let reverse_requirement = reverse_required.requirement.unwrap();
@@ -1994,7 +1996,7 @@ fn native_ordinary_offer_after_required_offer_can_be_accepted_after_join() {
             )
         )
         .unwrap(),
-        CommandResult::Accepted(ordinary.clone())
+        CommandResult::Accepted(ordinary.clone().into())
     );
     assert_eq!(conn.query_row("SELECT joined_seq FROM membership_intervals WHERE thread_id=?1 AND seat_id='s2' AND left_seq IS NULL",[thread.as_str()],|r|r.get::<_,i64>(0)).unwrap(),original);
     assert_eq!(
@@ -3677,7 +3679,7 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
             )
         )
         .unwrap(),
-        CommandResult::Accepted(invitation.clone())
+        CommandResult::Accepted(invitation.clone().into())
     );
     let joined_invite = Invite {
         thread: thread.clone(),
@@ -3809,6 +3811,7 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
     )
     .unwrap();
     let mut observation = HostObservation {
+        focused: false,
         target: HostTargetId::new("p1"),
         host_boot: HostBootId::new("b"),
         epoch: 2,
@@ -4049,6 +4052,7 @@ fn ordinary_allocation_replay_returns_original_seat_after_retirement() {
     let (context, mut conn, path, _) = fixture(100);
     conn.execute("DELETE FROM seats", []).unwrap();
     let observation = HostObservation {
+        focused: false,
         target: HostTargetId::new("p3"),
         host_boot: HostBootId::new("b"),
         epoch: 1,
@@ -4166,6 +4170,7 @@ fn ordinary_empty_allocation_retains_structural_identity_without_occupant_bindin
         operation: OperationId::new("ordinary-empty-proof"),
     };
     let observation = HostObservation {
+        focused: false,
         target: request.target.clone(),
         host_boot: HostBootId::new("b"),
         epoch: 1,
@@ -4317,6 +4322,7 @@ fn coherent_target_change_updates_structural_generation() {
     };
     let (context, mut conn, path, _) = fixture(100);
     let observation = HostObservation {
+        focused: false,
         target: HostTargetId::new("s2"),
         host_boot: HostBootId::new("b"),
         epoch: 1,
@@ -4384,6 +4390,7 @@ fn coherent_snapshots_keep_per_target_order_and_accept_ordered_empty_enumeration
     };
     let (context, mut conn, path, _) = fixture(100);
     let target = |id: &str, generation: u64, sequence: u64| HostObservation {
+        focused: false,
         target: HostTargetId::new(id),
         host_boot: HostBootId::new("b"),
         epoch: 1,
@@ -4487,6 +4494,7 @@ fn restoring_current_target_observation_bumps_send_eligibility_revision() {
     )
     .unwrap();
     let observation = HostObservation {
+        focused: false,
         target: HostTargetId::new("s2"),
         host_boot: HostBootId::new("b"),
         epoch: 1,
@@ -4569,6 +4577,7 @@ fn snapshot_rejects_nonrepresentable_host_numbers_without_changing_state() {
             evidence_kind: EvidenceKind::CoherentEnumeration,
         },
         targets: vec![HostObservation {
+            focused: false,
             target: HostTargetId::new("overflow-target"),
             host_boot: HostBootId::new("overflow-boot"),
             epoch,
@@ -4883,6 +4892,7 @@ fn operator_rebind_rejects_exhausted_binding_generation() {
         operation: OperationId::new("rebind-exhausted"),
     };
     let observation = HostObservation {
+        focused: false,
         target: HostTargetId::new("free"),
         host_boot: HostBootId::new("b"),
         epoch: 1,
@@ -6925,6 +6935,7 @@ fn b5_fresh_observation(target: &str) -> crate::ports::HostObservation {
         ObservationProvenance, StructuralOccupancy,
     };
     HostObservation {
+        focused: false,
         target: HostTargetId::new(target),
         host_boot: HostBootId::new("b"),
         epoch: 1,

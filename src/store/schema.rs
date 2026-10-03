@@ -42,8 +42,15 @@ const V11: &str = include_str!("../../migrations/0011_cooperative_only.sql");
 /// Harness version evidence (ht-xoc.4): `harness_version_evidence` and
 /// `harness_unattributed`.
 const V12: &str = include_str!("../../migrations/0012_harness_version_evidence.sql");
+/// Thread summaries: author role and relay claims on messages, summary blocks, jobs,
+/// catch-up rows and the receipt soft-poke marker (epic ht-1ip). (Renumbered
+/// from v11 to v12 when main's cooperative-only skeleton took v11, then to v13
+/// when main's harness version evidence took v12.)
+const V13: &str = include_str!("../../migrations/0013_thread_summaries.sql");
+/// Catch-up release key (epic ht-1ip; renumbered from v12 to v13, then v14).
+const V14: &str = include_str!("../../migrations/0014_catch_up_release.sql");
 /// The schema version this build writes and audits (the last migration).
-pub(crate) const LATEST_VERSION: i64 = 12;
+pub(crate) const LATEST_VERSION: i64 = 14;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -128,6 +135,8 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
                 .and_then(|_| conn.execute_batch(V10))
                 .and_then(|_| conn.execute_batch(V11))
                 .and_then(|_| conn.execute_batch(V12))
+                .and_then(|_| conn.execute_batch(V13))
+                .and_then(|_| conn.execute_batch(V14))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -151,6 +160,8 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v9_to_v10(conn)?;
             migrate_v10_to_v11(conn)?;
             migrate_v11_to_v12(conn)?;
+            migrate_v12_to_v13(conn)?;
+            migrate_v13_to_v14(conn)?;
             verify_existing(conn)
         }
         2 => {
@@ -166,6 +177,8 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v9_to_v10(conn)?;
             migrate_v10_to_v11(conn)?;
             migrate_v11_to_v12(conn)?;
+            migrate_v12_to_v13(conn)?;
+            migrate_v13_to_v14(conn)?;
             verify_existing(conn)
         }
         3 => {
@@ -181,6 +194,8 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v9_to_v10(conn)?;
             migrate_v10_to_v11(conn)?;
             migrate_v11_to_v12(conn)?;
+            migrate_v12_to_v13(conn)?;
+            migrate_v13_to_v14(conn)?;
             verify_existing(conn)
         }
         4 => {
@@ -197,6 +212,8 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v9_to_v10(conn)?;
             migrate_v10_to_v11(conn)?;
             migrate_v11_to_v12(conn)?;
+            migrate_v12_to_v13(conn)?;
+            migrate_v13_to_v14(conn)?;
             verify_existing(conn)
         }
         5 => {
@@ -213,6 +230,8 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v9_to_v10(conn)?;
             migrate_v10_to_v11(conn)?;
             migrate_v11_to_v12(conn)?;
+            migrate_v12_to_v13(conn)?;
+            migrate_v13_to_v14(conn)?;
             verify_existing(conn)
         }
         6 => {
@@ -229,6 +248,8 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v9_to_v10(conn)?;
             migrate_v10_to_v11(conn)?;
             migrate_v11_to_v12(conn)?;
+            migrate_v12_to_v13(conn)?;
+            migrate_v13_to_v14(conn)?;
             verify_existing(conn)
         }
         7 => {
@@ -245,6 +266,8 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v9_to_v10(conn)?;
             migrate_v10_to_v11(conn)?;
             migrate_v11_to_v12(conn)?;
+            migrate_v12_to_v13(conn)?;
+            migrate_v13_to_v14(conn)?;
             verify_existing(conn)
         }
         8 => {
@@ -253,6 +276,8 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v9_to_v10(conn)?;
             migrate_v10_to_v11(conn)?;
             migrate_v11_to_v12(conn)?;
+            migrate_v12_to_v13(conn)?;
+            migrate_v13_to_v14(conn)?;
             verify_existing(conn)
         }
         9 => {
@@ -260,20 +285,37 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v9_to_v10(conn)?;
             migrate_v10_to_v11(conn)?;
             migrate_v11_to_v12(conn)?;
+            migrate_v12_to_v13(conn)?;
+            migrate_v13_to_v14(conn)?;
             verify_existing(conn)
         }
         10 => {
             verify_existing_v10_shape(conn)?;
             migrate_v10_to_v11(conn)?;
             migrate_v11_to_v12(conn)?;
+            migrate_v12_to_v13(conn)?;
+            migrate_v13_to_v14(conn)?;
             verify_existing(conn)
         }
         11 => {
             verify_existing_v11_shape(conn)?;
             migrate_v11_to_v12(conn)?;
+            migrate_v12_to_v13(conn)?;
+            migrate_v13_to_v14(conn)?;
             verify_existing(conn)
         }
-        12 => verify_existing(conn),
+        12 => {
+            verify_existing_v12_shape(conn)?;
+            migrate_v12_to_v13(conn)?;
+            migrate_v13_to_v14(conn)?;
+            verify_existing(conn)
+        }
+        13 => {
+            verify_existing_v13_shape(conn)?;
+            migrate_v13_to_v14(conn)?;
+            verify_existing(conn)
+        }
+        14 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -379,16 +421,33 @@ pub(crate) fn binding_evidence_lacking(conn: &Connection, seat: &str) -> rusqlit
     )
 }
 
-/// The current (v12) shape audit: the v11 shape plus the harness version
-/// evidence tables.
+/// The current (v14) shape audit: the v11 shape (v10 B5 trust guards plus the
+/// statements `0011_cooperative_only.sql` adds; later additions to that file
+/// extend that audit), the v12 harness version evidence tables, the v13
+/// thread summaries and the v14 catch-up release key.
 pub fn verify_existing(conn: &Connection) -> Result<(), ApiError> {
+    verify_existing_v13_shape(conn)?;
+    verify_existing_v14(conn)
+}
+
+/// Audit of everything v1..v13 define; a v13 store is checked with this
+/// before the catch-up release migration runs.
+fn verify_existing_v13_shape(conn: &Connection) -> Result<(), ApiError> {
+    verify_existing_v12_shape(conn)?;
+    verify_existing_v13(conn)
+}
+
+/// Audit of everything v1..v12 define; a v12 store is checked with this
+/// before the summary migration runs.
+fn verify_existing_v12_shape(conn: &Connection) -> Result<(), ApiError> {
     verify_existing_v11_shape(conn)?;
     verify_v12_harness_evidence(conn)
 }
 
 /// The v11 shape audit: the v10 (B5 trust guards) shape plus the statements
 /// `0011_cooperative_only.sql` adds; later additions to that file extend this
-/// audit.
+/// audit. A v11 store is checked with this before the harness evidence
+/// migration runs.
 fn verify_existing_v11_shape(conn: &Connection) -> Result<(), ApiError> {
     verify_existing_v10_shape(conn)?;
     verify_v11_b1(conn)
@@ -450,7 +509,7 @@ fn migrate_v11_to_v12(conn: &Connection) -> Result<(), ApiError> {
     conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
     let result = conn
         .execute_batch(V12)
-        .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
+        .and_then(|_| conn.pragma_update(None, "user_version", 12));
     match result {
         Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
         Err(error) => {
@@ -570,6 +629,113 @@ fn migrate_v9_to_v10(conn: &Connection) -> Result<(), ApiError> {
             Err(store_error(error))
         }
     }
+}
+
+fn migrate_v12_to_v13(conn: &Connection) -> Result<(), ApiError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    let result = conn
+        .execute_batch(V13)
+        .and_then(|_| conn.pragma_update(None, "user_version", 13));
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(store_error(error))
+        }
+    }
+}
+
+fn migrate_v13_to_v14(conn: &Connection) -> Result<(), ApiError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    let result = conn
+        .execute_batch(V14)
+        .and_then(|_| conn.pragma_update(None, "user_version", 14));
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(store_error(error))
+        }
+    }
+}
+
+/// v14: catch-up release key. The column a row end stores for the push.
+fn verify_existing_v14(conn: &Connection) -> Result<(), ApiError> {
+    let present: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('catch_up') WHERE name='release_seq')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if !present {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "catch-up schema lacks catch_up.release_seq",
+        ));
+    }
+    Ok(())
+}
+
+/// v13: thread summaries. Presence audit of the tables, indexes, triggers and
+/// columns the summary, catch-up and poke tasks rely on.
+fn verify_existing_v13(conn: &Connection) -> Result<(), ApiError> {
+    let objects = [
+        ("table", "summary_blocks"),
+        ("table", "summary_items"),
+        ("table", "summary_transitions"),
+        ("table", "summary_jobs"),
+        ("table", "summary_job_durations"),
+        ("table", "catch_up"),
+        ("index", "summary_items_fold"),
+        ("index", "summary_transitions_fold"),
+        ("index", "summary_jobs_live_lease"),
+        ("index", "summary_job_durations_recent"),
+        ("index", "catch_up_extension_until"),
+        ("index", "catch_up_thread_active"),
+        ("trigger", "messages_immutable"),
+        ("trigger", "messages_summary_author_insert"),
+        ("trigger", "summary_blocks_immutable"),
+        ("trigger", "summary_blocks_retained"),
+    ];
+    for (kind, name) in objects {
+        let present: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type=?1 AND name=?2)",
+                [kind, name],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if !present {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("thread summary schema lacks {kind} {name}"),
+            ));
+        }
+    }
+    let columns = [
+        ("messages", "author_role"),
+        ("messages", "relays_user"),
+        ("messages", "author_role_backfilled"),
+        ("receipts", "soft_poked_at"),
+        ("receipt_state", "soft_poked_at"),
+    ];
+    for (table, column) in columns {
+        let present: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2)",
+                [table, column],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if !present {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("thread summary schema lacks {table}.{column}"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// v10: allocation decisions admit the B5 kinds and the continuity diagnostic;
@@ -1984,6 +2150,11 @@ fn append_event_once_at_seq(
         prefix::EVENT,
         &[("messages", "id", prefix::EVENT)],
     )?);
+    let author_role = match &author {
+        Some(EventAuthor::Native(seat)) => open_binding_role(tx, seat)?,
+        Some(EventAuthor::Programmatic(_)) => Some("service"),
+        Some(EventAuthor::BuiltIn) | None => None,
+    };
     let (author_kind, author_seat, author_service, actor_label) = match &author {
         Some(EventAuthor::Native(seat)) => (Some("native"), Some(seat.as_str()), None, None),
         Some(EventAuthor::Programmatic(service)) => (
@@ -1994,13 +2165,31 @@ fn append_event_once_at_seq(
         ),
         Some(EventAuthor::BuiltIn) | None => (None, None, None, None),
     };
-    tx.execute("INSERT INTO messages(id, instance_id, thread_id, sequence, kind, event_key, event_json, decision_at, source_message_id, source_invitation_id, decision_seq, event_offset, author_kind, actor_seat_id, author_service_id, actor_label) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+    tx.execute("INSERT INTO messages(id, instance_id, thread_id, sequence, kind, event_key, event_json, decision_at, source_message_id, source_invitation_id, decision_seq, event_offset, author_kind, actor_seat_id, author_service_id, actor_label, author_role) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         params![id.as_str(), instance, input.thread.as_str(), next, input.kind, input.key, input.payload_json,
             input.decision_at.0, input.source_message.map(MessageId::as_str), input.source_invitation.map(InvitationId::as_str), seq as i64, event_offset,
-            author_kind,author_seat,author_service,actor_label])
+            author_kind,author_seat,author_service,actor_label,author_role])
         .map_err(store_error)?;
     bump_timeline_revision(tx, input.thread)?;
     Ok((id, true))
+}
+
+/// Spec §1: the author role a seat's open binding gives its messages at decision
+/// time. A `human` harness reads as `human`, any other harness as `agent`; no
+/// open binding records NULL (read as agent).
+pub fn open_binding_role(
+    tx: &Transaction<'_>,
+    seat: &SeatId,
+) -> Result<Option<&'static str>, ApiError> {
+    let harness: Option<String> = tx
+        .query_row(
+            "SELECT harness FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    Ok(harness.map(|h| if h == "human" { "human" } else { "agent" }))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2168,7 +2357,12 @@ fn record_overdue_inner(
             cutover
         }
     };
-    if deadline.is_none_or(|deadline| classify_at < deadline) {
+    let comparison_deadline = if matches!(obligation, ObligationRef::Receipt { .. }) {
+        super::receipts::effective_deadline_for(tx, seat.as_str(), thread.as_str(), deadline)?
+    } else {
+        deadline
+    };
+    if comparison_deadline.is_none_or(|deadline| classify_at < deadline) {
         return Ok(OverdueOutcome {
             warning: None,
             inserted: false,

@@ -183,6 +183,9 @@ fn ordinary_body_and_system_event_render_distinct_complete_routes() {
         thread: ThreadId::new("t-1"),
         author: Some(SeatId::new("s-1")),
         event_author: None,
+        author_role: None,
+        relays_user: false,
+        author_role_backfilled: false,
         kind: MessageKind::Ordinary,
         sequence: 7,
         created_at: UtcMillis(88),
@@ -230,6 +233,9 @@ fn ordinary_body_and_system_event_render_distinct_complete_routes() {
         summary: MessageSummary {
             author: None,
             event_author: None,
+            author_role: None,
+            relays_user: false,
+            author_role_backfilled: false,
             kind: MessageKind::Warn,
             ..summary
         },
@@ -294,6 +300,9 @@ fn untrusted_system_json_cannot_create_a_continuation_command() {
             thread: ThreadId::new("t-1"),
             author: None,
             event_author: None,
+            author_role: None,
+            relays_user: false,
+            author_role_backfilled: false,
             kind: MessageKind::Warn,
             sequence: 1,
             created_at: UtcMillis(1),
@@ -347,6 +356,9 @@ fn body_text_with(body: &str, complete: bool, next_argv: Option<Vec<String>>) ->
             thread: ThreadId::new("t-1"),
             author: Some(SeatId::new("seat-a")),
             event_author: None,
+            author_role: None,
+            relays_user: false,
+            author_role_backfilled: false,
             kind: MessageKind::Ordinary,
             sequence: 12,
             created_at: UtcMillis(3_723_000),
@@ -590,6 +602,9 @@ fn preview_snippet_and_full_thread_detail_use_distinct_routes() {
         thread: ThreadId::new("t-9"),
         author: None,
         event_author: None,
+        author_role: None,
+        relays_user: false,
+        author_role_backfilled: false,
         kind: MessageKind::Warn,
         sequence: 9,
         created_at: UtcMillis(9),
@@ -802,6 +817,9 @@ fn text_escapes_c1_and_unicode_separators_in_every_peer_field() {
             thread: ThreadId::new("t-c1"),
             author: None,
             event_author: None,
+            author_role: None,
+            relays_user: false,
+            author_role_backfilled: false,
             kind: MessageKind::Ordinary,
             sequence: 1,
             created_at: UtcMillis(1),
@@ -1068,5 +1086,100 @@ fn compact_inbox_pending_participants_and_check_in_carry_no_json() {
     assert_eq!(
         check_in,
         "checked_in seat-a claude top_level generation=2 current offered_through=31\ninbox:\nt-1 receipts=2 warnings=1000+\nt-2 invitations=1 required\n  accept-required: herdr-threads accept-required t-2 --invitation inv-1 --requirement req-1 --revision 3\nwarnings: 0 pending\n"
+    );
+}
+
+#[test]
+fn compact_rows_mark_human_and_relayed_authorship_outside_peer_data() {
+    let row = |seq: u32, role: Option<&str>, relays: bool, body: &str| {
+        let mut row = serde_json::json!({"message":format!("msg-{seq}"),"thread":"t-1","author":"seat-a",
+            "event_author":{"kind":"native","id":"seat-a"},"kind":"ordinary","sequence":seq,
+            "created_at":43_200_000,"actor_label":null,"preview_data":body,"preview_omitted":false,
+            "preview_detail_argv":null});
+        if let Some(role) = role {
+            row["author_role"] = serde_json::json!(role);
+        }
+        if relays {
+            row["relays_user"] = serde_json::json!(true);
+        }
+        row
+    };
+    let text = compact_text(serde_json::json!({"kind":"history","data":{
+        "items":[
+            row(7, Some("human"), false, "text"),
+            row(6, Some("agent"), true, "text"),
+            row(5, Some("human"), true, "text"),
+            row(4, None, false, "text"),
+            row(3, Some("agent"), false, "text"),
+            row(2, Some("service"), false, "text"),
+            row(1, None, false, "[human] [relays user]")
+        ],
+        "next_cursor":null,"next_argv":null,"high_water_ordinal":7,"scope_revision":null,
+        "has_more":false,"stop_reason":"complete","consistency":"bounded_live"
+    }}));
+    assert_eq!(
+        text,
+        "history\n\
+         #7 msg-7 seat-a 12:00Z [human]: text\n\
+         #6 msg-6 seat-a 12:00Z [relays user]: text\n\
+         #5 msg-5 seat-a 12:00Z [human] [relays user]: text\n\
+         #4 msg-4 seat-a 12:00Z: text\n\
+         #3 msg-3 seat-a 12:00Z: text\n\
+         #2 msg-2 seat-a 12:00Z: text\n\
+         #1 msg-1 seat-a 12:00Z: [human] [relays user]\n"
+    );
+}
+
+// Kills: a join hint missing from the compact renderer, a bare accept whose
+// text changed (it must keep the generic form), or a hint command that does not
+// carry the output context.
+#[test]
+fn compact_accepted_adds_the_summary_hint_line_only_when_present() {
+    use crate::protocol::{ids::InvitationId, results::AcceptedInvitation};
+    let text = |result: &CommandResult, spec: &OutputSpec| {
+        String::from_utf8(encode_selected(result, spec).unwrap()).unwrap()
+    };
+    let spec = OutputSpec {
+        format: OutputFormat::Text,
+        ..OutputSpec::default()
+    };
+    let bare = CommandResult::Accepted(InvitationId::new("inv-1").into());
+    assert_eq!(text(&bare, &spec), "accepted\nvalue: \"inv-1\"\n");
+    let hinted = CommandResult::Accepted(AcceptedInvitation {
+        invitation: InvitationId::new("inv-1"),
+        summary_available: Some(ThreadId::new("t-9")),
+    });
+    assert_eq!(
+        text(&hinted, &spec),
+        "accepted\nvalue: \"inv-1\"\nsummary available: herdr-threads summary t-9\n"
+    );
+}
+
+#[test]
+fn compact_pending_receipt_names_the_deferral() {
+    let receipt = |extra: serde_json::Value| {
+        let mut value = serde_json::json!({"message":"MSG","thread":"t1","seat":"S2","sequence":4,
+            "sender":"S1","decision_at":0,"available_at":0,"deadline":43_200_000,"overdue":false});
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        value
+    };
+    let page_of = |item| {
+        compact_text(
+            serde_json::json!({"kind":"pending_receipts","data":{"items":[item],"next_cursor":null,"next_argv":null,"high_water_ordinal":1,
+                "scope_revision":null,"has_more":false,"stop_reason":"complete","consistency":"bounded_live"}}),
+        )
+    };
+    assert_eq!(
+        page_of(receipt(
+            serde_json::json!({"effective_deadline":43_500_000,"deferred_until":43_500_000})
+        )),
+        "pending_receipts S2\nMSG t1#4 from S1 due 12:00Z deferred: recipient catching up (until 12:05Z)\n"
+    );
+    assert_eq!(
+        page_of(receipt(serde_json::json!({}))),
+        "pending_receipts S2\nMSG t1#4 from S1 due 12:00Z\n"
     );
 }

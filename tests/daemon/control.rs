@@ -1592,8 +1592,8 @@ fn cooperative_health_degrades_only_on_real_problems() {
         );
     };
     degraded(
-        &|inputs| inputs.claude = HarnessStatus::Refused("claude 2.1.287: no recipe".into()),
-        "harness claude unsupported: claude 2.1.287",
+        &|inputs| inputs.claude = HarnessStatus::Refused("claude 2.1.288: no recipe".into()),
+        "harness claude unsupported: claude 2.1.288",
     );
     degraded(
         &|inputs| inputs.codex = HarnessStatus::Unknown,
@@ -1681,7 +1681,7 @@ fn claude_observation_classifies_cooperative_refused_and_absent() {
             crate::app::claude_status(Some(Ok("2.1.288".into())), native),
             HarnessStatus::Optimistic(
                 "claude 2.1.288: optimistic \u{2014} newer than verified 2.1.287, assumed \
-                 compatible with recipe claude-hooks-2.1.283"
+                 compatible with recipe claude-hooks-2.1.287"
                     .into()
             )
         );

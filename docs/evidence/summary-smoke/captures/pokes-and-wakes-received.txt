@@ -1,0 +1,58 @@
+# claude sessions: x=67b76143 y=924bda35 p=c1c57283 q=135d7e62 ; codex: x=rollout ...d697 y=rollout ...d67e
+# Poke ('receipt due in') and wake ('attention pending') prompts received by each agent, with the UTC time they reached the session
+2026-10-02T23:10:53.718Z claude-X herdr-threads: attention pending; run herdr-threads inbox
+2026-10-02T23:10:54.022Z claude-Y herdr-threads: attention pending; run herdr-threads inbox
+2026-10-02T23:32:21.926Z claude-X herdr-threads: attention pending; run herdr-threads inbox
+2026-10-02T23:32:22.364Z claude-Y herdr-threads: attention pending; run herdr-threads inbox
+2026-10-02T23:33:40.071Z claude-Y herdr-threads: attention pending; run herdr-threads inbox
+2026-10-02T23:35:10.696Z claude-X herdr-threads: attention pending; run herdr-threads inbox
+2026-10-02T23:36:21.320Z claude-X herdr-threads: attention pending; run herdr-threads inbox
+2026-10-02T23:37:53.222Z claude-Y herdr-threads: receipt due in 18s on thread-I2SWujnv; run herdr-threads inbox
+2026-10-02T23:38:23.581Z claude-Y herdr-threads: receipt due in 58s on thread-I2SWujnv; run herdr-threads inbox
+2026-10-02T23:52:33.986Z claude-P herdr-threads: attention pending; run herdr-threads inbox
+2026-10-02T23:52:34.403Z claude-Q herdr-threads: attention pending; run herdr-threads inbox
+2026-10-02T23:54:34.976Z claude-P herdr-threads: attention pending; run herdr-threads inbox
+2026-10-02T23:54:35.392Z claude-Q herdr-threads: attention pending; run herdr-threads inbox
+2026-10-02T23:59:14.313Z claude-P herdr-threads: attention pending; run herdr-threads inbox
+2026-10-02T23:59:14.745Z claude-Q herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:04:15.010Z claude-P herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:04:15.445Z claude-Q herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:07:35.185Z codex-X herdr-threads: receipt due in 48s on thread-DWKSdAn7; run herdr-threads inbox
+2026-10-03T00:08:24.090Z codex-X herdr-threads: receipt due in 116s on thread-DWKSdAn7; run herdr-threads inbox
+2026-10-03T00:08:25.917Z codex-Y herdr-threads: receipt due in 114s on thread-DWKSdAn7; run herdr-threads inbox
+2026-10-03T00:09:16.482Z claude-P herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:09:16.910Z claude-Q herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:10:24.739Z codex-Y herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:10:55.771Z codex-Y herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:12:36.592Z codex-Y herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:14:18.647Z claude-P herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:14:19.202Z claude-Q herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:16:38.705Z codex-X herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:16:39.254Z codex-Y herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:19:20.750Z claude-P herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:19:21.307Z claude-Q herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:19:29.211Z codex-X herdr-threads: receipt due in 65s on thread-DWKSdAn7; run herdr-threads inbox
+2026-10-03T00:20:08.712Z codex-X herdr-threads: receipt due in 88s on thread-DWKSdAn7; run herdr-threads inbox
+2026-10-03T00:20:09.270Z codex-Y herdr-threads: receipt due in 88s on thread-DWKSdAn7; run herdr-threads inbox
+2026-10-03T00:20:41.187Z codex-Y herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:20:44.604Z codex-X herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:21:39.878Z codex-X herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:21:40.564Z codex-Y herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:24:22.299Z claude-P herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:24:22.864Z claude-Q herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:25:09.689Z codex-X herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:25:10.350Z codex-Y herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:26:15.678Z codex-X herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:26:16.502Z codex-Y herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:29:24.973Z claude-P herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:29:25.564Z claude-Q herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:31:17.251Z codex-X herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:31:17.870Z codex-Y herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:32:29.983Z codex-X herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:32:30.576Z codex-Y herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:34:26.293Z claude-P herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:34:26.970Z claude-Q herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:37:30.388Z codex-X herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:37:31.069Z codex-Y herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:39:29.744Z claude-P herdr-threads: attention pending; run herdr-threads inbox
+2026-10-03T00:39:30.326Z claude-Q herdr-threads: attention pending; run herdr-threads inbox

@@ -247,6 +247,7 @@ fn explicit_send_accept_and_ack_are_separate_sqlite_decisions() {
                 deadline_millis: None,
                 operation: OperationId::new("send"),
                 claim: sender,
+                relays_user: false,
             }),
             peer,
             &budget(),
@@ -530,6 +531,7 @@ fn partial_send_preparation_survives_budget_expiry_and_resumes_exact_intent() {
         deadline_millis: None,
         operation: OperationId::new("send"),
         claim: sender,
+        relays_user: false,
     });
     clock
         .expire
@@ -599,6 +601,7 @@ fn stale_sender_cannot_publish_a_prepared_message() {
         deadline_millis: None,
         operation: OperationId::new("send"),
         claim: sender,
+        relays_user: false,
     };
     loop {
         match service
@@ -899,6 +902,7 @@ fn publish_snapshot_at(
         targets: targets
             .iter()
             .map(|target| HostObservation {
+                focused: false,
                 target: HostTargetId::new(*target),
                 host_boot: HostBootId::new("b"),
                 epoch,
@@ -1079,6 +1083,7 @@ fn sends_succeed_after_host_outage_epoch_advance_and_reconfirmation() {
             deadline_millis: None,
             operation: OperationId::new(operation),
             claim: claim.clone(),
+            relays_user: false,
         }),
         peer,
         &budget(),
@@ -1241,6 +1246,7 @@ fn send_before_first_pass_to_structurally_continuous_seat_has_no_warning() {
             deadline_millis: None,
             operation: OperationId::new("pre-pass-send"),
             claim: sender.clone(),
+            relays_user: false,
         }),
         peer,
         &budget(),

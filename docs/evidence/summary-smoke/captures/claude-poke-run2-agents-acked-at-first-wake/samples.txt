@@ -1,0 +1,357 @@
+=== T+0 23:47:52
+--- w1:p4 focused=false status=done
+✻ Churned for 8s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Brewed for 6s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|0|2026-10-02 23:47:05|submitted
+seat-dI6CZeba|0|2026-10-02 23:47:05|submitted
+=== T+11 23:48:03
+--- w1:p4 focused=false status=done
+✻ Sautéed for 8s · done 4:48 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Cooked for 5s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted
+=== T+21 23:48:13
+--- w1:p4 focused=false status=done
+✻ Sautéed for 8s · done 4:48 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Cooked for 5s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted
+=== T+31 23:48:23
+--- w1:p4 focused=false status=done
+✻ Sautéed for 8s · done 4:48 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Cooked for 5s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted
+=== T+42 23:48:34
+--- w1:p4 focused=false status=done
+✻ Sautéed for 8s · done 4:48 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Cooked for 5s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted
+=== T+52 23:48:44
+--- w1:p4 focused=false status=done
+✻ Sautéed for 8s · done 4:48 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Cooked for 5s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted
+=== T+64 23:48:56
+--- w1:p4 focused=false status=done
+✻ Sautéed for 8s · done 4:48 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=done
+✻ Cooked for 5s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted
+=== T+74 23:49:06
+--- w1:p4 focused=false status=idle
+✻ Sautéed for 8s · done 4:48 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=true status=idle
+✻ Cooked for 5s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted
+=== T+85 23:49:17
+--- w1:p4 focused=false status=idle
+✻ Sautéed for 8s · done 4:48 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=true status=idle
+✻ Cooked for 5s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted
+=== T+95 23:49:27
+--- w1:p4 focused=false status=idle
+✻ Sautéed for 8s · done 4:48 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=true status=idle
+✻ Cooked for 5s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted
+=== T+105 23:49:37
+--- w1:p4 focused=false status=idle
+✻ Sautéed for 8s · done 4:48 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=true status=idle
+✻ Cooked for 5s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted
+=== T+116 23:49:48
+--- w1:p4 focused=false status=idle
+✻ Sautéed for 8s · done 4:48 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=true status=idle
+✻ Cooked for 5s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted
+=== T+126 23:49:58
+--- w1:p4 focused=false status=idle
+✻ Sautéed for 8s · done 4:48 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=true status=idle
+✻ Cooked for 5s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted
+=== T+137 23:50:09
+--- w1:p4 focused=false status=idle
+✻ Sautéed for 8s · done 4:48 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=idle
+✻ Cooked for 5s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted
+=== T+147 23:50:19
+--- w1:p4 focused=false status=idle
+✻ Sautéed for 8s · done 4:48 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=idle
+✻ Cooked for 5s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted
+=== T+158 23:50:30
+--- w1:p4 focused=false status=idle
+✻ Sautéed for 8s · done 4:48 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=idle
+✻ Cooked for 5s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted
+=== T+168 23:50:40
+--- w1:p4 focused=false status=idle
+✻ Sautéed for 8s · done 4:48 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=idle
+✻ Cooked for 5s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted
+=== T+179 23:50:51
+--- w1:p4 focused=false status=idle
+✻ Sautéed for 8s · done 4:48 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=idle
+✻ Cooked for 5s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted
+=== T+189 23:51:01
+--- w1:p4 focused=false status=idle
+✻ Sautéed for 8s · done 4:48 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=idle
+✻ Cooked for 5s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted
+=== T+200 23:51:12
+--- w1:p4 focused=false status=idle
+✻ Sautéed for 8s · done 4:48 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=idle
+✻ Cooked for 5s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted
+=== T+210 23:51:22
+--- w1:p4 focused=false status=idle
+✻ Sautéed for 8s · done 4:48 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--- w1:p5 focused=false status=idle
+✻ Cooked for 5s · done 4:47 PM
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+seat-KqDe0evQ|1|2026-10-02 23:47:53|submitted
+seat-dI6CZeba|1|2026-10-02 23:47:53|submitted

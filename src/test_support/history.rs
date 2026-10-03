@@ -225,6 +225,7 @@ fn send_one(
         deadline_millis,
         operation: OperationId::new(operation),
         claim: from.claim(),
+        relays_user: false,
     };
     loop {
         match messages::prepare_send_step(

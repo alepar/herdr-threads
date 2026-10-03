@@ -1706,6 +1706,7 @@ mod pacer_lanes {
             let at = self.clock.monotonic_now();
             HostObservation {
                 target: target.clone(),
+                focused: false,
                 host_boot: HostBootId::new("host"),
                 epoch: 1,
                 generation: 1,
@@ -1819,6 +1820,7 @@ mod pacer_lanes {
             pacer.clone(),
             cancel.clone(),
             status.clone(),
+            Arc::new(herdr_threads::ports::NoPokeCapabilities),
         )
         .unwrap();
         Lane {
@@ -2012,6 +2014,7 @@ mod pacer_lanes {
                 pacer.clone(),
                 cancel.clone(),
                 status.clone(),
+                Arc::new(herdr_threads::ports::NoPokeCapabilities),
             )
             .unwrap();
             Lane {

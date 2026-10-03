@@ -1,0 +1,84 @@
+{
+ "run1": {
+  "session_id": "e3272da9-a6a2-4d99-bd8d-e552b74d87f0",
+  "result": "done",
+  "total_cost_usd": 0.0243117,
+  "permission_denials": [],
+  "parent_claude_herdr_env_after_unset": []
+ },
+ "run2": {
+  "session_id": "e3272da9-a6a2-4d99-bd8d-e552b74d87f0",
+  "result": "done",
+  "total_cost_usd": 0.06559885,
+  "permission_denials": [],
+  "parent_claude_herdr_env_after_unset": []
+ },
+ "run3": {
+  "session_id": "e3272da9-a6a2-4d99-bd8d-e552b74d87f0",
+  "result": "",
+  "total_cost_usd": 0.0760754,
+  "permission_denials": [],
+  "parent_claude_herdr_env_after_unset": []
+ },
+ "run4": {
+  "session_id": "e3272da9-a6a2-4d99-bd8d-e552b74d87f0",
+  "result": "Here are all strings starting with \"HT-\" that appear in my context:\n\n1. HT-SS-MARKER-c287cp\n2. HT-COMPACT-MARKER-c287cp",
+  "total_cost_usd": 0.0927852,
+  "permission_denials": [],
+  "parent_claude_herdr_env_after_unset": []
+ },
+ "transcript_rows": [
+  {
+   "line": 68,
+   "attachment": {
+    "type": "hook_success",
+    "hookName": "SessionStart:resume",
+    "hookEvent": "SessionStart",
+    "content": "",
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"HT-SS-MARKER-c287cp\"}}\n",
+    "exitCode": 0
+   }
+  },
+  {
+   "line": 69,
+   "attachment": {
+    "type": "hook_additional_context",
+    "hookName": "SessionStart",
+    "hookEvent": "SessionStart",
+    "content": [
+     "HT-SS-MARKER-c287cp"
+    ]
+   }
+  },
+  {
+   "line": 70,
+   "compact_boundary": true
+  },
+  {
+   "line": 71,
+   "compact_summary_message": true
+  },
+  {
+   "line": 80,
+   "attachment": {
+    "type": "hook_success",
+    "hookName": "SessionStart:compact",
+    "hookEvent": "SessionStart",
+    "content": "",
+    "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"HT-COMPACT-MARKER-c287cp\"}}\n",
+    "exitCode": 0
+   }
+  },
+  {
+   "line": 81,
+   "attachment": {
+    "type": "hook_additional_context",
+    "hookName": "SessionStart",
+    "hookEvent": "SessionStart",
+    "content": [
+     "HT-COMPACT-MARKER-c287cp"
+    ]
+   }
+  }
+ ]
+}

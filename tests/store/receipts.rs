@@ -75,6 +75,7 @@ fn send_request(explicit: Vec<&str>) -> SendMessage {
             execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
             target: HostTargetId::new("pa"),
         },
+        relays_user: false,
     }
 }
 
@@ -2527,4 +2528,547 @@ fn pending_only_thread_candidates_cover_every_canonical_pending_receipt() {
     }
     let (scanned, _) = scanned_pending(&conn);
     assert_eq!(scanned, canonical);
+}
+
+// ---------------------------------------------------------------------------
+// Deadline extension (spec §8, ht-1ip.7).
+// ---------------------------------------------------------------------------
+
+fn catch_up_row(
+    conn: &Connection,
+    seat: &str,
+    thread: &str,
+    active: bool,
+    extension_until: Option<i64>,
+) {
+    let (state, reason, ended): (&str, Option<&str>, Option<i64>) = if active {
+        ("active", None, None)
+    } else {
+        ("ended", Some("ready"), Some(10))
+    };
+    conn.execute(
+        "INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,state,end_reason,ended_at) VALUES (?1,?2,0,1,'e',0,?3,?4,?5,?6)",
+        params![seat, thread, extension_until, state, reason, ended],
+    )
+    .unwrap();
+}
+
+fn extension_of(conn: &Connection, seat: &str, thread: &str) -> Option<i64> {
+    conn.query_row(
+        "SELECT extension_until FROM catch_up WHERE seat_id=?1 AND thread_id=?2",
+        params![seat, thread],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+fn receipt_view(
+    seat: &str,
+    thread: &str,
+    deadline_at: Option<i64>,
+) -> crate::store::effective::EffectiveReceipt {
+    use crate::store::effective::{EffectiveReceipt, EffectiveReceiptState, ReceiptSource};
+    EffectiveReceipt {
+        source: ReceiptSource::Physical,
+        message_id: "m".into(),
+        thread_id: thread.into(),
+        seat_id: seat.into(),
+        sequence: 1,
+        source_ordinal: 1,
+        decision_seq: Some(1),
+        decision_at: 0,
+        frozen_duration_ms: 1_000,
+        state: EffectiveReceiptState::Pending,
+        available_at: Some(0),
+        deadline_at,
+        warning_message_id: None,
+        ack_actor_seat_id: None,
+        ack_generation: None,
+        ack_observation: None,
+        acked_at: None,
+        retired_at: None,
+    }
+}
+
+#[test]
+fn no_row_means_frozen() {
+    let (_context, conn, _clock) = setup();
+    assert_eq!(
+        receipts::effective_deadline(&conn, &receipt_view("b", "t", Some(1000))).unwrap(),
+        Some(1000)
+    );
+    assert_eq!(
+        receipts::effective_deadline(&conn, &receipt_view("b", "t", None)).unwrap(),
+        None
+    );
+    // A row without an extension is also the frozen deadline.
+    catch_up_row(&conn, "b", "t", true, None);
+    assert_eq!(
+        receipts::effective_deadline(&conn, &receipt_view("b", "t", Some(1000))).unwrap(),
+        Some(1000)
+    );
+}
+
+#[test]
+fn active_row_extends() {
+    let (_context, conn, _clock) = setup();
+    catch_up_row(&conn, "b", "t", true, Some(5000));
+    assert_eq!(
+        receipts::effective_deadline(&conn, &receipt_view("b", "t", Some(1000))).unwrap(),
+        Some(5000)
+    );
+    // Another seat or another thread is untouched.
+    assert_eq!(
+        receipts::effective_deadline(&conn, &receipt_view("a", "t", Some(1000))).unwrap(),
+        Some(1000)
+    );
+    assert_eq!(
+        receipts::effective_deadline(&conn, &receipt_view("b", "t2", Some(1000))).unwrap(),
+        Some(1000)
+    );
+}
+
+#[test]
+fn frozen_later_wins() {
+    let (_context, conn, _clock) = setup();
+    catch_up_row(&conn, "b", "t", true, Some(800));
+    assert_eq!(
+        receipts::effective_deadline(&conn, &receipt_view("b", "t", Some(1000))).unwrap(),
+        Some(1000)
+    );
+}
+
+#[test]
+fn entry_sets_entry_plus_p99_never_lowering() {
+    let (_context, mut conn, _clock) = setup();
+    catch_up_row(&conn, "b", "t", true, None);
+    let tx = conn.transaction().unwrap();
+    receipts::extension_on_entry(
+        &tx,
+        &SeatId::new("b"),
+        &ThreadId::new("t"),
+        UtcMillis(100),
+        90,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(extension_of(&conn, "b", "t"), Some(190));
+    // A later extension is never lowered by an earlier entry.
+    conn.execute("UPDATE catch_up SET extension_until=900", [])
+        .unwrap();
+    let tx = conn.transaction().unwrap();
+    receipts::extension_on_entry(
+        &tx,
+        &SeatId::new("b"),
+        &ThreadId::new("t"),
+        UtcMillis(100),
+        90,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(extension_of(&conn, "b", "t"), Some(900));
+}
+
+#[test]
+fn progress_extends_every_active_seat_on_the_thread() {
+    let (_context, mut conn, _clock) = setup();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','i','topic','goal',0,0)", []).unwrap();
+    catch_up_row(&conn, "a", "t", true, Some(150));
+    catch_up_row(&conn, "b", "t", true, None);
+    catch_up_row(&conn, "c", "t", false, Some(40));
+    catch_up_row(&conn, "a", "t2", true, Some(150));
+    let tx = conn.transaction().unwrap();
+    receipts::extension_on_progress(&tx, &ThreadId::new("t"), UtcMillis(200), 90).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(extension_of(&conn, "a", "t"), Some(290));
+    assert_eq!(extension_of(&conn, "b", "t"), Some(290));
+    assert_eq!(extension_of(&conn, "c", "t"), Some(40));
+    assert_eq!(extension_of(&conn, "a", "t2"), Some(150));
+}
+
+#[test]
+fn exit_sets_now_plus_grace() {
+    let (_context, mut conn, _clock) = setup();
+    catch_up_row(&conn, "b", "t", false, Some(9_999));
+    catch_up_row(&conn, "a", "t", true, Some(9_999));
+    let tx = conn.transaction().unwrap();
+    receipts::extension_on_exit(
+        &tx,
+        &SeatId::new("b"),
+        &ThreadId::new("t"),
+        UtcMillis(300),
+        60,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    // Set, not raised: the exit grace replaces the longer progress window.
+    assert_eq!(extension_of(&conn, "b", "t"), Some(360));
+    assert_eq!(extension_of(&conn, "a", "t"), Some(9_999));
+}
+
+/// A pending physical receipt for seat `b` on thread `t`: message `id`,
+/// frozen deadline `deadline`.
+fn legacy_receipt(conn: &Connection, id: &str, thread: &str, sequence: i64, deadline: i64) {
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i',?2,?3,'ordinary','a','x',0,(SELECT COALESCE(MAX(decision_seq),1)+1 FROM messages))", params![id, thread, sequence]).unwrap();
+    conn.execute(
+        "UPDATE host_instances SET decision_seq=MAX(decision_seq,(SELECT MAX(decision_seq) FROM messages))",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE threads SET next_sequence=MAX(next_sequence,?2) WHERE id=?1",
+        params![thread, sequence + 1],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,?2,'b','pending',500,0,?3)", params![id, thread, deadline]).unwrap();
+}
+
+/// A manifest-era receipt for seat `b` on thread `t` (a `receipt_state` row
+/// only), frozen deadline 2000.
+fn manifest_receipt(context: &StoreContext, conn: &mut Connection) -> MessageId {
+    let mut request = send_request(vec![]);
+    request.deadline_millis = Some(500);
+    let id = match send_prepared(
+        context,
+        conn,
+        &request,
+        &mut permit(&request),
+        messages::MessageLimits::default(),
+    )
+    .unwrap()
+    {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        other => panic!("{other:?}"),
+    };
+    conn.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES ('b',3,1500,1,'verified')",[]).unwrap();
+    conn.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at) VALUES (?1,'b','pending',1500,2000)",[id.as_str()]).unwrap();
+    id
+}
+
+fn warning_count(conn: &Connection, message: &str) -> i64 {
+    conn.query_row(
+        "SELECT count(*) FROM messages WHERE kind='warn' AND source_message_id=?1",
+        [message],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+fn due_phase(context: &StoreContext, conn: &mut Connection) -> u16 {
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    let due = receipts::scan_due(context, conn, 10, &mut cursor).unwrap();
+    let lapses = receipts::scan_extension_lapses(context, conn, &mut cursor).unwrap();
+    due.warnings + lapses.warnings
+}
+
+#[test]
+fn extended_legacy_receipt_is_skipped_until_the_extension_lapses() {
+    let (context, mut conn, clock) = setup();
+    legacy_receipt(&conn, "ml", "t", 1, 1500);
+    catch_up_row(&conn, "b", "t", true, Some(5000));
+    clock.0.store(2000, Ordering::SeqCst);
+    // The frozen deadline passed during the extension: nothing fires.
+    assert_eq!(due_phase(&context, &mut conn), 0);
+    assert_eq!(warning_count(&conn, "ml"), 0);
+    // The lapse is found by the extension recheck even when the due scan had
+    // already moved past the receipt: run only the recheck.
+    clock.0.store(5000, Ordering::SeqCst);
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    let lapses = receipts::scan_extension_lapses(&context, &mut conn, &mut cursor).unwrap();
+    assert_eq!(lapses.warnings, 1);
+    assert_eq!(warning_count(&conn, "ml"), 1);
+    assert_eq!(due_phase(&context, &mut conn), 0);
+    assert_eq!(warning_count(&conn, "ml"), 1);
+}
+
+#[test]
+fn extended_manifest_receipt_is_skipped_until_the_extension_lapses() {
+    let (context, mut conn, clock) = setup();
+    let id = manifest_receipt(&context, &mut conn);
+    catch_up_row(&conn, "b", "t", true, Some(5000));
+    clock.0.store(2000, Ordering::SeqCst);
+    assert_eq!(due_phase(&context, &mut conn), 0);
+    assert_eq!(warning_count(&conn, id.as_str()), 0);
+    clock.0.store(4999, Ordering::SeqCst);
+    assert_eq!(due_phase(&context, &mut conn), 0);
+    clock.0.store(5000, Ordering::SeqCst);
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    let lapses = receipts::scan_extension_lapses(&context, &mut conn, &mut cursor).unwrap();
+    assert_eq!(lapses.warnings, 1);
+    assert_eq!(warning_count(&conn, id.as_str()), 1);
+    assert_eq!(due_phase(&context, &mut conn), 0);
+    assert_eq!(warning_count(&conn, id.as_str()), 1);
+}
+
+#[test]
+fn due_phase_warns_exactly_once_when_the_extension_lapses() {
+    let (context, mut conn, clock) = setup();
+    legacy_receipt(&conn, "ml", "t", 1, 1500);
+    catch_up_row(&conn, "b", "t", true, Some(5000));
+    clock.0.store(4999, Ordering::SeqCst);
+    assert_eq!(due_phase(&context, &mut conn), 0);
+    clock.0.store(5000, Ordering::SeqCst);
+    assert_eq!(due_phase(&context, &mut conn), 1);
+    assert_eq!(due_phase(&context, &mut conn), 0);
+    assert_eq!(warning_count(&conn, "ml"), 1);
+}
+
+#[test]
+fn recheck_is_idempotent_after_restart() {
+    let (context, mut conn, clock) = setup();
+    legacy_receipt(&conn, "ml", "t", 1, 1500);
+    catch_up_row(&conn, "b", "t", false, Some(1800));
+    clock.0.store(2000, Ordering::SeqCst);
+    for _ in 0..2 {
+        // Watermark None each time, as after a restart.
+        let mut cursor = receipts::ReceiptDueCursor::default();
+        assert_eq!(cursor.extension, receipts::ExtensionLapseCursor::default());
+        receipts::scan_extension_lapses(&context, &mut conn, &mut cursor).unwrap();
+    }
+    assert_eq!(warning_count(&conn, "ml"), 1);
+}
+
+#[test]
+fn recheck_walks_the_extension_index_in_bounded_pages_with_a_watermark() {
+    let (context, mut conn, clock) = setup();
+    // 100 lapsed rows on other threads fill the first page; the row that
+    // matters is the 101st by extension_until.
+    for n in 0..100 {
+        let thread = format!("x{n}");
+        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)", [&thread]).unwrap();
+        catch_up_row(&conn, "a", &thread, false, Some(100 + n));
+    }
+    legacy_receipt(&conn, "ml", "t", 1, 1500);
+    catch_up_row(&conn, "b", "t", false, Some(1800));
+    clock.0.store(2000, Ordering::SeqCst);
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    let first = receipts::scan_extension_lapses(&context, &mut conn, &mut cursor).unwrap();
+    assert!(first.more);
+    assert_eq!(first.warnings, 0);
+    assert_eq!(
+        cursor.extension.after,
+        Some((199, "a".into(), "x99".into()))
+    );
+    assert_eq!(cursor.extension.through, None);
+    assert_eq!(warning_count(&conn, "ml"), 0);
+    let second = receipts::scan_extension_lapses(&context, &mut conn, &mut cursor).unwrap();
+    assert!(!second.more);
+    assert_eq!(second.warnings, 1);
+    assert_eq!(cursor.extension.after, None);
+    assert_eq!(cursor.extension.through, Some(1999));
+    assert_eq!(warning_count(&conn, "ml"), 1);
+}
+
+fn pass(
+    context: &StoreContext,
+    conn: &mut Connection,
+    cursor: &mut receipts::ReceiptDueCursor,
+) -> (u16, bool) {
+    let due = receipts::scan_due(context, conn, 10, cursor).unwrap();
+    let lapses = receipts::scan_extension_lapses(context, conn, cursor).unwrap();
+    (due.warnings + lapses.warnings, due.more || lapses.more)
+}
+
+#[test]
+fn lapse_watermark_survives_a_completed_due_scan() {
+    let (context, mut conn, _clock) = setup();
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    cursor.extension.through = Some(1500);
+    cursor.extension.after = Some((10, "a".into(), "x".into()));
+    let expected = cursor.extension.clone();
+    let due = receipts::scan_due(&context, &mut conn, 10, &mut cursor).unwrap();
+    assert!(!due.more);
+    assert_eq!(cursor.extension, expected);
+}
+
+#[test]
+fn many_ended_rows_stop_reporting_more() {
+    let (context, mut conn, clock) = setup();
+    for n in 0..250 {
+        let thread = format!("x{n:03}");
+        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)", [&thread]).unwrap();
+        catch_up_row(&conn, "a", &thread, false, Some(100 + n));
+    }
+    clock.0.store(2000, Ordering::SeqCst);
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    let mut more_passes = 0;
+    while pass(&context, &mut conn, &mut cursor).1 {
+        more_passes += 1;
+        assert!(more_passes <= 3, "continuation never clears");
+    }
+    for _ in 0..5 {
+        assert!(!pass(&context, &mut conn, &mut cursor).1);
+        assert_eq!(
+            cursor.extension,
+            receipts::ExtensionLapseCursor {
+                through: Some(1999),
+                after: None
+            }
+        );
+    }
+}
+
+#[test]
+fn lapse_after_a_completed_walk_is_found_once() {
+    let (context, mut conn, clock) = setup();
+    clock.0.store(2000, Ordering::SeqCst);
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    assert_eq!(pass(&context, &mut conn, &mut cursor), (0, false));
+    assert_eq!(cursor.extension.through, Some(1999));
+    legacy_receipt(&conn, "ml", "t", 1, 1500);
+    catch_up_row(&conn, "b", "t", false, Some(2500));
+    clock.0.store(2499, Ordering::SeqCst);
+    assert_eq!(pass(&context, &mut conn, &mut cursor).0, 0);
+    clock.0.store(2500, Ordering::SeqCst);
+    assert_eq!(pass(&context, &mut conn, &mut cursor).0, 1);
+    clock.0.store(2600, Ordering::SeqCst);
+    assert_eq!(pass(&context, &mut conn, &mut cursor).0, 0);
+    assert_eq!(warning_count(&conn, "ml"), 1);
+}
+
+#[test]
+fn keyset_pages_through_rows_sharing_one_extension_until() {
+    let (context, mut conn, clock) = setup();
+    for n in 0..150 {
+        let thread = format!("x{n:03}");
+        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)", [&thread]).unwrap();
+        catch_up_row(&conn, "a", &thread, false, Some(1800));
+    }
+    legacy_receipt(&conn, "ml", "t", 1, 1500);
+    catch_up_row(&conn, "b", "t", false, Some(1800));
+    clock.0.store(2000, Ordering::SeqCst);
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    let first = receipts::scan_extension_lapses(&context, &mut conn, &mut cursor).unwrap();
+    assert!(first.more);
+    let second = receipts::scan_extension_lapses(&context, &mut conn, &mut cursor).unwrap();
+    assert!(!second.more);
+    assert_eq!(first.warnings + second.warnings, 1);
+    assert_eq!(warning_count(&conn, "ml"), 1);
+}
+
+#[test]
+fn record_overdue_uses_effective_for_both_bases() {
+    use crate::ports::TimeBasis;
+    let (context, mut conn, _clock) = setup();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','i','topic','goal',0,0)", []).unwrap();
+    legacy_receipt(&conn, "ext", "t", 1, 1500);
+    legacy_receipt(&conn, "plain", "t2", 1, 1500);
+    catch_up_row(&conn, "b", "t", true, Some(5000));
+    let obligation = |message: &str| ObligationRef::Receipt {
+        message: MessageId::new(message),
+        seat: SeatId::new("b"),
+    };
+    // Decision basis: between frozen and effective is not overdue; the same
+    // instant without an extension is.
+    let (extended, plain) = context
+        .execute_decision(
+            &mut conn,
+            |_| Ok(()),
+            |tx, _, _| {
+                let extended = crate::store::schema::record_overdue_if_pending(
+                    tx,
+                    &obligation("ext"),
+                    &TimeBasis::Decision,
+                    UtcMillis(3000),
+                )?;
+                let plain = crate::store::schema::record_overdue_if_pending(
+                    tx,
+                    &obligation("plain"),
+                    &TimeBasis::Decision,
+                    UtcMillis(3000),
+                )?;
+                Ok((extended.inserted, plain.inserted))
+            },
+        )
+        .unwrap();
+    assert!(!extended);
+    assert!(plain);
+    // At the effective deadline it is overdue, and the payload keeps the
+    // frozen deadline.
+    let at_effective = context
+        .execute_decision(
+            &mut conn,
+            |_| Ok(()),
+            |tx, _, _| {
+                crate::store::schema::record_overdue_if_pending(
+                    tx,
+                    &obligation("ext"),
+                    &TimeBasis::Decision,
+                    UtcMillis(5000),
+                )
+            },
+        )
+        .unwrap();
+    assert!(at_effective.inserted);
+    let payload: String = conn
+        .query_row(
+            "SELECT event_json FROM messages WHERE kind='warn' AND source_message_id='ext'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(payload.contains("\"deadline_at\":1500"), "{payload}");
+}
+
+#[test]
+fn retirement_cutover_is_classified_against_the_effective_deadline() {
+    use crate::ports::TimeBasis;
+    let (context, mut conn, _clock) = setup();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','i','topic','goal',0,0)", []).unwrap();
+    legacy_receipt(&conn, "ext", "t", 1, 1500);
+    legacy_receipt(&conn, "plain", "t2", 1, 1500);
+    catch_up_row(&conn, "b", "t", true, Some(5000));
+    // Cutover 3000 is after the frozen deadline but before the effective one.
+    conn.execute(
+        "UPDATE seats SET state='retired', retired_at=3000 WHERE id='b'",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO retirements(id, seat_id, cutover_at, closure_boot, closure_epoch, closure_target, closure_generation) VALUES ('j', 'b', 3000, 'b', 1, 'p', 1)", []).unwrap();
+    let basis = TimeBasis::Retirement(RetirementJobId::new("j"));
+    let (extended, plain) = context
+        .execute_decision(
+            &mut conn,
+            |_| Ok(()),
+            |tx, at, _| {
+                let run = |message: &str| {
+                    crate::store::schema::record_overdue_if_pending(
+                        tx,
+                        &ObligationRef::Receipt {
+                            message: MessageId::new(message),
+                            seat: SeatId::new("b"),
+                        },
+                        &basis,
+                        at.utc,
+                    )
+                    .map(|outcome| outcome.inserted)
+                };
+                Ok((run("ext")?, run("plain")?))
+            },
+        )
+        .unwrap();
+    assert!(!extended, "cutover before the effective deadline");
+    assert!(plain, "control: no extension means overdue at the cutover");
+}
+
+#[test]
+fn ack_after_frozen_deadline_during_extension_records_no_late_warning() {
+    let (context, mut conn, clock) = setup();
+    let id = manifest_receipt(&context, &mut conn);
+    catch_up_row(&conn, "b", "t", true, Some(9000));
+    clock.0.store(3000, Ordering::SeqCst);
+    let request = ack_request(vec![id.clone()]);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    receipts::ack(
+        &context,
+        &mut conn,
+        &budget,
+        &request,
+        &mut ack_permit(&request),
+    )
+    .unwrap();
+    assert_eq!(warning_count(&conn, id.as_str()), 0);
 }

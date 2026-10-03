@@ -1,0 +1,34 @@
+herdr-threads doctor
+version: 0.1.0 (protocol 2)
+state_dir: /private/tmp/ht-summary-smoke/state
+state_dir.source: --state-dir
+state_dir.status: ok
+host_endpoint: /private/tmp/ht-summary-smoke/h.sock (present)
+host_endpoint.source: --host-endpoint
+instance_dir: /private/tmp/ht-summary-smoke/state/instances/9639634cd008ed0f1c61a379dd666732a771ab7f17494af1af87036b37bf06a6
+daemon: healthy
+daemon.software_version: 0.1.0
+daemon.version_matches: true
+daemon.boot_id: 0eeb70b8-63fd-4256-81fe-9498c0c22839
+daemon.host_reachability: ready
+daemon.harness_claude: cooperative
+daemon.harness_codex: cooperative
+daemon.limitation: harness codex: codex 0.160.0: schema-matched, live-unverified: recipe codex-hooks-v1 hook schemas sha256:86858f2456c999030224a92d8dfb535183fe0edf8601690d8941978fadbb066d; binary sha256 112fae7a5a1223e6
+daemon.note: harness claude: claude 2.1.287: listed: recipe claude-hooks-2.1.287
+daemon.note: receipt cooperative: harness cooperative means an admitted recipe without native-verified receipt; model-issued accept/ACK is recorded as cooperative_top_level, shown live on claude 2.1.285-2.1.286 and codex 0.159.2 (schema-matched, live-unverified)
+daemon.note: wake cooperative: prompts only Herdr's detected idle/done claude or codex agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified
+skill.summary_procedure: present
+hooks.claude.settings: /Users/USER/.claude/settings.json
+hooks.claude.installed: no
+hooks.claude.observed: not observable: Claude hook runs are not recorded (cooperative mode)
+hooks.claude.recipes: claude-hooks-2.1.283 [2.1.283, 2.1.286]; claude-hooks-2.1.287 {2.1.287}
+hooks.claude.compaction_recovery: claude-hooks-2.1.283: unsupported (resume/clear and herdr-threads summary); claude-hooks-2.1.287: supported
+hooks.codex: Codex hooks are user-level ($CODEX_HOME/hooks.json, set up by `herdr-threads setup codex`); Codex runs them only once trusted
+hooks.codex.recipes: codex-hooks-v1 {0.157.1, 0.158.0}
+hooks.codex.hooks_file: /Users/USER/.codex/hooks.json
+hooks.codex.setup_installed: no
+hooks.codex.installed: codex 0.160.0: schema-matched, live-unverified: recipe codex-hooks-v1 hook schemas sha256:86858f2456c999030224a92d8dfb535183fe0edf8601690d8941978fadbb066d; binary sha256 112fae7a5a1223e6
+hooks.codex.last_hook: codex 0.160.0: schema-matched, live-unverified: recipe codex-hooks-v1 hook schemas sha256:86858f2456c999030224a92d8dfb535183fe0edf8601690d8941978fadbb066d; binary sha256 112fae7a5a1223e6
+limitation: claude is on PATH (/Users/USER/.local/bin/claude) but its hooks are not installed in /Users/USER/.claude/settings.json: run `herdr-threads setup claude`
+limitation: codex is on PATH (/Users/USER/.local/bin/codex) but its hooks are not installed in /Users/USER/.codex/hooks.json: run `herdr-threads setup codex` with this CODEX_HOME
+result: degraded

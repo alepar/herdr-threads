@@ -1,0 +1,22 @@
+health
+boot_id: "0eeb70b8-63fd-4256-81fe-9498c0c22839"
+database: {"detail":null,"state":"ready"}
+harness: {"claude":"cooperative","codex":"cooperative"}
+held_targets: null
+host: {"coherent_enumeration":"supported","current_execution":"unsupported","reachability":"ready","receipt_registration":"unsupported","safe_prompt":"supported","version":null}
+host_timeouts: null
+instance_id: "fca0ebb0-142a-415a-96c0-308b1e17c56e"
+last_reconciliation_at: 1790988045273
+last_scheduler_tick_at: 1790988046760
+limitations: ["harness codex: codex 0.160.0: schema-matched, live-unverified: recipe codex-hooks-v1 hook schemas sha256:86858f2456c999030224a92d8dfb535183fe0edf8601690d8941978fadbb066d; binary sha256 112fae7a5a1223e6"]
+notes: ["harness claude: claude 2.1.287: listed: recipe claude-hooks-2.1.287","receipt cooperative: harness cooperative means an admitted recipe without native-verified receipt; model-issued accept/ACK is recorded as cooperative_top_level, shown live on claude 2.1.285-2.1.286 and codex 0.159.2 (schema-matched, live-unverified)","wake cooperative: prompts only Herdr's detected idle/done claude or codex agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified"]
+protocol_version: 2
+queue_depth: null
+queue_rejections: null
+retirement_degraded: null
+retirement_pending: null
+schema: {"detail":null,"state":"ready"}
+settings: {"invitation_default_ms":300000,"minimum_wake_delay_ms":30000,"receipt_default_ms":300000}
+software_version: "0.1.0"
+state: "healthy"
+unresolved_seats: 0

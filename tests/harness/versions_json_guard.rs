@@ -58,7 +58,7 @@ fn generated_document_lists_every_version_in_order_with_evidence() {
             row("claude", "2.1.284", "claude-hooks-2.1.283", "no_model"),
             row("claude", "2.1.285", "claude-hooks-2.1.283", "live"),
             row("claude", "2.1.286", "claude-hooks-2.1.283", "live"),
-            row("claude", "2.1.287", "claude-hooks-2.1.283", "live"),
+            row("claude", "2.1.287", "claude-hooks-2.1.287", "live"),
             row("codex", "0.157.1", "codex-hooks-v1", "no_model"),
             row("codex", "0.158.0", "codex-hooks-v1", "live"),
             row("codex", "0.159.3", "codex-hooks-v1", "live"),
@@ -148,6 +148,9 @@ static SNIPPET: &[Recipe<ClaudeProfile>] = &[Recipe {
     profile: ClaudeProfile {
         input_schema: InputSchema::Hooks2_1_283,
         model_receipt: NativeSupport::Unsupported,
+        session_start_compact: NativeSupport::Unsupported,
+        composer_stash: NativeSupport::Unsupported,
+        poke_during_turn: NativeSupport::Unsupported,
     },
 }];
 
