@@ -1617,14 +1617,18 @@ pub fn sanitize_agent_name(raw: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_owned())
 }
 
-/// Short readable seat id: the seat's alphanumeric characters after its
-/// `seat-` prefix, lowercased, at most 8 (`seat-k3Fq9a2B` -> `k3fq9a2b`).
+/// Short readable seat suffix, lowercased and at most eight characters.
+/// Both `sk3Fq9a2B` and persisted `seat-k3Fq9a2B` yield `k3fq9a2b`.
 pub fn short_seat(seat: &SeatId) -> String {
     let seat_str = seat.as_str();
-    let rest = seat_str
-        .strip_prefix("seat-")
-        .or_else(|| seat_str.strip_prefix("seat_"))
-        .unwrap_or(seat_str);
+    let rest = if crate::protocol::ids::is_short_public_id("s", seat_str) {
+        &seat_str[1..]
+    } else {
+        seat_str
+            .strip_prefix("seat-")
+            .or_else(|| seat_str.strip_prefix("seat_"))
+            .unwrap_or(seat_str)
+    };
     let short: String = rest
         .chars()
         .filter(char::is_ascii_alphanumeric)
@@ -1645,14 +1649,19 @@ fn seat_digest(seat: &SeatId) -> String {
 
 /// The Herdr agent names one launch of `seat` may submit, in order: the
 /// sanitized `hint` (`launch --name`, else the pane label), else
-/// `seat-<short seat id>`; then, used once only after Herdr refuses the first
+/// `s<short seat id>` for a compact ID (or `seat-<short id>` for a persisted
+/// seat); then, used once only after Herdr refuses the first
 /// as `agent_name_taken`, that name cut to fit plus `-<short seat id>` (a
 /// seat digest when the name already ends with that id).
 pub fn launch_agent_names(seat: &SeatId, hint: Option<&str>) -> [String; 2] {
     let short = short_seat(seat);
-    let first = hint
-        .and_then(sanitize_agent_name)
-        .unwrap_or_else(|| format!("seat-{short}"));
+    let first = hint.and_then(sanitize_agent_name).unwrap_or_else(|| {
+        if crate::protocol::ids::is_short_public_id("s", seat.as_str()) {
+            format!("s{short}")
+        } else {
+            format!("seat-{short}")
+        }
+    });
     let suffix = if first.ends_with(&short) {
         seat_digest(seat)
     } else {

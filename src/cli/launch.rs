@@ -229,7 +229,8 @@ Preflight (nothing is started when any step refuses):
     instance's socket too;
   - a last fresh read of the pane just before Herdr starts the agent.
 
-Agent name: --name NAME, else the pane's Herdr label, else seat-<short seat id>,
+Agent name: --name NAME, else the pane's Herdr label, else s<short seat id>
+for a new compact ID (seat-<short seat id> for a persisted ID),
 fitted to Herdr's [a-z][a-z0-9_-]{0,31}. If another live agent holds it, launch
 retries once with -<short seat id> appended.
 

@@ -102,11 +102,14 @@ fn ordinary_messages_are_irc_lines_with_pane_nicks_and_harness() {
 fn unknown_seats_fall_back_to_the_short_seat_id() {
     let out = render(&summary(1, "seat-Zz99Yy88", "hi"), &mut NoLookup);
     assert_eq!(out, "[12:34] <seat-Zz99Yy88> hi\n");
+    let compact = render(&summary(1, "sAb12Cd34", "hi"), &mut NoLookup);
+    assert_eq!(compact, "[12:34] <sAb12Cd34> hi\n");
     assert_eq!(
         short_seat("seat-0b5a1c2e-1111-2222-3333-444455556666"),
         "seat-0b5a1c2e"
     );
     assert_eq!(short_seat("seat-Ab12Cd34"), "seat-Ab12Cd34");
+    assert_eq!(short_seat("sAb12Cd34"), "sAb12Cd34");
 }
 
 #[test]

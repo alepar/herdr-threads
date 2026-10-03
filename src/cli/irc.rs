@@ -87,8 +87,8 @@ impl Nick {
     }
 }
 
-/// A seat ID short enough for a nick: new IDs (`seat-` plus eight base62
-/// characters) are kept whole; legacy UUID-suffixed IDs keep eight characters.
+/// A seat ID short enough for a nick: compact IDs are kept whole; persisted
+/// UUID-suffixed IDs keep eight suffix characters.
 pub fn short_seat(seat: &str) -> String {
     match seat.split_once('-') {
         Some((prefix, suffix)) if suffix.chars().count() > 8 => {

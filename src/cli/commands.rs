@@ -948,8 +948,9 @@ struct LaunchArgs {
     /// first `claude`/`codex` on PATH, which Herdr starts by name).
     #[arg(long, value_name = "PATH")]
     harness_binary: Option<String>,
-    /// Herdr agent name (default: the pane's Herdr label, else `seat-<short
-    /// seat id>`). Fitted to Herdr's `[a-z][a-z0-9_-]{0,31}`.
+    /// Herdr agent name (default: the pane's Herdr label, else the compact
+    /// seat ID, or `seat-<short seat id>` for a persisted seat). Fitted to
+    /// Herdr's `[a-z][a-z0-9_-]{0,31}`.
     #[arg(long, value_name = "NAME")]
     name: Option<String>,
     /// Native agent arguments, kept byte for byte and in order after `--`.

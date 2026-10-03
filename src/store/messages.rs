@@ -4,7 +4,7 @@ use crate::ports::{DurableWorkAdmission, SendPreparationProgress};
 use crate::protocol::{
     authority::{MutationPermit, ObligationRef},
     commands::SendMessage,
-    ids::{MessageId, SeatId, ServiceAuthorId, ThreadId, prefix},
+    ids::{MessageId, SeatId, ServiceAuthorId, ThreadId, prefix, send_message_id_for_preparation},
     results::{ApiError, CommandResult, ErrorCode},
     time::CallBudget,
 };
@@ -565,7 +565,9 @@ pub(super) fn stage_recipient(
                         "unavailable warning ID collision",
                     ));
                 }
-                let source_message = prep_id.replacen("prep-", "msg-", 1);
+                let source_message = send_message_id_for_preparation(prep_id).ok_or_else(|| {
+                    api_error(ErrorCode::StoreCorrupt, "invalid send preparation ID")
+                })?;
                 let payload=json!({"event":"recipient_unavailable","seat":recipient,"episode":episode,"first_message":source_message}).to_string();
                 if payload.len() > 4096 {
                     return Err(api_error(
@@ -649,7 +651,10 @@ pub(super) fn insert_publication(
             "timeline sequence exhausted",
         ));
     }
-    let id = MessageId::new(prep_id.replacen("prep-", "msg-", 1));
+    let id = MessageId::new(
+        send_message_id_for_preparation(&prep_id)
+            .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "invalid send preparation ID"))?,
+    );
     match author {
         PublicationAuthor::Native {
             seat,

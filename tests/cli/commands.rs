@@ -1121,6 +1121,57 @@ fn digest_item_form_is_refused_as_invalid_arguments_naming_the_bare_id() {
     assert!(parse_argv(vec!["herdr-threads", "ack", "msg-1"]).is_ok());
 }
 
+#[test]
+fn copied_compact_and_persisted_ids_parse_as_command_inputs() {
+    for thread in ["tAb12Cd34", "thread-Ab12Cd34"] {
+        let accept = parse_argv(["herdr-threads", "accept", thread]).unwrap();
+        assert!(matches!(
+            accept.action,
+            CliAction::Mutation(MutationSpec::Accept(ref id)) if id.as_str() == thread
+        ));
+        assert!(parse_argv(["herdr-threads", "read", thread]).is_ok());
+        assert!(parse_argv(["herdr-threads", "send", thread, "--body", "hi"]).is_ok());
+    }
+    for message in ["mAb12Cd34", "msg-Ab12Cd34"] {
+        assert!(parse_argv(["herdr-threads", "ack", message]).is_ok());
+        assert!(parse_argv(["herdr-threads", "body", message]).is_ok());
+    }
+    for message in [
+        "eAb12Cd34",
+        "event-Ab12Cd34",
+        "nAb12Cd34",
+        "notify-Ab12Cd34",
+        "wbc121d12-9d30-8510-b93c-e7cd26e890f1",
+        "warning-bc121d12-9d30-8510-b93c-e7cd26e890f1",
+    ] {
+        assert!(parse_argv(["herdr-threads", "body", message]).is_ok());
+    }
+    for (invitation, requirement) in [
+        ("iAb12Cd34", "qAb12Cd34"),
+        ("inv-Ab12Cd34", "requirement-Ab12Cd34"),
+    ] {
+        assert!(
+            parse_argv([
+                "herdr-threads",
+                "accept-required",
+                "tAb12Cd34",
+                "--invitation",
+                invitation,
+                "--requirement",
+                requirement,
+                "--revision",
+                "4",
+            ])
+            .is_ok()
+        );
+    }
+    for seat in ["sAb12Cd34", "seat-Ab12Cd34"] {
+        assert!(
+            parse_argv(["herdr-threads", "seat", "retire", seat, "--operator"]).is_ok()
+        );
+    }
+}
+
 // Native codex matrix O1 (repeats demo 3 P4): models guess
 // `herdr-threads participants THREAD`; it is an alias of `thread
 // participants`. Kills: removing the alias or routing it elsewhere.

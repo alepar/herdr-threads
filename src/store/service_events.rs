@@ -9,7 +9,7 @@ use crate::{
         ServiceDecisionTransaction,
     },
     protocol::{
-        ids::{MessageId, ServiceAuthorId, prefix},
+        ids::{MessageId, ServiceAuthorId, notification_message_id_for_preparation, prefix},
         results::{ApiError, ErrorCode, MessageKind},
         service::{NotificationSeverity, ServiceNotification, ServiceNotify, ServiceResult},
         time::{CallBudget, UtcMillis},
@@ -518,7 +518,13 @@ pub(crate) fn publish_notify_internal(
     let following = next_sequence
         .checked_add(1)
         .ok_or_else(|| api_error(ErrorCode::SequenceExhausted, "timeline exhausted"))?;
-    let message = MessageId::new(id.replacen("notify-prep-", "notify-", 1));
+    let message =
+        MessageId::new(notification_message_id_for_preparation(&id).ok_or_else(|| {
+            api_error(
+                ErrorCode::StoreCorrupt,
+                "invalid notification preparation ID",
+            )
+        })?);
     let kind = match request.severity {
         NotificationSeverity::Info => "info",
         NotificationSeverity::Warn => "warn",
@@ -1322,14 +1328,11 @@ mod tests {
                 .code,
             ErrorCode::OperationPayloadMismatch
         );
-        let job = format!(
-            "work:service-notify:{}",
-            notice
-                .summary
-                .message
-                .as_str()
-                .replacen("notify-", "notify-prep-", 1)
-        );
+        let preparation = crate::protocol::ids::notification_preparation_id_for_message(
+            notice.summary.message.as_str(),
+        )
+        .unwrap();
+        let job = format!("work:service-notify:{preparation}");
         for _ in 0..10 {
             let progress = materialization::advance_work(
                 &mut db,

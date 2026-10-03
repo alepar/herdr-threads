@@ -473,7 +473,7 @@ try:
     cli_env = dict(environment, HERDR_PLUGIN_STATE_DIR=str(plugin_state))
     resolved = run([str(binary), "seat", "resolve", "--pane", seat_pane, "--new-seat", "--operator"], env=cli_env)
     seat = field(resolved.stdout, "value")
-    check("operator resolves a fresh seat", bool(seat and seat.startswith("seat-")), resolved.stdout)
+    check("operator resolves a fresh seat", bool(seat and re.fullmatch(r"s[0-9A-Za-z]{8}", seat)), resolved.stdout)
     cooperative = ["--cooperative-seat", seat, "--cooperative-target", seat_pane,
                    "--cooperative-harness", "codex", "--cooperative-role", "top-level"]
     run([str(binary), "check-in", "--lifecycle-event", f"package-validation-{uuid.uuid4()}", *cooperative],
@@ -482,7 +482,7 @@ try:
     created = run([str(binary), "thread", "create", "--topic", topic, *cooperative],
                   env=dict(cli_env, HERDR_PANE_ID=seat_pane))
     thread = field(created.stdout, "value")
-    check("seat creates a durable thread", bool(thread and thread.startswith("thread-")), created.stdout)
+    check("seat creates a durable thread", bool(thread and re.fullmatch(r"t[0-9A-Za-z]{8}", thread)), created.stdout)
 
     # -- 5. The operator view stays readable until q ---------------------------
     opened = action("view")

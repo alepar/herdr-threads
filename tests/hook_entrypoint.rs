@@ -2756,10 +2756,14 @@ fn three_thread_startup_keeps_the_overview_and_every_command() {
     let peer = peer_data(&context);
     assert!(peer.contains("directory overview"), "{peer}");
     assert!(!peer.contains("overview has_more"), "{peer}");
-    // The skill pointer rides in the fixed section within the same budget.
+    // The pointer gives way only when the full offer would exceed the budget;
+    // the ready commands below must still survive that choice.
+    let hint = herdr_threads::cli::skill::HOOK_SKILL_HINT;
     assert!(
-        context.contains(herdr_threads::cli::skill::HOOK_SKILL_HINT),
-        "{context}"
+        context.contains(hint)
+            || context.len() + 1 + hint.len() > herdr_threads::cli::hook::MAX_CONTEXT,
+        "skill pointer omitted with room remaining: {} bytes",
+        context.len()
     );
     for (thread, _, _, topic) in &threads {
         assert!(
@@ -2767,7 +2771,7 @@ fn three_thread_startup_keeps_the_overview_and_every_command() {
             "{thread}: {peer}"
         );
         assert!(
-            peer.contains(&format!("\"topic\":\"{topic}\"")),
+            peer.contains(&format!("\"topic_data\":\"{topic}\"")),
             "{topic}: {peer}"
         );
     }

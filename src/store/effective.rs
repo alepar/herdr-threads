@@ -1501,7 +1501,7 @@ pub fn canonical_warning_key(key: &UnavailableWarningKey) -> Result<String, ApiE
 }
 
 /// Domain-separated SHA-256 truncated to an RFC 9562 version-8 UUID.
-pub fn canonical_warning_id(key: &UnavailableWarningKey) -> Result<String, ApiError> {
+fn warning_uuid(key: &UnavailableWarningKey) -> Result<uuid::Uuid, ApiError> {
     let full_key = canonical_warning_key(key)?;
     let mut hash = Sha256::new();
     hash.update(b"herdr-warning-id-v1\0");
@@ -1511,7 +1511,16 @@ pub fn canonical_warning_id(key: &UnavailableWarningKey) -> Result<String, ApiEr
     bytes.copy_from_slice(&digest[..16]);
     bytes[6] = (bytes[6] & 0x0f) | 0x80;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    Ok(format!("warning-{}", uuid::Uuid::from_bytes(bytes)))
+    Ok(uuid::Uuid::from_bytes(bytes))
+}
+
+/// Stable compact ID for a new unavailable-recipient warning.
+pub fn canonical_warning_id(key: &UnavailableWarningKey) -> Result<String, ApiError> {
+    Ok(format!("w{}", warning_uuid(key)?))
+}
+
+fn legacy_warning_id(key: &UnavailableWarningKey) -> Result<String, ApiError> {
+    Ok(format!("warning-{}", warning_uuid(key)?))
 }
 
 /// Direct events and published manifests share one canonical lookup. Hidden
@@ -1522,6 +1531,7 @@ pub fn effective_warning_by_key(
 ) -> Result<Option<EffectiveWarning>, ApiError> {
     let encoded = canonical_warning_key(key)?;
     let expected_id = canonical_warning_id(key)?;
+    let legacy_id = legacy_warning_id(key)?;
     let published: Option<String> = db.query_row(
         "SELECT w.warning_id FROM prepared_unavailable_warnings w JOIN send_manifests sm ON sm.preparation_id=w.preparation_id WHERE w.warning_key=?1 LIMIT 1",
         [&encoded], |r| r.get(0),
@@ -1534,18 +1544,16 @@ pub fn effective_warning_by_key(
         )
         .optional()
         .map_err(store_error)?;
-    if published.as_deref().is_some_and(|id| id != expected_id)
-        || direct.as_deref().is_some_and(|id| id != expected_id)
+    let recorded = published.as_deref().or(direct.as_deref());
+    if recorded.is_some_and(|id| id != expected_id.as_str() && id != legacy_id.as_str())
+        || (published.is_some() && direct.is_some() && published.as_deref() != direct.as_deref())
     {
         return Err(api_error(
             ErrorCode::StoreCorrupt,
             "warning key and deterministic ID disagree",
         ));
     }
-    if published.is_none() && direct.is_none() {
-        return Ok(None);
-    }
-    effective_warning_by_id(db, &expected_id)
+    recorded.map_or(Ok(None), |id| effective_warning_by_id(db, id))
 }
 
 pub fn effective_warning_by_id(

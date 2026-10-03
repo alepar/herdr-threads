@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Compact public ID prefixes.** New seats and threads use `s` and `t` directly before eight base62 characters. Invitations, requirements, retirements, event messages, ordinary messages and service notifications use `i`, `q`, `r`, `e`, `m` and `n`; unavailable warnings use `w` before their deterministic UUID. Stored IDs with older prefixes are kept verbatim and accepted in commands. Scripts should copy complete IDs from output instead of constructing them from prefixes.
+
 ## v0.1.0
 
 First release. Not yet published: see [docs/release.md](docs/release.md) for the checklist and the post-merge follow-on steps.

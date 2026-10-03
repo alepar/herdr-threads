@@ -105,23 +105,22 @@ impl<'de> Deserialize<'de> for LocalRecoveryRef {
     }
 }
 
-/// Public ID prefixes. A public ID is `<prefix>-<suffix>`; new IDs carry a
-/// short base62 suffix (see [`generate_public_id`]), while IDs stored before
-/// the short form keep their UUID suffix. Every validator treats IDs as
-/// opaque, so both forms are accepted everywhere.
+/// Prefixes for newly minted public IDs. The eight-character base62 suffix
+/// follows the prefix directly. Persisted IDs with older long prefixes stay
+/// opaque and are never rewritten.
 pub mod prefix {
-    pub const SEAT: &str = "seat";
-    pub const THREAD: &str = "thread";
-    pub const INVITATION: &str = "inv";
-    pub const REQUIREMENT: &str = "requirement";
-    pub const RETIREMENT: &str = "retirement";
-    pub const EVENT: &str = "event";
-    /// Send preparation; its ordinary message is `msg-<same suffix>`.
-    pub const SEND_PREPARATION: &str = "prep";
-    pub const MESSAGE: &str = "msg";
-    /// Service notification preparation; its message is `notify-<same suffix>`.
-    pub const NOTIFY_PREPARATION: &str = "notify-prep";
-    pub const NOTIFY: &str = "notify";
+    pub const SEAT: &str = "s";
+    pub const THREAD: &str = "t";
+    pub const INVITATION: &str = "i";
+    pub const REQUIREMENT: &str = "q";
+    pub const RETIREMENT: &str = "r";
+    pub const EVENT: &str = "e";
+    /// Send preparation; its ordinary message is `m<same suffix>`.
+    pub const SEND_PREPARATION: &str = "p";
+    pub const MESSAGE: &str = "m";
+    /// Service notification preparation; its message is `n<same suffix>`.
+    pub const NOTIFY_PREPARATION: &str = "np";
+    pub const NOTIFY: &str = "n";
 }
 
 /// Length of the random base62 suffix of a newly generated public ID:
@@ -156,22 +155,51 @@ pub fn public_id_suffix() -> String {
     String::from_utf8(suffix.to_vec()).expect("base62 is ASCII")
 }
 
-/// A fresh public ID `<prefix>-<8 base62 chars>`, e.g. `seat-k3Fq9a2B`.
+/// A fresh public ID `<prefix><8 base62 chars>`, e.g. `sk3Fq9a2B`.
 /// Callers that persist it must go through `store::public_ids`, which
 /// regenerates on collision.
 pub fn generate_public_id(prefix: &str) -> String {
-    format!("{prefix}-{}", public_id_suffix())
+    format!("{prefix}{}", public_id_suffix())
 }
 
-/// True when `value` is `<prefix>-<8 base62 chars>` (the short form).
+/// True when `value` is `<prefix><8 base62 chars>` (the compact form).
 pub fn is_short_public_id(prefix: &str, value: &str) -> bool {
-    value
-        .strip_prefix(prefix)
-        .and_then(|rest| rest.strip_prefix('-'))
-        .is_some_and(|suffix| {
-            suffix.len() == PUBLIC_ID_SUFFIX_LEN
-                && suffix.bytes().all(|b| b.is_ascii_alphanumeric())
-        })
+    value.strip_prefix(prefix).is_some_and(|suffix| {
+        suffix.len() == PUBLIC_ID_SUFFIX_LEN && suffix.bytes().all(|b| b.is_ascii_alphanumeric())
+    })
+}
+
+fn derived_message_id(
+    preparation: &str,
+    compact_preparation: &str,
+    compact_message: &str,
+    legacy_preparation: &str,
+    legacy_message: &str,
+) -> Option<String> {
+    if let Some(suffix) = preparation.strip_prefix(legacy_preparation) {
+        return (!suffix.is_empty()).then(|| format!("{legacy_message}{suffix}"));
+    }
+    if is_short_public_id(compact_preparation, preparation) {
+        return preparation
+            .strip_prefix(compact_preparation)
+            .map(|suffix| format!("{compact_message}{suffix}"));
+    }
+    None
+}
+
+/// Derive the message belonging to a new or persisted send preparation.
+pub fn send_message_id_for_preparation(preparation: &str) -> Option<String> {
+    derived_message_id(preparation, "p", "m", "prep-", "msg-")
+}
+
+/// Derive the message belonging to a new or persisted service notification.
+pub fn notification_message_id_for_preparation(preparation: &str) -> Option<String> {
+    derived_message_id(preparation, "np", "n", "notify-prep-", "notify-")
+}
+
+/// Recover the preparation belonging to a new or persisted notification.
+pub fn notification_preparation_id_for_message(message: &str) -> Option<String> {
+    derived_message_id(message, "n", "np", "notify-", "notify-prep-")
 }
 
 #[cfg(test)]
@@ -188,7 +216,7 @@ mod public_id_tests {
         ] {
             let id = generate_public_id(prefix);
             assert!(is_short_public_id(prefix, &id), "{id}");
-            assert_eq!(id.len(), prefix.len() + 1 + PUBLIC_ID_SUFFIX_LEN);
+            assert_eq!(id.len(), prefix.len() + PUBLIC_ID_SUFFIX_LEN);
             SeatId::parse(id.clone()).unwrap();
             MessageId::parse(id).unwrap();
         }
@@ -214,8 +242,50 @@ mod public_id_tests {
         InvitationId::parse("invitation-bc121d12-9d30-4510-b93c-e7cd26e890f1").unwrap();
         MessageId::parse("msg-bc121d12-9d30-4510-b93c-e7cd26e890f1").unwrap();
         assert!(!is_short_public_id(prefix::SEAT, legacy));
-        assert!(!is_short_public_id(prefix::SEAT, "seat-k3Fq9a2"));
-        assert!(!is_short_public_id(prefix::SEAT, "seat-k3Fq9a2_"));
-        assert!(is_short_public_id(prefix::SEAT, "seat-k3Fq9a2B"));
+        assert!(!is_short_public_id(prefix::SEAT, "sk3Fq9a2"));
+        assert!(!is_short_public_id(prefix::SEAT, "sk3Fq9a2_"));
+        assert!(is_short_public_id(prefix::SEAT, "sk3Fq9a2B"));
+    }
+
+    #[test]
+    fn compact_public_ids_have_distinct_direct_prefixes() {
+        let prefixes = ["s", "t", "i", "q", "r", "e", "p", "m", "np", "n"];
+        for prefix in prefixes {
+            let id = generate_public_id(prefix);
+            assert!(is_short_public_id(prefix, &id), "{id}");
+            assert_eq!(id.len(), prefix.len() + PUBLIC_ID_SUFFIX_LEN);
+            assert!(!id.contains('-'));
+        }
+        assert!(!is_short_public_id(prefix::NOTIFY, "npAb12Cd34"));
+        assert!(!is_short_public_id(prefix::SEAT, "tAb12Cd34"));
+    }
+
+    #[test]
+    fn preparation_derivation_accepts_compact_and_persisted_forms() {
+        assert_eq!(
+            send_message_id_for_preparation("pAb12Cd34"),
+            Some("mAb12Cd34".to_owned())
+        );
+        assert_eq!(
+            send_message_id_for_preparation("prep-Ab12Cd34"),
+            Some("msg-Ab12Cd34".to_owned())
+        );
+        assert_eq!(
+            notification_message_id_for_preparation("npAb12Cd34"),
+            Some("nAb12Cd34".to_owned())
+        );
+        assert_eq!(
+            notification_message_id_for_preparation("notify-prep-Ab12Cd34"),
+            Some("notify-Ab12Cd34".to_owned())
+        );
+        assert_eq!(
+            notification_preparation_id_for_message("nAb12Cd34"),
+            Some("npAb12Cd34".to_owned())
+        );
+        assert_eq!(
+            notification_preparation_id_for_message("notify-Ab12Cd34"),
+            Some("notify-prep-Ab12Cd34".to_owned())
+        );
+        assert_eq!(send_message_id_for_preparation("broken"), None);
     }
 }

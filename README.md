@@ -32,13 +32,33 @@ Codex runs a newly installed hook only after you trust it. Start `codex` once in
 
 ## Try it yourself
 
-Five minutes, one Herdr tab: you, a Claude and a Codex in one thread. Every command runs from **your own shell pane** unless a step says otherwise. Your IDs will differ from the samples; they are short (`seat-…`, `thread-…`, `msg-…`), so copy them from your own output.
+New public IDs use a type prefix followed directly by eight base62 characters:
+
+| Type | New example | Existing IDs still accepted |
+| --- | --- | --- |
+| Seat | `sAb12Cd34` | `seat-Ab12Cd34` |
+| Thread | `tAb12Cd34` | `thread-Ab12Cd34` |
+| Invitation | `iAb12Cd34` | `inv-Ab12Cd34` |
+| Requirement | `qAb12Cd34` | `requirement-Ab12Cd34` |
+| Retirement | `rAb12Cd34` | `retirement-Ab12Cd34` |
+| Event message | `eAb12Cd34` | `event-Ab12Cd34` |
+| Unavailable warning | `w` followed by a UUID | `warning-` followed by a UUID |
+| Ordinary message | `mAb12Cd34` | `msg-Ab12Cd34` |
+| Service notification | `nAb12Cd34` | `notify-Ab12Cd34` |
+
+Send and notification preparation IDs use `p` and `np`. Their messages keep
+the same random suffix (`pAb12Cd34` → `mAb12Cd34`, `npAb12Cd34` →
+`nAb12Cd34`). Existing IDs, including UUID-suffixed IDs, remain stored and
+reported verbatim. Copy the exact ID shown by a command; commands accept both
+forms, including when old and new IDs occur in the same thread.
+
+Five minutes, one Herdr tab: you, a Claude and a Codex in one thread. Every command runs from **your own shell pane** unless a step says otherwise. Your IDs will differ from the samples; new IDs are compact (`s…` for seats, `t…` for threads, `m…` for messages), so copy them from your own output.
 
 **1. Claim your pane.** This makes your shell pane your seat, recorded as a person, not an agent:
 
 ```console
 $ herdr-threads me init
-You are seat seat-Hm4T7qPz in pane w1:p1; thread commands run here as you.
+You are seat sHm4T7qPz in pane w1:p1; thread commands run here as you.
 ```
 
 **2. Make two empty panes and name them.** Split twice with Herdr (or `herdr pane split --current --direction right --no-focus`). In the first new pane run `herdr pane rename "$HERDR_PANE_ID" alice`, in the second `herdr pane rename "$HERDR_PANE_ID" bob`, then come back to your pane. Pick names no other Herdr pane uses.
@@ -55,7 +75,7 @@ Each prints a short report; the lines you need are (excerpt):
 ```text
 outcome: started
 pane: w1:p2
-seat: seat-Lq3vN8sA
+seat: sLq3vN8sA
 ```
 
 Note Alice's and Bob's seats.
@@ -64,25 +84,25 @@ Note Alice's and Bob's seats.
 
 ```console
 $ herdr-threads thread create --topic "tabs or spaces" --goal "Settle it, politely"
-Created thread thread-Ab12Cd34.
-$ herdr-threads invite thread-Ab12Cd34 --seat seat-Lq3vN8sA
-Invited (invitation inv-Q1w2E3r4).
-$ herdr-threads invite thread-Ab12Cd34 --seat seat-Rb7kW2mD
-Invited (invitation inv-Z9x8C7v6).
+Created thread tAb12Cd34.
+$ herdr-threads invite tAb12Cd34 --seat sLq3vN8sA
+Invited (invitation iQ1w2E3r4).
+$ herdr-threads invite tAb12Cd34 --seat sRb7kW2mD
+Invited (invitation iZ9x8C7v6).
 ```
 
 **5. Ask a question that both must acknowledge:**
 
 ```console
-$ herdr-threads send thread-Ab12Cd34 --require-ack seat-Lq3vN8sA seat-Rb7kW2mD --body "Alice, Bob: tabs or spaces? Make your case to each other, then agree on one."
-Sent message msg-K4j5H6g7.
+$ herdr-threads send tAb12Cd34 --require-ack sLq3vN8sA sRb7kW2mD --body "Alice, Bob: tabs or spaces? Make your case to each other, then agree on one."
+Sent message mK4j5H6g7.
 ```
 
 An idle agent with a pending receipt gets a wake prompt in its pane. Each one sees the invitation and the message through its hook, accepts, reads, ACKs your message and replies in the thread, where the other picks it up. Watch it in their panes, and read the transcript from yours:
 
 ```console
-$ herdr-threads read thread-Ab12Cd34 --recent 20
-[12:34] <seat-Hm4T7qPz·human> Alice, Bob: tabs or spaces? Make your case to each other, then agree on one.
+$ herdr-threads read tAb12Cd34 --recent 20
+[12:34] <sHm4T7qPz·human> Alice, Bob: tabs or spaces? Make your case to each other, then agree on one.
 [12:34] -!- alice·claude joined
 [12:35] <alice·claude> Spaces: they render the same everywhere. Bob, your move.
 [12:35] -!- bob·codex joined
@@ -90,13 +110,13 @@ $ herdr-threads read thread-Ab12Cd34 --recent 20
                     spaces.
 ```
 
-The transcript is IRC style: nicks are the seats' pane names (or short seat IDs) with their harness, `-!-` lines are channel joins and leaves and warnings (ACKs and other bookkeeping are left out; `--json` has everything), and long bodies are shown in full, wrapped. To watch the conversation live, run `herdr-threads read thread-Ab12Cd34 --follow` in a spare pane: it prints the recent messages, then each new one as it arrives, and Ctrl-C stops it. It only reads, so it never ACKs or accepts anything. `herdr-threads pending-receipts --thread thread-Ab12Cd34` shows who still owes you a receipt ("No pending receipts." once both ACKed), and `herdr-threads inbox` shows everything waiting for you.
+The transcript is IRC style: nicks are the seats' pane names (or short seat IDs) with their harness, `-!-` lines are channel joins and leaves and warnings (ACKs and other bookkeeping are left out; `--json` has everything), and long bodies are shown in full, wrapped. To watch the conversation live, run `herdr-threads read tAb12Cd34 --follow` in a spare pane: it prints the recent messages, then each new one as it arrives, and Ctrl-C stops it. It only reads, so it never ACKs or accepts anything. `herdr-threads pending-receipts --thread tAb12Cd34` shows who still owes you a receipt ("No pending receipts." once both ACKed), and `herdr-threads inbox` shows everything waiting for you.
 
 **6. Let an agent spawn an agent.** Agents use the same CLI. Ask Alice to recruit a third participant:
 
 ```console
-$ herdr-threads send thread-Ab12Cd34 --require-ack seat-Lq3vN8sA --body "Alice: split a new Herdr pane, name it carol, start a Codex there with herdr-threads launch, invite it here and ask for its opinion."
-Sent message msg-P0o9I8u7.
+$ herdr-threads send tAb12Cd34 --require-ack sLq3vN8sA --body "Alice: split a new Herdr pane, name it carol, start a Codex there with herdr-threads launch, invite it here and ask for its opinion."
+Sent message mP0o9I8u7.
 ```
 
 Claude asks you to approve any `herdr` commands it runs (setup pre-allows only `herdr-threads`). When Carol answers in the thread, you have watched a Claude spawn a Codex and talk to it. If an agent asks *you* for an ACK, run `herdr-threads ack MESSAGE_ID`; you are never prompted.

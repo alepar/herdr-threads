@@ -1448,9 +1448,12 @@ fn programmatic_rows_map_to_service() {
         );
     }
     assert!(
-        notices
-            .iter()
-            .any(|notice| notice["message"].as_str().unwrap().starts_with("notify-")),
+        notices.iter().any(|notice| {
+            herdr_threads::protocol::ids::is_short_public_id(
+                herdr_threads::protocol::ids::prefix::NOTIFY,
+                notice["message"].as_str().unwrap(),
+            )
+        }),
         "{history}"
     );
     // Native sends on the same thread keep their own role.

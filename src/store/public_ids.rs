@@ -1,6 +1,6 @@
 //! The one place the store mints user-facing public IDs.
 //!
-//! IDs are `<prefix>-<8 base62 chars>` (`protocol::ids::generate_public_id`).
+//! IDs are `<prefix><8 base62 chars>` (`protocol::ids::generate_public_id`).
 //! Every caller runs inside the store's write transaction, so a candidate is
 //! checked against every table it (or an ID derived from its suffix) will be
 //! written to before use; a taken candidate is regenerated in the same
@@ -20,15 +20,15 @@ use super::connection::{api_error, store_error};
 const ATTEMPTS: usize = 16;
 
 /// Where a candidate must be absent: `(table, column, prefix)` — the candidate
-/// suffix is checked as `<prefix>-<suffix>` in `table.column`.
+/// suffix is checked as `<prefix><suffix>` in `table.column`.
 pub(crate) type Slot = (&'static str, &'static str, &'static str);
 
-/// A send preparation `prep-X` publishes its ordinary message as `msg-X`.
+/// A send preparation `pX` publishes its ordinary message as `mX`.
 pub(crate) const SEND_PREPARATION_SLOTS: &[Slot] = &[
     ("send_preparations", "id", prefix::SEND_PREPARATION),
     ("messages", "id", prefix::MESSAGE),
 ];
-/// A notification preparation `notify-prep-X` publishes `notify-X`.
+/// A notification preparation `npX` publishes `nX`.
 pub(crate) const NOTIFY_PREPARATION_SLOTS: &[Slot] = &[
     (
         "service_notification_preparations",
@@ -42,7 +42,7 @@ pub(crate) const NOTIFY_PREPARATION_SLOTS: &[Slot] = &[
 ///
 /// The first slot is normally `(table, "id", prefix)` for the row about to be
 /// inserted; extra slots cover IDs derived from the same suffix (a send
-/// preparation `prep-X` publishes message `msg-X`).
+/// preparation `pX` publishes message `mX`).
 ///
 /// Suffixes are drawn from 62^8 ≈ 2^47.6 values. A retired id is only reused
 /// if a fresh draw hits it and nothing references it any more: the probability
@@ -54,9 +54,9 @@ pub(crate) fn fresh(conn: &Connection, prefix: &str, slots: &[Slot]) -> Result<S
         prefix,
         || generate_public_id(prefix),
         |candidate| {
-            let suffix = &candidate[prefix.len() + 1..];
+            let suffix = &candidate[prefix.len()..];
             for (table, column, slot_prefix) in slots {
-                let value = format!("{slot_prefix}-{suffix}");
+                let value = format!("{slot_prefix}{suffix}");
                 let taken: bool = conn
                     .query_row(
                         &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {column}=?1)"),
@@ -98,24 +98,24 @@ mod tests {
 
     #[test]
     fn a_colliding_candidate_is_regenerated() {
-        let mut queue = vec!["seat-BBBBBBBB", "seat-AAAAAAAA"];
+        let mut queue = vec!["sBBBBBBBB", "sAAAAAAAA"];
         let mut checked = Vec::new();
         let id = fresh_with(
-            "seat",
+            "s",
             || queue.pop().unwrap().to_owned(),
             |candidate| {
                 checked.push(candidate.to_owned());
-                Ok(candidate == "seat-AAAAAAAA")
+                Ok(candidate == "sAAAAAAAA")
             },
         )
         .unwrap();
-        assert_eq!(id, "seat-BBBBBBBB");
-        assert_eq!(checked, ["seat-AAAAAAAA", "seat-BBBBBBBB"]);
+        assert_eq!(id, "sBBBBBBBB");
+        assert_eq!(checked, ["sAAAAAAAA", "sBBBBBBBB"]);
     }
 
     #[test]
     fn persistent_collisions_fail_closed() {
-        let error = fresh_with("seat", || "seat-AAAAAAAA".into(), |_| Ok(true)).unwrap_err();
+        let error = fresh_with("s", || "sAAAAAAAA".into(), |_| Ok(true)).unwrap_err();
         assert_eq!(error.code, ErrorCode::StoreCorrupt);
     }
 
@@ -124,7 +124,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE a(id TEXT UNIQUE); CREATE TABLE b(id TEXT UNIQUE);")
             .unwrap();
-        let id = fresh(&conn, "prep", &[("a", "id", "prep"), ("b", "id", "msg")]).unwrap();
-        assert!(is_short_public_id("prep", &id), "{id}");
+        let id = fresh(&conn, "p", &[("a", "id", "p"), ("b", "id", "m")]).unwrap();
+        assert!(is_short_public_id("p", &id), "{id}");
     }
 }

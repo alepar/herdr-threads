@@ -607,6 +607,7 @@ fn canonical_unavailable_warning_key_is_stable_and_only_published_rows_count() {
     };
     let encoded = canonical_warning_key(&key).unwrap();
     let id = canonical_warning_id(&key).unwrap();
+    assert!(id.starts_with('w'));
     assert_eq!(id, canonical_warning_id(&key).unwrap());
     assert_ne!(
         id,
@@ -620,6 +621,24 @@ fn canonical_unavailable_warning_key_is_stable_and_only_published_rows_count() {
     assert!(effective_warning_by_key(&db, &key).unwrap().is_none());
     db.execute_batch("INSERT INTO messages(instance_id,id, thread_id, sequence, kind, body, decision_at, decision_seq) VALUES ('i','m', 't', 1, 'ordinary', 'body', 1000, 10); INSERT INTO send_manifests(instance_id,preparation_id, message_id, thread_id, decision_seq, decision_at, base_sequence, interval_high_water, recipient_count, warning_count) VALUES ('i','p', 'm', 't', 10, 1000, 1, 0, 1, 1);").unwrap();
     assert_eq!(effective_warning_by_key(&db, &key).unwrap().unwrap().id, id);
+    let legacy_key = UnavailableWarningKey {
+        unavailability_episode: 4,
+        ..key
+    };
+    let compact_id = canonical_warning_id(&legacy_key).unwrap();
+    let legacy_id = format!("warning-{}", &compact_id[1..]);
+    db.execute(
+        "INSERT INTO prepared_unavailable_warnings(preparation_id, warning_key, warning_id, affected_seat_id, unavailability_episode, warning_offset, event_json) VALUES ('p', ?1, ?2, 's', 4, 2, '{}')",
+        rusqlite::params![canonical_warning_key(&legacy_key).unwrap(), legacy_id],
+    )
+    .unwrap();
+    assert_eq!(
+        effective_warning_by_key(&db, &legacy_key)
+            .unwrap()
+            .unwrap()
+            .id,
+        legacy_id
+    );
 }
 
 #[test]

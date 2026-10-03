@@ -784,7 +784,11 @@ fn publish_programmatic_warnings(
             }
         };
         if drain {
-            let preparation = message.as_str().replacen("notify-", "notify-prep-", 1);
+            let preparation =
+                crate::protocol::ids::notification_preparation_id_for_message(message.as_str())
+                    .ok_or_else(|| {
+                        api_error(ErrorCode::StoreCorrupt, "invalid notification message ID")
+                    })?;
             drain_job(context, conn, &format!("work:service-notify:{preparation}"))?;
         }
         notices.push(message);
@@ -799,6 +803,8 @@ pub fn drain_programmatic_projection(
     conn: &mut Connection,
     notice: &MessageId,
 ) -> Result<(), ApiError> {
-    let preparation = notice.as_str().replacen("notify-", "notify-prep-", 1);
+    let preparation =
+        crate::protocol::ids::notification_preparation_id_for_message(notice.as_str())
+            .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "invalid notification message ID"))?;
     drain_job(context, conn, &format!("work:service-notify:{preparation}"))
 }

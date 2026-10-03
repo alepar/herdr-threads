@@ -243,8 +243,13 @@ fn agent_facing_machine_text_is_compact() {
         lines[1].starts_with("#24 ack ") && lines[1].contains(&hatter_seat),
         "{read}"
     );
+    let message_id = lines[2].split_whitespace().nth(1).unwrap();
     assert!(
-        lines[2].starts_with("#23 msg-")
+        lines[2].starts_with("#23 ")
+            && herdr_threads::protocol::ids::is_short_public_id(
+                herdr_threads::protocol::ids::prefix::MESSAGE,
+                message_id,
+            )
             && lines[2].ends_with(": Twinkle, twinkle, little bat! (#19)"),
         "{read}"
     );
@@ -252,8 +257,16 @@ fn agent_facing_machine_text_is_compact() {
         .iter()
         .find(|l| l.contains("[more: "))
         .expect("clipped row");
+    let clipped_id = clipped
+        .split_once("[more: herdr-threads body ")
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(id, _)| id)
+        .unwrap();
     assert!(
-        clipped.contains("[more: herdr-threads body msg-"),
+        herdr_threads::protocol::ids::is_short_public_id(
+            herdr_threads::protocol::ids::prefix::MESSAGE,
+            clipped_id,
+        ),
         "{clipped}"
     );
     for row in &lines[2..21] {
@@ -315,10 +328,14 @@ fn agent_facing_machine_text_is_compact() {
     );
     assert_eq!(pending.lines().count(), 10, "{pending}");
     assert!(
-        pending
-            .lines()
-            .skip(1)
-            .all(|l| l.starts_with("msg-") && l.contains(&format!(" from {alice_seat} due "))),
+        pending.lines().skip(1).all(|l| {
+            l.split_whitespace().next().is_some_and(|id| {
+                herdr_threads::protocol::ids::is_short_public_id(
+                    herdr_threads::protocol::ids::prefix::MESSAGE,
+                    id,
+                )
+            }) && l.contains(&format!(" from {alice_seat} due "))
+        }),
         "{pending}"
     );
     assert!(

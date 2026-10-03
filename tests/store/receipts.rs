@@ -199,7 +199,10 @@ fn send_snapshots_joined_plus_explicit_invited_once() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(preparation.replacen("prep-", "msg-", 1), id.as_str());
+    assert_eq!(
+        crate::protocol::ids::send_message_id_for_preparation(&preparation).as_deref(),
+        Some(id.as_str())
+    );
     let mut stmt = conn
         .prepare("SELECT pr.seat_id FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id WHERE sm.message_id=?1 ORDER BY pr.seat_id")
         .unwrap();
@@ -217,6 +220,96 @@ fn send_snapshots_joined_plus_explicit_invited_once() {
         .map(Result::unwrap)
         .collect();
     assert_eq!(frozen, [300_000, 300_000]);
+}
+
+#[test]
+fn persisted_legacy_preparation_publishes_beside_a_new_compact_message() {
+    let (context, mut conn, _) = setup();
+    let request = send_request(vec![]);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    let preparation = match messages::prepare_send_step(
+        &context,
+        &mut conn,
+        &request,
+        messages::MessageLimits::default(),
+        &budget,
+        crate::ports::DurableWorkAdmission { max_units: 16 },
+    )
+    .unwrap()
+    {
+        crate::ports::SendPreparationProgress::Ready { preparation_id, .. } => preparation_id,
+        other => panic!("{other:?}"),
+    };
+    let staged_message = send_message_id_for_preparation(&preparation).unwrap();
+    let old_preparation = "prep-bc121d12-9d30-4510-b93c-e7cd26e890f1";
+    let old_message = "msg-bc121d12-9d30-4510-b93c-e7cd26e890f1";
+    // Simulate an in-flight preparation written by the prior release. Keep
+    // the same durable operation and recipient snapshot; only its stored ID
+    // and the event's copied source ID use the persisted format.
+    let tx = conn.transaction().unwrap();
+    tx.execute_batch("PRAGMA defer_foreign_keys=ON").unwrap();
+    tx.execute(
+        "UPDATE prepared_unavailable_warnings SET event_json=replace(event_json, ?1, ?2) WHERE preparation_id=?3",
+        params![staged_message, old_message, preparation],
+    )
+    .unwrap();
+    tx.execute(
+        "UPDATE send_preparations SET id=?1 WHERE id=?2",
+        params![old_preparation, preparation],
+    )
+    .unwrap();
+    tx.execute(
+        "UPDATE prepared_recipients SET preparation_id=?1 WHERE preparation_id=?2",
+        params![old_preparation, preparation],
+    )
+    .unwrap();
+    tx.execute(
+        "UPDATE prepared_unavailable_warnings SET preparation_id=?1 WHERE preparation_id=?2",
+        params![old_preparation, preparation],
+    )
+    .unwrap();
+    tx.commit().unwrap();
+
+    let old = messages::publish_send(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&request),
+        &budget,
+        || messages::MAX_BODY_BYTES,
+    )
+    .unwrap();
+    assert_eq!(
+        old,
+        crate::protocol::results::CommandResult::MessageSent(MessageId::new(old_message))
+    );
+    let mut next = send_request(vec![]);
+    next.operation = OperationId::new("op-next");
+    let new = send_prepared(
+        &context,
+        &mut conn,
+        &next,
+        &mut permit(&next),
+        messages::MessageLimits::default(),
+    )
+    .unwrap();
+    let crate::protocol::results::CommandResult::MessageSent(new_id) = new else {
+        panic!("{new:?}")
+    };
+    assert!(is_short_public_id(prefix::MESSAGE, new_id.as_str()));
+    let ids: Vec<String> = conn
+        .prepare(
+            "SELECT id FROM messages WHERE thread_id='t' AND kind='ordinary' ORDER BY sequence",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(ids, [old_message.to_owned(), new_id.as_str().to_owned()]);
 }
 
 #[test]
@@ -1867,7 +1960,8 @@ fn publication_rechecks_reduced_body_limit_and_replay_keeps_committed_result() {
             crate::ports::SendPreparationProgress::Ready { preparation_id, .. } => preparation_id,
             other => panic!("{other:?}"),
         };
-    let staged_message_id = prep_id.replacen("prep-", "msg-", 1);
+    let staged_message_id =
+        crate::protocol::ids::send_message_id_for_preparation(&prep_id).unwrap();
     let effective_body_limit = AtomicUsize::new(5);
     effective_body_limit.store(4, Ordering::SeqCst);
     let error = messages::publish_send(
@@ -2210,7 +2304,7 @@ fn foreground_write_between_preparation_quanta_and_failed_publication_stays_hidd
         )
         .unwrap();
     assert_eq!(staged, 35);
-    let message_id = prep_id.replacen("prep-", "msg-", 1);
+    let message_id = crate::protocol::ids::send_message_id_for_preparation(&prep_id).unwrap();
     assert!(
         crate::store::effective::effective_receipt(&conn, &message_id, "b")
             .unwrap()

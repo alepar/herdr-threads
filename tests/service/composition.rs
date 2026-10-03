@@ -2102,7 +2102,7 @@ fn actual_native_verified_snapshot_resolves_live_pane_and_retires_it_after_close
         panic!("resolve did not return a seat");
     };
     assert!(
-        herdr_threads::protocol::ids::is_short_public_id("seat", seat.as_str()),
+        herdr_threads::protocol::ids::is_short_public_id("s", seat.as_str()),
         "new seat IDs are short: {}",
         seat.as_str()
     );
