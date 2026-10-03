@@ -70,7 +70,8 @@ fn only_elected_owner_lock_can_install_sink_and_retains_it_through_close() {
         io::ErrorKind::WouldBlock
     );
     drop(listener);
-    assert!(OwnerLock::acquire(&fixture.paths).is_ok());
+    // The error kind (WouldBlock vs a path or permission error) on failure.
+    OwnerLock::acquire(&fixture.paths).unwrap();
 }
 
 struct LockCheckingSink {

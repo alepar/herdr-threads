@@ -17,7 +17,7 @@ pub use super::recipe::NativeSupport;
 use super::recipe::{self, Evidence, LookupError, Recipe, Version, VersionSet};
 use super::{Capability, LifecycleEvent, declared_role, field, input};
 use crate::protocol::results::CapabilityState;
-use crate::protocol::time::Cancellation;
+use crate::protocol::time::{Cancellation, external_bound};
 use serde_json::{Value, json};
 use std::{
     fmt,
@@ -383,7 +383,7 @@ impl InstalledVersion {
         cache: codex_schema::FingerprintCache<'_>,
         cancel: Option<&Cancellation>,
     ) -> Result<Self, VersionError> {
-        let deadline = Instant::now() + timeout.min(VERSION_TIMEOUT);
+        let deadline = Instant::now() + external_bound(timeout.min(VERSION_TIMEOUT));
         // Taken before the run, so an unlisted version is only admitted when
         // the binary fingerprinted is the binary that reported it.
         let target = codex_schema::fingerprint_target(binary);
@@ -589,7 +589,7 @@ impl InstalledVersion {
 /// and reading stdout to EOF; the process group is killed on expiry. Shared by
 /// every adapter that gates on an observed installed version.
 pub(crate) fn version_output(binary: &Path, timeout: Duration) -> Result<Vec<u8>, VersionError> {
-    version_output_by(binary, Instant::now() + timeout, None)
+    version_output_by(binary, Instant::now() + external_bound(timeout), None)
 }
 
 /// [`version_output`] that also kills the process group once `cancel` fires.
@@ -598,7 +598,11 @@ pub(crate) fn version_output_cancellable(
     timeout: Duration,
     cancel: &Cancellation,
 ) -> Result<Vec<u8>, VersionError> {
-    version_output_by(binary, Instant::now() + timeout, Some(cancel))
+    version_output_by(
+        binary,
+        Instant::now() + external_bound(timeout),
+        Some(cancel),
+    )
 }
 
 /// Run `<absolute binary> --version` and return its stdout before
@@ -627,7 +631,13 @@ pub(crate) fn bounded_output(
     limit: u64,
     timeout: Duration,
 ) -> Result<Vec<u8>, VersionError> {
-    bounded_output_by(binary, args, limit, Instant::now() + timeout, None)
+    bounded_output_by(
+        binary,
+        args,
+        limit,
+        Instant::now() + external_bound(timeout),
+        None,
+    )
 }
 
 fn bounded_output_by(

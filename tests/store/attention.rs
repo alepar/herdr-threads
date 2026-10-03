@@ -830,7 +830,19 @@ fn assert_check_in_reads_flat(sizes: &[u64]) {
 // thread's ordinary timeline (`scan_effective_timeline` in
 // `scan_effective_warnings_for_seat`: the first warnings page then stops on
 // its candidate limit inside `hist` and returns one warning instead of two).
+// The default-suite guard for the same regressions (ht-zo4.7): ACKed
+// receipts and settled invitations are never visited, so the work is flat
+// already from 200 to 2,000 (10x), without the minutes-long 10^4 seeding.
+// It replaces the wall-clock budget check of
+// hook_entrypoint::twenty_thousand_acked_receipts_stay_quiet_and_new_attention_is_emitted
+// (now release-only) with deterministic SQLite VM work.
 #[test]
+fn check_in_reads_are_flat_from_two_hundred_to_two_thousand_acked_receipts() {
+    assert_check_in_reads_flat(&[200, 2_000]);
+}
+
+#[test]
+#[ignore = "writes 10^4 sends through the real writers (60-180 s in debug under parallel load); run in release"]
 fn check_in_reads_are_flat_in_production_shaped_acked_receipts() {
     assert_check_in_reads_flat(&[1_000, 10_000]);
 }
@@ -991,6 +1003,7 @@ fn assert_check_in_reads_flat_in_settled_warnings(sizes: &[u64]) {
 // (`scan_effective_warnings_for_seat` to completion: `hist` is listed with
 // every settled warning and the work grows).
 #[test]
+#[ignore = "writes 10^4 sends through the real writers (60-180 s in debug under parallel load); run in release"]
 fn check_in_reads_are_flat_in_production_settled_warnings() {
     assert_check_in_reads_flat_in_settled_warnings(&[1_000, 10_000]);
 }
@@ -1636,6 +1649,7 @@ fn assert_axis_flat(axis: Axis, sizes: &[u64]) {
 // (the invitation walk's `LIMIT ?3` removed: every pending invitation is
 // visited, digest work grows ~10x).
 #[test]
+#[ignore = "writes 10^4 items through the real writers (60-180 s in debug under parallel load); run in release"]
 fn pending_invitation_axis_is_flat() {
     assert_axis_flat(Axis::PendingInvitations, &[1_000, 10_000]);
 }
@@ -1645,6 +1659,7 @@ fn pending_invitation_axis_is_flat() {
 // window is cut to `cap+1` afterwards: same answer, work grows with the
 // pending backlog).
 #[test]
+#[ignore = "writes 10^4 items through the real writers (60-180 s in debug under parallel load); run in release"]
 fn pending_receipt_axis_is_flat() {
     assert_axis_flat(Axis::PendingReceipts, &[1_000, 10_000]);
 }
@@ -1654,6 +1669,7 @@ fn pending_receipt_axis_is_flat() {
 // walk without its `LIMIT` (work grows) and the fix4 behaviour of building
 // the full pending set before the cap.
 #[test]
+#[ignore = "writes 10^4 items through the real writers (60-180 s in debug under parallel load); run in release"]
 fn undelivered_programmatic_axis_is_flat() {
     assert_axis_flat(Axis::ProgrammaticUndelivered, &[1_000, 10_000]);
 }
@@ -1665,6 +1681,7 @@ fn undelivered_programmatic_axis_is_flat() {
 // saturates) and a walk that post-filters the frontier (work grows with the
 // delivered rows below it).
 #[test]
+#[ignore = "writes 10^4 items through the real writers (60-180 s in debug under parallel load); run in release"]
 fn delivered_programmatic_axis_is_flat() {
     assert_axis_flat(Axis::ProgrammaticDelivered, &[1_000, 10_000]);
 }
@@ -1798,6 +1815,7 @@ fn assert_offer_settlement_constant(sizes: &[u64]) {
 // the carried page: the pending count drops by more than 16 and the second
 // offer carries the wrong page).
 #[test]
+#[ignore = "writes 10^4 notices through the real writers (60-180 s in debug under parallel load); run in release"]
 fn offer_settlement_writes_are_constant() {
     assert_offer_settlement_constant(&[1_000, 10_000]);
 }

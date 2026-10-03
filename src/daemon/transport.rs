@@ -306,7 +306,8 @@ async fn serve_connection(
         ));
     }
     let peer = PeerIdentity::from_kernel(uid);
-    let expires = tokio::time::Instant::now() + ORDINARY_TIMEOUT;
+    let expires =
+        tokio::time::Instant::now() + crate::protocol::time::external_bound(ORDINARY_TIMEOUT);
     let frame = tokio::select! {
         result = tokio::time::timeout_at(expires, read_frame(&mut stream)) =>
             result.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "request expired"))??,

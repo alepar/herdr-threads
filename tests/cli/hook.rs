@@ -171,7 +171,9 @@ fn hook_parses_only_under_an_observed_pinned_harness_version() {
     let root = private_root();
     let bin = root.join("bin");
     std::fs::create_dir(&bin).unwrap();
-    let budget = Duration::from_secs(2);
+    // The production cap: this test is about which versions parse, and fake
+    // `sh` harnesses can take seconds to start under a loaded parallel suite.
+    let budget = crate::harness::codex::VERSION_TIMEOUT;
     fake_harness(&bin, "claude", "2.1.283 (Claude Code)");
     fake_harness(&bin, "codex", "codex-cli 0.157.1");
     let path = std::ffi::OsString::from(format!("relative:{}", bin.display()));
@@ -1523,7 +1525,10 @@ fn hook_parse_error_outside_herdr_is_quiet() {
             HookOutcome::default(),
             "{env:?}"
         );
-        assert_eq!(run_process_in(Err("bad argv".into()), env), 0);
+        assert_eq!(
+            run_process_with(Err("bad argv".into()), env, std::io::empty()),
+            0
+        );
     }
     assert_eq!(
         parse_failure_outcome("bad argv".into(), &herdr()),

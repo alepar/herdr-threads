@@ -1165,19 +1165,16 @@ fn observation_worker_loop_feeds_production_health_at_both_call_sites() {
     );
     assert_eq!(host.snapshots.load(Ordering::SeqCst), 0);
 
-    // Phase B: admission succeeds but the host read fails: a durable
-    // `Invalidated(HostUnavailable)` replaces the capture error.
+    // Phase B: admission succeeds but the host read fails: Herdr is
+    // unavailable, so state is frozen (no invalidation, ht-yms), and that
+    // replaces the capture error.
     host.fail.store(true, Ordering::SeqCst);
     port.fail_admission.store(false, Ordering::SeqCst);
     next_capture();
-    wait_for("invalidated capture", &|| {
-        retrying("host observation invalidated: HostUnavailable")
-    });
-    production.assert_redacted_with(
-        "host observation invalidated: HostUnavailable",
-        &private,
-        true,
-    );
+    let frozen =
+        "host unavailable (HostUnavailable): seats and bindings frozen until Herdr answers";
+    wait_for("frozen capture", &|| retrying(frozen));
+    production.assert_redacted_with(frozen, &private, true);
     assert!(host.snapshots.load(Ordering::SeqCst) >= 1);
 
     // Phase C: a verified capture publishes (clearing the capture failure),

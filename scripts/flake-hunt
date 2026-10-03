@@ -1,0 +1,522 @@
+#!/usr/bin/env python3
+"""Flake hunter for the Rust suite (ht-zo4).
+
+Builds every test target once, lists every non-ignored test per test binary,
+then runs each test N times in a hot loop (`<bin> --exact <name>`) while a job
+pool sized to the CPU count runs many tests' loops at once, so load-sensitive
+flakes surface. After a complete pass it reports always-failing and flaky
+tests (k of N failed), sorted by failure rate, with the first failure's output
+saved per test.
+
+Usage (run under `nice`, from the repository root or anywhere inside it):
+
+  nice scripts/flake-hunt                       # every test, 10 runs each
+  nice scripts/flake-hunt -n 20 -j 16           # more runs, more load
+  nice scripts/flake-hunt --only target/flake-hunt/latest/broken.txt
+  nice scripts/flake-hunt --filter 'service::'  # regex over test ids
+  nice scripts/flake-hunt --binaries -n 20      # loop whole binaries: in-process interference
+  nice scripts/flake-hunt --full-suite 10       # then 10 unpinned `cargo test` runs
+
+A test id is `<target>::<test path>`, where target is `lib`, `bin.<name>` or
+`test.<name>` (the cargo target), e.g. `test.service::service::up_reports_ready`.
+`--only` takes a file of test ids (one per line, `#` comments allowed) or a
+previous run's report.json; each run writes `broken.txt` for exactly this use.
+
+Every run starts in its own process group, which is SIGKILLed on timeout and
+reaped after each run either way. Daemons that detach into their own session
+escape the group, so every run carries the hunt's HT_LEAK_RUN_ID and a
+per-test HT_FLAKE_HUNT_TEST tag: after each test's loop, processes still
+tagged past a 10 s grace are reported as that test's leaks and stopped, and
+after the pass scripts/check-no-leaked-processes must find nothing of this
+hunt's, or the pass fails. Default concurrency is 4 loops (shared machine).
+
+Tests are built into their own target dir (default target/flake-hunt/build;
+`env!("CARGO_BIN_EXE_*")` paths point into it), so `cargo test` and builds in
+target/ while a hunt is in flight cannot swap binaries under it.
+
+Output: target/flake-hunt/<timestamp>/ (report.md, report.json, broken.txt,
+failures/<id>.log, full-suite-<k>.log), with target/flake-hunt/latest pointing
+at the newest run.
+"""
+
+import argparse
+import concurrent.futures as cf
+import datetime as dt
+import json
+import os
+import random
+import re
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import uuid
+from pathlib import Path
+
+CARGO_FLAGS = ["--locked", "--all-targets", "--all-features"]
+
+
+def repo_root() -> Path:
+    out = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True
+    )
+    return Path(out.stdout.strip())
+
+
+def build(root: Path, target_dir: Path) -> list[tuple[str, str]]:
+    """Build every test target once; return (target id, executable) pairs."""
+    proc = subprocess.run(
+        ["cargo", "test", *CARGO_FLAGS, "--no-run", "--message-format=json",
+         "--target-dir", str(target_dir)],
+        cwd=root,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    if proc.returncode != 0:
+        sys.exit("flake-hunt: cargo test --no-run failed")
+    bins = []
+    for line in proc.stdout.splitlines():
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if msg.get("reason") != "compiler-artifact" or not msg.get("executable"):
+            continue
+        if not msg["profile"]["test"]:
+            continue
+        kind = msg["target"]["kind"][0]
+        name = msg["target"]["name"]
+        target = "lib" if kind == "lib" else f"{kind}.{name}"
+        bins.append((target, msg["executable"]))
+    return sorted(bins)
+
+
+def list_tests(root: Path, exe: str, env: dict) -> list[str]:
+    def names(*extra):
+        out = subprocess.run(
+            [exe, "--list", "--format=terse", *extra],
+            cwd=root, env=env, capture_output=True, text=True, check=True,
+        ).stdout
+        return [l[: -len(": test")] for l in out.splitlines() if l.endswith(": test")]
+
+    ignored = set(names("--ignored"))
+    return [t for t in names() if t not in ignored]
+
+
+def test_env(root: Path) -> dict:
+    """The runtime environment `cargo test` gives a test binary."""
+    env = dict(os.environ)
+    meta = json.loads(
+        subprocess.run(
+            ["cargo", "metadata", "--no-deps", "--format-version=1"],
+            cwd=root, capture_output=True, text=True, check=True,
+        ).stdout
+    )
+    pkg = meta["packages"][0]
+    major, minor, patch = (pkg["version"].split("-")[0].split(".") + ["0", "0"])[:3]
+    env.update(
+        CARGO_MANIFEST_DIR=str(Path(pkg["manifest_path"]).parent),
+        CARGO_PKG_NAME=pkg["name"],
+        CARGO_PKG_VERSION=pkg["version"],
+        CARGO_PKG_VERSION_MAJOR=major,
+        CARGO_PKG_VERSION_MINOR=minor,
+        CARGO_PKG_VERSION_PATCH=patch,
+        CARGO_CRATE_NAME=pkg["name"].replace("-", "_"),
+    )
+    cargo = subprocess.run(["rustup", "which", "cargo"], capture_output=True, text=True)
+    if cargo.returncode == 0:
+        env["CARGO"] = cargo.stdout.strip()
+    return env
+
+
+LEAK_GRACE = 10.0  # seconds a tagged process may outlive its test (owner reapers)
+
+
+def tagged_pids(key: str, value: str) -> dict[int, str]:
+    """Live processes whose environment carries KEY=VALUE, with their command."""
+    out = subprocess.run(["ps", "-axeww", "-o", "pid=,command="], capture_output=True, text=True).stdout
+    needle = re.compile(rf"(^|\s){re.escape(key)}={re.escape(value)}(\s|$)")
+    found = {}
+    for line in out.splitlines():
+        pid, _, rest = line.strip().partition(" ")
+        if pid.isdigit() and int(pid) != os.getpid() and needle.search(rest):
+            found[int(pid)] = rest.split(f" {key}=")[0][:300]
+    return found
+
+
+def stop_pids(pids) -> None:
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid in pids:
+            try:
+                os.kill(pid, sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+        time.sleep(2)
+
+
+class Runner:
+    def __init__(self, root, env, timeout, runs, give_up_after):
+        self.root, self.env, self.timeout = root, env, timeout
+        self.runs, self.give_up_after = runs, give_up_after
+        # Every run carries the hunt's HT_LEAK_RUN_ID (for
+        # check-no-leaked-processes) and its test's own tag (for attribution).
+        self.run_id = env["HT_LEAK_RUN_ID"]
+        self.live: set[int] = set()  # process group ids in flight
+        self.lock = threading.Lock()
+        self.stopping = False
+
+    def leaks(self, tag: str) -> dict[int, str]:
+        """Processes still tagged for `tag` once the grace period lapses; they
+        are stopped and returned (pid -> command)."""
+        until = time.monotonic() + LEAK_GRACE
+        while (left := tagged_pids("HT_FLAKE_HUNT_TEST", tag)) and time.monotonic() < until:
+            time.sleep(0.5)
+        if left:
+            stop_pids(left)
+        return left
+
+    def run_once(self, exe: str, name: str, tag: str) -> tuple[str, float, str]:
+        """One test, one run; returns (outcome, seconds, output). outcome: pass|fail|timeout."""
+        outcome, secs, text = self.run_argv([exe, "--exact", name, "--test-threads=1"], tag)
+        if outcome == "pass" and "1 passed" not in text:
+            outcome = "fail"  # filtered to nothing: the name no longer exists
+            text = "flake-hunt: test did not run (renamed or removed?)\n" + text
+        return outcome, secs, text
+
+    def run_argv(self, argv: list[str], tag: str) -> tuple[str, float, str]:
+        # Output goes to a file, not a pipe, and completion is the process's
+        # exit: a descendant that escaped the group and inherited stdout (a
+        # detached daemon, a reaper) must not stall the run waiting for EOF
+        # while the exited test sits unreaped (a zombie its reaper waits on).
+        start = time.monotonic()
+        with tempfile.TemporaryFile() as out:
+            proc = subprocess.Popen(
+                argv,
+                cwd=self.root, env={**self.env, "HT_FLAKE_HUNT_TEST": tag}, stdin=subprocess.DEVNULL,
+                stdout=out, stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            with self.lock:
+                self.live.add(proc.pid)
+            try:
+                proc.wait(timeout=self.timeout)
+                outcome = "pass" if proc.returncode == 0 else "fail"
+            except subprocess.TimeoutExpired:
+                kill_group(proc.pid)
+                proc.wait()
+                outcome = "timeout"
+            finally:
+                kill_group(proc.pid)  # reap anything the test left in its group
+                with self.lock:
+                    self.live.discard(proc.pid)
+            out.seek(0)
+            text = out.read().decode("utf-8", "replace")
+        return outcome, time.monotonic() - start, text
+
+    def hunt(self, test_id: str, exe: str, name: str) -> dict:
+        res = {"id": test_id, "runs": 0, "fails": 0, "timeouts": 0, "secs": [], "first_failure": None}
+        tag = uuid.uuid4().hex[:16]
+        for i in range(self.runs):
+            if self.stopping:
+                break
+            outcome, secs, text = self.run_once(exe, name, tag)
+            res["runs"] += 1
+            res["secs"].append(round(secs, 3))
+            if outcome != "pass":
+                res["fails"] += 1
+                res["timeouts"] += outcome == "timeout"
+                if res["first_failure"] is None:
+                    res["first_failure"] = f"[run {i + 1}: {outcome} after {secs:.1f}s]\n{text}"
+            # A test that failed every one of its first K runs is always-failing;
+            # stop spending the pool on it.
+            if self.give_up_after and res["runs"] == self.give_up_after and res["fails"] == res["runs"]:
+                res["gave_up"] = True
+                break
+        res["leaked"] = self.leaks(tag)
+        return res
+
+    def hunt_binary(self, target: str, exe: str, names: list[str], all_selected: bool) -> list[dict]:
+        """Loop a whole test binary (libtest's default thread pool) so tests
+        interfere in-process as under `cargo test`; attribute failures per test
+        from libtest's `test X ... FAILED` lines. A run that fails without any
+        such line (crash, abort, timeout) is charged to `<target>::<binary>`."""
+        argv = [exe] if all_selected else [exe, "--exact", *names]
+        res = {n: {"id": f"{target}::{n}", "runs": 0, "fails": 0, "timeouts": 0, "secs": [],
+                   "first_failure": None} for n in names + ["<binary>"]}
+        # libtest's closing summary ("failures:" then one indented name per
+        # line): parallel tests' output interleaves with "test X ... FAILED".
+        summary_rx = re.compile(r"^failures:\n((?:    \S+\n)+)", re.M)
+        tag = uuid.uuid4().hex[:16]
+        for i in range(self.runs):
+            if self.stopping:
+                break
+            outcome, secs, text = self.run_argv(argv, tag)
+            failed = {name.strip() for block in summary_rx.findall(text) for name in block.splitlines()}
+            if outcome != "pass" and not failed:
+                failed = {"<binary>"}
+            for n, r in res.items():
+                r["runs"] += 1
+                r["secs"].append(round(secs, 3))
+                if n in failed:
+                    r["fails"] += 1
+                    r["timeouts"] += outcome == "timeout"
+                    if r["first_failure"] is None:
+                        r["first_failure"] = f"[binary run {i + 1}: {outcome} after {secs:.1f}s]\n{text}"
+        res["<binary>"]["leaked"] = self.leaks(tag)
+        return list(res.values())
+
+    def kill_all(self):
+        self.stopping = True
+        with self.lock:
+            for pgid in list(self.live):
+                kill_group(pgid)
+
+
+def kill_group(pgid: int):
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def load_only(path: Path) -> set[str]:
+    text = path.read_text()
+    if path.suffix == ".json":
+        return {r["id"] for r in json.loads(text)["broken"]}
+    return {l.split("#")[0].strip() for l in text.splitlines()} - {""}
+
+
+def safe(test_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", test_id)[:200]
+
+
+def classify(r: dict) -> str:
+    """ok, always-failing, flaky, or slow: every failure was a per-run timeout
+    (no assertion failed; the test outran --timeout under the pool's load)."""
+    if r["fails"] == 0:
+        return "ok"
+    if r["timeouts"] == r["fails"]:
+        return "slow"
+    return "always-failing" if r["fails"] == r["runs"] else "flaky"
+
+
+def write_report(out: Path, results: list[dict], meta: dict) -> list[dict]:
+    broken = [r for r in results if r["fails"]]
+    broken.sort(key=lambda r: (-r["fails"] / r["runs"], r["id"]))
+    fail_dir = out / "failures"
+    fail_dir.mkdir(exist_ok=True)
+    for r in broken:
+        r["kind"] = classify(r)
+        r["log"] = f"failures/{safe(r['id'])}.log"
+        (out / r["log"]).write_text(r["first_failure"])
+    slow = sorted(results, key=lambda r: -max(r["secs"] or [0]))[:15]
+
+    lines = [
+        f"# flake-hunt {meta['started']}",
+        "",
+        f"- commit: `{meta['commit']}`, mode: {meta['mode']}",
+        f"- tests: {meta['tests']}, runs per test: {meta['runs']}, jobs: {meta['jobs']}, "
+        f"timeout: {meta['timeout']}s, wall: {meta['wall_secs']:.0f}s",
+        f"- always-failing: {sum(r['kind'] == 'always-failing' for r in broken)}, "
+        f"flaky: {sum(r['kind'] == 'flaky' for r in broken)}, "
+        f"slow (timeouts only): {sum(r['kind'] == 'slow' for r in broken)}",
+        "",
+        "## Broken (by failure rate)",
+        "",
+        "| test | kind | failed | timeouts | first failure |",
+        "|---|---|---|---|---|",
+    ]
+    for r in broken:
+        note = " (gave up)" if r.get("gave_up") else ""
+        lines.append(
+            f"| `{r['id']}` | {r['kind']} | {r['fails']}/{r['runs']}{note} | {r['timeouts']} | {r['log']} |"
+        )
+    if not broken:
+        lines.append("| (none) | | | | |")
+    if meta["mode"] == "binaries":
+        slow = []  # a binary run's time is shared by all its tests
+    else:
+        lines += ["", "## Slowest single runs", "", "| test | max s | median s |", "|---|---|---|"]
+    for r in slow:
+        s = sorted(r["secs"]) or [0]
+        lines.append(f"| `{r['id']}` | {s[-1]:.1f} | {s[len(s) // 2]:.1f} |")
+    lines += ["", "## Leaked processes", ""]
+    if not meta["leaked"] and not meta["leak_check"]["ours"]:
+        lines.append(f"none (per-test tag scan after a {LEAK_GRACE:.0f}s grace; "
+                     f"check-no-leaked-processes exit {meta['leak_check']['exit']})")
+    for tid, procs in sorted(meta["leaked"].items()):
+        for pid, cmd in procs.items():
+            lines.append(f"- `{tid}`: pid {pid} `{cmd}` (stopped)")
+    for l in meta["leak_check"]["ours"]:
+        lines.append(f"- pass-level: `{l}` (stopped)")
+    for l in meta["leak_check"]["foreign"]:
+        lines.append(f"- not ours, left alone: `{l}`")
+    if meta.get("full_suite"):
+        lines += ["", "## Full unpinned suite runs", ""]
+        for k, ok in enumerate(meta["full_suite"], 1):
+            lines.append(f"- run {k}: {'green' if ok else 'RED'} (full-suite-{k}.log)")
+    (out / "report.md").write_text("\n".join(lines) + "\n")
+    for r in results:
+        r.pop("first_failure", None)
+    (out / "report.json").write_text(
+        json.dumps({"meta": meta, "broken": broken, "results": results}, indent=1)
+    )
+    (out / "broken.txt").write_text("".join(f"{r['id']}\n" for r in broken))
+    return broken
+
+
+def leak_check(root: Path, run_id: str, build_dir: Path) -> dict:
+    """scripts/check-no-leaked-processes after the pass. Leaks it ties to this
+    hunt (its run id, or a binary under this worktree's target/) fail the pass
+    and are stopped; other rules' hits may belong to another worktree's run
+    and are only reported."""
+    proc = subprocess.run(
+        [str(root / "scripts" / "check-no-leaked-processes"), "--run-id", run_id, "--root", str(root)],
+        cwd="/", capture_output=True, text=True,
+    )
+    lines = [l for l in proc.stdout.splitlines() if l.startswith("LEAK ")]
+    # Ours: this hunt's run id, or a binary from this hunt's own build dir. The
+    # artifact rule alone also matches a developer's cargo test in target/.
+    ours = [l for l in lines
+            if re.search(r"rule=run-id\b", l)
+            or (re.search(r"rule=artifact\b", l) and str(build_dir) in l)]
+    pids = [int(m.group(1)) for l in ours if (m := re.search(r"pid=(\d+)", l))]
+    if pids:
+        stop_pids(pids)
+    return {"exit": proc.returncode, "ours": ours, "foreign": [l for l in lines if l not in ours],
+            "stderr": proc.stderr[-2000:]}
+
+
+def full_suite(root: Path, out: Path, n: int, env: dict) -> list[bool]:
+    greens = []
+    for k in range(1, n + 1):
+        log = out / f"full-suite-{k}.log"
+        with log.open("w") as f:
+            rc = subprocess.run(
+                ["cargo", "test", *CARGO_FLAGS], cwd=root, env=env,
+                stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            ).returncode
+        greens.append(rc == 0)
+        print(f"flake-hunt: full suite run {k}/{n}: {'green' if rc == 0 else 'RED'}", file=sys.stderr)
+    return greens
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("-n", "--runs", type=int, default=10, help="runs per test (default 10)")
+    ap.add_argument("-j", "--jobs", type=int, default=4,
+                    help="parallel test loops (default 4: the machine is shared with other runs)")
+    ap.add_argument("-t", "--timeout", type=float,
+                    help="per-run timeout in seconds (default 180; 1200 with --binaries)")
+    ap.add_argument("--give-up-after", type=int, default=3,
+                    help="stop a test's loop after this many consecutive failures from run 1 (0: never; default 3)")
+    ap.add_argument("--only", type=Path, help="test-id list or report.json: run only these")
+    ap.add_argument("--filter", help="regex over test ids")
+    ap.add_argument("--keep-failed-roots", action="store_true",
+                    help="set HT_KEEP_FAILED_ROOTS=1: failing tests keep their isolated Herdr roots "
+                         "(breaks tests that panic on purpose and assert teardown)")
+    ap.add_argument("--binaries", action="store_true",
+                    help="loop whole test binaries (default libtest threads) instead of one test per "
+                         "process, to surface in-process interference; -n is then runs per binary")
+    ap.add_argument("--full-suite", type=int, default=0, metavar="N",
+                    help="afterwards, run the unpinned full `cargo test` N times")
+    ap.add_argument("--seed", type=int, help="shuffle seed for the run order")
+    ap.add_argument("--target-dir", type=Path,
+                    help="cargo target dir for the hunt's build (default target/flake-hunt/build)")
+    args = ap.parse_args()
+    # A stopped background hunt gets SIGTERM: unwind like Ctrl-C so every
+    # in-flight run's process group is killed instead of orphaned mid-test.
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt))
+
+    if args.timeout is None:
+        args.timeout = 1200 if args.binaries else 180
+    root = repo_root()
+    started = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    out = root / "target" / "flake-hunt" / started
+    out.mkdir(parents=True)
+    latest = out.parent / "latest"
+    if latest.is_symlink() or latest.exists():
+        latest.unlink()
+    latest.symlink_to(started)
+
+    print("flake-hunt: building test targets", file=sys.stderr)
+    build_dir = (args.target_dir or root / "target" / "flake-hunt" / "build").resolve()
+    bins = build(root, build_dir)
+    env = test_env(root)
+    env["HT_LEAK_RUN_ID"] = f"flake-hunt-{started}-{uuid.uuid4().hex[:8]}"
+    if args.keep_failed_roots:
+        # A failing test keeps its isolated Herdr root (daemon log, database)
+        # and prints its path into the failure output (processes still stop).
+        # Opt-in: tests that panic on purpose assert their root is removed.
+        env["HT_KEEP_FAILED_ROOTS"] = "1"
+    only = load_only(args.only) if args.only else None
+    rx = re.compile(args.filter) if args.filter else None
+    work, binaries = [], []
+    for target, exe in bins:
+        listed = list_tests(root, exe, env)
+        selected = []
+        for name in listed:
+            tid = f"{target}::{name}"
+            if only is not None and tid not in only:
+                continue
+            if rx and not rx.search(tid):
+                continue
+            work.append((tid, exe, name))
+            selected.append(name)
+        if selected:
+            binaries.append((target, exe, selected, len(selected) == len(listed)))
+    if only is not None:
+        missing = only - {w[0] for w in work}
+        for tid in sorted(missing):
+            print(f"flake-hunt: --only id not found (renamed or removed?): {tid}", file=sys.stderr)
+    random.Random(args.seed).shuffle(work)
+    unit = f"{len(binaries)} binaries" if args.binaries else "runs"
+    print(f"flake-hunt: {len(work)} tests x {args.runs} {unit}, {args.jobs} jobs -> {out}", file=sys.stderr)
+
+    runner = Runner(root, env, args.timeout, args.runs, args.give_up_after)
+    results, t0 = [], time.monotonic()
+    pool = cf.ThreadPoolExecutor(max_workers=args.jobs)
+    if args.binaries:
+        futs = {pool.submit(runner.hunt_binary, *b): b[0] for b in binaries}
+    else:
+        futs = {pool.submit(lambda w: [runner.hunt(*w)], w): w[0] for w in work}
+    last = 0.0
+    try:
+        for fut in cf.as_completed(futs):
+            for r in fut.result():
+                results.append(r)
+                if r["fails"]:
+                    print(f"flake-hunt: {classify(r)} {r['fails']}/{r['runs']}: {r['id']}", file=sys.stderr)
+            now = time.monotonic()
+            if now - last > 30:
+                last = now
+                print(f"flake-hunt: {len(results)}/{len(work)} tests done, {now - t0:.0f}s", file=sys.stderr)
+    except KeyboardInterrupt:
+        print("flake-hunt: interrupted, killing in-flight runs", file=sys.stderr)
+        runner.kill_all()
+        pool.shutdown(wait=True, cancel_futures=True)
+        sys.exit(130)
+    pool.shutdown(wait=True)
+    wall = time.monotonic() - t0
+
+    commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=root,
+                            capture_output=True, text=True).stdout.strip()
+    leaked = {r["id"]: r.pop("leaked") for r in results if r.get("leaked")}
+    check = leak_check(root, env["HT_LEAK_RUN_ID"], build_dir)
+    meta = {"started": started, "commit": commit, "tests": len(work), "runs": args.runs,
+            "leak_run_id": env["HT_LEAK_RUN_ID"], "leaked": leaked, "leak_check": check,
+            "mode": "binaries" if args.binaries else "per-test",
+            "jobs": args.jobs, "timeout": args.timeout, "wall_secs": wall}
+    if args.full_suite:
+        meta["full_suite"] = full_suite(root, out, args.full_suite, env)
+    broken = write_report(out, results, meta)
+    print((out / "report.md").read_text())
+    if leaked or check["ours"]:
+        print("flake-hunt: PASS FAILED: test processes leaked (see report)", file=sys.stderr)
+    sys.exit(1 if broken or leaked or check["ours"] or not all(meta.get("full_suite", [True])) else 0)
+
+
+if __name__ == "__main__":
+    main()

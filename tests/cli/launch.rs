@@ -942,7 +942,10 @@ fn system_shell_probe_is_bounded_and_reads_stdout() {
     );
     let probe = SystemShellProbe {
         shell: fake_zsh,
-        timeout: std::time::Duration::from_secs(3),
+        // A liveness bound only: these probes answer at once, but `sh` start-up
+        // under a loaded parallel suite can take seconds (the bound itself is
+        // the 200 ms `slow` case above).
+        timeout: std::time::Duration::from_secs(30),
     };
     assert_eq!(
         probe.resolve_codex().unwrap(),
@@ -957,7 +960,10 @@ fn system_shell_probe_is_bounded_and_reads_stdout() {
     );
     let probe = SystemShellProbe {
         shell: exporting,
-        timeout: std::time::Duration::from_secs(3),
+        // A liveness bound only: these probes answer at once, but `sh` start-up
+        // under a loaded parallel suite can take seconds (the bound itself is
+        // the 200 ms `slow` case above).
+        timeout: std::time::Duration::from_secs(30),
     };
     assert_eq!(
         probe.pane_shell_env("CODEX_HOME").as_deref(),

@@ -53,12 +53,25 @@ pub fn ensure_reaper() {
     });
 }
 
-/// Tag `command` with this process as owner (and the daemon owner pid).
+/// How much a test child stretches its external wait bounds
+/// ([`crate::protocol::time::external_bound`]): the suite runs many tests in
+/// parallel, so a fake `herdr` script or a daemon start can take seconds.
+pub const TIMEOUT_SCALE: &str = "10";
+
+/// Tag `command` with this process as owner (and the daemon owner pid), and
+/// scale its external wait bounds for a loaded suite.
 pub fn tag(command: &mut Command) -> &mut Command {
     ensure_reaper();
     command
         .env(OWNER_ENV, std::process::id().to_string())
-        .envs([crate::daemon::lifecycle::test_owner_env()])
+        .envs([crate::daemon::lifecycle::test_owner_env()]);
+    // An explicit choice on the command (set, or removed to run with the
+    // production bounds) wins; `tag` runs again at `spawn_owned`.
+    let scale = crate::protocol::time::TEST_TIMEOUT_SCALE_ENV;
+    if !command.get_envs().any(|(key, _)| key == scale) {
+        command.env(scale, TIMEOUT_SCALE);
+    }
+    command
 }
 
 /// `Command::new(program)` with the scrubbed, tagged test environment.

@@ -1931,15 +1931,12 @@ pub fn foreign_session(
     None
 }
 
-/// Drain stdin for at most `bound`, so the harness's payload write never
-/// meets a closed pipe, without letting a stalled writer hold the hook.
-fn drain_stdin(bound: Duration) {
+/// Drain the hook's input for at most `bound`, so the harness's payload write
+/// never meets a closed pipe, without letting a stalled writer hold the hook.
+fn drain_input(input: impl Read + Send + 'static, bound: Duration) {
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = io::copy(
-            &mut io::stdin().lock().take(MAX_STDIN as u64 + 1),
-            &mut io::sink(),
-        );
+        let _ = io::copy(&mut input.take(MAX_STDIN as u64 + 1), &mut io::sink());
         let _ = sender.send(());
     });
     let _ = receiver.recv_timeout(bound);
@@ -1982,6 +1979,18 @@ pub fn parse_failure_outcome(detail: String, env: &HookEnv) -> HookOutcome {
 
 /// [`run_process`] with the Herdr environment supplied (tests pass it explicitly).
 pub fn run_process_in(parsed: Result<HookArgs, String>, env: &HookEnv) -> i32 {
+    run_process_with(parsed, env, io::stdin())
+}
+
+/// [`run_process_in`] reading the hook payload from `input` (the process's
+/// stdin in production). Tests pass their own: an in-process test must not
+/// read, or hold the lock of, the test runner's stdin (ht-zo4: a drain left
+/// blocked on an open terminal stdin deadlocked every later stdin user).
+pub fn run_process_with(
+    parsed: Result<HookArgs, String>,
+    env: &HookEnv,
+    mut input: impl Read + Send + 'static,
+) -> i32 {
     let started = Instant::now();
     // Not a pane of the installed Herdr instance: silent, before any probe.
     if let Err(detail) = &parsed
@@ -1989,19 +1998,23 @@ pub fn run_process_in(parsed: Result<HookArgs, String>, env: &HookEnv) -> i32 {
             .diagnostic
             .is_none()
     {
-        drain_stdin(Duration::from_millis(200));
+        drain_input(input, Duration::from_millis(200));
         return 0;
     }
     if let Ok(args) = &parsed
         && foreign_session(args, env, std::env::var_os("HERDR_SOCKET_PATH").as_deref()).is_some()
     {
-        drain_stdin(Duration::from_millis(200));
+        drain_input(input, Duration::from_millis(200));
         return 0;
     }
     // The watchdog starts at the tool budget, so a stalled stdin cannot hold a
     // tool hook past it; a parsed lifecycle event raises it to its own budget,
     // still measured from process start.
-    let deadline_ms = Arc::new(AtomicU64::new(TOOL_BUDGET.as_millis() as u64));
+    // A test child of a loaded parallel suite stretches its wall-clock
+    // budgets (external_bound; production builds use them as is), so a
+    // starved scheduler does not turn into a fail-open hook.
+    let tool_budget = crate::protocol::time::external_bound(TOOL_BUDGET);
+    let deadline_ms = Arc::new(AtomicU64::new(tool_budget.as_millis() as u64));
     {
         let deadline_ms = Arc::clone(&deadline_ms);
         std::thread::spawn(move || {
@@ -2024,8 +2037,7 @@ pub fn run_process_in(parsed: Result<HookArgs, String>, env: &HookEnv) -> i32 {
         }
     };
     let mut stdin = Vec::new();
-    if io::stdin()
-        .lock()
+    if (&mut input)
         .take(MAX_STDIN as u64 + 1)
         .read_to_end(&mut stdin)
         .is_err()
@@ -2033,7 +2045,7 @@ pub fn run_process_in(parsed: Result<HookArgs, String>, env: &HookEnv) -> i32 {
         stdin.clear();
     }
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
-    let observe_budget = TOOL_BUDGET
+    let observe_budget = tool_budget
         .saturating_sub(WATCHDOG_MARGIN)
         .saturating_sub(started.elapsed());
     let installed = match observe_harness_in(
@@ -2053,8 +2065,8 @@ pub fn run_process_in(parsed: Result<HookArgs, String>, env: &HookEnv) -> i32 {
         }
     };
     let budget = parse_event(&installed, &stdin)
-        .map(|event| budget_for(&event))
-        .unwrap_or(TOOL_BUDGET);
+        .map(|event| crate::protocol::time::external_bound(budget_for(&event)))
+        .unwrap_or(tool_budget);
     deadline_ms.store(budget.as_millis() as u64, Ordering::SeqCst);
     // Calls end slightly before the watchdog so failures can still be reported.
     let deadline = started + budget.saturating_sub(WATCHDOG_MARGIN);

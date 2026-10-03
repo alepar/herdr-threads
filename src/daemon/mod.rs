@@ -30,13 +30,17 @@ use std::{
 use uuid::Uuid;
 
 unsafe extern "C" {
-    fn dup(fd: RawFd) -> RawFd;
     fn dup2(oldfd: RawFd, newfd: RawFd) -> RawFd;
     fn close(fd: RawFd) -> i32;
 }
 
+/// A close-on-exec duplicate. The saved stdout/stderr must not leak into the
+/// children spawned while output is redirected (ht-zo4: an in-process
+/// daemon's saved test-process pipe, inherited as fds 13/14 by every later
+/// child, held a test runner's output pipe open after the test exited).
 fn duplicate(fd: RawFd) -> io::Result<RawFd> {
-    let result = unsafe { dup(fd) };
+    // SAFETY: fcntl(F_DUPFD_CLOEXEC) only creates a new descriptor.
+    let result = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
     if result < 0 {
         Err(io::Error::last_os_error())
     } else {

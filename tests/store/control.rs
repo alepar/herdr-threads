@@ -8458,3 +8458,67 @@ fn continuity_never_writes_receipts() {
     drop(conn);
     let _ = std::fs::remove_file(path);
 }
+
+/// Every monotonic read steps 10 ms: each snapshot writer turn's quantum is
+/// spent by its first unit.
+struct SteppingClock(std::sync::atomic::AtomicU64);
+impl Clock for SteppingClock {
+    fn utc_now(&self) -> UtcMillis {
+        UtcMillis(100)
+    }
+    fn monotonic_now(&self) -> MonoInstant {
+        MonoInstant(self.0.fetch_add(10, std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+/// A writer turn whose 5 ms quantum is spent (CPU load, a stall) stages its
+/// committed prefix, at least one target, and returns progress; the rest
+/// goes in later turns and the snapshot publishes. Kills: failing the slice
+/// with DeadlineExceeded (the lane then recorded PublicationFailed, a host
+/// invalidation that unresolved seats and ended bindings on no host
+/// evidence: ht-zo4), and a turn that stages nothing (no progress).
+#[test]
+fn spent_snapshot_quantum_commits_its_prefix_and_staging_resumes() {
+    use crate::ports::{DurableWorkAdmission, SnapshotHeader};
+    use crate::protocol::time::{CallBudget, Cancellation};
+    use crate::store::seats;
+    let (context, mut conn, path, _) = fixture(100);
+    let budget = CallBudget {
+        deadline: MonoInstant(u64::MAX / 2),
+        cancellation: Cancellation::default(),
+    };
+    let snapshot = snapshot_for_test(2, &["q-1", "q-2", "q-3"]);
+    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let stage = seats::begin_snapshot_stage(
+        &context,
+        &mut conn,
+        SnapshotHeader::from_captured(admission, &snapshot).unwrap(),
+        &budget,
+    )
+    .unwrap();
+    let stepping = StoreContext::new(
+        path.clone(),
+        Arc::new(SteppingClock(std::sync::atomic::AtomicU64::new(0))),
+    );
+    let mut offset = 0usize;
+    while offset < snapshot.targets.len() {
+        let progress = seats::stage_snapshot_targets(
+            &stepping,
+            &mut conn,
+            &stage.id,
+            offset as u64,
+            &snapshot.targets[offset..],
+            DurableWorkAdmission::new(16).unwrap(),
+            &budget,
+        )
+        .unwrap();
+        assert_eq!(progress.visited, 1, "one unit per spent quantum");
+        offset += 1;
+        assert_eq!(progress.stage.staged_targets, offset as u64);
+    }
+    seats::seal_snapshot_stage(&context, &mut conn, &stage.id, &budget).unwrap();
+    let published = seats::publish_snapshot_stage(&context, &mut conn, &stage.id, &budget).unwrap();
+    assert_eq!(published.target_count, 3);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}

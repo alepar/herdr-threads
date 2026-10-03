@@ -168,9 +168,12 @@ fn failing_observation_backs_off_and_resets() {
     fx.failing.store(false, Ordering::SeqCst);
     let due = fx.pacer.next_retry_at().unwrap().0 - fx.pacer.now().0;
     fx.advance(due);
-    wait_until("the retry to succeed", || fx.pacer.attempts() == 0);
+    // The worker publishes a success in three steps (slot, pacer reset,
+    // status), so wait for the last one rather than the pacer's reset.
+    wait_until("the retry to succeed and clear the failure", || {
+        fx.pacer.attempts() == 0 && fx.status.health().is_none()
+    });
     assert!(fx.status.retry().is_none());
-    assert!(fx.status.health().is_none(), "success clears the failure");
     assert_eq!(*fx.slot.lock().unwrap(), observed("fresh"));
     assert!(fx.status.last_tick().is_some());
 }
@@ -254,7 +257,10 @@ fn idle_observer_makes_no_commits_and_one_pass_per_tick() {
 #[test]
 fn failing_observation_shows_retry_suffix_without_a_new_health_line() {
     let fx = Fx::start(true);
-    wait_until("the failure", || fx.pacer.attempts() == 1);
+    // The pacer counts the failure before `record_failure` publishes it.
+    wait_until("the failure", || {
+        fx.pacer.attempts() == 1 && fx.status.health().is_some()
+    });
     let summary = fx
         .status
         .health()

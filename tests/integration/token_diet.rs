@@ -7,7 +7,7 @@
 
 use super::sweep::{FakeHost, Scratch, pane};
 use serde_json::{Value, json};
-use std::{fs, os::unix::fs::DirBuilderExt, path::PathBuf, process::Command, time::Duration};
+use std::{fs, os::unix::fs::DirBuilderExt, path::PathBuf, process::Command};
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
 
@@ -47,19 +47,7 @@ impl Plugin {
     fn ok(&self, agent: Option<(&str, &str, &str)>, args: &[&str]) -> Value {
         let mut command = self.command(agent, true);
         command.args(args);
-        // A call that races the daemon's first observation publication may be
-        // refused `stale_host_observation`; that refusal is transient.
-        let until = std::time::Instant::now() + Duration::from_secs(10);
-        let output = loop {
-            let output = command.output().unwrap();
-            if output.status.success()
-                || !String::from_utf8_lossy(&output.stderr).contains("stale_host_observation")
-                || std::time::Instant::now() >= until
-            {
-                break output;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        };
+        let output = command.output().unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         assert!(
             output.status.success(),

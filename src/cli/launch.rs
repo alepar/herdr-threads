@@ -98,7 +98,7 @@ impl SystemShellProbe {
             .map_or_else(|| "/bin/zsh".into(), std::path::PathBuf::from);
         Self {
             shell,
-            timeout: SHELL_PROBE_TIMEOUT,
+            timeout: crate::protocol::time::external_bound(SHELL_PROBE_TIMEOUT),
         }
     }
 }

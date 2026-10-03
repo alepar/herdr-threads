@@ -277,10 +277,12 @@ pub fn prepare_send_step(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let began = std::time::Instant::now();
+    // The 5 ms writer quantum runs on the store's clock, like the snapshot
+    // and retirement quanta: an injected clock decides it deterministically.
+    let began = context.clock().monotonic_now();
     let mut visited = 0u8;
     while visited < max_units
-        && (visited == 0 || began.elapsed() < std::time::Duration::from_millis(5))
+        && (visited == 0 || context.clock().monotonic_now().0.saturating_sub(began.0) < 5)
         && !budget.is_exhausted(context.clock())
     {
         if cursor < high_water {

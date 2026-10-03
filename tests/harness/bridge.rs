@@ -7,6 +7,13 @@ use crate::{
     },
 };
 use std::{fs, time::Duration};
+/// Context-lock wait for these fixtures: a liveness bound only. On macOS a
+/// lock holder's `sync_all`s are full-device flushes queued behind every
+/// other test's, so a short bound turned concurrent dedup into a
+/// `LockTimeout` race (ht-zo4); the timeout itself is pinned by
+/// `lock_wait_is_bounded_and_crashed_lock_owner_releases`.
+const CONTEXT_LOCK_WAIT: Duration = Duration::from_secs(10);
+
 fn fixture() -> (
     std::path::PathBuf,
     Journal,
@@ -25,13 +32,8 @@ fn fixture() -> (
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     }
     let j = Journal::open(root.join("intents")).unwrap();
-    let cj = ContextJournal::open(
-        &root,
-        uuid::Uuid::from_u128(1),
-        "seat",
-        Duration::from_millis(200),
-    )
-    .unwrap();
+    let cj =
+        ContextJournal::open(&root, uuid::Uuid::from_u128(1), "seat", CONTEXT_LOCK_WAIT).unwrap();
     let c = OccupantContext {
         format_version: 1,
         instance: uuid::Uuid::from_u128(1),
@@ -102,8 +104,7 @@ fn lifecycle_preparation_uses_one_cli_key_and_tagged_fallback_across_restart() {
             .starts_with("plugin_context:")
     );
     drop(cj);
-    let cj =
-        ContextJournal::open(&root, seed.instance, "seat", Duration::from_millis(200)).unwrap();
+    let cj = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT).unwrap();
     assert_eq!(
         prepare_event(&j, &cj, &event, Some(&seed), 3)
             .unwrap()
@@ -257,8 +258,7 @@ fn response_loss_restart_retries_exact_command_and_current_reuses_execution() {
     let frozen = cj.pending().unwrap().unwrap();
     let key = frozen.operation_id;
     drop(cj);
-    let cj =
-        ContextJournal::open(&root, seed.instance, "seat", Duration::from_millis(200)).unwrap();
+    let cj = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT).unwrap();
     run_event(
         &j,
         &cj,
@@ -554,8 +554,7 @@ fn overview_failure_and_reopen_reuse_cached_check_in_and_pending_intent() {
     assert_eq!(j.page(&Default::default()).unwrap().items.len(), 1);
     assert!(cj.pending().unwrap().is_none());
     drop(cj);
-    let cj =
-        ContextJournal::open(&root, seed.instance, "seat", Duration::from_millis(200)).unwrap();
+    let cj = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT).unwrap();
     client.directory_error = false;
     let mut output = Vec::new();
     run_hook_event(
@@ -1389,13 +1388,8 @@ fn cross_instance_context_diagnostic_precedes_any_new_hook_intent() {
     )
     .unwrap();
     drop(cj);
-    let other = ContextJournal::open(
-        &root,
-        uuid::Uuid::from_u128(999),
-        "seat",
-        Duration::from_millis(200),
-    )
-    .unwrap();
+    let other =
+        ContextJournal::open(&root, uuid::Uuid::from_u128(999), "seat", CONTEXT_LOCK_WAIT).unwrap();
     assert_eq!(
         prepare_event(&j, &other, &event, Some(&seed), 2),
         Err(ContextError::WrongInstance)

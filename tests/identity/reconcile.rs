@@ -2236,7 +2236,7 @@ mod fake_port {
     }
 
     #[test]
-    fn late_coherent_result_uses_maintenance_budget_to_fail_closed() {
+    fn late_coherent_result_freezes_without_invalidating() {
         let store = Arc::new(FakeStore::new());
         let host = FakeHost {
             store: store.clone(),
@@ -2257,18 +2257,17 @@ mod fake_port {
             &budget(),
         )
         .unwrap();
+        // A coherent answer past its budget is unavailability: frozen, not
+        // invalidated (ht-yms).
         assert!(matches!(
             outcome,
-            ObservationOutcome::Invalidated {
+            ObservationOutcome::Frozen {
                 reason: HostInvalidationReason::HostUnavailable,
                 ..
             }
         ));
         assert!(!lane.is_available());
-        assert_eq!(
-            store.state.lock().unwrap().calls,
-            ["admit", "invalidate:HostUnavailable"]
-        );
+        assert_eq!(store.state.lock().unwrap().calls, ["admit"]);
     }
 
     #[test]
@@ -2277,7 +2276,7 @@ mod fake_port {
         store.state.lock().unwrap().fail_invalidation = true;
         let host = FakeHost {
             store: store.clone(),
-            capture: Err(stale("denied host read")),
+            capture: partial(),
             cancel_on_return: false,
         };
         let mut lane = ObservationLane::default();
@@ -2310,7 +2309,7 @@ mod fake_port {
     }
 
     #[test]
-    fn coherent_capture_stage_failure_durably_invalidates_old_publication() {
+    fn coherent_capture_stage_failure_freezes_the_old_publication() {
         let store = Arc::new(FakeStore::new());
         store.state.lock().unwrap().fail_offset = Some(0);
         let host = FakeHost {
@@ -2332,9 +2331,11 @@ mod fake_port {
             &budget(),
         )
         .unwrap();
+        // A daemon-side staging failure is not host evidence: frozen, the old
+        // publication stays (ht-yms).
         assert!(matches!(
             outcome,
-            ObservationOutcome::Invalidated {
+            ObservationOutcome::Frozen {
                 reason: HostInvalidationReason::PublicationFailed,
                 ..
             }
@@ -2342,13 +2343,7 @@ mod fake_port {
         assert!(!lane.is_available());
         assert_eq!(
             store.state.lock().unwrap().calls,
-            [
-                "admit",
-                "begin",
-                "stage:0:1",
-                "discard",
-                "invalidate:PublicationFailed"
-            ]
+            ["admit", "begin", "stage:0:1", "discard"]
         );
     }
 
@@ -2561,32 +2556,68 @@ mod fake_port {
             .count()
     }
 
+    /// A capture that still invalidates (evidence the host view is not
+    /// coherently known): an incomplete enumeration.
+    fn partial() -> Result<HostSnapshot, ApiError> {
+        let mut partial = snapshot(2, vec![]);
+        partial.complete = false;
+        Ok(partial)
+    }
+
+    /// Herdr unavailable (ht-yms, TRUST-POLICY C4): a failed capture writes no
+    /// invalidation and arms no marking pass, however often it repeats, so
+    /// seats and bindings stay frozen. Kills: invalidating (or marking) on a
+    /// host that merely did not answer.
+    #[test]
+    fn unavailable_host_freezes_without_invalidating_or_marking() {
+        let store = Arc::new(FakeStore::new());
+        store.state.lock().unwrap().invalidation_seats = vec![saved_seat(1, "seat-a")];
+        let mut lane = ObservationLane::default();
+        for detail in ["host down", "host still down"] {
+            let outcome = observe(&store, &mut lane, Err(stale(detail)));
+            assert!(
+                matches!(
+                    outcome,
+                    ObservationOutcome::Frozen {
+                        reason: HostInvalidationReason::HostUnavailable,
+                        cause: Some(_)
+                    }
+                ),
+                "{outcome:?}"
+            );
+            assert!(!lane.is_available());
+        }
+        assert_eq!(invalidations(&store), 0);
+        assert!(store.state.lock().unwrap().invalidated_seats.is_empty());
+        assert_eq!(store.state.lock().unwrap().calls, ["admit", "admit"]);
+    }
+
     #[test]
     fn repeat_failure_with_same_reason_after_completed_marking_writes_no_invalidation() {
         let store = Arc::new(FakeStore::new());
         store.state.lock().unwrap().invalidation_seats = vec![saved_seat(1, "seat-a")];
         let mut lane = ObservationLane::default();
-        let first = observe(&store, &mut lane, Err(stale("host down")));
+        let first = observe(&store, &mut lane, partial());
         assert!(matches!(first, ObservationOutcome::Invalidated { .. }));
         // Marker is set only once the marking pass's last page commits.
         assert_eq!(lane.last_invalidation_reason(), None);
         run_marking_pass(&store, &mut lane, &first).unwrap();
         assert_eq!(
             lane.last_invalidation_reason(),
-            Some(HostInvalidationReason::HostUnavailable)
+            Some(HostInvalidationReason::PartialEnumeration)
         );
-        let second = observe(&store, &mut lane, Err(stale("host still down")));
+        let second = observe(&store, &mut lane, partial());
         assert!(matches!(
             second,
             ObservationOutcome::InvalidationRepeated {
-                reason: HostInvalidationReason::HostUnavailable,
-                cause: Some(_)
+                reason: HostInvalidationReason::PartialEnumeration,
+                cause: None
             }
         ));
         // The admission (fence) commit stays; the invalidation is not rewritten.
         assert_eq!(
             store.state.lock().unwrap().calls,
-            ["admit", "invalidate:HostUnavailable", "admit"]
+            ["admit", "invalidate:PartialEnumeration", "admit"]
         );
         assert_eq!(lane.repeat_failures(), 1);
         assert!(!lane.is_available());
@@ -2596,9 +2627,9 @@ mod fake_port {
     fn repeat_before_marking_completes_invalidates_again() {
         let store = Arc::new(FakeStore::new());
         let mut lane = ObservationLane::default();
-        observe(&store, &mut lane, Err(stale("host down")));
+        observe(&store, &mut lane, partial());
         // No marking page ran: the pass has not completed.
-        let second = observe(&store, &mut lane, Err(stale("host down")));
+        let second = observe(&store, &mut lane, partial());
         assert!(matches!(second, ObservationOutcome::Invalidated { .. }));
         assert_eq!(invalidations(&store), 2);
     }
@@ -2608,15 +2639,15 @@ mod fake_port {
         let store = Arc::new(FakeStore::new());
         store.state.lock().unwrap().invalidation_seats = vec![saved_seat(1, "seat-a")];
         let mut lane = ObservationLane::default();
-        let first = observe(&store, &mut lane, Err(stale("host down")));
+        let first = observe(&store, &mut lane, partial());
         run_marking_pass(&store, &mut lane, &first).unwrap();
-        let mut partial = snapshot(2, vec![]);
-        partial.complete = false;
-        let second = observe(&store, &mut lane, Ok(partial));
+        let mut unknown = snapshot(2, vec![]);
+        unknown.incarnation = crate::ports::IncarnationEvidence::Unknown;
+        let second = observe(&store, &mut lane, Ok(unknown));
         assert!(matches!(
             second,
             ObservationOutcome::Invalidated {
-                reason: HostInvalidationReason::PartialEnumeration,
+                reason: HostInvalidationReason::UnknownIncarnation,
                 ..
             }
         ));
@@ -2629,12 +2660,12 @@ mod fake_port {
         let store = Arc::new(FakeStore::new());
         store.state.lock().unwrap().invalidation_seats = vec![saved_seat(1, "seat-a")];
         let mut lane = ObservationLane::default();
-        let first = observe(&store, &mut lane, Err(stale("host down")));
+        let first = observe(&store, &mut lane, partial());
         run_marking_pass(&store, &mut lane, &first).unwrap();
         let published = observe(&store, &mut lane, Ok(snapshot(2, vec![])));
         assert!(matches!(published, ObservationOutcome::Published(_)));
         assert_eq!(lane.last_invalidation_reason(), None);
-        let again = observe(&store, &mut lane, Err(stale("host down again")));
+        let again = observe(&store, &mut lane, partial());
         assert!(matches!(again, ObservationOutcome::Invalidated { .. }));
         assert_eq!(invalidations(&store), 2);
     }
@@ -2651,7 +2682,7 @@ mod fake_port {
             state.fail_invalidation_page_after = Some(2);
         }
         let mut lane = ObservationLane::default();
-        let first = observe(&store, &mut lane, Err(stale("host down")));
+        let first = observe(&store, &mut lane, partial());
         assert!(run_marking_pass(&store, &mut lane, &first).is_err());
         assert_eq!(lane.last_invalidation_reason(), None);
         assert_eq!(
@@ -2661,7 +2692,7 @@ mod fake_port {
         // Same reason again: not skipped, and the pass restarts at ordinal 0.
         store.state.lock().unwrap().fail_invalidation_page_after = None;
         store.state.lock().unwrap().invalidated_seats.clear();
-        let second = observe(&store, &mut lane, Err(stale("host down")));
+        let second = observe(&store, &mut lane, partial());
         assert!(matches!(second, ObservationOutcome::Invalidated { .. }));
         run_marking_pass(&store, &mut lane, &second).unwrap();
         assert_eq!(
@@ -2680,11 +2711,11 @@ mod fake_port {
         store.state.lock().unwrap().invalidation_seats = vec![saved_seat(1, "seat-a")];
         let mut lane = ObservationLane::default();
         let status = WorkerStatus::default();
-        let first = observe(&store, &mut lane, Err(stale("host down")));
+        let first = observe(&store, &mut lane, partial());
         status.observe_capture(&Ok(Some(first.clone())));
         run_marking_pass(&store, &mut lane, &first).unwrap();
         let pages_before = store.state.lock().unwrap().invalidated_seats.len();
-        let second = observe(&store, &mut lane, Err(stale("host down")));
+        let second = observe(&store, &mut lane, partial());
         assert!(matches!(
             second,
             ObservationOutcome::InvalidationRepeated { .. }
@@ -2695,7 +2726,7 @@ mod fake_port {
         assert_eq!(
             status.health().unwrap().failure,
             Some(RedactedFailure::ObservationInvalidated(
-                HostInvalidationReason::HostUnavailable
+                HostInvalidationReason::PartialEnumeration
             ))
         );
         // No continuation page ran for the skipped failure.
@@ -2748,6 +2779,60 @@ mod fake_port {
             [SeatId::new("seat-a")]
         );
         assert!(store.state.lock().unwrap().actions.is_empty());
+    }
+
+    /// An already-unresolved seat (here `other`) is skipped, not re-marked:
+    /// the pass goes on to mark the resolved seat after it and completes.
+    /// Kills: re-marking it (the store refuses that as Stale, which aborted
+    /// the pass with CursorStale, so it never completed and every retry wrote
+    /// a new invalidation: ht-zo4,
+    /// elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log).
+    #[test]
+    fn invalidation_skips_already_unresolved_seats_and_marks_the_rest() {
+        let store = FakeStore::new();
+        let admission = store
+            .begin_host_observation("instance-a", &budget())
+            .unwrap();
+        let fence = HostInvalidationFence {
+            admission,
+            invalidation_revision: 1,
+        };
+        let seat = |ordinal: u64, id: &str, state: SeatState| SnapshotSavedSeat {
+            ordinal,
+            seat: SeatId::new(id),
+            state,
+            unresolved_reason: (state == SeatState::Unresolved).then_some(UnresolvedReason::Other),
+            prior_published_observation: None,
+            structural_proof: None,
+            target: Some(HostTargetId::new(format!("p-{id}"))),
+            terminal: Some(TerminalId::new(format!("t-{id}"))),
+            binding_generation: 3,
+            binding_execution: None,
+            active_binding_execution: None,
+            bound_epoch: None,
+            bound_boot: Some(HostBootId::new("boot-a")),
+            bound_incarnation: Some("inc-a".into()),
+            latest_binding_evidence: None,
+            observed_match: None,
+        };
+        store.state.lock().unwrap().invalidation_page = Some(InvalidationSeatPage {
+            fence: fence.clone(),
+            high_water_ordinal: 2,
+            after_ordinal: 2,
+            visited: 2,
+            has_more: false,
+            seats: vec![
+                seat(1, "stuck", SeatState::Unresolved),
+                seat(2, "live", SeatState::Resolved),
+            ],
+        });
+        let progress = reconcile_invalidated_page(&store, &fence, 0, None, &budget()).unwrap();
+        assert_eq!(progress.transition_count, 1);
+        assert_eq!(progress.next_after_ordinal, None, "the pass completes");
+        assert_eq!(
+            store.state.lock().unwrap().invalidated_seats,
+            [SeatId::new("live")]
+        );
     }
 
     /// D2: a guarded transition the store refuses for one seat is recorded
@@ -2945,7 +3030,9 @@ mod carry_forward {
     }
 
     /// Seat `s` on `pane`/`terminal-a`, host epoch 3, open registered binding
-    /// of `provenance` at epoch 3. `unresolved` makes it host-invalidated.
+    /// of `provenance` at epoch 3. `unresolved` makes it host-invalidated the
+    /// way `mark_seat_unresolved` leaves a seat: generation bumped, binding
+    /// ended.
     fn fixture(provenance: &str, unresolved: bool) -> Fixture {
         let path = std::env::temp_dir().join(format!("herdr-carry-{}.db", uuid::Uuid::new_v4()));
         let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
@@ -2966,8 +3053,8 @@ mod carry_forward {
             ("resolved", None)
         };
         conn.execute(
-            "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at,unavailability_open) VALUES ('s','i',?1,?2,'native','pane',1,1,'terminal-a','inc-a',?3,'boot-a',3,1,1,0,1)",
-            rusqlite::params![state, reason, kind],
+            "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at,unavailability_open) VALUES ('s','i',?1,?2,'native','pane',?4,1,'terminal-a','inc-a',?3,'boot-a',3,1,1,0,1)",
+            rusqlite::params![state, reason, kind, if unresolved { 2 } else { 1 }],
         )
         .unwrap();
         conn.execute(
@@ -2975,6 +3062,13 @@ mod carry_forward {
             [provenance],
         )
         .unwrap();
+        if unresolved {
+            conn.execute(
+                "UPDATE occupant_bindings SET ended_at=9 WHERE seat_id='s'",
+                [],
+            )
+            .unwrap();
+        }
         Fixture {
             context,
             conn,
@@ -3034,10 +3128,13 @@ mod carry_forward {
         );
     }
 
+    /// A host-invalidated seat on the same terminal is reconfirmed resolved;
+    /// the invalidation ended its binding, so nothing is carried and the
+    /// agent's next lifecycle check-in registers again (ht-0b8: the carry on
+    /// this path could never match and was removed).
     #[test]
-    fn reconfirm_structure_after_restart_carries_open_binding_forward() {
+    fn reconfirm_structure_after_invalidation_resolves_with_no_binding_to_carry() {
         let mut f = fixture("cooperative_top_level", true);
-        let before = binding(&f.conn);
         let publication = publish(&mut f, production(4, 3, "inc-a"));
         let transitions = plan(&f, &publication);
         assert_eq!(transitions.len(), 1);
@@ -3057,7 +3154,15 @@ mod carry_forward {
             .query_row("SELECT state FROM seats WHERE id='s'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(state, "resolved");
-        assert_carried(&f, "cooperative_top_level", &before);
+        let open: i64 = f
+            .conn
+            .query_row(
+                "SELECT count(*) FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(open, 0);
     }
 
     #[test]

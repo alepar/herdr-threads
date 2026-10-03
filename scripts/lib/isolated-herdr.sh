@@ -87,8 +87,13 @@ ih_trap_install() { # opt-in for scripts: teardown on exit and on fatal signals
     trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 }
 
+ih_owner_alive() { # PID -> 0 while PID runs; an exited (zombie) owner is dead
+    kill -0 "$1" 2>/dev/null || return 1
+    case "$(ps -o stat= -p "$1" 2>/dev/null)" in Z*) return 1 ;; esac
+}
+
 ih_reaper_loop() { # OWNER -> wait for OWNER to die, then reap what it left
-    while kill -0 "$1" 2>/dev/null; do sleep 0.2; done
+    while ih_owner_alive "$1"; do sleep 0.2; done
     # Process groups first: ps cannot read the environment of Apple platform
     # binaries (/bin/sleep, /bin/sh), so the tag below cannot find those.
     # shellcheck disable=SC2046
@@ -192,6 +197,14 @@ ih_state() { # ROOT -> up | stale-socket | stopped | never-started
     elif [ -S "$1/h.sock" ]; then echo stale-socket
     elif [ -f "$1/starts" ]; then echo stopped
     else echo never-started; fi
+}
+
+ih_keep() { # ROOT -> like ih_teardown, but keep the root's files for diagnosis
+    case "$1" in /tmp/ih.*|/private/tmp/ih.*) ;; *) echo "isolated-herdr: refusing to keep $1" >&2; return 1 ;; esac
+    ih_stop "$1" || ih_kill "$1"
+    # shellcheck disable=SC2046
+    ih_kill_pids $(ih_root_pids "$1")
+    rm -f "$1/owner"  # the owner's reaper must not remove a kept root
 }
 
 ih_teardown() { # ROOT -> stop (or kill) our server, remove the root

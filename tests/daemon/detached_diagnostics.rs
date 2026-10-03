@@ -85,6 +85,10 @@ impl LocalService for HealthService {
     }
 }
 
+/// A hang guard for event waits on detached fixtures, never an assertion
+/// about time: a loaded parallel suite can delay their start by seconds.
+const HANG_GUARD: Duration = Duration::from_secs(30);
+
 fn wait_until(timeout: Duration, mut condition: impl FnMut() -> bool) {
     let start = Instant::now();
     while !condition() {
@@ -687,6 +691,16 @@ fn detached_output_survives_ensure_parent_and_loser_does_not_touch_logs() {
     let root = std::env::temp_dir().join(format!("herdr-task23-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    // Removed however the test ends (a panic used to leak the root).
+    struct RemoveRoot(PathBuf);
+    impl Drop for RemoveRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let _remove = RemoveRoot(root.clone());
+    // Each ensure caller's stderr, for the failure message.
+    let caller_err = |n: u8| fs::File::create(root.join(format!("ensure-{n}.err"))).unwrap();
     let launcher = root.join("launcher.sh");
     let current = std::env::current_exe().unwrap();
     let script = format!(
@@ -706,7 +720,7 @@ fn detached_output_survives_ensure_parent_and_loser_does_not_touch_logs() {
         .env("HERDR_TASK23_LAUNCHER", &launcher)
         .stdin(Stdio::from(inherited_input.try_clone().unwrap()))
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(caller_err(1))
         .spawn_owned()
         .unwrap();
     let mut ensure_two = scrubbed_process(&current)
@@ -717,18 +731,22 @@ fn detached_output_survives_ensure_parent_and_loser_does_not_touch_logs() {
         .env("HERDR_TASK23_LAUNCHER", &launcher)
         .stdin(Stdio::from(inherited_input))
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(caller_err(2))
         .spawn_owned()
         .unwrap();
     let first = ensure_one.wait().unwrap();
     let second = ensure_two.wait().unwrap();
+    let caller_stderr =
+        |n: u8| fs::read_to_string(root.join(format!("ensure-{n}.err"))).unwrap_or_default();
     assert!(
         first.success() && second.success(),
-        "ensure callers exited {first} and {second}"
+        "ensure callers exited {first} and {second}\n--- caller 1 stderr:\n{}\n--- caller 2 stderr:\n{}",
+        caller_stderr(1),
+        caller_stderr(2)
     );
     let paths = fixture_paths(root.clone());
-    wait_until(Duration::from_secs(2), || paths.descriptor_path.exists());
-    wait_until(Duration::from_secs(2), || {
+    wait_until(HANG_GUARD, || paths.descriptor_path.exists());
+    wait_until(HANG_GUARD, || {
         fs::read(paths.instance_dir.join("daemon.log"))
             .ok()
             .is_some_and(|bytes| {
@@ -762,7 +780,7 @@ fn detached_output_survives_ensure_parent_and_loser_does_not_touch_logs() {
     );
     assert!(!paths.instance_dir.join("daemon.log.1").exists());
     fs::write(root.join("go"), b"").unwrap();
-    wait_until(Duration::from_secs(5), || {
+    wait_until(HANG_GUARD, || {
         fs::read(paths.instance_dir.join("daemon.log"))
             .ok()
             .is_some_and(|bytes| {
@@ -786,6 +804,22 @@ fn detached_output_survives_ensure_parent_and_loser_does_not_touch_logs() {
             .any(|w| w == b"stderr-after-ensure-exit")
     );
     fs::write(root.join("stop"), b"").unwrap();
-    wait_until(Duration::from_secs(5), || !paths.descriptor_path.exists());
-    fs::remove_dir_all(root).unwrap();
+    wait_until(HANG_GUARD, || !paths.descriptor_path.exists());
+}
+
+/// The stdout/stderr saved while daemon output is redirected are
+/// close-on-exec, so no child spawned meanwhile inherits them. Kills: a
+/// plain `dup` (the saved pipe leaked into every later child, ht-zo4).
+#[test]
+fn saved_output_descriptors_are_close_on_exec() {
+    let saved = super::duplicate(2).unwrap();
+    // SAFETY: queries flags of the descriptor just created.
+    let flags = unsafe { libc::fcntl(saved, libc::F_GETFD) };
+    super::close_fd(saved);
+    assert!(flags >= 0, "fcntl failed");
+    assert_ne!(
+        flags & libc::FD_CLOEXEC,
+        0,
+        "saved descriptor is inheritable"
+    );
 }

@@ -166,6 +166,9 @@ impl LocalService for HealthService {
     }
 }
 
+/// A liveness bound for tests that are not about the ensure wait itself.
+const LIVENESS: Duration = Duration::from_secs(60);
+
 fn fixture() -> (PathBuf, RuntimeContext, InstancePaths) {
     use std::os::unix::fs::PermissionsExt;
     let root = std::env::temp_dir().join(format!("herdr-lifecycle-{}", uuid::Uuid::new_v4()));
@@ -901,6 +904,10 @@ async fn shutdown_waits_for_synchronous_handler_before_releasing_lock() {
 #[test]
 #[ignore = "subprocess fixture invoked explicitly by lifecycle tests"]
 fn subprocess_owner_fixture() {
+    // Exit once the test that launched this owner is gone, however it ended
+    // (an untagged fixture outlived a killed test run, ht-zo4).
+    #[cfg(feature = "test-support")]
+    crate::test_support::owner_watch::watch_from_env();
     let root = PathBuf::from(std::env::var_os("HERDR_LIFECYCLE_ROOT").unwrap());
     let context = RuntimeContext::explicit(root.clone(), root.join("host.sock"), None).unwrap();
     let paths = InstancePaths::resolve(&context).unwrap();
@@ -956,12 +963,17 @@ fn launcher(root: &std::path::Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = root.join("launch.sh");
     let executable = std::env::current_exe().unwrap();
+    // The fixture is started by the production detached spawn, which does not
+    // tag test children: the launcher names this test process as its owner.
+    let owner = std::process::id();
     let script = format!(
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{}/args-$$.tmp\"\nmv \"{}/args-$$.tmp\" \"{}/args-$$\"\nHERDR_LIFECYCLE_ROOT='{}' exec '{}' --ignored --exact daemon::lifecycle::tests::subprocess_owner_fixture\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{}/args-$$.tmp\"\nmv \"{}/args-$$.tmp\" \"{}/args-$$\"\nHERDR_LIFECYCLE_ROOT='{}' {}={owner} {}={owner} exec '{}' --ignored --exact daemon::lifecycle::tests::subprocess_owner_fixture\n",
         root.display(),
         root.display(),
         root.display(),
         root.display(),
+        crate::daemon::lifecycle::TEST_OWNER_PID_ENV,
+        crate::test_support::spawn::OWNER_ENV,
         executable.display()
     );
     std::fs::write(&path, script).unwrap();
@@ -1030,9 +1042,11 @@ fn detached_child_uses_resolved_herdr_binary_environment() {
 async fn racing_ensure_callers_converge_and_crash_releases_owner() {
     let (root, context, paths) = fixture();
     let launcher = launcher(&root);
+    // A liveness bound: this test is about convergence, and a daemon start in
+    // a loaded parallel suite can outrun the in-process (unscaled) 5 s wait.
     let results = tokio::join!(
-        ensure_running(&context, &launcher, Arc::new(TestClock)),
-        ensure_running(&context, &launcher, Arc::new(TestClock)),
+        ensure_running_with_timeout(&context, &launcher, Arc::new(TestClock), LIVENESS),
+        ensure_running_with_timeout(&context, &launcher, Arc::new(TestClock), LIVENESS),
     );
     let first = results.0.unwrap();
     let second = results.1.unwrap();
@@ -1054,7 +1068,7 @@ async fn racing_ensure_callers_converge_and_crash_releases_owner() {
     .await
     .unwrap();
     std::fs::remove_file(root.join("crash")).unwrap();
-    let recovered = ensure_running(&context, &launcher, Arc::new(TestClock))
+    let recovered = ensure_running_with_timeout(&context, &launcher, Arc::new(TestClock), LIVENESS)
         .await
         .unwrap();
     assert_ne!(first.boot_id, recovered.boot_id);
