@@ -71,7 +71,28 @@ fn generated_document_lists_every_version_in_order_with_evidence() {
             .iter()
             .all(|row| row["known_broken"] == json!([]))
     );
-    assert_eq!(document["schema_version"], 1);
+    assert_eq!(document["schema_version"], 2);
+    for row in document["rows"].as_array().unwrap() {
+        assert_eq!(row["status"], "verified", "{row}");
+        assert_eq!(row["source"], "manual", "{row}");
+        for key in [
+            "contract_id",
+            "supported_since",
+            "broken_event",
+            "broken_field",
+            "last_working",
+            "issue_url",
+        ] {
+            assert!(row[key].is_null(), "{key} must be a present null: {row}");
+        }
+    }
+    for key in ["generated_at", "latest_release"] {
+        assert!(
+            document.get(key).is_some_and(Value::is_null),
+            "{key} must be a present null"
+        );
+    }
+    assert_eq!(document["contracts"], json!({}));
 }
 
 /// Kills: a guard that only compares row counts: a changed evidence level,
@@ -144,7 +165,7 @@ fn known_broken_snippet_round_trips() {
     ));
     std::fs::write(
         &path,
-        serde_json::to_vec(&json!({"schema_version": 1, "rows": rows})).unwrap(),
+        serde_json::to_vec(&json!({"schema_version": 2, "rows": rows})).unwrap(),
     )
     .unwrap();
     let key = path.clone().into_os_string();

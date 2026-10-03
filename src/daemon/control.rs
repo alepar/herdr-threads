@@ -68,6 +68,10 @@ pub struct ControlService<H, S> {
     health: H,
     domain: S,
     hook_parse_failures: Option<std::sync::Arc<crate::daemon::logs::HookParseFailures>>,
+    /// The harness version manifest (ht-xoc.4 calls `ensure_manifest` from
+    /// its evidence handler; ht-xoc.5 reads `current()`). Not called yet.
+    #[allow(dead_code)]
+    harness_manifest: Option<std::sync::Arc<crate::harness::manifest::ManifestService>>,
 }
 
 impl<H, S> ControlService<H, S>
@@ -81,6 +85,7 @@ where
             health,
             domain,
             hook_parse_failures: None,
+            harness_manifest: None,
         }
     }
 
@@ -91,6 +96,15 @@ where
         failures: std::sync::Arc<crate::daemon::logs::HookParseFailures>,
     ) -> Self {
         self.hook_parse_failures = Some(failures);
+        self
+    }
+
+    /// The daemon's harness version manifest service.
+    pub fn with_harness_manifest(
+        mut self,
+        manifest: std::sync::Arc<crate::harness::manifest::ManifestService>,
+    ) -> Self {
+        self.harness_manifest = Some(manifest);
         self
     }
 }

@@ -834,6 +834,16 @@ async fn run_elected_impl<R>(
 where
     R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
 {
+    // Instance settings and the offline switch are read once, here: the
+    // manifest fetch policy is fixed for this daemon's lifetime. An invalid
+    // settings file refuses the start with a message naming the file.
+    let instance_settings = crate::daemon::settings::load(&paths.instance_dir)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    let manifest_policy = crate::harness::manifest::policy_from(
+        &instance_settings,
+        std::env::var_os("HERDR_THREADS_OFFLINE").as_deref(),
+    );
+    let manifest_cache_dir = crate::harness::manifest::cache_dir(&paths.instance_dir);
     let database_path = paths.database_path.clone();
     let factory_log_path = crate::daemon::logs::daemon_log_path(paths);
     let factory_clock = Arc::clone(&clock);
@@ -1077,9 +1087,25 @@ where
                 inputs.hook_parse_failures = health_parse_failures.snapshot();
                 inputs
             };
+            // The harness version manifest: cache, embedded fallback and the
+            // detached fetch policy. One log line per fetch outcome (at most
+            // one fetch per harness per day, so no extra rate limit).
+            let manifest = Arc::new(crate::harness::manifest::ManifestService::new(
+                manifest_cache_dir.clone(),
+                manifest_policy,
+                Arc::new(crate::harness::manifest::CurlFetcher::new(
+                    manifest_cache_dir,
+                )),
+                Arc::clone(&factory_clock),
+                {
+                    let log = Arc::clone(&rate_limited_log);
+                    Arc::new(move |line: &str| log.write_line(line))
+                },
+            ));
             Ok(Arc::new(
                 ControlService::new(stop, health, domain)
-                    .with_hook_parse_failures(factory_parse_failures),
+                    .with_hook_parse_failures(factory_parse_failures)
+                    .with_harness_manifest(manifest),
             ) as Arc<dyn LocalService>)
         },
         on_ready,

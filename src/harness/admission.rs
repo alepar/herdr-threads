@@ -231,34 +231,60 @@ pub fn version_rows<P>(harness: &str, table: &[Recipe<P>]) -> Vec<Value> {
         rows.push(json!({
             "harness": harness,
             "version": version.to_string(),
-            "recipe": recipe.id,
+            "status": "verified",
             "evidence": evidence,
+            "contract_id": null,
+            "source": "manual",
+            "supported_since": null,
+            "broken_event": null,
+            "broken_field": null,
+            "last_working": null,
+            "issue_url": null,
+            "recipe": recipe.id,
             "known_broken": ranges_json(recipe.known_broken),
         }));
     }
     rows
 }
 
-/// The versions document generated from the compiled recipe tables.
+/// The versions document generated from the compiled recipe tables, in the
+/// manifest's schema 2 (see `harness::manifest`). The canary-only fields are
+/// present and null: the canary writer (not this generator) fills them.
+/// Rows carry a null `contract_id`, so a daemon never takes their status
+/// from the manifest (the compiled recipe tables already cover them).
 pub fn versions_document() -> Value {
     let mut rows = version_rows("claude", super::claude::RECIPES);
     rows.extend(version_rows("codex", super::codex::RECIPES));
     json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_from": "src/harness/claude.rs RECIPES, src/harness/codex.rs RECIPES (cargo test versions_json_guard; HT_BLESS=1 regenerates)",
+        "generated_at": null,
+        "latest_release": null,
+        "contracts": {},
         "rows": rows,
     })
 }
 
 /// Document key order, so the committed file reads harness-first.
-const KEY_ORDER: [&str; 10] = [
+const KEY_ORDER: [&str; 21] = [
     "schema_version",
     "generated_from",
+    "generated_at",
+    "latest_release",
+    "contracts",
     "rows",
     "harness",
     "version",
-    "recipe",
+    "status",
     "evidence",
+    "contract_id",
+    "source",
+    "supported_since",
+    "broken_event",
+    "broken_field",
+    "last_working",
+    "issue_url",
+    "recipe",
     "known_broken",
     "min",
     "max",
