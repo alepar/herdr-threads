@@ -3,7 +3,6 @@ use herdr_threads::test_support::isolated_herdr::{
     Availability, HerdrState, IsolatedHerdr, SCRIPT, availability,
 };
 use std::{
-    collections::BTreeMap,
     ffi::OsStr,
     os::unix::{fs::MetadataExt, net::UnixStream},
     panic::{AssertUnwindSafe, catch_unwind},
@@ -83,37 +82,13 @@ fn teardown_runs_after_a_panicking_test() {
     assert!(!root.exists(), "root {} survived the panic", root.display());
 }
 
-type Snapshot = (BTreeMap<u32, String>, (bool, u64));
+/// The shared Herdr server as identified by its socket: the process serving
+/// the shared socket path (with its start time) and the socket file itself.
+/// Other `herdr server` processes on this machine (other projects' runs)
+/// come and go and are not this fixture's to compare.
+type Snapshot = (Option<(u32, String)>, (bool, u64));
 
 fn shared_snapshot() -> Snapshot {
-    let ps = Command::new("ps")
-        .args(["-axo", "pid=,lstart=,command="])
-        .output()
-        .expect("ps");
-    let mut servers = BTreeMap::new();
-    for line in String::from_utf8_lossy(&ps.stdout).lines() {
-        if !line.trim_end().ends_with("herdr server") {
-            continue;
-        }
-        let line = line.trim_start();
-        let Some((pid, rest)) = line.split_once(' ') else {
-            continue;
-        };
-        let Ok(pid) = pid.parse::<u32>() else {
-            continue;
-        };
-        let env = Command::new("ps")
-            .args(["eww", "-o", "command=", "-p", &pid.to_string()])
-            .output()
-            .expect("ps eww");
-        let env = String::from_utf8_lossy(&env.stdout);
-        // Empty: the process exited between the two `ps` calls (a private
-        // server being torn down by a parallel test), so it is not shared.
-        if env.trim().is_empty() || env.contains("/tmp/ih.") {
-            continue;
-        }
-        servers.insert(pid, rest.trim().to_owned());
-    }
     let socket = std::env::var_os("HERDR_SOCKET_PATH")
         .map(PathBuf::from)
         .or_else(|| {
@@ -122,8 +97,22 @@ fn shared_snapshot() -> Snapshot {
         .or_else(|| {
             std::env::var_os("HOME").map(|d| Path::new(&d).join(".config/herdr/herdr.sock"))
         });
+    let server = socket.as_ref().and_then(|path| {
+        let lsof = Command::new("lsof").arg("-t").arg(path).output().ok()?;
+        let pid: u32 = String::from_utf8_lossy(&lsof.stdout)
+            .lines()
+            .next()?
+            .trim()
+            .parse()
+            .ok()?;
+        let ps = Command::new("ps")
+            .args(["-o", "lstart=,command=", "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        Some((pid, String::from_utf8_lossy(&ps.stdout).trim().to_owned()))
+    });
     let meta = socket.and_then(|p| std::fs::symlink_metadata(p).ok());
-    (servers, (meta.is_some(), meta.map_or(0, |m| m.ino())))
+    (server, (meta.is_some(), meta.map_or(0, |m| m.ino())))
 }
 
 #[test]
@@ -138,19 +127,9 @@ fn shared_server_is_untouched() {
         h.restart();
         assert_eq!(h.state(), HerdrState::Up);
     }
-    // Every server that was running is still running, unrestarted (same start
-    // time), and the shared socket is the same file. A server that appeared
-    // meanwhile belongs to someone else on this machine (another project's
-    // run), not to this fixture, so it is not compared.
-    let after = shared_snapshot();
-    for (pid, started) in &before.0 {
-        assert_eq!(
-            after.0.get(pid),
-            Some(started),
-            "server {pid} was stopped or restarted"
-        );
-    }
-    assert_eq!(after.1, before.1, "the shared socket changed");
+    // The shared server is the same process (same pid and start time) on the
+    // same socket file.
+    assert_eq!(shared_snapshot(), before);
 }
 
 #[test]
