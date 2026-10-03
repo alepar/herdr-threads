@@ -179,6 +179,8 @@ PY
     XRC=0
     (cd "$ROOT" && python3 "$RUN_PY" --timeout 1800 -- "${e[@]}" nice cargo test --locked --all-features --lib \
       canary_payloads -- --nocapture >"$LOGS/t1-payload-parse.out" 2>"$LOGS/t1-payload-parse.err" </dev/null) || XRC=$?
+    # the tier-1 contract verdicts reach the probe result next to the tier-0 ones (harness-canary.sh probe-json)
+    if [ -f "$T1/cap/canary-rust.json" ]; then cp "$T1/cap/canary-rust.json" "$P/canary-rust-tier1.json"; fi
     if [ "$XRC" -eq 0 ]; then
       record_check t1.payload-parse pass "canary_payloads parsed $n tier-1 payload(s)"
     elif grep -q 'test result:' "$LOGS/t1-payload-parse.out"; then

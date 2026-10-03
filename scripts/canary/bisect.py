@@ -22,10 +22,10 @@ def parse_probe_output(text):
         raise ValueError(f"probe output is not JSON: {e}") from e
     if not isinstance(doc, dict):
         raise ValueError("probe output must be a JSON object")
-    extra = set(doc) - {"result", "checks", "failed_tier"}
+    extra = set(doc) - {"result", "checks", "failed_tier", "contract"}
     if extra:
         raise ValueError(f"unexpected keys: {sorted(extra)}")
-    for key in ("result", "checks", "failed_tier"):
+    for key in ("result", "checks", "failed_tier"):  # `contract` is optional (older probes omit it)
         if key not in doc:
             raise ValueError(f"missing key: {key}")
     if doc["result"] not in _RESULTS:
@@ -72,13 +72,13 @@ def _attempt(probe_cmd, version, tier1):
     """One probe invocation -> (attempt dict, failed_tier)."""
     argv = [a.replace("{version}", version) for a in shlex.split(probe_cmd)]
     start = time.monotonic()
-    failed_tier, checks, detail = None, [], None
+    failed_tier, checks, detail, contract = None, [], None, None
     try:
         cp = subprocess.run(argv, capture_output=True, text=True, timeout=PROBE_TIMEOUT_S)
         result = {0: "pass", 1: "fail"}.get(cp.returncode, "infra")
         try:
             doc = parse_probe_output(cp.stdout)
-            checks, failed_tier = doc["checks"], doc["failed_tier"]
+            checks, failed_tier, contract = doc["checks"], doc["failed_tier"], doc.get("contract")
             if doc["result"] != result:
                 result, detail = "infra", f"exit code {cp.returncode} contradicts result {doc['result']!r}"
         except ValueError as e:
@@ -88,8 +88,11 @@ def _attempt(probe_cmd, version, tier1):
         result, detail = "infra", f"probe command failed to run: {e}"
     if detail is not None:
         checks = checks + [{"id": "t0.probe-output", "status": "fail", "detail": detail}]
-    return ({"result": result, "tier1": bool(tier1) or failed_tier == 1,
-             "duration_ms": int((time.monotonic() - start) * 1000), "checks": checks}, failed_tier)
+    attempt = {"result": result, "tier1": bool(tier1) or failed_tier == 1,
+               "duration_ms": int((time.monotonic() - start) * 1000), "checks": checks}
+    if contract is not None:
+        attempt["contract"] = contract
+    return attempt, failed_tier
 
 
 def run(candidates, baseline, probe_cmd, bisect=True, tier1=False, known_broken=()):

@@ -12,6 +12,26 @@
         "detail": {"type": "string"}
       }
     },
+    "payloadClassification": {
+      "description": "One captured payload's classification against the declared payload contract (ht-xoc.1 classify): ok, violation (a well-formed payload that breaks the contract: event and field name where) or malformed (never a violation).",
+      "type": "object", "additionalProperties": false,
+      "required": ["event", "kind", "field"],
+      "properties": {
+        "event": {"type": ["string", "null"]},
+        "kind": {"enum": ["ok", "violation", "malformed"]},
+        "field": {"type": ["string", "null"]}
+      }
+    },
+    "probeContract": {
+      "description": "Optional, not a check: the payload-contract verdicts of the probe's canary_payloads runs. release is reserved (null) for the latest release's verdicts, which scripts/canary/release_contract.sh collects separately.",
+      "type": "object", "additionalProperties": false,
+      "required": ["contract_id", "payloads", "release"],
+      "properties": {
+        "contract_id": {"type": ["string", "null"]},
+        "payloads": {"type": "array", "items": {"$ref": "#/$defs/payloadClassification"}},
+        "release": {"type": "null"}
+      }
+    },
     "probeResult": {
       "description": "--probe stdout: one probe's outcome. failed_tier is 1 when a tier-1 check failed (bisect retries twice), 0 for a tier-0 failure (retried once), null when nothing failed.",
       "type": "object", "additionalProperties": false,
@@ -19,7 +39,8 @@
       "properties": {
         "result": {"enum": ["pass", "fail", "infra"]},
         "checks": {"type": "array", "items": {"$ref": "#/$defs/check"}},
-        "failed_tier": {"enum": [0, 1, null]}
+        "failed_tier": {"enum": [0, 1, null]},
+        "contract": {"$ref": "#/$defs/probeContract"}
       }
     },
     "canaryProbe": {

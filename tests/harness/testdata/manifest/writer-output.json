@@ -1,0 +1,87 @@
+{
+  "schema_version": 2,
+  "generated_from": "harness-canary 1111111111111111111111111111111111111111",
+  "generated_at": "2026-10-02T06:00:00Z",
+  "latest_release": "0.4.0",
+  "contracts": {
+    "claude": "c1a0c1a0c1a0c1a0",
+    "codex": "c0dec0dec0dec0de"
+  },
+  "rows": [
+    {
+      "harness": "claude",
+      "version": "2.1.286",
+      "status": "verified",
+      "evidence": "live",
+      "contract_id": "c1a0c1a0c1a0c1a0",
+      "source": "canary",
+      "supported_since": "0.3.0",
+      "broken_event": null,
+      "broken_field": null,
+      "last_working": null,
+      "issue_url": null,
+      "recipe": null,
+      "known_broken": []
+    },
+    {
+      "harness": "claude",
+      "version": "2.1.287",
+      "status": "verified",
+      "evidence": "live",
+      "contract_id": "c1a0c1a0c1a0c1a0",
+      "source": "canary",
+      "supported_since": null,
+      "broken_event": null,
+      "broken_field": null,
+      "last_working": null,
+      "issue_url": null,
+      "recipe": null,
+      "known_broken": []
+    },
+    {
+      "harness": "claude",
+      "version": "2.1.288",
+      "status": "verified",
+      "evidence": "no_model",
+      "contract_id": "c1a0c1a0c1a0c1a0",
+      "source": "canary",
+      "supported_since": null,
+      "broken_event": null,
+      "broken_field": null,
+      "last_working": null,
+      "issue_url": null,
+      "recipe": null,
+      "known_broken": []
+    },
+    {
+      "harness": "claude",
+      "version": "2.1.289",
+      "status": "known_broken",
+      "evidence": "schema",
+      "contract_id": "c1a0c1a0c1a0c1a0",
+      "source": "canary",
+      "supported_since": null,
+      "broken_event": "SessionStart",
+      "broken_field": "session_id",
+      "last_working": "2.1.288",
+      "issue_url": null,
+      "recipe": null,
+      "known_broken": []
+    },
+    {
+      "harness": "codex",
+      "version": "0.160.0",
+      "status": "verified",
+      "evidence": "live",
+      "contract_id": "c0dec0dec0dec0de",
+      "source": "canary",
+      "supported_since": null,
+      "broken_event": null,
+      "broken_field": null,
+      "last_working": null,
+      "issue_url": null,
+      "recipe": null,
+      "known_broken": []
+    }
+  ]
+}

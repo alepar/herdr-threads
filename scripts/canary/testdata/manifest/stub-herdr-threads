@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+"""Offline stand-in for the herdr-threads binary, as scripts/canary/manifest.py calls it.
+
+  contract-id --json                      -> {"claude": <id>, "codex": <id>, "normalize": {...}}
+  harness-version normalize <harness> <raw>  strips " (Claude Code)" / "codex-cli " and refuses anything else
+
+Ids come from STUB_CLAUDE_ID / STUB_CODEX_ID (default 16-hex constants). Every invocation is appended to the file
+named by STUB_LOG, one JSON argv per line, when it is set."""
+import json, os, re, sys
+
+args = sys.argv[1:]
+log = os.environ.get("STUB_LOG")
+if log:
+    with open(log, "a", encoding="utf-8") as f:
+        f.write(json.dumps(args) + "\n")
+ids = {"claude": os.environ.get("STUB_CLAUDE_ID", "c1a0c1a0c1a0c1a0"), "codex": os.environ.get("STUB_CODEX_ID", "c0dec0dec0dec0de")}
+if args == ["contract-id", "--json"]:
+    print(json.dumps({**ids, "normalize": {"claude": {}, "codex": {}}}))
+    sys.exit(0)
+if len(args) == 4 and args[:2] == ["harness-version", "normalize"] and args[2] in ids:
+    h, raw = args[2], args[3].strip()
+    if h == "claude" and raw.endswith(" (Claude Code)"):
+        raw = raw[: -len(" (Claude Code)")]
+    if h == "codex" and raw.startswith("codex-cli "):
+        raw = raw[len("codex-cli "):]
+    if re.fullmatch(r"(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})", raw):
+        print(raw)
+        sys.exit(0)
+    print(f"unrecognized {h} version: {args[3]}", file=sys.stderr)
+    sys.exit(1)
+print(f"stub-herdr-threads: unexpected arguments {args}", file=sys.stderr)
+sys.exit(2)

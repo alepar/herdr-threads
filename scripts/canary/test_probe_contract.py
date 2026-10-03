@@ -30,10 +30,14 @@ def validate(instance, schema, root, path=""):
         if not ok:
             raise AssertionError(f"{path or '/'}: {instance!r} not in enum")
     t = schema.get("type")
-    pytypes = {"object": dict, "array": list, "string": str}
-    if t and (not isinstance(instance, pytypes[t])):
+    pytypes = {"object": dict, "array": list, "string": str, "null": type(None)}
+    if isinstance(t, list):
+        if not any(isinstance(instance, pytypes[x]) for x in t):
+            raise AssertionError(f"{path or '/'}: expected one of {t}")
+        t = None if instance is None or isinstance(instance, str) else t[0]
+    elif t and (not isinstance(instance, pytypes[t])):
         raise AssertionError(f"{path or '/'}: expected {t}")
-    if "pattern" in schema and not re.search(schema["pattern"], instance):
+    if "pattern" in schema and isinstance(instance, str) and not re.search(schema["pattern"], instance):
         raise AssertionError(f"{path or '/'}: {instance!r} does not match pattern")
     if t == "object":
         for k in schema.get("required", []):
@@ -63,6 +67,42 @@ def load(name):
 class ProbeContract(unittest.TestCase):
     def test_probe_sample_validates(self):
         check(load("probe-sample.json"), "probeResult")
+
+    def test_probe_result_with_contract_validates(self):
+        p = load("probe-sample.json")
+        contract = {"contract_id": "3f860645de4c3363", "release": None,
+                    "payloads": [{"event": "SessionStart", "kind": "violation", "field": "session_id"},
+                                 {"event": None, "kind": "malformed", "field": None}]}
+        check({**p, "contract": contract}, "probeResult")
+        for bad in ({**contract, "release": "v0.1.0"}, {**contract, "payloads": [{"event": "x", "kind": "bad", "field": None}]},
+                    {**contract, "extra": 1}):
+            with self.subTest(bad=bad), self.assertRaises(AssertionError):
+                check({**p, "contract": bad}, "probeResult")
+        text = json.dumps({**p, "contract": contract})
+        self.assertEqual(canary_bisect.parse_probe_output(text)["contract"], contract)
+
+    def test_probe_json_copies_payload_classifications(self):
+        script = str(ROOT / "scripts" / "harness-canary.sh")
+        with tempfile.TemporaryDirectory() as d:
+            d = pathlib.Path(d)
+            (d / "checks.tsv").write_text("t0.payload-parse\tpass\tok\n")
+            (d / "t0.json").write_text(json.dumps({"contract_id": "abc", "payloads": [
+                {"file": "capture/tier0/1.stdin", "ok": True,
+                 "contract": {"kind": "violation", "event": "SessionStart", "field": "session_id"}}]}))
+            (d / "t1.json").write_text(json.dumps({"contract_id": "abc", "payloads": [
+                {"file": "capture/tier1/1.json", "ok": True,
+                 "contract": {"kind": "ok", "event": "PreToolUse", "field": None}}]}))
+            src = f'HT_CANARY_SOURCE_ONLY=1 . {script}; canary_py probe-json {d}/checks.tsv auto {d}/t0.json {d}/missing.json {d}/t1.json 2>/dev/null'
+            out = subprocess.run(["bash", "-c", src, script], capture_output=True, text=True, cwd=ROOT, check=True).stdout
+            doc = json.loads(out)
+            check(doc, "probeResult")
+            self.assertEqual(doc["contract"]["payloads"], [
+                {"event": "SessionStart", "kind": "violation", "field": "session_id"},
+                {"event": "PreToolUse", "kind": "ok", "field": None}])
+            self.assertEqual(doc["contract"]["contract_id"], "abc")
+            src = f'HT_CANARY_SOURCE_ONLY=1 . {script}; canary_py probe-json {d}/checks.tsv auto {d}/missing.json 2>/dev/null'
+            doc = json.loads(subprocess.run(["bash", "-c", src, script], capture_output=True, text=True, cwd=ROOT, check=True).stdout)
+            self.assertNotIn("contract", doc)
 
     def test_canary_probe_sample_validates(self):
         check(load("canary-probe-sample.json"), "canaryProbe")

@@ -137,7 +137,7 @@ def lookup(gh, repo, title, existing):
     """Open issues whose title equals `title` exactly (newest number first)."""
     if existing is None:
         argv = ["gh", "issue", "list", "--repo", repo, "--state", "open", "--label", LABEL,
-                "--search", f"{title} in:title", "--json", "number,title,body,comments"]
+                "--search", f"{title} in:title", "--json", "number,title,body,comments,url"]
         if gh.dry_run:
             gh.show(argv)
             return []
@@ -154,6 +154,8 @@ def main(argv=None):
     ap.add_argument("--run-url", default="")
     ap.add_argument("--artifact-name", default=ARTIFACT)
     ap.add_argument("--dry-run", action="store_true", help="print the gh commands instead of running them")
+    ap.add_argument("--write-urls", metavar="PATH", help='write {"<harness> <first_bad>": "<issue url>"} for each '
+                    'break issue created or found ("dry-run" placeholders under --dry-run)')
     ap.add_argument("--existing-issues", help="JSON shaped like `gh issue list --json number,title,body` "
                     "(offline replacement for the open-issue lookup)")
     a = ap.parse_args(argv)
@@ -168,6 +170,18 @@ def main(argv=None):
             existing = json.load(f)
     gh = Gh(a.dry_run)
     label_made = False
+    urls = {}
+
+    def record(block, url):
+        if block.get("first_bad"):
+            urls[f"{block['harness']} {block['first_bad']}"] = url
+
+    def write_urls():
+        if a.write_urls:
+            with open(a.write_urls, "w", encoding="utf-8") as f:
+                json.dump(urls, f, indent=2, sort_keys=True)
+                f.write("\n")
+
     for block in report["harnesses"]:
         if block["status"] not in ("break", "inconclusive"):
             continue
@@ -175,6 +189,7 @@ def main(argv=None):
         found = lookup(gh, a.repo, title, existing)
         if found:
             issue = found[0]
+            record(block, issue.get("url") or f"https://github.com/{a.repo}/issues/{issue['number']}")
             if latest_digest(issue) == digest(block):
                 print(f"issue #{issue['number']} ({title}): unchanged, nothing to do")
                 continue
@@ -185,8 +200,11 @@ def main(argv=None):
             gh.run(["gh", "label", "create", LABEL, "--force", "--repo", a.repo,
                     "--description", "Harness version canary findings", "--color", "d93f0b"])
             label_made = True
-        gh.run(["gh", "issue", "create", "--repo", a.repo, "--title", title, "--label", LABEL, "--body-file", "-"],
-               stdin=body_for(block, report, a.run_url, a.artifact_name))
+        out = gh.run(["gh", "issue", "create", "--repo", a.repo, "--title", title, "--label", LABEL, "--body-file", "-"],
+                     stdin=body_for(block, report, a.run_url, a.artifact_name), capture=True)
+        created = (out or "").strip().splitlines()
+        record(block, "dry-run" if gh.dry_run else (created[-1] if created else "unknown"))
+    write_urls()
     return 0
 
 

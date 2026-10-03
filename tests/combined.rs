@@ -9,6 +9,8 @@
 //! changes process-wide state gets its own `[[test]]` target instead, like
 //! `hook_entrypoint`, `integration`, `package` and `service`.
 
+#[path = "canary_manifest_writer.rs"]
+mod canary_manifest_writer;
 #[path = "contracts.rs"]
 mod contracts;
 #[path = "host_adapter.rs"]

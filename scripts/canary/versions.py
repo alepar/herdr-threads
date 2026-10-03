@@ -56,15 +56,25 @@ def _rows(doc, harness):
 
 
 def verified_max(doc, harness):
-    """Greatest verified version of the harness, or None when it has no rows."""
-    vs = [r["version"] for r in _rows(doc, harness) if isinstance(r.get("version"), str) and STABLE.match(r["version"])]
+    """Greatest verified version of the harness, or None when it has no verified rows. A row counts when its
+    `status` is `verified` or absent (schema 1); a `known_broken` row never raises the baseline."""
+    vs = [r["version"] for r in _rows(doc, harness)
+          if r.get("status", "verified") == "verified"
+          and isinstance(r.get("version"), str) and STABLE.match(r["version"])]
     return max(vs, key=version_key) if vs else None
 
 
 def known_broken(doc, harness):
-    """Inclusive (min, max) ranges across the harness's rows; None = open end. Order-stable, de-duplicated."""
+    """Inclusive (min, max) ranges across the harness's rows; None = open end. Order-stable, de-duplicated.
+    A row with `status == "known_broken"` (a canary-written row) also yields `(version, version)`."""
     out = []
     for r in _rows(doc, harness):
+        if r.get("status") == "known_broken" and isinstance(r.get("version"), str):
+            t = (r["version"], r["version"])
+            if not STABLE.match(t[0]):
+                raise ValueError(f"known_broken row version {t[0]!r} is not X.Y.Z")
+            if t not in out:
+                out.append(t)
         for rng in r.get("known_broken") or []:
             t = (rng.get("min"), rng.get("max"))
             for end in t:

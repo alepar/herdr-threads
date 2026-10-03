@@ -1,0 +1,123 @@
+{
+  "description": "60 versions: the newest 50 stay, plus every known_broken, recipe-listed and manual row",
+  "baseline": {
+    "schema_version": 2,
+    "generated_from": "harness-canary 0000",
+    "generated_at": "2026-09-30T06:00:00Z",
+    "latest_release": "0.4.0",
+    "contracts": {
+      "claude": "c1a0c1a0c1a0c1a0",
+      "codex": "c0dec0dec0dec0de"
+    },
+    "rows": []
+  },
+  "baseline_rows_gen": [
+    {
+      "harness": "claude",
+      "count": 60,
+      "prefix": "1.0."
+    },
+    {
+      "harness": "claude",
+      "version": "0.9.0",
+      "status": "known_broken"
+    },
+    {
+      "harness": "claude",
+      "version": "0.9.1",
+      "recipe": "claude-hooks-0.9.1"
+    },
+    {
+      "harness": "claude",
+      "version": "0.9.2",
+      "source": "manual"
+    }
+  ],
+  "report": {
+    "schema_version": 1,
+    "canary_commit": "1111111111111111111111111111111111111111",
+    "herdr_threads": "0.1.0",
+    "runner": {
+      "os": "linux",
+      "arch": "x86_64"
+    },
+    "harnesses": [
+      {
+        "harness": "claude",
+        "package": "pkg",
+        "status": "all_pass",
+        "first_bad": null,
+        "last_good": null,
+        "probes": [
+          {
+            "version": "2.0.0",
+            "role": "newest",
+            "result": "pass",
+            "flaky": false,
+            "attempts": [
+              {
+                "result": "pass",
+                "tier1": false,
+                "duration_ms": 1,
+                "checks": [
+                  {
+                    "id": "t0.payload-parse",
+                    "status": "pass"
+                  }
+                ],
+                "contract": {
+                  "contract_id": "c1a0c1a0c1a0c1a0",
+                  "payloads": [
+                    {
+                      "event": "SessionStart",
+                      "kind": "ok",
+                      "field": null
+                    },
+                    {
+                      "event": "PreToolUse",
+                      "kind": "ok",
+                      "field": null
+                    }
+                  ],
+                  "release": null
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "exit": 0,
+    "claude_versions_count": 53,
+    "rows": [
+      {
+        "harness": "claude",
+        "version": "2.0.0"
+      },
+      {
+        "harness": "claude",
+        "version": "1.0.59"
+      },
+      {
+        "harness": "claude",
+        "version": "0.9.0"
+      },
+      {
+        "harness": "claude",
+        "version": "0.9.1"
+      },
+      {
+        "harness": "claude",
+        "version": "0.9.2"
+      }
+    ],
+    "absent": [
+      [
+        "claude",
+        "1.0.10"
+      ]
+    ]
+  }
+}

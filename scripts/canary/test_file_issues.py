@@ -131,6 +131,23 @@ class FileIssues(unittest.TestCase):
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("GH_TOKEN", p.stderr)
 
+    def test_write_urls_records_each_break_issue(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = pathlib.Path(d) / "issues.json"
+            self.ok("break.json", "none.json", ("--write-urls", str(path)))
+            self.assertEqual(json.loads(path.read_text()), {"claude 2.1.285": "dry-run"})
+            # an existing open issue is recorded by its number (fixture rows carry no url)
+            self.ok("break.json", "break-same-digest.json", ("--write-urls", str(path)))
+            urls = json.loads(path.read_text())
+            self.assertRegex(urls["claude 2.1.285"], r"^https://github\.com/owner/herdr-threads/issues/\d+$")
+            # no break: an empty document is still written (the writer reads it unconditionally)
+            self.ok("all_pass.json", "none.json", ("--write-urls", str(path)))
+            self.assertEqual(json.loads(path.read_text()), {})
+            # inconclusive blocks have no first_bad and so no key
+            self.ok("inconclusive.json", "none.json", ("--write-urls", str(path)))
+            self.assertEqual(json.loads(path.read_text()), {})
+
     def test_digest_ignores_timings_but_not_results(self):
         file_issues = load_module()
         rep = json.loads((REPORTS / "break.json").read_text())

@@ -1,0 +1,46 @@
+[
+  {
+    "id": 1,
+    "name": "r",
+    "target": "branch",
+    "enforcement": "disabled",
+    "conditions": {
+      "ref_name": {
+        "include": [
+          "~DEFAULT_BRANCH"
+        ],
+        "exclude": []
+      }
+    },
+    "rules": [
+      {
+        "type": "deletion"
+      },
+      {
+        "type": "non_fast_forward"
+      }
+    ]
+  },
+  {
+    "id": 1,
+    "name": "r",
+    "target": "tag",
+    "enforcement": "active",
+    "conditions": {
+      "ref_name": {
+        "include": [
+          "refs/tags/v*"
+        ],
+        "exclude": []
+      }
+    },
+    "rules": [
+      {
+        "type": "deletion"
+      },
+      {
+        "type": "update"
+      }
+    ]
+  }
+]

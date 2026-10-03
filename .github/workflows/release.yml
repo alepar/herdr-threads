@@ -82,28 +82,16 @@ jobs:
       - name: Embed the published harness manifest
         shell: bash
         run: |
-          # The binary embeds docs/compatibility/harness-versions.json
-          # (include_str!). Prefer the canary's published copy on the
-          # harness-manifest branch when it is valid schema 2 within the 256 KB
-          # cap; otherwise keep the in-repo file.
+          # The binary embeds docs/compatibility/harness-versions.json (include_str!). Prefer the canary's
+          # published copy on the harness-manifest branch when it is valid schema 2 within the 256 KB cap
+          # (manifest.py embed checks that); otherwise keep the in-repo file.
           set -uo pipefail
-          candidate="$RUNNER_TEMP/harness-versions.branch.json"
+          candidate="$RUNNER_TEMP/branch-manifest.json"
           if git fetch --depth 1 origin harness-manifest \
-            && git show FETCH_HEAD:harness-versions.json > "$candidate" \
-            && python3 - "$candidate" <<'PY'
-          import json, os, sys
-          path = sys.argv[1]
-          if os.path.getsize(path) > 262144:
-              sys.exit(1)
-          with open(path, encoding="utf-8") as f:
-              doc = json.load(f)
-          sys.exit(0 if isinstance(doc, dict) and doc.get("schema_version") == 2 and isinstance(doc.get("rows"), list) else 1)
-          PY
-          then
-            cp "$candidate" docs/compatibility/harness-versions.json
-            echo "Embedded the harness-manifest branch file."
+            && git show FETCH_HEAD:harness-versions.json > "$candidate"; then
+            python3 scripts/canary/manifest.py embed --branch-file "$candidate" --out docs/compatibility/harness-versions.json
           else
-            echo "::notice::harness-manifest branch file missing or not valid schema 2 (max 262144 bytes); embedding the in-repo harness-versions.json"
+            echo "::notice::harness-manifest branch file missing; embedding the in-repo harness-versions.json"
           fi
 
       - name: Locked release build
