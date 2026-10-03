@@ -902,6 +902,20 @@ where
             );
             factory_probe.attach_store(&sqlite);
             let store: Arc<dyn StorePort> = sqlite;
+            // The manifest policy, logged after election (stderr is the daemon
+            // log from here on).
+            rate_limited_log.write_line(&format!(
+                "harness manifest: {}",
+                match manifest_policy {
+                    crate::harness::manifest::ManifestPolicy::Auto => "auto",
+                    crate::harness::manifest::ManifestPolicy::Off(
+                        crate::harness::manifest::OffReason::Settings,
+                    ) => "off (settings.json)",
+                    crate::harness::manifest::ManifestPolicy::Off(
+                        crate::harness::manifest::OffReason::OfflineEnv,
+                    ) => "off (HERDR_THREADS_OFFLINE=1)",
+                }
+            ));
             // The writer's startup invariant verification is logged once per
             // daemon boot (the daemon log) and reported by Health/doctor.
             // Written to the process stderr descriptor itself, which the
