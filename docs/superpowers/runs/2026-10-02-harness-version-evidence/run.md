@@ -18,8 +18,10 @@ approvals:
 - coverage-round-2 · canonical R-list: R1-R16 (coverage-round-2-requirements.md) · requirements: 16 · mapped: 16 · unmapped: 0 · divergence: findings 11 → 8, novel 100%, widening: no · auto 8 applied (C12-C19), C20 NEEDS-SPEC not honored (findings actionable) · new edge ht-xoc.2←ht-xoc.1 · integration sweep ht-xoc.7 adopted
 
 roastDesignRound: 2
-roast-design: 2026-10-02-harness-version-evidence-roast-design-1.md
+roast-design: 2026-10-02-harness-version-evidence-roast-design-1.md, 2026-10-02-harness-version-evidence-roast-design-2.md
 
 parked:
+- 2026-10-02-harness-version-evidence-roast-design-2.md · escalation · "UNVERIFIED external: whether resuming a Codex rollout appends a later session_meta and where; assigned to spike ht-xoc.8 with kill criteria"
 - 2026-10-02-harness-version-evidence-roast-design-1.md · escalation · "Material dissent: attribution step 3 vs the Codex shared app-server daemon (process start older than exe mtime on the same inode) — dissolved by the round-1 redesign (transcript attribution; no mtime guard)"
 stepBack-round-1: redesign — applied: process-tree/executable version attribution → version read from the harness's own session transcript at transcript_path (dissolves 2 + the parked escalation); clusters contract-scoping, evidence-transport, refused-split, opt-out-semantics patched; roll-up rule, registered-event classification and token-scope nit fixed inline
+- roast-design loop exit · converged at round 2 (Should-fix 8 confirmed [converged], 0 Blocking) · punch list applied inline to spec and beads ht-xoc.1/.2/.4/.5/.8 (transcript read rule, buffered SessionStart, transport/gate/heartbeat, registered-event --event flag, contract selection, refused-version evidence)

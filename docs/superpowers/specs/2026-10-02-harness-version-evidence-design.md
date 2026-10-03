@@ -73,7 +73,9 @@ a break in <event/field>; it has worked here"), never degraded.
   change to it is deliberate. It changes only when herdr-threads changes what it reads; that is the one case that
   needs a build.
 - A **violation** is a well-formed JSON object, classified against the event the hook was **registered** for (the
-  hook command line names it; the payload's own discriminator is not trusted to pick the event), with a required
+  installed hook command carries `--event <name>`, which `setup` adds to each per-event registration; the payload's
+  own discriminator is not trusted to pick the event. A registration without `--event` (installed before this
+  epic) falls back to the discriminator, and `doctor` suggests re-running `setup`), with a required
   field missing or of the wrong type — including a missing or renamed discriminator. Malformed or truncated stdin, unknown event kinds and extra fields are not violations (counted by
   B6's parse-failure counter, never degrading).
 
@@ -84,20 +86,31 @@ a break in <event/field>; it has worked here"), never degraded.
   by one migration (number assigned at implementation; B4/B6 also add migrations).
 - **Attribution** (redesigned after design roast r1): the version is the one the running harness recorded in its
   own session transcript, read from the payload's `transcript_path`. Claude: the `version` field of the newest
-  JSONL entry (bounded tail read). Codex: `cli_version` of the rollout's `session_meta` record (the newest one when
-  a resumed rollout has several). The hook reads it in-process with a size cap (≤ 64 KB read, no exec, no process
-  tree walk, no inode/mtime comparison) and never blocks on it. If the transcript is absent (e.g. a SessionStart
+  JSONL entry that carries a `version` field, found by scanning backward from the end over complete lines only (a
+  partial trailing line and versionless record types such as cost-state or mode are skipped); the read window
+  starts at 64 KB and grows in 64 KB steps up to 1 MB, beyond which the event is unattributed. Codex: `cli_version`
+  of the newest `session_meta` record (the first line, plus a backward scan of the same bounded window for a later
+  one when a rollout is resumed). The hook reads it in-process (no exec, no process tree walk, no inode/mtime
+  comparison) and never blocks on it. A `SessionStart` with source `resume` is never attributed from the old
+  file's entries; it is buffered like any unattributed SessionStart (below). If the transcript is absent (e.g. a SessionStart
   before the first entry is written), unreadable, or has no version field, nothing is recorded for that event and
-  `doctor` says "version evidence unavailable: <reason>"; lifecycle verification may therefore land on the first
-  event whose transcript exists. A spike first confirms, for Claude and Codex (shared daemon and `--no-daemon`),
+  `doctor` says "version evidence unavailable: <reason>". **Unattributed SessionStart:** its outcome is sent with
+  the session id and no version; the daemon holds it per session id and attributes it to the version of that
+  session's first attributed event (held at most 24 h, then dropped), so the lifecycle half of verification and
+  SessionStart violations are never lost to a not-yet-written transcript. A spike first confirms, for Claude and Codex (shared daemon and `--no-daemon`),
   when the transcript appears, how resume and fork behave, and that the recorded version is that of the process
   now writing.
-- **Recording is cheap and bounded:** a successful lifecycle check-in already reaches the daemon and records
-  `lifecycle_ok_at`. For tool events, the hook sends a best-effort, non-blocking "payload ok" note at most once
-  per session, and only while the daemon's last reply said this version is not yet verified; once verified the
-  hooks send nothing extra. **Transport:** all evidence (payload-ok and violation) travels in one new
+- **Recording is cheap and bounded:** every hook event's outcome travels in `HarnessEvidence` (below); the lifecycle
+  check-in itself records nothing in this table. SessionStart always sends its outcome. A tool event sends `ok` at
+  most once per session, and only while the daemon's last reply said this version is not yet verified; the
+  verified gate suppresses only `ok`: `violation` and `malformed` are always sent, at most once per (session,
+  event, field). Each session also sends one `ok` heartbeat per hour (exempt from the gate), and the daemon touches
+  `last_seen_at` on every `HarnessEvidence` it receives for that (harness, version), which keeps long sessions in
+  the Health window. **Transport:** all evidence (payload-ok and violation) travels in one new
   capability-gated hook→daemon message `HarnessEvidence{harness, attributed version, contract_id, event,
-  outcome: ok | violation{field} | malformed}`, sent for every admission tier and not gated on Optimistic or on a
+  outcome: ok | violation{field} | malformed, session_id}`, sent for every admission tier and regardless of the ladder
+  verdict (a refused version still sends evidence, which is what makes its below-floor or known_broken line reach
+  Health) and not gated on Optimistic or on a
   Herdr pane (B6's parse-failure report is unchanged and still counts malformed payloads). The daemon keys rows by
   the hook-sent `contract_id`, so hook/daemon build skew records evidence against the contract the hook actually
   checked; a daemon that does not advertise the capability gets no message (the hook skips it silently).
@@ -158,7 +171,8 @@ a break in <event/field>; it has worked here"), never degraded.
 
 ## Deriving the state (one pure function)
 
-Inputs: the attributed version's B6 ladder classification (split into below-floor and recipe known_broken),
+Inputs (per harness version, under the newest `contract_id` the daemon has seen from that harness's hooks): the
+attributed version's B6 ladder classification (split into below-floor and recipe known_broken),
 local evidence row, manifest row (cached or embedded), contract_id. Order: local violation → broken; below floor
 → broken; local verified → working (manifest and recipe `known_broken` shown in doctor only); manifest
 `known_broken` (same contract) or recipe `known_broken` → broken; manifest verified or listed recipe → working;
@@ -192,7 +206,12 @@ signing the manifest.
 - Attribution: a session whose transcript says A keeps attributing to A after PATH moves to B, with or without an
   in-place replacement of the binary; a missing transcript or version field records nothing and `doctor` names why.
 - Mixed-contract manifest: another contract's status is ignored, its `supported_since` drives "upgrade to X".
-- Event classification uses the registered event: a payload with a renamed discriminator is a violation.
+- Event classification uses the registered event (`--event`): a payload with a renamed discriminator is a
+  violation; a registration without `--event` falls back to the discriminator.
+- Claude reader: transcript ending in versionless records and with a >64 KB line still attributes; resume
+  SessionStart is buffered, not attributed from the old file. Unattributed SessionStart is attributed on the
+  session's first attributed event. A violation after verification flips the state to broken. A refused
+  (below-floor) version's evidence reaches Health. After a contract change the newest contract's row decides.
 - Evidence transport: sent for Listed, SchemaMatched and Optimistic versions alike; a daemon without the
   capability receives nothing and the hook is unaffected.
 - End to end (stand-in harness): a new unlisted version → no Health line → first payloads → working; a payload
