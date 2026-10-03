@@ -99,6 +99,7 @@ environment = {key: value for key, value in os.environ.items()
                if not key.startswith("HERDR_") and not key.startswith("GIT_")}
 environment.update({
     "HOME": str(home),
+    "CLAUDE_CONFIG_DIR": str(home / ".claude"), "CODEX_HOME": str(home / ".codex"),
     "XDG_CONFIG_HOME": str(config), "XDG_STATE_HOME": str(state), "XDG_RUNTIME_DIR": str(runtime),
     "HERDR_CONFIG_PATH": str(config / "herdr.toml"), "HERDR_SOCKET_PATH": str(socket),
     # The private HOME must still find the user's Rust toolchain (read-only use).
@@ -405,11 +406,17 @@ try:
           health["exit_code"] == 0 and field(health["stdout"], "boot_id") == boot_one, repr(health))
     doctor = action("doctor")
     check("doctor action succeeds", doctor["exit_code"] == 0, repr(doctor))
+    check("doctor action reports a concise serving-daemon verdict",
+          field(doctor["stdout"], "doctor") in ("ok", "degraded")
+          and field(doctor["stdout"], "daemon") in ("healthy", "degraded")
+          and "details: herdr-threads doctor --debug" in doctor["stdout"], doctor["stdout"])
+    doctor_debug = run([str(binary), "--state-dir", str(plugin_state), "--host-endpoint", str(socket),
+                        "doctor", "--debug"]).stdout
     for line in (f"state_dir: {plugin_state}", f"host_endpoint: {socket} (present)",
                  f"version: {old_version_text}", "daemon.version_matches: true"):
-        check(f"doctor reports {line.split(':')[0]}", line in doctor["stdout"], doctor["stdout"])
+        check(f"doctor debug reports {line.split(':')[0]}", line in doctor_debug, doctor_debug)
     evidence["daemon"] = {"state": field(ensured["stdout"], "state"), "command": daemon_command}
-    evidence["doctor_result"] = field(doctor["stdout"], "result")
+    evidence["doctor_result"] = field(doctor["stdout"], "doctor")
 
     # -- 3b. Live handoff reruns the startup entry against the serving daemon -
     # `herdr server live-handoff` (also what `herdr update --handoff` sends)
@@ -546,7 +553,8 @@ try:
     check("ensure did not start a second writer", set(daemons()) == {daemon_pid})
     doctor_mismatch = action("doctor")
     check("doctor reports the version mismatch",
-          doctor_mismatch["exit_code"] == 3 and "result: daemon_version_mismatch" in doctor_mismatch["stdout"],
+          doctor_mismatch["exit_code"] == 3
+          and field(doctor_mismatch["stdout"], "doctor") == "daemon_version_mismatch",
           repr(doctor_mismatch))
     stopped_old = action("stop")
     check("updated stop reaches the older owner",
