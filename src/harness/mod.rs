@@ -4,6 +4,10 @@ pub mod admission;
 #[cfg(test)]
 #[path = "../../tests/harness/admission_ladder.rs"]
 mod admission_ladder;
+pub mod attribution;
+#[cfg(test)]
+#[path = "../../tests/harness/attribution.rs"]
+mod attribution_tests;
 #[cfg(test)]
 #[path = "../../tests/harness/canary_payloads.rs"]
 mod canary_payloads;
