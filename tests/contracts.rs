@@ -600,6 +600,39 @@ fn pending_and_retired_rows_preserve_physical_and_provenance_facts() {
 }
 
 #[test]
+fn pending_receipt_from_a_service_author_has_no_seat_sender() {
+    use herdr_threads::protocol::{
+        ids::{MessageId, SeatId, ThreadId},
+        results::PendingReceipt,
+        time::UtcMillis,
+    };
+    let programmatic = serde_json::json!({"message":"m","thread":"t","seat":"s","sequence":4,"sender":null,"sender_author":{"kind":"programmatic","id":"graph"},"decision_at":5,"available_at":null,"deadline":null,"overdue":false});
+    let parsed: PendingReceipt = serde_json::from_value(programmatic.clone()).unwrap();
+    assert_eq!(parsed.sender, None);
+    assert!(parsed.sender_author.is_some());
+    assert_eq!(serde_json::to_value(parsed).unwrap(), programmatic);
+
+    let native = PendingReceipt {
+        message: MessageId::new("m"),
+        thread: ThreadId::new("t"),
+        seat: SeatId::new("s"),
+        sequence: 4,
+        sender: Some(SeatId::new("author")),
+        sender_author: None,
+        decision_at: UtcMillis(5),
+        available_at: None,
+        deadline: None,
+        overdue: false,
+        effective_deadline: None,
+        deferred_until: None,
+    };
+    assert_eq!(
+        serde_json::to_value(native).unwrap(),
+        serde_json::json!({"message":"m","thread":"t","seat":"s","sequence":4,"sender":"author","decision_at":5,"available_at":null,"deadline":null,"overdue":false})
+    );
+}
+
+#[test]
 fn read_errors_report_typed_cursor_budget_and_required_minimum() {
     for spelling in [
         "invalid_cursor",

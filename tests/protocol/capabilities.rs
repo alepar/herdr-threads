@@ -213,6 +213,7 @@ fn probe_history_full_bodies() {
 fn capability_constants_are_stable() {
     assert_eq!(HISTORY_FULL_BODIES, "history.full_bodies");
     assert_eq!(HOOK_PARSE_FAILURE_REPORT, "hook.parse_failure_report");
+    assert_eq!(SERVICE_SEND_V1, "service.send_v1");
     assert_eq!(HARNESS_EVIDENCE, "hook.harness_evidence");
     assert_eq!(HARNESS_STATES, "harness.states");
     assert_eq!(
@@ -220,6 +221,7 @@ fn capability_constants_are_stable() {
         &[
             "history.full_bodies",
             "hook.parse_failure_report",
+            "service.send_v1",
             "hook.harness_evidence",
             "harness.states"
         ]
@@ -236,6 +238,7 @@ fn every_advertised_capability_has_a_handler() {
         match *name {
             HISTORY_FULL_BODIES => probe_history_full_bodies(),
             HOOK_PARSE_FAILURE_REPORT => probe_hook_parse_failure_report(),
+            SERVICE_SEND_V1 => probe_service_send_v1(),
             HARNESS_EVIDENCE => probe_harness_evidence(),
             HARNESS_STATES => probe_harness_states(),
             other => panic!("{other} is advertised but has no handler probe here"),
@@ -431,6 +434,96 @@ fn probe_hook_parse_failure_report() {
         serde_json::json!({"kind": "hook_parse_failure",
                            "args": {"harness": "codex", "detail": "Invalid"}})
     );
+}
+
+struct ProbeGate(crate::protocol::ids::ServiceAuthorId);
+struct ProbeGuard(crate::protocol::ids::ServiceAuthorId);
+impl crate::ports::ServiceDecisionGuard for ProbeGuard {
+    fn author(&self) -> &crate::protocol::ids::ServiceAuthorId {
+        &self.0
+    }
+}
+impl crate::ports::ServiceAuthorityGate for ProbeGate {
+    fn register(
+        &self,
+        instance: &str,
+        boot: &str,
+        author: crate::protocol::ids::ServiceAuthorId,
+    ) -> Result<crate::ports::ServiceConnectionAuthority, ApiError> {
+        Ok(crate::ports::ServiceConnectionAuthority::new(
+            instance.into(),
+            boot.into(),
+            1,
+            author,
+        ))
+    }
+    fn decision_guard<'a>(
+        &'a self,
+        _proof: &crate::ports::ServiceWriteTransactionProof,
+        _connection: &crate::ports::ServiceConnectionAuthority,
+    ) -> Result<Box<dyn crate::ports::ServiceDecisionGuard + 'a>, ApiError> {
+        Ok(Box::new(ProbeGuard(self.0.clone())))
+    }
+    fn revoke_exact(&self, _connection: &crate::ports::ServiceConnectionAuthority) -> bool {
+        true
+    }
+}
+
+/// `service.send_v1` is advertised only once the daemon's store serves all three
+/// operations: each of `Send`, `History` and `Receipts` against an unknown
+/// subject answers `NotFound`, never `Unsupported` (which is what a daemon
+/// without the handler answers).
+fn probe_service_send_v1() {
+    use crate::{
+        ports::{ServiceAuthorityGate, StorePort},
+        protocol::{
+            ids::{MessageId, OperationId, ServiceAuthorId, ThreadId},
+            pagination::PageRequest,
+            service::{ServiceHistoryQuery, ServiceOperation, ServiceReceiptsQuery, ServiceSend},
+        },
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+    };
+    let dir = std::env::temp_dir().join(format!("htcap-send-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let context = StoreContext::new(dir.join("probe.db"), Arc::new(FixedClock));
+    {
+        let conn = context.open_writer().unwrap();
+        conn.execute(
+            "INSERT INTO host_instances(id, created_at, host_boot, host_epoch) VALUES ('i', 0, 'b', 1)",
+            [],
+        )
+        .unwrap();
+    }
+    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let author = ServiceAuthorId::new("graph:probe");
+    let gate = ProbeGate(author.clone());
+    let connection = gate.register("i", "boot", author).unwrap();
+    let operations = [
+        ServiceOperation::Send(ServiceSend {
+            thread: ThreadId::new("absent"),
+            body: "b".into(),
+            recipients: vec![],
+            deadline_millis: None,
+            operation: OperationId::new("probe-send"),
+        }),
+        ServiceOperation::History(ServiceHistoryQuery {
+            thread: ThreadId::new("absent"),
+            page: PageRequest::default(),
+            initial: None,
+        }),
+        ServiceOperation::Receipts(ServiceReceiptsQuery {
+            message: MessageId::new("absent"),
+            page: PageRequest::default(),
+        }),
+    ];
+    for operation in operations {
+        let label = format!("{operation:?}");
+        let error = store
+            .service_operation(operation, &connection, &gate, &budget(), None)
+            .expect_err("an unknown subject is refused");
+        assert_eq!(error.code, ErrorCode::NotFound, "{label}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 fn evidence_note(version: Option<&str>) -> crate::protocol::commands::HarnessEvidence {

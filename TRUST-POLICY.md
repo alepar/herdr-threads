@@ -214,10 +214,12 @@ record 0 and pre-migration rows are 0. Neither field authorizes anything; togeth
 | ACK, accept, send, leave, archive, reopen | the seat's current binding (top-level agent or declared human) |
 | check in | the pane's top-level agent (hook) or a human via `me init` |
 | rebind, fresh seat, retire, replace, orphan-thread invite | operator |
+| service-authored send, notify, and managed-thread controls (ensure, invite, topic, release, archive, reopen) | the registered service connection |
 | summary, summary job, summary submit | the seat's binding or its children (summary workers), all under the seat's claim: read-mostly; submit only stores a validated block for a live lease issued to the seat |
 | anything else on behalf of another seat | nobody by design; possible by spoofing (Accepted limits) |
 
 The operator never ACKs, accepts, sends or advances a checkpoint.
+The service never ACKs or accepts and is never a receipt recipient.
 
 **A6. Effective receipt deadlines.** A receipt's effective deadline is the later of its frozen deadline and
 the `extension_until` of the latest catch-up row for the receipt's (seat, thread). The daemon decides it (A2)

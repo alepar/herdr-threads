@@ -27,6 +27,8 @@ const HOST_IO_WRITER_PROBE_WAIT: std::time::Duration = std::time::Duration::from
 mod composition;
 #[path = "service/graph_d2.rs"]
 mod graph_d2;
+#[path = "service/graph_send.rs"]
+mod graph_send;
 #[path = "service/lanes.rs"]
 mod lanes;
 #[path = "service/operator.rs"]

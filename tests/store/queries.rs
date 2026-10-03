@@ -2715,6 +2715,53 @@ fn thread_pending_receipts_reaches_multiple_seats() {
 }
 
 #[test]
+fn pending_receipts_attribute_a_programmatic_sender() {
+    let (store, db) = fixture();
+    db.execute(
+        "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('graph','i',0)",
+        [],
+    )
+    .unwrap();
+    db.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,body,decision_at,author_kind,author_service_id) VALUES ('i',coalesce((SELECT MAX(decision_seq)+1 FROM messages WHERE instance_id='i'),1),'m-svc','t',1,'ordinary','body',0,'programmatic','graph')", []).unwrap();
+    db.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('i',coalesce((SELECT MAX(decision_seq)+1 FROM messages WHERE instance_id='i'),1),'m-nat','t',2,'ordinary','s','body',0)", []).unwrap();
+    for message in ["m-svc", "m-nat"] {
+        db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,'t','s','pending',300)", [message]).unwrap();
+    }
+    let q = PendingReceiptsQuery {
+        seat: Some(SeatId::new("s")),
+        thread: None,
+        page: PageRequest {
+            cursor: None,
+            limit: 10,
+            max_bytes: 65_536,
+        },
+    };
+    let CommandResult::PendingReceipts(result) =
+        query(&store, "i", &Command::PendingReceipts(q), &budget()).unwrap()
+    else {
+        panic!()
+    };
+    let by_message = |id: &str| {
+        result
+            .items
+            .iter()
+            .find(|receipt| receipt.message.as_str() == id)
+            .unwrap()
+    };
+    let service = by_message("m-svc");
+    assert_eq!(service.sender, None);
+    assert_eq!(
+        service.sender_author,
+        Some(crate::protocol::service::EventAuthor::Programmatic(
+            crate::protocol::ids::ServiceAuthorId::new("graph")
+        ))
+    );
+    let native = by_message("m-nat");
+    assert_eq!(native.sender, Some(SeatId::new("s")));
+    assert_eq!(native.sender_author, None);
+}
+
+#[test]
 fn recipients_page_205_rows_and_show_effective_retirement() {
     let (store, db) = fixture();
     db.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('i',coalesce((SELECT MAX(decision_seq)+1 FROM messages WHERE instance_id='i'),1),'m','t',1,'ordinary','s','body',0)",[]).unwrap();

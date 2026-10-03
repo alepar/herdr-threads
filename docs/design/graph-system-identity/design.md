@@ -25,7 +25,7 @@ Graph team/seat/clone structure, collective subscriptions, naming, activation an
 
 ## 2. Service operations
 
-Provide a typed programmatic client over the registered connection for: ensure a service-managed thread; invite/reinvite native participants with ordinary or required membership; publish system notifications; inspect membership/status; update a managed thread topic; release a required constraint; and archive/reopen a service-managed thread. Exact CLI spelling may follow existing conventions, but these capabilities and boundaries are fixed.
+Provide a typed programmatic client over the registered connection for: ensure a service-managed thread; invite/reinvite native participants with ordinary or required membership; publish system notifications; inspect membership/status; update a managed thread topic; release a required constraint; archive/reopen a service-managed thread; post an ordinary receipt-bearing message into a service-managed thread; read thread history; and read the receipt state of its own messages (session capability `service_session_v2`; see [service-send-amendment.md](service-send-amendment.md)). Exact CLI spelling may follow existing conventions, but these capabilities and boundaries are fixed.
 
 Service management is durable and distinct from author membership. A system author is not a fake pane-bound seat, is not an agent receipt recipient, and does not require native check-in, prompt delivery or retirement. Native discussion and receipts remain ordinary native operations even inside a service-managed thread.
 
@@ -57,6 +57,8 @@ Membership belongs to the durable threads participant, not each successive nativ
 Service notifications are durable `system_notify` events with explicit programmatic author attribution, distinct from built-in timeout/receipt events. They require no message ACK, matching existing system-event semantics. Info notices are discoverable at read/check-in without an independent wake; actionable warn notices use existing bounded, coalesced native wake handling. The programmatic sender never becomes a native wake target.
 
 Snapshot the notification audience from joined native members plus pending required invitees at publication, deduplicated. That lets a pending invitee discover actionable system notices before acceptance; public history is already readable without membership. Use existing bounded logical publication/materialization machinery rather than an unbounded recipient loop in a writer transaction. No receipt obligations are created by this audience selection. New memberships do not retroactively change the snapshot; history remains discoverable.
+
+Service *messages*, unlike notifications, carry ordinary receipt obligations: the recipient set is the joined snapshot plus explicit invited or joined recipients at decision time, ACK is the native exact-id ACK, retirement settles to recipient-retired, and wake and deadlines are the native machinery. The service author is never a recipient and never ACKs. Sends are allowed only on threads the service manages.
 
 Native messages in these channels retain normal recipient snapshots and explicit ACK rules. Neither service registration, successful socket writes, history reads, invitation acceptance nor system notifications manufacture ACKs. Graph must separately reconcile the desired effect of a notification, such as other clones leaving an ordinary thread; publication is not proof they acted.
 
@@ -106,3 +108,4 @@ Graph's implementation, collective subscription state, event observers, clone lo
 - [Connection lifecycle](connection-design.md)
 - [Store and membership](store-design.md)
 - [Client and integration](client-integration-design.md)
+- [Service send and reads amendment](service-send-amendment.md)

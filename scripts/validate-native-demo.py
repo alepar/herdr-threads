@@ -65,8 +65,8 @@ daemon (its stable socket path, checked against the published endpoint); `none` 
 model was refused the socket (the product's `transport_denied` error, or the pre-P2 `host_unavailable` text while the
 driver's daemon is healthy outside the sandbox) is UNSUPPORTED `transport_denied`, never a product FAIL.
 
-Opt-in scenarios (`--scenario child,midturn,warning,burst,required`, ht-4is.11.3 / 11.4 / 32.3 / ht-910) each add
-their own verdict steps (SC*, SM*, SW*, SB*, SR*), dry-run-only product probes (SM0D, SW0D, SB0D, SR0D) and a manifest
+Opt-in scenarios (`--scenario child,midturn,warning,burst,required,servicesend`, ht-4is.11.3 / 11.4 / 32.3 / ht-910 /
+ht-5nb.4) each add their own verdict steps (SC*, SM*, SW*, SB*, SR*, SS*), dry-run-only product probes (SM0D, SW0D, SB0D, SR0D) and a manifest
 scenario suffix. A scenario whose model-side trigger never happened is NOT_EXERCISED: the manifest is then UNSUPPORTED
 `scenario_not_exercised`, never PASS and never a product FAIL. `--launch managed` starts the agent through
 `herdr-threads launch` when the build offers it (else UNSUPPORTED `managed_launch_unavailable`). `--mode tui
@@ -118,7 +118,7 @@ BLOCKEDUI_PROMPT = ("Run exactly this shell command now, and if it needs approva
 # Opt-in scenarios (ht-4is.11.3 / 11.4 / 32.3 / ht-910 / 11.12), each with its own verdict steps and manifest suffix.
 # Pseudo-phases (ht-p03.38): cycle the daemon while the TUI agent stays in its pane (ht-910 restart, P40 crash).
 DAEMON_PHASES = ("daemon-restart", "daemon-crash")
-SCENARIOS = ("child", "midturn", "warning", "burst", "required", "lostprompt", "blockedui", "children")
+SCENARIOS = ("child", "midturn", "warning", "burst", "required", "lostprompt", "blockedui", "children", "servicesend")
 # Herdr 0.9.1 reports a TUI that finished its turn as `done`; for an idle wake target `done` is idle (ht-4is.5.6).
 IDLE_STATES = ("idle", "done")
 # The approval / question UIs the blockedui scenario recognizes on screen (Claude permission dialog, Codex approval).
@@ -186,7 +186,7 @@ PREVIEW_BYTES = 256
 # Distinctive phrases of each scenario instruction; finding one in the model's transcript (or a `body` read of the
 # handoff) is the evidence that the model saw the instruction at all.
 SCENARIO_MARKERS = {"midturn": "watch for new herdr-threads mail", "burst": "page through your whole inbox",
-                    "required": "required invite, thread"}
+                    "required": "required invite, thread", "servicesend": "service request, thread"}
 # Default argv template for `--launch managed` (harness design: `launch --pane ADDRESS --kind codex|claude`).
 MANAGED_LAUNCH_ARGV = "launch --pane {pane} --kind {harness} --"
 # How many recent unwrapped lines a pane capture reads.
@@ -708,7 +708,8 @@ class ServiceClient:
     """Minimal Python speaker of the D2 programmatic service wire (src/protocol/service.rs, the same frames
     `client::service::PersistentServiceClient` sends): one registered, connection-scoped session on the
     driver's own daemon socket. Used only for the `required` scenario's service-side setup (ensure a managed
-    thread, a required invitation, one info event); it never accepts, ACKs or leaves for anyone."""
+    thread, a required invitation, one info event); the `servicesend` scenario registers v2 and also sends one
+    ACK-required request. It never accepts, ACKs or leaves for anyone."""
 
     def __init__(self, endpoint, instance, timeout=10.0):
         import socket
@@ -747,8 +748,8 @@ class ServiceClient:
             raise RuntimeError(f"service {service.get('kind')}/{(service.get('args') or {}).get('kind')} refused: {result['Err']}")
         return result.get("Ok") or {}
 
-    def register(self):
-        return self.call({"kind": "register", "args": {"capability": "service_session_v1"}})
+    def register(self, capability="service_session_v1"):
+        return self.call({"kind": "register", "args": {"capability": capability}})
 
     def operation(self, kind, args):
         return self.call({"kind": "operation", "args": {"kind": kind, "args": args}})
@@ -1192,6 +1193,10 @@ class Driver:
         if "required" in self.scenarios and required.get("thread"):
             extra.append(f"Required invite, thread {required['thread']}: accept-required it, then run "
                          f"`herdr-threads leave {required['thread']}` once; report result.")
+        servicesend = self.facts.get("servicesend") or {}
+        if "servicesend" in self.scenarios and servicesend.get("thread"):
+            extra.append(f"Service request, thread {servicesend['thread']}: accept-required it, then follow that thread's "
+                         f"service message.")
         if not extra:
             return ""
         return "".join(f" {chr(97 + i)}) {text}" for i, text in enumerate(extra))
@@ -3791,6 +3796,87 @@ class Driver:
                       f"the agent seat (requirement {requirement.get('requirement')} rev {requirement.get('revision')}) over the "
                       f"D2 service wire; one info event"), None
 
+    # ----- servicesend (service-authored ACK-required request, ht-5nb.4) -----
+    def s_servicesend_setup(self):
+        descriptor = self.daemon_descriptor()
+        if not descriptor:
+            return FAIL, f"no daemon endpoint descriptor under {self.state / 'instances'}", None
+        thread = f"ssend-{self.run_id[-20:]}"
+        agent_seat = self.facts["agent_seat"]
+        body = f"Service request {self.run_id}: reply DONE in this thread, then ACK this message by its exact ID."
+        client = ServiceClient(descriptor["endpoint"], descriptor["instance_uuid"])
+        try:
+            registration = client.register("service_session_v2")
+            client.operation("ensure_thread", {"thread": thread, "topic": f"service request demo {self.run_id}",
+                                               "goal": "Service-authored ACK-required request", "operation": f"{thread}-ensure"})
+            invitation = client.operation("invite", {"thread": thread, "seat": agent_seat, "constraint": "required",
+                                                     "deadline_millis": self.args.deadline * 1000, "operation": f"{thread}-invite"})
+            sent = client.operation("send", {"thread": thread, "body": body, "recipients": [agent_seat],
+                                             "deadline_millis": self.args.deadline * 1000, "operation": f"{thread}-send"})
+        finally:
+            client.close()
+            (self.ev / "service-client.json").write_text(json.dumps(client.transcript, indent=2))
+        invite = invitation.get("data") or {}
+        requirement = invite.get("requirement") or {}
+        message = (((sent.get("data") or {}).get("summary")) or {}).get("message")
+        self.facts["servicesend"] = {"thread": thread, "author": (registration.get("data") or {}).get("author"), "message": message,
+                                     "invitation": invite.get("invitation"), "requirement": requirement.get("requirement"),
+                                     "revision": requirement.get("revision")}
+        if not requirement:
+            return FAIL, f"service invite returned no requirement: {invitation}", None
+        if not message:
+            return FAIL, f"service send returned no message id: {sent}", None
+        return PASS, (f"service author {self.facts['servicesend']['author']} (v2 session) ensured managed thread {thread}, "
+                      f"required-invited the agent seat and sent ACK-required message {message}"), None
+
+    def s_servicesend_ack(self):
+        info = self.facts.get("servicesend") or {}
+        message, seat = info.get("message"), self.facts["agent_seat"]
+        if not message:
+            return NOT_EXERCISED, "service request message not sent", None
+        transcript = self.phase_transcript("initial") or self.live_transcript("initial")
+        deadline = time.monotonic() + (0 if self.dry else self.args.verify_wait)
+        while True:
+            receipt = {r["message_id"]: r for r in self.receipts_for(seat)}.get(message)
+            if (receipt or {}).get("state") == "acked" or time.monotonic() >= deadline:
+                break
+            time.sleep(2)
+        root_acks = [c for c in self.transcript_calls(transcript) if self.is_root_ack(c, message)]
+        obs = json.loads((receipt or {}).get("ack_observation") or "{}")
+        (self.ev / "servicesend-ack.json").write_text(json.dumps({"message": message, "receipt": receipt, "root_ack_calls": root_acks,
+                                                                  "provenance": obs.get("provenance")}, indent=2))
+        if not receipt or receipt["state"] != "acked":
+            return FAIL, f"service request {message} not ACKed (state {(receipt or {}).get('state')!r})", None
+        if receipt["ack_actor_seat_id"] != seat or obs.get("provenance") not in MODEL_PROVENANCE:
+            return FAIL, (f"service request ACK actor/provenance {receipt['ack_actor_seat_id']}/{obs.get('provenance')!r} "
+                          f"is not the agent seat with a top-level model class"), None
+        if not root_acks:
+            return FAIL, f"service request {message} ACKed in SQLite but the transcript has no root `herdr-threads ack {message}` call", None
+        return PASS, (f"model ACKed service request {message} by root call {root_acks[0][0]}; stored actor {seat} "
+                      f"provenance {obs.get('provenance')}"), None
+
+    def s_servicesend_author(self):
+        info = self.facts.get("servicesend") or {}
+        message, author = info.get("message"), info.get("author")
+        if not message:
+            return NOT_EXERCISED, "service request message not sent", None
+        rows = self.query("SELECT kind, author_kind, actor_seat_id, author_service_id FROM messages WHERE id=?", (message,))
+        if not rows:
+            return FAIL, f"no messages row for service request {message}", None
+        row = rows[0]
+        if (row["author_kind"], row["actor_seat_id"], row["kind"]) != ("programmatic", None, "ordinary"):
+            return FAIL, (f"service request is author_kind={row['author_kind']!r} actor_seat_id={row['actor_seat_id']!r} "
+                          f"kind={row['kind']!r}, not a programmatic, seat-less ordinary message"), None
+        stray = []
+        if author:
+            stray += self.query("SELECT 'receipt_state' AS tbl, seat_id FROM receipt_state WHERE seat_id=?", (author,))
+            stray += self.query("SELECT 'receipts' AS tbl, seat_id FROM receipts WHERE seat_id=?", (author,))
+            stray += self.query("SELECT 'prepared_recipients' AS tbl, seat_id FROM prepared_recipients WHERE seat_id=?", (author,))
+        if stray:
+            return FAIL, f"receipt rows name the service author as a seat: {stray}", None
+        return PASS, (f"service request {message} is a programmatic ordinary message by {row['author_service_id']!r} with no "
+                      f"seat actor and no receipt row for the author"), None
+
     def s_required_probe(self):
         if not self.dry:
             raise Blocked("live run: only the real harness fires hooks")
@@ -4335,6 +4421,10 @@ class Driver:
             self.step("SR0", "required: service registers, ensures a managed thread, required-invites the agent seat (D2 wire)",
                       self.s_required_setup, needs=("S06", "S08"))
             setup_needs += ("SR0",)
+        if "servicesend" in self.scenarios:
+            self.step("SS0", "servicesend: v2 service registers, ensures a managed thread, required-invites the agent seat and sends an "
+                      "ACK-required request", self.s_servicesend_setup, needs=("S06", "S08"))
+            setup_needs += ("SS0",)
         self.step("S13", "send require-ACK handoff (initial)", lambda: self.send("initial"), needs=("S12",) + setup_needs)
         if a.codex_profile:  # D5: before S14, so `setup codex` runs under the launch profile's CODEX_HOME
             self.step("S16A", "aisw Codex profile (read-only; credentials for the scratch launch CODEX_HOME)", self.s_codex_profile, needs=("S01",))
@@ -4442,6 +4532,11 @@ class Driver:
             self.step("SR2", "required: model's leave refused, membership held",
                       lambda: self.gate_on_instruction("required", self.s_required_leave()), needs=("S17", "SR0"))
             self.step("SR3", "required: service events carry no receipt/ACK rows", self.s_required_no_receipts, needs=("SR0",))
+        if "servicesend" in self.scenarios:
+            self.step("SS1", "servicesend: model ACKed the service-authored request (root call + stored provenance)",
+                      lambda: self.gate_on_instruction("servicesend", self.s_servicesend_ack()), needs=("S17", "SS0"))
+            self.step("SS2", "servicesend: the request is a programmatic message with no author receipt", self.s_servicesend_author,
+                      needs=("SS0",))
 
     def hook_context_source(self):
         """D4: where S<n>H reads delivery from, per harness."""
@@ -4532,6 +4627,7 @@ def parse(argv=None):
                         " (default base: the prelaunch handoff only). child: the prompt delegates reading to one subagent; "
                         "midturn: a new require-ACK message after the model's first tool call; warning: a short ACK deadline; "
                         "burst: more than one inbox page of threads; required: service required invitation + leave refusal; "
+                        "servicesend: a v2 service sends an ACK-required request the model must ACK by its exact ID; "
                         "lostprompt (tui): no launch prompt, the product's idle recovery wake must reach the agent; blockedui "
                         "(tui): agent left in an approval UI (never answered), a queued warning must inject nothing; children: "
                         "two concurrent reading subagents, no child write, root ACK")

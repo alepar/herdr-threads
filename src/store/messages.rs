@@ -4,7 +4,7 @@ use crate::ports::{DurableWorkAdmission, SendPreparationProgress};
 use crate::protocol::{
     authority::{MutationPermit, ObligationRef},
     commands::SendMessage,
-    ids::{MessageId, SeatId, prefix},
+    ids::{MessageId, SeatId, ServiceAuthorId, ThreadId, prefix},
     results::{ApiError, CommandResult, ErrorCode},
     time::CallBudget,
 };
@@ -29,8 +29,15 @@ fn require_live_budget(context: &StoreContext, budget: &CallBudget) -> Result<()
 }
 
 fn frozen_duration(request: &SendMessage, limits: MessageLimits) -> Result<i64, ApiError> {
-    let duration = request
-        .deadline_millis
+    frozen_duration_ms(request.deadline_millis, limits)
+}
+
+/// The receipt duration a send freezes: the explicit deadline or the instance default.
+pub(super) fn frozen_duration_ms(
+    deadline_millis: Option<u64>,
+    limits: MessageLimits,
+) -> Result<i64, ApiError> {
+    let duration = deadline_millis
         .map(i64::try_from)
         .transpose()
         .map_err(|_| api_error(ErrorCode::InvalidRequest, "duration overflow"))?
@@ -281,57 +288,29 @@ pub fn prepare_send_step(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    // The 5 ms writer quantum runs on the store's clock, like the snapshot
-    // and retirement quanta: an injected clock decides it deterministically.
-    let began = context.clock().monotonic_now();
-    let mut visited = 0u8;
-    while visited < max_units
-        && (visited == 0 || context.clock().monotonic_now().0.saturating_sub(began.0) < 5)
-        && !budget.is_exhausted(context.clock())
-    {
-        if cursor < high_water {
-            let row: Option<(i64,String,bool)> = tx.query_row(
-                "SELECT mi.ordinal,mi.seat_id,(mi.left_seq IS NULL AND s.retired_seq IS NULL AND s.state!='retired') FROM membership_intervals mi JOIN seats s ON s.id=mi.seat_id WHERE mi.thread_id=?1 AND mi.ordinal>?2 AND mi.ordinal<=?3 ORDER BY mi.ordinal LIMIT 1",
-                params![request.thread.as_str(),cursor,high_water], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
-            ).optional().map_err(store_error)?;
-            if let Some((ordinal, recipient, joined)) = row {
-                cursor = ordinal;
-                visited += 1;
-                if joined && recipient != seat.as_str() {
-                    stage_recipient(
-                        &tx,
-                        &prep_id,
-                        &instance,
-                        &request.thread,
-                        &recipient,
-                        duration,
-                        &mut count,
-                        &mut warning_count,
-                    )?;
-                }
-                continue;
-            }
-            cursor = high_water;
-        }
-        let explicit_index = usize::try_from(cursor - high_water)
-            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid preparation cursor"))?;
-        if explicit_index >= explicit.len() {
-            break;
-        }
-        let recipient = explicit[explicit_index];
-        let target_instance: Option<String> = tx
-            .query_row(
-                "SELECT instance_id FROM seats WHERE id=?1 AND state!='retired'",
-                [recipient.as_str()],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(store_error)?;
-        if target_instance.as_deref() != Some(instance.as_str())
-            || schema::effective_membership_state(&tx, &request.thread, recipient)?
-                .as_ref()
-                .is_none_or(|v| !matches!(v.state.as_str(), "invited" | "joined"))
-        {
+    let walk = AudienceWalk {
+        prep_id: &prep_id,
+        instance: &instance,
+        thread: &request.thread,
+        high_water,
+        explicit: &explicit,
+        exclude: Some(&seat),
+        duration,
+    };
+    let end = walk_audience(
+        &tx,
+        context,
+        budget,
+        max_units,
+        &walk,
+        &mut cursor,
+        &mut count,
+        &mut warning_count,
+    )?;
+    let (visited, complete) = match end {
+        WalkEnd::Complete { visited } => (visited, true),
+        WalkEnd::More { visited } => (visited, false),
+        WalkEnd::Rejected { .. } => {
             discard_preparation(&tx, &prep_id)?;
             tx.commit().map_err(store_error)?;
             return Err(api_error(
@@ -339,27 +318,7 @@ pub fn prepare_send_step(
                 "explicit recipient invalid or retired",
             ));
         }
-        cursor = cursor.checked_add(1).ok_or_else(|| {
-            api_error(ErrorCode::SequenceExhausted, "preparation cursor exhausted")
-        })?;
-        visited += 1;
-        if recipient != &seat {
-            stage_recipient(
-                &tx,
-                &prep_id,
-                &instance,
-                &request.thread,
-                recipient.as_str(),
-                duration,
-                &mut count,
-                &mut warning_count,
-            )?;
-        }
-    }
-    let complete = cursor
-        >= high_water
-            + i64::try_from(explicit.len())
-                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "explicit count overflow"))?;
+    };
     tx.execute("UPDATE send_preparations SET recipient_cursor=?1,recipient_count=?2,warning_count=?3,status=?4 WHERE id=?5",
         params![cursor,count,warning_count,if complete {"sealed"} else {"building"},prep_id]).map_err(store_error)?;
     tx.commit().map_err(store_error)?;
@@ -376,7 +335,157 @@ pub fn prepare_send_step(
     })
 }
 
-fn discard_preparation(tx: &Transaction<'_>, prep_id: &str) -> Result<(), ApiError> {
+/// Why an explicit recipient was refused during the audience walk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RecipientRejection {
+    Unknown,
+    Retired,
+    NotMemberOrInvitee,
+}
+
+/// Where one audience-walk quantum stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum WalkEnd {
+    Complete {
+        visited: u8,
+    },
+    More {
+        visited: u8,
+    },
+    Rejected {
+        seat: SeatId,
+        reason: RecipientRejection,
+    },
+}
+
+/// The fixed inputs of one preparation's audience walk.
+pub(super) struct AudienceWalk<'a> {
+    pub prep_id: &'a str,
+    pub instance: &'a str,
+    pub thread: &'a ThreadId,
+    pub high_water: i64,
+    pub explicit: &'a [&'a SeatId],
+    /// The sender, never its own recipient. `None` for a service author.
+    pub exclude: Option<&'a SeatId>,
+    pub duration: i64,
+}
+
+/// Stages at most `max_units` audience candidates: the joined snapshot up to the
+/// interval high-water, then the explicit recipients. The caller owns the
+/// transaction and persists the cursor and counters.
+// Allowed: the walk updates the caller's three running counters.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn walk_audience(
+    tx: &Transaction<'_>,
+    context: &StoreContext,
+    budget: &CallBudget,
+    max_units: u8,
+    walk: &AudienceWalk<'_>,
+    cursor: &mut i64,
+    count: &mut i64,
+    warning_count: &mut i64,
+) -> Result<WalkEnd, ApiError> {
+    // The 5 ms writer quantum runs on the store's clock, like the snapshot
+    // and retirement quanta: an injected clock decides it deterministically.
+    let began = context.clock().monotonic_now();
+    let mut visited = 0u8;
+    while visited < max_units
+        && (visited == 0 || context.clock().monotonic_now().0.saturating_sub(began.0) < 5)
+        && !budget.is_exhausted(context.clock())
+    {
+        if *cursor < walk.high_water {
+            let row: Option<(i64,String,bool)> = tx.query_row(
+                "SELECT mi.ordinal,mi.seat_id,(mi.left_seq IS NULL AND s.retired_seq IS NULL AND s.state!='retired') FROM membership_intervals mi JOIN seats s ON s.id=mi.seat_id WHERE mi.thread_id=?1 AND mi.ordinal>?2 AND mi.ordinal<=?3 ORDER BY mi.ordinal LIMIT 1",
+                params![walk.thread.as_str(),*cursor,walk.high_water], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
+            ).optional().map_err(store_error)?;
+            if let Some((ordinal, recipient, joined)) = row {
+                *cursor = ordinal;
+                visited += 1;
+                if joined
+                    && walk
+                        .exclude
+                        .is_none_or(|sender| recipient != sender.as_str())
+                {
+                    stage_recipient(
+                        tx,
+                        walk.prep_id,
+                        walk.instance,
+                        walk.thread,
+                        &recipient,
+                        walk.duration,
+                        count,
+                        warning_count,
+                    )?;
+                }
+                continue;
+            }
+            *cursor = walk.high_water;
+        }
+        let explicit_index = usize::try_from(*cursor - walk.high_water)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid preparation cursor"))?;
+        if explicit_index >= walk.explicit.len() {
+            break;
+        }
+        let recipient = walk.explicit[explicit_index];
+        let target: Option<(String, bool)> = tx
+            .query_row(
+                "SELECT instance_id,state='retired' FROM seats WHERE id=?1",
+                [recipient.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(store_error)?;
+        let rejection = match target {
+            Some((target_instance, false)) if target_instance == walk.instance => {
+                if schema::effective_membership_state(tx, walk.thread, recipient)?
+                    .as_ref()
+                    .is_none_or(|v| !matches!(v.state.as_str(), "invited" | "joined"))
+                {
+                    Some(RecipientRejection::NotMemberOrInvitee)
+                } else {
+                    None
+                }
+            }
+            Some((target_instance, true)) if target_instance == walk.instance => {
+                Some(RecipientRejection::Retired)
+            }
+            _ => Some(RecipientRejection::Unknown),
+        };
+        if let Some(reason) = rejection {
+            return Ok(WalkEnd::Rejected {
+                seat: recipient.clone(),
+                reason,
+            });
+        }
+        *cursor = cursor.checked_add(1).ok_or_else(|| {
+            api_error(ErrorCode::SequenceExhausted, "preparation cursor exhausted")
+        })?;
+        visited += 1;
+        if walk.exclude != Some(recipient) {
+            stage_recipient(
+                tx,
+                walk.prep_id,
+                walk.instance,
+                walk.thread,
+                recipient.as_str(),
+                walk.duration,
+                count,
+                warning_count,
+            )?;
+        }
+    }
+    let complete = *cursor
+        >= walk.high_water
+            + i64::try_from(walk.explicit.len())
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "explicit count overflow"))?;
+    Ok(if complete {
+        WalkEnd::Complete { visited }
+    } else {
+        WalkEnd::More { visited }
+    })
+}
+
+pub(super) fn discard_preparation(tx: &Transaction<'_>, prep_id: &str) -> Result<(), ApiError> {
     tx.execute("UPDATE send_preparations SET status='discarded' WHERE id=?1 AND status IN ('building','sealed') AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=?1)",[prep_id]).map_err(store_error)?;
     tx.execute("INSERT OR IGNORE INTO work_jobs(id,kind,subject_id,high_water) VALUES (?1,'preparation_cleanup',?2,0)",params![format!("work:cleanup:{prep_id}"),prep_id]).map_err(store_error)?;
     Ok(())
@@ -405,11 +514,11 @@ pub fn abandon_send_preparation(
 
 // Allowed: stages one recipient row and updates the caller's two running counters.
 #[allow(clippy::too_many_arguments)]
-fn stage_recipient(
+pub(super) fn stage_recipient(
     tx: &Transaction<'_>,
     prep_id: &str,
     instance: &str,
-    thread: &crate::protocol::ids::ThreadId,
+    thread: &ThreadId,
     recipient: &str,
     duration: i64,
     count: &mut i64,
@@ -471,6 +580,114 @@ fn stage_recipient(
         }
     }
     Ok(())
+}
+
+/// Who a published ordinary message is attributed to.
+pub(super) enum PublicationAuthor<'a> {
+    /// A joined native seat, with its serialized observation.
+    Native {
+        seat: &'a SeatId,
+        observation: &'a str,
+        relays_user: bool,
+    },
+    /// The registered service author: no seat, label `herdr-graph`.
+    Programmatic(&'a ServiceAuthorId),
+}
+
+/// What one publication wrote.
+pub(super) struct Publication {
+    pub message: MessageId,
+    pub sequence: i64,
+    pub recipient_count: i64,
+    /// The frozen receipt duration; 0 when the message has no recipients.
+    pub duration_ms: i64,
+}
+
+/// Inserts the message, its manifest and the `send_attention` job for the sealed
+/// preparation `(scope, key, digest)`. The caller proved authority and revision
+/// currency; this touches a constant number of rows regardless of audience size.
+// Allowed: one deciding insert: transaction, instant, replay identity and author.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn insert_publication(
+    tx: &Transaction<'_>,
+    utc: i64,
+    scope: &str,
+    key: &str,
+    digest: &[u8; 32],
+    thread: &ThreadId,
+    body: &str,
+    author: PublicationAuthor<'_>,
+) -> Result<Publication, ApiError> {
+    let (prep_id,instance,high_water,recipient_count,warning_count):(String,String,i64,i64,i64)=tx.query_row(
+        "SELECT id,instance_id,interval_high_water,recipient_count,warning_count FROM send_preparations WHERE operation_scope=?1 AND operation_key=?2 AND digest=?3",
+        params![scope,key,digest.as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
+    ).map_err(store_error)?;
+    let mut duration_ms = 0;
+    if recipient_count > 0 {
+        duration_ms=tx.query_row("SELECT frozen_duration_ms FROM prepared_recipients WHERE preparation_id=?1 AND receipt_ordinal=1",[prep_id.as_str()],|r|r.get(0)).map_err(store_error)?;
+        schema::checked_deadline(crate::protocol::time::UtcMillis(utc), duration_ms)?;
+    }
+    let decision_seq = schema::next_decision_seq(tx, &instance)?;
+    let base: i64 = tx
+        .query_row(
+            "SELECT next_sequence FROM threads WHERE id=?1",
+            [thread.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let advance = warning_count
+        .checked_add(1)
+        .ok_or_else(|| api_error(ErrorCode::SequenceExhausted, "timeline sequence exhausted"))?;
+    let following = base
+        .checked_add(advance)
+        .ok_or_else(|| api_error(ErrorCode::SequenceExhausted, "timeline sequence exhausted"))?;
+    if following <= 0 {
+        return Err(api_error(
+            ErrorCode::SequenceExhausted,
+            "timeline sequence exhausted",
+        ));
+    }
+    let id = MessageId::new(prep_id.replacen("prep-", "msg-", 1));
+    match author {
+        PublicationAuthor::Native {
+            seat,
+            observation,
+            relays_user,
+        } => {
+            let author_role = schema::open_binding_role(tx, seat)?;
+            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11)",params![id.as_str(),instance,thread.as_str(),base,seat.as_str(),observation,body,utc,decision_seq as i64,author_role,relays_user as i64]).map_err(store_error)?;
+        }
+        PublicationAuthor::Programmatic(author) => {
+            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_label,body,decision_at,decision_seq,author_kind,author_service_id,author_role) VALUES (?1,?2,?3,?4,'ordinary','herdr-graph',?5,?6,?7,'programmatic',?8,'service')",params![id.as_str(),instance,thread.as_str(),base,body,utc,decision_seq as i64,author.as_str()]).map_err(store_error)?;
+        }
+    }
+    tx.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![prep_id,id.as_str(),instance,thread.as_str(),decision_seq as i64,utc,base,high_water,recipient_count,warning_count]).map_err(store_error)?;
+    tx.execute(
+        "UPDATE threads SET next_sequence=?1,updated_at=?2 WHERE id=?3",
+        params![following, utc, thread.as_str()],
+    )
+    .map_err(store_error)?;
+    schema::bump_timeline_revision(tx, thread)?;
+    schema::bump_filter_revision(tx, &instance, "directory", thread.as_str())?;
+    let work_high_water = recipient_count
+        .checked_add(warning_count)
+        .and_then(|v| v.checked_add(1))
+        .ok_or_else(|| api_error(ErrorCode::SequenceExhausted, "send work position exhausted"))?;
+    tx.execute(
+        "INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES (?1,'send_attention',?2,?3)",
+        params![
+            format!("work:send:{}", id.as_str()),
+            prep_id,
+            work_high_water
+        ],
+    )
+    .map_err(store_error)?;
+    Ok(Publication {
+        message: id,
+        sequence: base,
+        recipient_count,
+        duration_ms,
+    })
 }
 
 /// Publishes only a sealed, revision-current preparation after a fresh caller proof.
@@ -564,53 +781,22 @@ pub fn publish_send(
                     "send preparation snapshot changed at decision",
                 ));
             }
-            let (prep_id,instance,high_water,recipient_count,warning_count):(String,String,i64,i64,i64)=tx.query_row(
-                "SELECT id,instance_id,interval_high_water,recipient_count,warning_count FROM send_preparations WHERE operation_scope=?1 AND operation_key=?2 AND digest=?3",
-                params![scope,request.operation.as_str(),digest.as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
-            ).map_err(store_error)?;
-            if recipient_count > 0 {
-                let duration:i64=tx.query_row("SELECT frozen_duration_ms FROM prepared_recipients WHERE preparation_id=?1 AND receipt_ordinal=1",[prep_id.as_str()],|r|r.get(0)).map_err(store_error)?;
-                schema::checked_deadline(decision.utc, duration)?;
-            }
-            let decision_seq = schema::next_decision_seq(tx, &instance)?;
-            let base: i64 = tx
-                .query_row(
-                    "SELECT next_sequence FROM threads WHERE id=?1",
-                    [request.thread.as_str()],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?;
-            let advance = warning_count.checked_add(1).ok_or_else(|| {
-                api_error(ErrorCode::SequenceExhausted, "timeline sequence exhausted")
-            })?;
-            let following = base.checked_add(advance).ok_or_else(|| {
-                api_error(ErrorCode::SequenceExhausted, "timeline sequence exhausted")
-            })?;
-            if following <= 0 {
-                return Err(api_error(
-                    ErrorCode::SequenceExhausted,
-                    "timeline sequence exhausted",
-                ));
-            }
-            let id = MessageId::new(prep_id.replacen("prep-", "msg-", 1));
             let observation = actor.observation(decision.utc.0);
-            let author_role = schema::open_binding_role(tx, &seat)?;
-            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11)",params![id.as_str(),instance,request.thread.as_str(),base,seat.as_str(),observation,request.body,decision.utc.0,decision_seq as i64,author_role,request.relays_user as i64]).map_err(store_error)?;
-            tx.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![prep_id,id.as_str(),instance,request.thread.as_str(),decision_seq as i64,decision.utc.0,base,high_water,recipient_count,warning_count]).map_err(store_error)?;
-            tx.execute(
-                "UPDATE threads SET next_sequence=?1,updated_at=?2 WHERE id=?3",
-                params![following, decision.utc.0, request.thread.as_str()],
-            )
-            .map_err(store_error)?;
-            schema::bump_timeline_revision(tx, &request.thread)?;
-            schema::bump_filter_revision(tx, &instance, "directory", request.thread.as_str())?;
-            let work_high_water = recipient_count
-                .checked_add(warning_count)
-                .and_then(|v| v.checked_add(1))
-                .ok_or_else(|| {
-                    api_error(ErrorCode::SequenceExhausted, "send work position exhausted")
-                })?;
-            tx.execute("INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES (?1,'send_attention',?2,?3)",params![format!("work:send:{}",id.as_str()),prep_id,work_high_water]).map_err(store_error)?;
+            let published = insert_publication(
+                tx,
+                decision.utc.0,
+                &scope,
+                request.operation.as_str(),
+                &digest,
+                &request.thread,
+                &request.body,
+                PublicationAuthor::Native {
+                    seat: &seat,
+                    observation: &observation,
+                    relays_user: request.relays_user,
+                },
+            )?;
+            let id = published.message;
             failpoint!("send.before_commit", context.failpoint_scope());
             Ok(CommandResult::MessageSent(id))
         },

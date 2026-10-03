@@ -36,6 +36,9 @@
 #   burst     --burst-threads (>20) extra invited threads; SB1 model saw has_more, SB2 model used --cursor
 #   required  D2 service wire: managed thread + required invitation; SR1 model accept-required, SR2 leave refused
 #             with membership held, SR3 service events carry no receipt rows (ht-4is.32.3)
+#   servicesend  a v2 service session sends an ACK-required request to the agent seat (SS0 setup); SS1 the model ACKed it by
+#             a root `ack` call with stored provenance cooperative_top_level, SS2 the request is a programmatic message with
+#             no author receipt row (ht-5nb.4)
 #   lostprompt (--mode tui) the agent starts with NO prompt (startup check-in only); SL1 the product reserved an idle
 #             recovery wake covering the pending handoff, SL2 the wake marker reached the screen once, S18 the model ACKed
 #   blockedui (--mode tui, runs last) the agent is asked to run `mkdir /ht-blockedui-*` and left in its approval UI

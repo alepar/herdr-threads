@@ -208,6 +208,9 @@ fn replay(
     }
 }
 
+// Allowed: a transient step result; ServiceResult carries the v2 receipts inspection
+// and boxing it would change the wire-contract type.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreparationStep {
     More { visited: u8, preparation_id: String },

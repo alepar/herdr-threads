@@ -7,18 +7,20 @@ use std::collections::BTreeSet;
 
 pub const HISTORY_FULL_BODIES: &str = "history.full_bodies";
 pub const HOOK_PARSE_FAILURE_REPORT: &str = "hook.parse_failure_report";
+pub const SERVICE_SEND_V1: &str = "service.send_v1";
 pub const HARNESS_EVIDENCE: &str = "hook.harness_evidence";
 pub const HARNESS_STATES: &str = "harness.states";
 
 /// Everything this daemon build serves. A capability is listed only once its
 /// handler has landed (ht-p03.105): `HISTORY_FULL_BODIES` landed with
 /// ht-p03.12.8; `HOOK_PARSE_FAILURE_REPORT` landed with ht-p03.23;
-/// `HARNESS_EVIDENCE` landed with ht-xoc.4; `HARNESS_STATES` landed with
-/// ht-xoc.5. Each entry
+/// `SERVICE_SEND_V1` landed with ht-5nb.2/.3; `HARNESS_EVIDENCE` landed with
+/// ht-xoc.4; `HARNESS_STATES` landed with ht-xoc.5. Each entry
 /// has a probe arm in `every_advertised_capability_has_a_handler`.
 pub const ADVERTISED: &[&str] = &[
     HISTORY_FULL_BODIES,
     HOOK_PARSE_FAILURE_REPORT,
+    SERVICE_SEND_V1,
     HARNESS_EVIDENCE,
     HARNESS_STATES,
 ];

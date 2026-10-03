@@ -1,0 +1,169 @@
+[
+  {
+    "request": {
+      "version": 2,
+      "request_id": "ht-demo-1-6d6aeb",
+      "expected_instance": "442e6a12-d755-4a32-9577-929c1df94cbc",
+      "service": {
+        "kind": "register",
+        "args": {
+          "capability": "service_session_v2"
+        }
+      }
+    },
+    "response": {
+      "version": 2,
+      "request_id": "ht-demo-1-6d6aeb",
+      "instance": "442e6a12-d755-4a32-9577-929c1df94cbc",
+      "daemon_boot": "be7c3022-a1d7-4a45-b901-9fa62eada3d9",
+      "result": {
+        "Ok": {
+          "kind": "registered",
+          "data": {
+            "author": "graph:54962fee490fee699e397d608cb95760a1dc139b72c08ec683160176f96be42b",
+            "daemon_boot": "be7c3022-a1d7-4a45-b901-9fa62eada3d9",
+            "connection_generation": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "request": {
+      "version": 2,
+      "request_id": "ht-demo-2-c78ec0",
+      "expected_instance": "442e6a12-d755-4a32-9577-929c1df94cbc",
+      "service": {
+        "kind": "operation",
+        "args": {
+          "kind": "ensure_thread",
+          "args": {
+            "thread": "ssend-261002T191850-f55a32",
+            "topic": "service request demo ht-demo-claude-20261002T191850-f55a32",
+            "goal": "Service-authored ACK-required request",
+            "operation": "ssend-261002T191850-f55a32-ensure"
+          }
+        }
+      }
+    },
+    "response": {
+      "version": 2,
+      "request_id": "ht-demo-2-c78ec0",
+      "instance": "442e6a12-d755-4a32-9577-929c1df94cbc",
+      "daemon_boot": "be7c3022-a1d7-4a45-b901-9fa62eada3d9",
+      "result": {
+        "Ok": {
+          "kind": "thread_ensured",
+          "data": {
+            "thread": "ssend-261002T191850-f55a32",
+            "owner": "graph:54962fee490fee699e397d608cb95760a1dc139b72c08ec683160176f96be42b",
+            "archived": false
+          }
+        }
+      }
+    }
+  },
+  {
+    "request": {
+      "version": 2,
+      "request_id": "ht-demo-3-f6565d",
+      "expected_instance": "442e6a12-d755-4a32-9577-929c1df94cbc",
+      "service": {
+        "kind": "operation",
+        "args": {
+          "kind": "invite",
+          "args": {
+            "thread": "ssend-261002T191850-f55a32",
+            "seat": "seat-rZAPKCZE",
+            "constraint": "required",
+            "deadline_millis": 900000,
+            "operation": "ssend-261002T191850-f55a32-invite"
+          }
+        }
+      }
+    },
+    "response": {
+      "version": 2,
+      "request_id": "ht-demo-3-f6565d",
+      "instance": "442e6a12-d755-4a32-9577-929c1df94cbc",
+      "daemon_boot": "be7c3022-a1d7-4a45-b901-9fa62eada3d9",
+      "result": {
+        "Ok": {
+          "kind": "invitation",
+          "data": {
+            "invitation": "inv-pzk5a0VI",
+            "requirement": {
+              "requirement": "requirement-hGzXDWUT",
+              "revision": 1,
+              "invitation": "inv-pzk5a0VI",
+              "thread": "ssend-261002T191850-f55a32",
+              "seat": "seat-rZAPKCZE",
+              "issuer": "graph:54962fee490fee699e397d608cb95760a1dc139b72c08ec683160176f96be42b",
+              "state": "pending",
+              "accepted_by": null,
+              "accepted_at": null
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "request": {
+      "version": 2,
+      "request_id": "ht-demo-4-0df13d",
+      "expected_instance": "442e6a12-d755-4a32-9577-929c1df94cbc",
+      "service": {
+        "kind": "operation",
+        "args": {
+          "kind": "send",
+          "args": {
+            "thread": "ssend-261002T191850-f55a32",
+            "body": "Service request ht-demo-claude-20261002T191850-f55a32: reply DONE in this thread, then ACK this message by its exact ID.",
+            "recipients": [
+              "seat-rZAPKCZE"
+            ],
+            "deadline_millis": 900000,
+            "operation": "ssend-261002T191850-f55a32-send"
+          }
+        }
+      }
+    },
+    "response": {
+      "version": 2,
+      "request_id": "ht-demo-4-0df13d",
+      "instance": "442e6a12-d755-4a32-9577-929c1df94cbc",
+      "daemon_boot": "be7c3022-a1d7-4a45-b901-9fa62eada3d9",
+      "result": {
+        "Ok": {
+          "kind": "message_sent",
+          "data": {
+            "summary": {
+              "message": "msg-gA6iK5X4",
+              "thread": "ssend-261002T191850-f55a32",
+              "author": null,
+              "event_author": {
+                "kind": "programmatic",
+                "id": "graph:54962fee490fee699e397d608cb95760a1dc139b72c08ec683160176f96be42b"
+              },
+              "kind": "ordinary",
+              "sequence": 2,
+              "created_at": 1790993933103,
+              "actor_label": "herdr-graph",
+              "preview_data": "Service request ht-demo-claude-20261002T191850-f55a32: reply DONE in this thread, then ACK this message by its exact ID.",
+              "preview_omitted": false,
+              "preview_detail_argv": [
+                "herdr-threads",
+                "body",
+                "msg-gA6iK5X4"
+              ]
+            },
+            "author": "graph:54962fee490fee699e397d608cb95760a1dc139b72c08ec683160176f96be42b",
+            "recipient_count": 1,
+            "receipt_duration_millis": 900000
+          }
+        }
+      }
+    }
+  }
+]

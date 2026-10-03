@@ -1,0 +1,35 @@
+{
+  "task": "ht-5nb.4",
+  "acceptance_item_9": "NOT PROVEN: neither live cell could run; see unsupported_reason on each cell",
+  "sha": "b3297dc09bcefc4e6abc2d98426f3cce53d46b1b",
+  "cells": [
+    {
+      "harness": "claude",
+      "sha": "b3297dc09bcefc4e6abc2d98426f3cce53d46b1b",
+      "run_id": "ht-demo-claude-20261002T191850-f55a32",
+      "version_before": "2.1.288",
+      "version_after": "2.1.288",
+      "manifest_verdict": "UNSUPPORTED",
+      "unsupported_reason": "environment: installed claude 2.1.288 is outside the doctor recipe claude-hooks-2.1.283 [2.1.283, 2.1.287]; the hook fails closed (no check-in reaches the model), so a live launch would not exercise the product. No live model launch was made; the only run was --dry-run (manifest reason dry_run_no_model).",
+      "ss0": "PASS (dry-run: v2 register, ensure thread, required invite, send)",
+      "ss1": "NOT_RUN (needs a live model ACK)",
+      "ss2": "PASS (dry-run: programmatic ordinary message, no seat actor, no receipt row for the author)",
+      "ack_provenance": null,
+      "evidence_dir": "docs/history/graph-amendment-run/service-send-native-evidence/claude"
+    },
+    {
+      "harness": "codex",
+      "sha": "b3297dc09bcefc4e6abc2d98426f3cce53d46b1b",
+      "run_id": "ht-demo-codex-20261002T191902-760eeb",
+      "version_before": "0.160.0",
+      "version_after": "0.160.0",
+      "manifest_verdict": "UNSUPPORTED",
+      "unsupported_reason": "environment: installed codex 0.160.0 is unmeasured for the sandbox socket allowance (measured: 0.159.2, 0.159.3), so `setup codex` writes none and S14 fails; --codex-transport none would deny the daemon socket (transport_denied). No live model launch was made; the only run was --dry-run (manifest reason dry_run_no_model).",
+      "ss0": "PASS (dry-run: v2 register, ensure thread, required invite, send)",
+      "ss1": "NOT_RUN (needs a live model ACK)",
+      "ss2": "PASS (dry-run: programmatic ordinary message, no seat actor, no receipt row for the author)",
+      "ack_provenance": null,
+      "evidence_dir": "docs/history/graph-amendment-run/service-send-native-evidence/codex"
+    }
+  ]
+}

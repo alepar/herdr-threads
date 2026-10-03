@@ -141,6 +141,14 @@ pub fn operate(
                 "notification publication belongs to C3",
             ));
         }
+        ServiceOperation::Send(_)
+        | ServiceOperation::History(_)
+        | ServiceOperation::Receipts(_) => {
+            return Err(api_error(
+                ErrorCode::Unsupported,
+                "service send and reads route outside service controls",
+            ));
+        }
         ServiceOperation::Membership(_) => unreachable!(),
     };
     let json = serde_json::to_string(&result).map_err(|e| {
@@ -174,7 +182,7 @@ fn managed_thread(
     })
 }
 
-fn require_owner(
+pub(super) fn require_owner(
     tx: &Transaction<'_>,
     instance: &str,
     thread: &ThreadId,

@@ -5,10 +5,12 @@ use crate::{
     daemon::transport::{MAX_FRAME_BYTES, encode_json, read_frame},
     protocol::{
         ids::{OperationId, ServiceAuthorId},
-        results::{ApiError, ErrorCode},
+        pagination::Page,
+        results::{ApiError, DeliveryInspection, ErrorCode, MessageSummary},
         service::{
-            SERVICE_SESSION_CAPABILITY, ServiceOperation, ServiceRegister, ServiceRegistration,
-            ServiceRequest, ServiceResult, ServiceWireRequest, ServiceWireResponse,
+            SERVICE_SESSION_CAPABILITY_V2, ServiceHistoryQuery, ServiceMessageSent,
+            ServiceOperation, ServiceReceiptsQuery, ServiceRegister, ServiceRegistration,
+            ServiceRequest, ServiceResult, ServiceSend, ServiceWireRequest, ServiceWireResponse,
         },
         time::{CallBudget, Clock},
         wire::PROTOCOL_VERSION,
@@ -36,6 +38,9 @@ fn error(code: ErrorCode, detail: &str) -> ApiError {
     ApiError::new(code, detail)
 }
 
+// Allowed: an error type returned once per call; ServiceResult carries the v2 receipts
+// inspection and boxing it would change the wire-contract type.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum ServiceCallError {
     Api {
@@ -538,6 +543,8 @@ impl PersistentServiceClient {
     }
     /// Registration is connection-local. An ambiguous response closes the socket;
     /// the caller can reconnect after that close, without a durable mutation key.
+    /// Registers `service_session_v2`: an old daemon rejects it with
+    /// "unsupported service capability" and there is no silent fallback to v1.
     pub async fn register(&self, budget: &CallBudget) -> Result<ServiceRegistration, ApiError> {
         let mut held = self.admit(budget).await?;
         if let Some(session) = held.as_ref() {
@@ -549,7 +556,7 @@ impl PersistentServiceClient {
             _ = budget.cancellation.cancelled() => return Err(error(ErrorCode::Cancelled, "request cancelled before connect")),
         };
         let request = self.request(ServiceRequest::Register(ServiceRegister {
-            capability: SERVICE_SESSION_CAPABILITY.into(),
+            capability: SERVICE_SESSION_CAPABILITY_V2.into(),
         }));
         let response = self.exchange(&mut stream, &request, budget).await?;
         match response.result {
@@ -671,6 +678,52 @@ impl PersistentServiceClient {
                 pending: Some(key.clone()),
             })?;
         self.send_saved(&mut held, &key, &request, budget).await
+    }
+    /// Journaled send into a managed thread; the key is the request's operation.
+    pub async fn send(
+        &self,
+        request: ServiceSend,
+        budget: &CallBudget,
+    ) -> Result<(OperationId, ServiceMessageSent), ServiceCallError> {
+        let (key, result) = self.submit(ServiceOperation::Send(request), budget).await?;
+        match result {
+            ServiceResult::MessageSent(sent) => Ok((key, sent)),
+            _ => Err(ServiceCallError::Api {
+                error: error(ErrorCode::UnknownOutcome, "unexpected service result"),
+                pending: Some(key),
+            }),
+        }
+    }
+    /// Read a managed thread's history; never journaled.
+    pub async fn history(
+        &self,
+        query: ServiceHistoryQuery,
+        budget: &CallBudget,
+    ) -> Result<Page<MessageSummary>, ApiError> {
+        match self.query(ServiceOperation::History(query), budget).await? {
+            ServiceResult::History(page) => Ok(page),
+            _ => Err(error(
+                ErrorCode::UnknownOutcome,
+                "unexpected service result",
+            )),
+        }
+    }
+    /// Read the receipt state of one of this author's messages; never journaled.
+    pub async fn receipts(
+        &self,
+        query: ServiceReceiptsQuery,
+        budget: &CallBudget,
+    ) -> Result<DeliveryInspection, ApiError> {
+        match self
+            .query(ServiceOperation::Receipts(query), budget)
+            .await?
+        {
+            ServiceResult::Receipts(inspection) => Ok(inspection),
+            _ => Err(error(
+                ErrorCode::UnknownOutcome,
+                "unexpected service result",
+            )),
+        }
     }
     /// Explicit exact-envelope replay after the caller has assessed uncertainty.
     pub async fn replay(
@@ -828,6 +881,15 @@ fn result_matches(request: &ServiceWireRequest, result: &ServiceResult) -> bool 
         ) | (
             ServiceRequest::Operation(ServiceOperation::Reopen(_)),
             ServiceResult::Reopened(_)
+        ) | (
+            ServiceRequest::Operation(ServiceOperation::Send(_)),
+            ServiceResult::MessageSent(_)
+        ) | (
+            ServiceRequest::Operation(ServiceOperation::History(_)),
+            ServiceResult::History(_)
+        ) | (
+            ServiceRequest::Operation(ServiceOperation::Receipts(_)),
+            ServiceResult::Receipts(_)
         )
     )
 }
@@ -1592,6 +1654,196 @@ mod tests {
         assert!(client.registration().await.is_none());
         server.await.unwrap();
         drop(client);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn send_request(key: &str) -> ServiceSend {
+        ServiceSend {
+            thread: ThreadId::new("channel"),
+            body: "do it".into(),
+            recipients: vec![crate::protocol::ids::SeatId::new("seat-1")],
+            deadline_millis: None,
+            operation: OperationId::new(key),
+        }
+    }
+    fn empty_page<T>() -> Page<T> {
+        Page {
+            items: vec![],
+            next_cursor: None,
+            next_argv: None,
+            high_water_ordinal: 0,
+            scope_revision: None,
+            has_more: false,
+            stop_reason: crate::protocol::pagination::StopReason::Complete,
+            consistency: crate::protocol::pagination::Consistency::BoundedLive,
+        }
+    }
+    fn sent_summary() -> MessageSummary {
+        MessageSummary {
+            message: crate::protocol::ids::MessageId::new("m-1"),
+            thread: ThreadId::new("channel"),
+            author: None,
+            event_author: Some(crate::protocol::service::EventAuthor::Programmatic(
+                ServiceAuthorId::new("graph"),
+            )),
+            author_role: Some(crate::protocol::summary::AuthorRole::Service),
+            relays_user: false,
+            author_role_backfilled: false,
+            kind: crate::protocol::results::MessageKind::Ordinary,
+            sequence: 4,
+            created_at: UtcMillis(1),
+            actor_label: Some("herdr-graph".into()),
+            preview_data: "do it".into(),
+            preview_omitted: false,
+            preview_detail_argv: None,
+        }
+    }
+    fn history_query() -> ServiceHistoryQuery {
+        ServiceHistoryQuery {
+            thread: ThreadId::new("channel"),
+            page: PageRequest::default(),
+            initial: None,
+        }
+    }
+    fn receipts_query() -> ServiceReceiptsQuery {
+        ServiceReceiptsQuery {
+            message: crate::protocol::ids::MessageId::new("m-1"),
+            page: PageRequest::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn query_refuses_send_and_submit_refuses_history() {
+        let root = temp();
+        fs::create_dir_all(&root).unwrap();
+        let client = make_client(root.join("missing-socket"), &root.join("intents"));
+        let error = client
+            .query(ServiceOperation::Send(send_request("send-1")), &budget())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        for operation in [
+            ServiceOperation::History(history_query()),
+            ServiceOperation::Receipts(receipts_query()),
+        ] {
+            match client.submit(operation, &budget()).await {
+                Err(ServiceCallError::Api { error, pending }) => {
+                    assert_eq!(error.code, ErrorCode::InvalidRequest);
+                    assert_eq!(pending, None);
+                }
+                other => panic!("expected an invalid-request refusal, got {other:?}"),
+            }
+        }
+        assert!(client.journal().pending().unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn register_negotiates_service_session_v2() {
+        let root = temp();
+        fs::create_dir_all(&root).unwrap();
+        let socket = root.join("socket");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let register = incoming(&mut stream).await;
+            assert!(
+                matches!(&register.service, ServiceRequest::Register(ServiceRegister { capability })
+                    if capability == SERVICE_SESSION_CAPABILITY_V2),
+                "{register:?}"
+            );
+            respond(&mut stream, &register, BOOT, Ok(registration())).await;
+        });
+        let client = make_client(socket, &root.join("intents"));
+        client.register(&budget()).await.unwrap();
+        server.await.unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn typed_send_returns_message_sent() {
+        let root = temp();
+        fs::create_dir_all(&root).unwrap();
+        let socket = root.join("socket");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let register = incoming(&mut stream).await;
+            respond(&mut stream, &register, BOOT, Ok(registration())).await;
+            let send = incoming(&mut stream).await;
+            let ServiceRequest::Operation(ServiceOperation::Send(request)) = &send.service else {
+                panic!("expected a send frame: {send:?}");
+            };
+            assert_eq!(request.operation, OperationId::new("send-1"));
+            let sent = ServiceMessageSent {
+                summary: sent_summary(),
+                author: ServiceAuthorId::new("graph"),
+                recipient_count: 3,
+                receipt_duration_millis: 60_000,
+            };
+            respond(
+                &mut stream,
+                &send,
+                BOOT,
+                Ok(ServiceResult::MessageSent(sent)),
+            )
+            .await;
+        });
+        let client = make_client(socket, &root.join("intents"));
+        client.register(&budget()).await.unwrap();
+        let (key, sent) = client
+            .send(send_request("send-1"), &budget())
+            .await
+            .unwrap();
+        assert_eq!(key, OperationId::new("send-1"));
+        assert_eq!(sent.recipient_count, 3);
+        assert_eq!(sent.summary.message.as_str(), "m-1");
+        assert!(client.journal().pending().unwrap().is_empty());
+        assert_eq!(client.journal().completed().unwrap(), vec![key]);
+        server.await.unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn typed_reads_return_payloads_and_reject_mismatched_results() {
+        let root = temp();
+        fs::create_dir_all(&root).unwrap();
+        let socket = root.join("socket");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let register = incoming(&mut stream).await;
+            respond(&mut stream, &register, BOOT, Ok(registration())).await;
+            let history = incoming(&mut stream).await;
+            let mut page = empty_page();
+            page.items.push(sent_summary());
+            respond(
+                &mut stream,
+                &history,
+                BOOT,
+                Ok(ServiceResult::History(page)),
+            )
+            .await;
+            // The wrong variant for a Receipts request.
+            let receipts = incoming(&mut stream).await;
+            respond(
+                &mut stream,
+                &receipts,
+                BOOT,
+                Ok(ServiceResult::History(empty_page())),
+            )
+            .await;
+        });
+        let client = make_client(socket, &root.join("intents"));
+        client.register(&budget()).await.unwrap();
+        let page = client.history(history_query(), &budget()).await.unwrap();
+        assert_eq!(page.items, vec![sent_summary()]);
+        let error = client
+            .receipts(receipts_query(), &budget())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::UnknownOutcome);
+        server.await.unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 }

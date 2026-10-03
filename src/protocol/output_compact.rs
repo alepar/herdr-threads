@@ -374,6 +374,16 @@ fn inbox_rows(page: &Page<InboxItem>, spec: &OutputSpec, out: &mut String) {
     }
 }
 
+/// The sender column: the native seat, else the programmatic service author,
+/// else `system`.
+fn receipt_sender(receipt: &PendingReceipt) -> &str {
+    match (&receipt.sender, &receipt.sender_author) {
+        (Some(seat), _) => seat.as_str(),
+        (None, Some(EventAuthor::Programmatic(service))) => service.as_str(),
+        (None, _) => "system",
+    }
+}
+
 /// `pending_receipts [SEAT]`, then `MSG THREAD#SEQ from SENDER [due HH:MMZ]
 /// [overdue] [deferred: recipient catching up (until HH:MMZ)]`; the seat is on the header when every row shares it.
 fn pending_receipts(page: &Page<PendingReceipt>, out: &mut String) {
@@ -397,7 +407,7 @@ fn pending_receipts(page: &Page<PendingReceipt>, out: &mut String) {
             item.message.as_str(),
             item.thread.as_str(),
             item.sequence,
-            item.sender.as_str()
+            receipt_sender(item)
         ));
         if shared.is_none() {
             out.push_str(&format!(" to {}", item.seat.as_str()));

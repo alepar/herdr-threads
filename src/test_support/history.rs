@@ -312,6 +312,35 @@ fn ack_all(
     }
 }
 
+/// ACK `messages` as `seat` through the real ACK writer (fresh cooperative
+/// permit per attempt, retrying only `retryable` outcomes) and return the
+/// writer's result unchanged, so a caller can assert a repeat or partial ACK.
+pub fn ack_as(
+    context: &StoreContext,
+    conn: &mut Connection,
+    seat: &str,
+    messages: &[MessageId],
+    operation: &str,
+) -> Result<CommandResult, ApiError> {
+    let to = actor(conn, seat)?;
+    let request = Ack {
+        messages: messages.to_vec(),
+        operation: OperationId::new(operation),
+        claim: to.claim(),
+    };
+    let digest = schema::canonical_digest(&receipts::ack_payload(&request))?;
+    with_retries(|| {
+        let mut permit = to.permit(
+            context,
+            conn,
+            &request.operation,
+            ObligationRef::CheckIn(to.seat.clone()),
+            digest,
+        )?;
+        receipts::ack(context, conn, &unbounded(), &request, &mut permit)
+    })
+}
+
 /// `count` require-ack sends from `sender` in `thread` (whose joined members
 /// other than the sender are the recipients), each published and projected by
 /// the send worker, and ACKed by `recipient` in batches of 100 right after each

@@ -4,8 +4,8 @@ use super::*;
 use crate::{
     ports::{ServiceAuthorityGate, ServiceConnectionAuthority},
     protocol::service::{
-        ServiceRegister, ServiceRegistration, ServiceRequest, ServiceResult, ServiceWireRequest,
-        ServiceWireResponse,
+        SERVICE_SESSION_CAPABILITY_V2, ServiceOperation, ServiceRegister, ServiceRegistration,
+        ServiceRequest, ServiceResult, ServiceWireRequest, ServiceWireResponse,
     },
     service::live_gate::LiveServiceGate,
 };
@@ -170,7 +170,7 @@ pub async fn serve_registered(
         )
         .await;
     }
-    let ServiceRequest::Register(ServiceRegister { .. }) = &first.service else {
+    let ServiceRequest::Register(ServiceRegister { capability }) = &first.service else {
         return send(
             &mut stream,
             &response(
@@ -188,6 +188,8 @@ pub async fn serve_registered(
         )
         .await;
     };
+    // `first.validate()` accepted only v1 or v2. The session keeps what it negotiated.
+    let session_v2 = capability == SERVICE_SESSION_CAPABILITY_V2;
     // This reserved identity is stable across boots. C supplies its durable row.
     let author = crate::store::service_substrate::reserved_author_id(&instance);
     let (connection, session_cancellation) =
@@ -246,6 +248,32 @@ pub async fn serve_registered(
                 "duplicate service registration",
             ));
         };
+        if !session_v2
+            && matches!(
+                operation,
+                ServiceOperation::Send(_)
+                    | ServiceOperation::History(_)
+                    | ServiceOperation::Receipts(_)
+            )
+        {
+            send(
+                &mut stream,
+                &response(
+                    &request,
+                    &instance,
+                    &boot,
+                    Err(service_error(
+                        ErrorCode::Unsupported,
+                        "operation requires service_session_v2",
+                    )),
+                ),
+                expires,
+                &shutdown,
+                Some(&lease.cancellation),
+            )
+            .await?;
+            continue;
+        }
         let cancellation = Cancellation::default();
         let budget = CallBudget {
             deadline: MonoInstant(
@@ -291,6 +319,10 @@ pub async fn serve_registered(
 #[cfg(test)]
 #[path = "../../../tests/daemon/session_lease.rs"]
 mod session_lease_tests;
+
+#[cfg(test)]
+#[path = "../../../tests/daemon/service_session_capability.rs"]
+mod session_capability_tests;
 
 #[cfg(test)]
 mod send_tests {

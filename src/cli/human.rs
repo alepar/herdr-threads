@@ -412,6 +412,16 @@ fn message(details: &MessageDetails, out: &mut String) {
     }
 }
 
+/// The sender column: the native seat, else the programmatic service author,
+/// else `system`.
+fn receipt_sender(receipt: &PendingReceipt) -> &str {
+    match (&receipt.sender, &receipt.sender_author) {
+        (Some(seat), _) => seat.as_str(),
+        (None, Some(EventAuthor::Programmatic(service))) => service.as_str(),
+        (None, _) => "system",
+    }
+}
+
 fn pending(page: &Page<PendingReceipt>, out: &mut String) {
     if page.items.is_empty() {
         out.push_str("No pending receipts.\n");
@@ -425,7 +435,7 @@ fn pending(page: &Page<PendingReceipt>, out: &mut String) {
             vec![
                 receipt.message.as_str().to_owned(),
                 receipt.thread.as_str().to_owned(),
-                receipt.sender.as_str().to_owned(),
+                receipt_sender(receipt).to_owned(),
                 timestamp(receipt.decision_at),
                 receipt.deadline.map_or_else(|| "-".to_owned(), timestamp)
                     + if receipt.overdue { " (overdue)" } else { "" }

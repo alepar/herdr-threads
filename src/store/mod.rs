@@ -19,6 +19,7 @@ pub mod schema;
 pub mod seats;
 pub mod service_controls;
 pub mod service_events;
+pub mod service_send;
 pub mod service_substrate;
 pub mod summary;
 pub mod wake;
@@ -195,6 +196,19 @@ impl Drop for WriterProgressGuard<'_> {
     }
 }
 impl SqliteStore {
+    fn check_service_read_instance(
+        &self,
+        connection: &crate::ports::ServiceConnectionAuthority,
+    ) -> Result<(), ApiError> {
+        if connection.instance() != self.instance {
+            return Err(api_error(
+                ErrorCode::Unauthorized,
+                "service instance mismatch",
+            ));
+        }
+        Ok(())
+    }
+
     /// Spec §9 join hint: a committed (or replayed) plain accept names the
     /// thread when it already holds one full summary chunk. Computed after the
     /// commit from a fresh read and never stored; a failed read means no hint,
@@ -1261,6 +1275,59 @@ impl StorePort for SqliteStore {
         operation
             .validate()
             .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
+        match operation {
+            crate::protocol::service::ServiceOperation::Send(ref request) => {
+                return self.service_send_with_admission(
+                    request,
+                    connection,
+                    gate,
+                    budget,
+                    admission,
+                    |_, _| {},
+                );
+            }
+            // Reads run on the reader path: no writer, no admission turn, no
+            // authority guard, nothing mutated.
+            crate::protocol::service::ServiceOperation::History(ref q) => {
+                self.check_service_read_instance(connection)?;
+                return match queries::query_with_output(
+                    &self.context,
+                    &self.instance,
+                    &Command::History(crate::protocol::commands::HistoryQuery {
+                        thread: q.thread.clone(),
+                        page: q.page.clone(),
+                        initial: q.initial.clone(),
+                        full_bodies: false,
+                    }),
+                    &crate::protocol::output::OutputSpec::default(),
+                    budget,
+                )? {
+                    CommandResult::History(page) => {
+                        Ok(crate::protocol::service::ServiceResult::History(page))
+                    }
+                    _ => Err(api_error(ErrorCode::StoreCorrupt, "unexpected read result")),
+                };
+            }
+            crate::protocol::service::ServiceOperation::Receipts(ref q) => {
+                self.check_service_read_instance(connection)?;
+                return match queries::service_receipts(
+                    &self.context,
+                    &self.instance,
+                    connection.author(),
+                    &crate::protocol::commands::DeliveryInspectQuery {
+                        message: q.message.clone(),
+                        page: q.page.clone(),
+                    },
+                    budget,
+                )? {
+                    CommandResult::DeliveryInspect(inspection) => Ok(
+                        crate::protocol::service::ServiceResult::Receipts(inspection),
+                    ),
+                    _ => Err(api_error(ErrorCode::StoreCorrupt, "unexpected read result")),
+                };
+            }
+            _ => {}
+        }
         if let crate::protocol::service::ServiceOperation::Notify(ref request) = operation {
             return self.service_notify_with_admission(
                 request,
@@ -2424,6 +2491,9 @@ mod page_cursor_seam_tests;
 #[cfg(test)]
 #[path = "../../tests/store/page_cursor.rs"]
 mod page_cursor_tests;
+#[cfg(test)]
+#[path = "../../tests/store/service_reads.rs"]
+mod service_reads_tests;
 #[cfg(test)]
 #[path = "../../tests/store/facade.rs"]
 mod tests;

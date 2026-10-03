@@ -2268,6 +2268,110 @@ class RequiredScenarioTests(ScenarioBase):
         self.assertIn(f"herdr-threads leave {self.SVC}", text)
 
 
+class ServiceSendVerdicts(ScenarioBase):
+    """--scenario servicesend (ht-5nb.4): the model ACKs a service-authored request by its exact ID."""
+    SCENARIO = "servicesend"
+    SVC = "svc-send-thread"
+    SVC_MSG = "msg-svc"
+    AUTHOR = "author-1"
+
+    def setUp(self):
+        super().setUp()
+        self.driver.facts["servicesend"] = {"thread": self.SVC, "author": self.AUTHOR, "message": self.SVC_MSG,
+                                            "invitation": "inv-r", "requirement": "req-1", "revision": 1}
+        self.db.execute("INSERT INTO service_authors(id,instance_id,created_at) VALUES (?,'i',0)", (self.AUTHOR,))
+        self.db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?,'i','t','g',0,0)", (self.SVC,))
+        self.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,author_kind,author_service_id,actor_seat_id,"
+                        "decision_seq,decision_at) VALUES (?,?,?,1,'ordinary','do it','programmatic',?,NULL,40,1)",
+                        (self.SVC_MSG, "i", self.SVC, self.AUTHOR))
+        self.db.execute("INSERT INTO send_manifests VALUES ('prep-svc',?, 'i', ?, 6, 0, 3, 1, 1, 0)", (self.SVC_MSG, self.SVC))
+        self.db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) "
+                        "VALUES ('prep-svc', ?, ?, 1, 900000, 0)", (self.SVC, SEAT))
+        self.db.commit()
+
+    def ack(self, provenance="cooperative_top_level", actor=SEAT):
+        observation = json.dumps({"harness": "claude", "session": SESSION, "provenance": provenance, "execution": "exec-root"})
+        self.db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_actor_seat_id,ack_generation,ack_observation,acked_at) "
+                        "VALUES (?,?,'acked',?,1,?,1)", (self.SVC_MSG, SEAT, actor, observation))
+        self.db.commit()
+
+    def test_root_ack_with_cooperative_provenance_passes(self):
+        self.ack()
+        self.call("toolu_s", f"herdr-threads ack {self.SVC_MSG}")
+        status, detail, _ = self.driver.s_servicesend_ack()
+        self.assertEqual(status, demo.PASS, detail)
+        self.assertIn("cooperative_top_level", detail)
+        self.assertIn("toolu_s", detail)
+        record = json.loads((self.driver.ev / "servicesend-ack.json").read_text())
+        self.assertEqual((record["provenance"], len(record["root_ack_calls"])), ("cooperative_top_level", 1))
+
+    def test_acked_without_a_root_call_fails(self):
+        self.ack()
+        self.call("toolu_e", f'echo "herdr-threads ack {self.SVC_MSG}"')
+        self.assertEqual(self.driver.s_servicesend_ack()[0], demo.FAIL)
+
+    def test_acked_by_a_child_call_is_not_a_root_ack(self):
+        self.ack()
+        self.call("toolu_c", f"herdr-threads ack {self.SVC_MSG}", parent="toolu_task", sidechain=True)
+        self.assertEqual(self.driver.s_servicesend_ack()[0], demo.FAIL)
+
+    def test_ack_by_another_actor_fails(self):
+        self.ack(actor=COORD)
+        self.call("toolu_s", f"herdr-threads ack {self.SVC_MSG}")
+        status, detail, _ = self.driver.s_servicesend_ack()
+        self.assertEqual(status, demo.FAIL)
+        self.assertIn(COORD, detail)
+
+    def test_ack_with_non_model_provenance_fails(self):
+        self.ack(provenance="operator_assertion")
+        self.call("toolu_s", f"herdr-threads ack {self.SVC_MSG}")
+        self.assertEqual(self.driver.s_servicesend_ack()[0], demo.FAIL)
+
+    def test_unacked_request_with_unseen_instruction_is_not_exercised(self):
+        self.call("toolu_x", "herdr-threads inbox")
+        gated = self.driver.gate_on_instruction("servicesend", self.driver.s_servicesend_ack())
+        self.assertEqual(gated[0], demo.NOT_EXERCISED, gated[1])
+        self.assertIn("never saw", gated[1])
+
+    def test_unacked_request_with_seen_instruction_fails(self):
+        self.call("toolu_x", "herdr-threads inbox")
+        self.result("toolu_x", f"a) {demo.SCENARIO_MARKERS['servicesend']} {self.SVC}: accept-required it")
+        gated = self.driver.gate_on_instruction("servicesend", self.driver.s_servicesend_ack())
+        self.assertEqual(gated[0], demo.FAIL, gated[1])
+
+    def test_programmatic_message_without_author_receipt_passes(self):
+        status, detail, _ = self.driver.s_servicesend_author()
+        self.assertEqual(status, demo.PASS, detail)
+
+    def test_seat_authored_message_fails_the_author_check(self):
+        self.db.execute("UPDATE messages SET author_kind=NULL, author_service_id=NULL, actor_seat_id=? WHERE id=?", (COORD, self.SVC_MSG))
+        self.db.commit()
+        self.assertEqual(self.driver.s_servicesend_author()[0], demo.FAIL)
+
+    def test_receipt_row_for_the_author_fails_the_author_check(self):
+        self.db.execute("INSERT INTO receipt_state(message_id,seat_id,state) VALUES (?,?,'pending')", (self.SVC_MSG, self.AUTHOR))
+        self.db.commit()
+        self.assertEqual(self.driver.s_servicesend_author()[0], demo.FAIL)
+
+    def test_steps_are_registered_and_gated(self):
+        driver = self.driver
+        for sid in ("S17", "SS0"):
+            driver.record(sid, sid, demo.PASS, "ok")
+        self.call("toolu_x", "herdr-threads inbox")
+        driver.scenario_verdicts()
+        status = {row["step"]: row["status"] for row in driver.steps}
+        self.assertEqual(status["SS1"], demo.NOT_EXERCISED)
+        self.assertEqual(status["SS2"], demo.PASS)
+
+    def test_scenario_is_selectable(self):
+        self.assertEqual(demo.parse_scenarios("servicesend"), ["servicesend"])
+        self.assertEqual(demo.parse_scenarios("required,servicesend"), ["required", "servicesend"])
+
+    def test_handoff_names_the_service_thread(self):
+        text = self.driver.scenario_instructions("initial")
+        self.assertIn(f"Service request, thread {self.SVC}: accept-required it", text)
+
+
 class ServiceWireTests(unittest.TestCase):
     """The Python D2 service client speaks the daemon framing and the ServiceWireRequest shape."""
 
@@ -2305,6 +2409,10 @@ class ServiceWireTests(unittest.TestCase):
                         result = {"Ok": {"kind": "invitation", "data": {"invitation": "inv-r", "requirement": {
                             "requirement": "req-1", "revision": 1, "invitation": "inv-r", "thread": service["args"]["args"]["thread"],
                             "seat": SEAT, "issuer": "author-1", "state": "pending", "accepted_by": None, "accepted_at": None}}}}
+                    elif kind == "send":
+                        result = {"Ok": {"kind": "message_sent", "data": {"summary": {"message": "msg-svc", "thread": "t", "sequence": 3},
+                                                                        "author": "author-1", "recipient_count": 1,
+                                                                        "receipt_duration_millis": 900000}}}
                     else:
                         result = {"Ok": {"kind": "thread_ensured", "data": {}}}
                     reply = json.dumps({"version": demo.WIRE_VERSION, "request_id": request["request_id"], "instance": request["expected_instance"],
@@ -2333,6 +2441,22 @@ class ServiceWireTests(unittest.TestCase):
         self.assertEqual({r["expected_instance"] for r in self.requests}, {"00000000-0000-4000-8000-000000000001"})
         self.assertEqual(self.requests[0]["service"]["args"], {"capability": "service_session_v1"})
         self.assertEqual(self.driver.facts["required"]["requirement"], "req-1")
+        self.assertTrue((self.driver.ev / "service-client.json").exists())
+
+    def test_servicesend_setup_registers_v2_and_sends_an_ack_required_request(self):
+        self.driver.scenarios = demo.parse_scenarios("servicesend")
+        status, detail, _ = self.driver.s_servicesend_setup()
+        self.assertEqual(status, demo.PASS, detail)
+        kinds = [r["service"]["kind"] if r["service"]["kind"] == "register" else r["service"]["args"]["kind"] for r in self.requests]
+        self.assertEqual(kinds, ["register", "ensure_thread", "invite", "send"])
+        self.assertEqual(self.requests[0]["service"]["args"], {"capability": "service_session_v2"})
+        send = self.requests[3]["service"]["args"]["args"]
+        self.assertEqual((send["recipients"], send["deadline_millis"], send["operation"]),
+                         ([SEAT], 900000, f"{send['thread']}-send"))
+        self.assertIn("ACK this message by its exact ID", send["body"])
+        facts = self.driver.facts["servicesend"]
+        self.assertEqual((facts["message"], facts["author"], facts["requirement"]), ("msg-svc", "author-1", "req-1"))
+        self.assertIn(facts["thread"], self.driver.scenario_instructions("initial"))
         self.assertTrue((self.driver.ev / "service-client.json").exists())
 
     def test_service_refusal_is_a_driver_failure_not_a_pass(self):
@@ -2532,7 +2656,8 @@ class HandoffPreviewTests(unittest.TestCase):
         self.addCleanup(driver.cmdlog.close)
         driver.scenarios = demo.parse_scenarios(scenario)
         driver.facts.update({"thread": UUID_THREAD, "agent_seat": SEAT, "coordinator_seat": COORD, "coordinator_pane": "w1:p2",
-                             "messages": {}, "required": {"thread": UUID_THREAD}})
+                             "messages": {}, "required": {"thread": UUID_THREAD},
+                             "servicesend": {"thread": UUID_THREAD}})
         self.calls = []
         driver.ht = lambda *argv, **kw: (self.calls.append(argv), (0, json.dumps({"message_id": "m"}), ""))[1]
         return driver
@@ -2541,7 +2666,7 @@ class HandoffPreviewTests(unittest.TestCase):
         return self.calls[-1][self.calls[-1].index("--body") + 1]
 
     def test_each_scenario_instruction_alone_fits_the_preview(self):
-        for scenario in ("midturn", "burst", "required"):
+        for scenario in ("midturn", "burst", "required", "servicesend"):
             with self.subTest(scenario=scenario):
                 driver = self.driver_for(scenario)
                 driver.send("initial")

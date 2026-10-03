@@ -5,14 +5,30 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ids::{InvitationId, OperationId, RequirementId, SeatId, ServiceAuthorId, ThreadId},
+    commands::{HistoryRange, MAX_BATCH_ITEMS},
+    ids::{InvitationId, MessageId, OperationId, RequirementId, SeatId, ServiceAuthorId, ThreadId},
     pagination::{Page, PageRequest},
-    results::{MessageKind, MessageSummary},
+    results::{DeliveryInspection, MessageKind, MessageSummary},
     time::UtcMillis,
     wire::PROTOCOL_VERSION,
 };
 
 pub const SERVICE_SESSION_CAPABILITY: &str = "service_session_v1";
+/// The v1 operations plus `Send`, `History` and `Receipts`. A client registers
+/// with this name; an old daemon rejects it at register ("unsupported service
+/// capability") and there is no silent fallback to v1.
+pub const SERVICE_SESSION_CAPABILITY_V2: &str = "service_session_v2";
+/// Same bound as native `store::messages::MAX_BODY_BYTES` (protocol must not
+/// depend on store; a test pins equality).
+pub const SERVICE_SEND_MAX_BODY_BYTES: usize = 65_536;
+
+/// Whether a registering client's capability name is one this build serves.
+pub fn is_supported_service_capability(name: &str) -> bool {
+    matches!(
+        name,
+        SERVICE_SESSION_CAPABILITY | SERVICE_SESSION_CAPABILITY_V2
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -132,6 +148,45 @@ pub enum ServiceOperation {
     ReleaseRequirement(ReleaseRequirement),
     Archive(ServiceThreadMutation),
     Reopen(ServiceThreadMutation),
+    /// Mutation, journaled (`operation_key` is `Some`). Requires `service_session_v2`.
+    Send(ServiceSend),
+    /// Query, never journaled. Requires `service_session_v2`.
+    History(ServiceHistoryQuery),
+    /// Query, never journaled. Requires `service_session_v2`.
+    Receipts(ServiceReceiptsQuery),
+}
+
+/// Post an ordinary receipt-bearing message into a service-managed thread.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceSend {
+    /// Must be managed by this service author and not archived.
+    pub thread: ThreadId,
+    /// Non-empty, at most `SERVICE_SEND_MAX_BODY_BYTES` bytes.
+    pub body: String,
+    /// Explicit additions to the joined snapshot: at most 100, no duplicates.
+    pub recipients: Vec<SeatId>,
+    /// `None` is the instance default receipt duration; `Some` must be positive.
+    pub deadline_millis: Option<u64>,
+    pub operation: OperationId,
+}
+
+/// Read a managed thread's history; mirrors the native history query.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceHistoryQuery {
+    pub thread: ThreadId,
+    pub page: PageRequest,
+    /// Initial selector; conflicts with a page cursor.
+    pub initial: Option<HistoryRange>,
+}
+
+/// Read the receipt state of one of this service author's own messages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceReceiptsQuery {
+    pub message: MessageId,
+    pub page: PageRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -217,6 +272,9 @@ pub enum ServiceResult {
     RequirementReleased(RequiredMembership),
     Archived(ManagedThread),
     Reopened(ManagedThread),
+    MessageSent(ServiceMessageSent),
+    History(Page<MessageSummary>),
+    Receipts(DeliveryInspection),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,6 +292,19 @@ pub struct ServiceRegistration {
 pub struct ServiceNotification {
     pub summary: MessageSummary,
     pub author: ServiceAuthorId,
+}
+
+/// Mirrors `ServiceNotification`: native-compatible summary plus the exact
+/// durable author.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceMessageSent {
+    pub summary: MessageSummary,
+    pub author: ServiceAuthorId,
+    /// Receipt obligations created, at least 1. Their live state comes from
+    /// `Receipts`, not from this result.
+    pub recipient_count: u64,
+    pub receipt_duration_millis: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -294,7 +365,7 @@ impl ServiceWireRequest {
         }
         match &self.service {
             ServiceRequest::Register(register) => {
-                if register.capability != SERVICE_SESSION_CAPABILITY {
+                if !is_supported_service_capability(&register.capability) {
                     return Err("unsupported service capability");
                 }
             }
@@ -326,6 +397,8 @@ impl ServiceOperation {
             Self::SetTopic(request) => Some(&request.operation),
             Self::ReleaseRequirement(request) => Some(&request.operation),
             Self::Archive(request) | Self::Reopen(request) => Some(&request.operation),
+            Self::Send(request) => Some(&request.operation),
+            Self::History(_) | Self::Receipts(_) => None,
         }
     }
 }
@@ -352,14 +425,54 @@ impl ServiceOperation {
                 Err("notification event exceeds byte bound")
             }
             Self::Membership(request) => request.page.validate(),
+            Self::Send(request) => request.validate(),
+            Self::History(request) => request.validate(),
+            Self::Receipts(request) => request.page.validate(),
             _ => Ok(()),
         }
+    }
+}
+
+impl ServiceSend {
+    fn validate(&self) -> Result<(), &'static str> {
+        if self.body.is_empty() {
+            return Err("service message body is empty");
+        }
+        if self.body.len() > SERVICE_SEND_MAX_BODY_BYTES {
+            return Err("service message body exceeds byte bound");
+        }
+        if self.deadline_millis == Some(0) {
+            return Err("deadline must be positive");
+        }
+        if self.recipients.len() > MAX_BATCH_ITEMS {
+            return Err("too many explicit recipients");
+        }
+        let distinct: std::collections::HashSet<&SeatId> = self.recipients.iter().collect();
+        if distinct.len() != self.recipients.len() {
+            return Err("duplicate explicit recipient");
+        }
+        Ok(())
+    }
+}
+
+impl ServiceHistoryQuery {
+    fn validate(&self) -> Result<(), &'static str> {
+        if self.initial.is_some() && self.page.cursor.is_some() {
+            return Err("history selector conflicts with cursor");
+        }
+        if let Some(HistoryRange::Recent { count }) = &self.initial
+            && (*count == 0 || *count > 100)
+        {
+            return Err("invalid recent history count");
+        }
+        self.page.validate()
     }
 }
 
 #[cfg(test)]
 mod contract_tests {
     use super::*;
+    use crate::protocol::pagination::Cursor;
     use crate::protocol::{
         authority::{CallerClaim, CallerRole, Harness},
         commands::{AcceptRequired, Command},
@@ -380,6 +493,252 @@ mod contract_tests {
                 capability: SERVICE_SESSION_CAPABILITY.into(),
             }),
         }
+    }
+
+    fn send_op(body: &str, recipients: Vec<SeatId>, deadline: Option<u64>) -> ServiceOperation {
+        ServiceOperation::Send(ServiceSend {
+            thread: ThreadId::new("thread-1"),
+            body: body.into(),
+            recipients,
+            deadline_millis: deadline,
+            operation: OperationId::new("send-1"),
+        })
+    }
+
+    fn seats(count: usize) -> Vec<SeatId> {
+        (0..count)
+            .map(|n| SeatId::new(format!("seat-{n}")))
+            .collect()
+    }
+
+    fn history_op(initial: Option<HistoryRange>, page: PageRequest) -> ServiceOperation {
+        ServiceOperation::History(ServiceHistoryQuery {
+            thread: ThreadId::new("thread-1"),
+            page,
+            initial,
+        })
+    }
+
+    fn valid_cursor() -> String {
+        use crate::protocol::pagination::{CursorDirection, CursorScope};
+        Cursor {
+            instance: INSTANCE.into(),
+            scope: CursorScope::Directory,
+            scope_key: "all".into(),
+            filter_digest: "digest".into(),
+            direction: CursorDirection::Ascending,
+            order_version: 1,
+            last_examined_key: None,
+            after_ordinal: 1,
+            high_water_ordinal: 5,
+            scope_revision: Some(1),
+            filter_revision: None,
+            search: None,
+            inbox: None,
+            attention: None,
+            binding: None,
+        }
+        .encode()
+        .unwrap()
+    }
+
+    fn bad_page() -> PageRequest {
+        PageRequest {
+            limit: 0,
+            ..PageRequest::default()
+        }
+    }
+
+    #[test]
+    fn register_accepts_v1_and_v2_only() {
+        for capability in [SERVICE_SESSION_CAPABILITY, SERVICE_SESSION_CAPABILITY_V2] {
+            let mut request = registration();
+            request.service = ServiceRequest::Register(ServiceRegister {
+                capability: capability.into(),
+            });
+            assert_eq!(request.validate(), Ok(()), "{capability}");
+        }
+        for capability in ["service_session_v3", "", "future-service"] {
+            let mut request = registration();
+            request.service = ServiceRequest::Register(ServiceRegister {
+                capability: capability.into(),
+            });
+            assert_eq!(
+                request.validate(),
+                Err("unsupported service capability"),
+                "{capability:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn operation_keys_are_some_only_for_send_among_new_ops() {
+        let key = OperationId::new("send-1");
+        assert_eq!(send_op("hi", vec![], None).operation_key(), Some(&key));
+        assert_eq!(
+            history_op(None, PageRequest::default()).operation_key(),
+            None
+        );
+        let receipts = ServiceOperation::Receipts(ServiceReceiptsQuery {
+            message: MessageId::new("m-1"),
+            page: PageRequest::default(),
+        });
+        assert_eq!(receipts.operation_key(), None);
+    }
+
+    #[test]
+    fn send_validation_rejects_bad_payloads() {
+        let max = "a".repeat(SERVICE_SEND_MAX_BODY_BYTES);
+        let over = "a".repeat(SERVICE_SEND_MAX_BODY_BYTES + 1);
+        let duplicate = vec![SeatId::new("seat-1"), SeatId::new("seat-1")];
+        for (op, error) in [
+            (send_op("", vec![], None), "service message body is empty"),
+            (
+                send_op(&over, vec![], None),
+                "service message body exceeds byte bound",
+            ),
+            (send_op("x", vec![], Some(0)), "deadline must be positive"),
+            (
+                send_op("x", seats(101), None),
+                "too many explicit recipients",
+            ),
+            (
+                send_op("x", duplicate, None),
+                "duplicate explicit recipient",
+            ),
+        ] {
+            assert_eq!(op.validate(), Err(error));
+        }
+        for op in [
+            send_op("x", vec![], None),
+            send_op(&max, vec![], None),
+            send_op("x", seats(100), None),
+            send_op("x", vec![], Some(1)),
+        ] {
+            assert_eq!(op.validate(), Ok(()));
+        }
+    }
+
+    #[test]
+    fn history_validation_mirrors_native() {
+        let with_cursor = |cursor: String| PageRequest {
+            cursor: Some(cursor),
+            ..PageRequest::default()
+        };
+        for count in [0, 101] {
+            assert_eq!(
+                history_op(Some(HistoryRange::Recent { count }), PageRequest::default()).validate(),
+                Err("invalid recent history count")
+            );
+        }
+        assert_eq!(
+            history_op(
+                Some(HistoryRange::After { sequence: 3 }),
+                with_cursor(valid_cursor())
+            )
+            .validate(),
+            Err("history selector conflicts with cursor")
+        );
+        assert_eq!(
+            history_op(None, bad_page()).validate(),
+            Err("invalid page limit")
+        );
+        for op in [
+            history_op(
+                Some(HistoryRange::Recent { count: 100 }),
+                PageRequest::default(),
+            ),
+            history_op(
+                Some(HistoryRange::After { sequence: 3 }),
+                PageRequest::default(),
+            ),
+            history_op(None, with_cursor(valid_cursor())),
+        ] {
+            assert_eq!(op.validate(), Ok(()));
+        }
+    }
+
+    #[test]
+    fn receipts_validation_checks_page() {
+        let receipts = |page| {
+            ServiceOperation::Receipts(ServiceReceiptsQuery {
+                message: MessageId::new("m-1"),
+                page,
+            })
+        };
+        assert_eq!(receipts(bad_page()).validate(), Err("invalid page limit"));
+        assert_eq!(receipts(PageRequest::default()).validate(), Ok(()));
+    }
+
+    #[test]
+    fn send_frame_rejects_forged_authority_fields() {
+        let request = ServiceWireRequest {
+            version: PROTOCOL_VERSION,
+            request_id: "request-2".into(),
+            expected_instance: INSTANCE.into(),
+            service: ServiceRequest::Operation(send_op("hi", seats(1), None)),
+        };
+        let decodes =
+            |value: &Value| ServiceWireRequest::decode(&serde_json::to_vec(value).unwrap());
+        let mut frame = serde_json::to_value(&request).unwrap();
+        assert_eq!(decodes(&frame).unwrap(), request);
+        assert_eq!(frame["service"]["kind"], "operation");
+        assert_eq!(frame["service"]["args"]["kind"], "send");
+        frame["service"]["args"]["args"]["author"] = json!("graph");
+        assert!(decodes(&frame).is_err());
+        frame["service"]["args"]["args"]
+            .as_object_mut()
+            .unwrap()
+            .remove("author");
+        frame["service"]["args"]["args"]["connection_generation"] = json!(3);
+        assert!(decodes(&frame).is_err());
+        frame["service"]["args"]["args"]
+            .as_object_mut()
+            .unwrap()
+            .remove("connection_generation");
+        assert!(decodes(&frame).is_ok());
+        frame["author"] = json!("graph");
+        assert!(decodes(&frame).is_err());
+    }
+
+    #[test]
+    fn new_results_roundtrip() {
+        let summary = json!({
+            "message": "m-1", "thread": "t-1", "author": null,
+            "event_author": {"kind": "programmatic", "id": "graph"},
+            "kind": "ordinary", "sequence": 4, "created_at": 1,
+            "actor_label": "herdr-graph", "preview_data": "do it",
+            "preview_omitted": false, "preview_detail_argv": null
+        });
+        let page = |items: Value| {
+            json!({"items": items, "next_cursor": null, "next_argv": null,
+                "high_water_ordinal": 0, "scope_revision": null, "has_more": false,
+                "stop_reason": "complete", "consistency": "bounded_live"})
+        };
+        let sent = json!({"kind": "message_sent", "data": {
+            "summary": summary, "author": "graph", "recipient_count": 2,
+            "receipt_duration_millis": 60000}});
+        let history = json!({"kind": "history", "data": page(json!([summary]))});
+        let receipts = json!({"kind": "receipts", "data": {
+            "message": summary,
+            "delivery": {"committed": 1, "attempted": null, "submitted": null,
+                "read": null, "acknowledged": 0},
+            "recipients": page(json!([]))}});
+        for fixture in [sent.clone(), history, receipts] {
+            let parsed: ServiceResult = serde_json::from_value(fixture.clone()).unwrap();
+            assert_eq!(serde_json::to_value(parsed).unwrap(), fixture);
+        }
+        let mut extra = sent;
+        extra["data"]["recipients"] = json!([]);
+        assert!(serde_json::from_value::<ServiceResult>(extra).is_err());
+    }
+
+    #[test]
+    fn send_body_bound_matches_native() {
+        assert_eq!(
+            SERVICE_SEND_MAX_BODY_BYTES,
+            crate::store::messages::MAX_BODY_BYTES
+        );
     }
 
     #[test]

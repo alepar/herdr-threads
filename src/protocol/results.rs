@@ -975,7 +975,12 @@ pub struct PendingReceipt {
     pub thread: ThreadId,
     pub seat: SeatId,
     pub sequence: u64,
-    pub sender: SeatId,
+    /// The native sender seat; `None` for a service-authored message.
+    pub sender: Option<SeatId>,
+    /// Set only when the sender is not a native seat (a programmatic service
+    /// author), so native rows serialize exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_author: Option<crate::protocol::service::EventAuthor>,
     pub decision_at: UtcMillis,
     pub available_at: Option<UtcMillis>,
     pub deadline: Option<UtcMillis>,

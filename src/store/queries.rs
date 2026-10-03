@@ -39,6 +39,7 @@ use crate::protocol::{
         RetirementStatus, SearchHit, SearchPage, SeatHistoryItem, SeatInspection, SeatSummary,
         StructuredEvent, ThreadDetails, ThreadSummary, WarningRecipient, WarningRef,
     },
+    service::EventAuthor,
     time::{CallBudget, Clock, MonoInstant, UtcMillis},
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -233,6 +234,62 @@ pub fn query_with_output(
         )),
     };
     result.map_err(|error| query_error(error, &active_budget, store.clock(), command, output))
+}
+
+/// The author-scoped `DeliveryInspect` behind the service `Receipts` read: the
+/// message must be an ordinary message authored by `author` (a native message,
+/// a notification or another author's message is `InvalidRequest`). The
+/// ownership check and the inspection share one read transaction; nothing is
+/// written and no writer or lane turn is taken.
+pub fn service_receipts(
+    store: &StoreContext,
+    instance: &str,
+    author: &crate::protocol::ids::ServiceAuthorId,
+    q: &DeliveryInspectQuery,
+    budget: &CallBudget,
+) -> Result<CommandResult, ApiError> {
+    let command = Command::DeliveryInspect(q.clone());
+    let output = OutputSpec::default();
+    command
+        .validate()
+        .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
+    let db = store
+        .open_query(budget.clone())
+        .map_err(|error| query_error(error, budget, store.clock(), &command, &output))?;
+    db.execute_batch("BEGIN DEFERRED").map_err(|error| {
+        query_error(
+            db.map_error(error),
+            budget,
+            store.clock(),
+            &command,
+            &output,
+        )
+    })?;
+    let result = (|| {
+        if !message_owned(&db, instance, &q.message)? {
+            return Err(api_error(ErrorCode::NotFound, "message not found"));
+        }
+        let kind: String = db
+            .query_row(
+                "SELECT kind FROM messages WHERE id=?1",
+                [q.message.as_str()],
+                |r| r.get(0),
+            )
+            .map_err(|e| db.map_error(e))?;
+        let own = kind == "ordinary"
+            && matches!(
+                super::service_substrate::message_author(&db, &q.message)?,
+                crate::protocol::service::EventAuthor::Programmatic(a) if a == *author
+            );
+        if !own {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "message is not authored by this service",
+            ));
+        }
+        delivery_inspect(&db, instance, q, store.clock().utc_now(), &output)
+    })();
+    result.map_err(|error| query_error(error, budget, store.clock(), &command, &output))
 }
 
 fn query_error(
@@ -4474,24 +4531,24 @@ fn pending_receipts(
             {
                 continue;
             }
-            let sender: Option<String> = db
-                .query_row(
-                    "SELECT actor_seat_id FROM messages WHERE id=?1",
-                    [&receipt.message_id],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(|e| db.map_error(e))?
-                .flatten();
-            let sender = sender
-                .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "receipt sender missing"))?;
+            let (sender, sender_author) = match super::service_substrate::message_author(
+                db,
+                &MessageId::new(&receipt.message_id),
+            )? {
+                EventAuthor::Native(seat) => (Some(seat), None),
+                author @ EventAuthor::Programmatic(_) => (None, Some(author)),
+                EventAuthor::BuiltIn => {
+                    return Err(api_error(ErrorCode::StoreCorrupt, "receipt sender missing"));
+                }
+            };
             let display = deadline_display(db, receipt, now)?;
             let item = PendingReceipt {
                 message: MessageId::new(&receipt.message_id),
                 thread: ThreadId::new(&receipt.thread_id),
                 seat: SeatId::new(&receipt.seat_id),
                 sequence: receipt.sequence as u64,
-                sender: SeatId::new(sender),
+                sender,
+                sender_author,
                 decision_at: UtcMillis(receipt.decision_at),
                 available_at: receipt.available_at.map(UtcMillis),
                 deadline: receipt.deadline_at.map(UtcMillis),

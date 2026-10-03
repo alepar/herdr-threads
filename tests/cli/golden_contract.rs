@@ -19,7 +19,7 @@ use crate::protocol::{
         NoticeOffer, Participant, PendingReceipt, SearchHit, SearchPage, ThreadDetails,
         ThreadSummary, WarningRef,
     },
-    service::{RequiredMembership, RequirementState},
+    service::{EventAuthor, RequiredMembership, RequirementState},
     time::UtcMillis,
 };
 use std::{collections::BTreeSet, path::PathBuf};
@@ -195,7 +195,8 @@ mod fixtures {
             thread: ThreadId::new("t-1"),
             seat: SeatId::new("seat-a"),
             sequence,
-            sender: SeatId::new("seat-b"),
+            sender: Some(SeatId::new("seat-b")),
+            sender_author: None,
             decision_at: old(),
             available_at: None,
             deadline,
@@ -667,6 +668,19 @@ fn older_timestamps_carry_a_date() {
     assert!(out.contains("due 10-03 09:30Z\n"), "{out}");
     let out = human(&CommandResult::History(history_page()));
     assert!(out.contains("[09-28 08:45] <seat-a> hello there"), "{out}");
+}
+
+#[test]
+fn pending_receipts_name_a_service_sender() {
+    let mut page = pending_receipts_page();
+    page.items.truncate(1);
+    page.items[0].sender = None;
+    page.items[0].sender_author = Some(EventAuthor::Programmatic(ServiceAuthorId::new("graph")));
+    let out = compact(&CommandResult::PendingReceipts(page.clone()));
+    assert!(out.contains("from graph"), "{out}");
+    let out = human(&CommandResult::PendingReceipts(page));
+    let row = out.lines().find(|line| line.contains("msg-3")).unwrap();
+    assert!(row.contains("graph") && !row.contains("seat-b"), "{out}");
 }
 
 #[test]
