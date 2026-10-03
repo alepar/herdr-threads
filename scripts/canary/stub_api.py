@@ -11,7 +11,7 @@ import sys
 _here = __import__("os").path.dirname(__import__("os").path.abspath(__file__))
 sys.path[:] = [p for p in sys.path if p not in ("", _here)]
 
-import argparse, http.server, json, threading
+import argparse, http.server, json, socketserver, threading
 
 BODY = json.dumps({"type": "error", "error": {"type": "authentication_error", "message": "canary stub: invalid"}}).encode()
 
@@ -38,8 +38,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+class LoopbackHTTPServer(http.server.ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer resolves server_name through getfqdn before startup. This
+        # loopback-only fixture has no hostname dependency or virtual hosts.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "localhost"
+        self.server_port = self.server_address[1]
+
+
 def serve(lifetime):
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = LoopbackHTTPServer(("127.0.0.1", 0), Handler)
     server.daemon_threads = True
     print(server.server_address[1], flush=True)
     timer = threading.Timer(lifetime, server.shutdown)
