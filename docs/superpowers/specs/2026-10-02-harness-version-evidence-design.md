@@ -226,3 +226,9 @@ signing the manifest.
 ## Post-Implementation Notes
 
 > *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
+
+**Changes vs. original design (2026-10-02, super-auto run 2026-10-02-harness-version-evidence):**
+- Codex resumed sessions are never attributed: the spike (docs/compatibility/harness-transcript-version.md) found a resumed rollout keeps the creator's single `session_meta`, so the hook marks the session resumed on SessionStart source=resume and records nothing for its later events (ht-xoc.18). Untested live: that Codex sends source=resume under the same session_id (the capture was refused by the permission layer).
+- The payload parse-failure note moved from Health to `doctor`; Health renders `VersionRefused` as nothing (ht-xoc.5).
+- One `settings.json` schema serves the service config and `harness_manifest` (ht-xoc.12).
+- Open (report.md Remaining): the evidence step runs before `observe_harness_in` on the hook path and shares its budget; `doctor` would say "working" for a locally verified version inside a recipe `known_broken` range (both lists empty today).
