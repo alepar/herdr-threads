@@ -29,7 +29,7 @@ fn manifest_matches_pinned_091_documented_argv_shape() {
     let doc: serde_json::Value = serde_json::from_slice(&parse.stdout).unwrap();
     assert_eq!(doc["id"], "herdr-threads");
     assert_eq!(doc["name"], "Threads");
-    assert_eq!(doc["version"], "0.1.0");
+    assert_eq!(doc["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(doc["min_herdr_version"], "0.9.1");
     assert_eq!(doc["platforms"], serde_json::json!(["macos", "linux"]));
     assert_eq!(

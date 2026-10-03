@@ -58,7 +58,12 @@ impl Plugin {
     }
     /// The machine text an agent's tool call sees (stdout is a pipe).
     fn text(&self, agent: Option<(&str, &str, &str)>, args: &[&str]) -> String {
-        let output = self.command(agent, false).args(args).output().unwrap();
+        let output = self
+            .command(agent, false)
+            .arg("--machine")
+            .args(args)
+            .output()
+            .unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         assert!(
             output.status.success(),

@@ -1639,13 +1639,24 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
     else {
         panic!()
     };
-    // Accepted: no invitation is pending, and the overdue warning settled with
-    // it, so under the pending-count contract (wave-2 (a)) nothing in the
-    // thread is pending for `s2` and the inbox no longer lists it.
-    assert!(
-        after.items.iter().all(|item| item.thread != thread),
-        "{:?}",
-        after.items
+    // Acceptance settles the obligation; unread open and clear warning events
+    // remain visible as history until the seat consumes them.
+    let item = after
+        .items
+        .iter()
+        .find(|item| item.thread == thread)
+        .unwrap();
+    assert_eq!(item.invitations, 0);
+    assert_eq!(item.pending_receipts, 0);
+    assert_eq!(item.warnings, 2);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*),count(clear_warning_id) FROM warning_conditions WHERE thread_id=?1 AND condition_kind='invitation'",
+            [thread.as_str()],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        ).unwrap(),
+        (1, 1),
+        "one overdue condition, closed by acceptance",
     );
     assert_eq!(
         crate::store::invitation_due::scan_invitation_due_batch(&context, &mut conn, None, 10)
@@ -3729,7 +3740,16 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(warnings, 1);
+    assert_eq!(warnings, 2, "one open and one clear warning event");
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*),count(clear_warning_id) FROM warning_conditions WHERE thread_id=?1 AND condition_kind='invitation'",
+            [thread.as_str()],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        ).unwrap(),
+        (1, 1),
+        "late acceptance opens and closes exactly one condition",
+    );
     let state: String = conn
         .query_row(
             "SELECT state FROM memberships WHERE thread_id=?1 AND seat_id='s2'",

@@ -1037,7 +1037,9 @@ fn caller_without_pane_is_invalid_request_for_acting_and_reads() {
     let acting = run(&state, &host, &["thread", "create", "--topic", "x"], None);
     assert_caller_not_located("no pane: thread create", &acting, "--cooperative-seat");
     let inbox = run(&state, &host, &["inbox"], None);
-    assert_caller_not_located("no pane: inbox", &inbox, "--seat SEAT");
+    assert_caller_not_located("no pane: inbox", &inbox, "--cooperative-seat");
+    let machine = run(&state, &host, &["inbox", "--machine"], None);
+    assert_caller_not_located("no pane: machine inbox", &machine, "--seat SEAT");
     let pending = run(&state, &host, &["pending-receipts"], None);
     assert_caller_not_located("no pane: pending-receipts", &pending, "--seat SEAT");
 }

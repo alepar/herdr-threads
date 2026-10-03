@@ -117,7 +117,9 @@ fn ack_impl(
                     matches!(
                         receipt.state,
                         EffectiveReceiptState::Pending | EffectiveReceiptState::Acknowledged
-                    )
+                    ) || (!displayed
+                        && request.claim.harness == Harness::Human
+                        && receipt.state == EffectiveReceiptState::NotRequired)
                 });
                 if kind.as_deref() != Some("ordinary") || !eligible {
                     return Err(api_error(
@@ -171,8 +173,9 @@ fn ack_impl(
                     .ok_or_else(|| {
                         api_error(ErrorCode::StoreCorrupt, "validated receipt disappeared")
                     })?;
-                if effective_deadline(tx, &receipt)?
-                    .is_some_and(|deadline| deadline <= decision.utc.0)
+                if receipt.state == EffectiveReceiptState::Pending
+                    && effective_deadline(tx, &receipt)?
+                        .is_some_and(|deadline| deadline <= decision.utc.0)
                 {
                     schema::record_overdue_if_pending(
                         tx,

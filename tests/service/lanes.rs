@@ -675,6 +675,38 @@ impl herdr_threads::scheduler::WakePort for HealthWakeFixture {
             herdr_threads::ports::StorePort::wake_candidates(&self.store, page, budget)
         })
     }
+    fn wake_batch_seats(
+        &self,
+        after: Option<&herdr_threads::protocol::ids::SeatId>,
+        limit: u16,
+        budget: &CallBudget,
+    ) -> Result<Vec<herdr_threads::protocol::ids::SeatId>, herdr_threads::protocol::results::ApiError>
+    {
+        self.result(6, || {
+            herdr_threads::ports::StorePort::wake_batch_seats(&self.store, after, limit, budget)
+        })
+    }
+    fn clear_wake_batch_if_empty(
+        &self,
+        seat: &herdr_threads::protocol::ids::SeatId,
+        budget: &CallBudget,
+    ) -> Result<bool, herdr_threads::protocol::results::ApiError> {
+        self.result(7, || {
+            herdr_threads::ports::StorePort::clear_wake_batch_if_empty(&self.store, seat, budget)
+        })
+    }
+    fn wake_batch_window(
+        &self,
+        candidate: &herdr_threads::ports::WakeCandidate,
+        budget: &CallBudget,
+    ) -> Result<
+        Option<(herdr_threads::protocol::time::UtcMillis, u64)>,
+        herdr_threads::protocol::results::ApiError,
+    > {
+        self.result(8, || {
+            herdr_threads::ports::StorePort::wake_batch_window(&self.store, candidate, budget)
+        })
+    }
     fn reserve_wake(
         &self,
         candidate: &herdr_threads::ports::WakeCandidate,
@@ -768,6 +800,7 @@ fn health_wake_store(
         "i",
         herdr_threads::store::StoreSettings {
             daemon_boot: Some(boot),
+            wake_batch_delay_ms: 0,
             ..Default::default()
         },
     )
@@ -826,6 +859,84 @@ fn wake_health_recovers_only_after_actual_failed_store_operation_retry() {
         retained.is_empty(),
         "recovered operations remain degraded: {retained:?}"
     );
+}
+
+#[test]
+fn wake_health_batch_callbacks_recover_only_on_matching_retry() {
+    use herdr_threads::{scheduler::WakePort, service::workers::ObservedWakePort};
+    let dir = HealthTestDir::new();
+    let clock = Arc::new(HealthDeadlinePort {
+        mono: std::sync::atomic::AtomicU64::new(0),
+        jobs: std::sync::Mutex::new(vec![]),
+        mode: std::sync::atomic::AtomicU8::new(2),
+        invitation_failed: std::sync::atomic::AtomicBool::new(false),
+    });
+    let fixture = HealthWakeFixture {
+        store: health_wake_store(&dir.path().join("db"), clock, uuid::Uuid::new_v4()),
+        fail: std::sync::atomic::AtomicU8::new(0),
+        completion_hold: None,
+    };
+    let budget = CallBudget {
+        deadline: MonoInstant(10000),
+        cancellation: Cancellation::default(),
+    };
+    let candidate = fixture
+        .wake_candidates(Default::default(), &budget)
+        .unwrap()
+        .items
+        .remove(0);
+    for phase in 6..=8 {
+        let status = WorkerStatus::default();
+        let observed = ObservedWakePort::new(&fixture, &status);
+        let call = || match phase {
+            6 => observed.wake_batch_seats(None, 16, &budget).map(|_| ()),
+            7 => observed
+                .clear_wake_batch_if_empty(&candidate.seat, &budget)
+                .map(|_| ()),
+            8 => observed.wake_batch_window(&candidate, &budget).map(|_| ()),
+            _ => unreachable!(),
+        };
+        fixture
+            .fail
+            .store(phase, std::sync::atomic::Ordering::SeqCst);
+        observed.begin_drive(&budget);
+        assert!(call().is_err(), "phase {phase}");
+        assert!(
+            observed.callback_failed(),
+            "phase {phase} must be classified as a callback failure"
+        );
+        let failure = status
+            .last_error()
+            .expect("batch callback failure degrades health");
+        let label = match phase {
+            6 => "wake batch discovery",
+            7 => "wake batch cleanup",
+            8 => "wake batch window",
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            failure,
+            format!("{label} failed: StoreBusy"),
+            "health exposes only the phase and typed error"
+        );
+        observed.begin_drive(&budget);
+        observed
+            .wake_candidates(Default::default(), &budget)
+            .unwrap();
+        assert!(
+            status.last_error().is_some(),
+            "discovery cannot recover a batch callback"
+        );
+        call().unwrap();
+        assert!(
+            status.last_error().is_none(),
+            "phase {phase} recovers on its successful retry"
+        );
+        assert!(
+            status.last_diagnostic().is_some(),
+            "the private diagnostic is retained"
+        );
+    }
 }
 
 #[test]

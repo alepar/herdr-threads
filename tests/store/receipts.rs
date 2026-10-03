@@ -148,6 +148,117 @@ fn overdue_scan_does_not_warn_for_a_waived_legacy_human_receipt() {
 }
 
 #[test]
+fn human_may_explicitly_ack_waived_older_receipt_without_new_overdue_warning() {
+    let (context, mut conn, _) = setup();
+    conn.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('legacy','i','t',1,'ordinary','old message',100,2); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,ack_required) VALUES ('legacy','t','b','pending',800,100,900,0); UPDATE occupant_bindings SET harness='human',observation_provenance='operator_human' WHERE seat_id='b'; INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES ('b',2,1,100);").unwrap();
+    conn.execute_batch("UPDATE threads SET next_sequence=2 WHERE id='t'; UPDATE host_instances SET decision_seq=2 WHERE id='i';").unwrap();
+    assert_eq!(conn.query_row(
+        "SELECT state,acked_at,ack_actor_seat_id,ack_observation FROM receipts WHERE message_id='legacy' AND seat_id='b'",
+        [], |r| Ok((r.get::<_, String>(0)?,r.get::<_, Option<i64>>(1)?,r.get::<_, Option<String>>(2)?,r.get::<_, Option<String>>(3)?)),
+    ).unwrap(), ("pending".into(),None,None,None), "a waiver does not fabricate an ACK");
+    let agent_request = ack_request(vec![MessageId::new("legacy")]);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    assert_eq!(
+        receipts::ack(
+            &context,
+            &mut conn,
+            &budget,
+            &agent_request,
+            &mut ack_permit(&agent_request)
+        )
+        .unwrap_err()
+        .code,
+        crate::protocol::results::ErrorCode::InvalidRequest,
+        "agents cannot revive waived obligations"
+    );
+    let mut request = ack_request(vec![MessageId::new("legacy")]);
+    request.claim.harness = Harness::Human;
+    assert_eq!(
+        receipts::ack_displayed(
+            &context,
+            &mut conn,
+            &budget,
+            &request,
+            &mut ack_permit(&request)
+        )
+        .unwrap_err()
+        .code,
+        crate::protocol::results::ErrorCode::InvalidRequest,
+        "human ACK is explicit, never display settlement"
+    );
+    let result = receipts::ack(
+        &context,
+        &mut conn,
+        &budget,
+        &request,
+        &mut ack_permit(&request),
+    )
+    .unwrap();
+    let crate::protocol::results::CommandResult::Acknowledged(result) = result else {
+        panic!("unexpected ACK result: {result:?}");
+    };
+    assert_eq!(result.acknowledged, vec![MessageId::new("legacy")]);
+    let receipt = crate::store::effective::effective_receipt(&conn, "legacy", "b")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        receipt.state,
+        crate::store::effective::EffectiveReceiptState::Acknowledged
+    );
+    assert_eq!(receipt.ack_actor_seat_id.as_deref(), Some("b"));
+    let observation: serde_json::Value =
+        serde_json::from_str(receipt.ack_observation.as_deref().unwrap()).unwrap();
+    assert_eq!(observation["provenance"], "operator_human");
+    assert_eq!(
+        conn.query_row(
+            "SELECT ack_required FROM receipts WHERE message_id='legacy' AND seat_id='b'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    let repeat = Ack {
+        operation: OperationId::new("human-ack-again"),
+        ..request.clone()
+    };
+    let repeated = receipts::ack(
+        &context,
+        &mut conn,
+        &budget,
+        &repeat,
+        &mut ack_permit(&repeat),
+    )
+    .unwrap();
+    let crate::protocol::results::CommandResult::Acknowledged(repeated) = repeated else {
+        panic!();
+    };
+    assert!(repeated.acknowledged.is_empty());
+    assert_eq!(
+        repeated.already_acknowledged,
+        vec![MessageId::new("legacy")]
+    );
+    assert_eq!(
+        crate::store::effective::effective_receipt(&conn, "legacy", "b")
+            .unwrap()
+            .unwrap()
+            .ack_observation,
+        receipt.ack_observation,
+        "repeat keeps the original human provenance"
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM messages WHERE kind='warn'", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0,
+        "an optional human ACK creates no overdue warning"
+    );
+}
+
+#[test]
 fn persisted_waivers_leave_pending_and_due_windows_for_agent_mail() {
     let (context, mut conn, _) = setup();
     conn.execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1001) INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) SELECT 'human-'||x,'i','t',x,'ordinary','old human mail',100,x+1 FROM n; INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,ack_required) SELECT id,'t','b','pending',10,100,110,0 FROM messages WHERE id LIKE 'human-%'; INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('agent-mail','i','t',1002,'ordinary','agent mail',1000,1003); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('agent-mail','t','b','pending',1000,1000,2000);").unwrap();

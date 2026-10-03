@@ -241,6 +241,9 @@ pub enum WakePhase {
     Completion,
     RecoveryDiscovery,
     Recovery,
+    BatchDiscovery,
+    BatchCleanup,
+    BatchWindow,
 }
 impl WakePhase {
     fn label(self) -> &'static str {
@@ -251,6 +254,9 @@ impl WakePhase {
             Self::Completion => "unsettled durable wake completion",
             Self::RecoveryDiscovery => "wake recovery discovery",
             Self::Recovery => "wake recovery",
+            Self::BatchDiscovery => "wake batch discovery",
+            Self::BatchCleanup => "wake batch cleanup",
+            Self::BatchWindow => "wake batch window",
         }
     }
 }
@@ -1366,21 +1372,33 @@ impl<P: WakePort + ?Sized> WakePort for ObservedWakePort<'_, P> {
         limit: u16,
         budget: &CallBudget,
     ) -> Result<Vec<crate::protocol::ids::SeatId>, ApiError> {
-        self.port.wake_batch_seats(after, limit, budget)
+        self.observed(
+            WakePhase::BatchDiscovery,
+            None,
+            self.port.wake_batch_seats(after, limit, budget),
+        )
     }
     fn clear_wake_batch_if_empty(
         &self,
         seat: &crate::protocol::ids::SeatId,
         budget: &CallBudget,
     ) -> Result<bool, ApiError> {
-        self.port.clear_wake_batch_if_empty(seat, budget)
+        self.observed(
+            WakePhase::BatchCleanup,
+            Some(seat.as_str().to_owned()),
+            self.port.clear_wake_batch_if_empty(seat, budget),
+        )
     }
     fn wake_batch_window(
         &self,
         candidate: &WakeCandidate,
         budget: &CallBudget,
     ) -> Result<Option<(crate::protocol::time::UtcMillis, u64)>, ApiError> {
-        self.port.wake_batch_window(candidate, budget)
+        self.observed(
+            WakePhase::BatchWindow,
+            Some(candidate.seat.as_str().to_owned()),
+            self.port.wake_batch_window(candidate, budget),
+        )
     }
     fn reserve_wake(
         &self,

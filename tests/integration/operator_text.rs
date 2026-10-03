@@ -168,7 +168,7 @@ fn degraded_lane_in_health_prints_see_log() {
     assert!(ensured.status.success(), "{}", text(&ensured.stderr));
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let doctor = text(&scratch.cli(&["doctor"]).stdout);
+        let doctor = text(&scratch.cli(&["doctor", "--debug"]).stdout);
         if doctor.contains("daemon.host_reachability: ready") {
             break;
         }

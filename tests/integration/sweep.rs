@@ -538,7 +538,33 @@ fn installed_flow_prelaunch_handoff_to_explicit_receipt_survives_daemon_restart(
                 .is_some_and(|tick| tick > acked_at)
         },
     );
-    assert_eq!(plugin.warnings(&b), warnings, "a late ACK adds no warning");
+    let settled_warnings = plugin.warnings(&b);
+    assert_eq!(
+        settled_warnings.len(),
+        2,
+        "one open and one clear: {settled_warnings:?}"
+    );
+    assert_eq!(
+        settled_warnings[0], warnings[0],
+        "the open event is retained"
+    );
+    assert!(
+        overdue_subjects(&plugin).is_empty(),
+        "the late ACK closes the overdue condition"
+    );
+    let context = herdr_threads::daemon::paths::RuntimeContext::explicit(
+        plugin.state.clone(),
+        plugin.host.clone(),
+        None,
+    )
+    .unwrap();
+    let paths = herdr_threads::daemon::paths::InstancePaths::resolve(&context).unwrap();
+    let db = rusqlite::Connection::open(&paths.database_path).unwrap();
+    assert_eq!(db.query_row(
+        "SELECT count(*),count(clear_warning_id) FROM warning_conditions WHERE condition_kind='receipt' AND thread_id=?1 AND condition_id=?2 AND affected_seat_id=?2",
+        [&thread, &b],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+    ).unwrap(), (1, 1), "the ACK closes exactly the existing warning");
 
     // Leave keeps earlier obligations and stops future fanout.
     let kept = plugin.ok(
@@ -598,13 +624,14 @@ fn installed_flow_prelaunch_handoff_to_explicit_receipt_survives_daemon_restart(
         "the rejoined seat is in the deciding-time fanout again; nothing else is owed"
     );
     assert_eq!(
-        plugin.warnings(&b).len(),
-        1,
-        "no warning beyond the missed deadline"
+        plugin.warnings(&b),
+        settled_warnings,
+        "no warning transition beyond the missed deadline and its clear"
     );
 }
 
-/// Wave 26 (ht-p03.25): the cooperative setup sweep pins `healthy`. With both
+/// The cooperative daemon stays healthy after setup, while doctor keeps the
+/// outstanding Codex hook review and socket-policy limitations visible. With both
 /// harnesses on the daemon's PATH at versions their recipes admit (pinned
 /// version reporters in a private bin directory, so the host's real `claude`
 /// and `codex` cannot change the verdict) and a coherent private Herdr
@@ -613,7 +640,7 @@ fn installed_flow_prelaunch_handoff_to_explicit_receipt_survives_daemon_restart(
 /// `setup` has installed both harnesses' hooks (into the isolated HOME).
 #[cfg(feature = "test-support")]
 #[test]
-fn cooperative_setup_sweep_reports_healthy() {
+fn cooperative_setup_sweep_reports_healthy_daemon_and_pending_codex_review() {
     use herdr_threads::test_support::isolation::TestIsolation;
     use std::os::unix::fs::PermissionsExt;
 
@@ -668,7 +695,7 @@ fn cooperative_setup_sweep_reports_healthy() {
     let (code, ensured, stderr) = run(&["daemon", "ensure"]);
     assert_eq!(code, 0, "daemon ensure: {stderr}{ensured}");
     // The first observation pass and harness version probe land after ensure
-    // returns; the sweep settles on the designed mode, never `degraded`.
+    // returns; daemon health settles on the designed cooperative mode.
     let mut reported = Value::Null;
     wait_until(
         "healthy cooperative health",
@@ -686,7 +713,28 @@ fn cooperative_setup_sweep_reports_healthy() {
     }
     let (code, doctor, stderr) = run(&["doctor"]);
     assert_eq!(code, 0, "doctor: {stderr}{doctor}");
-    assert_eq!(doctor["doctor"]["result"], "ok", "{doctor}");
+    assert_eq!(doctor["doctor"]["daemon"]["state"], "healthy", "{doctor}");
+    assert_eq!(doctor["doctor"]["result"], "degraded", "{doctor}");
+    assert_eq!(
+        doctor["doctor"]["hooks"]["codex"]["trust"]["status"], "review_required",
+        "{doctor}"
+    );
+    let limitations = doctor["doctor"]["limitations"].as_array().unwrap();
+    assert_eq!(limitations.len(), 2, "{doctor}");
+    assert!(
+        limitations.iter().any(|line| line
+            .as_str()
+            .unwrap()
+            .starts_with("Codex hook review required")),
+        "{doctor}"
+    );
+    assert!(
+        limitations.iter().any(|line| line
+            .as_str()
+            .unwrap()
+            .starts_with("Codex socket policy unvalidated")),
+        "{doctor}"
+    );
 }
 
 #[test]

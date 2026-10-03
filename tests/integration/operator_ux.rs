@@ -227,6 +227,45 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
     let before = plugin.refused(Some("w1:p1"), &["thread", "create", "--topic", "too early"]);
     assert!(before.contains("me init"), "{before}");
 
+    // Before the human check-in, an unbound seat can inherit an agent obligation.
+    let person_before = plugin.ok(None, None, &["seat", "resolve", "--pane", "w1:p1"])["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let legacy_thread = plugin.ok(
+        None,
+        agent_caller,
+        &["thread", "create", "--topic", "older obligation"],
+    )["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    plugin.ok(
+        None,
+        agent_caller,
+        &["invite", &legacy_thread, "--seat", &person_before],
+    );
+    let legacy = plugin.ok(
+        None,
+        agent_caller,
+        &[
+            "send",
+            &legacy_thread,
+            "--body",
+            "older addressed mail",
+            "--require-ack",
+            &person_before,
+        ],
+    )["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let legacy_pending = plugin.ok(None, None, &["pending-receipts", "--seat", &person_before]);
+    assert!(
+        legacy_pending.to_string().contains(&legacy),
+        "{legacy_pending}"
+    );
+
     // `me init` resolves the pane by ordinary resolution and checks in as a person.
     let me = plugin.ok(Some("w1:p1"), None, &["me", "init"]);
     assert_eq!(me["kind"], "checked_in", "{me}");
@@ -234,6 +273,12 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
     assert_eq!(me["data"]["context"]["role"], "top_level", "{me}");
     let person = me["data"]["context"]["seat"].as_str().unwrap().to_owned();
     assert_ne!(person, agent);
+    assert_eq!(person, person_before);
+    let waived = plugin.ok(None, None, &["pending-receipts", "--seat", &person]);
+    assert!(
+        !waived.to_string().contains(&legacy),
+        "human check-in waives the old obligation: {waived}"
+    );
     // Re-running is a current check-in for the same occupant.
     let again = plugin.ok(Some("w1:p1"), None, &["me", "init"]);
     assert_eq!(again["data"]["context"], me["data"]["context"], "{again}");
@@ -272,7 +317,7 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
     plugin.ok(None, agent_caller, &["ack", &handoff]);
     plugin.ok(None, agent_caller, &["accept", &thread]);
 
-    // The person's seat can be addressed with --require-ack and ACKs by hand.
+    // Mail to the human stays readable without creating an ACK obligation.
     let reply = plugin.ok(
         None,
         agent_caller,
@@ -289,9 +334,26 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
         .unwrap()
         .to_owned();
     let inbox = plugin.ok(Some("w1:p1"), None, &["inbox"]);
-    assert!(inbox.to_string().contains(&thread), "{inbox}");
-    let acked = plugin.ok(Some("w1:p1"), None, &["ack", &reply]);
-    assert_eq!(acked["data"]["acknowledged"], json!([reply]), "{acked}");
+    assert!(
+        !inbox.to_string().contains(&thread),
+        "no human receipt expectation: {inbox}"
+    );
+    let history = plugin.ok(Some("w1:p1"), None, &["read", &thread]);
+    assert!(history.to_string().contains(&reply), "{history}");
+    let pending = plugin.ok(None, None, &["pending-receipts", "--seat", &person]);
+    assert!(!pending.to_string().contains(&reply), "{pending}");
+    let (code, _, refused) = plugin.run(Some("w1:p1"), None, &["ack", &reply]);
+    assert_eq!(
+        code, 2,
+        "human-only delivery has no retained receipt to ACK: {refused}"
+    );
+    assert!(
+        refused.contains("not an addressed ordinary message"),
+        "{refused}"
+    );
+    // The person may still explicitly ACK retained older mail, with human provenance.
+    let acked = plugin.ok(Some("w1:p1"), None, &["ack", &legacy]);
+    assert_eq!(acked["data"]["acknowledged"], json!([legacy]), "{acked}");
 
     // The person accepts an agent's invitation from their pane.
     let second = plugin.ok(
@@ -346,7 +408,7 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
         )
         .unwrap()
     };
-    assert_eq!(provenance(ack(&reply, &person)), "operator_human");
+    assert_eq!(provenance(ack(&legacy, &person)), "operator_human");
     assert_eq!(provenance(ack(&handoff, &agent)), "cooperative_top_level");
     let accepted: Option<String> = db
         .query_row(
