@@ -57,3 +57,5 @@ scopeFilter-round-1: [Nit] src/app.rs:1199; src/app.rs:1201 punch-list — clust
 scopeFilter-round-1: [Nit] src/harness/setup.rs:756; src/cli/doctor.rs:850 punch-list — cluster override: Codex re-trust wording separable from stale foreign-hook/Health docs
 scopeFilter-round-1: [Nit] src/harness/attribution.rs:193; src/harness/attribution.rs:209 punch-list — cluster override: parse-cost optimization separable from wrong-version attribution
 scope-filter: 4 in-scope · 8 punch-listed
+fixLoop-round-1: epic reopened; filed ht-xoc.18 (codex-resume-attribution), .19 (store-error-paths), .20 (user-visible-docs-sync), .21 (manifest.py:306), .22 (loop_inventory test); re-entering super-code
+phase: fix-loop
