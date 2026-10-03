@@ -1678,12 +1678,25 @@ mod pacer_lanes {
             self.utc.store(to as i64, Ordering::SeqCst);
             let seen = pacer.evaluations();
             pacer.clock_advanced();
-            wait_until("the lane to re-read the clock", || {
-                pacer.evaluations() > seen
-            });
-            wait_until("the lane to finish the pass", || {
-                pacer.idle_events() == pacer.wakes() + 1
-            });
+            // Thousands of fake-clock steps need acknowledgements, not a
+            // real-time polling delay at each step. Yield to the lane while
+            // keeping both original predicates and their separate deadlines.
+            let until = Instant::now() + Duration::from_secs(5);
+            while pacer.evaluations() <= seen {
+                assert!(
+                    Instant::now() < until,
+                    "timed out waiting for the lane to re-read the clock"
+                );
+                std::thread::yield_now();
+            }
+            let until = Instant::now() + Duration::from_secs(5);
+            while pacer.idle_events() != pacer.wakes() + 1 {
+                assert!(
+                    Instant::now() < until,
+                    "timed out waiting for the lane to finish the pass"
+                );
+                std::thread::yield_now();
+            }
         }
     }
 

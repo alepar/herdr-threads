@@ -59,10 +59,10 @@ test-group = "service-daemon"
 # skipped-Herdr summary).
 [profile.ci]
 fail-fast = false
-# The macOS CI run kept three slots occupied for 357 s, including many
-# IPC and clock waits. A fourth slot overlaps those waits; the latency and
-# daemon groups above still admit only one test each.
-test-threads = 4
+# The v0.2.0 CI runs filled four slots for 301/320 s (over 99% utilization,
+# 1202/1269 summed test-seconds). Five slots overlap IPC and clock waits;
+# the latency and daemon groups above still admit only one test each.
+test-threads = 5
 
 [profile.ci.junit]
 path = "junit.xml"
