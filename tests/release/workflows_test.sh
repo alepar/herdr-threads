@@ -8,6 +8,7 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$root"
 ci=.github/workflows/ci.yml
 rel=.github/workflows/release.yml
+canary=.github/workflows/harness-canary.yml
 fails=0
 
 ok() { printf 'ok   %s\n' "$1"; }
@@ -79,6 +80,22 @@ check "ci.yml: actionlint job exists" test "$(yq '.jobs | has("actionlint")' "$c
 
 check "herdr-plugin.toml platforms = [\"macos\", \"linux\"]" \
   grep -qxF 'platforms = ["macos", "linux"]' herdr-plugin.toml
+
+canary_writers() { yq '.jobs | to_entries | .[] | select(.value.permissions.contents == "write") | .key' "$canary"; }
+check "harness-canary.yml: exactly one job has contents: write, publish-manifest" \
+  test "$(canary_writers)" = publish-manifest
+check "harness-canary.yml: publish-manifest dispatch requires the default branch" bash -c '
+  cond=$(yq ".jobs.publish-manifest.if" "$1")
+  case "$cond" in *"github.ref == format('"'"'refs/heads/{0}'"'"', github.event.repository.default_branch)"*) ;; *) exit 1 ;; esac
+  case "$cond" in *"github.event_name == '"'"'workflow_dispatch'"'"'"*) ;; *) exit 1 ;; esac
+' _ "$canary"
+ref_guard_first() {
+  local guard push
+  guard=$(yq '.jobs.publish-manifest.steps | to_entries | .[] | select((.value.run // "") | test("(?s)GITHUB_REF.*\\.default_branch|\\.default_branch.*GITHUB_REF")) | .key' "$canary" | head -n 1)
+  push=$(yq '.jobs.publish-manifest.steps | to_entries | .[] | select((.value.run // "") | test("git push")) | .key' "$canary" | head -n 1)
+  [ -n "$guard" ] && [ -n "$push" ] && [ "$guard" -lt "$push" ]
+}
+check "harness-canary.yml: publish-manifest checks GITHUB_REF before any push" ref_guard_first
 
 if [ "$fails" -ne 0 ]; then
   printf '%d check(s) failed\n' "$fails" >&2
