@@ -43,6 +43,7 @@ fn observed(detail: &str) -> HarnessObservations {
     HarnessObservations {
         claude: HarnessStatus::NotInstalled(detail.into()),
         codex: HarnessStatus::NotInstalled(detail.into()),
+        ..Default::default()
     }
 }
 

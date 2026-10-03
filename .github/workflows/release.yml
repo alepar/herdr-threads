@@ -79,6 +79,21 @@ jobs:
           rustup default "$RUST_TOOLCHAIN"
           rustc --version
 
+      - name: Embed the published harness manifest
+        shell: bash
+        run: |
+          # The binary embeds docs/compatibility/harness-versions.json (include_str!). Prefer the canary's
+          # published copy on the harness-manifest branch when it is valid schema 2 within the 256 KB cap
+          # (manifest.py embed checks that); otherwise keep the in-repo file.
+          set -uo pipefail
+          candidate="$RUNNER_TEMP/branch-manifest.json"
+          if git fetch --depth 1 origin harness-manifest \
+            && git show FETCH_HEAD:harness-versions.json > "$candidate"; then
+            python3 scripts/canary/manifest.py embed --branch-file "$candidate" --out docs/compatibility/harness-versions.json
+          else
+            echo "::notice::harness-manifest branch file missing; embedding the in-repo harness-versions.json"
+          fi
+
       - name: Locked release build
         shell: bash
         env:

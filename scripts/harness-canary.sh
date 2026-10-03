@@ -3,7 +3,7 @@
 #
 #   harness-canary.sh [--harness claude|codex|both] [--versions latest|since-verified|V1,V2,...]
 #                     [--bisect] [--model-tier auto|off|required] [--out DIR] [--baseline V]
-#                     [--herdr-threads PATH] [--versions-json PATH] [--keep]
+#                     [--herdr-threads PATH] [--versions-json PATH] [--baseline-json PATH] [--keep]
 #   harness-canary.sh --probe HARNESS VERSION [same options]   one probe; prints a probeResult JSON
 #   harness-canary.sh --self-test                              offline self-test (no network, npm, cargo)
 #   harness-canary.sh --write-probe-files P HARNESS VERSION BINARY
@@ -55,6 +55,7 @@ OUT_IS_TEMP=0
 BASELINE=
 HT_BIN=
 VERSIONS_JSON=
+BASELINE_JSON=
 KEEP=0
 MODE=run
 PROBE_HARNESS=
@@ -87,6 +88,7 @@ while [ $# -gt 0 ]; do
     --baseline) [ $# -ge 2 ] || die "--baseline needs a value"; BASELINE=$2; shift 2 ;;
     --herdr-threads) [ $# -ge 2 ] || die "--herdr-threads needs a value"; HT_BIN=$2; shift 2 ;;
     --versions-json) [ $# -ge 2 ] || die "--versions-json needs a value"; VERSIONS_JSON=$2; shift 2 ;;
+    --baseline-json) [ $# -ge 2 ] || die "--baseline-json needs a value"; BASELINE_JSON=$2; shift 2 ;;
     --keep) KEEP=1; shift ;;
     --self-test) MODE=self-test; shift ;;
     --probe)
@@ -116,6 +118,13 @@ if [ -n "$VERSIONS_JSON" ]; then
   VERSIONS_JSON=$(abs_path "$VERSIONS_JSON")
 fi
 VJSON=${VERSIONS_JSON:-$ROOT/docs/compatibility/harness-versions.json}
+# --baseline-json PATH (the published harness-manifest branch file) feeds candidate selection only
+# (since-verified baseline and known-broken exclusion); it never replaces the recipes under test.
+if [ -n "$BASELINE_JSON" ]; then
+  [ -f "$BASELINE_JSON" ] || die "--baseline-json: no such file: $BASELINE_JSON"
+  BASELINE_JSON=$(abs_path "$BASELINE_JSON")
+fi
+BJSON=${BASELINE_JSON:-$VJSON}
 [ -z "$HT_BIN" ] || { [ -x "$HT_BIN" ] || die "--herdr-threads: not an executable: $HT_BIN"; HT_BIN=$(abs_path "$HT_BIN"); }
 
 if [ "$MODE" = self-test ]; then
@@ -154,21 +163,43 @@ try:
                 print("optimistic" if harness == "claude" else "schema-matched-or-optimistic")
             else:
                 print("unasserted")
-    elif cmd == "verified-max":  # H JSON
-        print(versions.verified_max(versions.load_versions_json(args[1]), args[0]) or "")
-    elif cmd == "known-broken":  # H JSON -> JSON list of {min,max}
-        rngs = versions.known_broken(versions.load_versions_json(args[1]), args[0])
+    elif cmd == "verified-max":  # H JSON [MAIN_ID]
+        print(versions.verified_max(versions.load_versions_json(args[1]), args[0], (args[2:3] or [""])[0] or None) or "")
+    elif cmd == "known-broken":  # H JSON [MAIN_ID] -> JSON list of {min,max}
+        rngs = versions.known_broken(versions.load_versions_json(args[1]), args[0], (args[2:3] or [""])[0] or None)
         print(json.dumps([{"min": lo, "max": hi} for lo, hi in rngs]))
-    elif cmd == "candidates":  # H MODE JSON EXPLICIT NPMLIST_FILE
-        harness, mode, path, explicit, listfile = args
+    elif cmd == "reprobe":  # H JSON NPMLIST_FILE MAIN_ID -> comma-separated versions known_broken under another contract
+        harness, path, listfile, main_id = args
+        npm_list = json.load(open(listfile))
+        if isinstance(npm_list, str):
+            npm_list = [npm_list]
+        print(",".join(versions.reprobe(npm_list, versions.load_versions_json(path), harness, main_id or None)))
+    elif cmd == "candidates":  # H MODE JSON EXPLICIT NPMLIST_FILE [MAIN_ID]
+        harness, mode, path, explicit, listfile = args[:5]
+        main_id = (args[5:6] or [""])[0] or None
         npm_list = json.load(open(listfile))
         if isinstance(npm_list, str):
             npm_list = [npm_list]
         doc = versions.load_versions_json(path)
         ex = [v for v in explicit.split(",") if v] if explicit else None
-        print(",".join(versions.candidates(npm_list, mode, doc, harness, ex)))
-    elif cmd == "probe-json":  # TSV_FILE FORCED_RESULT -> probeResult document on stdout, exit code on $? via stderr
-        tsv, forced = args
+        print(",".join(versions.candidates(npm_list, mode, doc, harness, ex, main_id)))
+    elif cmd == "probe-json":  # TSV_FILE FORCED_RESULT [CANARY_RUST_JSON...] -> probeResult on stdout, exit code via stderr
+        tsv, forced = args[:2]
+        # The per-payload contract verdicts of the gated canary_payloads runs (tier 0, then tier 1); the field is
+        # omitted when neither run wrote a report (the probe never got that far).
+        contract = None
+        for rust in args[2:]:
+            try:
+                rdoc = json.load(open(rust, encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(rdoc, dict):
+                continue
+            contract = contract or {"contract_id": rdoc.get("contract_id"), "payloads": [], "release": None}
+            for pl in rdoc.get("payloads", []):
+                c = pl.get("contract") if isinstance(pl, dict) else None
+                if isinstance(c, dict) and c.get("kind") in ("ok", "violation", "malformed"):
+                    contract["payloads"].append({"event": c.get("event"), "kind": c["kind"], "field": c.get("field")})
         checks = []
         for line in open(tsv, encoding="utf-8"):
             line = line.rstrip("\n")
@@ -188,16 +219,20 @@ try:
             tier = 1 if any(c["status"] == "fail" and c["id"].startswith("t1.") for c in checks) else 0
         else:
             result, tier = "pass", None
-        print(json.dumps({"result": result, "checks": checks, "failed_tier": tier}))
+        doc = {"result": result, "checks": checks, "failed_tier": tier}
+        if contract is not None:
+            doc["contract"] = contract
+        print(json.dumps(doc))
         print({"pass": 0, "fail": 1, "infra": 2}[result], file=sys.stderr)
-    elif cmd == "report":  # OUT HARNESSES_CSV INPUTS_JSON COMMIT HT_VERSION OS ARCH JSON BASELINE
-        out, hs, inputs, commit, htv, osn, arch, path, baseline = args
+    elif cmd == "report":  # OUT HARNESSES_CSV INPUTS_JSON COMMIT HT_VERSION OS ARCH JSON BASELINE [MAIN_IDS_JSON]
+        out, hs, inputs, commit, htv, osn, arch, path, baseline = args[:9]
+        main_ids = json.loads(args[9]) if len(args) > 9 and args[9] else {}
         report = load("report")
         doc = versions.load_versions_json(path)
         blocks = []
         for h in hs.split(","):
             res = json.load(open(os.path.join(out, f"bisect-{h}.json")))
-            vmax = versions.verified_max(doc, h)
+            vmax = versions.verified_max(doc, h, main_ids.get(h))
             blocks.append(report.harness_block(h, res, verified_max=vmax or baseline or None))
         rep = report.assemble(blocks, json.loads(inputs), {"os": osn, "arch": arch}, commit, htv)
         report.write(rep, out)
@@ -382,7 +417,7 @@ chk_t0_config_load() {
 # t0_py CMD ARGS...: small JSON/capture readers for the checks below; prints a result, exit 0 unless noted.
 t0_py() {
   python3 - "$@" <<'PY'
-import glob, json, os, sys
+import glob, json, os, re, sys
 
 cmd, args = sys.argv[1], sys.argv[2:]
 
@@ -407,14 +442,21 @@ def owned_groups(doc, event):
 
 
 def hook_captures(harness, capdir):
-    """(stdin path, parsed stdin or None) of every capture whose argv ends `hook <harness>`."""
+    """(stdin path, parsed stdin or None) of every capture whose argv ends `hook <harness>` or
+    `hook <harness> --event <NAME>` (setup registers each hook with its event)."""
     found = []
     for argv_path in sorted(glob.glob(os.path.join(capdir, "*.argv"))):
         try:
             argv = open(argv_path, encoding="utf-8", errors="replace").read().splitlines()
         except OSError:
             continue
-        if argv[-2:] != ["hook", harness]:
+        evented = (
+            len(argv) >= 4
+            and argv[-4:-2] == ["hook", harness]
+            and argv[-2] == "--event"
+            and re.fullmatch(r"[A-Za-z0-9]{1,63}", argv[-1]) is not None
+        )
+        if argv[-2:] != ["hook", harness] and not evented:
             continue
         stdin_path = argv_path[: -len(".argv")] + ".stdin"
         try:
@@ -627,7 +669,7 @@ chk_t0_payload_parse() {
   if [ "${HOOK_FIRES_RAN:-0}" = 1 ]; then
     captured=$(t0_py hook-capture-count "$H" "$P/capture/tier0")
     if [ "$captured" -eq 0 ]; then
-      CK_STATUS=fail; CK_DETAIL="t0.hook-fires ran but capture/tier0 holds no capture whose argv ends 'hook $H'"
+      CK_STATUS=fail; CK_DETAIL="t0.hook-fires ran but capture/tier0 holds no capture whose argv ends 'hook $H' (optionally followed by --event NAME)"
       return 0
     fi
   fi
@@ -818,7 +860,7 @@ ATTEMPT_FILE_DIR=$OUT/work
 
 probe_finish() { # forced-result -> prints the probeResult, returns its exit code via PROBE_RC
   local forced=$1 doc
-  doc=$(canary_py probe-json "$P/checks.tsv" "$forced" 2>"$P/rc.txt") || { PROBE_RC=2; echo '{"result":"infra","checks":[],"failed_tier":null}'; return 0; }
+  doc=$(canary_py probe-json "$P/checks.tsv" "$forced" "$P/canary-rust.json" "$P/canary-rust-tier1.json" 2>"$P/rc.txt") || { PROBE_RC=2; echo '{"result":"infra","checks":[],"failed_tier":null}'; return 0; }
   PROBE_RC=$(cat "$P/rc.txt")
   printf '%s\n' "$doc"
 }
@@ -923,14 +965,26 @@ case $VERSIONS in latest|since-verified) ;; *) explicit=$VERSIONS ;; esac
 
 ensure_ht || echo "harness-canary.sh: warning: could not build herdr-threads; probes will report it" >&2
 
+# main's per-harness contract ids ({"claude": ..., "codex": ...}); selection is scoped to them.
+MAIN_IDS=
+if [ -n "$HT_BIN" ] && MAIN_IDS=$("$HT_BIN" contract-id --json 2>/dev/null) && [ -n "$MAIN_IDS" ]; then :; else
+  MAIN_IDS=
+  echo "harness-canary.sh: warning: no contract id (herdr-threads unavailable); selection is contract-agnostic and nothing is re-probed" >&2
+fi
+main_id_for() {
+  [ -n "$MAIN_IDS" ] || return 0
+  MAIN_IDS_JSON=$MAIN_IDS python3 -c 'import json,os,sys; print(json.loads(os.environ["MAIN_IDS_JSON"]).get(sys.argv[1]) or "")' "$1"
+}
+
 for h in ${HARNESSES//,/ }; do
   listfile=$OUT/work/npm-$h-versions.json
   npm_versions "$h" "$listfile" || { echo "harness-canary.sh: npm view failed for $h (see $OUT/work/_view/logs)" >&2; exit 2; }
   mode=$VERSIONS; [ -z "$explicit" ] || mode=list
-  cands=$(canary_py candidates "$h" "$mode" "$VJSON" "$explicit" "$listfile") || exit 2
-  vmax=$(canary_py verified-max "$h" "$VJSON") || exit 2
+  mid=$(main_id_for "$h") || exit 2
+  cands=$(canary_py candidates "$h" "$mode" "$BJSON" "$explicit" "$listfile" "$mid") || exit 2
+  vmax=$(canary_py verified-max "$h" "$BJSON" "$mid") || exit 2
   base=${BASELINE:-${vmax:-0.0.0}}
-  kb=$(canary_py known-broken "$h" "$VJSON") || exit 2
+  kb=$(canary_py known-broken "$h" "$BJSON" "$mid") || exit 2
   KEEP_FLAG=(); if [ "$KEEP" -eq 1 ]; then KEEP_FLAG=(--keep); fi
   probe_cmd=$(printf '%q ' "$SCRIPT_PATH" --probe "$h" '{version}' --out "$OUT" --model-tier "$MODEL_TIER" \
     ${HT_BIN:+--herdr-threads "$HT_BIN"} ${VERSIONS_JSON:+--versions-json "$VERSIONS_JSON"} \
@@ -938,6 +992,12 @@ for h in ${HARNESSES//,/ }; do
   bisect_args=(--probe-cmd "$probe_cmd" --candidates "$cands" --baseline "$base" --known-broken "$kb")
   if [ "$BISECT" -eq 1 ]; then bisect_args+=(--bisect); fi
   if tier1_enabled "$h"; then bisect_args+=(--tier1); fi
+  rp=
+  if [ "$mode" = since-verified ]; then rp=$(canary_py reprobe "$h" "$BJSON" "$listfile" "$mid") || exit 2; fi
+  if [ -n "$rp" ]; then
+    bisect_args+=(--reprobe "$rp")
+    echo "harness-canary.sh: $h re-probing versions known_broken under another contract: $rp" >&2
+  fi
   echo "harness-canary.sh: $h candidates: ${cands:-none} (baseline $base)" >&2
   python3 "$CANARY/bisect.py" "${bisect_args[@]}" > "$OUT/bisect-$h.json" || true
   [ -s "$OUT/bisect-$h.json" ] || { echo "harness-canary.sh: bisect produced no result for $h" >&2; exit 2; }
@@ -948,7 +1008,7 @@ inputs=$(printf '{"harness":%s,"versions":%s,"bisect":%s,"model_tier":%s}' "$(js
 commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)
 htv=$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -n 1)
 code=$(canary_py report "$OUT" "$HARNESSES" "$inputs" "$commit" "${htv:-unknown}" \
-  "$(uname -s | tr '[:upper:]' '[:lower:]')" "$(uname -m)" "$VJSON" "$BASELINE") || exit 2
+  "$(uname -s | tr '[:upper:]' '[:lower:]')" "$(uname -m)" "$BJSON" "$BASELINE" "$MAIN_IDS") || exit 2
 echo "harness-canary.sh: report in $OUT/canary-report.json and $OUT/summary.md (exit $code)" >&2
 if [ "$KEEP" -ne 1 ]; then rm -rf "$OUT/work" "$OUT/npm-cache"; fi
 exit "$code"

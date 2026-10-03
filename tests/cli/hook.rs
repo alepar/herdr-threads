@@ -31,6 +31,7 @@ fn installed_argv_and_hook_parser_are_one_contract() {
                 state_dir: Some("/tmp/state dir".into()),
                 host_endpoint: Some("/tmp/herdr dir/herdr.sock".into()),
                 harness,
+                event: None,
             }))
         );
         // Setup quotes exactly this argv into the native command string, for
@@ -41,11 +42,22 @@ fn installed_argv_and_hook_parser_are_one_contract() {
         let settings: serde_json::Value = serde_json::from_slice(&plan.proposed_bytes).unwrap();
         assert_eq!(
             settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
-            command
+            crate::harness::setup::event_command(&command, "PreToolUse")
         );
         assert_eq!(plan.owned.len(), 2);
+        // Each owned group registers its own event on the command line, and that evented
+        // command parses back through the hook entrypoint.
         for entry in &plan.owned {
-            assert_eq!(entry.group["hooks"][0]["command"], command, "{entry:?}");
+            let registered = crate::harness::setup::event_command(&command, &entry.event);
+            assert_eq!(entry.group["hooks"][0]["command"], registered, "{entry:?}");
+            let mut evented = argv.clone();
+            evented.extend(["--event".to_owned(), entry.event.clone()]);
+            assert_eq!(shell_command(&evented).unwrap(), registered);
+            let words: Vec<OsString> = evented.iter().map(OsString::from).collect();
+            assert_eq!(
+                parse_hook_argv(&words).unwrap().unwrap().event.as_deref(),
+                Some(entry.event.as_str())
+            );
         }
         let codex = crate::harness::setup::plan_codex_for_version(
             &[],
@@ -58,7 +70,16 @@ fn installed_argv_and_hook_parser_are_one_contract() {
             crate::harness::codex::DECLARATION.owned_hooks.len()
         );
         for entry in &codex.owned {
-            assert_eq!(entry.group["hooks"][0]["command"], command, "{entry:?}");
+            let registered = crate::harness::setup::event_command(&command, &entry.event);
+            assert_eq!(entry.group["hooks"][0]["command"], registered, "{entry:?}");
+            let mut evented = argv.clone();
+            evented.extend(["--event".to_owned(), entry.event.clone()]);
+            assert_eq!(shell_command(&evented).unwrap(), registered);
+            let words: Vec<OsString> = evented.iter().map(OsString::from).collect();
+            assert_eq!(
+                parse_hook_argv(&words).unwrap().unwrap().event.as_deref(),
+                Some(entry.event.as_str())
+            );
         }
     }
     assert_eq!(
@@ -74,6 +95,7 @@ fn installed_argv_and_hook_parser_are_one_contract() {
             state_dir: None,
             host_endpoint: Some("/h".into()),
             harness: Harness::Codex,
+            event: None,
         }))
     );
     assert!(matches!(parse_hook_argv(&os(&["b", "hook"])), Some(Err(_))));
@@ -144,6 +166,7 @@ fn installed_argv_and_hook_parser_are_one_contract() {
             state_dir: Some("/s".into()),
             host_endpoint: Some("/h".into()),
             harness: Harness::Claude,
+            event: None,
         }))
     );
     assert!(matches!(
@@ -1495,6 +1518,7 @@ fn args(root: &std::path::Path) -> HookArgs {
         state_dir: Some(root.join("state")),
         host_endpoint: Some(root.join("host.sock")),
         harness: Harness::Claude,
+        event: None,
     }
 }
 
@@ -1838,6 +1862,7 @@ fn owned_claude_allow_rule_covers_every_ready_command_form() {
             state_dir: selectors.state_dir.as_ref().map(Into::into),
             host_endpoint: selectors.host.as_ref().map(Into::into),
             harness: Harness::Claude,
+            event: None,
         };
         for argv in [
             diagnose_argv(&args, &InstanceInputs::default()),
@@ -1960,6 +1985,7 @@ fn ready_prefix_is_bare_when_pane_detection_reaches_the_same_instance() {
         state_dir: Some(state.clone()),
         host_endpoint: Some(host.clone()),
         harness: Harness::Claude,
+        event: None,
     };
     assert_eq!(
         diagnose_argv(&args, &pane),
@@ -2002,6 +2028,7 @@ fn ready_prefix_stays_explicit_for_a_non_default_state_dir_or_host() {
         state_dir: Some(state.clone()),
         host_endpoint: None,
         harness: Harness::Claude,
+        event: None,
     };
     let no_socket = InstanceInputs {
         env_host: None,
@@ -2292,6 +2319,7 @@ mod parse_failure_report {
             state_dir: Some("/nonexistent-ht-p03-23".into()),
             host_endpoint: Some("/nonexistent-ht-p03-23/herdr.sock".into()),
             harness: Harness::Claude,
+            event: None,
         };
         let env = HookEnv {
             herdr_env: true,
@@ -3047,5 +3075,64 @@ mod continuity_gate {
                 "{code:?}"
             );
         }
+    }
+}
+
+#[test]
+fn hook_argv_accepts_an_optional_event_registration() {
+    for (word, harness) in [("claude", Harness::Claude), ("codex", Harness::Codex)] {
+        let event = if harness == Harness::Claude {
+            "SessionStart"
+        } else {
+            "PreToolUse"
+        };
+        assert_eq!(
+            parse_hook_argv(&os(&[
+                "b",
+                "--state-dir",
+                "/s",
+                "hook",
+                word,
+                "--event",
+                event
+            ])),
+            Some(Ok(HookArgs {
+                state_dir: Some("/s".into()),
+                host_endpoint: None,
+                harness,
+                event: Some(event.into()),
+            }))
+        );
+        assert_eq!(
+            parse_hook_argv(&os(&["b", "hook", word]))
+                .unwrap()
+                .unwrap()
+                .event,
+            None
+        );
+    }
+    let long = "A".repeat(63);
+    assert_eq!(
+        parse_hook_argv(&os(&["b", "hook", "claude", "--event", &long]))
+            .unwrap()
+            .unwrap()
+            .event,
+        Some(long)
+    );
+    let too_long = "A".repeat(64);
+    for bad in [
+        &["b", "hook", "claude", "--event"][..],
+        &["b", "hook", "claude", "--event", ""],
+        &["b", "hook", "claude", "--event", "a b"],
+        &["b", "hook", "claude", "--event", "a-b"],
+        &["b", "hook", "claude", "--event", "X", "extra"],
+        &["b", "hook", "claude", "--evnt", "X"],
+        &["b", "hook", "claude", "--event", &too_long],
+        &["b", "hook", "--event", "X", "claude"],
+    ] {
+        assert!(
+            matches!(parse_hook_argv(&os(bad)), Some(Err(e)) if e.contains("--event NAME")),
+            "{bad:?}"
+        );
     }
 }

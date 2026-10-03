@@ -2,6 +2,7 @@
 //! HT_CANARY_CAPTURE_DIR is set; it parses the captured payloads and reports the Codex schema
 //! fingerprint and launch-table drift into canary-rust.json (reported, never asserted).
 //! ht-p03.14.8 delivers the contract types. The ungated flag-table test always runs.
+use crate::harness::contract::{Classification, Malformed, classify, contract_for, contract_id};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -75,21 +76,33 @@ fn harness_of(name: &str) -> Option<crate::harness::context::Harness> {
     }
 }
 
-/// Whether the witness recorded `<stem>.argv` for a hook invocation of `harness`: its last two
-/// arguments (one per line) are `hook <harness>`. A capture without that `.argv` is some other
+/// Whether the witness recorded `<stem>.argv` for a hook invocation of `harness`: its arguments
+/// (one per line) end `hook <harness>` or `hook <harness> --event NAME` (setup registers each hook
+/// with its event). Returns `Some(registered event)` for a hook capture (`Some(None)` for the
+/// legacy form without `--event`), `None` otherwise. A capture without that `.argv` is some other
 /// herdr-threads invocation (or not a witness capture) and is never parsed as a payload.
-fn argv_ends_hook(stdin_path: &Path, harness: &str) -> bool {
-    let Ok(argv) = std::fs::read_to_string(stdin_path.with_extension("argv")) else {
-        return false;
-    };
+fn hook_argv_event(stdin_path: &Path, harness: &str) -> Option<Option<String>> {
+    let argv = std::fs::read_to_string(stdin_path.with_extension("argv")).ok()?;
     let args: Vec<&str> = argv.lines().collect();
-    matches!(args.as_slice(), [.., "hook", last] if *last == harness)
+    match args.as_slice() {
+        [.., "hook", h, "--event", name] if *h == harness => Some(Some((*name).to_owned())),
+        [.., "hook", h] if *h == harness => Some(None),
+        _ => None,
+    }
+}
+
+/// One captured payload: display name, event label, the event its hook was registered for, bytes.
+struct Captured {
+    name: String,
+    event: String,
+    registered: Option<String>,
+    bytes: Result<Vec<u8>, String>,
 }
 
 /// `capture/tier0/*.stdin` (raw hook stdin, only those whose `.argv` ends `hook <harness>`) and
 /// `capture/tier1/*.json` (`{"event","stdin","stdout"}`), each sorted by name, as
 /// `(display name, event label, stdin bytes)`.
-fn read_payloads(dir: &Path, harness: &str) -> Vec<(String, String, Result<Vec<u8>, String>)> {
+fn read_payloads(dir: &Path, harness: &str) -> Vec<Captured> {
     let mut out = Vec::new();
     let list = |sub: &str, ext: &str| -> Vec<PathBuf> {
         let mut files: Vec<PathBuf> = std::fs::read_dir(dir.join("capture").join(sub))
@@ -102,9 +115,9 @@ fn read_payloads(dir: &Path, harness: &str) -> Vec<(String, String, Result<Vec<u
         files
     };
     for path in list("tier0", "stdin") {
-        if !argv_ends_hook(&path, harness) {
+        let Some(registered) = hook_argv_event(&path, harness) else {
             continue;
-        }
+        };
         let name = format!(
             "capture/tier0/{}",
             path.file_name().unwrap().to_string_lossy()
@@ -114,29 +127,45 @@ fn read_payloads(dir: &Path, harness: &str) -> Vec<(String, String, Result<Vec<u
             .as_ref()
             .ok()
             .map_or_else(String::new, |b| event_name(b));
-        out.push((name, event, bytes));
+        out.push(Captured {
+            name,
+            event,
+            registered,
+            bytes,
+        });
     }
     for path in list("tier1", "json") {
         let name = format!(
             "capture/tier1/{}",
             path.file_name().unwrap().to_string_lossy()
         );
-        let bytes = std::fs::read(&path)
+        let doc = std::fs::read(&path)
             .map_err(|e| e.to_string())
             .and_then(|raw| {
                 serde_json::from_slice::<serde_json::Value>(&raw).map_err(|e| e.to_string())
-            })
-            .and_then(|doc| {
-                doc.get("stdin")
-                    .and_then(|s| s.as_str())
-                    .map(|s| s.as_bytes().to_vec())
-                    .ok_or_else(|| "tier1 capture has no string \"stdin\"".to_string())
             });
+        let registered = doc
+            .as_ref()
+            .ok()
+            .and_then(|d| d.get("event"))
+            .and_then(|e| e.as_str())
+            .map(str::to_owned);
+        let bytes = doc.and_then(|doc| {
+            doc.get("stdin")
+                .and_then(|s| s.as_str())
+                .map(|s| s.as_bytes().to_vec())
+                .ok_or_else(|| "tier1 capture has no string \"stdin\"".to_string())
+        });
         let event = bytes
             .as_ref()
             .ok()
             .map_or_else(String::new, |b| event_name(b));
-        out.push((name, event, bytes));
+        out.push(Captured {
+            name,
+            event,
+            registered,
+            bytes,
+        });
     }
     out
 }
@@ -149,6 +178,21 @@ fn event_name(stdin: &[u8]) -> String {
                 .and_then(|e| e.as_str().map(str::to_owned))
         })
         .unwrap_or_default()
+}
+
+/// `{"kind": ok|violation|malformed, "event", "field"}` for one payload's contract classification.
+fn classification_json(c: Classification) -> serde_json::Value {
+    match c {
+        Classification::Ok { event } => {
+            serde_json::json!({"kind": "ok", "event": event, "field": null})
+        }
+        Classification::Violation { event, field } => {
+            serde_json::json!({"kind": "violation", "event": event, "field": field})
+        }
+        Classification::Malformed(_) => {
+            serde_json::json!({"kind": "malformed", "event": null, "field": null})
+        }
+    }
 }
 
 /// Observe the harness exactly as the hook does, then parse every captured payload with the
@@ -183,7 +227,19 @@ fn run_capture(dir: &Path) -> CaptureRun {
                     }
                 }
                 Ok(installed) => {
-                    for (file, event, bytes) in read_payloads(&dir, &probe.harness) {
+                    for captured in read_payloads(&dir, &probe.harness) {
+                        let Captured {
+                            name: file,
+                            event,
+                            registered,
+                            bytes,
+                        } = captured;
+                        let contract = match (&bytes, contract_for(&probe.harness)) {
+                            (Ok(b), Some(c)) => {
+                                classification_json(classify(c, registered.as_deref(), b))
+                            }
+                            _ => classification_json(Classification::Malformed(Malformed::NotJson)),
+                        };
                         let result = bytes.and_then(|b| {
                             crate::cli::hook::parse_event(&installed, &b)
                                 .map(|_| ())
@@ -194,7 +250,8 @@ fn run_capture(dir: &Path) -> CaptureRun {
                         }
                         payloads.push(serde_json::json!({
                             "file": file, "event": event,
-                            "ok": result.is_ok(), "error": result.err()}));
+                            "ok": result.is_ok(), "error": result.err(),
+                            "contract": contract}));
                     }
                 }
             }
@@ -211,8 +268,10 @@ fn run_capture(dir: &Path) -> CaptureRun {
     } else {
         (None, None)
     };
+    let contract_id = harness.and_then(|_| contract_for(&probe.harness).map(contract_id));
     let report = serde_json::json!({
         "probe": {"harness": probe.harness, "version": probe.version, "binary": binary},
+        "contract_id": contract_id,
         "observation": observation, "payloads": payloads,
         "schema": schema, "launch_tables": launch_tables, "help_present": help});
     CaptureRun { report, failures }
@@ -564,4 +623,55 @@ fn unparsable_payload_fails_the_run() {
     assert_eq!(run.report["payloads"].as_array().unwrap().len(), 1);
     assert_eq!(run.report["payloads"][0]["file"], "capture/tier0/1.stdin");
     assert_eq!(run.report["payloads"][0]["ok"], false);
+}
+
+/// Per-payload contract classification (reported, never a failure): a payload missing a required
+/// field under its registered `--event` is a `violation` naming the event and field, a truncated
+/// one is `malformed`, a good one is `ok`, and the report carries the harness's `contract_id`.
+#[test]
+fn planted_capture_reports_contract_classification() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/harness/testdata/canary");
+    let tmp = std::env::temp_dir().join(format!("canary-contract-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(tmp.join("capture/tier0")).unwrap();
+    std::fs::create_dir_all(tmp.join("bin")).unwrap();
+    std::fs::copy(src.join("canary-probe.json"), tmp.join("canary-probe.json")).unwrap();
+    std::fs::copy(src.join("bin/claude"), tmp.join("bin/claude")).unwrap();
+    let plant = |n: u32, stdin: &str| {
+        std::fs::write(tmp.join(format!("capture/tier0/{n}.stdin")), stdin).unwrap();
+        std::fs::write(
+            tmp.join(format!("capture/tier0/{n}.argv")),
+            "--state-dir\n/s\nhook\nclaude\n--event\nSessionStart\n",
+        )
+        .unwrap();
+    };
+    plant(
+        1,
+        r#"{"hook_event_name":"SessionStart","source":"startup"}"#,
+    );
+    plant(2, r#"{"hook_event_name":"SessionStart","source":"sta"#);
+    plant(
+        3,
+        r#"{"hook_event_name":"SessionStart","source":"startup","session_id":"s"}"#,
+    );
+    let run = run_capture(&tmp);
+    let _ = std::fs::remove_dir_all(&tmp);
+    let payloads = run.report["payloads"].as_array().unwrap();
+    assert_eq!(payloads.len(), 3, "{payloads:#?}");
+    assert_eq!(
+        payloads[0]["contract"],
+        serde_json::json!({"kind": "violation", "event": "SessionStart", "field": "session_id"})
+    );
+    assert_eq!(
+        payloads[1]["contract"],
+        serde_json::json!({"kind": "malformed", "event": null, "field": null})
+    );
+    assert_eq!(
+        payloads[2]["contract"],
+        serde_json::json!({"kind": "ok", "event": "SessionStart", "field": null})
+    );
+    assert_eq!(
+        run.report["contract_id"],
+        contract_id(contract_for("claude").unwrap())
+    );
 }

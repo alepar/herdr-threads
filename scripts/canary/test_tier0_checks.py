@@ -118,6 +118,25 @@ build_env "$P"
         self.assertEqual(status, "pass", detail)
         self.assertIn("parsed 1 tier-0 payload(s) (1 hook capture(s))", detail)
 
+    def test_an_evented_hook_capture_is_parsed(self):
+        # setup registers `hook <harness> --event <NAME>`; a bare word after it is not a hook capture
+        self.capture("1-1", ["--state-dir", "/s", "hook", "claude", "--event", "SessionStart"])
+        (self.p / "fake-cargo-payloads").write_text("")
+        self.bash("HOOK_FIRES_RAN=1; run_check t0.payload-parse")
+        status, detail = self.checks()["t0.payload-parse"]
+        self.assertEqual(status, "pass", detail)
+        self.assertIn("(1 hook capture(s))", detail)
+
+    def test_malformed_event_registrations_are_not_hook_captures(self):
+        self.capture("1-1", ["hook", "claude", "--event"])
+        self.capture("2-1", ["hook", "claude", "--event", "a b"])
+        self.capture("3-1", ["hook", "claude", "--event", "SessionStart", "extra"])
+        self.capture("4-1", ["hook", "codex", "--event", "SessionStart"])  # another harness
+        self.bash("HOOK_FIRES_RAN=1; run_check t0.payload-parse")
+        status, detail = self.checks()["t0.payload-parse"]
+        self.assertEqual(status, "fail", detail)
+        self.assertIn("no capture whose argv ends 'hook claude'", detail)
+
     def test_captures_the_rust_test_did_not_parse_fail(self):
         self.capture("1-1", ["hook", "claude"])
         self.bash("HOOK_FIRES_RAN=1; run_check t0.payload-parse")  # fake cargo parsed no payload

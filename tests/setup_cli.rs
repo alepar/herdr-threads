@@ -295,7 +295,9 @@ fn installed_command_is_the_hook_entrypoint_argv() {
             .as_str()
             .unwrap();
         assert!(
-            command.starts_with(&format!("{quoted} # herdr-threads-owner:")),
+            command.starts_with(&format!(
+                "{quoted} '--event' '{event}' # herdr-threads-owner:"
+            )),
             "{event}: {command}"
         );
     }
@@ -603,7 +605,9 @@ fn codex_setup_installs_user_hooks_and_unsetup_restores_bytes() {
             .as_str()
             .unwrap();
         assert!(
-            owned.starts_with(&format!("{command} # herdr-threads-owner:")),
+            owned.starts_with(&format!(
+                "{command} '--event' '{event}' # herdr-threads-owner:"
+            )),
             "{event}: {owned}"
         );
     }
@@ -1881,5 +1885,93 @@ fn doctor_reports_the_claude_on_path_end_to_end() {
     assert!(
         out.contains(&format!("claude on PATH: {binary} 2.1.284 (listed)\n")),
         "{out}"
+    );
+}
+
+/// Rewrites the installed Claude hooks into the form made before per-event registration:
+/// every `--event` pair removed from the settings file and from the manifest's recorded groups,
+/// with consistent fingerprints.
+fn downgrade_claude_to_legacy(s: &Scratch) {
+    use sha2::{Digest, Sha256};
+    let manifest_path = fs::read_dir(s.state.join("setup"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.to_string_lossy().contains("claude-user"))
+        .expect("claude manifest");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    let mut settings = fs::read_to_string(s.settings()).unwrap();
+    for entry in manifest["owned"].as_array_mut().unwrap() {
+        let pair = format!(" '--event' '{}'", entry["event"].as_str().unwrap());
+        assert!(settings.contains(&pair), "{pair} missing from {settings}");
+        settings = settings.replace(&pair, "");
+        let command = entry["group"]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .replace(&pair, "");
+        entry["group"]["hooks"][0]["command"] = serde_json::json!(command);
+        entry["fingerprint"] = serde_json::json!(format!(
+            "sha256:{:x}",
+            Sha256::digest(serde_json::to_vec(&entry["group"]).unwrap())
+        ));
+    }
+    assert!(!settings.contains("--event"));
+    fs::write(s.settings(), settings.as_bytes()).unwrap();
+    manifest["installed_fingerprint"] =
+        serde_json::json!(format!("sha256:{:x}", Sha256::digest(settings.as_bytes())));
+    fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+}
+
+/// Doctor on hooks installed before per-event registration: still installed, an informational
+/// re-run-setup line and `event_registration: "legacy"`, and no limitation (so not degraded
+/// because of it). A current install reports `"current"` and no line. Kills: treating a legacy
+/// install as not installed (launch would refuse to start), putting the line in `limitations`,
+/// and a missing or constant `event_registration`.
+#[test]
+fn doctor_flags_legacy_event_registration_without_degrading() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.286 (Claude Code)");
+    fs::create_dir_all(&s.claude_config).unwrap();
+    fs::write(s.settings(), b"{}").unwrap();
+    let setup = s.run(&["--json", "setup", "claude"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+
+    let current = json_doctor(&s);
+    assert_eq!(current["hooks"]["claude"]["setup"]["installed"], true);
+    assert_eq!(
+        current["hooks"]["claude"]["setup"]["event_registration"],
+        "current"
+    );
+    assert!(!text(&s.run(&["doctor"]).stdout).contains("predate per-event registration"));
+
+    downgrade_claude_to_legacy(&s);
+    let legacy = json_doctor(&s);
+    assert_eq!(
+        legacy["hooks"]["claude"]["setup"]["installed"], true,
+        "{legacy}"
+    );
+    assert_eq!(
+        legacy["hooks"]["claude"]["setup"]["event_registration"],
+        "legacy"
+    );
+    assert_eq!(legacy["limitations"], current["limitations"], "{legacy}");
+    assert_eq!(legacy["result"], current["result"]);
+    let line = "claude hooks predate per-event registration (no --event): re-run \
+                `herdr-threads setup claude`\n";
+    assert!(text(&s.run(&["doctor"]).stdout).contains(line));
+
+    // Re-running setup rewrites the hooks with --event: doctor is back to current.
+    let again = s.run(&["--json", "setup", "claude"]);
+    assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
+    let after = json_doctor(&s);
+    assert_eq!(after["hooks"]["claude"]["setup"]["installed"], true);
+    assert_eq!(
+        after["hooks"]["claude"]["setup"]["event_registration"],
+        "current"
+    );
+    assert!(
+        fs::read_to_string(s.settings())
+            .unwrap()
+            .contains("'--event' 'SessionStart'")
     );
 }

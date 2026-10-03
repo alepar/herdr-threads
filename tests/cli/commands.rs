@@ -1222,3 +1222,87 @@ fn seat_rebind_replace_parses_to_operator_replace() {
             .is_err()
     );
 }
+
+#[test]
+fn contract_id_and_harness_version_parse_as_local_actions() {
+    use crate::harness::context::Harness;
+    let parsed = parse_argv(["herdr-threads", "contract-id"]).unwrap();
+    assert_eq!(parsed.action, CliAction::ContractId { harness: None });
+    let parsed = parse_argv(["herdr-threads", "contract-id", "--harness", "codex"]).unwrap();
+    assert_eq!(
+        parsed.action,
+        CliAction::ContractId {
+            harness: Some(Harness::Codex)
+        }
+    );
+    let parsed = parse_argv([
+        "herdr-threads",
+        "harness-version",
+        "normalize",
+        "codex",
+        "codex-cli 0.158.0",
+    ])
+    .unwrap();
+    assert_eq!(
+        parsed.action,
+        CliAction::HarnessVersionNormalize {
+            harness: Harness::Codex,
+            raw: "codex-cli 0.158.0".into()
+        }
+    );
+    assert!(parse_argv(["herdr-threads", "contract-id", "--harness", "gemini"]).is_err());
+    assert!(
+        parse_argv(["herdr-threads", "harness-version", "normalize", "gemini", "1.0.0"]).is_err()
+    );
+}
+
+#[test]
+fn contract_id_runs_without_a_daemon_and_prints_exact_documents() {
+    use crate::harness::{claude, codex, contract::contract_id};
+    let run = |args: &[&str]| -> Result<String, String> {
+        let mut out = Vec::new();
+        crate::cli::run(
+            std::iter::once("herdr-threads").chain(args.iter().copied()),
+            &mut out,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(String::from_utf8(out).unwrap())
+    };
+    let claude_id = contract_id(&claude::CONTRACT);
+    let codex_id = contract_id(&codex::CONTRACT);
+    assert_eq!(
+        run(&["contract-id"]).unwrap(),
+        format!("claude {claude_id}\ncodex {codex_id}\n")
+    );
+    assert_eq!(
+        run(&["contract-id", "--harness", "codex"]).unwrap(),
+        format!("codex {codex_id}\n")
+    );
+    let doc: serde_json::Value = serde_json::from_str(&run(&["contract-id", "--json"]).unwrap()).unwrap();
+    let keys: Vec<&str> = doc.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(keys, ["claude", "codex", "normalize"]);
+    assert_eq!(doc["claude"], claude_id);
+    assert_eq!(doc["codex"], codex_id);
+    assert_eq!(
+        run(&["harness-version", "normalize", "codex", "codex-cli 0.158.0"]).unwrap(),
+        "0.158.0\n"
+    );
+    let json = run(&[
+        "harness-version",
+        "normalize",
+        "claude",
+        "2.1.286 (Claude Code)",
+        "--json",
+    ])
+    .unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        doc,
+        serde_json::json!({"harness":"claude","raw":"2.1.286 (Claude Code)","version":"2.1.286"})
+    );
+    let err = run(&["harness-version", "normalize", "codex", "codex-cli 0.160.0-alpha.1"]).unwrap_err();
+    assert!(
+        err.contains("unrecognized codex version: codex-cli 0.160.0-alpha.1"),
+        "{err}"
+    );
+}

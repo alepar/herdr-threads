@@ -4,6 +4,7 @@ pub mod doctor;
 pub mod exit;
 pub mod follow;
 pub mod hook;
+pub mod hook_evidence;
 pub mod human;
 pub mod input;
 pub mod instance;
@@ -343,6 +344,21 @@ where
         writer.flush()?;
         return Ok(());
     }
+    if let CliAction::ContractId { harness } = &parsed.action {
+        let name = harness.map(harness_name);
+        let json = parsed.output.format == OutputFormat::Json;
+        writer.write_all(crate::harness::contract::render_contract_ids(name, json).as_bytes())?;
+        writer.flush()?;
+        return Ok(());
+    }
+    if let CliAction::HarnessVersionNormalize { harness, raw } = &parsed.action {
+        let json = parsed.output.format == OutputFormat::Json;
+        let text = crate::harness::contract::render_normalize(harness_name(*harness), raw, json)
+            .map_err(|message| invalid_request(&message))?;
+        writer.write_all(text.as_bytes())?;
+        writer.flush()?;
+        return Ok(());
+    }
     if let CliAction::InternalJsonField { path } = &parsed.action {
         let mut input = String::new();
         io::Read::read_to_string(&mut io::stdin().lock(), &mut input)?;
@@ -572,6 +588,9 @@ where
             unreachable!("setup is handled before context resolution")
         }
         CliAction::Skill => unreachable!("skill is handled before context resolution"),
+        CliAction::ContractId { .. } | CliAction::HarnessVersionNormalize { .. } => {
+            unreachable!("contract-id and harness-version are handled before context resolution")
+        }
         CliAction::InternalJsonField { .. } => {
             unreachable!("internal json-field is handled before context resolution")
         }
@@ -1003,6 +1022,14 @@ fn exact_check_in_replay(
     let frozen =
         bridge::pending_request(journal, &intent.header.reference).map_err(context_run_error)?;
     Ok(saved == frozen)
+}
+
+/// `claude` or `codex`, the names the contract and version helpers use.
+fn harness_name(harness: crate::harness::context::Harness) -> &'static str {
+    match harness {
+        crate::harness::context::Harness::Codex => "codex",
+        _ => "claude",
+    }
 }
 
 fn invalid_request(detail: &str) -> RunError {

@@ -2344,6 +2344,44 @@ pub trait StorePort: Send + Sync {
     /// work-job transaction (spec D3). Opens no write transaction when no row
     /// qualifies.
     fn prune_retention(&self, budget: &CallBudget) -> Result<PruneProgress, ApiError>;
+    /// Records one hook payload's harness evidence (ht-xoc.4): upserts the
+    /// (harness, version, contract id) row and applies the outcome.
+    fn record_harness_evidence(
+        &self,
+        record: &crate::store::harness_evidence::EvidenceRecord<'_>,
+        budget: &CallBudget,
+    ) -> Result<crate::store::harness_evidence::Recorded, ApiError>;
+    fn harness_evidence(
+        &self,
+        harness: &str,
+        version: &str,
+        contract_id: &str,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::store::harness_evidence::EvidenceRow>, ApiError>;
+    /// Rows of both harnesses with `last_seen_at >= since_ms`.
+    fn harness_evidence_since(
+        &self,
+        since_ms: u64,
+        budget: &CallBudget,
+    ) -> Result<Vec<crate::store::harness_evidence::EvidenceRow>, ApiError>;
+    /// Every row of one harness (doctor and "newest verified here").
+    fn harness_evidence_all(
+        &self,
+        harness: &str,
+        budget: &CallBudget,
+    ) -> Result<Vec<crate::store::harness_evidence::EvidenceRow>, ApiError>;
+    /// Keeps the latest reason a payload of `harness` was unattributable.
+    fn record_unattributed(
+        &self,
+        harness: &str,
+        reason: &str,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError>;
+    fn last_unattributed(
+        &self,
+        harness: &str,
+        budget: &CallBudget,
+    ) -> Result<Option<(String, u64)>, ApiError>;
     /// A changed active snapshot returns CursorStale before any old row is read.
     fn saved_seats_page(
         &self,

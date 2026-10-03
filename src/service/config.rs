@@ -5,7 +5,6 @@ use crate::{
     scheduler::config::SchedulerTiming,
     store::{StoreSettings, messages::MessageLimits},
 };
-use serde::Deserialize;
 use std::{
     fs::{self, OpenOptions},
     io::{self, Read},
@@ -19,24 +18,6 @@ const O_NOFOLLOW: i32 = 0x0000_0100;
 #[cfg(target_os = "linux")]
 const O_NOFOLLOW: i32 = 0x0002_0000;
 
-#[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct SettingsFile {
-    invitation_default_ms: u64,
-    receipt_default_ms: u64,
-    minimum_wake_delay_ms: u64,
-}
-
-impl Default for SettingsFile {
-    fn default() -> Self {
-        Self {
-            invitation_default_ms: 300_000,
-            receipt_default_ms: 300_000,
-            minimum_wake_delay_ms: 30_000,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct ServiceConfig {
     timing: SchedulerTiming,
@@ -47,7 +28,7 @@ impl Default for ServiceConfig {
     fn default() -> Self {
         Self {
             timing: SchedulerTiming::default(),
-            minimum_wake_delay_ms: 30_000,
+            minimum_wake_delay_ms: crate::daemon::settings::DEFAULT_MINIMUM_WAKE_DELAY_MS,
         }
     }
 }
@@ -162,14 +143,21 @@ impl ServiceConfig {
                 ));
             }
         }
-        let settings: SettingsFile = serde_json::from_slice(&bytes)
+        let settings = crate::daemon::settings::parse(&bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        Self::from_settings(&settings)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+
+    /// Validate the timing keys of the one `settings.json` schema.
+    pub fn from_settings(
+        settings: &crate::daemon::settings::InstanceSettings,
+    ) -> Result<Self, &'static str> {
         Self::new(
             settings.invitation_default_ms,
             settings.receipt_default_ms,
             settings.minimum_wake_delay_ms,
         )
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     }
 
     pub fn new(

@@ -1,0 +1,106 @@
+{
+  "description": "a schema-1 baseline is upgraded: baseline rows preserved as verified/manual",
+  "baseline": {
+    "schema_version": 1,
+    "rows": [
+      {
+        "harness": "claude",
+        "version": "2.1.283",
+        "recipe": "claude-hooks-2.1.283",
+        "evidence": "live",
+        "known_broken": []
+      },
+      {
+        "harness": "codex",
+        "version": "0.157.1",
+        "recipe": "codex-hooks-0.157.1",
+        "evidence": "no_model",
+        "known_broken": []
+      }
+    ]
+  },
+  "report": {
+    "schema_version": 1,
+    "canary_commit": "1111111111111111111111111111111111111111",
+    "herdr_threads": "0.1.0",
+    "runner": {
+      "os": "linux",
+      "arch": "x86_64"
+    },
+    "harnesses": [
+      {
+        "harness": "claude",
+        "package": "pkg",
+        "status": "all_pass",
+        "first_bad": null,
+        "last_good": null,
+        "probes": [
+          {
+            "version": "2.1.284",
+            "role": "newest",
+            "result": "pass",
+            "flaky": false,
+            "attempts": [
+              {
+                "result": "pass",
+                "tier1": false,
+                "duration_ms": 1,
+                "checks": [
+                  {
+                    "id": "t0.payload-parse",
+                    "status": "pass"
+                  }
+                ],
+                "contract": {
+                  "contract_id": "c1a0c1a0c1a0c1a0",
+                  "payloads": [
+                    {
+                      "event": "SessionStart",
+                      "kind": "ok",
+                      "field": null
+                    },
+                    {
+                      "event": "PreToolUse",
+                      "kind": "ok",
+                      "field": null
+                    }
+                  ],
+                  "release": null
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "exit": 0,
+    "schema_version": 2,
+    "rows": [
+      {
+        "harness": "claude",
+        "version": "2.1.283",
+        "status": "verified",
+        "source": "manual",
+        "recipe": "claude-hooks-2.1.283",
+        "contract_id": null
+      },
+      {
+        "harness": "codex",
+        "version": "0.157.1",
+        "status": "verified",
+        "source": "manual",
+        "recipe": "codex-hooks-0.157.1",
+        "contract_id": null
+      },
+      {
+        "harness": "claude",
+        "version": "2.1.284",
+        "status": "verified",
+        "source": "canary"
+      }
+    ],
+    "row_count": 3
+  }
+}

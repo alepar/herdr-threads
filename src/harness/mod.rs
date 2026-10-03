@@ -4,6 +4,10 @@ pub mod admission;
 #[cfg(test)]
 #[path = "../../tests/harness/admission_ladder.rs"]
 mod admission_ladder;
+pub mod attribution;
+#[cfg(test)]
+#[path = "../../tests/harness/attribution.rs"]
+mod attribution_tests;
 #[cfg(test)]
 #[path = "../../tests/harness/canary_payloads.rs"]
 mod canary_payloads;
@@ -25,10 +29,18 @@ pub mod context;
 #[cfg(test)]
 #[path = "../../tests/harness/context.rs"]
 mod context_tests;
+pub mod contract;
+#[cfg(test)]
+#[path = "../../tests/harness/contract.rs"]
+mod contract_tests;
 #[cfg(test)]
 #[path = "../../tests/harness/cooperative.rs"]
 mod cooperative;
 pub mod launch;
+pub mod manifest;
+#[cfg(test)]
+#[path = "../../tests/harness/manifest.rs"]
+mod manifest_tests;
 #[cfg(test)]
 #[path = "../../tests/harness/optimistic_render.rs"]
 mod optimistic_render;
@@ -37,6 +49,7 @@ pub mod recipe;
 #[path = "../../tests/harness/recipe.rs"]
 mod recipe_tests;
 pub mod setup;
+pub mod state;
 #[cfg(test)]
 #[path = "../../tests/harness/stub_binaries.rs"]
 pub(crate) mod stub_binaries;

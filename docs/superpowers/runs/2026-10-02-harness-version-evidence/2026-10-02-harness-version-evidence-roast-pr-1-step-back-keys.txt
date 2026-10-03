@@ -1,0 +1,12 @@
+r1 [Should-fix] src/harness/attribution.rs:87
+r1 [Should-fix] src/daemon/harness_evidence.rs:162
+r1 [Should-fix] docs/install.md:184; docs/agent-usage.md:144
+r1 [Nit] src/cli/hook_evidence.rs:236
+r1 [Nit] src/harness/state.rs:423
+r1 [Nit] scripts/canary/manifest.py:306
+r1 [Nit] scripts/canary/release_contract.sh:58; .github/workflows/harness-canary.yml:157
+r1 [Nit] src/harness/setup.rs:396; src/harness/setup.rs:404
+r1 [Nit] src/harness/attribution.rs:109; src/cli/hook.rs:2042
+r1 [Nit] src/app.rs:1199; src/app.rs:1201
+r1 [Nit] src/harness/setup.rs:756; src/cli/doctor.rs:850
+r1 [Nit] src/harness/attribution.rs:193; src/harness/attribution.rs:209

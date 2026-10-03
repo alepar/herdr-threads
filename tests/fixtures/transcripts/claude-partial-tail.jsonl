@@ -1,0 +1,3 @@
+{"type":"user","version":"2.1.285","cwd":"~/proj","message":{"role":"user","content":"hi"}}
+{"type":"assistant","version":"2.1.285","cwd":"~/proj","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}
+{"type":"assistant","version":"9.9.9"

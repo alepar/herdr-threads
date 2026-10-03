@@ -68,6 +68,13 @@ pub struct ControlService<H, S> {
     health: H,
     domain: S,
     hook_parse_failures: Option<std::sync::Arc<crate::daemon::logs::HookParseFailures>>,
+    /// The harness version manifest (the evidence recorder and the version
+    /// states hold their own handles). Not read here.
+    #[allow(dead_code)]
+    harness_manifest: Option<std::sync::Arc<crate::harness::manifest::ManifestService>>,
+    harness_evidence:
+        Option<std::sync::Arc<crate::daemon::harness_evidence::HarnessEvidenceRecorder>>,
+    harness_states: Option<std::sync::Arc<crate::daemon::harness_states::HarnessStatesProvider>>,
 }
 
 impl<H, S> ControlService<H, S>
@@ -81,6 +88,9 @@ where
             health,
             domain,
             hook_parse_failures: None,
+            harness_manifest: None,
+            harness_evidence: None,
+            harness_states: None,
         }
     }
 
@@ -91,6 +101,35 @@ where
         failures: std::sync::Arc<crate::daemon::logs::HookParseFailures>,
     ) -> Self {
         self.hook_parse_failures = Some(failures);
+        self
+    }
+
+    /// Where hook harness-evidence notes are recorded. Without it a note is
+    /// accepted and dropped (`verified: false`).
+    pub fn with_harness_evidence(
+        mut self,
+        recorder: std::sync::Arc<crate::daemon::harness_evidence::HarnessEvidenceRecorder>,
+    ) -> Self {
+        self.harness_evidence = Some(recorder);
+        self
+    }
+
+    /// Where `harness.states` reads the version verdicts from. Without it the
+    /// report is empty.
+    pub fn with_harness_states(
+        mut self,
+        provider: std::sync::Arc<crate::daemon::harness_states::HarnessStatesProvider>,
+    ) -> Self {
+        self.harness_states = Some(provider);
+        self
+    }
+
+    /// The daemon's harness version manifest service.
+    pub fn with_harness_manifest(
+        mut self,
+        manifest: std::sync::Arc<crate::harness::manifest::ManifestService>,
+    ) -> Self {
+        self.harness_manifest = Some(manifest);
         self
     }
 }
@@ -205,6 +244,21 @@ where
                     failures.record(&report.harness, &report.detail);
                 }
                 Ok(CommandResult::HookParseFailureRecorded)
+            }
+            ApiCommand::HarnessEvidence(note) => {
+                let verified = match &self.harness_evidence {
+                    Some(recorder) => recorder.record(&note, budget)?,
+                    None => false,
+                };
+                Ok(CommandResult::HarnessEvidenceRecorded { verified })
+            }
+            ApiCommand::HarnessStates => {
+                Ok(CommandResult::HarnessStates(match &self.harness_states {
+                    Some(provider) => provider.report(budget)?,
+                    None => crate::protocol::results::HarnessStatesReport {
+                        harnesses: Vec::new(),
+                    },
+                }))
             }
             ApiCommand::Stop(StopRequest { expected_boot }) => {
                 let boot = Uuid::parse_str(&expected_boot)

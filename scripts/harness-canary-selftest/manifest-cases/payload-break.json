@@ -1,0 +1,140 @@
+{
+  "description": "a payload-contract violation writes known_broken with event/field/last_working",
+  "baseline": {
+    "schema_version": 2,
+    "generated_from": "harness-canary 0000",
+    "generated_at": "2026-09-30T06:00:00Z",
+    "latest_release": "0.4.0",
+    "contracts": {
+      "claude": "c1a0c1a0c1a0c1a0",
+      "codex": "c0dec0dec0dec0de"
+    },
+    "rows": [
+      {
+        "harness": "claude",
+        "version": "2.1.286",
+        "status": "verified",
+        "evidence": "live",
+        "contract_id": "c1a0c1a0c1a0c1a0",
+        "source": "canary",
+        "supported_since": null,
+        "broken_event": null,
+        "broken_field": null,
+        "last_working": null,
+        "issue_url": null,
+        "recipe": null,
+        "known_broken": []
+      },
+      {
+        "harness": "claude",
+        "version": "2.1.287",
+        "status": "verified",
+        "evidence": "live",
+        "contract_id": "c1a0c1a0c1a0c1a0",
+        "source": "canary",
+        "supported_since": null,
+        "broken_event": null,
+        "broken_field": null,
+        "last_working": null,
+        "issue_url": null,
+        "recipe": null,
+        "known_broken": []
+      },
+      {
+        "harness": "claude",
+        "version": "2.1.288",
+        "status": "verified",
+        "evidence": "no_model",
+        "contract_id": "c1a0c1a0c1a0c1a0",
+        "source": "canary",
+        "supported_since": null,
+        "broken_event": null,
+        "broken_field": null,
+        "last_working": null,
+        "issue_url": null,
+        "recipe": null,
+        "known_broken": []
+      },
+      {
+        "harness": "codex",
+        "version": "0.160.0",
+        "status": "verified",
+        "evidence": "live",
+        "contract_id": "c0dec0dec0dec0de",
+        "source": "canary",
+        "supported_since": null,
+        "broken_event": null,
+        "broken_field": null,
+        "last_working": null,
+        "issue_url": null,
+        "recipe": null,
+        "known_broken": []
+      }
+    ]
+  },
+  "report": {
+    "schema_version": 1,
+    "canary_commit": "1111111111111111111111111111111111111111",
+    "herdr_threads": "0.1.0",
+    "runner": {
+      "os": "linux",
+      "arch": "x86_64"
+    },
+    "harnesses": [
+      {
+        "harness": "claude",
+        "package": "pkg",
+        "status": "break",
+        "first_bad": "2.1.289",
+        "last_good": null,
+        "probes": [
+          {
+            "version": "2.1.289",
+            "role": "newest",
+            "result": "fail",
+            "flaky": false,
+            "attempts": [
+              {
+                "result": "fail",
+                "tier1": false,
+                "duration_ms": 1,
+                "checks": [
+                  {
+                    "id": "t0.payload-parse",
+                    "status": "pass"
+                  }
+                ],
+                "contract": {
+                  "contract_id": "c1a0c1a0c1a0c1a0",
+                  "payloads": [
+                    {
+                      "event": "SessionStart",
+                      "kind": "violation",
+                      "field": "session_id"
+                    }
+                  ],
+                  "release": null
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "exit": 0,
+    "rows": [
+      {
+        "harness": "claude",
+        "version": "2.1.289",
+        "status": "known_broken",
+        "broken_event": "SessionStart",
+        "broken_field": "session_id",
+        "last_working": "2.1.288",
+        "source": "canary"
+      }
+    ],
+    "row_count": 5
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "schema_version": 2,
+  "generated_from": "harness-canary 0000",
+  "generated_at": "2026-09-30T06:00:00Z",
+  "latest_release": "0.4.0",
+  "contracts": {
+    "claude": "aaaaaaaaaaaaaaaa",
+    "codex": "c0dec0dec0dec0de"
+  },
+  "rows": [
+    {
+      "harness": "claude",
+      "version": "2.1.286",
+      "status": "known_broken",
+      "evidence": "schema",
+      "contract_id": "aaaaaaaaaaaaaaaa",
+      "source": "canary",
+      "supported_since": null,
+      "broken_event": "SessionStart",
+      "broken_field": "session_id",
+      "last_working": "2.1.285",
+      "issue_url": null,
+      "recipe": null,
+      "known_broken": []
+    },
+    {
+      "harness": "claude",
+      "version": "2.1.285",
+      "status": "verified",
+      "evidence": "live",
+      "contract_id": "aaaaaaaaaaaaaaaa",
+      "source": "canary",
+      "supported_since": null,
+      "broken_event": null,
+      "broken_field": null,
+      "last_working": null,
+      "issue_url": null,
+      "recipe": null,
+      "known_broken": []
+    }
+  ]
+}

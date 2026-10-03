@@ -113,6 +113,20 @@ fn private_instance_settings_load_overrides_and_reject_unsafe_files() {
     assert_eq!(settings.invitation_default_ms, Some(120_000));
     assert_eq!(settings.message_limits.receipt_duration_ms, 240_000);
     assert_eq!(settings.minimum_wake_delay_ms, 45_000);
+    fs::write(&file, br#"{"invitation_default_ms":120000,"receipt_default_ms":240000,"minimum_wake_delay_ms":45000,"harness_manifest":"off"}"#).unwrap();
+    let mixed = ServiceConfig::load(&paths)
+        .unwrap()
+        .store_settings(Uuid::new_v4());
+    assert_eq!(mixed.invitation_default_ms, Some(120_000));
+    assert_eq!(mixed.message_limits.receipt_duration_ms, 240_000);
+    assert_eq!(mixed.minimum_wake_delay_ms, 45_000);
+    fs::write(&file, br#"{"harness_manifest":"off"}"#).unwrap();
+    let manifest_only = ServiceConfig::load(&paths)
+        .unwrap()
+        .store_settings(Uuid::new_v4());
+    assert_eq!(manifest_only.invitation_default_ms, Some(300_000));
+    assert_eq!(manifest_only.message_limits.receipt_duration_ms, 300_000);
+    assert_eq!(manifest_only.minimum_wake_delay_ms, 30_000);
     fs::write(&file, br#"{"minimum_wake_delay_ms":29999}"#).unwrap();
     assert!(ServiceConfig::load(&paths).is_err());
     fs::write(&file, br#"{"unknown":1}"#).unwrap();
@@ -770,11 +784,20 @@ fn elected_service_fixture(custom_settings: bool) {
     drop(db);
     if custom_settings {
         let file = paths.instance_dir.join("settings.json");
-        fs::write(&file, br#"{"invitation_default_ms":120000,"receipt_default_ms":240000,"minimum_wake_delay_ms":45000}"#).unwrap();
+        fs::write(&file, br#"{"invitation_default_ms":120000,"receipt_default_ms":240000,"minimum_wake_delay_ms":45000,"harness_manifest":"off"}"#).unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
     }
+    // With `harness_manifest: off` the daemon must never contact the manifest URL.
+    let manifest_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    manifest_listener.set_nonblocking(true).unwrap();
+    let manifest_port = manifest_listener.local_addr().unwrap().port();
+    let mut manifest_command = super::scrubbed_command(env!("CARGO_BIN_EXE_herdr-threads"));
+    manifest_command.env(
+        "HT_TEST_MANIFEST_URL",
+        format!("http://127.0.0.1:{manifest_port}/harness-versions.json"),
+    );
     let mut child = TestChild(
-        super::scrubbed_command(env!("CARGO_BIN_EXE_herdr-threads"))
+        manifest_command
             .args([
                 "daemon",
                 "run",
@@ -948,6 +971,25 @@ fn elected_service_fixture(custom_settings: bool) {
         assert_eq!(
             health.host.current_execution,
             herdr_threads::protocol::results::CapabilityState::Unsupported
+        );
+    }
+    if custom_settings {
+        let log_path = herdr_threads::daemon::logs::daemon_log_path(&paths);
+        let until = Instant::now() + Duration::from_secs(5);
+        while !fs::read_to_string(&log_path)
+            .is_ok_and(|log| log.contains("harness manifest: off (settings.json)"))
+        {
+            assert!(
+                Instant::now() < until,
+                "daemon.log never reported the manifest policy: {:?}",
+                fs::read_to_string(&log_path)
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            manifest_listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "the daemon contacted the manifest URL despite harness_manifest=off"
         );
     }
     if custom_settings {

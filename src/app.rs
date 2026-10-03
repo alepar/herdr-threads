@@ -133,6 +133,21 @@ pub(crate) struct ElectedHostEvidence {
 pub(crate) struct HarnessObservations {
     pub(crate) claude: HarnessStatus,
     pub(crate) codex: HarnessStatus,
+    /// The canonical `X.Y.Z` each binary on `PATH` reported (`None` when it
+    /// reported none): what doctor's detected-version line is about.
+    pub(crate) claude_version: Option<String>,
+    pub(crate) codex_version: Option<String>,
+}
+
+impl HarnessObservations {
+    /// The detected version of `harness` (`claude` or `codex`).
+    pub(crate) fn detected_version(&self, harness: &str) -> Option<String> {
+        match harness {
+            "claude" => self.claude_version.clone(),
+            "codex" => self.codex_version.clone(),
+            _ => None,
+        }
+    }
 }
 
 struct ElectedHealth {
@@ -270,6 +285,10 @@ pub(crate) fn codex_status(
         Err(InstalledRefusal::NotFound) => {
             HarnessStatus::NotInstalled("no executable `codex` on the daemon's PATH".into())
         }
+        Err(InstalledRefusal::Refused(
+            crate::harness::codex::VersionError::Unsupported(_)
+            | crate::harness::codex::VersionError::KnownBroken { .. },
+        )) => HarnessStatus::VersionRefused(admission.line()),
         Err(InstalledRefusal::Refused(_)) => HarnessStatus::Refused(admission.line()),
         Ok(version) => match version.admission() {
             Admission::Optimistic {
@@ -337,14 +356,14 @@ pub(crate) fn claude_status_in(
                 }
             }
         }
-        Some(Err(VersionError::Unsupported(version))) => HarnessStatus::Refused(format!(
+        Some(Err(VersionError::Unsupported(version))) => HarnessStatus::VersionRefused(format!(
             "claude {version}: no recipe admits it; supported recipes: {recipes}"
         )),
         Some(Err(VersionError::KnownBroken {
             version,
             range,
             newest_working,
-        })) => HarnessStatus::Refused(crate::harness::known_broken_label(
+        })) => HarnessStatus::VersionRefused(crate::harness::known_broken_label(
             "claude",
             &version,
             &range,
@@ -367,12 +386,23 @@ fn observe_claude(
     path: Option<&std::ffi::OsStr>,
     timeout: Duration,
     cancel: &Cancellation,
-) -> HarnessStatus {
-    claude_status(
-        crate::cli::hook::resolve_on_path("claude", path).map(|binary| {
-            crate::harness::claude::observe_installed_version_cancellable(&binary, timeout, cancel)
-        }),
-        crate::harness::claude::health_capability(),
+) -> (HarnessStatus, Option<String>) {
+    let observed = crate::cli::hook::resolve_on_path("claude", path).map(|binary| {
+        crate::harness::claude::observe_installed_version_cancellable(&binary, timeout, cancel)
+    });
+    let version = observed.as_ref().and_then(|observed| match observed {
+        Ok(version) => Some(version.as_str()),
+        Err(crate::harness::codex::VersionError::Unsupported(version)) => Some(version.as_str()),
+        Err(crate::harness::codex::VersionError::KnownBroken { version, .. }) => {
+            Some(version.as_str())
+        }
+        Err(_) => None,
+    });
+    let version =
+        version.and_then(|raw| crate::harness::contract::normalize_version("claude", raw));
+    (
+        claude_status(observed, crate::harness::claude::health_capability()),
+        version,
     )
 }
 
@@ -380,13 +410,25 @@ fn observe_codex(
     path: Option<&std::ffi::OsStr>,
     timeout: Duration,
     cancel: &Cancellation,
-) -> HarnessStatus {
+) -> (HarnessStatus, Option<String>) {
+    use crate::harness::codex::{InstalledRefusal, VersionError};
     let admission = crate::harness::codex::InstalledAdmission::observe_on_path_cancellable(
         path, timeout, cancel,
     );
-    codex_status(
-        &admission,
-        crate::harness::codex::DECLARATION.health_capability(),
+    let version = match &admission.result {
+        Ok(version) => Some(version.as_str()),
+        Err(InstalledRefusal::Refused(
+            VersionError::Unsupported(version) | VersionError::KnownBroken { version, .. },
+        )) => Some(version.as_str()),
+        Err(_) => None,
+    };
+    let version = version.and_then(|raw| crate::harness::contract::normalize_version("codex", raw));
+    (
+        codex_status(
+            &admission,
+            crate::harness::codex::DECLARATION.health_capability(),
+        ),
+        version,
     )
 }
 
@@ -396,7 +438,7 @@ impl HarnessStatus {
         match self {
             HarnessStatus::Unknown => "unknown",
             HarnessStatus::NotInstalled(_) => "not_found",
-            HarnessStatus::Refused(_) => "refused",
+            HarnessStatus::Refused(_) | HarnessStatus::VersionRefused(_) => "refused",
             HarnessStatus::Cooperative {
                 live_unverified: true,
                 ..
@@ -424,6 +466,7 @@ impl HarnessStatus {
 struct ObservedBinary {
     identity: Option<crate::harness::BinaryIdentity>,
     status: HarnessStatus,
+    version: Option<String>,
 }
 
 /// The admission-observer pass with re-observation (root spec B6 D3, Wave
@@ -474,11 +517,14 @@ impl AdmissionReobserver {
                 .and_then(|binary| crate::harness::BinaryIdentity::observe(&binary));
             let before = &mut previous[index];
             let unchanged = identity.is_some() && identity == before.identity;
-            let status = if unchanged && before.status.reusable() {
+            let (status, version) = if unchanged && before.status.reusable() {
                 reused[index] = true;
-                std::mem::take(&mut before.status)
+                (
+                    std::mem::take(&mut before.status),
+                    std::mem::take(&mut before.version),
+                )
             } else {
-                let status = match index {
+                let (status, version) = match index {
                     0 => observe_claude(path.as_deref(), timeout, cancel),
                     _ => observe_codex(path.as_deref(), timeout, cancel),
                 };
@@ -500,14 +546,19 @@ impl AdmissionReobserver {
                         status.admission_word()
                     ));
                 }
-                status
+                (status, version)
             };
-            next[index] = ObservedBinary { identity, status };
+            next[index] = ObservedBinary {
+                identity,
+                status,
+                version,
+            };
         }
         if cancel.is_cancelled() {
             for index in 0..2 {
                 if reused[index] {
                     previous[index].status = std::mem::take(&mut next[index].status);
+                    previous[index].version = std::mem::take(&mut next[index].version);
                 }
             }
             *slot = (!first).then_some(previous);
@@ -516,6 +567,8 @@ impl AdmissionReobserver {
         let observations = HarnessObservations {
             claude: next[0].status.clone(),
             codex: next[1].status.clone(),
+            claude_version: next[0].version.clone(),
+            codex_version: next[1].version.clone(),
         };
         *slot = Some(next);
         observations
@@ -834,6 +887,16 @@ async fn run_elected_impl<R>(
 where
     R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
 {
+    // Instance settings and the offline switch are read once, here: the
+    // manifest fetch policy is fixed for this daemon's lifetime. An invalid
+    // settings file refuses the start with a message naming the file.
+    let instance_settings = crate::daemon::settings::load(&paths.instance_dir)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    let manifest_policy = crate::harness::manifest::policy_from(
+        &instance_settings,
+        std::env::var_os("HERDR_THREADS_OFFLINE").as_deref(),
+    );
+    let manifest_cache_dir = crate::harness::manifest::cache_dir(&paths.instance_dir);
     let database_path = paths.database_path.clone();
     let factory_log_path = crate::daemon::logs::daemon_log_path(paths);
     let factory_clock = Arc::clone(&clock);
@@ -892,6 +955,20 @@ where
             );
             factory_probe.attach_store(&sqlite);
             let store: Arc<dyn StorePort> = sqlite;
+            // The manifest policy, logged after election (stderr is the daemon
+            // log from here on).
+            rate_limited_log.write_line(&format!(
+                "harness manifest: {}",
+                match manifest_policy {
+                    crate::harness::manifest::ManifestPolicy::Auto => "auto",
+                    crate::harness::manifest::ManifestPolicy::Off(
+                        crate::harness::manifest::OffReason::Settings,
+                    ) => "off (settings.json)",
+                    crate::harness::manifest::ManifestPolicy::Off(
+                        crate::harness::manifest::OffReason::OfflineEnv,
+                    ) => "off (HERDR_THREADS_OFFLINE=1)",
+                }
+            ));
             // The writer's startup invariant verification is logged once per
             // daemon boot (the daemon log) and reported by Health/doctor.
             // Written to the process stderr descriptor itself, which the
@@ -982,7 +1059,25 @@ where
                 Arc::clone(&writer),
                 Arc::clone(&factory_retention_status),
             )?);
+            // The harness version manifest: cache, embedded fallback and the
+            // detached fetch policy. One log line per fetch outcome (at most
+            // one fetch per harness per day, so no extra rate limit).
+            let manifest = Arc::new(crate::harness::manifest::ManifestService::new(
+                manifest_cache_dir.clone(),
+                manifest_policy,
+                Arc::new(crate::harness::manifest::CurlFetcher::new(
+                    manifest_cache_dir,
+                )),
+                Arc::clone(&factory_clock),
+                {
+                    let log = Arc::clone(&rate_limited_log);
+                    Arc::new(move |line: &str| log.write_line(line))
+                },
+            ));
             let harnesses = Arc::new(Mutex::new(HarnessObservations::default()));
+            let states_harnesses = Arc::clone(&harnesses);
+            let observer_manifest = Arc::clone(&manifest);
+            let observer_store = Arc::clone(&store);
             let reobserver = AdmissionReobserver::new(
                 std::env::var_os("PATH"),
                 crate::harness::codex::VERSION_TIMEOUT,
@@ -1006,6 +1101,18 @@ where
                                 "admission pass cancelled",
                             ));
                         }
+                        // A detected version nobody has a row for asks for a
+                        // manifest fetch (detached; never waits).
+                        crate::daemon::harness_states::trigger_unseen_versions(
+                            observer_store.as_ref(),
+                            observer_manifest.as_ref(),
+                            &observer_manifest.current(),
+                            &[
+                                ("claude", observed.claude_version.clone()),
+                                ("codex", observed.codex_version.clone()),
+                            ],
+                            budget,
+                        );
                         Ok(observed)
                     },
                     Arc::clone(&harnesses),
@@ -1038,6 +1145,8 @@ where
                 ],
             );
             let health_store = Arc::clone(&store);
+            let evidence_store = Arc::clone(&store);
+            let states_store = Arc::clone(&store);
             let health_clock = Arc::clone(&factory_clock);
             let domain = DomainService::with_identity(
                 instance.to_string(),
@@ -1070,16 +1179,45 @@ where
                 },
             );
             let log_path = factory_log_path.clone();
-            let health_parse_failures = Arc::clone(&factory_parse_failures);
+            let states = Arc::new(crate::daemon::harness_states::HarnessStatesProvider::new(
+                states_store,
+                crate::daemon::harness_states::service_source(Arc::clone(&manifest)),
+                Arc::clone(&factory_clock),
+                Box::new(move |harness: &str| {
+                    states_harnesses
+                        .lock()
+                        .ok()
+                        .and_then(|observed| observed.detected_version(harness))
+                }),
+                Some(Arc::clone(&factory_parse_failures)),
+            ));
+            let health_states = Arc::clone(&states);
+            let health_log = Arc::clone(&rate_limited_log);
             let health = move |request: &CallBudget| {
                 let mut inputs = provider(request);
                 inputs.log_path = Some(log_path.clone());
-                inputs.hook_parse_failures = health_parse_failures.snapshot();
+                // A store read failure degrades nothing here: it is logged
+                // (rate limited) and Health shows no version line.
+                match health_states.health_lines(request) {
+                    Ok(lines) => inputs.harness_version_lines = lines,
+                    Err(error) => health_log.record_harness_states_unavailable(&error.detail),
+                }
                 inputs
             };
+            let harness_evidence = Arc::new(
+                crate::daemon::harness_evidence::HarnessEvidenceRecorder::new(
+                    evidence_store,
+                    Some(Arc::clone(&manifest)
+                        as Arc<dyn crate::daemon::harness_evidence::ManifestTrigger>),
+                    Arc::clone(&factory_clock),
+                ),
+            );
             Ok(Arc::new(
                 ControlService::new(stop, health, domain)
-                    .with_hook_parse_failures(factory_parse_failures),
+                    .with_hook_parse_failures(factory_parse_failures)
+                    .with_harness_evidence(harness_evidence)
+                    .with_harness_states(states)
+                    .with_harness_manifest(manifest),
             ) as Arc<dyn LocalService>)
         },
         on_ready,

@@ -1,0 +1,189 @@
+{
+  "description": "verified rows: evidence live with a tool payload, no_model without",
+  "baseline": {
+    "schema_version": 2,
+    "generated_from": "harness-canary 0000",
+    "generated_at": "2026-09-30T06:00:00Z",
+    "latest_release": "0.4.0",
+    "contracts": {
+      "claude": "c1a0c1a0c1a0c1a0",
+      "codex": "c0dec0dec0dec0de"
+    },
+    "rows": [
+      {
+        "harness": "claude",
+        "version": "2.1.286",
+        "status": "verified",
+        "evidence": "live",
+        "contract_id": "c1a0c1a0c1a0c1a0",
+        "source": "canary",
+        "supported_since": "0.3.0",
+        "broken_event": null,
+        "broken_field": null,
+        "last_working": null,
+        "issue_url": null,
+        "recipe": null,
+        "known_broken": []
+      }
+    ]
+  },
+  "report": {
+    "schema_version": 1,
+    "canary_commit": "1111111111111111111111111111111111111111",
+    "herdr_threads": "0.1.0",
+    "runner": {
+      "os": "linux",
+      "arch": "x86_64"
+    },
+    "harnesses": [
+      {
+        "harness": "claude",
+        "package": "pkg",
+        "status": "all_pass",
+        "first_bad": null,
+        "last_good": null,
+        "probes": [
+          {
+            "version": "2.1.288",
+            "role": "newest",
+            "result": "pass",
+            "flaky": false,
+            "attempts": [
+              {
+                "result": "pass",
+                "tier1": false,
+                "duration_ms": 1,
+                "checks": [
+                  {
+                    "id": "t0.payload-parse",
+                    "status": "pass"
+                  }
+                ],
+                "contract": {
+                  "contract_id": "c1a0c1a0c1a0c1a0",
+                  "payloads": [
+                    {
+                      "event": "SessionStart",
+                      "kind": "ok",
+                      "field": null
+                    }
+                  ],
+                  "release": null
+                }
+              }
+            ]
+          },
+          {
+            "version": "2.1.287",
+            "role": "newest",
+            "result": "pass",
+            "flaky": false,
+            "attempts": [
+              {
+                "result": "pass",
+                "tier1": false,
+                "duration_ms": 1,
+                "checks": [
+                  {
+                    "id": "t0.payload-parse",
+                    "status": "pass"
+                  }
+                ],
+                "contract": {
+                  "contract_id": "c1a0c1a0c1a0c1a0",
+                  "payloads": [
+                    {
+                      "event": "SessionStart",
+                      "kind": "ok",
+                      "field": null
+                    },
+                    {
+                      "event": "PreToolUse",
+                      "kind": "ok",
+                      "field": null
+                    }
+                  ],
+                  "release": null
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "harness": "codex",
+        "package": "pkg",
+        "status": "all_pass",
+        "first_bad": null,
+        "last_good": null,
+        "probes": [
+          {
+            "version": "0.160.0",
+            "role": "newest",
+            "result": "pass",
+            "flaky": false,
+            "attempts": [
+              {
+                "result": "pass",
+                "tier1": false,
+                "duration_ms": 1,
+                "checks": [
+                  {
+                    "id": "t0.payload-parse",
+                    "status": "pass"
+                  }
+                ],
+                "contract": {
+                  "contract_id": "c0dec0dec0dec0de",
+                  "payloads": [
+                    {
+                      "event": "SessionStart",
+                      "kind": "ok",
+                      "field": null
+                    },
+                    {
+                      "event": "PreToolUse",
+                      "kind": "ok",
+                      "field": null
+                    }
+                  ],
+                  "release": null
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "exit": 0,
+    "rows": [
+      {
+        "harness": "claude",
+        "version": "2.1.287",
+        "status": "verified",
+        "evidence": "live",
+        "source": "canary"
+      },
+      {
+        "harness": "claude",
+        "version": "2.1.288",
+        "status": "verified",
+        "evidence": "no_model"
+      },
+      {
+        "harness": "codex",
+        "version": "0.160.0",
+        "status": "verified",
+        "evidence": "live"
+      },
+      {
+        "harness": "claude",
+        "version": "2.1.286",
+        "supported_since": "0.3.0"
+      }
+    ],
+    "row_count": 4
+  }
+}

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline self-test for the harness canary (nested spec §D11): drives scripts/canary/bisect.py with
 stub_probe.py over the planted cases and asserts each report. No network, npm, cargo or harness."""
-import importlib.util, json, math, os, pathlib, shlex, sys, tempfile, unittest
+import importlib.util, json, math, os, pathlib, shlex, subprocess, sys, tempfile, unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
 CANARY = HERE.parent / "canary"
@@ -27,6 +27,88 @@ CASES = sorted((HERE / "cases").glob("*.json"))
 EXPECTED_CASES = {"all-pass", "break-mid", "break-first", "flip", "baseline-broken", "flaky", "infra",
                   "tier1-retry", "known-broken-then-new-break", "break-persists-above-range",
                   "open-ended-known-broken"}
+
+
+MANIFEST_CASES = sorted((HERE / "manifest-cases").glob("*.json"))
+EXPECTED_MANIFEST_CASES = {"all-pass", "payload-break", "known-broken-persists", "flaky", "tier0-failure-issue-only",
+                           "retention", "size-cap-failure", "schema1-baseline-upgrade"}
+MANIFEST_PY = CANARY / "manifest.py"
+STUB_HT = CANARY / "testdata" / "manifest" / "stub-herdr-threads"
+STUB_IDS = {"claude": "c1a0c1a0c1a0c1a0", "codex": "c0dec0dec0dec0de"}
+
+
+def expand_baseline(case):
+    """The case's baseline document, with `baseline_rows_gen` entries expanded into schema-2 canary rows:
+    {harness, count, prefix} -> `<prefix>0 .. <prefix>count-1`; {harness, version} -> one row; optional status,
+    recipe, source, issue_url_pad."""
+    base = json.loads(json.dumps(case["baseline"]))
+    for g in case.get("baseline_rows_gen", []):
+        versions_ = [g["version"]] if "version" in g else [f"{g['prefix']}{i}" for i in range(g["count"])]
+        for v in versions_:
+            status = g.get("status", "verified")
+            row = {"harness": g["harness"], "version": v, "status": status,
+                   "evidence": "live" if status == "verified" else "schema", "contract_id": STUB_IDS[g["harness"]],
+                   "source": g.get("source", "canary"), "supported_since": None,
+                   "broken_event": "SessionStart" if status == "known_broken" else None,
+                   "broken_field": "session_id" if status == "known_broken" else None,
+                   "last_working": None, "issue_url": "x" * g["issue_url_pad"] if g.get("issue_url_pad") else None,
+                   "recipe": g.get("recipe"), "known_broken": []}
+            base["rows"].append(row)
+    return base
+
+
+def run_manifest_case(path, state):
+    """Run manifest.py write over one case's inputs; (case, completed process, output document or None)."""
+    case = json.loads(path.read_text())
+    state = pathlib.Path(state)
+    (state / "baseline.json").write_text(json.dumps(expand_baseline(case)))
+    (state / "report.json").write_text(json.dumps(case["report"]))
+    out = state / "out.json"
+    cmd = [sys.executable, str(MANIFEST_PY), "write", "--baseline", str(state / "baseline.json"),
+           "--report", str(state / "report.json"), "--binary", str(STUB_HT), "--generated-at", "2026-10-02T06:00:00Z",
+           "--out", str(out)]
+    if "release_results" in case:
+        (state / "release.json").write_text(json.dumps(case["release_results"]))
+        cmd += ["--release-results", str(state / "release.json"), "--latest-release", case.get("latest_release", "v0.4.0")]
+    cp = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    return case, cp, (json.loads(out.read_text()) if out.exists() else None)
+
+
+class ManifestCases(unittest.TestCase):
+    def test_case_files_are_the_planted_set(self):
+        self.assertEqual({p.stem for p in MANIFEST_CASES}, EXPECTED_MANIFEST_CASES)
+
+    def test_cases(self):
+        for path in MANIFEST_CASES:
+            with self.subTest(case=path.stem), tempfile.TemporaryDirectory() as state:
+                self.check_case(path, state)
+
+    def check_case(self, path, state):
+        case, cp, out = run_manifest_case(path, state)
+        exp = case["expect"]
+        self.assertEqual(cp.returncode, exp["exit"], cp.stdout + cp.stderr)
+        if "stdout" in exp:
+            self.assertIn(exp["stdout"], cp.stdout)
+        if exp.get("no_output_file"):
+            self.assertIsNone(out)
+            return
+        self.assertEqual(out["schema_version"], exp.get("schema_version", 2))
+        for want in exp.get("rows", []):
+            matches = [r for r in out["rows"] if r["harness"] == want["harness"] and r["version"] == want["version"]]
+            self.assertEqual(len(matches), 1, f"{want['harness']} {want['version']}: {len(matches)} rows")
+            for k, v in want.items():
+                self.assertEqual(matches[0][k], v, f"{want['harness']} {want['version']}.{k}")
+        for h, v in exp.get("absent", []):
+            self.assertFalse([r for r in out["rows"] if r["harness"] == h and r["version"] == v], f"{h} {v} must be absent")
+        if "row_count" in exp:
+            self.assertEqual(len(out["rows"]), exp["row_count"])
+        if "claude_versions_count" in exp:
+            self.assertEqual(len([r for r in out["rows"] if r["harness"] == "claude"]), exp["claude_versions_count"])
+        keys = {(r["harness"], r["version"], r["contract_id"]) for r in out["rows"]}
+        self.assertEqual(len(keys), len(out["rows"]), "no duplicate (harness, version, contract_id) keys")
+        vp = subprocess.run([sys.executable, str(MANIFEST_PY), "validate", str(pathlib.Path(state) / "out.json")],
+                            capture_output=True, text=True)
+        self.assertEqual(vp.returncode, 0, vp.stdout)
 
 
 def run_case(path):
@@ -125,6 +207,42 @@ class Cases(unittest.TestCase):
         self.assertIsNone(res["first_bad"])
         self.assertEqual(res["status"], "break")
 
+    def test_reprobe_runs_after_the_search_and_keeps_the_verdict(self):
+        src = HERE / "cases" / "all-pass.json"
+        case = json.loads(src.read_text())
+
+        def run_with(results, candidates, reprobe, name="c.json"):
+            with tempfile.TemporaryDirectory() as state:
+                cp = pathlib.Path(state) / name
+                cp.write_text(json.dumps(dict(case, results=results)))
+                os.environ["HT_SELFTEST_STATE"] = state
+                cmd = " ".join(shlex.quote(a) for a in (sys.executable, str(STUB), str(cp))) + " {version}"
+                return canary_bisect.run(candidates, "1.0.0", cmd, bisect=True, reprobe=reprobe)
+
+        res = run_with({"default": "pass"}, case["candidates"], ["0.9.5"])
+        self.assertEqual(res["status"], "all_pass")
+        self.assertEqual({k: res["probes"][-1][k] for k in ("version", "role")}, {"version": "0.9.5", "role": "reprobe"})
+        self.assertEqual(res["reprobed"], ["0.9.5"])
+        res = run_with({"default": "pass"}, [], ["0.9.5"])
+        self.assertEqual(res["status"], "no_candidates")
+        self.assertEqual([p["version"] for p in res["probes"]], ["0.9.5"])
+        # a re-probe version equal to the newest candidate is not probed twice
+        res = run_with({"default": "pass"}, case["candidates"], ["1.0.9"])
+        self.assertEqual([p["version"] for p in res["probes"]].count("1.0.9"), 1)
+        self.assertEqual(res["reprobed"], [])
+        # a failing re-probe changes neither the verdict nor the exit code
+        def exit_code(res):
+            block = report_mod.harness_block("claude", res, verified_max="1.0.0")
+            return report_mod.assemble([block], {"harness": "claude", "versions": "since-verified", "bisect": True,
+                                                 "model_tier": "auto"}, {"os": "linux", "arch": "x86_64"},
+                                       "0" * 40, "0.0.0", generated_at="2026-10-01T00:00:00Z")["exit_code"]
+        plain = run_with({"default": "pass"}, case["candidates"], [])
+        failing = run_with({"default": "pass", "0.9.5": "fail"}, case["candidates"], ["0.9.5"])
+        self.assertEqual(failing["probes"][-1]["result"], "fail")
+        for k in ("status", "first_bad", "last_good", "failing_checks", "signals"):
+            self.assertEqual(failing[k], plain[k], k)
+        self.assertEqual(exit_code(failing), exit_code(plain))
+
 
 class Helpers(unittest.TestCase):
     def test_codex_candidate_filtering(self):
@@ -142,6 +260,67 @@ class Helpers(unittest.TestCase):
         for bad in (["0.158.0-alpha.1"], ["9.9.9"]):
             with self.assertRaises(ValueError):
                 versions.candidates(npm, "list", doc, "codex", explicit=bad)
+
+    def test_selection_is_scoped_to_main_contract(self):
+        c1, c2 = "1111111111111111", "2222222222222222"
+
+        def row(version, status="verified", cid=None, **kw):
+            return dict({"harness": "claude", "version": version, "status": status, "contract_id": cid,
+                         "known_broken": []}, **kw)
+        doc = {"schema_version": 2, "rows": [
+            row("2.1.285"), row("2.1.300", cid=c1), row("2.1.290", "known_broken", c1), row("2.1.288", cid=c2),
+            row("2.1.280", known_broken=[{"min": "2.1.281", "max": "2.1.282"}])]}
+        npm = [f"2.1.{i}" for i in range(280, 303)] + ["2.1.303-beta.1"]
+        cands = lambda cid: versions.candidates(npm, "since-verified", doc, "claude", contract_id=cid)
+
+        self.assertEqual(versions.verified_max(doc, "claude", c2), "2.1.288")
+        self.assertEqual(versions.known_broken(doc, "claude", c2), [("2.1.281", "2.1.282")])
+        self.assertEqual(cands(c2)[0], "2.1.289")
+        self.assertIn("2.1.290", cands(c2))
+        self.assertEqual(versions.reprobe(npm, doc, "claude", c2), ["2.1.290"])
+
+        self.assertEqual(versions.verified_max(doc, "claude", c1), "2.1.300")
+        self.assertIn(("2.1.290", "2.1.290"), versions.known_broken(doc, "claude", c1))
+        self.assertEqual(cands(c1), ["2.1.301", "2.1.302"])
+        self.assertEqual(versions.reprobe(npm, doc, "claude", c1), [])
+
+        self.assertEqual(versions.verified_max(doc, "claude", None), "2.1.300")
+        self.assertCountEqual(versions.known_broken(doc, "claude", None), [("2.1.281", "2.1.282"), ("2.1.290", "2.1.290")])
+        self.assertEqual(versions.reprobe(npm, doc, "claude", None), [])
+        self.assertEqual(cands(None), cands(c1))
+
+        both = {"schema_version": 2, "rows": doc["rows"] + [row("2.1.290", "known_broken", c2)]}
+        self.assertEqual(versions.reprobe(npm, both, "claude", c2), [])  # broken under main too: stays excluded
+        self.assertEqual(versions.reprobe([v for v in npm if v != "2.1.290"], doc, "claude", c2), [])  # unpublished
+
+    def test_schema_1_and_2_documents_give_the_same_answers(self):
+        committed_path = HERE.parents[1] / "docs" / "compatibility" / "harness-versions.json"
+        committed = versions.load_versions_json(committed_path)
+        self.assertEqual(committed["schema_version"], 2)
+        # The same rows written as a schema-1 document (no schema-2 fields) upgrade to the same answers.
+        v1 = {"schema_version": 1,
+              "rows": [{k: r[k] for k in ("harness", "version", "recipe", "evidence", "known_broken")}
+                       for r in committed["rows"]]}
+        with tempfile.TemporaryDirectory() as tmp:
+            v1_path = pathlib.Path(tmp) / "v1.json"
+            v1_path.write_text(json.dumps(v1))
+            upgraded = versions.load_versions_json(v1_path)
+        self.assertEqual(upgraded["schema_version"], 2)
+        for harness in ("codex", "claude"):
+            self.assertIsNotNone(versions.verified_max(committed, harness))
+            self.assertEqual(versions.verified_max(upgraded, harness), versions.verified_max(committed, harness))
+            self.assertEqual(versions.known_broken(upgraded, harness), versions.known_broken(committed, harness))
+        self.assertEqual(versions.verified_max(committed, "codex"), "0.159.3")
+        self.assertTrue(all(r["status"] == "verified" and r["contract_id"] is None for r in upgraded["rows"]))
+        # The checked-in schema-1 fixture still loads.
+        fixture = versions.load_versions_json(FIX / "harness-versions.json")
+        self.assertEqual(versions.verified_max(fixture, "codex"), "0.157.1")
+        self.assertEqual(versions.known_broken(fixture, "codex"), [])
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = pathlib.Path(tmp) / "v3.json"
+            bad.write_text(json.dumps({"schema_version": 3, "rows": []}))
+            with self.assertRaises(ValueError):
+                versions.load_versions_json(bad)
 
     def test_claude_candidates_sort_numerically(self):
         npm = json.loads((FIX / "npm-claude-versions.json").read_text())

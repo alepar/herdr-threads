@@ -22,10 +22,10 @@ def parse_probe_output(text):
         raise ValueError(f"probe output is not JSON: {e}") from e
     if not isinstance(doc, dict):
         raise ValueError("probe output must be a JSON object")
-    extra = set(doc) - {"result", "checks", "failed_tier"}
+    extra = set(doc) - {"result", "checks", "failed_tier", "contract"}
     if extra:
         raise ValueError(f"unexpected keys: {sorted(extra)}")
-    for key in ("result", "checks", "failed_tier"):
+    for key in ("result", "checks", "failed_tier"):  # `contract` is optional (older probes omit it)
         if key not in doc:
             raise ValueError(f"missing key: {key}")
     if doc["result"] not in _RESULTS:
@@ -72,13 +72,13 @@ def _attempt(probe_cmd, version, tier1):
     """One probe invocation -> (attempt dict, failed_tier)."""
     argv = [a.replace("{version}", version) for a in shlex.split(probe_cmd)]
     start = time.monotonic()
-    failed_tier, checks, detail = None, [], None
+    failed_tier, checks, detail, contract = None, [], None, None
     try:
         cp = subprocess.run(argv, capture_output=True, text=True, timeout=PROBE_TIMEOUT_S)
         result = {0: "pass", 1: "fail"}.get(cp.returncode, "infra")
         try:
             doc = parse_probe_output(cp.stdout)
-            checks, failed_tier = doc["checks"], doc["failed_tier"]
+            checks, failed_tier, contract = doc["checks"], doc["failed_tier"], doc.get("contract")
             if doc["result"] != result:
                 result, detail = "infra", f"exit code {cp.returncode} contradicts result {doc['result']!r}"
         except ValueError as e:
@@ -88,13 +88,19 @@ def _attempt(probe_cmd, version, tier1):
         result, detail = "infra", f"probe command failed to run: {e}"
     if detail is not None:
         checks = checks + [{"id": "t0.probe-output", "status": "fail", "detail": detail}]
-    return ({"result": result, "tier1": bool(tier1) or failed_tier == 1,
-             "duration_ms": int((time.monotonic() - start) * 1000), "checks": checks}, failed_tier)
+    attempt = {"result": result, "tier1": bool(tier1) or failed_tier == 1,
+               "duration_ms": int((time.monotonic() - start) * 1000), "checks": checks}
+    if contract is not None:
+        attempt["contract"] = contract
+    return attempt, failed_tier
 
 
-def run(candidates, baseline, probe_cmd, bisect=True, tier1=False, known_broken=()):
+def run(candidates, baseline, probe_cmd, bisect=True, tier1=False, known_broken=(), reprobe=()):
     """Search `candidates` (ascending, §D1) for the first failing version; returns the §D7/§D8 harness
-    result: status, first_bad, last_good, probes, excluded, ..."""
+    result: status, first_bad, last_good, probes, excluded, ...
+
+    `reprobe` versions are probed after the search, on every return path, with role "reprobe"; they never
+    change the verdict (they only add probes, so the manifest writer can record them)."""
     versions = _sibling("versions")
     cands = list(candidates)
     ranges = [tuple(r) for r in known_broken]
@@ -130,6 +136,17 @@ def run(candidates, baseline, probe_cmd, bisect=True, tier1=False, known_broken=
         res["signals"] = [{"id": c["id"], "detail": c.get("detail", "")} for c in last if c["status"] == "warn"]
 
     res["crossed_ranges"] = len([r for r in ranges if any(versions.in_range(v, r) for v in excluded)])
+    res["reprobed"] = []
+
+    status = _search(res, versions, kept, excluded, ranges, baseline, bisect, probe, finish, evidence)
+    for v in sorted(set(reprobe), key=versions.version_key):
+        if all(p["version"] != v for p in res["probes"]):
+            probe(v, "reprobe")
+            res["reprobed"].append(v)
+    return status
+
+
+def _search(res, versions, kept, excluded, ranges, baseline, bisect, probe, finish, evidence):
     if not kept:
         return finish("no_candidates")
 
@@ -210,11 +227,13 @@ def main(argv=None):
     ap.add_argument("--baseline", required=True, help="verified_max, assumed good")
     ap.add_argument("--bisect", action="store_true", help="binary search (default: probe every candidate)")
     ap.add_argument("--tier1", action="store_true", help="the probe command runs the model tier")
+    ap.add_argument("--reprobe", default="", help="comma-separated versions probed after the search (verdict-neutral)")
     ap.add_argument("--known-broken", default="[]", help='JSON [{"min":"a.b.c"|null,"max":"x.y.z"|null}]')
     args = ap.parse_args(argv)
     ranges = [(r.get("min"), r.get("max")) for r in json.loads(args.known_broken)]
     res = run([c for c in args.candidates.split(",") if c], args.baseline, args.probe_cmd,
-              bisect=args.bisect, tier1=args.tier1, known_broken=ranges)
+              bisect=args.bisect, tier1=args.tier1, known_broken=ranges,
+              reprobe=[v for v in args.reprobe.split(",") if v])
     print(json.dumps(res, indent=2))
     return _sibling("report").exit_code({"harnesses": [res]})
 

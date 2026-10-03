@@ -13,6 +13,11 @@
 use super::admission::{self, OptimisticAdmission, Refusal, Row};
 use super::codex_schema::{self, Unextractable};
 use super::context::{ContextError, EventKind, Harness, Role};
+use super::contract::{
+    EventClass, EventContract, HarnessContract,
+    JsonType::{String as Str, StringOrNull as StrOrNull},
+    field as f,
+};
 pub use super::recipe::NativeSupport;
 use super::recipe::{self, Evidence, LookupError, Recipe, Version, VersionSet};
 use super::{Capability, LifecycleEvent, declared_role, field, input};
@@ -27,6 +32,59 @@ use std::{
     process::{Command, Stdio},
     sync::mpsc,
     time::{Duration, Instant},
+};
+
+/// The native hook payload contract `check_hooks_v1`, `parse_shape` and
+/// `parse_tool_invocation` consume. Kept in step with the parsers by the drift
+/// tests in `tests/harness/contract.rs`: a parser that requires an undeclared
+/// field fails them. Changing it changes the contract id, which must be
+/// deliberate.
+pub const CONTRACT: HarnessContract = HarnessContract {
+    harness: "codex",
+    discriminator: "hook_event_name",
+    events: &[
+        EventContract {
+            event: "SessionStart",
+            class: EventClass::Lifecycle,
+            fields: &[
+                f("hook_event_name", Str, true),
+                f("session_id", Str, true),
+                f("source", Str, true),
+                f("turn_id", Str, false),
+                f("agent_id", Str, false),
+                f("agent_type", Str, false),
+            ],
+        },
+        EventContract {
+            event: "SubagentStart",
+            class: EventClass::Other,
+            fields: &[
+                f("hook_event_name", Str, true),
+                f("session_id", Str, true),
+                f("turn_id", Str, true),
+                f("cwd", Str, true),
+                f("model", Str, true),
+                f("permission_mode", Str, true),
+                f("agent_id", Str, true),
+                f("agent_type", Str, true),
+                f("transcript_path", StrOrNull, true),
+            ],
+        },
+        EventContract {
+            event: "PreToolUse",
+            class: EventClass::Tool,
+            fields: &[
+                f("hook_event_name", Str, true),
+                f("session_id", Str, true),
+                f("turn_id", Str, true),
+                f("tool_name", Str, true),
+                f("tool_use_id", Str, true),
+                f("tool_input.command", Str, true),
+                f("agent_id", Str, false),
+                f("agent_type", Str, false),
+            ],
+        },
+    ],
 };
 
 /// Native hook-input schema a recipe parses. One variant per distinct

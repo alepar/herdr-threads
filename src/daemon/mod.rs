@@ -1,12 +1,15 @@
 //! Elected daemon diagnostics and runtime composition.
 pub mod control;
 pub mod diagnostics;
+pub mod harness_evidence;
+pub mod harness_states;
 pub mod health;
 pub mod lifecycle;
 pub mod logs;
 pub mod ownership;
 pub mod paths;
 pub mod remedy;
+pub mod settings;
 pub mod transport;
 
 use crate::daemon::{

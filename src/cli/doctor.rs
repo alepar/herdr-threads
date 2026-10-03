@@ -18,7 +18,9 @@ use crate::{
     protocol::{
         commands::Command,
         output::OutputFormat,
-        results::{CommandResult, ErrorCode, HarnessState, Health, HealthState},
+        results::{
+            CommandResult, ErrorCode, HarnessState, HarnessStatesReport, Health, HealthState,
+        },
         time::{CallBudget, Cancellation, Clock, MonoInstant},
         wire::PROTOCOL_VERSION,
     },
@@ -252,7 +254,35 @@ pub fn claude_observed_text(
 enum Daemon {
     NotRunning,
     Unreachable(String),
-    Reachable(Box<Health>),
+    /// Health, and the daemon's version verdicts or why there are none.
+    Reachable(Box<Health>, Result<HarnessStatesReport, String>),
+}
+
+/// The daemon's `harness.states` answer, or why doctor has none (an older
+/// daemon that does not advertise it, or a failed call).
+fn harness_states(
+    client: &LocalSocketClient,
+    clock: &Arc<dyn Clock>,
+) -> Result<HarnessStatesReport, String> {
+    let budget = || CallBudget {
+        deadline: MonoInstant(clock.monotonic_now().0.saturating_add(HEALTH_BUDGET_MS)),
+        cancellation: Cancellation::default(),
+    };
+    if !client
+        .capabilities(&budget())
+        .supports(crate::protocol::capabilities::HARNESS_STATES)
+    {
+        return Err("the daemon does not advertise harness.states (an older daemon)".into());
+    }
+    match client.call(Command::HarnessStates, &budget()) {
+        Ok(CommandResult::HarnessStates(report)) => Ok(report),
+        Ok(_) => Err("the daemon answered harness.states with another result".into()),
+        Err(error) => Err(format!(
+            "harness.states failed: {} ({})",
+            error.detail,
+            exit::code_name(&error.code)
+        )),
+    }
 }
 
 fn probe_daemon(paths: &InstancePaths) -> Result<Daemon, String> {
@@ -288,7 +318,10 @@ fn probe_daemon(paths: &InstancePaths) -> Result<Daemon, String> {
         Some(descriptor.boot_id),
     );
     match client.call(Command::Health, &budget) {
-        Ok(CommandResult::Health(health)) => Ok(Daemon::Reachable(Box::new(health))),
+        Ok(CommandResult::Health(health)) => {
+            let states = harness_states(&client, &clock);
+            Ok(Daemon::Reachable(Box::new(health), states))
+        }
         Ok(_) => Ok(Daemon::Unreachable(
             "daemon answered health with another result".into(),
         )),
@@ -320,6 +353,150 @@ fn unsafe_private_dir(paths: &InstancePaths) -> Option<String> {
 }
 
 /// Assemble the report and its exit status. Split from rendering for tests.
+/// The effective harness-manifest fetch policy and the cache state, for
+/// `report["harness_manifest"]`. Informational only: never a limitation.
+/// `offline_env` is this process's `HERDR_THREADS_OFFLINE`; the daemon reads
+/// its own environment (and `settings.json`) once at start.
+pub(crate) fn harness_manifest_report(
+    instance_dir: &std::path::Path,
+    offline_env: Option<&std::ffi::OsStr>,
+) -> Value {
+    use crate::harness::manifest::{
+        ManifestPolicy, OffReason, SUPPORTED_SCHEMA_VERSION, cache_dir, format_rfc3339_utc,
+        policy_from, read_meta,
+    };
+    let meta = read_meta(&cache_dir(instance_dir));
+    let cache_fetched_at = meta.fetched_at_ms.map(format_rfc3339_utc);
+    let (policy, source, settings_error) = match crate::daemon::settings::load(instance_dir) {
+        Ok(settings) => {
+            let (policy, source) = match policy_from(&settings, offline_env) {
+                ManifestPolicy::Auto => ("auto", "default"),
+                ManifestPolicy::Off(OffReason::Settings) => ("off", "settings"),
+                ManifestPolicy::Off(OffReason::OfflineEnv) => ("off", "offline_env"),
+            };
+            (json!(policy), json!(source), Value::Null)
+        }
+        Err(error) => (Value::Null, Value::Null, json!(error.to_string())),
+    };
+    json!({
+        "policy": policy,
+        "source": source,
+        "settings_error": settings_error,
+        "cache_fetched_at": cache_fetched_at,
+        "cache_etag": meta.etag,
+        "embedded_schema_version": SUPPORTED_SCHEMA_VERSION,
+    })
+}
+
+/// The text lines for [`harness_manifest_report`].
+fn harness_manifest_text(manifest: &Value) -> String {
+    let mut out = String::new();
+    if let Some(error) = manifest["settings_error"].as_str() {
+        out.push_str(&format!("harness manifest: settings error: {error}\n"));
+    } else {
+        match (manifest["policy"].as_str(), manifest["source"].as_str()) {
+            (Some("off"), Some("settings")) => {
+                out.push_str("harness manifest: off (settings.json)\n")
+            }
+            (Some("off"), _) => out.push_str(
+                "harness manifest: off (HERDR_THREADS_OFFLINE=1 in this environment; the daemon reads its own environment at start)\n",
+            ),
+            _ => out.push_str("harness manifest: auto\n"),
+        }
+    }
+    match manifest["cache_fetched_at"].as_str() {
+        Some(at) => out.push_str(&format!(
+            "manifest cache: fetched {at} (etag {})\n",
+            manifest["cache_etag"].as_str().unwrap_or("none")
+        )),
+        None => out.push_str("manifest cache: never fetched (using the embedded copy)\n"),
+    }
+    out
+}
+
+/// The per-harness verdict blocks (`harness.states`), then the reason doctor
+/// has none when the daemon could not answer. Everything is escaped.
+fn harness_states_text(report: &Value) -> String {
+    let mut out = String::new();
+    let Some(harnesses) = report["harness_states"]["harnesses"].as_array() else {
+        if let Some(why) = report["harness_states_unavailable"].as_str() {
+            out.push_str(&format!("harness states unavailable: {}\n", clean(why)));
+        }
+        return out;
+    };
+    for harness in harnesses {
+        let name = scalar(&harness["harness"]);
+        let versions = harness["versions"].as_array().cloned().unwrap_or_default();
+        let detected = &harness["detected"];
+        if let Some(newest) = versions.first() {
+            out.push_str(&format!(
+                "harness {name}: {} {} \u{2014} {}\n",
+                scalar(&newest["state"]),
+                scalar(&newest["version"]),
+                scalar(&newest["source"])
+            ));
+        } else if detected.is_object() {
+            out.push_str(&format!(
+                "harness {name}: {} {} (on PATH, no session yet) \u{2014} {}\n",
+                scalar(&detected["state"]),
+                scalar(&detected["version"]),
+                scalar(&detected["line"])
+            ));
+        }
+        if detected.is_object() && !versions.is_empty() {
+            out.push_str(&format!(
+                "  {name} {} (on PATH, no session yet): {} \u{2014} {}\n",
+                scalar(&detected["version"]),
+                scalar(&detected["state"]),
+                scalar(&detected["line"])
+            ));
+        }
+        for (index, row) in versions.iter().enumerate() {
+            // Other rows still in the Health window.
+            if index > 0 && row["in_health_window"] == json!(true) {
+                out.push_str(&format!(
+                    "  {name} {}: {} \u{2014} {}\n",
+                    scalar(&row["version"]),
+                    scalar(&row["state"]),
+                    scalar(&row["source"])
+                ));
+            }
+            if row["state"] == json!("broken")
+                && (index == 0 || row["in_health_window"] == json!(true))
+            {
+                out.push_str(&format!("  {}\n", scalar(&row["line"])));
+            }
+            if index == 0 || row["in_health_window"] == json!(true) {
+                for note in row["notes"].as_array().into_iter().flatten() {
+                    out.push_str(&format!("  note: {}\n", scalar(note)));
+                }
+                if let Some(url) = row["issue_url"].as_str() {
+                    out.push_str(&format!("  issue: {}\n", clean(url)));
+                }
+            }
+        }
+        let newest_seen = versions
+            .first()
+            .and_then(|row| row["last_seen_at"].as_u64())
+            .unwrap_or(0);
+        if let (Some(reason), Some(at)) = (
+            harness["unattributed"]["reason"].as_str(),
+            harness["unattributed"]["at"].as_u64(),
+        ) && at > newest_seen
+        {
+            out.push_str(&format!(
+                "version evidence unavailable: {} ({})\n",
+                clean(reason),
+                crate::harness::manifest::format_rfc3339_utc(i64::try_from(at).unwrap_or(i64::MAX))
+            ));
+        }
+        if let Some(count) = harness["hook_parse_failures"].as_u64().filter(|n| *n > 0) {
+            out.push_str(&format!("hook payloads not understood: {count}\n"));
+        }
+    }
+    out
+}
+
 pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Value, i32) {
     let mut report = json!({
         "version": env!("CARGO_PKG_VERSION"),
@@ -371,6 +548,10 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
         result = "unsafe_state_dir";
     }
     let mut observed_claude = String::from("unknown");
+    // The daemon's version verdicts, or why doctor has none.
+    let mut states: Result<HarnessStatesReport, String> =
+        Err("the daemon's instance could not be resolved".into());
+    let mut daemon_limitations: Vec<String> = Vec::new();
     match resolved {
         Err(error) => {
             report["daemon"] = json!({"state": "unavailable", "error": error.to_string()});
@@ -380,8 +561,13 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
         Ok(paths) => {
             report["instance_dir"] = json!(paths.instance_dir.display().to_string());
             report["daemon_log"] = json!(daemon_log_path(&paths).display().to_string());
+            report["harness_manifest"] = harness_manifest_report(
+                &paths.instance_dir,
+                std::env::var_os("HERDR_THREADS_OFFLINE").as_deref(),
+            );
             match probe_daemon(&paths) {
                 Ok(Daemon::NotRunning) => {
+                    states = Err("the daemon is not running".into());
                     report["daemon"] = if state_error.is_some() {
                         // Ensure refuses an unsafe state tree; do not suggest it.
                         json!({"state": "not_running"})
@@ -400,13 +586,16 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
                     }
                 }
                 Ok(Daemon::Unreachable(detail)) | Err(detail) => {
+                    states = Err("the daemon is unreachable".into());
                     report["daemon"] = json!({"state": "unreachable", "error": detail});
                     if code == exit::EXIT_OK {
                         code = exit::EXIT_UNAVAILABLE;
                         result = "unavailable";
                     }
                 }
-                Ok(Daemon::Reachable(health)) => {
+                Ok(Daemon::Reachable(health, answered)) => {
+                    states = answered;
+                    daemon_limitations = health.limitations.clone();
                     let version_matches = health.software_version == env!("CARGO_PKG_VERSION");
                     observed_claude = claude_observed_text(
                         health.harness.claude,
@@ -473,6 +662,7 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
             claude["setup"] = json!({
                 "settings": settings.display().to_string(),
                 "installed": inspection.installed,
+                "event_registration": event_registration(inspection.legacy_event_registration),
                 "adopted": inspection.adopted.as_ref().map(|adoption| json!({
                     "owner": adoption.owner,
                     "recorded": adoption.recorded,
@@ -491,12 +681,16 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
     let (claude_installed, claude_warning) =
         claude_installed_with_warning(path.as_deref(), |key| std::env::var_os(key));
     claude["installed"] = json!(claude_installed);
-    claude["admission_warning"] = json!(claude_warning);
+    // With the daemon's answer the PATH version's verdict is the
+    // detected-version line of the harness block; without it the admission
+    // warning stands as before.
+    claude["admission_warning"] = json!(if states.is_ok() { None } else { claude_warning });
     let codex_inspection = super::setup::user_inspection(Harness::Codex, &env);
     let codex_setup = match &codex_inspection {
         Ok((file, inspection)) => json!({
             "hooks_file": file.display().to_string(),
             "installed": inspection.installed,
+            "event_registration": event_registration(inspection.legacy_event_registration),
             "adopted": inspection.adopted.as_ref().map(|adoption| json!({
                 "owner": adoption.owner,
                 "recorded": adoption.recorded,
@@ -585,10 +779,43 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
     for warning in &proxy_warnings {
         limitations.push(format!("codex sandbox: {warning}"));
     }
+    // A broken verdict is a limitation like it is in Health (a line Health
+    // already shows is not repeated); working and new verdicts are not.
+    if let Ok(states) = &states {
+        for harness in &states.harnesses {
+            let broken = |state: &str| state == "broken";
+            let lines = harness
+                .detected
+                .iter()
+                .filter(|detected| broken(&detected.state))
+                .map(|detected| detected.line.clone())
+                .chain(
+                    harness
+                        .versions
+                        .iter()
+                        .filter(|row| row.in_health_window && broken(&row.state))
+                        .map(|row| row.line.clone()),
+                );
+            for line in lines {
+                if !daemon_limitations.contains(&line) {
+                    limitations.push(line);
+                }
+            }
+        }
+    }
     if !limitations.is_empty() && result == "ok" {
         result = "degraded";
     }
     report["limitations"] = json!(limitations);
+    match &states {
+        Ok(states) => {
+            report["harness_states"] = serde_json::to_value(states).unwrap_or(Value::Null);
+        }
+        Err(why) => {
+            report["harness_states"] = Value::Null;
+            report["harness_states_unavailable"] = json!(why);
+        }
+    }
     report["hooks"] = json!({
         "claude": claude,
         "codex": {
@@ -610,6 +837,23 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
     });
     report["result"] = json!(result);
     (report, code)
+}
+
+/// The `setup.event_registration` value: `legacy` for hooks installed before per-event
+/// registration (still working, informational only), else `current`.
+fn event_registration(legacy: bool) -> &'static str {
+    if legacy { "legacy" } else { "current" }
+}
+
+/// The informational line for hooks that predate per-event registration. Never a limitation:
+/// the hooks work, so doctor does not turn `degraded` over it.
+fn legacy_registration_line(harness: &str, setup: &Value) -> Option<String> {
+    (setup["event_registration"] == json!("legacy")).then(|| {
+        format!(
+            "{harness} hooks predate per-event registration (no --event): re-run \
+             `herdr-threads setup {harness}`\n"
+        )
+    })
 }
 
 fn clean(value: &str) -> String {
@@ -677,6 +921,10 @@ pub fn render_text(report: &Value) -> String {
         if !report["daemon_log"].is_null() {
             out.push_str(&format!("daemon_log: {}\n", scalar(&report["daemon_log"])));
         }
+        out.push_str(&harness_states_text(report));
+        if report["harness_manifest"].is_object() {
+            out.push_str(&harness_manifest_text(&report["harness_manifest"]));
+        }
         let daemon = &report["daemon"];
         out.push_str(&format!("daemon: {}\n", scalar(&daemon["state"])));
         for key in [
@@ -716,6 +964,9 @@ pub fn render_text(report: &Value) -> String {
                 "no"
             }
         ));
+        if let Some(line) = legacy_registration_line("claude", &claude["setup"]) {
+            out.push_str(&line);
+        }
         let claude_installed = &claude["installed"];
         out.push_str(&claude_path_line(claude_installed));
         out.push('\n');
@@ -791,6 +1042,9 @@ pub fn render_text(report: &Value) -> String {
                 "no"
             }
         ));
+        if let Some(line) = legacy_registration_line("codex", setup) {
+            out.push_str(&line);
+        }
         let installed = &report["hooks"]["codex"]["installed"];
         out.push_str(&format!(
             "hooks.codex.installed: {}\n",

@@ -1,6 +1,8 @@
-//! ht-p03.23: Health renders the optimistic admission and the known-broken
-//! refusal truthfully, counts hook payloads not understood, and derives its
-//! version text from the recipe tables. Each test names the mutation it kills.
+//! ht-p03.23 / ht-xoc.5: an optimistic admission, a schema-matched one and a
+//! version refusal add nothing to Health (the version verdict is
+//! `harness::state`'s, rendered from evidence: see `health_harness_state`);
+//! the receipt note and the recipe-derived version text stay. Each test names
+//! the mutation it kills.
 
 use super::health_budget::{ready_inputs, worst_case_inputs};
 use super::*;
@@ -64,43 +66,38 @@ fn override_table(
     table
 }
 
-/// Kills: an optimistic admission that stays a limitation (it degraded Health
-/// before), one that is dropped from Health, and one that flips the state.
+/// Kills: an optimistic admission that renders a limitation (it degraded
+/// Health before), one that still renders its note (ht-xoc.5 retired it: a
+/// new version is not a problem), and one that flips the state.
 #[test]
-fn optimistic_is_an_informational_note_not_degraded() {
+fn optimistic_renders_nothing_in_health() {
     let mut inputs = ready_inputs();
     let version = newer_version();
     inputs.claude = claude_status(observed(&version), CapabilityState::Unsupported);
     assert!(matches!(inputs.claude, HarnessStatus::Optimistic(_)));
     let health = inputs.assemble();
     assert_eq!(health.state, HealthState::Healthy, "{health:#?}");
-    let expected = format!(
-        "harness claude: claude {version}: optimistic \u{2014} newer than verified {}, assumed \
-         compatible with recipe {}",
-        verified_max(),
-        claude::RECIPES[0].id
-    );
-    assert!(health.notes.contains(&expected), "{:#?}", health.notes);
+    assert!(health.limitations.is_empty(), "{:#?}", health.limitations);
     assert!(
-        health
-            .limitations
-            .iter()
-            .all(|line| !line.contains("optimistic")),
+        health.notes.iter().all(|line| !line.contains("optimistic")
+            && !line.starts_with("harness claude:")
+            && !line.contains(&version)),
         "{:#?}",
-        health.limitations
+        health.notes
     );
     assert_eq!(health.harness.claude, HarnessState::Cooperative);
+    // The receipt basis note stays: it is not a version verdict.
+    assert!(health.notes.contains(&cooperative_receipt_line()));
 }
 
-/// Kills: a Health line budget that the note and the parse-failure lines push
-/// past 12 lines or past the wire cap, and notes folded away from the front.
+/// Kills: a Health line budget that long optimistic details push past 12
+/// lines or past the wire cap, and notes folded away from the front.
 #[test]
-fn worst_case_line_budget_still_holds_with_note_and_parse_failures() {
+fn worst_case_line_budget_still_holds_with_optimistic_harnesses() {
     let mut inputs = worst_case_inputs();
     let long = "y".repeat(400);
     inputs.claude = HarnessStatus::Optimistic(long.clone());
     inputs.codex = HarnessStatus::Optimistic(long);
-    inputs.hook_parse_failures = vec![("claude".into(), u64::MAX), ("codex".into(), u64::MAX)];
     let health = inputs.assemble();
     assert!(
         health.limitations.len() <= HEALTH_LINE_BUDGET,
@@ -113,24 +110,11 @@ fn worst_case_line_budget_still_holds_with_note_and_parse_failures() {
         health.notes
     );
     health.validate().expect("the wire cap still holds");
-    for harness in ["claude", "codex"] {
-        assert!(
-            health.notes.contains(&format!(
-                "{} hook payloads not understood ({harness})",
-                u64::MAX
-            )),
-            "{:#?}",
-            health.notes
-        );
-        assert!(
-            health
-                .notes
-                .iter()
-                .any(|line| line.starts_with(&format!("harness {harness}: yyy"))),
-            "{:#?}",
-            health.notes
-        );
-    }
+    assert!(
+        health.notes.iter().all(|line| !line.contains("yyy")),
+        "{:#?}",
+        health.notes
+    );
 }
 
 /// Kills: `supported` for a version that is not listed (the Wave 26 latent
@@ -172,11 +156,13 @@ fn supported_requires_native_receipt_and_listed() {
     assert!(matches!(status, HarnessStatus::Optimistic(_)), "{status:?}");
 }
 
-/// Kills: a known-broken refusal that omits the range or the newest working
-/// version in Health, with the range planted through the test-only recipe
-/// override.
+/// Kills: a known-broken refusal that still degrades Health through the PATH
+/// observation (it is `VersionRefused` now: the verdict reaches Health only
+/// through evidence), and one that loses its range or newest-working text in
+/// the status detail doctor prints. The range is planted through the
+/// test-only recipe override.
 #[test]
-fn known_broken_text_in_health() {
+fn known_broken_is_a_version_refusal_not_a_health_limitation() {
     let table = override_table("broken", Some(("2.1.286", "2.1.286")));
     let Row::Refused(Refusal::KnownBroken {
         range,
@@ -194,24 +180,23 @@ fn known_broken_text_in_health() {
         })),
         CapabilityState::Unsupported,
     );
+    assert_eq!(
+        status,
+        HarnessStatus::VersionRefused(format!(
+            "claude 2.1.286: refused: known broken in {range}; newest working: 2.1.283"
+        ))
+    );
     let mut inputs = ready_inputs();
     inputs.claude = status;
     let health = inputs.assemble();
-    assert_eq!(health.state, HealthState::Degraded);
-    assert!(
-        health.limitations.contains(&format!(
-            "harness claude unsupported: claude 2.1.286: refused: known broken in {range}; \
-             newest working: 2.1.283"
-        )),
-        "{:#?}",
-        health.limitations
-    );
+    assert_eq!(health.state, HealthState::Healthy, "{health:#?}");
+    assert!(health.limitations.is_empty(), "{:#?}", health.limitations);
 }
 
 /// Kills: the within-span placement rendering the newer-than-verified
-/// wording (or none), and a missing assumed recipe id.
+/// wording (or none) in the status detail, and a Health line for it.
 #[test]
-fn within_span_label_renders() {
+fn within_span_label_renders_in_status_not_in_health() {
     let table = override_table("span", None);
     let status = claude_status_in(table, observed("2.1.285"), CapabilityState::Unsupported);
     let HarnessStatus::Optimistic(detail) = &status else {
@@ -229,44 +214,28 @@ fn within_span_label_renders() {
         health
             .notes
             .iter()
-            .any(|line| line.contains("unlisted within the supported span")),
+            .all(|line| !line.contains("unlisted within the supported span")),
         "{:#?}",
         health.notes
     );
 }
 
-/// Kills: the major-version flag lost on the way to Health.
+/// Kills: the major-version flag lost from the status detail, and one
+/// rendered in Health.
 #[test]
-fn major_version_change_in_health() {
+fn major_version_change_in_status_not_in_health() {
     let mut inputs = ready_inputs();
     inputs.claude = claude_status(observed("9.0.0"), CapabilityState::Unsupported);
+    assert!(
+        matches!(&inputs.claude, HarnessStatus::Optimistic(detail)
+            if detail.starts_with("claude 9.0.0: optimistic")
+                && detail.ends_with("; major version change")),
+        "{:?}",
+        inputs.claude
+    );
     let health = inputs.assemble();
     assert!(
-        health.notes.iter().any(|line| line
-            .starts_with("harness claude: claude 9.0.0: optimistic")
-            && line.ends_with("; major version change")),
-        "{:#?}",
-        health.notes
-    );
-}
-
-/// Kills: a count line that is rendered for zero failures, mislabelled, or
-/// that degrades Health.
-#[test]
-fn hook_parse_failure_count_line() {
-    let mut inputs = ready_inputs();
-    inputs.hook_parse_failures = vec![("claude".into(), 3), ("codex".into(), 0)];
-    let health = inputs.assemble();
-    assert_eq!(health.state, HealthState::Healthy);
-    assert!(
-        health
-            .notes
-            .contains(&"3 hook payloads not understood (claude)".to_owned()),
-        "{:#?}",
-        health.notes
-    );
-    assert!(
-        health.notes.iter().all(|line| !line.contains("(codex)")),
+        health.notes.iter().all(|line| !line.contains("9.0.0")),
         "{:#?}",
         health.notes
     );

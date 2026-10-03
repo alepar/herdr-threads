@@ -289,3 +289,201 @@ fn doctor_known_broken_text() {
         "without the override it is listed"
     );
 }
+
+// -- the harness manifest policy (ht-xoc.3) ---------------------------------
+
+fn manifest_case(tag: &str) -> PathCase {
+    PathCase::new(&format!("manifest-{tag}"))
+}
+
+/// Kills: a policy line that ignores settings.json or the environment, a
+/// missing key (absent instead of null), a cache line for a never-fetched
+/// cache, and an error that is swallowed into a default policy.
+#[test]
+fn doctor_reports_the_manifest_policy_and_cache() {
+    use std::ffi::OsStr;
+    let case = manifest_case("policy");
+    let report = harness_manifest_report(&case.dir, None);
+    assert_eq!(
+        report,
+        json!({"policy": "auto", "source": "default", "settings_error": null,
+               "cache_fetched_at": null, "cache_etag": null, "embedded_schema_version": 2})
+    );
+    let text = harness_manifest_text(&report);
+    assert_eq!(
+        text,
+        "harness manifest: auto\nmanifest cache: never fetched (using the embedded copy)\n"
+    );
+
+    let env = harness_manifest_report(&case.dir, Some(OsStr::new("1")));
+    assert_eq!(
+        (env["policy"].as_str(), env["source"].as_str()),
+        (Some("off"), Some("offline_env"))
+    );
+    assert!(harness_manifest_text(&env).starts_with(
+        "harness manifest: off (HERDR_THREADS_OFFLINE=1 in this environment; \
+             the daemon reads its own environment at start)\n"
+    ));
+    let not_one = harness_manifest_report(&case.dir, Some(OsStr::new("0")));
+    assert_eq!(not_one["policy"], "auto");
+
+    std::fs::write(
+        case.dir.join("settings.json"),
+        br#"{"harness_manifest":"off"}"#,
+    )
+    .unwrap();
+    let off = harness_manifest_report(&case.dir, None);
+    assert_eq!(
+        (off["policy"].as_str(), off["source"].as_str()),
+        (Some("off"), Some("settings"))
+    );
+    assert!(harness_manifest_text(&off).starts_with("harness manifest: off (settings.json)\n"));
+    // Settings win the label when the environment also says offline.
+    let both = harness_manifest_report(&case.dir, Some(OsStr::new("1")));
+    assert_eq!(both["source"], "settings");
+
+    let cache = case.dir.join("harness-manifest");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(
+        cache.join("meta.json"),
+        br#"{"etag":"W/\"abc\"","fetched_at_ms":1790000123000,"attempts":{}}"#,
+    )
+    .unwrap();
+    let cached = harness_manifest_report(&case.dir, None);
+    assert_eq!(cached["cache_fetched_at"], "2026-09-21T14:15:23Z");
+    assert!(
+        harness_manifest_text(&cached)
+            .ends_with("manifest cache: fetched 2026-09-21T14:15:23Z (etag W/\"abc\")\n")
+    );
+    // Attempts without a successful fetch still read as never fetched.
+    std::fs::write(cache.join("meta.json"), br#"{"attempts":{"claude":5}}"#).unwrap();
+    assert_eq!(
+        harness_manifest_report(&case.dir, None)["cache_fetched_at"],
+        Value::Null
+    );
+
+    std::fs::write(
+        case.dir.join("settings.json"),
+        br#"{"harness_manifest":"maybe"}"#,
+    )
+    .unwrap();
+    let bad = harness_manifest_report(&case.dir, None);
+    assert_eq!(
+        (bad["policy"].clone(), bad["source"].clone()),
+        (Value::Null, Value::Null)
+    );
+    let error = bad["settings_error"].as_str().unwrap();
+    assert!(error.contains("settings.json"), "{error}");
+    assert!(harness_manifest_text(&bad).starts_with("harness manifest: settings error: "));
+}
+
+/// Kills: doctor rejecting the daemon's timing keys (one schema for both
+/// readers) or accepting an out-of-range timing value.
+#[test]
+fn doctor_accepts_timing_keys_and_mixed_settings() {
+    let case = manifest_case("mixed");
+    let file = case.dir.join("settings.json");
+    std::fs::write(
+        &file,
+        br#"{"invitation_default_ms":120000,"receipt_default_ms":240000,"minimum_wake_delay_ms":45000}"#,
+    )
+    .unwrap();
+    let timing = harness_manifest_report(&case.dir, None);
+    assert_eq!(timing["settings_error"], Value::Null);
+    assert_eq!(timing["policy"], "auto");
+    assert_eq!(timing["source"], "default");
+
+    std::fs::write(
+        &file,
+        br#"{"invitation_default_ms":120000,"receipt_default_ms":240000,"minimum_wake_delay_ms":45000,"harness_manifest":"off"}"#,
+    )
+    .unwrap();
+    let mixed = harness_manifest_report(&case.dir, None);
+    assert_eq!(mixed["settings_error"], Value::Null);
+    assert_eq!(
+        (mixed["policy"].as_str(), mixed["source"].as_str()),
+        (Some("off"), Some("settings"))
+    );
+    assert!(harness_manifest_text(&mixed).starts_with("harness manifest: off (settings.json)\n"));
+
+    std::fs::write(&file, br#"{"minimum_wake_delay_ms":1}"#).unwrap();
+    let bad = harness_manifest_report(&case.dir, None);
+    let error = bad["settings_error"].as_str().unwrap();
+    assert!(error.contains("settings.json"), "{error}");
+}
+
+/// Kills: a report that computes the manifest object but never attaches it
+/// (or never prints it) in the full doctor output.
+#[test]
+fn doctor_report_and_text_carry_the_manifest_policy() {
+    let case = manifest_case("report");
+    let state = case.dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let endpoint = case.dir.join("herdr.sock");
+    let context =
+        crate::daemon::paths::RuntimeContext::explicit(state.clone(), endpoint.clone(), None)
+            .unwrap();
+    let instance = crate::daemon::paths::instance_dir(&context);
+    std::fs::create_dir_all(&instance).unwrap();
+    std::fs::write(
+        instance.join("settings.json"),
+        br#"{"harness_manifest":"off"}"#,
+    )
+    .unwrap();
+    let (report, _) = report(Some(state), Some(endpoint));
+    assert_eq!(report["harness_manifest"]["policy"], "off");
+    assert_eq!(report["harness_manifest"]["source"], "settings");
+    assert_eq!(report["harness_manifest"]["embedded_schema_version"], 2);
+    assert!(
+        report["limitations"]
+            .as_array()
+            .is_none_or(|limitations| limitations
+                .iter()
+                .all(|l| !l.to_string().contains("manifest"))),
+        "informational only"
+    );
+    let text = render_text(&report);
+    assert!(
+        text.contains("harness manifest: off (settings.json)\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("manifest cache: never fetched (using the embedded copy)\n"),
+        "{text}"
+    );
+}
+
+/// Kills: a `harness_states` key that is missing when the daemon answers or
+/// not null with a reason when it cannot (ht-xoc.5).
+#[test]
+fn doctor_json_carries_harness_states_or_the_reason() {
+    use crate::protocol::results::{HarnessStateReport, HarnessStatesReport};
+    let state = HarnessStatesReport {
+        harnesses: vec![HarnessStateReport {
+            harness: "claude".into(),
+            contract_id: None,
+            detected: None,
+            versions: Vec::new(),
+            unattributed: None,
+            hook_parse_failures: 0,
+        }],
+    };
+    let value = serde_json::to_value(&state).unwrap();
+    assert_eq!(value["harnesses"][0]["harness"], "claude");
+    assert!(value["harnesses"][0]["contract_id"].is_null());
+    // No daemon in a scratch state dir: the report says why.
+    let case = manifest_case("states-none");
+    let state = case.dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let (report, _) = report(Some(state), Some(case.dir.join("herdr.sock")));
+    assert!(report["harness_states"].is_null(), "{report}");
+    assert_eq!(
+        report["harness_states_unavailable"], "the daemon is not running",
+        "{report}"
+    );
+    let text = render_text(&report);
+    assert!(
+        text.contains("harness states unavailable: the daemon is not running\n"),
+        "{text}"
+    );
+}
