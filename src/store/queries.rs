@@ -578,8 +578,8 @@ fn thread_details(
             |r| r.get(0),
         )
         .map_err(|e| db.map_error(e))?;
-    let manifest_pending:i64=db.query_row("SELECT count(*) FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id JOIN seats s ON s.id=pr.seat_id LEFT JOIN receipt_state rs ON rs.message_id=sm.message_id AND rs.seat_id=pr.seat_id WHERE pr.thread_id=?1 AND s.state!='retired' AND (rs.state IS NULL OR rs.state='pending')",[q.thread.as_str()],|r|r.get(0)).map_err(|e|db.map_error(e))?;
-    let physical_pending:i64=db.query_row("SELECT count(*) FROM receipts r JOIN seats s ON s.id=r.seat_id WHERE r.thread_id=?1 AND r.state='pending' AND s.state!='retired' AND NOT EXISTS(SELECT 1 FROM send_manifests sm JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id WHERE sm.message_id=r.message_id AND pr.seat_id=r.seat_id)",[q.thread.as_str()],|r|r.get(0)).map_err(|e|db.map_error(e))?;
+    let manifest_pending:i64=db.query_row("SELECT count(*) FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id JOIN seats s ON s.id=pr.seat_id LEFT JOIN receipt_state rs ON rs.message_id=sm.message_id AND rs.seat_id=pr.seat_id WHERE pr.thread_id=?1 AND pr.ack_required=1 AND COALESCE(rs.ack_required,1)=1 AND s.state!='retired' AND (rs.state IS NULL OR rs.state='pending') AND pr.availability_provenance IS NOT 'operator_human' AND NOT EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=pr.seat_id AND b.harness='human' AND b.ended_at IS NULL) AND NOT EXISTS(SELECT 1 FROM human_receipt_waivers w WHERE w.seat_id=pr.seat_id AND sm.decision_seq<=w.through_decision_seq)",[q.thread.as_str()],|r|r.get(0)).map_err(|e|db.map_error(e))?;
+    let physical_pending:i64=db.query_row("SELECT count(*) FROM receipts r JOIN seats s ON s.id=r.seat_id JOIN messages m ON m.id=r.message_id WHERE r.thread_id=?1 AND r.state='pending' AND r.ack_required=1 AND s.state!='retired' AND NOT EXISTS(SELECT 1 FROM send_manifests sm JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id WHERE sm.message_id=r.message_id AND pr.seat_id=r.seat_id) AND NOT EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=r.seat_id AND b.harness='human' AND b.ended_at IS NULL) AND NOT EXISTS(SELECT 1 FROM human_receipt_waivers w WHERE w.seat_id=r.seat_id AND (m.decision_seq IS NULL OR m.decision_seq<=w.through_decision_seq))",[q.thread.as_str()],|r|r.get(0)).map_err(|e|db.map_error(e))?;
     let pending_receipt_count = manifest_pending
         .checked_add(physical_pending)
         .ok_or_else(|| api_error(ErrorCode::SequenceExhausted, "pending count overflow"))?
@@ -3034,6 +3034,7 @@ fn recipient_item(
         EffectiveReceiptState::Pending => ReceiptStatus::Pending,
         EffectiveReceiptState::Acknowledged => ReceiptStatus::Acknowledged,
         EffectiveReceiptState::RecipientRetired => ReceiptStatus::Retired,
+        EffectiveReceiptState::NotRequired => ReceiptStatus::NotRequired,
     };
     let physical_state: Option<String> = db
         .query_row(

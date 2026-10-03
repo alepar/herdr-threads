@@ -86,11 +86,16 @@ fn collect(
     let seat_filter = seat.map(SeatId::as_str);
     let mut keys = BTreeSet::new();
     for table in ["receipt_state", "receipts"] {
+        let index = if table == "receipt_state" {
+            "receipt_state_required_poke"
+        } else {
+            "receipts_required_poke"
+        };
         let reservable = wake::reservable_seat_sql(&format!("{table}.seat_id"));
         let mut statement = conn
             .prepare_cached(&format!(
-                "SELECT message_id, seat_id FROM {table} \
-                 WHERE state='pending' AND warning_message_id IS NULL \
+                "SELECT message_id, seat_id FROM {table} INDEXED BY {index} \
+                 WHERE state='pending' AND ack_required=1 AND warning_message_id IS NULL \
                  AND deadline_at IS NOT NULL AND available_at IS NOT NULL \
                  AND soft_poked_at IS NULL AND (?3 IS NULL OR seat_id=?3) AND {reservable} \
                  AND deadline_at - (1.0-?1)*(deadline_at-available_at) - 1.0 <= ?2 \

@@ -108,6 +108,8 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "digest_open_warnings",
     "digest_pending_invitations",
     "digest_pending_manifest_receipts",
+    "human_receipt_waivers",
+    "human_receipt_reconciliation_bounds",
     "digest_programmatic_warnings",
     "filter_revisions",
     "harness_unattributed",

@@ -2084,6 +2084,14 @@ fn human_lifecycle_check_in_over_cooperative_top_level_binding_is_refused() {
 fn human_to_agent_lifecycle_check_in_still_replaces_human_binding() {
     let (store, conn, _) = fixture();
     let human = check_in(&store, lifecycle(human_claim(&claim(), 0), "human")).unwrap();
+    let waived_through: i64 = conn
+        .query_row(
+            "SELECT through_decision_seq FROM human_receipt_waivers WHERE seat_id=?1",
+            [human.context.seat.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(waived_through > 0);
     assert_eq!(
         open_bindings(&conn),
         vec![(1, "human".to_owned(), "operator_human".to_owned())]
@@ -2092,6 +2100,14 @@ fn human_to_agent_lifecycle_check_in_still_replaces_human_binding() {
     agent.binding_generation = human.context.binding_generation;
     let result = check_in(&store, lifecycle(agent, "agent")).unwrap();
     assert_eq!(result.context.binding_generation, 2);
+    let preserved: i64 = conn
+        .query_row(
+            "SELECT through_decision_seq FROM human_receipt_waivers WHERE seat_id=?1",
+            [result.context.seat.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(preserved, waived_through);
     assert_eq!(
         open_bindings(&conn),
         vec![(2, "codex".to_owned(), "cooperative_top_level".to_owned())]
@@ -2135,8 +2151,9 @@ fn agent_lifecycle_check_ins_on_own_target_always_replace() {
 #[test]
 fn operator_human_override_replaces_agent_binding_and_is_audited() {
     use crate::protocol::authority::{OperatorActor, PeerIdentity};
-    let (store, conn, _) = fixture();
+    let (store, mut conn, clock) = fixture();
     let agent = check_in(&store, lifecycle(claim(), "agent")).unwrap();
+    conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('agent-owed','i','t',1,'ordinary','body',90,2); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('agent-owed','t','s','pending',10,90,100);").unwrap();
     let actor = OperatorActor::from_peer(PeerIdentity::from_kernel(501), 501).unwrap();
     let result = check_in_as(
         &store,
@@ -2153,6 +2170,59 @@ fn operator_human_override_replaces_agent_binding_and_is_audited() {
         vec![(2, "human".to_owned(), "operator_human".to_owned())]
     );
     assert_eq!(decision_count(&conn, "operator_human_override"), 1);
+    let bounds: (i64, i64) = conn.query_row("SELECT prepared_high_water,physical_high_water FROM human_receipt_reconciliation_bounds WHERE seat_id='s'", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+    assert_eq!(bounds, (0, 1));
+    let (state, required, actor, observation): (String, i64, Option<String>, Option<String>) = conn.query_row(
+        "SELECT state,ack_required,ack_actor_seat_id,ack_observation FROM receipts WHERE message_id='agent-owed' AND seat_id='s'",
+        [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    ).unwrap();
+    assert_eq!(
+        (state.as_str(), required, actor, observation),
+        ("pending", 1, None, None)
+    );
+    assert_eq!(
+        crate::store::effective::effective_receipt(&conn, "agent-owed", "s")
+            .unwrap()
+            .unwrap()
+            .state,
+        crate::store::effective::EffectiveReceiptState::NotRequired
+    );
+    let mut successor = claim();
+    successor.binding_generation = result.context.binding_generation;
+    successor.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
+    check_in(&store, lifecycle(successor, "successor-agent")).unwrap();
+    conn.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p_agent','i','actor','o_agent',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed'); INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('p_agent','t','s',1,10,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('agent-new','i','t',2,'ordinary','new mail',110,50); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i','p_agent','agent-new','t',50,110,2,0,1,0);").unwrap();
+    crate::store::materialization::advance_work(
+        &mut conn,
+        "work:human-receipts:s",
+        crate::ports::DurableWorkAdmission::new(16).unwrap(),
+        &budget(),
+        clock.as_ref(),
+    )
+    .unwrap();
+    let required: i64 = conn
+        .query_row(
+            "SELECT ack_required FROM receipts WHERE message_id='agent-owed'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(required, 0);
+    let required: i64 = conn
+        .query_row(
+            "SELECT ack_required FROM prepared_recipients WHERE preparation_id='p_agent'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(required, 1);
+    assert_eq!(
+        crate::store::effective::effective_receipt(&conn, "agent-new", "s")
+            .unwrap()
+            .unwrap()
+            .state,
+        crate::store::effective::EffectiveReceiptState::Pending
+    );
     let label: String = conn
         .query_row(
             "SELECT operator_label FROM allocation_decisions WHERE kind='operator_human_override'",

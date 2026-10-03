@@ -51,7 +51,8 @@ const V13: &str = include_str!("../../migrations/0013_thread_summaries.sql");
 const V14: &str = include_str!("../../migrations/0014_catch_up_release.sql");
 /// The schema version this build writes and audits (the last migration).
 const V15: &str = include_str!("../../migrations/0015_preparation_retention.sql");
-pub(crate) const LATEST_VERSION: i64 = 15;
+const V16: &str = include_str!("../../migrations/0016_human_receipt_waivers.sql");
+pub(crate) const LATEST_VERSION: i64 = 16;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -140,6 +141,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V13))
                 .and_then(|_| conn.execute_batch(V14))
                 .and_then(|_| conn.execute_batch(V15))
+                .and_then(|_| conn.execute_batch(V16))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -166,6 +168,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
+            migrate_v15_to_v16(conn)?;
             verify_existing(conn)
         }
         2 => {
@@ -184,6 +187,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
+            migrate_v15_to_v16(conn)?;
             verify_existing(conn)
         }
         3 => {
@@ -202,6 +206,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
+            migrate_v15_to_v16(conn)?;
             verify_existing(conn)
         }
         4 => {
@@ -221,6 +226,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
+            migrate_v15_to_v16(conn)?;
             verify_existing(conn)
         }
         5 => {
@@ -240,6 +246,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
+            migrate_v15_to_v16(conn)?;
             verify_existing(conn)
         }
         6 => {
@@ -259,6 +266,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
+            migrate_v15_to_v16(conn)?;
             verify_existing(conn)
         }
         7 => {
@@ -278,6 +286,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
+            migrate_v15_to_v16(conn)?;
             verify_existing(conn)
         }
         8 => {
@@ -289,6 +298,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
+            migrate_v15_to_v16(conn)?;
             verify_existing(conn)
         }
         9 => {
@@ -299,6 +309,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
+            migrate_v15_to_v16(conn)?;
             verify_existing(conn)
         }
         10 => {
@@ -308,6 +319,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
+            migrate_v15_to_v16(conn)?;
             verify_existing(conn)
         }
         11 => {
@@ -316,6 +328,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
+            migrate_v15_to_v16(conn)?;
             verify_existing(conn)
         }
         12 => {
@@ -323,21 +336,29 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
+            migrate_v15_to_v16(conn)?;
             verify_existing(conn)
         }
         13 => {
             verify_existing_v13_shape(conn)?;
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
+            migrate_v15_to_v16(conn)?;
             verify_existing(conn)
         }
         14 => {
             verify_existing_v13_shape(conn)?;
             verify_existing_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
+            migrate_v15_to_v16(conn)?;
             verify_existing(conn)
         }
-        15 => verify_existing(conn),
+        15 => {
+            verify_existing_v15(conn)?;
+            migrate_v15_to_v16(conn)?;
+            verify_existing(conn)
+        }
+        16 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -450,7 +471,8 @@ pub(crate) fn binding_evidence_lacking(conn: &Connection, seat: &str) -> rusqlit
 pub fn verify_existing(conn: &Connection) -> Result<(), ApiError> {
     verify_existing_v13_shape(conn)?;
     verify_existing_v14(conn)?;
-    verify_existing_v15(conn)
+    verify_existing_v15(conn)?;
+    verify_existing_v16(conn)
 }
 
 /// Audit of everything v1..v13 define; a v13 store is checked with this
@@ -682,6 +704,77 @@ fn migrate_v14_to_v15(conn: &Connection, now: UtcMillis) -> Result<(), ApiError>
             Err(store_error(error))
         }
     }
+}
+
+fn migrate_v15_to_v16(conn: &Connection) -> Result<(), ApiError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    let result = conn
+        .execute_batch(V16)
+        .and_then(|_| conn.pragma_update(None, "user_version", 16));
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(store_error(error))
+        }
+    }
+}
+
+fn verify_existing_v16(conn: &Connection) -> Result<(), ApiError> {
+    let present: bool = conn
+        .query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='human_receipt_waivers')", [], |r| r.get(0))
+        .map_err(store_error)?;
+    let columns: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info('human_receipt_waivers') WHERE (name='seat_id' AND type='TEXT' AND pk=1) OR (name='through_decision_seq' AND type='INTEGER' AND \"notnull\"=1) OR (name='human_generation' AND type='INTEGER' AND \"notnull\"=1) OR (name='decided_at' AND type='INTEGER' AND \"notnull\"=1)",
+        [], |r| r.get(0),
+    ).map_err(store_error)?;
+    let obligation_columns: i64 = conn.query_row(
+        "SELECT (SELECT count(*) FROM pragma_table_info('prepared_recipients') WHERE name='ack_required' AND type='INTEGER' AND \"notnull\"=1) + (SELECT count(*) FROM pragma_table_info('receipt_state') WHERE name='ack_required' AND type='INTEGER' AND \"notnull\"=1) + (SELECT count(*) FROM pragma_table_info('receipts') WHERE name='ack_required' AND type='INTEGER' AND \"notnull\"=1)",
+        [], |r| r.get(0),
+    ).map_err(store_error)?;
+    let bounds: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='human_receipt_reconciliation_bounds')", [], |r| r.get(0)).map_err(store_error)?;
+    let bound_columns: i64 = conn.query_row("SELECT count(*) FROM pragma_table_info('human_receipt_reconciliation_bounds') WHERE (name='seat_id' AND type='TEXT' AND pk=1) OR (name='prepared_high_water' AND type='INTEGER' AND \"notnull\"=1) OR (name='physical_high_water' AND type='INTEGER' AND \"notnull\"=1) OR (name='decision_seq' AND type='INTEGER' AND \"notnull\"=1)", [], |r| r.get(0)).map_err(store_error)?;
+    let work_kind: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_jobs' AND sql LIKE '%human_receipt_reconciliation%')", [], |r| r.get(0)).map_err(store_error)?;
+    if !present
+        || !bounds
+        || !work_kind
+        || columns != 4
+        || bound_columns != 4
+        || obligation_columns != 3
+    {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "missing human receipt obligation state",
+        ));
+    }
+    for (kind, name) in [
+        ("trigger", "human_receipt_prepared_waived"),
+        ("trigger", "human_receipt_state_waived"),
+        ("trigger", "human_receipt_state_insert_waived"),
+        ("trigger", "human_receipt_physical_waived"),
+        ("index", "receipts_required_seat_pending"),
+        ("index", "prepared_recipients_required_seat"),
+        ("index", "receipts_required_thread_pending"),
+        ("index", "receipts_required_due"),
+        ("index", "receipt_state_required_due"),
+        ("index", "receipts_required_poke"),
+        ("index", "receipt_state_required_poke"),
+    ] {
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type=?1 AND name=?2)",
+                [kind, name],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if !exists {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                "missing human receipt pending path",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn verify_existing_v15(conn: &Connection) -> Result<(), ApiError> {
@@ -2343,6 +2436,12 @@ fn record_overdue_inner(
             ObligationRef::Receipt { message, seat } => {
                 let row = effective_receipt(tx, message.as_str(), seat.as_str())?
                     .ok_or_else(|| api_error(ErrorCode::NotFound, "receipt obligation missing"))?;
+                if row.state == EffectiveReceiptState::NotRequired {
+                    return Ok(OverdueOutcome {
+                        warning: None,
+                        inserted: false,
+                    });
+                }
                 // A retirement worker classifies the obligation at its cutover.
                 // The current effective projection is already retired, so read
                 // the durable pre-cutover settlement state for that path.
@@ -2364,6 +2463,7 @@ fn record_overdue_inner(
                         EffectiveReceiptState::Pending => "pending",
                         EffectiveReceiptState::Acknowledged => "acked",
                         EffectiveReceiptState::RecipientRetired => "recipient_retired",
+                        EffectiveReceiptState::NotRequired => "not_required",
                     }
                     .to_owned()
                 };

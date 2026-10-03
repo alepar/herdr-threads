@@ -981,6 +981,7 @@ pub enum ReceiptStatus {
     Pending,
     Acknowledged,
     Retired,
+    NotRequired,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

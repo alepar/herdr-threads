@@ -428,8 +428,8 @@ pub fn pending_receipts(
     const MATERIALIZED_THREAD: &str = "SELECT sm.message_id FROM (SELECT preparation_id FROM digest_pending_manifest_receipts INDEXED BY digest_pending_manifest_receipts_seat_thread WHERE seat_id=?1 AND thread_id=?3 AND decision_seq>0 ORDER BY decision_seq DESC,ordinal DESC LIMIT ?2) w LEFT JOIN send_manifests sm ON sm.preparation_id=w.preparation_id";
     const STAGED: &str = "SELECT sm.message_id FROM (SELECT preparation_id FROM digest_pending_manifest_receipts INDEXED BY digest_pending_manifest_receipts_seat WHERE seat_id=?1 AND decision_seq IS NULL ORDER BY ordinal DESC LIMIT ?2) w LEFT JOIN send_manifests sm ON sm.preparation_id=w.preparation_id";
     const STAGED_THREAD: &str = "SELECT sm.message_id FROM (SELECT preparation_id FROM digest_pending_manifest_receipts INDEXED BY digest_pending_manifest_receipts_seat_thread WHERE seat_id=?1 AND thread_id=?3 AND decision_seq IS NULL ORDER BY ordinal DESC LIMIT ?2) w LEFT JOIN send_manifests sm ON sm.preparation_id=w.preparation_id";
-    const PHYSICAL: &str = "SELECT message_id FROM receipts INDEXED BY receipts_seat_state_ordinal WHERE seat_id=?1 AND state='pending' ORDER BY ordinal DESC LIMIT ?2";
-    const PHYSICAL_THREAD: &str = "SELECT message_id FROM receipts INDEXED BY receipts_thread_seat_pending WHERE seat_id=?1 AND thread_id=?3 AND state='pending' ORDER BY ordinal DESC LIMIT ?2";
+    const PHYSICAL: &str = "SELECT message_id FROM receipts INDEXED BY receipts_required_seat_pending WHERE seat_id=?1 AND state='pending' AND ack_required=1 ORDER BY ordinal DESC LIMIT ?2";
+    const PHYSICAL_THREAD: &str = "SELECT message_id FROM receipts INDEXED BY receipts_required_thread_pending WHERE seat_id=?1 AND thread_id=?3 AND state='pending' AND ack_required=1 ORDER BY ordinal DESC LIMIT ?2";
     let mut gather = Gather::default();
     let mut hold = catch_up::HoldCache::new(seat_id);
     for (source, seat_sql, thread_sql) in [
@@ -887,8 +887,8 @@ pub const WAKE_PROBES: [WakeProbe; 6] = [
         sql: "SELECT EXISTS(SELECT 1 FROM digest_pending_manifest_receipts INDEXED BY digest_pending_manifest_receipts_seat WHERE seat_id=?1)",
     },
     WakeProbe {
-        index: "receipts_seat_state_ordinal",
-        sql: "SELECT EXISTS(SELECT 1 FROM receipts INDEXED BY receipts_seat_state_ordinal WHERE seat_id=?1 AND state='pending')",
+        index: "receipts_required_seat_pending",
+        sql: "SELECT EXISTS(SELECT 1 FROM receipts INDEXED BY receipts_required_seat_pending WHERE seat_id=?1 AND state='pending' AND ack_required=1)",
     },
     WakeProbe {
         index: "digest_open_warning_recipients_seat",

@@ -37,8 +37,8 @@ use std::{io::Write, sync::Arc};
 
 pub const ME_INIT_HELP: &str = "Run it in your own shell pane, then use thread create, invite, send, \
 read, ack and accept there with no --cooperative-* flags. Your actions are recorded as \
-operator_human, never as an agent. Mail addressed to your seat (including --require-ack) waits \
-for you: read it and `herdr-threads ack MESSAGE`. Re-run `me init` after a daemon restart to \
+operator_human, never as an agent. Messages remain readable, but a human seat owes no ACK and \
+gets no overdue-ACK warning, even when a sender uses --require-ack. Re-run `me init` after a daemon restart to \
 mark yourself available again. It is refused where agent markers (CLAUDECODE, CODEX_SANDBOX, \
 CODEX_SANDBOX_NETWORK_DISABLED) or a Claude or Codex agent reported by Herdr are present, and over \
 a seat bound to an agent; `me init --operator` overrides that as the local account (later \

@@ -1014,6 +1014,7 @@ fn pending_work_page_on(
             "send_attention" => WorkKind::SendAttention,
             "receipt_timer_materialization" => WorkKind::ReceiptTimerMaterialization,
             "preparation_cleanup" => WorkKind::PreparationCleanup,
+            "human_receipt_reconciliation" => WorkKind::HumanReceiptReconciliation,
             _ => return Err(api_error(ErrorCode::StoreCorrupt, "invalid work kind")),
         };
         item_positions.push((

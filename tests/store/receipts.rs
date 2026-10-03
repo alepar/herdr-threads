@@ -4,7 +4,7 @@ use crate::protocol::{
     ids::*,
     time::{Clock, MonoInstant, UtcMillis},
 };
-use crate::store::{connection::StoreContext, messages, receipts};
+use crate::store::{attention, connection::StoreContext, messages, receipts};
 use rusqlite::{Connection, params};
 use std::{
     path::PathBuf,
@@ -77,6 +77,91 @@ fn send_request(explicit: Vec<&str>) -> SendMessage {
         },
         relays_user: false,
     }
+}
+
+#[test]
+fn human_recipient_gets_message_without_an_ack_expectation() {
+    let (context, mut conn, _) = setup();
+    conn.execute("UPDATE occupant_bindings SET harness='human',observation_provenance='operator_human' WHERE seat_id='b'", []).unwrap();
+    let request = send_request(vec![]);
+    let mut permit = permit(&request);
+    let result = send_prepared(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit,
+        messages::MessageLimits::default(),
+    )
+    .unwrap();
+    let message = match result {
+        crate::protocol::results::CommandResult::MessageSent(id) => id,
+        other => panic!("unexpected send result: {other:?}"),
+    };
+    let ordinary: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM messages WHERE id=?1 AND kind='ordinary'",
+            [message.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let receipts: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM prepared_recipients WHERE seat_id='b'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let unavailable: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM prepared_unavailable_warnings WHERE affected_seat_id='b'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(ordinary, 1);
+    assert_eq!(receipts, 0);
+    assert_eq!(unavailable, 1);
+}
+
+#[test]
+fn overdue_scan_does_not_warn_for_a_waived_legacy_human_receipt() {
+    let (context, mut conn, _) = setup();
+    conn.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('legacy','i','t',1,'ordinary','old message',100,2); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('legacy','t','b','pending',800,100,900); UPDATE occupant_bindings SET harness='human',observation_provenance='operator_human' WHERE seat_id='b'; INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES ('b',2,1,100);").unwrap();
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    let scan = receipts::scan_due(&context, &mut conn, 10, &mut cursor).unwrap();
+    assert_eq!(scan.warnings, 0);
+    let marker: Option<String> = conn
+        .query_row(
+            "SELECT warning_message_id FROM receipts WHERE message_id='legacy' AND seat_id='b'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(marker.is_none());
+    assert_eq!(
+        crate::store::effective::effective_receipt(&conn, "legacy", "b")
+            .unwrap()
+            .unwrap()
+            .state,
+        crate::store::effective::EffectiveReceiptState::NotRequired
+    );
+}
+
+#[test]
+fn persisted_waivers_leave_pending_and_due_windows_for_agent_mail() {
+    let (context, mut conn, _) = setup();
+    conn.execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1001) INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) SELECT 'human-'||x,'i','t',x,'ordinary','old human mail',100,x+1 FROM n; INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,ack_required) SELECT id,'t','b','pending',10,100,110,0 FROM messages WHERE id LIKE 'human-%'; INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('agent-mail','i','t',1002,'ordinary','agent mail',1000,1003); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('agent-mail','t','b','pending',1000,1000,2000);").unwrap();
+    let pending = attention::pending_receipts(&conn, "b", None).unwrap();
+    assert_eq!(pending.count(), (1, false));
+    assert_eq!(pending.items[0].id, "agent-mail");
+    assert!(
+        pending.work_steps < 20,
+        "waived rows filled the bounded walk: {pending:?}"
+    );
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    let scan = receipts::scan_due(&context, &mut conn, 10, &mut cursor).unwrap();
+    assert_eq!((scan.warnings, scan.inspected), (0, 1));
+    assert!(!scan.more);
 }
 
 fn send_prepared(

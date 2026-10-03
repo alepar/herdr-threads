@@ -154,6 +154,56 @@ fn fixture() -> Connection {
 }
 
 #[test]
+fn pending_receipt_for_human_is_not_an_ack_obligation() {
+    let db = fixture();
+    db.execute_batch("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m','t',1,'ordinary','body',1000,10); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i','p','m','t',10,1000,1,0,1,0); INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES ('s',1,'p','b',0,'human','human','human','operator_human',1000,1000);").unwrap();
+    let receipt = effective_receipt(&db, "m", "s").unwrap().unwrap();
+    assert_eq!(receipt.state, EffectiveReceiptState::NotRequired);
+    assert!(receipt.ack_actor_seat_id.is_none());
+}
+
+#[test]
+fn human_waiver_survives_agent_rebinding_without_erasing_ack_history() {
+    let db = fixture();
+    db.execute_batch("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m','t',1,'ordinary','body',1000,10); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i','p','m','t',10,1000,1,0,1,0); INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES ('s',11,2,1100); INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES ('s',3,'p','b',0,'codex','agent','agent','cooperative_top_level',1500,1500);").unwrap();
+    assert_eq!(
+        effective_receipt(&db, "m", "s").unwrap().unwrap().state,
+        EffectiveReceiptState::NotRequired
+    );
+    db.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p2','i','actor','o2',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed'); INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('p2','t','s',1,300,0); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m2','t',3,'ordinary','new agent mail',1600,16); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i','p2','m2','t',16,1600,3,0,1,0);").unwrap();
+    assert_eq!(
+        effective_receipt(&db, "m2", "s").unwrap().unwrap().state,
+        EffectiveReceiptState::Pending
+    );
+    db.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p3','i','actor','o3',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed'); INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot,availability_provenance) VALUES ('p3','t','s',1,300,1,'operator_human'); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m3','t',2,'ordinary','legacy human mail',1400,14); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i','p3','m3','t',14,1400,2,0,1,0);").unwrap();
+    assert_eq!(
+        effective_receipt(&db, "m3", "s").unwrap().unwrap().state,
+        EffectiveReceiptState::NotRequired
+    );
+    db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_actor_seat_id,ack_generation,ack_observation,acked_at) VALUES ('m','s','acked','s',2,'operator_human',1400)", []).unwrap();
+    let acked = effective_receipt(&db, "m", "s").unwrap().unwrap();
+    assert_eq!(acked.state, EffectiveReceiptState::Acknowledged);
+    assert_eq!(acked.ack_observation.as_deref(), Some("operator_human"));
+    db.execute(
+        "UPDATE seats SET state='retired',retired_at=1700,retired_seq=17 WHERE id='s'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        effective_receipt(&db, "m", "s").unwrap().unwrap().state,
+        EffectiveReceiptState::Acknowledged
+    );
+    assert_eq!(
+        effective_receipt(&db, "m3", "s").unwrap().unwrap().state,
+        EffectiveReceiptState::NotRequired
+    );
+    assert_eq!(
+        effective_receipt(&db, "m2", "s").unwrap().unwrap().state,
+        EffectiveReceiptState::RecipientRetired
+    );
+}
+
+#[test]
 fn retained_baseline_holds_only_its_unowned_members_across_later_snapshots() {
     let db = fixture();
     db.execute_batch("\
@@ -353,6 +403,41 @@ fn overdue_manifest_receipt_gets_sparse_marker_and_one_warning_atomically() {
             .get::<_, i64>(0))
             .unwrap(),
         1
+    );
+}
+
+#[test]
+fn persisted_overdue_warning_stops_being_actionable_after_human_check_in() {
+    use crate::ports::TimeBasis;
+    use crate::protocol::{
+        authority::ObligationRef,
+        ids::{MessageId, SeatId},
+    };
+    let mut db = fixture();
+    db.execute_batch("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m','t',1,'ordinary','body',1000,10); UPDATE threads SET next_sequence=2 WHERE id='t'; INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i','p','m','t',10,1000,1,0,1,0); INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES ('s',11,1200,1,'verified'); UPDATE host_instances SET decision_seq=11 WHERE id='i';").unwrap();
+    let tx = db.transaction().unwrap();
+    let outcome = schema::record_overdue_if_pending(
+        &tx,
+        &ObligationRef::Receipt {
+            message: MessageId::new("m"),
+            seat: SeatId::new("s"),
+        },
+        &TimeBasis::Decision,
+        UtcMillis(1500),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let warning_id = outcome.warning.unwrap();
+    let warning = effective_warning_by_id(&db, warning_id.as_str())
+        .unwrap()
+        .unwrap();
+    assert!(warning_condition_actionable(&db, &warning).unwrap());
+    db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES ('s',1,'p','b',0,'human','human','human','operator_human',1600,1600); INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES ('s',12,1,1600);").unwrap();
+    assert!(!warning_condition_actionable(&db, &warning).unwrap());
+    assert!(
+        effective_warning_by_id(&db, warning_id.as_str())
+            .unwrap()
+            .is_some()
     );
 }
 

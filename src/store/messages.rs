@@ -526,6 +526,10 @@ pub(super) fn stage_recipient(
     count: &mut i64,
     warning_count: &mut i64,
 ) -> Result<(), ApiError> {
+    // The daemon's open binding is the canonical role. A human still sees the
+    // thread's message through membership; no ACK expectation is staged.
+    // Keep the separate unavailable-recipient warning below.
+    let expects_ack = schema::open_binding_role(tx, &SeatId::new(recipient))? != Some("human");
     let already:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM prepared_recipients WHERE preparation_id=?1 AND seat_id=?2)",params![prep_id,recipient],|r|r.get(0)).map_err(store_error)?;
     if already {
         return Ok(());
@@ -533,11 +537,13 @@ pub(super) fn stage_recipient(
     // One availability projection with `ensure_unavailability_episode`.
     let provenance = schema::effective_registered_availability(tx, recipient, Some(instance))?;
     let available = provenance.is_some();
-    *count = count
-        .checked_add(1)
-        .ok_or_else(|| api_error(ErrorCode::SequenceExhausted, "recipient ordinal exhausted"))?;
-    tx.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot,availability_provenance) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-        params![prep_id,thread.as_str(),recipient,*count,duration,available,provenance]).map_err(store_error)?;
+    if expects_ack {
+        *count = count.checked_add(1).ok_or_else(|| {
+            api_error(ErrorCode::SequenceExhausted, "recipient ordinal exhausted")
+        })?;
+        tx.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot,availability_provenance) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![prep_id,thread.as_str(),recipient,*count,duration,available,provenance]).map_err(store_error)?;
+    }
     // C4: a seat whose binding the pending reconciliation pass will carry is
     // not warned about; the carry starts its receipt timer.
     if !available

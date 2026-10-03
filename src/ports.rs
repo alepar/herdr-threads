@@ -474,6 +474,7 @@ pub enum WorkKind {
     SendAttention,
     ReceiptTimerMaterialization,
     PreparationCleanup,
+    HumanReceiptReconciliation,
 }
 /// One bounded hidden send-preparation step. `Ready` is not a publish permit;
 /// the service must obtain fresh caller proof for the final deciding mutation.

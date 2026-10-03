@@ -4039,6 +4039,18 @@ pub fn register_available(
                 mapping.generation as i64
             };
             let seq = schema::next_decision_seq(tx, &claim.instance)?;
+            if lifecycle && claim.harness == crate::protocol::authority::Harness::Human {
+                // One durable cutoff waives all still-pending seat obligations
+                // at this human check-in. No receipt is marked ACKed.
+                tx.execute("INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES (?1,?2,?3,?4) ON CONFLICT(seat_id) DO UPDATE SET through_decision_seq=MAX(human_receipt_waivers.through_decision_seq,excluded.through_decision_seq),human_generation=excluded.human_generation,decided_at=excluded.decided_at",
+                    params![seat.as_str(),seq as i64,generation,at.utc.0]).map_err(store_error)?;
+                let (prepared_high_water, physical_high_water): (i64,i64) = tx.query_row("SELECT COALESCE((SELECT MAX(ordinal) FROM prepared_recipients WHERE seat_id=?1),0),COALESCE((SELECT MAX(ordinal) FROM receipts WHERE seat_id=?1),0)",
+                    [seat.as_str()], |r| Ok((r.get(0)?,r.get(1)?))).map_err(store_error)?;
+                tx.execute("INSERT INTO human_receipt_reconciliation_bounds(seat_id,prepared_high_water,physical_high_water,decision_seq) VALUES (?1,?2,?3,?4) ON CONFLICT(seat_id) DO UPDATE SET prepared_high_water=excluded.prepared_high_water,physical_high_water=excluded.physical_high_water,decision_seq=excluded.decision_seq",
+                    params![seat.as_str(),prepared_high_water,physical_high_water,seq as i64]).map_err(store_error)?;
+                tx.execute("INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES (?1,'human_receipt_reconciliation',?2,?3) ON CONFLICT(kind,subject_id) DO UPDATE SET position=0,high_water=excluded.high_water,status='pending',last_error=NULL,completed_at=NULL",
+                    params![format!("work:human-receipts:{}",seat.as_str()),seat.as_str(),prepared_high_water.max(physical_high_water)]).map_err(store_error)?;
+            }
             if lifecycle || !previously_available {
                 tx.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES (?1,?2,?3,?4,?5)",
                     params![seat.as_str(),seq as i64,at.utc.0,generation,claim.harness.cooperative_provenance()]).map_err(store_error)?;

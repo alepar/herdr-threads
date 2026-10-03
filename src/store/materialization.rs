@@ -20,6 +20,7 @@ enum Kind {
     Send,
     Timer,
     Cleanup,
+    HumanReceipts,
 }
 struct Job {
     kind: Kind,
@@ -171,6 +172,7 @@ fn load_job(tx: &Connection, id: &str) -> Result<Job, ApiError> {
         "send_attention" => Kind::Send,
         "receipt_timer_materialization" => Kind::Timer,
         "preparation_cleanup" => Kind::Cleanup,
+        "human_receipt_reconciliation" => Kind::HumanReceipts,
         _ => return Err(api_error(ErrorCode::StoreCorrupt, "unknown work kind")),
     };
     Ok(Job {
@@ -189,7 +191,56 @@ fn advance_unit(tx: &Connection, job: &Job, position: u64) -> Result<(u64, bool)
         Kind::Send => send_unit(tx, &job.subject, position, job.high_water),
         Kind::Timer => timer_unit(tx, &job.subject, position, job.high_water),
         Kind::Cleanup => cleanup_unit(tx, &job.subject, position),
+        Kind::HumanReceipts => human_receipt_unit(tx, &job.subject, position, job.high_water),
     }
+}
+
+/// Reconcile one ordinal from each physical source. Both cursors share the
+/// same numeric position; equal ordinals are processed together. A later
+/// agent's rows are above the job's captured high water and stay required.
+fn human_receipt_unit(
+    tx: &Connection,
+    seat: &str,
+    position: u64,
+    high_water: u64,
+) -> Result<(u64, bool), ApiError> {
+    let (prepared_high_water, physical_high_water): (i64, i64) = tx.query_row(
+        "SELECT prepared_high_water,physical_high_water FROM human_receipt_reconciliation_bounds WHERE seat_id=?1",
+        [seat], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).map_err(store_error)?;
+    let next_prepared: Option<i64> = tx.query_row(
+        "SELECT ordinal FROM prepared_recipients INDEXED BY prepared_recipients_required_seat WHERE seat_id=?1 AND ack_required=1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT 1",
+        params![seat, sql(position)?, prepared_high_water], |r| r.get(0),
+    ).optional().map_err(store_error)?;
+    let next_physical: Option<i64> = tx.query_row(
+        "SELECT ordinal FROM receipts INDEXED BY receipts_required_seat_pending WHERE seat_id=?1 AND state='pending' AND ack_required=1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT 1",
+        params![seat, sql(position)?, physical_high_water], |r| r.get(0),
+    ).optional().map_err(store_error)?;
+    let Some(next) = next_prepared.into_iter().chain(next_physical).min() else {
+        return Ok((high_water, true));
+    };
+    if next_prepared == Some(next) {
+        let preparation: String = tx
+            .query_row(
+                "SELECT preparation_id FROM prepared_recipients WHERE seat_id=?1 AND ordinal=?2",
+                params![seat, next],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        tx.execute("UPDATE prepared_recipients SET ack_required=0 WHERE seat_id=?1 AND ordinal=?2 AND ack_required=1",
+            params![seat,next]).map_err(store_error)?;
+        tx.execute("UPDATE receipt_state SET ack_required=0 WHERE seat_id=?1 AND state='pending' AND ack_required=1 AND message_id IN (SELECT message_id FROM send_manifests WHERE preparation_id=?2)",
+            params![seat,preparation]).map_err(store_error)?;
+    }
+    if next_physical == Some(next) {
+        tx.execute("UPDATE receipts SET ack_required=0 WHERE seat_id=?1 AND ordinal=?2 AND state='pending' AND ack_required=1",
+            params![seat,next]).map_err(store_error)?;
+    }
+    Ok((
+        u64::try_from(next)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative human receipt cursor"))?,
+        false,
+    ))
 }
 
 fn warning_unit(
@@ -420,8 +471,10 @@ fn project_receipt(tx: &Connection, message: &str, seat: &str) -> Result<(), Api
         EffectiveReceiptState::Pending => "pending",
         EffectiveReceiptState::Acknowledged => "acked",
         EffectiveReceiptState::RecipientRetired => "recipient_retired",
+        EffectiveReceiptState::NotRequired => "pending",
     };
-    tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(message_id,seat_id) DO UPDATE SET available_at=COALESCE(receipt_state.available_at,excluded.available_at),deadline_at=COALESCE(receipt_state.deadline_at,excluded.deadline_at) WHERE receipt_state.state='pending'",params![message,seat,physical_state,effective.available_at,effective.deadline_at]).map_err(store_error)?;
+    let ack_required = i64::from(effective.state != EffectiveReceiptState::NotRequired);
+    tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_required) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(message_id,seat_id) DO UPDATE SET available_at=COALESCE(receipt_state.available_at,excluded.available_at),deadline_at=COALESCE(receipt_state.deadline_at,excluded.deadline_at),ack_required=MIN(receipt_state.ack_required,excluded.ack_required) WHERE receipt_state.state='pending'",params![message,seat,physical_state,effective.available_at,effective.deadline_at,ack_required]).map_err(store_error)?;
     if effective.state == EffectiveReceiptState::Pending && prior.is_none() {
         bump(tx, seat)?;
     }

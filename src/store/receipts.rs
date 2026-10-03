@@ -273,17 +273,17 @@ pub fn scan_due(
             let sparse_high = if current.sparse_high_water_rowid == 0 {
                 tx.query_row("SELECT COALESCE(MAX(rowid),0) FROM receipt_state", [], |r| r.get::<_,i64>(0)).map_err(store_error)?
             } else { current.sparse_high_water_rowid };
-            let has_sparse:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM receipt_state WHERE state='pending' AND deadline_at IS NOT NULL AND warning_message_id IS NULL)",[],|r|r.get(0)).map_err(store_error)?;
+            let has_sparse:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM receipt_state INDEXED BY receipt_state_required_due WHERE state='pending' AND ack_required=1 AND deadline_at IS NOT NULL AND warning_message_id IS NULL)",[],|r|r.get(0)).map_err(store_error)?;
             let physical_cap = if has_sparse { if current.next_sparse {limit/2} else {limit.div_ceil(2)} } else {limit};
             let mut physical=Vec::new();
             if physical_cap>0 {
-                let mut stmt=tx.prepare("SELECT ordinal,message_id,seat_id,deadline_at FROM receipts WHERE state='pending' AND warning_message_id IS NULL AND deadline_at IS NOT NULL AND (?1 IS NULL OR deadline_at>?1 OR (deadline_at=?1 AND ordinal>?2)) ORDER BY deadline_at,ordinal LIMIT ?3").map_err(store_error)?;
+                let mut stmt=tx.prepare("SELECT ordinal,message_id,seat_id,deadline_at FROM receipts INDEXED BY receipts_required_due WHERE state='pending' AND ack_required=1 AND warning_message_id IS NULL AND deadline_at IS NOT NULL AND (?1 IS NULL OR deadline_at>?1 OR (deadline_at=?1 AND ordinal>?2)) ORDER BY deadline_at,ordinal LIMIT ?3").map_err(store_error)?;
                 physical=stmt.query_map(params![current.after_deadline,current.after_ordinal,i64::from(physical_cap)],|r|Ok((r.get::<_,i64>(0)?,MessageId::new(r.get::<_,String>(1)?),SeatId::new(r.get::<_,String>(2)?),r.get::<_,i64>(3)?))).map_err(store_error)?.collect::<Result<Vec<_>,_>>().map_err(store_error)?;
             }
             let sparse_cap=limit-u16::try_from(physical.len()).map_err(|_|api_error(ErrorCode::StoreCorrupt,"physical due batch too large"))?;
             let mut sparse=Vec::new();
             if sparse_cap>0 {
-                let mut stmt=tx.prepare("SELECT rowid,message_id,seat_id,deadline_at FROM receipt_state WHERE state='pending' AND warning_message_id IS NULL AND deadline_at IS NOT NULL AND (?1 IS NULL OR deadline_at>?1 OR (deadline_at=?1 AND (message_id>?2 OR (message_id=?2 AND seat_id>?3)))) ORDER BY deadline_at,message_id,seat_id LIMIT ?4").map_err(store_error)?;
+                let mut stmt=tx.prepare("SELECT rowid,message_id,seat_id,deadline_at FROM receipt_state INDEXED BY receipt_state_required_due WHERE state='pending' AND ack_required=1 AND warning_message_id IS NULL AND deadline_at IS NOT NULL AND (?1 IS NULL OR deadline_at>?1 OR (deadline_at=?1 AND (message_id>?2 OR (message_id=?2 AND seat_id>?3)))) ORDER BY deadline_at,message_id,seat_id LIMIT ?4").map_err(store_error)?;
                 sparse=stmt.query_map(params![current.sparse_after_deadline,current.sparse_after_message,current.sparse_after_seat,i64::from(sparse_cap)],|r|Ok((r.get::<_,i64>(0)?,MessageId::new(r.get::<_,String>(1)?),SeatId::new(r.get::<_,String>(2)?),r.get::<_,i64>(3)?))).map_err(store_error)?.collect::<Result<Vec<_>,_>>().map_err(store_error)?;
             }
             Ok((physical_high,sparse_high,physical_cap,sparse_cap,physical,sparse))
@@ -483,7 +483,7 @@ pub fn scan_extension_lapses(
             let mut inspected = 0u16;
             for (_, seat, thread) in &rows {
                 let mut stmt = tx
-                    .prepare("SELECT message_id FROM receipts WHERE seat_id=?1 AND thread_id=?2 AND state='pending' AND warning_message_id IS NULL AND deadline_at IS NOT NULL AND deadline_at<=?3 UNION SELECT s.message_id FROM receipt_state s JOIN messages m ON m.id=s.message_id WHERE s.seat_id=?1 AND m.thread_id=?2 AND s.state='pending' AND s.warning_message_id IS NULL AND s.deadline_at IS NOT NULL AND s.deadline_at<=?3")
+                    .prepare("SELECT message_id FROM receipts WHERE seat_id=?1 AND thread_id=?2 AND state='pending' AND ack_required=1 AND warning_message_id IS NULL AND deadline_at IS NOT NULL AND deadline_at<=?3 UNION SELECT s.message_id FROM receipt_state s JOIN messages m ON m.id=s.message_id WHERE s.seat_id=?1 AND m.thread_id=?2 AND s.state='pending' AND s.ack_required=1 AND s.warning_message_id IS NULL AND s.deadline_at IS NOT NULL AND s.deadline_at<=?3")
                     .map_err(store_error)?;
                 let messages: Vec<String> = stmt
                     .query_map(params![seat, thread, decision.utc.0], |r| r.get(0))

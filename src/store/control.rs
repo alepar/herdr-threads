@@ -220,15 +220,20 @@ pub fn advance_retirement(
                                 obligation_ordinal=ordinal; retired+=1;
                             } else { phase="receipts".into(); obligation_ordinal=0; }
                         } else {
-                            let next: Option<(i64,String)> = tx.query_row("SELECT ordinal,message_id FROM receipts WHERE seat_id=?1 AND thread_id=?2 AND state='pending' AND ordinal>?3 ORDER BY ordinal LIMIT 1",
+                            let next: Option<(i64,String)> = tx.query_row("SELECT ordinal,message_id FROM receipts WHERE seat_id=?1 AND thread_id=?2 AND state='pending' AND ack_required=1 AND ordinal>?3 ORDER BY ordinal LIMIT 1",
                                 params![seat,thread,obligation_ordinal],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(store_error)?;
                             if let Some((ordinal,id)) = next {
                                 let message = MessageId::new(id);
-                                let outcome = schema::record_overdue_if_pending(tx,&ObligationRef::Receipt { message:message.clone(),seat:SeatId::new(&seat) },&TimeBasis::Retirement(job.clone()),at.utc)?;
-                                warnings += i64::from(outcome.inserted);
-                                tx.execute("UPDATE receipts SET state='recipient_retired',retired_at=?1 WHERE message_id=?2 AND seat_id=?3 AND state='pending'",
-                                    params![cutover,message.as_str(),seat]).map_err(store_error)?;
-                                obligation_ordinal=ordinal; retired+=1;
+                                let receipt = crate::store::effective::effective_receipt(tx,message.as_str(),&seat)?
+                                    .ok_or_else(||api_error(ErrorCode::StoreCorrupt,"physical receipt missing"))?;
+                                if receipt.state != crate::store::effective::EffectiveReceiptState::NotRequired {
+                                    let outcome = schema::record_overdue_if_pending(tx,&ObligationRef::Receipt { message:message.clone(),seat:SeatId::new(&seat) },&TimeBasis::Retirement(job.clone()),at.utc)?;
+                                    warnings += i64::from(outcome.inserted);
+                                    tx.execute("UPDATE receipts SET state='recipient_retired',retired_at=?1 WHERE message_id=?2 AND seat_id=?3 AND state='pending'",
+                                        params![cutover,message.as_str(),seat]).map_err(store_error)?;
+                                    retired+=1;
+                                }
+                                obligation_ordinal=ordinal;
                             } else { phase="logical_receipts".into(); obligation_ordinal=0; }
                         }
                     }
@@ -240,7 +245,7 @@ pub fn advance_retirement(
                             "SELECT pr.ordinal,sm.message_id,sm.decision_seq,rs.state FROM prepared_recipients pr \
                              LEFT JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id \
                              LEFT JOIN receipt_state rs ON rs.message_id=sm.message_id AND rs.seat_id=pr.seat_id \
-                             WHERE pr.seat_id=?1 AND pr.thread_id=?2 AND pr.ordinal>?3 ORDER BY pr.ordinal LIMIT 1",
+                             WHERE pr.seat_id=?1 AND pr.thread_id=?2 AND pr.ack_required=1 AND pr.ordinal>?3 ORDER BY pr.ordinal LIMIT 1",
                             params![seat,thread,obligation_ordinal],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))
                             .optional().map_err(store_error)?;
                         if let Some((ordinal,message,send_seq,state))=next {
@@ -251,13 +256,15 @@ pub fn advance_retirement(
                                     let message=MessageId::new(message);
                                     let receipt=crate::store::effective::effective_receipt(tx,message.as_str(),&seat)?
                                         .ok_or_else(||api_error(ErrorCode::StoreCorrupt,"published recipient lacks logical receipt"))?;
-                                    let outcome=schema::record_overdue_if_pending(tx,&ObligationRef::Receipt {message:message.clone(),seat:SeatId::new(&seat)},
-                                        &TimeBasis::Retirement(job.clone()),at.utc)?;
-                                    warnings+=i64::from(outcome.inserted);
-                                    tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,retired_at) VALUES (?1,?2,'recipient_retired',?3,?4,?5) \
-                                        ON CONFLICT(message_id,seat_id) DO UPDATE SET state='recipient_retired',available_at=COALESCE(receipt_state.available_at,excluded.available_at),deadline_at=COALESCE(receipt_state.deadline_at,excluded.deadline_at),retired_at=excluded.retired_at WHERE receipt_state.state='pending'",
-                                        params![message.as_str(),seat,receipt.available_at,receipt.deadline_at,cutover]).map_err(store_error)?;
-                                    retired+=1;
+                                    if receipt.state != crate::store::effective::EffectiveReceiptState::NotRequired {
+                                        let outcome=schema::record_overdue_if_pending(tx,&ObligationRef::Receipt {message:message.clone(),seat:SeatId::new(&seat)},
+                                            &TimeBasis::Retirement(job.clone()),at.utc)?;
+                                        warnings+=i64::from(outcome.inserted);
+                                        tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,retired_at) VALUES (?1,?2,'recipient_retired',?3,?4,?5) \
+                                            ON CONFLICT(message_id,seat_id) DO UPDATE SET state='recipient_retired',available_at=COALESCE(receipt_state.available_at,excluded.available_at),deadline_at=COALESCE(receipt_state.deadline_at,excluded.deadline_at),retired_at=excluded.retired_at WHERE receipt_state.state='pending'",
+                                            params![message.as_str(),seat,receipt.available_at,receipt.deadline_at,cutover]).map_err(store_error)?;
+                                        retired+=1;
+                                    }
                                 }
                         } else {phase="audit".into();obligation_ordinal=0;}
                     }

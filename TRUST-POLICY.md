@@ -4,12 +4,12 @@ Status: adopted 2026-10-01; B5 guards implemented (epic `ht-rzi`). Normative for
 attribution, receipt provenance and operator repair. Where an older design document requires adversarial
 proof of who is calling, this policy supersedes it. C5's guard is owned by B4 (`ht-p03.2`) and is the one
 guard still marked **required**. Amended 2026-10-02 for thread summaries and deadline extension (epic ht-1ip), and 2026-10-03 for the
-`managed_launch` binding (ht-5n6).
+`managed_launch` binding (ht-5n6), and 2026-10-03 for human receipt waivers.
 
 ## Abstract
 
-herdr-threads gives coding agents in Herdr panes a durable mailbox: threads, invitations, messages that a
-named recipient must explicitly ACK, deadlines, and a safe wake when something is pending. Every one of those
+herdr-threads gives coding agents in Herdr panes a durable mailbox: threads, invitations, messages that an
+agent recipient may be required to explicitly ACK, deadlines, and a safe wake when something is pending. Every one of those
 features rests on two questions the system must answer about each request: *which seat is this*, and *who
 acted*. A seat is a long-lived role ("the reviewer in the right-hand pane") that has to outlive everything
 that happens to the processes behind it: daemon restarts, Herdr restarts, pane moves, `/clear`, session
@@ -229,6 +229,35 @@ record 0 and pre-migration rows are 0. Neither field authorizes anything; togeth
 
 The operator never ACKs, accepts, sends or advances a checkpoint.
 The service never ACKs or accepts and is never a receipt recipient.
+
+**A5a. Human seats do not owe ACKs.** The daemon classifies a recipient from its canonical open
+binding when staging a send. A human binding gets the message through thread membership but no
+receipt expectation, even when the sender requested an ACK; an unbound or agent bound recipient
+keeps the existing expectation. A human lifecycle check-in waives every pending obligation already
+owed by that seat, including obligations inherited from an earlier agent binding. It records a
+durable decision cutoff and a bounded reconciliation job in the same decision. The job records
+each receipt table's high water independently and sets the separate `ack_required=0` obligation
+marker on retained pending rows; later agent mail stays outside those bounds. The receipt stays
+physically pending as historical evidence, but its effective state is `not_required`; it leaves
+pending, wake and overdue scans. No ACK, ACK actor or ACK provenance is fabricated. A later agent
+binding cannot revive the waived obligation; messages addressed to that agent afterward can require
+ACKs. Already acknowledged receipts retain their exact historical status and provenance. A person
+may still explicitly ACK an older addressed receipt; that action is attributed `operator_human`,
+but the system never demands it. Invitation acceptance, reads and message history are separate
+from receipt expectations.
+
+For an existing store, migration derives the last human check-in cutoff from recorded human
+binding generations and seat availability decision sequences. An open human binding can waive
+through the current decision sequence; a closed one stops at its own check-in. A pending send
+published within a recorded human binding's time interval is also waived, including a send made
+while that binding was temporarily unregistered and its availability provenance is absent. The
+end of a closed binding is exclusive: mail published after it ends, including mail for a newly
+managed launched agent before that agent's first availability decision, remains owed. Legacy
+manifest rows with recorded `operator_human` recipient availability are waived as well. The
+one time reconciliation marks waived physical and sparse rows and removes pending projections;
+old warning events, receipt timestamps, and ACK provenance remain historical evidence. A send
+at the exact recorded end time is assigned to the successor for this migration, because the
+millisecond clock cannot order simultaneous decisions within that boundary.
 
 **A6. Effective receipt deadlines.** A receipt's effective deadline is the later of its frozen deadline and
 the `extension_until` of the latest catch-up row for the receipt's (seat, thread). The daemon decides it (A2)

@@ -1,4 +1,71 @@
 use super::*;
+
+#[test]
+fn migration_waives_legacy_human_receipts_before_later_agent_mail() {
+    let db = Connection::open_in_memory().unwrap();
+    for migration in [
+        include_str!("../../migrations/0001_initial.sql"),
+        include_str!("../../migrations/0002_service_substrate.sql"),
+        include_str!("../../migrations/0003_invitation_cancellations.sql"),
+        include_str!("../../migrations/0004_voluntary_membership.sql"),
+        include_str!("../../migrations/0005_service_notifications.sql"),
+        include_str!("../../migrations/0006_retirement_health.sql"),
+        include_str!("../../migrations/0007_attention_digest.sql"),
+        include_str!("../../migrations/0008_digest_pending_paths.sql"),
+        include_str!("../../migrations/0009_human_occupant.sql"),
+        include_str!("../../migrations/0010_b5_trust_guards.sql"),
+        include_str!("../../migrations/0011_cooperative_only.sql"),
+        include_str!("../../migrations/0012_harness_version_evidence.sql"),
+        include_str!("../../migrations/0013_thread_summaries.sql"),
+        include_str!("../../migrations/0014_catch_up_release.sql"),
+        include_str!("../../migrations/0015_preparation_retention.sql"),
+    ] {
+        db.execute_batch(migration).unwrap();
+    }
+    db.pragma_update(None, "user_version", 15).unwrap();
+    db.execute_batch("INSERT INTO host_instances(id,created_at,decision_seq) VALUES ('i',0,30); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',2,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0); INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at) VALUES ('s',1,'p','b',0,'human','human','human','operator_human',10,10,20),('s',2,'p','b',0,'codex','agent','agent','cooperative_top_level',20,20,NULL); INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES ('s',10,10,1,'operator_human'),('s',20,20,2,'cooperative_top_level');").unwrap();
+    for (prep, msg, seq, at) in [("p_h", "m_h", 14, 15), ("p_a", "m_a", 15, 25)] {
+        db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES (?1,'i','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,1,'sealed')", [prep]).unwrap();
+        db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES (?1,'t','s',1,10,0)", [prep]).unwrap();
+        db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,'t',?2,'ordinary','body',?3,?4)", params![msg,seq,at,seq]).unwrap();
+        db.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,'t',?3,?4,?3,0,1,0)", params![prep,msg,seq,at]).unwrap();
+        db.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at) VALUES (?1,'s','pending',?2,?3)", params![msg,at,at+10]).unwrap();
+    }
+    for (msg, seq, at) in [("phys_h", 16, 16), ("phys_a", 17, 25)] {
+        db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,'t',?2,'ordinary','body',?3,?2)", params![msg,seq,at]).unwrap();
+        db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','s','pending',10,?2,?3)", params![msg,at,at+10]).unwrap();
+    }
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    let through: i64 = db
+        .query_row(
+            "SELECT through_decision_seq FROM human_receipt_waivers WHERE seat_id='s'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(through, 10);
+    for (msg, required) in [("m_h", 0), ("m_a", 1)] {
+        let (prepared, sparse): (i64, i64) = db.query_row("SELECT pr.ack_required,rs.ack_required FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id JOIN receipt_state rs ON rs.message_id=sm.message_id AND rs.seat_id=pr.seat_id WHERE sm.message_id=?1", [msg], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((prepared, sparse), (required, required));
+        let projected: i64 = db.query_row("SELECT count(*) FROM digest_pending_manifest_receipts d JOIN send_manifests sm ON sm.preparation_id=d.preparation_id WHERE sm.message_id=?1", [msg], |r| r.get(0)).unwrap();
+        assert_eq!(projected, required);
+    }
+    for (msg, required) in [("phys_h", 0), ("phys_a", 1)] {
+        let (state, marker, actor): (String, i64, Option<String>) = db
+            .query_row(
+                "SELECT state,ack_required,ack_observation FROM receipts WHERE message_id=?1",
+                [msg],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((state.as_str(), marker, actor), ("pending", required, None));
+    }
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        16
+    );
+}
 use crate::store::schema::{self, record_overdue_if_pending};
 use crate::{
     ports::TimeBasis,
@@ -191,7 +258,7 @@ fn v5_upgrade_adds_index_for_failed_pending_retirements() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        15
+        schema::LATEST_VERSION
     );
     let plan: Vec<String> = db.prepare(
         "EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM retirements r INDEXED BY retirements_failed_pending JOIN seats s ON s.id=r.seat_id WHERE r.status='pending' AND r.last_error IS NOT NULL AND s.instance_id='i')",
@@ -230,7 +297,7 @@ fn v6_upgrade_adds_seat_and_thread_leading_digest_indexes() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        15
+        schema::LATEST_VERSION
     );
     assert_eq!(
         db.query_row(
@@ -326,7 +393,7 @@ fn v7_upgrade_backfills_only_pending_rows_into_the_digest_projections() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        15
+        schema::LATEST_VERSION
     );
     assert_eq!(history(&db), before);
     let rows = |sql: &str| -> Vec<String> {
@@ -447,7 +514,7 @@ fn v1_history_migrates_once_with_native_and_builtin_authors_intact() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        15
+        schema::LATEST_VERSION
     );
     assert_eq!(
         db.query_row("SELECT id FROM seats", [], |r| r.get::<_, String>(0))
@@ -845,7 +912,7 @@ fn startup_rejects_missing_or_weakened_acceptance_guard_without_history_changes(
         assert_eq!(
             db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            15
+            schema::LATEST_VERSION
         );
         assert_eq!(
             db.query_row(
@@ -998,7 +1065,7 @@ fn startup_rejects_missing_or_weakened_actor_presence_checks() {
         assert_eq!(
             db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            15
+            schema::LATEST_VERSION
         );
         assert_eq!(
             db.query_row(
@@ -1267,7 +1334,7 @@ fn fresh_database_has_durable_settings_constraints_and_read_only_queries() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        15
+        schema::LATEST_VERSION
     );
     assert!(db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('s', 'missing', 'resolved', 'native', 1, 0)", []).is_err());
     db.execute(
@@ -2547,7 +2614,7 @@ fn v2_database_migrates_to_additive_invitation_cancellations_and_voluntary_state
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        15
+        schema::LATEST_VERSION
     );
     assert_eq!(
         db.query_row(
@@ -2591,7 +2658,7 @@ fn v4_database_adds_notification_schema_without_changing_existing_history() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        15
+        schema::LATEST_VERSION
     );
     assert_eq!(
         db.query_row("SELECT event_json FROM messages WHERE id='old'", [], |r| {
@@ -2794,7 +2861,7 @@ fn v3_required_only_shadow_recovers_prior_left_only_from_exact_leave_audit() {
         recovered
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        15
+        schema::LATEST_VERSION
     );
     assert_eq!(
         recovered
@@ -3022,7 +3089,7 @@ fn v8_upgrade_rebuilds_occupant_bindings_to_accept_a_human_occupant() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        15
+        schema::LATEST_VERSION
     );
     assert_eq!(rows(&db), before);
     for index in [
@@ -3100,7 +3167,8 @@ fn v9_upgrade_to_v11_drops_removed_only_tables() {
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
     assert_eq!(
-        version, 15,
+        version,
+        schema::LATEST_VERSION,
         "a v9 store upgrades all the way (v12: harness evidence; v13/v14: thread summaries)"
     );
     for dropped in DROPPED_IN_V11 {
@@ -3168,7 +3236,7 @@ fn migration_applies_on_a_populated_store() {
     let version: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 15);
+    assert_eq!(version, schema::LATEST_VERSION);
     let bindings: i64 = db
         .query_row("SELECT count(*) FROM occupant_bindings", [], |r| r.get(0))
         .unwrap();
@@ -3202,7 +3270,7 @@ fn fresh_store_lands_at_latest_with_the_evidence_tables() {
     let version: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 15);
+    assert_eq!(version, schema::LATEST_VERSION);
     for table in ["harness_version_evidence", "harness_unattributed"] {
         let present: bool = db
             .query_row(
@@ -3398,7 +3466,7 @@ fn v9_store_with_rows_migrates_to_v10_preserving_allocation_history() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        15
+        schema::LATEST_VERSION
     );
     assert_eq!(rows(&db), before);
     let diagnostics: i64 = db
@@ -3523,7 +3591,7 @@ fn main_v10_store_upgrades_to_v11_with_both_migrations() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        15
+        schema::LATEST_VERSION
     );
     let marker: (String, i64) = db
         .query_row(
@@ -3598,7 +3666,7 @@ fn fresh_and_main_v10_stores_share_the_v11_shape() {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            15
+            schema::LATEST_VERSION
         );
     }
     let normalize =
@@ -3636,7 +3704,7 @@ fn fresh_database_has_thread_summary_schema() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        15
+        schema::LATEST_VERSION
     );
     for table in [
         "summary_blocks",
@@ -3732,7 +3800,7 @@ fn v10_upgrade_backfills_author_role_from_the_covering_binding() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        15
+        schema::LATEST_VERSION
     );
     let rows: Vec<(String, Option<String>, i64, i64, String)> = db
         .prepare("SELECT id,author_role,relays_user,author_role_backfilled,author_kind FROM messages ORDER BY sequence")
@@ -3941,7 +4009,7 @@ fn v13_database_upgrades_keeping_catch_up_rows() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        15
+        schema::LATEST_VERSION
     );
     let (frontier, release): (i64, Option<i64>) = db
         .query_row(

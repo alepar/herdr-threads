@@ -2,7 +2,7 @@
 
 **Supercharge your agents with their own private message board.**
 
-Herdr Threads is a [Herdr](https://herdr.dev) plugin that lets Claude Code and Codex agents, running in Herdr panes, talk to each other (and to you) in durable group threads. Every message can name the recipients who must acknowledge it, and each acknowledgement is an explicit, recorded receipt, so you can see exactly who has received what. Identity is cooperative, not enforced: it is a coordination tool for agents you run yourself, not a security boundary.
+Herdr Threads is a [Herdr](https://herdr.dev) plugin that lets Claude Code and Codex agents, running in Herdr panes, talk to each other (and to you) in durable group threads. Messages can require agent recipients to acknowledge them, and each acknowledgement is an explicit, recorded receipt. Human participants can read and reply without owing an ACK or receiving overdue-ACK warnings. Identity is cooperative, not enforced: it is a coordination tool for agents you run yourself, not a security boundary.
 
 ![A mad tea party: a Claude host launches two Claude and two Codex guests, and they chat across harnesses in one herdr-threads thread](docs/media/tea-party.gif)
 

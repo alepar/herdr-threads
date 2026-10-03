@@ -190,6 +190,7 @@ pub enum EffectiveReceiptState {
     Pending,
     Acknowledged,
     RecipientRetired,
+    NotRequired,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1691,20 +1692,22 @@ pub fn effective_receipt(
         Option<String>,
         Option<String>,
         Option<String>,
+        Option<String>,
         Option<i64>,
         Option<String>,
         Option<i64>,
         Option<i64>,
         Option<i64>,
+        i64,
     )>;
     let logical: LogicalColumns = db.query_row(
-        "SELECT sm.thread_id, sm.base_sequence, pr.ordinal, sm.decision_seq, sm.decision_at, pr.frozen_duration_ms, pr.eligible_at_snapshot, rs.state, rs.warning_message_id, rs.ack_actor_seat_id, rs.ack_generation, rs.ack_observation, rs.acked_at, s.retired_at, s.retired_seq \
+        "SELECT sm.thread_id, sm.base_sequence, pr.ordinal, sm.decision_seq, sm.decision_at, pr.frozen_duration_ms, pr.eligible_at_snapshot, pr.availability_provenance, rs.state, rs.warning_message_id, rs.ack_actor_seat_id, rs.ack_generation, rs.ack_observation, rs.acked_at, s.retired_at, s.retired_seq, MIN(pr.ack_required,COALESCE(rs.ack_required,1)) \
          FROM send_manifests sm JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id \
          JOIN seats s ON s.id=pr.seat_id \
          LEFT JOIN receipt_state rs ON rs.message_id=sm.message_id AND rs.seat_id=pr.seat_id \
          WHERE sm.message_id=?1 AND pr.seat_id=?2",
         params![message_id, seat_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?, r.get(14)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?, r.get(14)?, r.get(15)?, r.get(16)?)),
     ).optional().map_err(store_error)?;
     if let Some((
         thread_id,
@@ -1714,6 +1717,7 @@ pub fn effective_receipt(
         send_at,
         duration,
         eligible,
+        availability_provenance,
         state,
         warning_message_id,
         ack_actor_seat_id,
@@ -1722,6 +1726,7 @@ pub fn effective_receipt(
         acked_at,
         retired_at,
         retired_seq,
+        ack_required,
     )) = logical
     {
         if retired_at.is_some() && retired_seq.is_none() {
@@ -1743,6 +1748,13 @@ pub fn effective_receipt(
         let deadline = start
             .map(|at| checked_deadline(UtcMillis(at), duration).map(|d| d.0))
             .transpose()?;
+        let waived = if state.as_deref().is_none_or(|status| status == "pending") {
+            ack_required == 0
+                || availability_provenance.as_deref() == Some("operator_human")
+                || human_receipt_waived(db, seat_id, Some(send_seq))?
+        } else {
+            false
+        };
         return Ok(Some(EffectiveReceipt {
             source: ReceiptSource::Manifest,
             message_id: message_id.to_owned(),
@@ -1753,7 +1765,7 @@ pub fn effective_receipt(
             decision_seq: Some(send_seq),
             decision_at: send_at,
             frozen_duration_ms: duration,
-            state: receipt_state(state.as_deref(), retired_at.is_some())?,
+            state: receipt_state(state.as_deref(), retired_at.is_some(), waived)?,
             available_at: start,
             deadline_at: deadline,
             warning_message_id,
@@ -1780,13 +1792,14 @@ pub fn effective_receipt(
         Option<String>,
         Option<i64>,
         Option<i64>,
+        i64,
     )>;
     let physical: PhysicalColumns = db
         .query_row(
-            "SELECT r.thread_id, m.sequence, r.ordinal, m.decision_seq, m.decision_at, r.frozen_duration_ms, r.state, r.available_at, r.deadline_at, r.warning_message_id, r.ack_actor_seat_id, r.ack_generation, r.ack_observation, r.acked_at, s.retired_at \
+            "SELECT r.thread_id, m.sequence, r.ordinal, m.decision_seq, m.decision_at, r.frozen_duration_ms, r.state, r.available_at, r.deadline_at, r.warning_message_id, r.ack_actor_seat_id, r.ack_generation, r.ack_observation, r.acked_at, s.retired_at, r.ack_required \
          FROM receipts r JOIN seats s ON s.id=r.seat_id JOIN messages m ON m.id=r.message_id WHERE r.message_id=?1 AND r.seat_id=?2",
             params![message_id, seat_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?, r.get(14)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?, r.get(14)?, r.get(15)?)),
         )
         .optional()
         .map_err(store_error)?;
@@ -1808,7 +1821,13 @@ pub fn effective_receipt(
                 ack_observation,
                 acked_at,
                 retired_at,
+                ack_required,
             )| {
+                let waived = if state == "pending" {
+                    ack_required == 0 || human_receipt_waived(db, seat_id, decision_seq)?
+                } else {
+                    false
+                };
                 Ok(EffectiveReceipt {
                     source: ReceiptSource::Physical,
                     message_id: message_id.to_owned(),
@@ -1819,7 +1838,7 @@ pub fn effective_receipt(
                     decision_seq,
                     decision_at,
                     frozen_duration_ms: duration,
-                    state: receipt_state(Some(&state), retired_at.is_some())?,
+                    state: receipt_state(Some(&state), retired_at.is_some(), waived)?,
                     available_at,
                     deadline_at,
                     warning_message_id,
@@ -1873,10 +1892,38 @@ pub fn receipt_soft_poked_at(
     })
 }
 
-fn receipt_state(state: Option<&str>, retired: bool) -> Result<EffectiveReceiptState, ApiError> {
+fn human_receipt_waived(
+    db: &Connection,
+    seat: &str,
+    message_seq: Option<i64>,
+) -> Result<bool, ApiError> {
+    let current_human: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND harness='human' AND ended_at IS NULL)",
+        [seat], |r| r.get(0),
+    ).map_err(store_error)?;
+    if current_human {
+        return Ok(true);
+    }
+    let cutoff: Option<i64> = db
+        .query_row(
+            "SELECT through_decision_seq FROM human_receipt_waivers WHERE seat_id=?1",
+            [seat],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    Ok(cutoff.is_some_and(|through| message_seq.is_none_or(|seq| seq <= through)))
+}
+
+fn receipt_state(
+    state: Option<&str>,
+    retired: bool,
+    human_waived: bool,
+) -> Result<EffectiveReceiptState, ApiError> {
     match state.unwrap_or("pending") {
         "acked" => Ok(EffectiveReceiptState::Acknowledged),
         "recipient_retired" => Ok(EffectiveReceiptState::RecipientRetired),
+        "pending" if human_waived => Ok(EffectiveReceiptState::NotRequired),
         "pending" if retired => Ok(EffectiveReceiptState::RecipientRetired),
         "pending" => Ok(EffectiveReceiptState::Pending),
         _ => Err(api_error(ErrorCode::StoreCorrupt, "unknown receipt state")),
