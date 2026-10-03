@@ -460,6 +460,7 @@ fn release(
     if current.state == RequirementState::Pending {
         tx.execute("INSERT INTO invitation_cancellations(invitation_id,requirement_id,cancelled_at) SELECT i.id,r.id,?1 FROM requirement_episodes r JOIN invitations i ON i.id=r.invitation_id WHERE r.id=?2 AND r.created_decision_seq=i.created_decision_seq AND i.state='pending'",
             params![at.0,v.requirement.as_str()]).map_err(store_error)?;
+        schema::clear_warning_condition_for_invitation(tx, current.invitation.as_str(), at)?;
     }
     schema::bump_membership_revision(tx, &v.thread)?;
     schema::bump_filter_revision(tx, instance, "directory", "all")?;

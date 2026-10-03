@@ -637,6 +637,9 @@ pub(super) fn insert_publication(
         duration_ms=tx.query_row("SELECT frozen_duration_ms FROM prepared_recipients WHERE preparation_id=?1 AND receipt_ordinal=1",[prep_id.as_str()],|r|r.get(0)).map_err(store_error)?;
         schema::checked_deadline(crate::protocol::time::UtcMillis(utc), duration_ms)?;
     }
+    if warning_count > 0 {
+        schema::ensure_unavailability_reopen_ready(tx, &prep_id, thread.as_str())?;
+    }
     let decision_seq = schema::next_decision_seq(tx, &instance)?;
     let base: i64 = tx
         .query_row(
@@ -675,6 +678,16 @@ pub(super) fn insert_publication(
         }
     }
     tx.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![prep_id,id.as_str(),instance,thread.as_str(),decision_seq as i64,utc,base,high_water,recipient_count,warning_count]).map_err(store_error)?;
+    if warning_count > 0 {
+        schema::record_published_unavailable_conditions(
+            tx,
+            &prep_id,
+            thread.as_str(),
+            decision_seq as i64,
+            high_water,
+            crate::protocol::time::UtcMillis(utc),
+        )?;
+    }
     tx.execute(
         "UPDATE threads SET next_sequence=?1,updated_at=?2 WHERE id=?3",
         params![following, utc, thread.as_str()],

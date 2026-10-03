@@ -51,6 +51,28 @@ pub trait WakePort: Send + Sync {
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<WakeCandidate>, ApiError>;
+    fn wake_batch_seats(
+        &self,
+        _after: Option<&SeatId>,
+        _limit: u16,
+        _budget: &CallBudget,
+    ) -> Result<Vec<SeatId>, ApiError> {
+        Ok(Vec::new())
+    }
+    fn clear_wake_batch_if_empty(
+        &self,
+        _seat: &SeatId,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(true)
+    }
+    fn wake_batch_window(
+        &self,
+        _candidate: &WakeCandidate,
+        _budget: &CallBudget,
+    ) -> Result<Option<(crate::protocol::time::UtcMillis, u64)>, ApiError> {
+        Ok(None)
+    }
     fn reserve_wake(
         &self,
         candidate: &WakeCandidate,
@@ -111,6 +133,11 @@ struct WakeScanState {
     pending: VecDeque<WakeCandidate>,
     /// Seats the current scan cycle (first page to last) has listed.
     seen: std::collections::HashSet<SeatId>,
+}
+#[derive(Default)]
+struct BatchCleanupScanState {
+    after: Option<SeatId>,
+    pending: VecDeque<SeatId>,
 }
 #[derive(Default)]
 struct RecoveryScanState {
@@ -189,6 +216,7 @@ pub struct Scheduler<
     instance: String,
     daemon_boot: uuid::Uuid,
     recovery: Mutex<RecoveryScanState>,
+    batch_cleanup: Mutex<BatchCleanupScanState>,
     scan: Mutex<WakeScanState>,
 }
 impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?Sized>
@@ -208,6 +236,7 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
             instance,
             daemon_boot,
             recovery: Mutex::new(RecoveryScanState::default()),
+            batch_cleanup: Mutex::new(BatchCleanupScanState::default()),
             scan: Mutex::new(WakeScanState::default()),
         }
     }
@@ -311,6 +340,10 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
                 Some(err) => Err(err),
                 None => Ok(outcome),
             };
+        }
+        if !self.drive_batch_cleanup(budget)? {
+            outcome.has_more = true;
+            return Ok(outcome);
         }
         let mut scan = self
             .scan
@@ -417,6 +450,59 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
     /// Recovery is independent of current attention and target eligibility.
     /// A page is bounded, and a partial page retains exact position on error or
     /// budget exhaustion. Normal wake admission begins only after the sweep.
+    /// One durable page per tick, including windows this process never admitted.
+    /// Fully processed pages do not force rapid wake ticks; the regular wake
+    /// cadence advances the cursor and starts another sweep after its end.
+    fn drive_batch_cleanup(&self, budget: &CallBudget) -> Result<bool, ApiError> {
+        let mut scan = self
+            .batch_cleanup
+            .lock()
+            .map_err(|_| error(ErrorCode::StoreCorrupt, "batch cleanup lock poisoned"))?;
+        if scan.pending.is_empty() {
+            let seats = self
+                .wakes
+                .store
+                .wake_batch_seats(scan.after.as_ref(), 16, budget)?;
+            if seats.len() > 16
+                || seats.windows(2).any(|pair| pair[0] >= pair[1])
+                || seats
+                    .first()
+                    .is_some_and(|seat| scan.after.as_ref().is_some_and(|after| seat <= after))
+            {
+                return Err(error(
+                    ErrorCode::StoreCorrupt,
+                    "invalid durable batch cleanup page",
+                ));
+            }
+            scan.after = seats.last().cloned();
+            scan.pending = seats.into();
+        }
+        while !budget.is_exhausted(self.wakes.store.clock()) {
+            let Some(seat) = scan.pending.pop_front() else {
+                break;
+            };
+            match self.wakes.store.clear_wake_batch_if_empty(&seat, budget) {
+                Ok(empty) => {
+                    if empty {
+                        self.wakes
+                            .state
+                            .lock()
+                            .map_err(|_| {
+                                error(ErrorCode::StoreCorrupt, "wake state lock poisoned")
+                            })?
+                            .dispatch
+                            .clear_batch(&seat);
+                    }
+                }
+                Err(err) => {
+                    scan.pending.push_front(seat);
+                    return Err(err);
+                }
+            }
+        }
+        Ok(scan.pending.is_empty())
+    }
+
     fn drive_recovery(
         &self,
         budget: &CallBudget,
@@ -596,6 +682,15 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             .any(|completion| completion.seat == seat)
             || state.pending.len() + state.dispatch.active_count() >= MAX_ACTIVE_PROMPTS
         {
+            return Ok(None);
+        }
+        let window = self.store.wake_batch_window(candidate, budget)?;
+        if !state.dispatch.batch_eligible(
+            &seat,
+            window,
+            self.store.clock().utc_now(),
+            self.store.clock().monotonic_now(),
+        ) {
             return Ok(None);
         }
         let retry_step = u8::try_from(candidate.retry_step)

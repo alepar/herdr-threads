@@ -6,18 +6,19 @@ use super::{
         EffectiveReceiptState, EffectiveTimelineEntry, GlobalLogicalKinds, GlobalLogicalPosition,
         InboxCapture, InboxValidation, ReceiptScanPosition, ReceiptScanScope, TimelinePosition,
         WarningRecipientPosition, capture_inbox_token, effective_warning_by_id,
-        scan_effective_receipts, scan_effective_timeline, scan_effective_warning_recipients,
-        scan_effective_warnings_for_seat, scan_global_logical_candidates, validate_inbox_token,
+        is_warning_recipient, scan_effective_receipts, scan_effective_timeline,
+        scan_effective_warning_recipients, scan_effective_warnings_for_seat,
+        scan_global_logical_candidates, validate_inbox_token, warning_condition_actionable,
     },
     page_fit::{FitStop, PageFit},
 };
 use crate::ports::{OperationReadScope, RetirementSummary};
 use crate::protocol::{
     commands::{
-        Command, DeliveryInspectQuery, DiagnosticsQuery, DirectoryMembership, DirectoryQuery,
-        FULL_BODY_FETCH_BYTES, HistoryRange, InboxQuery, MessageQuery, OperationStatusQuery,
-        ParticipantsQuery, RecipientsQuery, RetirementJobsQuery, SearchQuery, SeatInspectQuery,
-        SeatsQuery, ThreadQuery, WarningsQuery,
+        ActiveWarningsQuery, Command, DeliveryInspectQuery, DiagnosticsQuery, DirectoryMembership,
+        DirectoryQuery, FULL_BODY_FETCH_BYTES, HistoryRange, InboxQuery, MessageQuery,
+        OperationStatusQuery, ParticipantsQuery, RecipientsQuery, RetirementJobsQuery, SearchQuery,
+        SeatInspectQuery, SeatsQuery, ThreadQuery, WarningsQuery,
     },
     ids::{
         ExecutionId, HostBootId, HostTargetId, MessageId, NativeSessionId, RetirementJobId, SeatId,
@@ -27,17 +28,18 @@ use crate::protocol::{
         OutputFormat, OutputSpec, PREVIEW_SNIPPET_CHARS, encode_selected, is_inlined_full_body,
     },
     pagination::{
-        Consistency, Cursor, CursorDirection, CursorScope, Page, PageRequest, SearchCursorState,
-        SearchPhase, StopReason,
+        Consistency, Cursor, CursorDirection, CursorScope, Page, PageRequest,
+        ReceiptAttentionCursorState, SearchCursorState, SearchPhase, SeatAttentionCursorState,
+        StopReason,
     },
     results::{
         AckProvenance, ApiError, BindingHistory, BoundedError, CleanupState, CommandResult,
         ContinuityStatus, DeliveryAggregates, DeliveryInspection, Diagnostic, ErrorCode,
-        HoldSummary, InboxItem, InvitationAcceptance, MappingStatus, MembershipStatus,
-        MessageContent, MessageDetails, MessageKind, MessageSummary, OpenBindingSummary,
-        OperationStatus, Participant, PendingReceipt, ReceiptStatus, Recipient, RepairHistory,
-        RetirementStatus, SearchHit, SearchPage, SeatHistoryItem, SeatInspection, SeatSummary,
-        StructuredEvent, ThreadDetails, ThreadSummary, WarningRecipient, WarningRef,
+        HoldSummary, InboxBatchItem, InboxItem, InvitationAcceptance, MappingStatus,
+        MembershipStatus, MessageContent, MessageDetails, MessageKind, MessageSummary,
+        OpenBindingSummary, OperationStatus, Participant, PendingReceipt, ReceiptStatus, Recipient,
+        RepairHistory, RetirementStatus, SearchHit, SearchPage, SeatHistoryItem, SeatInspection,
+        SeatSummary, StructuredEvent, ThreadDetails, ThreadSummary, WarningRecipient, WarningRef,
     },
     service::EventAuthor,
     time::{CallBudget, Clock, MonoInstant, UtcMillis},
@@ -223,7 +225,11 @@ pub fn query_with_output(
         Command::Thread(q) => thread_details(&db, instance, q, output),
         Command::RetirementJobs(q) => retirement_jobs(&db, instance, q, output),
         Command::Warnings(q) => warnings(&db, instance, q, output),
+        Command::ActiveWarnings(q) => {
+            active_warnings(&db, store, instance, q, output, &active_budget)
+        }
         Command::Inbox(q) => inbox(&db, store, instance, q, output, budget),
+        Command::InboxBatch(q) => inbox_batch(&db, store, instance, q, output, budget),
         Command::AttentionDigest(q) => {
             super::attention::seat_digest(&db, instance, &q.seat, &|| db.check_budget())
                 .map(|run| CommandResult::AttentionDigest(run.digest))
@@ -4099,6 +4105,194 @@ fn warnings(
     warnings_in_transaction(db, instance, q, output)
 }
 
+fn active_warning_argv(q: &ActiveWarningsQuery, raw: &str) -> Vec<String> {
+    let mut argv = vec![
+        "herdr-threads".into(),
+        "warnings".into(),
+        "--active".into(),
+        q.thread.as_str().into(),
+    ];
+    argv.extend(page_bounds(&q.page));
+    argv.extend(["--cursor".into(), raw.into()]);
+    argv
+}
+
+fn active_warning_page(
+    items: Vec<WarningRef>,
+    cursor: Option<&Cursor>,
+    q: &ActiveWarningsQuery,
+    output: &OutputSpec,
+    reason: StopReason,
+) -> Result<Page<WarningRef>, ApiError> {
+    let next = cursor
+        .map(|cursor| {
+            let raw = cursor
+                .encode()
+                .map_err(|e| api_error(ErrorCode::InvalidCursor, e))?;
+            Ok((raw.clone(), active_warning_argv(q, &raw)))
+        })
+        .transpose()?;
+    Ok(page(
+        items,
+        next,
+        cursor.map_or(0, |c| c.high_water_ordinal),
+        reason,
+        output,
+    ))
+}
+
+/// An immutable per-thread warning sequence survives prepared-to-physical
+/// projection. The source condition is checked live, so closed ledger rows
+/// disappear while an actionable warning predating the ledger stays visible.
+fn active_warnings(
+    db: &QueryConnection,
+    store: &StoreContext,
+    instance: &str,
+    q: &ActiveWarningsQuery,
+    output: &OutputSpec,
+    budget: &CallBudget,
+) -> Result<CommandResult, ApiError> {
+    let next_sequence: Option<i64> = db
+        .query_row(
+            "SELECT next_sequence FROM threads WHERE id=?1 AND instance_id=?2",
+            params![q.thread.as_str(), instance],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let next_sequence =
+        next_sequence.ok_or_else(|| api_error(ErrorCode::NotFound, "thread not found"))?;
+    let filter = digest(&(q.thread.as_str(), "active_warnings_v2"))?;
+    let cursor = decode_cursor(
+        &q.page,
+        instance,
+        CursorScope::ActiveWarnings,
+        q.thread.as_str(),
+        &filter,
+        CursorDirection::Ascending,
+    )?;
+    let high = cursor
+        .as_ref()
+        .map_or((next_sequence - 1) as u64, |c| c.high_water_ordinal);
+    let mut after = cursor.as_ref().map_or(0, |c| c.after_ordinal);
+    let mut items = Vec::new();
+    let mut visited = 0usize;
+    let mut stop = StopReason::Complete;
+    while visited < CANDIDATE_LIMIT {
+        if budget.is_exhausted(store.clock()) {
+            return Err(api_error(
+                ErrorCode::ReadBudgetExhausted,
+                "active warnings budget exhausted",
+            ));
+        }
+        let slice = super::effective::scan_effective_warning_timeline(
+            db,
+            q.thread.as_str(),
+            Some(TimelinePosition {
+                after_sequence: after as i64,
+                high_water_sequence: high as i64,
+            }),
+            1,
+        )?;
+        if slice.visited == 0 {
+            after = slice.position.after_sequence as u64;
+            break;
+        }
+        visited += slice.visited as usize;
+        let entry = slice
+            .entries
+            .into_iter()
+            .next()
+            .expect("one visited warning");
+        let warning = match entry {
+            EffectiveTimelineEntry::Physical { id, kind, .. } if kind == "warn" => {
+                effective_warning_by_id(db, &id)?
+            }
+            EffectiveTimelineEntry::PublishedWarning(warning) => Some(warning),
+            _ => None,
+        };
+        if let Some(warning) = warning {
+            let ledger: Option<(String, Option<String>, bool)> = db.query_row(
+                "SELECT c.open_warning_id,c.clear_warning_id,EXISTS(SELECT 1 FROM warning_close_sweeps s WHERE s.condition_kind=c.condition_kind AND s.affected_seat_id=c.affected_seat_id AND c.ordinal<=s.through_ordinal AND (c.condition_kind='receipt' OR s.episode=c.episode)) FROM warning_conditions c WHERE c.open_warning_id=?1 OR c.clear_warning_id=?1",
+                [&warning.id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
+            ).optional().map_err(store_error)?;
+            let active = match ledger {
+                Some((open, clear, swept)) => open == warning.id && clear.is_none() && !swept,
+                None => warning_condition_actionable(db, &warning)?,
+            };
+            if active {
+                if items.len() >= q.page.limit as usize {
+                    stop = StopReason::Rows;
+                    break;
+                }
+                let item = WarningRef {
+                    warning: MessageId::new(&warning.id),
+                    thread: q.thread.clone(),
+                    sequence: warning.sequence as u64,
+                    event_seq: warning.event_seq as u64,
+                };
+                let trial_cursor = cursor_for(
+                    instance,
+                    CursorScope::ActiveWarnings,
+                    q.thread.as_str(),
+                    &filter,
+                    CursorDirection::Ascending,
+                    slice.position.after_sequence as u64,
+                    high,
+                );
+                let mut trial_items = items.clone();
+                trial_items.push(item.clone());
+                let trial = active_warning_page(
+                    trial_items,
+                    Some(&trial_cursor),
+                    q,
+                    output,
+                    StopReason::Bytes,
+                )?;
+                if encode_selected(&CommandResult::ActiveWarnings(trial), output)?.len()
+                    > q.page.max_bytes as usize
+                {
+                    if items.is_empty() {
+                        return Err(ApiError::invalid_budget("active warning cannot fit"));
+                    }
+                    stop = StopReason::Bytes;
+                    break;
+                }
+                items.push(item);
+            }
+        }
+        after = slice.position.after_sequence as u64;
+        if !slice.has_more {
+            break;
+        }
+    }
+    if after < high && stop == StopReason::Complete {
+        stop = StopReason::Work;
+    }
+    let next = if stop == StopReason::Complete {
+        None
+    } else {
+        Some(cursor_for(
+            instance,
+            CursorScope::ActiveWarnings,
+            q.thread.as_str(),
+            &filter,
+            CursorDirection::Ascending,
+            after,
+            high,
+        ))
+    };
+    let page = active_warning_page(items, next.as_ref(), q, output, stop)?;
+    if encode_selected(&CommandResult::ActiveWarnings(page.clone()), output)?.len()
+        > q.page.max_bytes as usize
+    {
+        return Err(ApiError::invalid_budget(
+            "selected active warning response cannot fit",
+        ));
+    }
+    Ok(CommandResult::ActiveWarnings(page))
+}
+
 /// Pending-warning count for check-in (root contract decision, wave-2 (a)):
 /// the seat's pending (actionable) warnings as defined by
 /// `attention::pending_warnings`, read inside the caller's snapshot through
@@ -4443,6 +4637,483 @@ pub fn inbox_in_transaction(
 
 fn inbox_argv(seat: &SeatId, cursor: &str, page: &PageRequest) -> Vec<String> {
     inbox_request_argv(seat, Some(cursor), page)
+}
+
+fn inbox_batch_argv(seat: &SeatId, raw: &str, request: &PageRequest) -> Vec<String> {
+    let _ = seat; // The cursor binds the selected seat; an explicit seat switches CLI mode.
+    let mut argv = vec!["herdr-threads".into(), "inbox".into()];
+    argv.extend(page_bounds(request));
+    argv.extend(["--cursor".into(), raw.into()]);
+    argv
+}
+
+fn batch_receipt_position(state: &SeatAttentionCursorState) -> ReceiptScanPosition {
+    let receipt = state
+        .receipts
+        .as_ref()
+        .expect("batch cursor carries receipt bounds");
+    ReceiptScanPosition {
+        physical_after: receipt.physical_after,
+        manifest_after: receipt.manifest_after,
+        physical_high_water: receipt.physical_high_water,
+        manifest_high_water: receipt.manifest_high_water,
+        next_manifest: receipt.next_manifest,
+    }
+}
+
+fn batch_set_receipt_position(state: &mut SeatAttentionCursorState, position: ReceiptScanPosition) {
+    state.receipts = Some(ReceiptAttentionCursorState {
+        physical_after: position.physical_after,
+        manifest_after: position.manifest_after,
+        physical_high_water: position.physical_high_water,
+        manifest_high_water: position.manifest_high_water,
+        next_manifest: position.next_manifest,
+    });
+}
+
+fn batch_cursor_raw(cursor: &Cursor) -> Result<String, ApiError> {
+    cursor
+        .encode()
+        .map_err(|e| api_error(ErrorCode::InvalidCursor, e))
+}
+
+fn batch_page(
+    items: Vec<InboxBatchItem>,
+    cursor: Option<&Cursor>,
+    seat: &SeatId,
+    request: &PageRequest,
+    output: &OutputSpec,
+    reason: StopReason,
+) -> Result<Page<InboxBatchItem>, ApiError> {
+    let next = cursor
+        .map(|cursor| {
+            let raw = batch_cursor_raw(cursor)?;
+            Ok((raw.clone(), inbox_batch_argv(seat, &raw, request)))
+        })
+        .transpose()?;
+    let high = cursor
+        .and_then(|c| c.attention.as_ref())
+        .and_then(|a| a.receipt_frontier_seq)
+        .unwrap_or(0) as u64;
+    Ok(page(items, next, high, reason, output))
+}
+
+fn batch_fits(
+    items: &[InboxBatchItem],
+    next: &Cursor,
+    seat: &SeatId,
+    request: &PageRequest,
+    output: &OutputSpec,
+) -> Result<bool, ApiError> {
+    let page = batch_page(
+        items.to_vec(),
+        Some(next),
+        seat,
+        request,
+        output,
+        StopReason::Bytes,
+    )?;
+    Ok(
+        encode_selected(&CommandResult::InboxBatch(page), output)?.len()
+            <= request.max_bytes as usize,
+    )
+}
+
+fn batch_topic(db: &Connection, thread: &str) -> Result<String, ApiError> {
+    db.query_row("SELECT topic FROM threads WHERE id=?1", [thread], |r| {
+        r.get(0)
+    })
+    .map_err(store_error)
+}
+
+/// One read-only page. The phase walks indexed invitations, effective receipts
+/// and active warning sources with source-specific captured high waters. A
+/// receipt's physical projection can appear later without changing its
+/// manifest identity or moving the captured receipt frontier.
+fn inbox_batch(
+    db: &QueryConnection,
+    store: &StoreContext,
+    instance: &str,
+    q: &InboxQuery,
+    output: &OutputSpec,
+    budget: &CallBudget,
+) -> Result<CommandResult, ApiError> {
+    let seat = q.seat.as_ref().ok_or_else(|| {
+        api_error(
+            ErrorCode::InvalidRequest,
+            "inbox batch requires a resolved seat",
+        )
+    })?;
+    let owned: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2 AND state!='retired')", params![seat.as_str(), instance], |r| r.get(0)).map_err(store_error)?;
+    if !owned {
+        return Err(api_error(ErrorCode::NotFound, "seat not found"));
+    }
+    let current_agent: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL AND harness IN ('claude','codex') AND observation_provenance='cooperative_top_level')",
+        [seat.as_str()], |r| r.get(0),
+    ).map_err(store_error)?;
+    let offered_warning_through: i64 = db.query_row(
+        "SELECT o.offered_through_seq FROM warning_offer o JOIN seats s ON s.id=o.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE o.seat_id=?1 AND o.binding_generation=s.generation AND o.execution_id=b.execution_id",
+        [seat.as_str()], |r| r.get(0),
+    ).optional().map_err(store_error)?.unwrap_or(0);
+    let filter = digest(&(seat.as_str(), "inbox_batch_v1"))?;
+    let mut cursor = match decode_cursor(
+        &q.page,
+        instance,
+        CursorScope::InboxBatch,
+        seat.as_str(),
+        &filter,
+        CursorDirection::Ascending,
+    )? {
+        Some(cursor) => {
+            if cursor.attention.is_none()
+                || cursor.after_ordinal > 3
+                || cursor.scope_revision.is_none() == cursor.last_examined_key.is_some()
+                || cursor.filter_revision.is_none() == cursor.last_examined_key.is_some()
+            {
+                return Err(api_error(
+                    ErrorCode::InvalidCursor,
+                    "invalid inbox batch position",
+                ));
+            }
+            cursor
+        }
+        None => {
+            let decision: i64 = db
+                .query_row(
+                    "SELECT decision_seq FROM host_instances WHERE id=?1",
+                    [instance],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            let invitation_high: i64 = db
+                .query_row(
+                    "SELECT coalesce(max(ordinal),0) FROM invitations WHERE seat_id=?1",
+                    [seat.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            let physical_high: i64 = db
+                .query_row(
+                    "SELECT coalesce(max(ordinal),0) FROM receipts WHERE seat_id=?1",
+                    [seat.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            let manifest_high: i64 = db
+                .query_row(
+                    "SELECT coalesce(max(ordinal),0) FROM prepared_recipients WHERE seat_id=?1",
+                    [seat.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            let mut cursor = cursor_for(
+                instance,
+                CursorScope::InboxBatch,
+                seat.as_str(),
+                &filter,
+                CursorDirection::Ascending,
+                0,
+                3,
+            );
+            cursor.attention = Some(SeatAttentionCursorState {
+                invitation_after_seq: 0,
+                invitation_after_ordinal: 0,
+                invitations_done: false,
+                has_pending_invitation: false,
+                invitation_frontier: (invitation_high > 0).then_some((1, invitation_high)),
+                receipts: Some(ReceiptAttentionCursorState {
+                    physical_after: 0,
+                    manifest_after: 0,
+                    physical_high_water: physical_high,
+                    manifest_high_water: manifest_high,
+                    next_manifest: false,
+                }),
+                receipts_done: false,
+                has_pending_receipt: false,
+                receipt_frontier_seq: Some(decision),
+                physical_warning_after: 0,
+                physical_warning_high_water: decision,
+                manifest_warning_after: 0,
+                manifest_warning_high_water: i64::MAX,
+                next_manifest_warning: false,
+                latest_warning_seq: None,
+                latest_warning_offset: None,
+            });
+            cursor
+        }
+    };
+    let mut items = Vec::new();
+    let mut visited = 0usize;
+    let mut stop = StopReason::Complete;
+    while cursor.after_ordinal < 3 && visited < CANDIDATE_LIMIT {
+        if budget.is_exhausted(store.clock()) {
+            return Err(api_error(
+                ErrorCode::ReadBudgetExhausted,
+                "inbox batch budget exhausted",
+            ));
+        }
+        // Once the row limit is reached, keep the bounded source walk until a
+        // further relevant item is found or every frozen source is exhausted.
+        // That keeps `has_more` and the empty/complete state truthful.
+        let at_limit = items.len() >= q.page.limit as usize;
+        let phase = cursor.after_ordinal;
+        let state = cursor.attention.as_ref().expect("batch state");
+        let decision_high = state.receipt_frontier_seq.unwrap_or(0);
+        let mut after = cursor.clone();
+        let item = match phase {
+            0 => {
+                let high = state.invitation_frontier.map_or(0, |(_, high)| high);
+                let row: Option<(i64, String, String)> = db.query_row(
+                    "SELECT i.ordinal,i.id,i.thread_id FROM invitations i WHERE i.seat_id=?1 AND i.ordinal>?2 AND i.ordinal<=?3 AND i.created_decision_seq<=?4 ORDER BY i.ordinal LIMIT 1",
+                    params![seat.as_str(), state.invitation_after_ordinal, high, decision_high],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                ).optional().map_err(store_error)?;
+                if let Some((ordinal, id, thread)) = row {
+                    visited += 1;
+                    let state = after.attention.as_mut().unwrap();
+                    state.invitation_after_ordinal = ordinal;
+                    state.invitation_after_seq = ordinal;
+                    let pending: bool = db.query_row("SELECT state='pending' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations WHERE invitation_id=?1) FROM invitations WHERE id=?1", [&id], |r| r.get(0)).map_err(store_error)?;
+                    if pending {
+                        let required_service = super::service_substrate::current_requirement(
+                            db,
+                            &ThreadId::new(&thread),
+                            seat,
+                        )?
+                        .filter(|r| {
+                            r.state == crate::protocol::service::RequirementState::Pending
+                                && r.invitation.as_str() == id
+                        });
+                        let topic_data = batch_topic(db, &thread)?;
+                        Some(InboxBatchItem::Invitation {
+                            thread: ThreadId::new(thread),
+                            topic_data,
+                            invitation: crate::protocol::ids::InvitationId::new(id),
+                            required_service,
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    after.after_ordinal = 1;
+                    None
+                }
+            }
+            1 => {
+                let before = batch_receipt_position(state);
+                let slice = scan_effective_receipts(
+                    db,
+                    &ReceiptScanScope::Seat(seat.as_str().into()),
+                    Some(before),
+                    1,
+                )?;
+                if slice.visited == 0 {
+                    after.after_ordinal = 2;
+                    None
+                } else {
+                    visited += 1;
+                    let receipt = slice.items.into_iter().next();
+                    batch_set_receipt_position(after.attention.as_mut().unwrap(), slice.position);
+                    if let Some(receipt) = receipt.filter(|r| {
+                        r.state == EffectiveReceiptState::Pending
+                            && r.decision_seq.unwrap_or(0) <= decision_high
+                    }) {
+                        let row: Option<(String, i64, Option<String>, String)> = db.query_row(
+                            "SELECT m.thread_id,m.sequence,m.actor_seat_id,m.body FROM messages m WHERE m.id=?1 AND m.kind='ordinary'",
+                            [&receipt.message_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
+                        ).optional().map_err(store_error)?;
+                        if let Some((thread, sequence, sender, body)) = row {
+                            let body_len = body.len() as u64;
+                            let offset = if cursor.last_examined_key.as_deref()
+                                == Some(receipt.message_id.as_str())
+                            {
+                                cursor.scope_revision.unwrap_or(0)
+                            } else {
+                                0
+                            };
+                            if offset > body_len
+                                || !body.is_char_boundary(offset as usize)
+                                || (cursor.last_examined_key.is_some()
+                                    && cursor.last_examined_key.as_deref()
+                                        != Some(receipt.message_id.as_str()))
+                                || cursor.filter_revision.is_some_and(|len| len != body_len)
+                            {
+                                return Err(api_error(
+                                    ErrorCode::InvalidCursor,
+                                    "inbox body changed",
+                                ));
+                            }
+                            let complete = InboxBatchItem::Message {
+                                thread: ThreadId::new(thread.clone()),
+                                topic_data: batch_topic(db, &thread)?,
+                                message: MessageId::new(&receipt.message_id),
+                                sequence: sequence as u64,
+                                sender: sender.clone().map(SeatId::new),
+                                body: body[offset as usize..].to_owned(),
+                                body_start: offset,
+                                body_end: body_len,
+                                body_len,
+                                ack_candidate: current_agent
+                                    .then(|| MessageId::new(&receipt.message_id)),
+                            };
+                            after.last_examined_key = None;
+                            after.scope_revision = None;
+                            after.filter_revision = None;
+                            if at_limit
+                                || batch_fits(
+                                    &[items.clone(), vec![complete.clone()]].concat(),
+                                    &after,
+                                    seat,
+                                    &q.page,
+                                    output,
+                                )?
+                            {
+                                Some(complete)
+                            } else {
+                                let before_position =
+                                    batch_receipt_position(cursor.attention.as_ref().unwrap());
+                                batch_set_receipt_position(
+                                    after.attention.as_mut().unwrap(),
+                                    before_position,
+                                );
+                                after.last_examined_key = Some(receipt.message_id.clone());
+                                after.filter_revision = Some(body_len);
+                                let mut lo = offset as usize;
+                                let mut hi = body.len();
+                                let mut chosen = None;
+                                while lo <= hi {
+                                    let mid = lo + (hi - lo) / 2;
+                                    let end = (mid..=body.len())
+                                        .find(|&n| body.is_char_boundary(n))
+                                        .unwrap_or(body.len());
+                                    let mut trial = after.clone();
+                                    trial.scope_revision = Some(end as u64);
+                                    let chunk = InboxBatchItem::Message {
+                                        thread: ThreadId::new(&thread),
+                                        topic_data: batch_topic(db, &thread)?,
+                                        message: MessageId::new(&receipt.message_id),
+                                        sequence: sequence as u64,
+                                        sender: sender.clone().map(SeatId::new),
+                                        body: body[offset as usize..end].to_owned(),
+                                        body_start: offset,
+                                        body_end: end as u64,
+                                        body_len,
+                                        ack_candidate: None,
+                                    };
+                                    if end > offset as usize
+                                        && batch_fits(
+                                            &[items.clone(), vec![chunk.clone()]].concat(),
+                                            &trial,
+                                            seat,
+                                            &q.page,
+                                            output,
+                                        )?
+                                    {
+                                        chosen = Some((chunk, trial));
+                                        lo = end.saturating_add(1);
+                                    } else if mid == 0 {
+                                        break;
+                                    } else {
+                                        hi = mid - 1;
+                                    }
+                                }
+                                if let Some((chunk, trial)) = chosen {
+                                    after = trial;
+                                    stop = StopReason::Bytes;
+                                    Some(chunk)
+                                } else if items.is_empty() {
+                                    return Err(ApiError::invalid_budget(
+                                        "inbox body chunk cannot fit",
+                                    ));
+                                } else {
+                                    after = cursor.clone();
+                                    stop = StopReason::Bytes;
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+            }
+            _ => {
+                if CANDIDATE_LIMIT - visited < 2 {
+                    stop = StopReason::Work;
+                    break;
+                }
+                let state = cursor.attention.as_ref().unwrap();
+                let slice = scan_global_logical_candidates(
+                    db,
+                    instance,
+                    GlobalLogicalKinds::Warnings,
+                    Some(GlobalLogicalPosition {
+                        after_decision_seq: state.physical_warning_after,
+                        after_event_offset: state.manifest_warning_after,
+                        high_water_decision_seq: state.physical_warning_high_water,
+                    }),
+                    2,
+                )?;
+                visited += slice.visited as usize;
+                if let Some(candidate) = slice.candidates.into_iter().next() {
+                    let state = after.attention.as_mut().unwrap();
+                    state.physical_warning_after = slice.position.after_decision_seq;
+                    state.manifest_warning_after = slice.position.after_event_offset;
+                    let warning = effective_warning_by_id(db, &candidate.id)?;
+                    if let Some(warning) = warning
+                        && is_warning_recipient(db, &candidate.id, seat.as_str())?
+                        && warning_condition_actionable(db, &warning)?
+                        && warning.event_seq > offered_warning_through
+                    {
+                        Some(InboxBatchItem::Warning {
+                            thread: ThreadId::new(&candidate.thread_id),
+                            topic_data: batch_topic(db, &candidate.thread_id)?,
+                            warning: MessageId::new(candidate.id),
+                            sequence: warning.sequence as u64,
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    after.after_ordinal = 3;
+                    None
+                }
+            }
+        };
+        if let Some(item) = item {
+            if at_limit {
+                stop = StopReason::Rows;
+                break;
+            }
+            let trial_items = [items.clone(), vec![item.clone()]].concat();
+            if !batch_fits(&trial_items, &after, seat, &q.page, output)? {
+                if items.is_empty() {
+                    return Err(ApiError::invalid_budget("inbox batch item cannot fit"));
+                }
+                stop = StopReason::Bytes;
+                break;
+            }
+            items.push(item);
+        }
+        cursor = after;
+        if stop == StopReason::Bytes {
+            break;
+        }
+    }
+    if cursor.after_ordinal < 3 && stop == StopReason::Complete {
+        stop = StopReason::Work;
+    }
+    let next = (cursor.after_ordinal < 3).then_some(&cursor);
+    let page = batch_page(items, next, seat, &q.page, output, stop)?;
+    if encode_selected(&CommandResult::InboxBatch(page.clone()), output)?.len()
+        > q.page.max_bytes as usize
+    {
+        return Err(ApiError::invalid_budget("selected response cannot fit"));
+    }
+    Ok(CommandResult::InboxBatch(page))
 }
 
 fn inbox_request_argv(seat: &SeatId, cursor: Option<&str>, page: &PageRequest) -> Vec<String> {

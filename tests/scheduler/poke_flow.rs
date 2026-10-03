@@ -319,6 +319,7 @@ impl Fixture {
                 daemon_boot: Some(
                     uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
                 ),
+                wake_batch_delay_ms: 0,
                 ..StoreSettings::default()
             },
         )

@@ -29,7 +29,12 @@ pub enum Command {
     Seats(SeatsQuery),
     SeatInspect(SeatInspectQuery),
     Inbox(InboxQuery),
+    /// Bounded read-only content page for the text inbox. Receipt changes use
+    /// a separate accountable command after the caller displays this page.
+    InboxBatch(InboxQuery),
     Warnings(WarningsQuery),
+    /// Bounded read-only active warning conditions for one thread.
+    ActiveWarnings(ActiveWarningsQuery),
     Thread(ThreadQuery),
     History(HistoryQuery),
     Participants(ParticipantsQuery),
@@ -69,6 +74,8 @@ pub enum Command {
     AcceptRequired(AcceptRequired),
     SendMessage(SendMessage),
     Ack(Ack),
+    /// Accountable ACK claimed only after a whole inbox text page is flushed.
+    AckDisplayed(Ack),
     Leave(Leave),
     SetTopic(SetTopic),
     Archive(ThreadMutation),
@@ -251,6 +258,12 @@ pub struct InboxQuery {
 #[serde(deny_unknown_fields)]
 pub struct WarningsQuery {
     pub seat: SeatId,
+    pub page: PageRequest,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActiveWarningsQuery {
+    pub thread: ThreadId,
     pub page: PageRequest,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -659,7 +672,7 @@ impl Command {
             Self::Accept(v) => Some(&v.claim),
             Self::AcceptRequired(v) => Some(&v.claim),
             Self::SendMessage(v) => Some(&v.claim),
-            Self::Ack(v) => Some(&v.claim),
+            Self::Ack(v) | Self::AckDisplayed(v) => Some(&v.claim),
             Self::Leave(v) => Some(&v.claim),
             Self::SetTopic(v) => Some(&v.claim),
             Self::Archive(v) | Self::Reopen(v) => Some(&v.claim),
@@ -738,10 +751,20 @@ impl Command {
                 }
                 Ok(())
             }
+            Self::ActiveWarnings(query) => {
+                if let Some(encoded) = &query.page.cursor
+                    && Cursor::decode(encoded)?.scope != CursorScope::ActiveWarnings
+                {
+                    return Err("active warnings cursor scope mismatch");
+                }
+                Ok(())
+            }
             Self::SendMessage(send) if send.invited_recipients.len() > MAX_BATCH_ITEMS => {
                 Err("too many explicit recipients")
             }
-            Self::Ack(ack) if ack.messages.is_empty() || ack.messages.len() > MAX_BATCH_ITEMS => {
+            Self::Ack(ack) | Self::AckDisplayed(ack)
+                if ack.messages.is_empty() || ack.messages.len() > MAX_BATCH_ITEMS =>
+            {
                 Err("invalid ack batch size")
             }
             _ => Ok(()),
@@ -752,8 +775,9 @@ impl Command {
             Self::Directory(v) => Some(&v.page),
             Self::Seats(v) => Some(&v.page),
             Self::SeatInspect(v) => Some(&v.page),
-            Self::Inbox(v) => Some(&v.page),
+            Self::Inbox(v) | Self::InboxBatch(v) => Some(&v.page),
             Self::Warnings(v) => Some(&v.page),
+            Self::ActiveWarnings(v) => Some(&v.page),
             Self::Thread(v) => Some(&v.page),
             Self::History(v) => Some(&v.page),
             Self::Participants(v) => Some(&v.page),
@@ -803,6 +827,7 @@ pub enum PermitMutation {
     AcceptRequired(AcceptRequired),
     SendMessage(SendMessage),
     Ack(Ack),
+    AckDisplayed(Ack),
     Leave(Leave),
     SetTopic(SetTopic),
     Archive(ThreadMutation),
@@ -819,6 +844,7 @@ impl TryFrom<Command> for PermitMutation {
             Command::AcceptRequired(v) => Ok(Self::AcceptRequired(v)),
             Command::SendMessage(v) => Ok(Self::SendMessage(v)),
             Command::Ack(v) => Ok(Self::Ack(v)),
+            Command::AckDisplayed(v) => Ok(Self::AckDisplayed(v)),
             Command::Leave(v) => Ok(Self::Leave(v)),
             Command::SetTopic(v) => Ok(Self::SetTopic(v)),
             Command::Archive(v) => Ok(Self::Archive(v)),

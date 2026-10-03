@@ -52,7 +52,9 @@ const V14: &str = include_str!("../../migrations/0014_catch_up_release.sql");
 /// The schema version this build writes and audits (the last migration).
 const V15: &str = include_str!("../../migrations/0015_preparation_retention.sql");
 const V16: &str = include_str!("../../migrations/0016_human_receipt_waivers.sql");
-pub(crate) const LATEST_VERSION: i64 = 16;
+const V17: &str = include_str!("../../migrations/0017_wake_batches.sql");
+const V18: &str = include_str!("../../migrations/0018_warning_conditions.sql");
+pub(crate) const LATEST_VERSION: i64 = 18;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -142,6 +144,8 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V14))
                 .and_then(|_| conn.execute_batch(V15))
                 .and_then(|_| conn.execute_batch(V16))
+                .and_then(|_| conn.execute_batch(V17))
+                .and_then(|_| conn.execute_batch(V18))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -169,6 +173,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
             migrate_v15_to_v16(conn)?;
+            migrate_v16_to_v17(conn)?;
             verify_existing(conn)
         }
         2 => {
@@ -188,6 +193,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
             migrate_v15_to_v16(conn)?;
+            migrate_v16_to_v17(conn)?;
             verify_existing(conn)
         }
         3 => {
@@ -207,6 +213,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
             migrate_v15_to_v16(conn)?;
+            migrate_v16_to_v17(conn)?;
             verify_existing(conn)
         }
         4 => {
@@ -227,6 +234,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
             migrate_v15_to_v16(conn)?;
+            migrate_v16_to_v17(conn)?;
             verify_existing(conn)
         }
         5 => {
@@ -247,6 +255,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
             migrate_v15_to_v16(conn)?;
+            migrate_v16_to_v17(conn)?;
             verify_existing(conn)
         }
         6 => {
@@ -267,6 +276,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
             migrate_v15_to_v16(conn)?;
+            migrate_v16_to_v17(conn)?;
             verify_existing(conn)
         }
         7 => {
@@ -287,6 +297,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
             migrate_v15_to_v16(conn)?;
+            migrate_v16_to_v17(conn)?;
             verify_existing(conn)
         }
         8 => {
@@ -299,6 +310,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
             migrate_v15_to_v16(conn)?;
+            migrate_v16_to_v17(conn)?;
             verify_existing(conn)
         }
         9 => {
@@ -310,6 +322,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
             migrate_v15_to_v16(conn)?;
+            migrate_v16_to_v17(conn)?;
             verify_existing(conn)
         }
         10 => {
@@ -320,6 +333,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
             migrate_v15_to_v16(conn)?;
+            migrate_v16_to_v17(conn)?;
             verify_existing(conn)
         }
         11 => {
@@ -329,6 +343,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
             migrate_v15_to_v16(conn)?;
+            migrate_v16_to_v17(conn)?;
             verify_existing(conn)
         }
         12 => {
@@ -337,6 +352,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
             migrate_v15_to_v16(conn)?;
+            migrate_v16_to_v17(conn)?;
             verify_existing(conn)
         }
         13 => {
@@ -344,6 +360,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             migrate_v13_to_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
             migrate_v15_to_v16(conn)?;
+            migrate_v16_to_v17(conn)?;
             verify_existing(conn)
         }
         14 => {
@@ -351,19 +368,34 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing_v14(conn)?;
             migrate_v14_to_v15(conn, now())?;
             migrate_v15_to_v16(conn)?;
+            migrate_v16_to_v17(conn)?;
             verify_existing(conn)
         }
         15 => {
             verify_existing_v15(conn)?;
             migrate_v15_to_v16(conn)?;
+            migrate_v16_to_v17(conn)?;
             verify_existing(conn)
         }
-        16 => verify_existing(conn),
+        16 => {
+            verify_existing_v13_shape(conn)?;
+            verify_existing_v14(conn)?;
+            verify_existing_v15(conn)?;
+            verify_existing_v16(conn)?;
+            migrate_v16_to_v17(conn)?;
+            verify_existing(conn)
+        }
+        17 => verify_existing(conn),
+        18 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
         )),
+    }?;
+    if (1..=17).contains(&version) {
+        migrate_v17_to_v18(conn)?;
     }
+    verify_existing_v18(conn)
 }
 
 /// Writer-connection invariant: no occupant binding is registered without the
@@ -472,7 +504,50 @@ pub fn verify_existing(conn: &Connection) -> Result<(), ApiError> {
     verify_existing_v13_shape(conn)?;
     verify_existing_v14(conn)?;
     verify_existing_v15(conn)?;
-    verify_existing_v16(conn)
+    verify_existing_v16(conn)?;
+    verify_existing_v17(conn)
+}
+
+fn migrate_v17_to_v18(conn: &Connection) -> Result<(), ApiError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    let result = conn
+        .execute_batch(V18)
+        .and_then(|_| conn.pragma_update(None, "user_version", 18));
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(store_error(error))
+        }
+    }
+}
+
+fn verify_existing_v18(conn: &Connection) -> Result<(), ApiError> {
+    for (kind, name) in [
+        ("table", "warning_conditions"),
+        ("index", "warning_conditions_active"),
+        ("index", "warning_conditions_affected"),
+        ("index", "warning_conditions_close_scope"),
+        ("index", "warning_conditions_thread"),
+        ("index", "warning_conditions_unavailable_reopen"),
+        ("table", "warning_close_sweeps"),
+        ("index", "warning_close_sweeps_cover"),
+    ] {
+        let present: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type=?1 AND name=?2)",
+                params![kind, name],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if !present {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                "missing warning condition schema",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Audit of everything v1..v13 define; a v13 store is checked with this
@@ -704,6 +779,55 @@ fn migrate_v14_to_v15(conn: &Connection, now: UtcMillis) -> Result<(), ApiError>
             Err(store_error(error))
         }
     }
+}
+
+fn migrate_v16_to_v17(conn: &Connection) -> Result<(), ApiError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    let result = conn
+        .execute_batch(V17)
+        .and_then(|_| conn.pragma_update(None, "user_version", 17));
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(store_error(error))
+        }
+    }
+}
+
+fn verify_existing_v17(conn: &Connection) -> Result<(), ApiError> {
+    // Compare every table and clear trigger with the migration, so an altered
+    // trigger cannot silently retain or reset the wrong seat's window.
+    for statement in V17.split("CREATE").skip(1) {
+        let expected = format!("CREATE{}", statement.trim_end().trim_end_matches(';'));
+        let mut words = expected.split_whitespace();
+        let _create = words.next();
+        let kind = words
+            .next()
+            .expect("wake batch object kind")
+            .to_ascii_lowercase();
+        let name = words.next().expect("wake batch object name");
+        let installed: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                [&kind, name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        let normalize = |sql: &str| {
+            sql.split_whitespace()
+                .collect::<String>()
+                .to_ascii_lowercase()
+        };
+        if installed.is_none_or(|sql| normalize(&sql) != normalize(&expected)) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                "incompatible wake batching schema",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn migrate_v15_to_v16(conn: &Connection) -> Result<(), ApiError> {
@@ -1875,7 +1999,7 @@ pub fn checked_deadline(start: UtcMillis, duration_ms: i64) -> Result<UtcMillis,
 
 /// Allocate the next instance decision order inside the deciding writer
 /// transaction. The caller shares this one value across its bounded batch.
-pub fn next_decision_seq(tx: &Transaction<'_>, instance: &str) -> Result<u64, ApiError> {
+pub fn next_decision_seq(tx: &Connection, instance: &str) -> Result<u64, ApiError> {
     let changed = tx
         .execute(
             "UPDATE host_instances SET decision_seq=decision_seq+1 WHERE id=?1 AND decision_seq<?2",
@@ -1925,15 +2049,11 @@ pub fn bump_membership_revision(tx: &Transaction<'_>, thread: &ThreadId) -> Resu
     bump_thread_revision(tx, thread, "membership_revision")
 }
 
-pub fn bump_timeline_revision(tx: &Transaction<'_>, thread: &ThreadId) -> Result<(), ApiError> {
+pub fn bump_timeline_revision(tx: &Connection, thread: &ThreadId) -> Result<(), ApiError> {
     bump_thread_revision(tx, thread, "timeline_revision")
 }
 
-fn bump_thread_revision(
-    tx: &Transaction<'_>,
-    thread: &ThreadId,
-    column: &str,
-) -> Result<(), ApiError> {
+fn bump_thread_revision(tx: &Connection, thread: &ThreadId, column: &str) -> Result<(), ApiError> {
     // Only the two fixed call sites supply a column name.
     let sql = format!("UPDATE threads SET {column}={column}+1 WHERE id=?1 AND {column}<?2");
     let changed = tx
@@ -2184,7 +2304,7 @@ pub struct EventInput<'a> {
 /// Returns the existing message ID for a duplicate event key, without taking
 /// another timeline sequence. Callers can use `inserted` for wake decisions.
 pub fn append_event_once(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     input: EventInput<'_>,
 ) -> Result<(MessageId, bool), ApiError> {
     append_event_once_at_seq(tx, input, None, None)
@@ -2210,7 +2330,7 @@ pub fn append_event_once_with_decision_seq(
 }
 
 fn append_event_once_at_seq(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     input: EventInput<'_>,
     decision_seq: Option<u64>,
     author: Option<EventAuthor>,
@@ -2310,7 +2430,7 @@ fn append_event_once_at_seq(
         .checked_add(1)
         .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "timeline sequence exhausted"))?;
     tx.execute(
-        "UPDATE threads SET next_sequence=?1, updated_at=?2 WHERE id=?3",
+        "UPDATE threads SET next_sequence=?1, updated_at=MAX(updated_at,?2) WHERE id=?3",
         params![following, input.decision_at.0, input.thread.as_str()],
     )
     .map_err(store_error)?;
@@ -2346,10 +2466,7 @@ fn append_event_once_at_seq(
 /// Spec §1: the author role a seat's open binding gives its messages at decision
 /// time. A `human` harness reads as `human`, any other harness as `agent`; no
 /// open binding records NULL (read as agent).
-pub fn open_binding_role(
-    tx: &Transaction<'_>,
-    seat: &SeatId,
-) -> Result<Option<&'static str>, ApiError> {
+pub fn open_binding_role(tx: &Connection, seat: &SeatId) -> Result<Option<&'static str>, ApiError> {
     let harness: Option<String> = tx
         .query_row(
             "SELECT harness FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
@@ -2393,6 +2510,303 @@ pub fn record_overdue_if_pending(
     decision_at: UtcMillis,
 ) -> Result<OverdueOutcome, ApiError> {
     record_overdue_inner(tx, obligation, basis, decision_at, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn enqueue_transition_warning(
+    tx: &Connection,
+    warning: &str,
+    event_seq: i64,
+    thread: &str,
+    interval_high_water: i64,
+    affected: &str,
+    condition_kind: &str,
+    recipient_cutoff_seq: Option<i64>,
+) -> Result<(), ApiError> {
+    tx.execute("INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id,recipient_cutoff_seq) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        params![warning,event_seq,thread,interval_high_water,affected,condition_kind,format!("transition:{warning}"),recipient_cutoff_seq]).map_err(store_error)?;
+    if condition_kind == "unavailable" {
+        tx.execute("INSERT INTO digest_open_warnings(source,source_ordinal,warning_id,thread_id,affected_seat_id,condition_kind,condition_id) SELECT 'job',ordinal,warning_id,thread_id,affected_seat_id,condition_kind,condition_id FROM warning_jobs WHERE warning_id=?1",
+            [warning]).map_err(store_error)?;
+    }
+    tx.execute("INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES (?1,'warning_attribution',?2,?3)",
+        params![format!("work:{warning}"),warning,interval_high_water]).map_err(store_error)?;
+    Ok(())
+}
+
+/// Manifest publication fixes the unavailable warning's logical event and
+/// recipient high water. Persist its transition before a projection worker can
+/// lag or the seat's episode can close.
+pub fn ensure_unavailability_reopen_ready(
+    tx: &Transaction<'_>,
+    preparation: &str,
+    thread: &str,
+) -> Result<(), ApiError> {
+    let pending_prior: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM prepared_unavailable_warnings w JOIN warning_conditions c INDEXED BY warning_conditions_unavailable_reopen ON c.thread_id=?2 AND c.affected_seat_id=w.affected_seat_id AND c.condition_kind='unavailable' AND c.clear_warning_id IS NULL AND c.episode<>w.unavailability_episode WHERE w.preparation_id=?1 AND EXISTS(SELECT 1 FROM warning_close_sweeps s WHERE s.condition_kind='unavailable' AND s.affected_seat_id=c.affected_seat_id AND s.episode=c.episode AND s.after_ordinal<c.ordinal AND c.ordinal<=s.through_ordinal))",
+        params![preparation,thread], |r| r.get(0),
+    ).map_err(store_error)?;
+    if pending_prior {
+        return Err(api_error(
+            ErrorCode::StoreBusy,
+            "unavailability clear must publish before episode reopens",
+        ));
+    }
+    Ok(())
+}
+
+pub fn record_published_unavailable_conditions(
+    tx: &Transaction<'_>,
+    preparation: &str,
+    thread: &str,
+    event_seq: i64,
+    interval_high_water: i64,
+    decision_at: UtcMillis,
+) -> Result<(), ApiError> {
+    let rows: Vec<(String, String, i64)> = {
+        let mut stmt = tx.prepare("SELECT warning_id,affected_seat_id,unavailability_episode FROM prepared_unavailable_warnings WHERE preparation_id=?1 ORDER BY warning_offset").map_err(store_error)?;
+        stmt.query_map([preparation], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(store_error)?
+            .collect::<Result<_, _>>()
+            .map_err(store_error)?
+    };
+    for (warning, seat, episode) in rows {
+        let identity = format!("{}:{}:{episode}", seat.len(), seat);
+        tx.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,episode,open_warning_id,opened_seq) VALUES ('unavailable',?1,?2,?3,?4,?5,?6)",
+            params![thread,identity,seat,episode,warning,event_seq]).map_err(store_error)?;
+        enqueue_transition_warning(
+            tx,
+            &warning,
+            event_seq,
+            thread,
+            interval_high_water,
+            &seat,
+            "unavailable",
+            None,
+        )?;
+        // A manifest published after this episode's canonical close is both
+        // opened and cleared in the publication transaction. The sweep's
+        // captured ordinal cannot include this newly published condition.
+        let still_open: bool = tx.query_row(
+            "SELECT unavailability_open=1 AND unavailability_episode=?2 AND state!='retired' FROM seats WHERE id=?1",
+            params![seat,episode], |r| r.get(0),
+        ).map_err(store_error)?;
+        if !still_open {
+            enqueue_warning_close_sweep(tx, "unavailable", &seat, Some(episode), decision_at)?;
+        }
+        // The v8 prepared projection is source-gated and will be removed on
+        // episode close. The transition job is the durable notification source.
+        tx.execute(
+            "DELETE FROM digest_open_warnings WHERE source='prepared' AND warning_id=?1",
+            [&warning],
+        )
+        .map_err(store_error)?;
+    }
+    Ok(())
+}
+
+pub fn clear_warning_conditions_for_unavailable(
+    tx: &Transaction<'_>,
+    seat: &str,
+    episode: i64,
+    decision_at: UtcMillis,
+) -> Result<u32, ApiError> {
+    enqueue_warning_close_sweep(tx, "unavailable", seat, Some(episode), decision_at)
+}
+
+pub fn clear_open_unavailability_for_seat(
+    tx: &Transaction<'_>,
+    seat: &str,
+    decision_at: UtcMillis,
+) -> Result<u32, ApiError> {
+    let episode: Option<i64> = tx
+        .query_row(
+            "SELECT unavailability_episode FROM seats WHERE id=?1 AND unavailability_open=1",
+            [seat],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    episode.map_or(Ok(0), |episode| {
+        clear_warning_conditions_for_unavailable(tx, seat, episode, decision_at)
+    })
+}
+
+pub(crate) fn clear_warning_condition(
+    tx: &Connection,
+    ordinal: i64,
+    decision_at: UtcMillis,
+) -> Result<(), ApiError> {
+    clear_warning_condition_at_snapshot(tx, ordinal, decision_at, None)
+}
+
+/// Optional recipient cutoff and global membership high water were captured
+/// by a prior canonical close decision, before this event was materialized.
+pub(crate) fn clear_warning_condition_at_snapshot(
+    tx: &Connection,
+    ordinal: i64,
+    decision_at: UtcMillis,
+    snapshot: Option<(i64, i64)>,
+) -> Result<(), ApiError> {
+    let (kind,thread,affected,open): (String,String,String,String) = tx.query_row(
+        "SELECT condition_kind,thread_id,affected_seat_id,open_warning_id FROM warning_conditions WHERE ordinal=?1 AND clear_warning_id IS NULL",
+        [ordinal], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
+    ).map_err(store_error)?;
+    let thread_id = ThreadId::new(&thread);
+    let key = format!("warning-clear:{open}");
+    let payload = serde_json::json!({"event":"warning_cleared","condition":kind,"open_warning":open,"affected_seat":affected}).to_string();
+    let (clear, inserted) = append_event_once(
+        tx,
+        EventInput {
+            thread: &thread_id,
+            key: &key,
+            kind: "warn",
+            payload_json: &payload,
+            decision_at,
+            source_message: None,
+            source_invitation: None,
+        },
+    )?;
+    if !inserted {
+        return Err(api_error(
+            ErrorCode::StoreCorrupt,
+            "clear warning event already existed without condition close",
+        ));
+    }
+    let seq: i64 = tx
+        .query_row(
+            "SELECT decision_seq FROM messages WHERE id=?1",
+            [clear.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let high_water: i64 = if let Some((_, high_water)) = snapshot {
+        high_water
+    } else {
+        tx.query_row(
+            "SELECT COALESCE(MAX(ordinal),0) FROM membership_intervals WHERE thread_id=?1",
+            [&thread],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?
+    };
+    tx.execute("UPDATE warning_conditions SET clear_warning_id=?1,cleared_seq=?2 WHERE ordinal=?3 AND clear_warning_id IS NULL",
+        params![clear.as_str(),seq,ordinal]).map_err(store_error)?;
+    enqueue_transition_warning(
+        tx,
+        clear.as_str(),
+        seq,
+        &thread,
+        high_water,
+        &affected,
+        &kind,
+        snapshot.map(|(cutoff, _)| cutoff),
+    )?;
+    Ok(())
+}
+
+/// Close only a condition opened by this schema, once every warned receipt
+/// under its thread/recipient backlog has ceased to be required and pending.
+pub fn clear_warning_conditions_for_receipts(
+    tx: &Transaction<'_>,
+    thread: &str,
+    seat: &str,
+    decision_at: UtcMillis,
+) -> Result<u32, ApiError> {
+    let open: Option<(i64,String)> = tx.query_row(
+        "SELECT c.ordinal,c.open_warning_id FROM warning_conditions c WHERE c.condition_kind='receipt' AND c.thread_id=?1 AND c.condition_id=?2 AND c.clear_warning_id IS NULL AND NOT EXISTS(SELECT 1 FROM warning_close_sweeps s WHERE s.condition_kind='receipt' AND s.affected_seat_id=c.affected_seat_id AND c.ordinal<=s.through_ordinal) ORDER BY c.ordinal DESC LIMIT 1",
+        params![thread,seat], |r| Ok((r.get(0)?,r.get(1)?)),
+    ).optional().map_err(store_error)?;
+    let Some((ordinal, warning)) = open else {
+        return Ok(0);
+    };
+    let pending: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM receipts r JOIN messages m ON m.id=r.message_id WHERE r.thread_id=?1 AND r.seat_id=?2 AND r.warning_message_id=?3 AND r.state='pending' AND r.ack_required=1 AND NOT EXISTS(SELECT 1 FROM human_receipt_waivers w WHERE w.seat_id=r.seat_id AND m.decision_seq<=w.through_decision_seq)) OR EXISTS(SELECT 1 FROM receipt_state rs JOIN messages m ON m.id=rs.message_id WHERE m.thread_id=?1 AND rs.seat_id=?2 AND rs.warning_message_id=?3 AND rs.state='pending' AND rs.ack_required=1 AND NOT EXISTS(SELECT 1 FROM human_receipt_waivers w WHERE w.seat_id=rs.seat_id AND m.decision_seq<=w.through_decision_seq))",
+        params![thread,seat,warning], |r| r.get(0),
+    ).map_err(store_error)?;
+    if pending {
+        return Ok(0);
+    }
+    clear_warning_condition(tx, ordinal, decision_at)?;
+    Ok(1)
+}
+
+pub fn clear_waived_receipt_conditions_for_seat(
+    tx: &Transaction<'_>,
+    seat: &str,
+    decision_at: UtcMillis,
+) -> Result<u32, ApiError> {
+    enqueue_warning_close_sweep(tx, "receipt", seat, None, decision_at)
+}
+
+fn enqueue_warning_close_sweep(
+    tx: &Transaction<'_>,
+    kind: &str,
+    seat: &str,
+    episode: Option<i64>,
+    decision_at: UtcMillis,
+) -> Result<u32, ApiError> {
+    let high_water: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(ordinal),0) FROM warning_conditions INDEXED BY warning_conditions_close_scope WHERE condition_kind=?1 AND affected_seat_id=?2 AND episode IS ?3 AND clear_warning_id IS NULL",
+        params![kind, seat, episode], |r| r.get(0),
+    ).map_err(store_error)?;
+    if high_water == 0 {
+        return Ok(0);
+    }
+    let after_ordinal: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(through_ordinal),0) FROM warning_close_sweeps INDEXED BY warning_close_sweeps_cover WHERE condition_kind=?1 AND affected_seat_id=?2 AND episode IS ?3",
+        params![kind,seat,episode], |r| r.get(0),
+    ).map_err(store_error)?;
+    if high_water <= after_ordinal {
+        return Ok(0);
+    }
+    let close_decision_seq: i64 = tx.query_row(
+        "SELECT h.decision_seq FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1",
+        [seat], |r| r.get(0),
+    ).map_err(store_error)?;
+    let interval_high_water: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(ordinal),0) FROM membership_intervals",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let id = format!(
+        "warning-close:{kind}:{seat}:{}:{high_water}",
+        episode.unwrap_or(0)
+    );
+    let inserted = tx.execute(
+        "INSERT INTO warning_close_sweeps(id,condition_kind,affected_seat_id,episode,after_ordinal,through_ordinal,close_decision_seq,interval_high_water,decision_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(id) DO NOTHING",
+        params![id,kind,seat,episode,after_ordinal,high_water,close_decision_seq,interval_high_water,decision_at.0],
+    ).map_err(store_error)?;
+    if inserted != 0 {
+        tx.execute("INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES (?1,'warning_condition_close',?2,?3)",
+            params![format!("work:{id}"),id,high_water]).map_err(store_error)?;
+    }
+    Ok(u32::from(inserted != 0))
+}
+
+pub fn clear_warning_condition_for_invitation(
+    tx: &Transaction<'_>,
+    invitation: &str,
+    decision_at: UtcMillis,
+) -> Result<bool, ApiError> {
+    let open: Option<i64> = tx.query_row(
+        "SELECT ordinal FROM warning_conditions WHERE condition_kind='invitation' AND condition_id=?1 AND clear_warning_id IS NULL",
+        [invitation], |r| r.get(0),
+    ).optional().map_err(store_error)?;
+    let Some(ordinal) = open else {
+        return Ok(false);
+    };
+    let pending: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM invitations i WHERE i.id=?1 AND i.state='pending' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id))",
+        [invitation], |r| r.get(0),
+    ).map_err(store_error)?;
+    if pending {
+        return Ok(false);
+    }
+    clear_warning_condition(tx, ordinal, decision_at)?;
+    Ok(true)
 }
 
 pub fn record_overdue_with_decision_seq(
@@ -2564,7 +2978,54 @@ fn record_overdue_inner(
         source_message: source_message.as_ref(),
         source_invitation: source_invitation.as_ref(),
     };
-    let (warning, inserted) = append_event_once_at_seq(tx, event, decision_seq, None)?;
+    let condition = match obligation {
+        ObligationRef::Invitation(id) => ("invitation", id.as_str()),
+        ObligationRef::Receipt { seat, .. } => ("receipt", seat.as_str()),
+        _ => unreachable!(),
+    };
+    if matches!(basis, TimeBasis::Decision) && condition.0 == "receipt" {
+        // A human waiver may have marked the prior backlog closed while its
+        // worker is still draining other threads. Close this one old row now
+        // so a reopened warning follows its clear on this thread's timeline.
+        let old: Vec<(i64, i64, i64, i64)> = {
+            let mut stmt = tx.prepare(
+                "SELECT c.ordinal,s.decision_at,s.close_decision_seq,s.interval_high_water FROM warning_conditions c JOIN warning_close_sweeps s INDEXED BY warning_close_sweeps_cover ON s.condition_kind='receipt' AND s.affected_seat_id=c.affected_seat_id AND s.episode IS NULL AND s.after_ordinal<c.ordinal AND c.ordinal<=s.through_ordinal WHERE c.condition_kind='receipt' AND c.thread_id=?1 AND c.condition_id=?2 AND c.clear_warning_id IS NULL ORDER BY c.ordinal LIMIT 2",
+            ).map_err(store_error)?;
+            stmt.query_map(params![thread.as_str(), condition.1], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .map_err(store_error)?
+            .collect::<Result<_, _>>()
+            .map_err(store_error)?
+        };
+        if old.len() > 1 {
+            return Err(api_error(
+                ErrorCode::StoreBusy,
+                "warning close sweep must catch up before reopen",
+            ));
+        }
+        if let Some((ordinal, close_at, cutoff, intervals)) = old.first() {
+            clear_warning_condition_at_snapshot(
+                tx,
+                *ordinal,
+                UtcMillis(*close_at),
+                Some((*cutoff, *intervals)),
+            )?;
+        }
+    }
+    let active: Option<String> = if matches!(basis, TimeBasis::Decision) {
+        tx.query_row(
+            "SELECT c.open_warning_id FROM warning_conditions c WHERE c.condition_kind=?1 AND c.thread_id=?2 AND c.condition_id=?3 AND c.clear_warning_id IS NULL AND NOT EXISTS(SELECT 1 FROM warning_close_sweeps s WHERE s.condition_kind=c.condition_kind AND s.affected_seat_id=c.affected_seat_id AND c.ordinal<=s.through_ordinal AND (c.condition_kind='receipt' OR s.episode=c.episode)) ORDER BY c.ordinal DESC LIMIT 1",
+            params![condition.0, thread.as_str(), condition.1],
+            |r| r.get(0),
+        ).optional().map_err(store_error)?
+    } else {
+        None
+    };
+    let (warning, inserted) = match active {
+        Some(id) => (MessageId::new(id), false),
+        None => append_event_once_at_seq(tx, event, decision_seq, None)?,
+    };
     let (source_table, source_where, source_parameters): (&str, &str, Vec<String>) =
         match obligation {
             ObligationRef::Invitation(id) => ("invitations", "id=?2", vec![id.as_str().to_owned()]),
@@ -2613,21 +3074,18 @@ fn record_overdue_inner(
                 |r| r.get(0),
             )
             .map_err(store_error)?;
-        let (condition_kind, condition_id) = match obligation {
-            ObligationRef::Invitation(id) => ("invitation", id.as_str().to_owned()),
-            ObligationRef::Receipt { message, seat } => (
-                "receipt",
-                format!(
-                    "{}:{}:{}",
-                    message.as_str().len(),
-                    message.as_str(),
-                    seat.as_str()
-                ),
-            ),
-            _ => unreachable!(),
-        };
-        tx.execute("INSERT INTO warning_jobs(warning_id, event_seq, thread_id, interval_high_water, affected_seat_id, condition_kind, condition_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)", params![warning.as_str(), event_seq, thread.as_str(), interval_high_water, seat.as_str(), condition_kind, condition_id]).map_err(store_error)?;
-        tx.execute("INSERT INTO work_jobs(id, kind, subject_id, high_water) VALUES (?1, 'warning_attribution', ?2, ?3)", params![format!("work:{}", warning.as_str()), warning.as_str(), interval_high_water]).map_err(store_error)?;
+        tx.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES (?1,?2,?3,?4,?5,?6)",
+            params![condition.0,thread.as_str(),condition.1,seat.as_str(),warning.as_str(),event_seq]).map_err(store_error)?;
+        enqueue_transition_warning(
+            tx,
+            warning.as_str(),
+            event_seq,
+            thread.as_str(),
+            interval_high_water,
+            seat.as_str(),
+            condition.0,
+            None,
+        )?;
     }
     Ok(OverdueOutcome {
         warning: Some(warning),

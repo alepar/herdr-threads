@@ -120,6 +120,7 @@ pub(crate) fn begin_retirement_fence(
 ) -> Result<RetirementJob, ApiError> {
     let cutover_seq = schema::next_decision_seq(tx, instance)?;
     schema::apply_eligibility_transition(tx, instance, |tx| {
+        schema::clear_open_unavailability_for_seat(tx, seat.as_str(), cutover)?;
         let changed = tx.execute("UPDATE seats SET state='retired',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL,generation=generation+1,retired_at=?1,retired_seq=?2 WHERE id=?3 AND state!='retired'",
             params![cutover.0,cutover_seq as i64,seat.as_str()]).map_err(store_error)?;
         tx.execute(
@@ -217,6 +218,7 @@ pub fn advance_retirement(
                                 warnings += i64::from(outcome.inserted);
                                 tx.execute("UPDATE invitations SET state='recipient_retired',retired_at=?1 WHERE id=?2 AND state='pending'",
                                     params![cutover,invitation.as_str()]).map_err(store_error)?;
+                                schema::clear_warning_condition_for_invitation(tx, invitation.as_str(), at.utc)?;
                                 obligation_ordinal=ordinal; retired+=1;
                             } else { phase="receipts".into(); obligation_ordinal=0; }
                         } else {
@@ -231,6 +233,7 @@ pub fn advance_retirement(
                                     warnings += i64::from(outcome.inserted);
                                     tx.execute("UPDATE receipts SET state='recipient_retired',retired_at=?1 WHERE message_id=?2 AND seat_id=?3 AND state='pending'",
                                         params![cutover,message.as_str(),seat]).map_err(store_error)?;
+                                    schema::clear_warning_conditions_for_receipts(tx, &thread, &seat, at.utc)?;
                                     retired+=1;
                                 }
                                 obligation_ordinal=ordinal;
@@ -263,6 +266,7 @@ pub fn advance_retirement(
                                         tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,retired_at) VALUES (?1,?2,'recipient_retired',?3,?4,?5) \
                                             ON CONFLICT(message_id,seat_id) DO UPDATE SET state='recipient_retired',available_at=COALESCE(receipt_state.available_at,excluded.available_at),deadline_at=COALESCE(receipt_state.deadline_at,excluded.deadline_at),retired_at=excluded.retired_at WHERE receipt_state.state='pending'",
                                             params![message.as_str(),seat,receipt.available_at,receipt.deadline_at,cutover]).map_err(store_error)?;
+                                        schema::clear_warning_conditions_for_receipts(tx, &thread, &seat, at.utc)?;
                                         retired+=1;
                                     }
                                 }
@@ -488,6 +492,7 @@ pub fn accept(
             let observation = actor.observation(decision.utc.0);
             tx.execute("UPDATE invitations SET state='accepted', accepted_at=?1,accepted_actor_seat_id=?2,accepted_generation=?3,accepted_observation=?4 WHERE id=?5",
                 params![decision.utc.0,caller.as_str(),generation,observation,invitation.as_str()]).map_err(store_error)?;
+            schema::clear_warning_condition_for_invitation(tx, invitation.as_str(), decision.utc)?;
             let thread = ThreadId::new(thread);
             let already_joined = joined_in_thread(tx, &thread, &caller)?;
             let instance: String = tx
@@ -617,6 +622,11 @@ pub fn accept_required(
             schema::record_overdue_if_pending(tx, &obligation, &TimeBasis::Decision, decision.utc)?;
             tx.execute("UPDATE invitations SET state='accepted',accepted_at=?1,accepted_actor_seat_id=?2,accepted_generation=?3,accepted_observation=?4 WHERE id=?5 AND state='pending'",
                 params![decision.utc.0,caller.as_str(),generation,observation,command.invitation.as_str()]).map_err(store_error)?;
+            schema::clear_warning_condition_for_invitation(
+                tx,
+                command.invitation.as_str(),
+                decision.utc,
+            )?;
             tx.execute("UPDATE requirement_episodes SET state='accepted',revision=revision+1,accepted_at=?1,accepted_by_seat_id=?2,accepted_generation=?3,accepted_observation=?4 WHERE id=?5 AND state='pending' AND revision=?6",
                 params![decision.utc.0,caller.as_str(),generation,observation,command.requirement.as_str(),command.expected_revision as i64]).map_err(store_error)?;
             let joined = joined_in_thread(tx, &command.thread, &caller)?;

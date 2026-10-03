@@ -3,7 +3,7 @@
 use crate::{
     ports::TimeBasis,
     protocol::{
-        authority::{MutationPermit, ObligationRef},
+        authority::{Harness, MutationPermit, ObligationRef},
         commands::Ack,
         ids::{MessageId, SeatId, ThreadId},
         results::{AckResult, ApiError, CommandResult, ErrorCode},
@@ -24,12 +24,37 @@ pub fn ack_payload(request: &Ack) -> Value {
     json!({"kind":"ack", "messages":request.messages,"claim":request.claim})
 }
 
+pub fn ack_displayed_payload(request: &Ack) -> Value {
+    json!({"kind":"ack_displayed", "messages":request.messages,"claim":request.claim})
+}
+
 pub fn ack(
     context: &StoreContext,
     conn: &mut Connection,
     budget: &crate::protocol::time::CallBudget,
     request: &Ack,
     permit: &mut MutationPermit,
+) -> Result<CommandResult, ApiError> {
+    ack_impl(context, conn, budget, request, permit, false)
+}
+
+pub fn ack_displayed(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    request: &Ack,
+    permit: &mut MutationPermit,
+) -> Result<CommandResult, ApiError> {
+    ack_impl(context, conn, budget, request, permit, true)
+}
+
+fn ack_impl(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    request: &Ack,
+    permit: &mut MutationPermit,
+    displayed: bool,
 ) -> Result<CommandResult, ApiError> {
     if request.messages.is_empty() || request.messages.len() > 100 {
         return Err(api_error(
@@ -44,7 +69,17 @@ pub fn ack(
             "duplicate message in ACK batch",
         ));
     }
-    let digest = schema::canonical_digest(&ack_payload(request))?;
+    if displayed && request.claim.harness == Harness::Human {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "display ACK requires an agent claim",
+        ));
+    }
+    let digest = schema::canonical_digest(&if displayed {
+        ack_displayed_payload(request)
+    } else {
+        ack_payload(request)
+    })?;
     let cooperative = permit.cooperative_metadata();
     let seat = request.claim.seat.clone();
     let scope = format!("seat:{}", seat.as_str());
@@ -78,11 +113,13 @@ pub fn ack(
                     .optional()
                     .map_err(store_error)?;
                 let receipt = effective::effective_receipt(tx, id.as_str(), seat.as_str())?;
-                if kind.as_deref() != Some("ordinary")
-                    || receipt
-                        .as_ref()
-                        .is_none_or(|r| r.state == EffectiveReceiptState::RecipientRetired)
-                {
+                let eligible = receipt.as_ref().is_some_and(|receipt| {
+                    matches!(
+                        receipt.state,
+                        EffectiveReceiptState::Pending | EffectiveReceiptState::Acknowledged
+                    )
+                });
+                if kind.as_deref() != Some("ordinary") || !eligible {
                     return Err(api_error(
                         ErrorCode::InvalidRequest,
                         "ACK ID is not an addressed ordinary message",
@@ -148,7 +185,14 @@ pub fn ack(
                     )?;
                 }
             }
-            let observation = actor.observation(decision.utc.0);
+            let observation = if displayed {
+                let mut value: Value = serde_json::from_str(&actor.observation(decision.utc.0))
+                    .map_err(|_| api_error(ErrorCode::StoreCorrupt, "ACK observation malformed"))?;
+                value["action_provenance"] = json!("cooperative_inbox_display");
+                value.to_string()
+            } else {
+                actor.observation(decision.utc.0)
+            };
             for id in &newly {
                 let receipt = effective::effective_receipt(tx, id.as_str(), seat.as_str())?
                     .ok_or_else(|| {
@@ -168,6 +212,14 @@ pub fn ack(
                     tx.execute("UPDATE receipts SET state='acked',ack_actor_seat_id=?1,ack_generation=?2,ack_observation=?3,acked_at=?4 WHERE message_id=?5 AND seat_id=?1 AND state='pending'",
                         params![seat.as_str(),actor.binding_generation as i64,observation,decision.utc.0,id.as_str()]).map_err(store_error)?;
                 }
+            }
+            for thread in by_thread.keys() {
+                schema::clear_warning_conditions_for_receipts(
+                    tx,
+                    thread.as_str(),
+                    seat.as_str(),
+                    decision.utc,
+                )?;
             }
             for (thread, ids) in &by_thread {
                 let mut payload = json!({"event":"ack", "seat":seat, "messages":ids, "decided_at":decision.utc.0}).to_string();

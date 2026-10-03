@@ -407,7 +407,7 @@ fn overdue_manifest_receipt_gets_sparse_marker_and_one_warning_atomically() {
 }
 
 #[test]
-fn persisted_overdue_warning_stops_being_actionable_after_human_check_in() {
+fn persisted_overdue_transition_stays_actionable_until_offered_after_human_check_in() {
     use crate::ports::TimeBasis;
     use crate::protocol::{
         authority::ObligationRef,
@@ -433,7 +433,7 @@ fn persisted_overdue_warning_stops_being_actionable_after_human_check_in() {
         .unwrap();
     assert!(warning_condition_actionable(&db, &warning).unwrap());
     db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES ('s',1,'p','b',0,'human','human','human','operator_human',1600,1600); INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES ('s',12,1,1600);").unwrap();
-    assert!(!warning_condition_actionable(&db, &warning).unwrap());
+    assert!(warning_condition_actionable(&db, &warning).unwrap());
     assert!(
         effective_warning_by_id(&db, warning_id.as_str())
             .unwrap()

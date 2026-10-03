@@ -481,6 +481,7 @@ pub struct DispatchState {
     daemon_boot: Uuid,
     seats: HashMap<SeatId, SeatAttempt>,
     pokes: HashMap<SeatId, PokeSeat>,
+    batches: HashMap<SeatId, crate::notification::policy::BatchGuard>,
     active: usize,
     refusal_seed: Option<u64>,
 }
@@ -493,6 +494,7 @@ impl DispatchState {
             daemon_boot,
             seats: HashMap::new(),
             pokes: HashMap::new(),
+            batches: HashMap::new(),
             active: 0,
             refusal_seed: None,
         }
@@ -533,6 +535,29 @@ impl DispatchState {
             },
         );
         Ok(())
+    }
+
+    pub fn clear_batch(&mut self, seat: &SeatId) {
+        self.batches.remove(seat);
+    }
+
+    pub fn batch_eligible(
+        &mut self,
+        seat: &SeatId,
+        window: Option<(crate::protocol::time::UtcMillis, u64)>,
+        utc: crate::protocol::time::UtcMillis,
+        now: MonoInstant,
+    ) -> bool {
+        let Some((deadline, delay)) = window else {
+            return true;
+        };
+        let guard = self.batches.entry(seat.clone()).or_insert_with(|| {
+            crate::notification::policy::BatchGuard::restore(deadline, delay, utc, now)
+        });
+        if guard.deadline != deadline {
+            *guard = crate::notification::policy::BatchGuard::restore(deadline, delay, utc, now);
+        }
+        guard.eligible(now)
     }
 
     pub fn can_reserve(&self, seat: &SeatId, now: MonoInstant) -> bool {
@@ -608,6 +633,12 @@ impl DispatchState {
     /// A seat that is only waiting on the ladder counts while still in the
     /// future. In-flight seats are excluded.
     pub fn next_due_at(&self, now: MonoInstant) -> Option<MonoInstant> {
+        let batch = self
+            .batches
+            .values()
+            .map(|guard| guard.mature_at)
+            .filter(|at| at.0 > now.0)
+            .min_by_key(|at| at.0);
         self.seats
             .values()
             .filter(|state| state.active.is_none())
@@ -620,6 +651,7 @@ impl DispatchState {
                     _ => ladder.filter(|at| at.0 > now.0),
                 }
             })
+            .chain(batch)
             .min_by_key(|at| at.0)
     }
 

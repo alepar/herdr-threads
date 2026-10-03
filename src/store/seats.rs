@@ -1836,6 +1836,7 @@ fn carry_binding_forward(
         .map_err(store_error)?;
     let seq = schema::next_decision_seq(tx, instance)?;
     anchor_seat_availability(tx, seat, seq, at, binding_generation, &provenance)?;
+    schema::clear_open_unavailability_for_seat(tx, seat.as_str(), at)?;
     tx.execute(
         "UPDATE seats SET unavailability_open=0 WHERE id=?1",
         [seat.as_str()],
@@ -3482,6 +3483,7 @@ pub fn decide_continuity(
                 new_generation,
                 crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE,
             )?;
+            schema::clear_open_unavailability_for_seat(tx, seat.as_str(), at.utc)?;
             tx.execute(
                 "UPDATE seats SET unavailability_open=0 WHERE id=?1",
                 [seat.as_str()],
@@ -4044,6 +4046,7 @@ pub fn register_available(
                 // at this human check-in. No receipt is marked ACKed.
                 tx.execute("INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES (?1,?2,?3,?4) ON CONFLICT(seat_id) DO UPDATE SET through_decision_seq=MAX(human_receipt_waivers.through_decision_seq,excluded.through_decision_seq),human_generation=excluded.human_generation,decided_at=excluded.decided_at",
                     params![seat.as_str(),seq as i64,generation,at.utc.0]).map_err(store_error)?;
+                schema::clear_waived_receipt_conditions_for_seat(tx, seat.as_str(), at.utc)?;
                 let (prepared_high_water, physical_high_water): (i64,i64) = tx.query_row("SELECT COALESCE((SELECT MAX(ordinal) FROM prepared_recipients WHERE seat_id=?1),0),COALESCE((SELECT MAX(ordinal) FROM receipts WHERE seat_id=?1),0)",
                     [seat.as_str()], |r| Ok((r.get(0)?,r.get(1)?))).map_err(store_error)?;
                 tx.execute("INSERT INTO human_receipt_reconciliation_bounds(seat_id,prepared_high_water,physical_high_water,decision_seq) VALUES (?1,?2,?3,?4) ON CONFLICT(seat_id) DO UPDATE SET prepared_high_water=excluded.prepared_high_water,physical_high_water=excluded.physical_high_water,decision_seq=excluded.decision_seq",
@@ -4064,6 +4067,7 @@ pub fn register_available(
                     .map_err(store_error)?;
                 tx.execute("INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES (?1,'receipt_timer_materialization',?2,?3)",params![format!("receipt-timer:{anchor}"),anchor.to_string(),high_water]).map_err(store_error)?;
             }
+            schema::clear_open_unavailability_for_seat(tx, seat.as_str(), at.utc)?;
             tx.execute(
                 "UPDATE seats SET unavailability_open=0 WHERE id=?1",
                 [seat.as_str()],

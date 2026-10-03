@@ -238,6 +238,23 @@ fn probe_seat_managed_launch() {
     );
 }
 
+fn probe_inbox_batch() {
+    use crate::protocol::commands::InboxQuery;
+    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let command = Command::InboxBatch(InboxQuery {
+        seat: Some(crate::protocol::ids::SeatId::new("seat-probe")),
+        page: Default::default(),
+    });
+    assert!(command.validate().is_ok());
+    let json = serde_json::to_value(&command).unwrap();
+    assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
+    let outcome = handler.handle(command, PeerIdentity::from_kernel(501), &budget());
+    assert_eq!(
+        outcome.expect_err("NoDomain answers NotFound").code,
+        ErrorCode::NotFound
+    );
+}
+
 #[test]
 fn capability_constants_are_stable() {
     assert_eq!(HISTORY_FULL_BODIES, "history.full_bodies");
@@ -246,6 +263,7 @@ fn capability_constants_are_stable() {
     assert_eq!(HARNESS_EVIDENCE, "hook.harness_evidence");
     assert_eq!(HARNESS_STATES, "harness.states");
     assert_eq!(SEAT_MANAGED_LAUNCH, "seat.managed_launch");
+    assert_eq!(INBOX_BATCH, "inbox.batch_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -254,7 +272,8 @@ fn capability_constants_are_stable() {
             "service.send_v1",
             "hook.harness_evidence",
             "harness.states",
-            "seat.managed_launch"
+            "seat.managed_launch",
+            "inbox.batch_v1"
         ]
     );
 }
@@ -273,6 +292,7 @@ fn every_advertised_capability_has_a_handler() {
             HARNESS_EVIDENCE => probe_harness_evidence(),
             HARNESS_STATES => probe_harness_states(),
             SEAT_MANAGED_LAUNCH => probe_seat_managed_launch(),
+            INBOX_BATCH => probe_inbox_batch(),
             other => panic!("{other} is advertised but has no handler probe here"),
         }
     }

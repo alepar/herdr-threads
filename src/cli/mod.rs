@@ -775,6 +775,141 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
+    query: &crate::protocol::commands::InboxQuery,
+    output_spec: &OutputSpec,
+    journal: &journal::Journal,
+    contexts: &crate::harness::context::ContextJournal,
+    client: &C,
+    clock: &dyn Clock,
+    writer: &mut W,
+) -> Result<(), RunError> {
+    use crate::protocol::{ids::MessageId, results::InboxBatchItem};
+    let context = contexts
+        .current()
+        .map_err(context_run_error)?
+        .ok_or_else(|| {
+            caller_not_located("context missing; explicit lifecycle check-in required")
+        })?;
+    let claim = crate::harness::bridge::caller_claim(&context).map_err(context_run_error)?;
+    let mut request = query.clone();
+    request.seat = Some(claim.seat.clone());
+    let supported = match client.call(Command::Capabilities, &cooperative_budget(clock)) {
+        Ok(CommandResult::Capabilities(list)) => list
+            .capabilities
+            .iter()
+            .any(|name| name == crate::protocol::capabilities::INBOX_BATCH),
+        Ok(_) => false,
+        Err(error)
+            if matches!(
+                error.code,
+                crate::protocol::results::ErrorCode::Unsupported
+                    | crate::protocol::results::ErrorCode::InvalidRequest
+            ) =>
+        {
+            false
+        }
+        Err(error) => return Err(RunError::Api(error)),
+    };
+    if !supported {
+        return Err(unsupported(
+            "this daemon does not support compact inbox display ACK; upgrade the daemon or use inbox --machine for a read-only view",
+        ));
+    }
+    let result = client.call_with_output(
+        Command::InboxBatch(request),
+        output_spec,
+        &cooperative_budget(clock),
+    )?;
+    let CommandResult::InboxBatch(page) = &result else {
+        return Err(RunError::Api(ApiError::store_corrupt(
+            "daemon returned no inbox batch",
+        )));
+    };
+    // A complete selected page must reach and flush the caller's output before
+    // any claim that its messages were displayed can be submitted.
+    output::write_selected(&result, output_spec, query.page.max_bytes, writer)?;
+    if claim.harness == crate::protocol::authority::Harness::Human {
+        return Ok(());
+    }
+    let mut candidates: Vec<MessageId> = Vec::new();
+    for item in &page.items {
+        if let InboxBatchItem::Message {
+            message,
+            body_start,
+            body_end,
+            body_len,
+            ack_candidate,
+            ..
+        } = item
+        {
+            let complete_chain = journal.record_displayed_chunk(
+                &claim,
+                message,
+                *body_start,
+                *body_end,
+                *body_len,
+            )?;
+            if complete_chain && ack_candidate.as_ref() == Some(message) {
+                candidates.push(message.clone());
+            }
+        }
+    }
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let scope = IntentScope::Cooperative {
+        instance: claim.instance.clone(),
+        seat: claim.seat.clone(),
+    };
+    let displayed_claim = claim.clone();
+    let settled_ids = candidates.clone();
+    let semantic = SemanticMutation::freeze(
+        SemanticMutation::AckDisplayed {
+            messages: candidates,
+        },
+        claim,
+    )?;
+    let reference = journal.record(scope.clone(), semantic, clock.utc_now().0)?;
+    let ack = retry::run_retry_api_to_writer(
+        journal,
+        &reference,
+        &scope,
+        || unreachable!("frozen inbox display claim"),
+        |command| client.call(command, &cooperative_budget(clock)),
+        output_spec,
+        &mut io::sink(),
+    );
+    match ack {
+        Ok(CommandResult::Acknowledged(_)) => {
+            for message in &settled_ids {
+                let _ = journal.clear_displayed_chunk(&displayed_claim, message);
+            }
+            Ok(())
+        }
+        Ok(_) => Err(RunError::Api(ApiError::store_corrupt(format!(
+            "inbox page displayed; ACK result was unexpected; retry herdr-threads retry {}",
+            reference.recovery_ref()
+        )))),
+        Err(retry::RetryFailure::Local(error)) => Err(RunError::Io(io::Error::new(
+            error.kind(),
+            format!(
+                "inbox page displayed; ACK outcome pending: {error}; retry herdr-threads retry {}",
+                reference.recovery_ref()
+            ),
+        ))),
+        Err(retry::RetryFailure::Submit(mut error)) => {
+            error.detail = format!(
+                "inbox page displayed; ACK outcome pending: {}; retry herdr-threads retry {}",
+                error.detail,
+                reference.recovery_ref()
+            );
+            Err(RunError::Api(error))
+        }
+    }
+}
+
 /// `thread -> (topic, clipped)` for the seat's first directory page, or
 /// `None` when the read fails.
 fn inbox_topics<C: LocalClient + ?Sized>(
@@ -1179,8 +1314,11 @@ enum CallerNeed {
     SelfMarker,
 }
 
-fn caller_need(action: &CliAction, paths: &InstancePaths) -> Result<CallerNeed, RunError> {
-    Ok(match action {
+fn caller_need(
+    parsed: &commands::ParsedCli,
+    paths: &InstancePaths,
+) -> Result<CallerNeed, RunError> {
+    Ok(match &parsed.action {
         CliAction::Mutation(mutation) => {
             if matches!(
                 mutation,
@@ -1211,6 +1349,13 @@ fn caller_need(action: &CliAction, paths: &InstancePaths) -> Result<CallerNeed, 
             } else {
                 CallerNeed::None
             }
+        }
+        CliAction::Wire(Command::Inbox(query))
+            if query.seat.is_none()
+                && parsed.output.format == OutputFormat::Text
+                && parsed.presentation != output::Presentation::Machine =>
+        {
+            CallerNeed::Selection
         }
         CliAction::Wire(Command::Inbox(query)) if query.seat.is_none() => {
             CallerNeed::SeatDefault { required: true }
@@ -1256,7 +1401,7 @@ where
     C: LocalClient,
     F: Fn() -> Result<(uuid::Uuid, C), RunError>,
 {
-    match caller_need(&parsed.action, paths)? {
+    match caller_need(parsed, paths)? {
         CallerNeed::None => Ok(parsed.cooperative.clone()),
         CallerNeed::SelfMarker => {
             // Presentation only: any failure to locate the caller leaves the
@@ -1618,6 +1763,22 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
         Capability, LifecycleEvent, bridge,
         context::{EventKind, Role},
     };
+    if let CliAction::Wire(Command::Inbox(query)) = &parsed.action
+        && query.seat.is_none()
+        && parsed.output.format == OutputFormat::Text
+        && parsed.presentation != output::Presentation::Machine
+        && role == Role::TopLevel
+    {
+        return run_display_inbox(
+            query,
+            &parsed.output,
+            journal,
+            contexts,
+            client,
+            clock,
+            writer,
+        );
+    }
     if let CliAction::Wire(command) = parsed.action {
         return run_wire(
             command,

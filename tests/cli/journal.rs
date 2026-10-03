@@ -47,6 +47,67 @@ fn scope() -> IntentScope {
 }
 
 #[test]
+fn displayed_body_progress_requires_contiguous_flushed_chunks() {
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let mut display_claim = claim();
+    display_claim.seat = SeatId::new("seat-original");
+    let message = MessageId::new("message-original");
+    assert!(
+        !journal
+            .record_displayed_chunk(&display_claim, &message, 5, 10, 15)
+            .unwrap(),
+        "a supplied final-page cursor cannot establish earlier output"
+    );
+    assert!(
+        !journal
+            .record_displayed_chunk(&display_claim, &message, 0, 5, 15)
+            .unwrap()
+    );
+    assert!(
+        !journal
+            .record_displayed_chunk(&display_claim, &message, 5, 10, 15)
+            .unwrap()
+    );
+    let mut successor = display_claim.clone();
+    successor.binding_generation += 1;
+    successor.execution = ExecutionId::new("successor-execution");
+    assert!(
+        !journal
+            .record_displayed_chunk(&successor, &message, 10, 15, 15)
+            .unwrap(),
+        "another occupant cannot inherit earlier displayed chunks"
+    );
+    assert!(
+        journal
+            .record_displayed_chunk(&display_claim, &message, 10, 15, 15)
+            .unwrap()
+    );
+    assert!(
+        journal
+            .record_displayed_chunk(&display_claim, &message, 10, 15, 15)
+            .unwrap(),
+        "replaying a flushed final page is idempotent"
+    );
+    journal
+        .clear_displayed_chunk(&display_claim, &message)
+        .unwrap();
+    assert!(
+        !journal
+            .record_displayed_chunk(&display_claim, &message, 10, 15, 15)
+            .unwrap(),
+        "settlement clears the local chain"
+    );
+    assert!(
+        journal
+            .record_displayed_chunk(&display_claim, &message, 0, 15, 15)
+            .unwrap(),
+        "a complete one-page body needs no earlier chain"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn pending_header_has_typed_local_token_and_never_reads_body() {
     let dir = temp();
     let journal = Journal::open(&dir).unwrap();

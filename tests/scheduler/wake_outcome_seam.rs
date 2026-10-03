@@ -172,6 +172,7 @@ impl Seam {
                 "i",
                 StoreSettings {
                     daemon_boot: Some(daemon_boot()),
+                    wake_batch_delay_ms: 0,
                     ..StoreSettings::default()
                 },
             )

@@ -694,6 +694,72 @@ fn cooperative_ack_retry_retains_claim_key_after_output_loss_and_restart() {
     assert!(j.load(&r).is_err());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn displayed_ack_keeps_frozen_intent_after_uncertain_submission() {
+    let dir = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("displayed-ack-intent-{}", uuid::Uuid::new_v4()));
+    let journal = Journal::open(&dir).unwrap();
+    let claim = claim();
+    let scope = IntentScope::Cooperative {
+        instance: claim.instance.clone(),
+        seat: claim.seat.clone(),
+    };
+    let semantic = SemanticMutation::freeze(
+        SemanticMutation::AckDisplayed {
+            messages: vec![MessageId::new("stored-message")],
+        },
+        claim.clone(),
+    )
+    .unwrap();
+    let reference = journal.record(scope.clone(), semantic, 1).unwrap();
+    let mut output = Vec::new();
+    let failure = retry::run_retry_api_to_writer(
+        &journal,
+        &reference,
+        &scope,
+        || panic!("frozen claim must be reused"),
+        |command| {
+            let Command::AckDisplayed(ack) = command else {
+                panic!("wrong mutation")
+            };
+            assert_eq!(ack.claim, claim);
+            Err(crate::protocol::results::ApiError::unknown_outcome(
+                "response lost",
+            ))
+        },
+        &crate::protocol::output::OutputSpec::default(),
+        &mut output,
+    );
+    assert!(failure.is_err());
+    assert!(
+        journal.load(&reference).is_ok(),
+        "uncertain submission retains intent"
+    );
+    retry::run_retry_api_to_writer(
+        &journal,
+        &reference,
+        &scope,
+        || panic!("frozen claim must be reused"),
+        |command| {
+            let Command::AckDisplayed(ack) = command else {
+                panic!("wrong mutation")
+            };
+            assert_eq!(ack.operation, reference.operation);
+            Ok(CommandResult::Acknowledged(AckResult {
+                acknowledged: vec![],
+                already_acknowledged: ack.messages,
+            }))
+        },
+        &crate::protocol::output::OutputSpec::default(),
+        &mut output,
+    )
+    .unwrap();
+    assert!(journal.load(&reference).is_err());
+    std::fs::remove_dir_all(dir).unwrap();
+}
 #[test]
 fn cooperative_scope_rejects_child_operator_and_wrong_instance() {
     let dir = std::env::temp_dir().join(format!("cooperative-scope-{}", uuid::Uuid::new_v4()));
@@ -984,6 +1050,287 @@ fn cooperative_reader_enforces_selected_page_budget_before_writing() {
     );
     assert!(out.is_empty());
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn inbox_display_ack_waits_for_complete_write_and_flush() {
+    use crate::harness::context::{
+        ContextJournal, Harness as ContextHarness, OccupantContext, Role, SessionReference,
+    };
+    use crate::protocol::{
+        pagination::{Consistency, Page, StopReason},
+        results::InboxBatchItem,
+    };
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Mutex;
+
+    struct Client {
+        calls: Mutex<Vec<Command>>,
+        supports_batch: std::sync::atomic::AtomicBool,
+        capability_unavailable: std::sync::atomic::AtomicBool,
+    }
+    impl crate::ports::LocalClient for Client {
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            self.call(command, budget)
+        }
+        fn call(
+            &self,
+            command: Command,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            self.calls.lock().unwrap().push(command.clone());
+            match command {
+                Command::Capabilities
+                    if self
+                        .capability_unavailable
+                        .load(std::sync::atomic::Ordering::SeqCst) =>
+                {
+                    Err(crate::protocol::results::ApiError::new(
+                        crate::protocol::results::ErrorCode::HostUnavailable,
+                        "private daemon unavailable",
+                    ))
+                }
+                Command::Capabilities => Ok(CommandResult::Capabilities(
+                    crate::protocol::results::CapabilityList {
+                        capabilities: if self
+                            .supports_batch
+                            .load(std::sync::atomic::Ordering::SeqCst)
+                        {
+                            vec![crate::protocol::capabilities::INBOX_BATCH.into()]
+                        } else {
+                            vec![]
+                        },
+                    },
+                )),
+                Command::InboxBatch(query) => {
+                    assert_eq!(query.seat.as_ref().map(SeatId::as_str), Some("seat-test"));
+                    Ok(CommandResult::InboxBatch(Page {
+                        items: vec![InboxBatchItem::Message {
+                            thread: ThreadId::new("thread-original"),
+                            message: MessageId::new("message-original"),
+                            sequence: 1,
+                            topic_data: "topic".into(),
+                            sender: Some(SeatId::new("sender-original")),
+                            body: "full body".into(),
+                            body_start: 0,
+                            body_end: 9,
+                            body_len: 9,
+                            ack_candidate: Some(MessageId::new("message-original")),
+                        }],
+                        next_cursor: None,
+                        next_argv: None,
+                        high_water_ordinal: 1,
+                        scope_revision: None,
+                        has_more: false,
+                        stop_reason: StopReason::Complete,
+                        consistency: Consistency::BoundedLive,
+                    }))
+                }
+                Command::AckDisplayed(ack) => {
+                    assert_eq!(ack.messages, vec![MessageId::new("message-original")]);
+                    Ok(CommandResult::Acknowledged(AckResult {
+                        acknowledged: ack.messages,
+                        already_acknowledged: vec![],
+                    }))
+                }
+                _ => panic!("unexpected command"),
+            }
+        }
+    }
+    struct Writer {
+        bytes: Vec<u8>,
+        fail_write: bool,
+        fail_flush: bool,
+    }
+    impl io::Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.fail_write {
+                self.fail_write = false;
+                self.bytes.extend_from_slice(&bytes[..bytes.len().min(4)]);
+                return Ok(bytes.len().min(4));
+            }
+            if !self.bytes.is_empty() {
+                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "partial output"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            if self.fail_flush {
+                Err(io::Error::other("flush failed"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("inbox-display-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    #[cfg(unix)]
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let contexts = ContextJournal::open(
+        &root,
+        uuid::Uuid::from_u128(1),
+        "seat-test",
+        std::time::Duration::from_millis(20),
+    )
+    .unwrap();
+    let execution = uuid::Uuid::from_u128(2);
+    contexts
+        .install_reattached(OccupantContext {
+            format_version: 1,
+            instance: uuid::Uuid::from_u128(1),
+            seat: "seat-test".into(),
+            target: "w1:p1".into(),
+            harness: ContextHarness::Codex,
+            binding_generation: 1,
+            execution,
+            session: SessionReference::PluginContext(execution),
+            role: Role::TopLevel,
+        })
+        .unwrap();
+    let journal = Journal::open(root.join("intents")).unwrap();
+    let parsed = crate::cli::commands::parse_argv(["herdr-threads", "inbox"]).unwrap();
+    let client = Client {
+        calls: Mutex::new(Vec::new()),
+        supports_batch: std::sync::atomic::AtomicBool::new(false),
+        capability_unavailable: std::sync::atomic::AtomicBool::new(false),
+    };
+    let mut writer = Vec::new();
+    assert!(
+        crate::cli::run_cooperative(
+            parsed.clone(),
+            &journal,
+            &contexts,
+            None,
+            Role::TopLevel,
+            &client,
+            &crate::app::SystemClock::new(),
+            &mut writer
+        )
+        .is_err()
+    );
+    assert!(
+        writer.is_empty(),
+        "unsupported daemon must not display or ACK"
+    );
+    assert_eq!(client.calls.lock().unwrap().len(), 1);
+    client.calls.lock().unwrap().clear();
+    client
+        .capability_unavailable
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let outcome = crate::cli::run_cooperative(
+        parsed.clone(),
+        &journal,
+        &contexts,
+        None,
+        Role::TopLevel,
+        &client,
+        &crate::app::SystemClock::new(),
+        &mut writer,
+    );
+    assert!(matches!(outcome, Err(crate::cli::RunError::Api(ref error))
+        if error.code == crate::protocol::results::ErrorCode::HostUnavailable));
+    assert_eq!(client.calls.lock().unwrap().len(), 1);
+    client
+        .capability_unavailable
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    client
+        .supports_batch
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    for (fail_write, fail_flush) in [(true, false), (false, true)] {
+        client.calls.lock().unwrap().clear();
+        let mut writer = Writer {
+            bytes: Vec::new(),
+            fail_write,
+            fail_flush,
+        };
+        let outcome = crate::cli::run_cooperative(
+            parsed.clone(),
+            &journal,
+            &contexts,
+            None,
+            Role::TopLevel,
+            &client,
+            &crate::app::SystemClock::new(),
+            &mut writer,
+        );
+        assert!(outcome.is_err());
+        assert_eq!(
+            client.calls.lock().unwrap().len(),
+            2,
+            "no ACK after output failure: {outcome:?}"
+        );
+        assert!(journal.page(&Default::default()).unwrap().items.is_empty());
+    }
+    client.calls.lock().unwrap().clear();
+    let mut writer = Writer {
+        bytes: Vec::new(),
+        fail_write: false,
+        fail_flush: false,
+    };
+    crate::cli::run_cooperative(
+        parsed,
+        &journal,
+        &contexts,
+        None,
+        Role::TopLevel,
+        &client,
+        &crate::app::SystemClock::new(),
+        &mut writer,
+    )
+    .unwrap();
+    assert_eq!(client.calls.lock().unwrap().len(), 3);
+    assert!(
+        String::from_utf8(writer.bytes)
+            .unwrap()
+            .contains("message-original")
+    );
+    contexts
+        .install_reattached(OccupantContext {
+            format_version: 1,
+            instance: uuid::Uuid::from_u128(1),
+            seat: "seat-test".into(),
+            target: "w1:p1".into(),
+            harness: ContextHarness::Human,
+            binding_generation: 2,
+            execution,
+            session: SessionReference::PluginContext(execution),
+            role: Role::TopLevel,
+        })
+        .unwrap();
+    client.calls.lock().unwrap().clear();
+    let mut human_output = Vec::new();
+    crate::cli::run_cooperative(
+        crate::cli::commands::parse_argv(["herdr-threads", "inbox"]).unwrap(),
+        &journal,
+        &contexts,
+        None,
+        Role::TopLevel,
+        &client,
+        &crate::app::SystemClock::new(),
+        &mut human_output,
+    )
+    .unwrap();
+    assert!(
+        String::from_utf8(human_output)
+            .unwrap()
+            .contains("message-original")
+    );
+    assert_eq!(
+        client.calls.lock().unwrap().len(),
+        2,
+        "human text inbox is content read-only"
+    );
+    std::fs::remove_dir_all(root).unwrap();
 }
 /// Kills the review N1 mutation of the `run_cooperative` `Retry` arm
 /// (`src/cli/mod.rs`, "retry context missing"): reverting its

@@ -474,9 +474,9 @@ enum Top {
     Archive { thread: String },
     /// Reopen an archived thread.
     Reopen { thread: String },
-    /// List threads and messages needing this seat's attention.
+    /// Display compact inbox bodies; default text ACKs fully displayed pending agent receipts after flush. --machine, --json and --seat remain read-only.
     Inbox(InboxArgs),
-    /// List current warnings for a seat.
+    /// List warning history for a seat, or active warning conditions for one thread.
     Warnings(WarningsArgs),
     /// Check in so pending work can be delivered to this seat.
     CheckIn(CheckInArgs),
@@ -888,7 +888,10 @@ struct DiagnosticsArgs {
 #[derive(Args)]
 struct WarningsArgs {
     #[arg(long)]
-    seat: String,
+    seat: Option<String>,
+    /// Show open conditions and actionable legacy warnings in this thread.
+    #[arg(long, conflicts_with = "seat")]
+    active: Option<String>,
     #[command(flatten)]
     page: PageArgs,
 }
@@ -1371,10 +1374,19 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
             seat: args.seat.map(|s| id(s, SeatId::parse)).transpose()?,
             page: page(args.page)?,
         })),
-        Top::Warnings(args) => CliAction::Wire(WireCommand::Warnings(WarningsQuery {
-            seat: id(args.seat, SeatId::parse)?,
-            page: page(args.page)?,
-        })),
+        Top::Warnings(args) => match (args.seat, args.active) {
+            (Some(seat), None) => CliAction::Wire(WireCommand::Warnings(WarningsQuery {
+                seat: id(seat, SeatId::parse)?,
+                page: page(args.page)?,
+            })),
+            (None, Some(thread)) => CliAction::Wire(WireCommand::ActiveWarnings(
+                crate::protocol::commands::ActiveWarningsQuery {
+                    thread: thread_id(thread)?,
+                    page: page(args.page)?,
+                },
+            )),
+            _ => return Err(invalid("warnings require --seat SEAT or --active THREAD")),
+        },
         Top::CheckIn(args) => CliAction::Mutation(match args.lifecycle_event {
             Some(event_id) => MutationSpec::CheckInLifecycle {
                 event_id: bounded(event_id, "lifecycle event identity")?,

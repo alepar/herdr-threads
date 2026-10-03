@@ -1138,6 +1138,7 @@ pub fn scan_effective_warning_recipients(
         });
     }
     let (high_water, affected) = recipe.expect("checked recipe");
+    let recipient_seq = warning_recipient_cutoff(db, warning_id, warning.event_seq)?;
     let mut position = position.unwrap_or(WarningRecipientPosition {
         warning_id: warning_id.to_owned(),
         interval_after: 0,
@@ -1169,9 +1170,9 @@ pub fn scan_effective_warning_recipients(
         if let Some((ordinal, seat, joined, left, retired)) = interval {
             position.interval_after = ordinal;
             visited += 1;
-            if joined <= warning.event_seq
-                && left.is_none_or(|left| left > warning.event_seq)
-                && retired.is_none_or(|retired| retired > warning.event_seq)
+            if joined <= recipient_seq
+                && left.is_none_or(|left| left > recipient_seq)
+                && retired.is_none_or(|retired| retired > recipient_seq)
             {
                 seats.push(seat);
             }
@@ -1183,7 +1184,7 @@ pub fn scan_effective_warning_recipients(
             if let Some(seat) = affected.as_deref() {
                 let already_joined: bool=db.query_row(
                     "SELECT EXISTS(SELECT 1 FROM membership_intervals mi JOIN seats s ON s.id=mi.seat_id WHERE mi.thread_id=?1 AND mi.seat_id=?2 AND mi.ordinal<=?3 AND mi.joined_seq<=?4 AND (mi.left_seq IS NULL OR mi.left_seq>?4) AND (s.retired_seq IS NULL OR s.retired_seq>?4))",
-                    params![warning.thread_id,seat,position.interval_high_water,warning.event_seq],|r|r.get(0)).map_err(store_error)?;
+                    params![warning.thread_id,seat,position.interval_high_water,recipient_seq],|r|r.get(0)).map_err(store_error)?;
                 if !already_joined && is_warning_recipient(db, warning_id, seat)? {
                     seats.push(seat.to_owned());
                 }
@@ -1601,7 +1602,7 @@ pub fn is_warning_recipient(db: &Connection, id: &str, seat_id: &str) -> Result<
             |r| r.get(0),
         )
         .map_err(store_error)?;
-    if projected || warning.affected_seat_id.as_deref() == Some(seat_id) {
+    if projected {
         return Ok(true);
     }
     let high_water: Option<i64> = db
@@ -1624,12 +1625,39 @@ pub fn is_warning_recipient(db: &Connection, id: &str, seat_id: &str) -> Result<
     let Some(high_water) = high_water else {
         return Ok(false);
     };
+    let recipient_seq = warning_recipient_cutoff(db, id, warning.event_seq)?;
+    if warning.affected_seat_id.as_deref() == Some(seat_id) {
+        return db
+            .query_row(
+                "SELECT retired_seq IS NULL OR retired_seq>?2 FROM seats WHERE id=?1",
+                params![seat_id, recipient_seq],
+                |r| r.get(0),
+            )
+            .map_err(store_error);
+    }
     db.query_row(
         "SELECT EXISTS(SELECT 1 FROM membership_intervals mi JOIN seats s ON s.id=mi.seat_id \
          WHERE mi.thread_id=?1 AND mi.seat_id=?2 AND mi.ordinal<=?3 AND mi.joined_seq<=?4 \
          AND (mi.left_seq IS NULL OR mi.left_seq>?4) AND (s.retired_seq IS NULL OR s.retired_seq>?4))",
-        params![warning.thread_id, seat_id, high_water, warning.event_seq], |r| r.get(0),
+        params![warning.thread_id, seat_id, high_water, recipient_seq], |r| r.get(0),
     ).map_err(store_error)
+}
+
+fn warning_recipient_cutoff(
+    db: &Connection,
+    warning_id: &str,
+    event_seq: i64,
+) -> Result<i64, ApiError> {
+    Ok(db
+        .query_row(
+            "SELECT recipient_cutoff_seq FROM warning_jobs WHERE warning_id=?1",
+            [warning_id],
+            |r| r.get::<_, Option<i64>>(0),
+        )
+        .optional()
+        .map_err(store_error)?
+        .flatten()
+        .unwrap_or(event_seq))
 }
 
 /// Historical recipients remain discoverable after source settlement, while
@@ -1638,6 +1666,13 @@ pub fn warning_condition_actionable(
     db: &Connection,
     warning: &EffectiveWarning,
 ) -> Result<bool, ApiError> {
+    let transition: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1 OR clear_warning_id=?1)",
+        [&warning.id], |r| r.get(0),
+    ).map_err(store_error)?;
+    if transition {
+        return Ok(true);
+    }
     let programmatic: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM messages m JOIN service_notification_publications p ON p.message_id=m.id WHERE m.id=?1 AND m.kind='warn' AND m.author_kind='programmatic')",
         [&warning.id],|r|r.get(0)).map_err(store_error)?;

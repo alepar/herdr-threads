@@ -769,3 +769,58 @@ mod refusal_backoff {
         assert!(state.can_reserve(&seat, MonoInstant(31_000)));
     }
 }
+
+#[test]
+fn batch_window_uses_elapsed_time_and_restart_caps_backward_wall_jump() {
+    use crate::notification::policy::BatchGuard;
+    use crate::protocol::time::{MonoInstant, UtcMillis};
+    let guard = BatchGuard::restore(UtcMillis(30_100), 30_000, UtcMillis(100), MonoInstant(7));
+    assert!(!guard.eligible(MonoInstant(30_006)));
+    assert!(guard.eligible(MonoInstant(30_007)));
+    let restart = BatchGuard::restore(
+        UtcMillis(30_100),
+        30_000,
+        UtcMillis(20_100),
+        MonoInstant(500),
+    );
+    assert!(!restart.eligible(MonoInstant(10_499)));
+    assert!(restart.eligible(MonoInstant(10_500)));
+    let backward = BatchGuard::restore(
+        UtcMillis(30_100),
+        30_000,
+        UtcMillis(-90_000),
+        MonoInstant(5),
+    );
+    assert!(backward.eligible(MonoInstant(30_005)));
+    let mature = BatchGuard::restore(UtcMillis(30_100), 30_000, UtcMillis(31_000), MonoInstant(4));
+    assert!(mature.eligible(MonoInstant(4)));
+    let zero = BatchGuard::restore(UtcMillis(30_100), 0, UtcMillis(100), MonoInstant(4));
+    assert!(zero.eligible(MonoInstant(4)));
+}
+
+#[test]
+fn batch_arrivals_do_not_reset_elapsed_guard_and_bypass_preserves_retry_spacing() {
+    use crate::notification::dispatch::DispatchState;
+    let mut state =
+        DispatchState::new(RetryConfig::default(), MonoInstant(0), uuid::Uuid::new_v4());
+    let seat = SeatId::new("batch-seat");
+    state
+        .restore(
+            seat.clone(),
+            DurableRetry {
+                retry_step: 0,
+                minimum_delay_ms: 30_000,
+                effective_delay_ms: 30_000,
+                ever_reserved: true,
+            },
+        )
+        .unwrap();
+    let window = Some((UtcMillis(30_000), 30_000));
+    assert!(!state.batch_eligible(&seat, window, UtcMillis(0), MonoInstant(0)));
+    // Later attention and a backward wall jump keep the original elapsed timer.
+    assert!(!state.batch_eligible(&seat, window, UtcMillis(-90_000), MonoInstant(29_999)));
+    assert!(state.batch_eligible(&seat, window, UtcMillis(-90_000), MonoInstant(30_000)));
+    assert!(state.batch_eligible(&seat, None, UtcMillis(0), MonoInstant(1)));
+    assert!(!state.can_reserve(&seat, MonoInstant(1)));
+    assert!(state.can_reserve(&seat, MonoInstant(30_000)));
+}

@@ -1,0 +1,45 @@
+{
+  "run_id": "66acde87-5a79-4fb8-863f-4c40daefa28a",
+  "binary": "<local-test-binary>",
+  "binary_sha256": "d00d5af169616803779073c5ec815a1db31b069ced718424f38ea0b458680ec6",
+  "git_head": "38b02ee82f85b43edabd1904f666cda8aa256281",
+  "thread": "tI7F6vFIG",
+  "sender_seat": "suWHhfN6s",
+  "recipient_seat": "sbCUCOKOa",
+  "messages": [
+    "mekenbHec",
+    "mZYEHQWVk",
+    "m95gRyh7c",
+    "mezgE3GEB",
+    "mBxKfmzjf"
+  ],
+  "pending_before": 5,
+  "baseline": {
+    "shell_tool_calls": 1,
+    "cli_commands": 3,
+    "exit_code": 0,
+    "stdout_bytes": 881,
+    "stderr_bytes": 0,
+    "elapsed_ms": 30.489124939776957,
+    "stdout": "inbox\ntI7F6vFIG receipts=5\npending_receipts sbCUCOKOa\nmekenbHec tI7F6vFIG#4 from suWHhfN6s due 19:19Z\nmZYEHQWVk tI7F6vFIG#5 from suWHhfN6s due 19:19Z\nm95gRyh7c tI7F6vFIG#6 from suWHhfN6s due 19:19Z\nmezgE3GEB tI7F6vFIG#7 from suWHhfN6s due 19:19Z\nmBxKfmzjf tI7F6vFIG#8 from suWHhfN6s due 19:19Z\nhistory\n#8 mBxKfmzjf suWHhfN6s 19:09Z: Message 4: concise peer update with exact ID.\n#7 mezgE3GEB suWHhfN6s 19:09Z: Message 3: concise peer update with exact ID.\n#6 m95gRyh7c suWHhfN6s 19:09Z: Message 2: concise peer update with exact ID.\n#5 mZYEHQWVk suWHhfN6s 19:09Z: Message 1: concise peer update with exact ID.\n#4 mekenbHec suWHhfN6s 19:09Z: Message 0: concise peer update with exact ID.\nnext: herdr-threads --state-dir /private/tmp/ih.inbox-overhead-dfys43_0/s --host-endpoint /private/tmp/ih.inbox-overhead-dfys43_0/inbox.sock read tI7F6vFIG --cursor c3:BgEBBATphmB_MyE --limit 5\n",
+    "stderr": ""
+  },
+  "compact": {
+    "shell_tool_calls": 1,
+    "cli_commands": 1,
+    "daemon_requests": 3,
+    "exit_code": 0,
+    "stdout_bytes": 660,
+    "stderr_bytes": 0,
+    "elapsed_ms": 37.14795794803649,
+    "stdout": "message mekenbHec tI7F6vFIG#4 from suWHhfN6s bytes 0..45/45: compact inbox overhead\n  Message 0: concise peer update with exact ID.\nmessage mZYEHQWVk tI7F6vFIG#5 from suWHhfN6s bytes 0..45/45: compact inbox overhead\n  Message 1: concise peer update with exact ID.\nmessage m95gRyh7c tI7F6vFIG#6 from suWHhfN6s bytes 0..45/45: compact inbox overhead\n  Message 2: concise peer update with exact ID.\nmessage mezgE3GEB tI7F6vFIG#7 from suWHhfN6s bytes 0..45/45: compact inbox overhead\n  Message 3: concise peer update with exact ID.\nmessage mBxKfmzjf tI7F6vFIG#8 from suWHhfN6s bytes 0..45/45: compact inbox overhead\n  Message 4: concise peer update with exact ID.\n",
+    "stderr": ""
+  },
+  "pending_after": 0,
+  "status": "passed",
+  "leak_check": {
+    "exit_code": 0,
+    "stdout": "no leaked test processes\n",
+    "stderr": ""
+  }
+}

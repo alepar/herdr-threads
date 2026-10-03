@@ -53,6 +53,20 @@ fn skill_file_is_a_well_formed_concise_guide() {
     }
 }
 
+#[test]
+fn skill_describes_text_inbox_display_ack_and_read_only_subagent_path() {
+    for required in [
+        "default text `inbox`",
+        "written and flushed",
+        "fully displayed",
+        "`inbox --machine`",
+        "`--json`",
+        "continuation",
+    ] {
+        assert!(SKILL_MD.contains(required), "missing {required}");
+    }
+}
+
 // Kills: a detector that accepts any mention of the title, or one that misses
 // the section header.
 #[test]

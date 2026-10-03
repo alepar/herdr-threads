@@ -1725,3 +1725,228 @@ fn managed_launch_binding_reserves_a_cooperative_wake() {
     drop(store);
     let _ = std::fs::remove_file(path);
 }
+
+#[test]
+fn durable_batch_uses_oldest_saturated_publication_and_clears_when_work_drains() {
+    let path = std::env::temp_dir().join(format!("herdr-batch-{}.db", uuid::Uuid::new_v4()));
+    let context = StoreContext::new(path.clone(), Arc::new(WakeClock));
+    let db = context.open_writer().unwrap();
+    db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,300);
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','pane',1,1,0);
+        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pane','host',1,1,0,'fresh','term-pane','inc','coherent_enumeration',1);
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);").unwrap();
+    for n in 1..=150 {
+        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES (?1,'t','s',?2,'pending',?3,?2,100000,100000)",params![format!("inv-{n}"),n,if n==1 {0}else{90}]).unwrap();
+    }
+    drop(db);
+    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    let first = StorePort::wake_batch_window(&store, &candidate, &budget())
+        .unwrap()
+        .unwrap();
+    assert_eq!(first, (UtcMillis(30_000), 30_000));
+    let db = store.context.open_writer().unwrap();
+    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('later','t','s',151,'pending',99,151,100000,100000)",[]).unwrap();
+    drop(db);
+    assert_eq!(
+        StorePort::wake_batch_window(&store, &candidate, &budget()).unwrap(),
+        Some(first)
+    );
+    let db = store.context.open_writer().unwrap();
+    db.execute(
+        "UPDATE invitations SET state='recipient_retired',retired_at=100",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM wake_batches", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('fresh','t','s',152,'pending',100,152,100000,100000)",[]).unwrap();
+    drop(db);
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    assert_eq!(
+        StorePort::wake_batch_window(&store, &candidate, &budget()).unwrap(),
+        Some((UtcMillis(30_100), 30_000))
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn canonical_batch_cleanup_clears_catch_up_holds_and_release_starts_new_window() {
+    let path = std::env::temp_dir().join(format!("herdr-batch-hold-{}.db", uuid::Uuid::new_v4()));
+    let context = StoreContext::new(path.clone(), Arc::new(WakeClock));
+    let db = context.open_writer().unwrap();
+    db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,3);
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','pane',1,1,0);
+        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pane','host',1,1,0,'fresh','term-pane','inc','coherent_enumeration',1);
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('m','i','t',1,'ordinary','body',1,0);
+        INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t','s','pending',100000);").unwrap();
+    drop(db);
+    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    assert_eq!(
+        StorePort::wake_batch_window(&store, &candidate, &budget()).unwrap(),
+        Some((UtcMillis(30_000), 30_000))
+    );
+    let db = store.context.open_writer().unwrap();
+    db.execute("INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state) VALUES ('s','t',0,1,'e',100,'active')",[]).unwrap();
+    drop(db);
+    // The restarted process has never tracked this batch in its runtime map.
+    drop(store);
+    let store = SqliteStore::new(
+        StoreContext::new(path.clone(), Arc::new(WakeClock)),
+        "i",
+        StoreSettings::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        StorePort::wake_batch_seats(&store, None, 16, &budget()).unwrap(),
+        vec![SeatId::new("s")]
+    );
+    let db = store.context.open_writer().unwrap();
+    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('keep','t','s',1,'pending',100,3,100000,100000)",[]).unwrap();
+    drop(db);
+    assert!(!StorePort::clear_wake_batch_if_empty(&store, &SeatId::new("s"), &budget()).unwrap());
+    let db = store.context.open_writer().unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT deadline_at FROM wake_batches WHERE seat_id='s'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        30_000
+    );
+    db.execute(
+        "UPDATE invitations SET state='recipient_retired',retired_at=100 WHERE id='keep'",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    assert!(
+        StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    assert!(StorePort::clear_wake_batch_if_empty(&store, &SeatId::new("s"), &budget()).unwrap());
+    let db = store.context.open_writer().unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM wake_batches", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    db.execute(
+        "UPDATE catch_up SET state='ended',end_reason='ready',ended_at=200,release_seq=2",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    assert_eq!(
+        StorePort::wake_batch_window(&store, &candidate, &budget()).unwrap(),
+        Some((UtcMillis(30_200), 30_000))
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn durable_batch_window_enumeration_pages_only_retained_windows() {
+    let path = std::env::temp_dir().join(format!("herdr-batch-page-{}.db", uuid::Uuid::new_v4()));
+    let context = StoreContext::new(path.clone(), Arc::new(WakeClock));
+    let db = context.open_writer().unwrap();
+    db.execute(
+        "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
+        [],
+    )
+    .unwrap();
+    for n in 0..25 {
+        let seat = format!("seat-{n:02}");
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','unresolved','native',0,0)",[&seat]).unwrap();
+        db.execute(
+            "INSERT INTO wake_batches(seat_id,deadline_at) VALUES (?1,30000)",
+            [&seat],
+        )
+        .unwrap();
+    }
+    drop(db);
+    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let first = StorePort::wake_batch_seats(&store, None, 16, &budget()).unwrap();
+    assert_eq!(first.len(), 16);
+    assert_eq!(first[0], SeatId::new("seat-00"));
+    let db = store.context.open_writer().unwrap();
+    db.execute(
+        "DELETE FROM wake_batches WHERE seat_id=?1",
+        [first.last().unwrap().as_str()],
+    )
+    .unwrap();
+    drop(db);
+    let second = StorePort::wake_batch_seats(&store, first.last(), 16, &budget()).unwrap();
+    assert_eq!(second.len(), 9);
+    assert_eq!(second[0], SeatId::new("seat-16"));
+    assert!(
+        StorePort::wake_batch_seats(&store, second.last(), 16, &budget())
+            .unwrap()
+            .is_empty()
+    );
+    assert!(StorePort::wake_batch_seats(&store, None, 17, &budget()).is_err());
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn batch_window_ignores_human_waived_receipts_and_clears_last_required_waiver() {
+    let path = std::env::temp_dir().join(format!("herdr-batch-waived-{}.db", uuid::Uuid::new_v4()));
+    let context = StoreContext::new(path.clone(), Arc::new(WakeClock));
+    let db = context.open_writer().unwrap();
+    db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,3);
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','pane',1,1,0);
+        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pane','host',1,1,0,'fresh','term-pane','inc','coherent_enumeration',1);
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('waived','i','t',1,'ordinary','body',1,0),('required','i','t',2,'ordinary','body',2,90);
+        INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,ack_required) VALUES ('waived','t','s','pending',100000,0),('required','t','s','pending',100000,1);").unwrap();
+    drop(db);
+    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    assert_eq!(
+        StorePort::wake_batch_window(&store, &candidate, &budget()).unwrap(),
+        Some((UtcMillis(30_090), 30_000))
+    );
+    let db = store.context.open_writer().unwrap();
+    db.execute(
+        "UPDATE receipts SET ack_required=0 WHERE message_id='required'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM wake_batches", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    drop(db);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}

@@ -668,6 +668,7 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
                         "host_reachability": health.host.reachability,
                         "harness_claude": harness_state(health.harness.claude),
                         "harness_codex": harness_state(health.harness.codex),
+                        "settings": health.settings,
                         "limitations": health.limitations,
                         "notes": health.notes,
                     });
@@ -1028,6 +1029,19 @@ pub fn render_debug_text(report: &Value) -> String {
         ] {
             if !daemon[key].is_null() {
                 out.push_str(&format!("daemon.{key}: {}\n", scalar(&daemon[key])));
+            }
+        }
+        for key in [
+            "invitation_default_ms",
+            "receipt_default_ms",
+            "minimum_wake_delay_ms",
+            "wake_batch_delay_ms",
+        ] {
+            if !daemon["settings"][key].is_null() {
+                out.push_str(&format!(
+                    "daemon.settings.{key}: {}\n",
+                    scalar(&daemon["settings"][key])
+                ));
             }
         }
         if let Some(limitations) = daemon["limitations"].as_array() {

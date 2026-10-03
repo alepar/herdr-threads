@@ -24,7 +24,9 @@ pub enum CommandResult {
     Seats(Page<SeatSummary>),
     SeatInspect(SeatInspection),
     Inbox(Page<InboxItem>),
+    InboxBatch(Page<InboxBatchItem>),
     Warnings(Page<WarningRef>),
+    ActiveWarnings(Page<WarningRef>),
     Thread(ThreadDetails),
     History(Page<MessageSummary>),
     Participants(Page<Participant>),
@@ -405,6 +407,12 @@ pub struct HealthSettings {
     pub invitation_default_ms: u64,
     pub receipt_default_ms: u64,
     pub minimum_wake_delay_ms: u64,
+    #[serde(default = "default_wake_batch_delay_ms")]
+    pub wake_batch_delay_ms: u64,
+}
+
+fn default_wake_batch_delay_ms() -> u64 {
+    30_000
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -547,13 +555,14 @@ impl Health {
             return Err("health claims unproven readiness");
         }
         if self.settings.as_ref().is_some_and(|settings| {
-            [
-                settings.invitation_default_ms,
-                settings.receipt_default_ms,
-                settings.minimum_wake_delay_ms,
-            ]
-            .iter()
-            .any(|value| *value == 0 || *value > i64::MAX as u64)
+            settings.wake_batch_delay_ms > i64::MAX as u64
+                || [
+                    settings.invitation_default_ms,
+                    settings.receipt_default_ms,
+                    settings.minimum_wake_delay_ms,
+                ]
+                .iter()
+                .any(|value| *value == 0 || *value > i64::MAX as u64)
         }) {
             return Err("invalid health settings");
         }
@@ -723,6 +732,38 @@ pub struct InboxItem {
     pub warnings_has_more: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_requirement: Option<RequiredMembership>,
+}
+
+/// One complete copyable inbox action, or one UTF-8 aligned body chunk.
+/// `ack_candidate` is present only for a fully displayed canonical pending
+/// agent receipt; consumers commit it only after writing and flushing output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InboxBatchItem {
+    Invitation {
+        thread: ThreadId,
+        topic_data: String,
+        invitation: InvitationId,
+        required_service: Option<RequiredMembership>,
+    },
+    Message {
+        thread: ThreadId,
+        topic_data: String,
+        message: MessageId,
+        sequence: u64,
+        sender: Option<SeatId>,
+        body: String,
+        body_start: u64,
+        body_end: u64,
+        body_len: u64,
+        ack_candidate: Option<MessageId>,
+    },
+    Warning {
+        thread: ThreadId,
+        topic_data: String,
+        warning: MessageId,
+        sequence: u64,
+    },
 }
 
 fn is_false(value: &bool) -> bool {

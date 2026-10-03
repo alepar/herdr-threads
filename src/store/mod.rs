@@ -74,6 +74,7 @@ pub struct StoreSettings {
     /// The elected daemon run's boot identity, supplied by the service factory.
     pub daemon_boot: Option<uuid::Uuid>,
     pub minimum_wake_delay_ms: u64,
+    pub wake_batch_delay_ms: u64,
     pub summary: crate::protocol::summary::SummarySettings,
 }
 impl Default for StoreSettings {
@@ -83,6 +84,7 @@ impl Default for StoreSettings {
             message_limits: messages::MessageLimits::default(),
             daemon_boot: None,
             minimum_wake_delay_ms: 30_000,
+            wake_batch_delay_ms: 30_000,
             summary: crate::protocol::summary::SummarySettings::default(),
         }
     }
@@ -248,6 +250,7 @@ impl SqliteStore {
                 .is_some_and(|ms| ms == 0 || ms > i64::MAX as u64)
             || settings.minimum_wake_delay_ms < 30_000
             || settings.minimum_wake_delay_ms > i64::MAX as u64
+            || settings.wake_batch_delay_ms > i64::MAX as u64
             || settings
                 .daemon_boot
                 .as_ref()
@@ -1395,7 +1398,7 @@ impl StorePort for SqliteStore {
             return Ok(result);
         }
         let mut selected = command.clone();
-        let needs_seat = matches!(&selected,Command::Inbox(q) if q.seat.is_none())
+        let needs_seat = matches!(&selected,Command::Inbox(q) | Command::InboxBatch(q) if q.seat.is_none())
             || matches!(&selected,Command::Directory(q) if q.membership.is_none() && q.membership_filter!=DirectoryMembership::All);
         if needs_seat {
             let Some(OperationReadScope::Seat(seat)) = &read.operation_scope else {
@@ -1419,7 +1422,7 @@ impl StorePort for SqliteStore {
                 ));
             }
             match &mut selected {
-                Command::Inbox(q) => q.seat = Some(seat.clone()),
+                Command::Inbox(q) | Command::InboxBatch(q) => q.seat = Some(seat.clone()),
                 Command::Directory(q) => q.membership = Some(seat.clone()),
                 _ => unreachable!(),
             }
@@ -1478,6 +1481,10 @@ impl StorePort for SqliteStore {
             PermitMutation::Ack(v) => {
                 let mut permit = permit;
                 receipts::ack(&self.context, &mut writer, budget, &v, &mut permit)
+            }
+            PermitMutation::AckDisplayed(v) => {
+                let mut permit = permit;
+                receipts::ack_displayed(&self.context, &mut writer, budget, &v, &mut permit)
             }
             PermitMutation::Leave(v) => {
                 control::leave(&self.context, &mut writer, budget, &v, permit)
@@ -2332,6 +2339,72 @@ impl StorePort for SqliteStore {
         let mut writer = self.writer(budget)?;
         materialization::advance_work(&mut writer, job, admission, budget, self.context.clock())
     }
+    fn wake_batch_seats(
+        &self,
+        after: Option<&SeatId>,
+        limit: u16,
+        budget: &CallBudget,
+    ) -> Result<Vec<SeatId>, ApiError> {
+        if !(1..=16).contains(&limit) {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "invalid batch cleanup limit",
+            ));
+        }
+        let db = self.context.open_query(budget.clone())?;
+        let mut statement = db
+            .prepare(wake::BATCH_SEATS_SQL)
+            .map_err(|error| db.map_error(error))?;
+        let seats = statement
+            .query_map(
+                params![
+                    self.instance,
+                    after.map(SeatId::as_str).unwrap_or(""),
+                    i64::from(limit)
+                ],
+                |r| r.get::<_, String>(0),
+            )
+            .map_err(|error| db.map_error(error))?
+            .map(|seat| seat.map(SeatId::new))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| db.map_error(error))?;
+        Ok(seats)
+    }
+    fn clear_wake_batch_if_empty(
+        &self,
+        seat: &SeatId,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        let mut writer = self.writer(budget)?;
+        self.context.execute_decision(
+            &mut writer,
+            |tx| {
+                let scan = attention::wake_seat_attention(tx, seat.as_str())?;
+                Ok(!scan.attention.has_pending_invitation && !scan.attention.has_pending_receipt)
+            },
+            |tx, _, empty| {
+                if empty {
+                    tx.execute("DELETE FROM wake_batches WHERE seat_id=?1", [seat.as_str()])
+                        .map_err(store_error)?;
+                }
+                Ok(empty)
+            },
+        )
+    }
+    fn wake_batch_window(
+        &self,
+        candidate: &WakeCandidate,
+        budget: &CallBudget,
+    ) -> Result<Option<(crate::protocol::time::UtcMillis, u64)>, ApiError> {
+        let mut writer = self.writer(budget)?;
+        wake::batch_window(
+            &self.context,
+            &mut writer,
+            &self.instance,
+            candidate,
+            self.settings.wake_batch_delay_ms,
+        )
+    }
     fn reserve_wake(
         &self,
         candidate: &WakeCandidate,
@@ -2581,6 +2654,13 @@ pub fn cooperative_permit_request(
             v.operation.clone(),
             ObligationRef::CheckIn(v.claim.seat.clone()),
             schema::canonical_digest(&receipts::ack_payload(v))?,
+            None,
+        ),
+        PermitMutation::AckDisplayed(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.claim.seat.clone()),
+            schema::canonical_digest(&receipts::ack_displayed_payload(v))?,
             None,
         ),
         PermitMutation::Leave(v) => (

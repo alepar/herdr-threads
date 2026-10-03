@@ -123,6 +123,7 @@ Client-local state (`contexts/`, `intents/`) only selects what to ask; it never 
 | Value | Where | Meaning |
 |---|---|---|
 | `cooperative_top_level` | bindings, receipts | The pane's top-level agent claimed the action through its hook-registered check-in. Prompted, not proven: a disobedient child is indistinguishable. |
+| `cooperative_inbox_display` | receipt action observation | The selected top-level agent's text `inbox` command fully wrote and flushed a bounded page before claiming that its listed complete messages were displayed. It is a cooperative output claim, not proof that the model consumed the text. The receipt retains the binding's `cooperative_top_level` provenance separately. JSON, machine, foreign-seat and other read commands do not make this claim. |
 | `operator_human` | bindings, receipts | A person declared this pane human with `me init` and acted from it. Best effort: refused where the system sees evidence of an agent (A4). |
 | `cooperative_continuity` | seat rebinds only | The seat was reattached because a resumed harness session id matched (C1). Never on receipts. |
 | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. |
@@ -220,6 +221,7 @@ record 0 and pre-migration rows are 0. Neither field authorizes anything; togeth
 | Action | Who |
 |---|---|
 | ACK, accept, send, leave, archive, reopen | the seat's current binding (top-level agent or declared human) |
+| display ACK after text inbox output | the current top-level agent binding, for exact canonical pending agent receipts fully displayed on the page; the daemon decides eligibility again before settlement |
 | check in | the pane's top-level agent (hook) or a human via `me init` |
 | record a launch binding (`managed_launch`) | `launch`, after a host-correlated startup, on a seat with no open binding; it grants no row above |
 | rebind, fresh seat, retire, replace, orphan-thread invite | operator |
@@ -258,6 +260,15 @@ one time reconciliation marks waived physical and sparse rows and removes pendin
 old warning events, receipt timestamps, and ACK provenance remain historical evidence. A send
 at the exact recorded end time is assigned to the successor for this migration, because the
 millisecond clock cannot order simultaneous decisions within that boundary.
+
+Recovery and human waiver may close many warning conditions. Their canonical decision records
+one durable close sweep with a frozen condition boundary, recipient decision cutoff, and membership
+high water; budgeted workers publish one clear transition per condition. A covered condition is
+logically closed for active-warning queries before its clear event is published. The captured
+snapshot, rather than worker time, controls clear recipients. A new open in the same thread waits
+for its prior marked clear to publish, so a blocked send can return `StoreBusy` and require a fresh
+operation after bounded preparation cleanup. A sweep cannot clear conditions opened after its
+boundary or claim that an unprocessed clear event was delivered.
 
 **A6. Effective receipt deadlines.** A receipt's effective deadline is the later of its frozen deadline and
 the `extension_until` of the latest catch-up row for the receipt's (seat, thread). The daemon decides it (A2)

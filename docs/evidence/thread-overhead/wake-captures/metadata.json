@@ -1,0 +1,6 @@
+{
+  "binary": "<local-test-binary>",
+  "binary_sha256": "0edfc1973c95cda8ecee5b5dfbdf549a4efbdbf93d0d24cca580eef1ef654a6c",
+  "git_head": "b9797187e3dfb1f383d19a59e01a1bb931b5e7f7",
+  "herdr_version": "herdr 0.9.1"
+}

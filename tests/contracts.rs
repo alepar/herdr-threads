@@ -145,10 +145,17 @@ fn health_settings_are_typed_and_unknown_until_resolved() {
         invitation_default_ms: 300_000,
         receipt_default_ms: 300_000,
         minimum_wake_delay_ms: 30_000,
+        wake_batch_delay_ms: 30_000,
     });
     assert!(health.validate().is_ok());
     let json = serde_json::to_value(&health).unwrap();
     assert_eq!(json["settings"]["minimum_wake_delay_ms"], 30_000);
+    assert_eq!(json["settings"]["wake_batch_delay_ms"], 30_000);
+    health.settings.as_mut().unwrap().wake_batch_delay_ms = 0;
+    assert!(health.validate().is_ok());
+    health.settings.as_mut().unwrap().wake_batch_delay_ms = u64::MAX;
+    assert!(health.validate().is_err());
+    health.settings.as_mut().unwrap().wake_batch_delay_ms = 30_000;
     health.settings.as_mut().unwrap().minimum_wake_delay_ms = 0;
     assert!(health.validate().is_err());
 }

@@ -111,6 +111,9 @@ pub enum SemanticMutation {
     Ack {
         messages: Vec<MessageId>,
     },
+    AckDisplayed {
+        messages: Vec<MessageId>,
+    },
     Leave {
         thread: ThreadId,
     },
@@ -272,7 +275,9 @@ impl SemanticMutation {
                 expected_revision: 0,
                 ..
             } => Err(invalid("required acceptance revision must be positive")),
-            Self::Ack { messages } if messages.is_empty() || messages.len() > MAX_BATCH_ITEMS => {
+            Self::Ack { messages } | Self::AckDisplayed { messages }
+                if messages.is_empty() || messages.len() > MAX_BATCH_ITEMS =>
+            {
                 Err(invalid("invalid ack batch size"))
             }
             Self::SendMessage {
@@ -305,7 +310,7 @@ impl SemanticMutation {
             Self::Accept { .. } => IntentKind::Accept,
             Self::AcceptRequired { .. } => IntentKind::Accept,
             Self::SendMessage { .. } => IntentKind::SendMessage,
-            Self::Ack { .. } => IntentKind::Ack,
+            Self::Ack { .. } | Self::AckDisplayed { .. } => IntentKind::Ack,
             Self::Leave { .. } => IntentKind::Leave,
             Self::SetTopic { .. } => IntentKind::SetTopic,
             Self::Archive { .. } => IntentKind::Archive,
@@ -442,6 +447,11 @@ impl SemanticMutation {
                 operation,
                 claim: native()?,
             }),
+            Self::AckDisplayed { messages } => Command::AckDisplayed(Ack {
+                messages: messages.clone(),
+                operation,
+                claim: native()?,
+            }),
             Self::Leave { thread } => Command::Leave(Leave {
                 thread: thread.clone(),
                 operation,
@@ -531,6 +541,18 @@ pub struct PendingIntent {
 pub type PendingPage = Page<LocalIntent>;
 pub struct Journal {
     root: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DisplayedProgress {
+    instance: String,
+    seat: SeatId,
+    binding_generation: u64,
+    execution: ExecutionId,
+    message: MessageId,
+    body_len: u64,
+    flushed_through: u64,
 }
 impl Journal {
     pub fn open(root: impl AsRef<Path>) -> io::Result<Self> {
@@ -646,6 +668,117 @@ impl Journal {
             reference.ordinal,
             reference.operation.as_str()
         ))
+    }
+    fn displayed_progress_path(&self, claim: &CallerClaim, message: &MessageId) -> PathBuf {
+        let mut digest = Sha256::new();
+        digest.update((claim.instance.len() as u64).to_be_bytes());
+        digest.update(claim.instance.as_bytes());
+        digest.update((claim.seat.as_str().len() as u64).to_be_bytes());
+        digest.update(claim.seat.as_str().as_bytes());
+        digest.update(claim.binding_generation.to_be_bytes());
+        digest.update((claim.execution.as_str().len() as u64).to_be_bytes());
+        digest.update(claim.execution.as_str().as_bytes());
+        digest.update(message.as_str().as_bytes());
+        self.root
+            .join(format!("display-{:x}.progress", digest.finalize()))
+    }
+
+    fn read_displayed_progress(&self, path: &Path) -> io::Result<Option<DisplayedProgress>> {
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        let file = match options.open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() > 4096 {
+            return Err(invalid("unsafe inbox display progress"));
+        }
+        #[cfg(unix)]
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(invalid("inbox display progress is not private"));
+        }
+        let mut bytes = Vec::new();
+        file.take(4097).read_to_end(&mut bytes)?;
+        if bytes.len() > 4096 {
+            return Err(invalid("inbox display progress too large"));
+        }
+        serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|_| invalid("inbox display progress corrupt"))
+    }
+
+    /// Record a body span only after the selected inbox page was fully written
+    /// and flushed. Client-local progress can only narrow automatic ACKs; the
+    /// daemon still decides receipt eligibility from canonical state.
+    pub fn record_displayed_chunk(
+        &self,
+        claim: &CallerClaim,
+        message: &MessageId,
+        start: u64,
+        end: u64,
+        body_len: u64,
+    ) -> io::Result<bool> {
+        if start > end || end > body_len || (start == end && body_len != 0) {
+            return Err(invalid("invalid inbox body span"));
+        }
+        if start == 0 && end == body_len {
+            return Ok(true);
+        }
+        let _lock = self.lock()?;
+        let path = self.displayed_progress_path(claim, message);
+        let prior = self.read_displayed_progress(&path)?;
+        if prior.as_ref().is_some_and(|prior| {
+            prior.instance != claim.instance
+                || prior.seat != claim.seat
+                || prior.binding_generation != claim.binding_generation
+                || prior.execution != claim.execution
+                || prior.message != *message
+                || prior.body_len != body_len
+        }) {
+            return Err(invalid("inbox display progress identity changed"));
+        }
+        let flushed = match prior.as_ref() {
+            _ if start == 0 => prior
+                .as_ref()
+                .map_or(end, |prior| prior.flushed_through.max(end)),
+            Some(prior) if prior.flushed_through == start => end,
+            Some(prior) if prior.flushed_through >= end => prior.flushed_through,
+            _ => return Ok(false),
+        };
+        let progress = DisplayedProgress {
+            instance: claim.instance.clone(),
+            seat: claim.seat.clone(),
+            binding_generation: claim.binding_generation,
+            execution: claim.execution.clone(),
+            message: message.clone(),
+            body_len,
+            flushed_through: flushed,
+        };
+        let temp = self.root.join(format!(".display-{}.tmp", Uuid::new_v4()));
+        let mut file = private_new(&temp)?;
+        serde_json::to_writer(&mut file, &progress)?;
+        file.sync_all()?;
+        fs::rename(&temp, &path)?;
+        File::open(&self.root)?.sync_all()?;
+        Ok(flushed == body_len)
+    }
+
+    pub fn clear_displayed_chunk(
+        &self,
+        claim: &CallerClaim,
+        message: &MessageId,
+    ) -> io::Result<()> {
+        let _lock = self.lock()?;
+        let path = self.displayed_progress_path(claim, message);
+        match fs::remove_file(path) {
+            Ok(()) => File::open(&self.root)?.sync_all(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
     }
     pub fn resolve_recovery_ref(&self, reference: &str) -> io::Result<IntentRef> {
         LocalRecoveryRef::parse(reference).map_err(invalid)?;

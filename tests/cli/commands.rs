@@ -61,6 +61,10 @@ fn bounded_collection_routes_parse_with_exact_filters() {
             vec!["herdr-threads", "inbox", "--seat", "s1", "--limit", "7"],
             |c| matches!(c,WireCommand::Inbox(q) if q.seat.as_ref().is_some_and(|v|v.as_str()=="s1") && q.page.limit==7),
         ),
+        (
+            vec!["herdr-threads", "warnings", "--active", "t1", "--limit", "7"],
+            |c| matches!(c,WireCommand::ActiveWarnings(q) if q.thread.as_str()=="t1" && q.page.limit==7),
+        ),
     ];
     for (argv, predicate) in cases {
         let parsed = parse_argv(argv).unwrap();

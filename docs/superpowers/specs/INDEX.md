@@ -4,6 +4,7 @@ Columns: date · title · relative link · one-line summary · status · tags.
 
 | Date | Title | Design | Summary | Status | Tags |
 |---|---|---|---|---|---|
+| 2026-10-03 | Daily thread overhead | [Design](2026-10-03-thread-overhead-design.md) | Batched inbox display ACKs, wake batching, warning transitions, and measured native scenarios. | implemented | inbox, scheduler, warnings |
 | 2026-09-27 | Herdr persistent threads | [Root design](../../design/herdr-threads/2026-09-27-herdr-threads-design.md) | Pane-bound seats, prelaunch handoffs, explicit receipts and compact native delivery. | draft | herdr-threads, root |
 | 2026-09-27 | Native caller attribution | [Design](../../design/herdr-threads/2026-09-27-herdr-threads--caller-attribution-design.md) | Prove top-level call attribution for Codex and Claude. | draft | herdr-threads, caller-attribution |
 | 2026-09-27 | Durable thread store | [Design](../../design/herdr-threads/2026-09-27-herdr-threads--store-design.md) | Atomic membership, messages, receipts, deadlines and bounded reads. | draft | herdr-threads, store |

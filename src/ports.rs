@@ -2611,6 +2611,37 @@ pub trait StorePort: Send + Sync {
         admission: DurableWorkAdmission,
         budget: &CallBudget,
     ) -> Result<WorkProgress, ApiError>;
+    /// Enumerate at most sixteen durable batch windows in stable seat-id order.
+    /// This also finds windows retained across a daemon restart.
+    fn wake_batch_seats(
+        &self,
+        _after: Option<&SeatId>,
+        _limit: u16,
+        _budget: &CallBudget,
+    ) -> Result<Vec<SeatId>, ApiError> {
+        Ok(Vec::new())
+    }
+
+    /// Clear a retained window only when canonical ordinary attention is gone.
+    fn clear_wake_batch_if_empty(
+        &self,
+        _seat: &SeatId,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(true)
+    }
+
+    /// Recheck ordinary attention and retain its durable initial batching
+    /// window. No window means batching is disabled or attention bypasses it.
+    /// Lightweight adapters preserve their immediate-wake behavior by default.
+    fn wake_batch_window(
+        &self,
+        _candidate: &WakeCandidate,
+        _budget: &CallBudget,
+    ) -> Result<Option<(UtcMillis, u64)>, ApiError> {
+        Ok(None)
+    }
+
     fn reserve_wake(
         &self,
         candidate: &WakeCandidate,

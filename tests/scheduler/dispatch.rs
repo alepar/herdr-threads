@@ -258,6 +258,7 @@ struct FakeWakeStore {
     clock: Arc<FakeClock>,
     events: Arc<Mutex<Vec<&'static str>>>,
     fail_reservation: AtomicBool,
+    batch: Option<(UtcMillis, u64)>,
 }
 impl WakePort for FakeWakeStore {
     fn clock(&self) -> &dyn Clock {
@@ -293,6 +294,13 @@ impl WakePort for FakeWakeStore {
             consistency: Consistency::BoundedLive,
         })
     }
+    fn wake_batch_window(
+        &self,
+        _: &WakeCandidate,
+        _: &CallBudget,
+    ) -> Result<Option<(UtcMillis, u64)>, ApiError> {
+        Ok(self.batch)
+    }
     fn reserve_wake(
         &self,
         candidate: &WakeCandidate,
@@ -314,7 +322,11 @@ impl WakePort for FakeWakeStore {
             attention_witness: witness.clone(),
             reasons: vec!["invitation".into()],
             retained_effective_delay_ms: 30_000,
-            lease_until: MonoInstant(5_000),
+            lease_until: MonoInstant(if self.batch.is_some() {
+                self.clock.monotonic_now().0 + 5_000
+            } else {
+                5_000
+            }),
             retained_minimum_delay_ms: 30_000,
             reserved_at_utc: UtcMillis(0),
             daemon_boot: daemon_boot(),
@@ -443,6 +455,7 @@ fn lease_expiry_cancels_and_joins_owned_transport_before_slot_release() {
     let store = FakeWakeStore {
         clock: clock.clone(),
         events: Arc::new(Mutex::new(Vec::new())),
+        batch: None,
         fail_reservation: AtomicBool::new(false),
     };
     let entered = Arc::new((Mutex::new(false), Condvar::new()));
@@ -511,6 +524,7 @@ fn delivered_prompt_stays_submitted_when_verification_outlives_the_lease() {
     let store = FakeWakeStore {
         clock: clock.clone(),
         events: Arc::new(Mutex::new(Vec::new())),
+        batch: None,
         fail_reservation: AtomicBool::new(false),
     };
     let notifier = SlowVerificationNotifier {
@@ -534,6 +548,7 @@ fn four_connected_owned_calls_block_a_fifth_until_their_transports_exit() {
     let store = FakeWakeStore {
         clock: clock.clone(),
         events: events.clone(),
+        batch: None,
         fail_reservation: AtomicBool::new(false),
     };
     let notifier = CancellationOnlyNotifier {
@@ -644,6 +659,7 @@ fn scheduler_drives_due_work_while_native_prompt_waits() {
     let wake = FakeWakeStore {
         clock: clock.clone(),
         events,
+        batch: None,
         fail_reservation: AtomicBool::new(false),
     };
     let due = FakeDeadlinePort {
@@ -766,6 +782,7 @@ fn runner_commits_reservation_before_host_and_completes_without_receipt_mutation
     let store = FakeWakeStore {
         clock: Arc::new(FakeClock(AtomicU64::new(0))),
         events: events.clone(),
+        batch: None,
         fail_reservation: AtomicBool::new(false),
     };
     let notifier = FakeNotifier {
@@ -794,6 +811,7 @@ fn incomplete_attention_never_reaches_reservation() {
     let store = FakeWakeStore {
         clock: Arc::new(FakeClock(AtomicU64::new(0))),
         events: events.clone(),
+        batch: None,
         fail_reservation: AtomicBool::new(false),
     };
     let notifier = FakeNotifier {
@@ -816,6 +834,7 @@ fn stale_attention_witness_is_rejected_by_reserving_store() {
     let store = FakeWakeStore {
         clock: Arc::new(FakeClock(AtomicU64::new(0))),
         events: events.clone(),
+        batch: None,
         fail_reservation: AtomicBool::new(false),
     };
     let notifier = FakeNotifier {
@@ -1067,6 +1086,7 @@ fn sqlite_reopen_recovers_old_boot_before_real_fake_host_attempt() {
         StoreSettings {
             daemon_boot: Some(old_daemon_boot()),
             minimum_wake_delay_ms: 60_000,
+            wake_batch_delay_ms: 0,
             ..StoreSettings::default()
         },
     )
@@ -1106,6 +1126,7 @@ fn sqlite_reopen_recovers_old_boot_before_real_fake_host_attempt() {
             StoreSettings {
                 daemon_boot: Some(daemon_boot()),
                 minimum_wake_delay_ms: 30_000,
+                wake_batch_delay_ms: 0,
                 ..StoreSettings::default()
             },
         )
@@ -1286,6 +1307,7 @@ fn completion_fixture() -> (
         "i",
         StoreSettings {
             daemon_boot: Some(daemon_boot()),
+            wake_batch_delay_ms: 0,
             ..StoreSettings::default()
         },
     )
@@ -2496,6 +2518,7 @@ fn sqlite_completed_frontier_shortens_retry_only_after_new_logical_publication()
             "i",
             StoreSettings {
                 daemon_boot: Some(daemon_boot()),
+                wake_batch_delay_ms: 0,
                 ..StoreSettings::default()
             },
         )
@@ -2738,6 +2761,7 @@ fn failed_reservation_never_calls_host_and_remains_discoverable() {
     let store = FakeWakeStore {
         clock: Arc::new(FakeClock(AtomicU64::new(0))),
         events: events.clone(),
+        batch: None,
         fail_reservation: AtomicBool::new(true),
     };
     let due = FakeDeadlinePort {
@@ -2824,6 +2848,7 @@ fn cancellation_after_commit_completes_the_attempt_without_host_io() {
     let base = FakeWakeStore {
         clock: Arc::new(FakeClock(AtomicU64::new(0))),
         events: events.clone(),
+        batch: None,
         fail_reservation: AtomicBool::new(false),
     };
     let store = CancelAfterReserve(&base);
@@ -2848,6 +2873,7 @@ fn settled_and_already_offered_work_never_reserves_or_prompts() {
     let store = FakeWakeStore {
         clock: Arc::new(FakeClock(AtomicU64::new(0))),
         events: events.clone(),
+        batch: None,
         fail_reservation: AtomicBool::new(false),
     };
     let notifier = FakeNotifier {
@@ -3495,6 +3521,7 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
                 "i",
                 StoreSettings {
                     daemon_boot: Some(daemon_boot()),
+                    wake_batch_delay_ms: 0,
                     ..StoreSettings::default()
                 },
             )
@@ -3672,6 +3699,7 @@ fn drive_scripted_wake(
     let wake = FakeWakeStore {
         clock: clock.clone(),
         events: events.clone(),
+        batch: None,
         fail_reservation: AtomicBool::new(false),
     };
     let due = FakeDeadlinePort {
@@ -4151,6 +4179,7 @@ fn refused_warning_wake_is_retried_not_offered() {
     let base = FakeWakeStore {
         clock: clock.clone(),
         events,
+        batch: None,
         fail_reservation: AtomicBool::new(false),
     };
     let store = MatchedRestore(&base, Mutex::new(vec![]));
@@ -4304,6 +4333,7 @@ fn crash_between_reserve_and_complete_keeps_the_advanced_step() {
         "i",
         StoreSettings {
             daemon_boot: Some(crash_boot),
+            wake_batch_delay_ms: 0,
             ..StoreSettings::default()
         },
     )
@@ -4342,6 +4372,7 @@ fn crash_between_reserve_and_complete_keeps_the_advanced_step() {
         "i",
         StoreSettings {
             daemon_boot: Some(recovery_boot),
+            wake_batch_delay_ms: 0,
             ..StoreSettings::default()
         },
     )
@@ -4378,6 +4409,7 @@ fn next_due_at_reports_the_earliest_refusal_retry() {
     let store = FakeWakeStore {
         clock: clock.clone(),
         events,
+        batch: None,
         fail_reservation: AtomicBool::new(false),
     };
     let store = MatchedRestore(&store, Mutex::new(vec![]));
@@ -6460,4 +6492,159 @@ fn skipped_poke_leaves_the_wake_guard_unchanged() {
     // The durable retry is the one the wake left: restoring it is accepted
     // only when the guard still holds exactly that.
     state.restore(seat.clone(), durable).unwrap();
+}
+
+#[test]
+fn batching_defers_reservation_and_host_without_postponing_later_arrivals() {
+    let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let store = FakeWakeStore {
+        clock: clock.clone(),
+        events: events.clone(),
+        fail_reservation: AtomicBool::new(false),
+        batch: Some((UtcMillis(30_000), 30_000)),
+    };
+    let notifier = CompletionNotifier(Mutex::new(Vec::new()));
+    let runner = WakeRunner::new(&store, &notifier, RetryConfig::default(), daemon_boot());
+    let budget = CallBudget {
+        deadline: MonoInstant(100_000),
+        cancellation: Cancellation::default(),
+    };
+    assert_eq!(
+        runner.try_candidate(&due_candidate(), &budget).unwrap(),
+        None
+    );
+    clock.0.store(29_999, Ordering::SeqCst);
+    assert_eq!(
+        runner.try_candidate(&due_candidate(), &budget).unwrap(),
+        None
+    );
+    assert!(events.lock().unwrap().is_empty());
+    assert!(notifier.0.lock().unwrap().is_empty());
+    clock.0.store(30_000, Ordering::SeqCst);
+    assert_eq!(
+        runner.try_candidate(&due_candidate(), &budget).unwrap(),
+        Some(WakeOutcome::Submitted)
+    );
+    assert_eq!(notifier.0.lock().unwrap().len(), 1);
+    assert_eq!(*events.lock().unwrap(), vec!["reserve", "complete"]);
+}
+
+struct DurableCleanupStore {
+    inner: FakeWakeStore,
+    windows: Vec<SeatId>,
+    checks: Mutex<Vec<SeatId>>,
+    fail_once: AtomicBool,
+}
+impl WakePort for DurableCleanupStore {
+    fn clock(&self) -> &dyn Clock {
+        self.inner.clock()
+    }
+    fn wake_batch_seats(
+        &self,
+        after: Option<&SeatId>,
+        limit: u16,
+        _: &CallBudget,
+    ) -> Result<Vec<SeatId>, ApiError> {
+        Ok(self
+            .windows
+            .iter()
+            .filter(|seat| after.is_none_or(|after| *seat > after))
+            .take(usize::from(limit))
+            .cloned()
+            .collect())
+    }
+    fn clear_wake_batch_if_empty(&self, seat: &SeatId, _: &CallBudget) -> Result<bool, ApiError> {
+        self.checks.lock().unwrap().push(seat.clone());
+        if self.fail_once.swap(false, Ordering::SeqCst) {
+            return Err(ApiError::deadline_exceeded("injected cleanup cancellation"));
+        }
+        Ok(false)
+    }
+    fn wake_candidates(
+        &self,
+        page: PageRequest,
+        budget: &CallBudget,
+    ) -> Result<Page<WakeCandidate>, ApiError> {
+        self.inner.wake_candidates(page, budget)
+    }
+    fn reserve_wake(
+        &self,
+        candidate: &WakeCandidate,
+        budget: &CallBudget,
+    ) -> Result<Option<WakeReservation>, ApiError> {
+        self.inner.reserve_wake(candidate, budget)
+    }
+    fn complete_wake(
+        &self,
+        attempt: WakeAttemptId,
+        outcome: WakeOutcome,
+        prior: Option<&PriorLadder>,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        self.inner.complete_wake(attempt, outcome, prior, budget)
+    }
+    fn wake_recovery_candidates(
+        &self,
+        page: PageRequest,
+        budget: &CallBudget,
+    ) -> Result<Page<WakeRecoveryCandidate>, ApiError> {
+        self.inner.wake_recovery_candidates(page, budget)
+    }
+    fn recover_wake_reservation(
+        &self,
+        request: WakeRecoveryRequest,
+        budget: &CallBudget,
+    ) -> Result<WakeRecoveryOutcome, ApiError> {
+        self.inner.recover_wake_reservation(request, budget)
+    }
+}
+
+#[test]
+fn durable_batch_cleanup_pages_untracked_windows_and_requeues_failed_check() {
+    let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+    let store = DurableCleanupStore {
+        inner: FakeWakeStore {
+            clock: clock.clone(),
+            events: Arc::new(Mutex::new(Vec::new())),
+            fail_reservation: AtomicBool::new(false),
+            batch: None,
+        },
+        windows: (0..20)
+            .map(|n| SeatId::new(format!("seat-{n:02}")))
+            .collect(),
+        checks: Mutex::new(Vec::new()),
+        fail_once: AtomicBool::new(true),
+    };
+    let due = FakeDeadlinePort {
+        clock,
+        due_calls: AtomicU64::new(0),
+    };
+    let notifier = CompletionNotifier(Mutex::new(Vec::new()));
+    let scheduler = Scheduler::new(
+        "i".into(),
+        &due,
+        &store,
+        &notifier,
+        RetryConfig::default(),
+        daemon_boot(),
+    );
+    let budget = CallBudget {
+        deadline: MonoInstant(100_000),
+        cancellation: Cancellation::default(),
+    };
+    assert!(scheduler.drive_batch_cleanup(&budget).is_err());
+    assert!(scheduler.drive_batch_cleanup(&budget).unwrap());
+    assert_eq!(store.checks.lock().unwrap().len(), 17);
+    {
+        let checks = store.checks.lock().unwrap();
+        assert_eq!(checks[0], checks[1]);
+    }
+    assert!(scheduler.drive_batch_cleanup(&budget).unwrap());
+    assert_eq!(store.checks.lock().unwrap().len(), 21);
+    assert!(scheduler.drive_batch_cleanup(&budget).unwrap()); // end-of-sweep resets cursor
+    assert_eq!(store.checks.lock().unwrap().len(), 21);
+    assert!(scheduler.drive_batch_cleanup(&budget).unwrap()); // starts next continuous sweep
+    assert_eq!(store.checks.lock().unwrap().len(), 37);
+    assert!(notifier.0.lock().unwrap().is_empty());
 }

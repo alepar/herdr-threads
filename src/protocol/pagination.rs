@@ -228,6 +228,8 @@ pub enum CursorScope {
     SeatInspect,
     DeliveryInspect,
     Inbox,
+    InboxBatch,
+    ActiveWarnings,
     Warnings,
     History,
     MessageBody,
@@ -386,8 +388,12 @@ impl Cursor {
                     || inbox.warning_after_offset < -1
             })
             || cursor.attention.as_ref().is_some_and(|attention| {
-                cursor.scope != CursorScope::WakeCandidates
-                    || cursor.search.is_some()
+                !matches!(
+                    cursor.scope,
+                    CursorScope::WakeCandidates
+                        | CursorScope::InboxBatch
+                        | CursorScope::ActiveWarnings
+                ) || cursor.search.is_some()
                     || attention.invitation_after_seq < 0
                     || attention.invitation_after_ordinal < 0
                     || (attention.invitation_after_seq == 0)
@@ -785,7 +791,7 @@ fn key_check(scope_key: &str) -> [u8; KEY_CHECK_BYTES] {
 
 /// Wire codes of `CursorScope` in a `c3:` cursor. Append only: a code is
 /// never reused or reordered.
-const SCOPE_CODES: [CursorScope; 20] = [
+const SCOPE_CODES: [CursorScope; 22] = [
     CursorScope::Directory,
     CursorScope::Seats,
     CursorScope::SeatInspect,
@@ -806,6 +812,8 @@ const SCOPE_CODES: [CursorScope; 20] = [
     CursorScope::WakeRecovery,
     CursorScope::WorkJobs,
     CursorScope::SearchCandidates,
+    CursorScope::InboxBatch,
+    CursorScope::ActiveWarnings,
 ];
 const F_DESCENDING: u8 = 0x01;
 const F_KEY: u8 = 0x02;

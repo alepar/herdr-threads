@@ -781,3 +781,216 @@ pub fn recover_abandoned(
         Ok(WakeRecoveryOutcome::Stale)
     })
 }
+
+/// The retained-window table drives this walk through its primary key. Cost
+/// follows retained windows, rather than all resolved or historical seats.
+pub(crate) const BATCH_SEATS_SQL: &str = "SELECT b.seat_id FROM wake_batches b CROSS JOIN seats s ON s.id=b.seat_id WHERE s.instance_id=?1 AND b.seat_id>?2 ORDER BY b.seat_id LIMIT ?3";
+
+fn receipt_attention_at(
+    db: &Connection,
+    seat: &str,
+    receipt: &effective::EffectiveReceipt,
+    key: (i64, i64),
+) -> Result<i64, ApiError> {
+    if receipt
+        .decision_seq
+        .is_some_and(|original| key.0 > original)
+    {
+        let release: Option<i64> = db.query_row(
+            "SELECT ended_at FROM catch_up WHERE seat_id=?1 AND thread_id=?2 AND release_seq=?3",
+            params![seat,receipt.thread_id,key.0], |r| r.get(0)).optional().map_err(store_error)?.flatten();
+        return release.ok_or_else(|| {
+            api_error(
+                ErrorCode::StoreCorrupt,
+                "released attention timestamp missing",
+            )
+        });
+    }
+    Ok(receipt.decision_at)
+}
+
+/// Oldest-first indexed probes keep a saturated newest-first digest from
+/// anchoring the batch to newer arrivals. Every source retains the same row cap.
+fn oldest_ordinary_at(db: &Connection, seat: &str, through: i64) -> Result<Option<i64>, ApiError> {
+    let cap = super::attention::WINDOW as i64;
+    let mut earliest = None::<i64>;
+    let mut invitations = db.prepare(
+        "SELECT i.created_at FROM (SELECT invitation_id FROM digest_pending_invitations INDEXED BY digest_pending_invitations_seat WHERE seat_id=?1 AND created_decision_seq<=?2 ORDER BY created_decision_seq,ordinal LIMIT ?3) w JOIN invitations i ON i.id=w.invitation_id WHERE i.state='pending' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id)").map_err(store_error)?;
+    let dates = invitations
+        .query_map(params![seat, through, cap], |r| r.get::<_, i64>(0))
+        .map_err(store_error)?;
+    for date in dates {
+        let date = date.map_err(store_error)?;
+        earliest = Some(earliest.map_or(date, |prior| prior.min(date)));
+    }
+    let mut hold = super::catch_up::HoldCache::new(seat);
+    for (source, sql) in [
+        (
+            effective::ReceiptSource::Physical,
+            "SELECT message_id FROM receipts INDEXED BY receipts_required_seat_pending WHERE seat_id=?1 AND state='pending' AND ack_required=1 ORDER BY ordinal LIMIT ?2",
+        ),
+        (
+            effective::ReceiptSource::Manifest,
+            "SELECT sm.message_id FROM (SELECT preparation_id FROM digest_pending_manifest_receipts INDEXED BY digest_pending_manifest_receipts_seat WHERE seat_id=?1 AND decision_seq>0 ORDER BY decision_seq,ordinal LIMIT ?2) w JOIN send_manifests sm ON sm.preparation_id=w.preparation_id",
+        ),
+        (
+            effective::ReceiptSource::Manifest,
+            "SELECT sm.message_id FROM (SELECT preparation_id FROM digest_pending_manifest_receipts INDEXED BY digest_pending_manifest_receipts_seat WHERE seat_id=?1 AND decision_seq IS NULL ORDER BY ordinal LIMIT ?2) w JOIN send_manifests sm ON sm.preparation_id=w.preparation_id",
+        ),
+    ] {
+        let mut statement = db.prepare(sql).map_err(store_error)?;
+        let messages = statement
+            .query_map(params![seat, cap], |r| r.get::<_, String>(0))
+            .map_err(store_error)?;
+        for message in messages {
+            let message = message.map_err(store_error)?;
+            let Some(receipt) = effective::effective_receipt(db, &message, seat)? else {
+                continue;
+            };
+            if receipt.source != source
+                || receipt.state != effective::EffectiveReceiptState::Pending
+            {
+                continue;
+            }
+            let Some(seq) = receipt.decision_seq else {
+                continue;
+            };
+            let Some(key) =
+                hold.attention_key(db, &receipt.thread_id, &message, receipt.sequence, (seq, 0))?
+            else {
+                continue;
+            };
+            let at = receipt_attention_at(db, seat, &receipt, key)?;
+            earliest = Some(earliest.map_or(at, |prior| prior.min(at)));
+        }
+    }
+    Ok(earliest)
+}
+
+/// Decide the initial ordinary window against canonical bounded attention.
+/// Publication timestamps make discovery after a host outage mature promptly.
+pub fn batch_window(
+    context: &StoreContext,
+    db: &mut Connection,
+    instance: &str,
+    candidate: &WakeCandidate,
+    delay_ms: u64,
+) -> Result<Option<(crate::protocol::time::UtcMillis, u64)>, ApiError> {
+    if delay_ms == 0 {
+        return Ok(None);
+    }
+    context.execute_decision(db, |tx| {
+        let live: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2 AND state!='retired')",
+            params![candidate.seat.as_str(), instance], |r| r.get(0)).map_err(store_error)?;
+        if !live { return Ok((None, false)); }
+        let scan = super::attention::wake_seat_attention(tx, candidate.seat.as_str())?;
+        let invitations = super::attention::pending_invitations(tx, candidate.seat.as_str(), None, scan.decision_seq)?;
+        let pending = super::attention::pending_receipts(tx, candidate.seat.as_str(), None)?;
+        let mut first = None::<i64>;
+        let mut urgent = scan.attention.latest_warning_seq.is_some()
+            && !candidate.warning_offered_for_current_occupant();
+        let now = context.clock().utc_now().0;
+        for item in invitations.items {
+            let (created, due): (i64, Option<i64>) = tx.query_row(
+                "SELECT created_at,deadline_at FROM invitations WHERE id=?1", [&item.id],
+                |r| Ok((r.get(0)?,r.get(1)?))).map_err(store_error)?;
+            first = Some(first.map_or(created, |prior| prior.min(created)));
+            urgent |= due.is_some_and(|at| at <= now);
+        }
+        for item in pending.items {
+            if let Some(receipt) = effective::effective_receipt(tx, &item.id, candidate.seat.as_str())? {
+                let at = receipt_attention_at(tx, candidate.seat.as_str(), &receipt, item.key)?;
+                first = Some(first.map_or(at, |prior| prior.min(at)));
+                urgent |= super::receipts::effective_deadline(tx, &receipt)?.is_some_and(|at| at <= now);
+            }
+        }
+        let existing: Option<i64> = tx.query_row("SELECT deadline_at FROM wake_batches WHERE seat_id=?1",
+            [candidate.seat.as_str()], |r| r.get(0)).optional().map_err(store_error)?;
+        if let Some(first_at) = first
+            && existing.is_none()
+            && let Some(oldest) = oldest_ordinary_at(tx, candidate.seat.as_str(), scan.decision_seq)? {
+            first = Some(first_at.min(oldest));
+        }
+        Ok((first, urgent))
+    }, |tx, _, (first, urgent)| {
+        let Some(first) = first else {
+            tx.execute("DELETE FROM wake_batches WHERE seat_id=?1", [candidate.seat.as_str()]).map_err(store_error)?;
+            return Ok(None);
+        };
+        let deadline = retain_batch_deadline(tx, candidate.seat.as_str(), first, delay_ms)?;
+        Ok((!urgent).then_some((deadline, delay_ms)))
+    })
+}
+
+/// Retain the first deadline without sliding it on later attention. The caller
+/// has already classified canonical ordinary work inside this transaction.
+fn retain_batch_deadline(
+    db: &Connection,
+    seat: &str,
+    first_at: i64,
+    delay_ms: u64,
+) -> Result<crate::protocol::time::UtcMillis, ApiError> {
+    let existing: Option<i64> = db
+        .query_row(
+            "SELECT deadline_at FROM wake_batches WHERE seat_id=?1",
+            [seat],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    if let Some(deadline) = existing {
+        return Ok(crate::protocol::time::UtcMillis(deadline));
+    }
+    let deadline = first_at.saturating_add(delay_ms as i64);
+    db.execute(
+        "INSERT INTO wake_batches(seat_id,deadline_at) VALUES (?1,?2)",
+        params![seat, deadline],
+    )
+    .map_err(store_error)?;
+    Ok(crate::protocol::time::UtcMillis(deadline))
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+
+    #[test]
+    fn batch_deadline_retains_first_arrival_through_reopen_and_clear() {
+        let path = std::env::temp_dir().join(format!("wake-batch-{}.sqlite", uuid::Uuid::new_v4()));
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch(
+            "CREATE TABLE wake_batches(seat_id TEXT PRIMARY KEY, deadline_at INTEGER NOT NULL);",
+        )
+        .unwrap();
+        assert_eq!(
+            retain_batch_deadline(&db, "seat", 100, 30_000).unwrap().0,
+            30_100
+        );
+        assert_eq!(
+            retain_batch_deadline(&db, "seat", 29_000, 30_000)
+                .unwrap()
+                .0,
+            30_100
+        );
+        drop(db);
+        let db = Connection::open(&path).unwrap();
+        assert_eq!(
+            retain_batch_deadline(&db, "seat", 99_000, 30_000)
+                .unwrap()
+                .0,
+            30_100
+        );
+        db.execute("DELETE FROM wake_batches WHERE seat_id='seat'", [])
+            .unwrap();
+        assert_eq!(
+            retain_batch_deadline(&db, "seat", 99_000, 30_000)
+                .unwrap()
+                .0,
+            129_000
+        );
+        assert_eq!(retain_batch_deadline(&db, "zero", 100, 0).unwrap().0, 100);
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+}

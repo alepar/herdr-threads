@@ -67,6 +67,10 @@ fn page(cursor: Option<String>) -> PageRequest {
     }
 }
 
+fn bind_query_agent(db: &rusqlite::Connection) {
+    db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'w:p1','host',1,'codex','session','exec','cooperative_top_level',0,0,'term','inc')", []).unwrap();
+}
+
 /// Kills: an open binding that depends on the history page (it must come back
 /// with `limit: 1`), and one that survives the binding's end.
 #[test]
@@ -545,6 +549,663 @@ fn inbox_counts_published_warning_and_receipt_in_same_snapshot() {
     assert_eq!(result.items[0].pending_receipts, 1);
     assert_eq!(result.items[0].warnings, 1);
     assert!(!result.has_more);
+}
+
+#[test]
+fn inbox_batch_displays_pending_body_and_only_complete_agent_receipt_is_candidate() {
+    let (store, db) = fixture();
+    bind_query_agent(&db);
+    db.execute_batch("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('i',1,'m-full','t',1,'ordinary','s','copyable body',0);
+        INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m-full','t','s','pending',300);
+        UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
+    let result = query(
+        &store,
+        "i",
+        &Command::InboxBatch(InboxQuery {
+            seat: Some(SeatId::new("s")),
+            page: page(None),
+        }),
+        &budget(),
+    )
+    .unwrap();
+    let CommandResult::InboxBatch(batch) = result else {
+        panic!("wrong result")
+    };
+    assert_eq!(batch.items.len(), 1);
+    let crate::protocol::results::InboxBatchItem::Message {
+        message,
+        body,
+        body_start,
+        body_end,
+        body_len,
+        ack_candidate,
+        ..
+    } = &batch.items[0]
+    else {
+        panic!("wrong item")
+    };
+    assert_eq!(message.as_str(), "m-full");
+    assert_eq!(body, "copyable body");
+    assert_eq!((*body_start, *body_end, *body_len), (0, 13, 13));
+    assert_eq!(
+        ack_candidate.as_ref().map(MessageId::as_str),
+        Some("m-full")
+    );
+    assert!(!batch.has_more);
+}
+
+#[test]
+fn inbox_batch_partial_body_has_cursor_and_no_candidate_until_final_chunk() {
+    let (store, db) = fixture();
+    bind_query_agent(&db);
+    let body = "α".repeat(4_000);
+    db.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('i',1,'m-long','t',1,'ordinary','s',?1,0)", [&body]).unwrap();
+    db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m-long','t','s','pending',300)", []).unwrap();
+    let mut request = PageRequest {
+        cursor: None,
+        limit: 1,
+        max_bytes: 1024,
+    };
+    let mut assembled = String::new();
+    let mut chunks = 0;
+    loop {
+        let CommandResult::InboxBatch(batch) = query(
+            &store,
+            "i",
+            &Command::InboxBatch(InboxQuery {
+                seat: Some(SeatId::new("s")),
+                page: request.clone(),
+            }),
+            &budget(),
+        )
+        .unwrap() else {
+            panic!("wrong result")
+        };
+        assert_eq!(batch.items.len(), 1);
+        let crate::protocol::results::InboxBatchItem::Message {
+            body: chunk,
+            body_start,
+            body_end,
+            body_len,
+            ack_candidate,
+            ..
+        } = &batch.items[0]
+        else {
+            panic!("wrong item")
+        };
+        assert_eq!(*body_start as usize, assembled.len());
+        assert_eq!(*body_end as usize, assembled.len() + chunk.len());
+        assert_eq!(*body_len as usize, body.len());
+        assembled.push_str(chunk);
+        assert_eq!(ack_candidate.is_some(), !batch.has_more);
+        chunks += 1;
+        if !batch.has_more {
+            break;
+        }
+        request.cursor = batch.next_cursor;
+        assert!(chunks < 30, "continuation did not advance");
+    }
+    assert_eq!(assembled, body);
+}
+
+#[test]
+fn inbox_batch_pages_101_receipts_without_acknowledging_or_skipping() {
+    let (store, db) = fixture();
+    bind_query_agent(&db);
+    for n in 1..=101 {
+        db.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('i',?1,?2,'t',?1,'ordinary','s','body',0)", params![n, format!("message-{n:03}")]).unwrap();
+        db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,'t','s','pending',300)", [format!("message-{n:03}")]).unwrap();
+    }
+    let mut request = PageRequest {
+        cursor: None,
+        limit: 100,
+        max_bytes: 65_536,
+    };
+    let mut candidates = Vec::new();
+    loop {
+        let CommandResult::InboxBatch(batch) = query(
+            &store,
+            "i",
+            &Command::InboxBatch(InboxQuery {
+                seat: Some(SeatId::new("s")),
+                page: request.clone(),
+            }),
+            &budget(),
+        )
+        .unwrap() else {
+            panic!("wrong result")
+        };
+        assert!(batch.items.len() <= 100);
+        candidates.extend(batch.items.iter().filter_map(|item| match item {
+            crate::protocol::results::InboxBatchItem::Message { ack_candidate, .. } => {
+                ack_candidate.as_ref().map(|id| id.as_str().to_owned())
+            }
+            _ => None,
+        }));
+        if !batch.has_more {
+            break;
+        }
+        request.cursor = batch.next_cursor;
+    }
+    assert_eq!(candidates.len(), 101);
+    candidates.sort();
+    candidates.dedup();
+    assert_eq!(candidates.len(), 101);
+    let pending: i64 = db
+        .query_row(
+            "SELECT count(*) FROM receipts WHERE state='pending'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending, 101, "inbox query must remain read-only");
+}
+
+#[test]
+fn inbox_batch_defers_later_arrivals_to_next_traversal() {
+    let (store, db) = fixture();
+    for n in 1..=2 {
+        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES (?1,'t','s',?2,'pending',0,300,300,?2)", params![format!("invite-{n}"), n]).unwrap();
+    }
+    let mut request = PageRequest {
+        cursor: None,
+        limit: 1,
+        max_bytes: 65_536,
+    };
+    let CommandResult::InboxBatch(first) = query(
+        &store,
+        "i",
+        &Command::InboxBatch(InboxQuery {
+            seat: Some(SeatId::new("s")),
+            page: request.clone(),
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    assert!(first.has_more);
+    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES ('invite-3','t','s',3,'pending',0,300,300,3)", []).unwrap();
+    request.cursor = first.next_cursor;
+    let mut seen = Vec::new();
+    loop {
+        let CommandResult::InboxBatch(batch) = query(
+            &store,
+            "i",
+            &Command::InboxBatch(InboxQuery {
+                seat: Some(SeatId::new("s")),
+                page: request.clone(),
+            }),
+            &budget(),
+        )
+        .unwrap() else {
+            panic!()
+        };
+        seen.extend(batch.items.iter().filter_map(|item| match item {
+            crate::protocol::results::InboxBatchItem::Invitation { invitation, .. } => {
+                Some(invitation.as_str().to_owned())
+            }
+            _ => None,
+        }));
+        if !batch.has_more {
+            break;
+        }
+        request.cursor = batch.next_cursor;
+    }
+    assert_eq!(seen, vec!["invite-2"]);
+    let CommandResult::InboxBatch(fresh) = query(
+        &store,
+        "i",
+        &Command::InboxBatch(InboxQuery {
+            seat: Some(SeatId::new("s")),
+            page: PageRequest {
+                cursor: None,
+                limit: 100,
+                max_bytes: 65_536,
+            },
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    assert!(fresh.items.iter().any(|item| matches!(item,
+        crate::protocol::results::InboxBatchItem::Invitation { invitation, .. } if invitation.as_str()=="invite-3")));
+}
+
+#[test]
+fn inbox_batch_finds_unprojected_active_warning_for_frozen_member() {
+    let (store, db) = fixture();
+    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('invitee','i','resolved','native',1,0);
+        INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','s',1,1);
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at)
+            VALUES ('invitee-invitation','t','invitee',1,'pending',2,0,300,300);
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,decision_at)
+            VALUES ('warning-full-id','i','t',1,'warn','{}',3,0);
+        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id)
+            VALUES ('warning-full-id',3,'t',1,'invitee','invitation','invitee-invitation');").unwrap();
+    let projected: i64 = db
+        .query_row(
+            "SELECT count(*) FROM warning_recipients WHERE warning_id='warning-full-id'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(projected, 0);
+    let CommandResult::InboxBatch(batch) = query(
+        &store,
+        "i",
+        &Command::InboxBatch(InboxQuery {
+            seat: Some(SeatId::new("s")),
+            page: page(None),
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    assert!(
+        batch.items.iter().any(|item| matches!(item,
+        crate::protocol::results::InboxBatchItem::Warning { warning, .. }
+        if warning.as_str() == "warning-full-id")),
+        "{:?}",
+        batch.items
+    );
+}
+
+#[test]
+fn inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projection() {
+    let (store, db) = fixture();
+    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('invitee','i','resolved','native',1,0);
+        INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','s',1,1);
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,decision_at)
+            VALUES ('warning-open-full','i','t',1,'warn','{}',2,0);
+        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id)
+            VALUES ('warning-open-full',2,'t',1,'invitee','invitation','transition:warning-open-full');
+        INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq)
+            VALUES ('invitation','t','original-invitation','invitee','warning-open-full',2);
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,decision_at)
+            VALUES ('warning-clear-full','i','t',2,'warn','{}',3,0);
+        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id)
+            VALUES ('warning-clear-full',3,'t',1,'invitee','invitation','transition:warning-clear-full');
+        UPDATE warning_conditions SET clear_warning_id='warning-clear-full',cleared_seq=3 WHERE open_warning_id='warning-open-full';").unwrap();
+    let projected: i64 = db
+        .query_row("SELECT count(*) FROM warning_recipients", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(projected, 0);
+    let CommandResult::InboxBatch(batch) = query(
+        &store,
+        "i",
+        &Command::InboxBatch(InboxQuery {
+            seat: Some(SeatId::new("s")),
+            page: page(None),
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    let ids: Vec<_> = batch
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            crate::protocol::results::InboxBatchItem::Warning { warning, .. } => {
+                Some(warning.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, vec!["warning-open-full", "warning-clear-full"]);
+    bind_query_agent(&db);
+    db.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) VALUES ('s',1,'exec',2)", []).unwrap();
+    let inbox = || {
+        let CommandResult::InboxBatch(batch) = query(
+            &store,
+            "i",
+            &Command::InboxBatch(InboxQuery {
+                seat: Some(SeatId::new("s")),
+                page: page(None),
+            }),
+            &budget(),
+        )
+        .unwrap() else {
+            panic!()
+        };
+        batch
+            .items
+            .into_iter()
+            .filter_map(|item| match item {
+                crate::protocol::results::InboxBatchItem::Warning { warning, .. } => Some(warning),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        inbox().iter().map(MessageId::as_str).collect::<Vec<_>>(),
+        vec!["warning-clear-full"],
+        "the clear remains until its own verified offer"
+    );
+    db.execute(
+        "UPDATE warning_offer SET offered_through_seq=3 WHERE seat_id='s'",
+        [],
+    )
+    .unwrap();
+    assert!(
+        inbox().is_empty(),
+        "offered open and clear notifications leave the compact inbox"
+    );
+}
+
+#[test]
+fn active_warnings_union_open_ledger_and_actionable_legacy_without_clear_fabrication() {
+    let (store, db) = fixture();
+    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('invitee','i','resolved','native',1,0);
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at)
+            VALUES ('inv-open','t','invitee',1,'pending',1,0,300,300);
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,decision_at)
+            VALUES ('warning-open','i','t',1,'warn','{}',2,0);
+        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id)
+            VALUES ('warning-open',2,'t',0,'invitee','invitation','inv-open');
+        INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq)
+            VALUES ('invitation','t','inv-open','invitee','warning-open',2);
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at)
+            VALUES ('inv-legacy','t','invitee',2,'pending',3,0,300,300);
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,decision_at)
+            VALUES ('warning-legacy','i','t',2,'warn','{}',4,0);
+        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id)
+            VALUES ('warning-legacy',4,'t',0,'invitee','invitation','inv-legacy');
+        UPDATE threads SET next_sequence=3 WHERE id='t';").unwrap();
+    let q = Command::ActiveWarnings(crate::protocol::commands::ActiveWarningsQuery {
+        thread: ThreadId::new("t"),
+        page: page(None),
+    });
+    let CommandResult::ActiveWarnings(first) = query(&store, "i", &q, &budget()).unwrap() else {
+        panic!()
+    };
+    let mut ids: Vec<_> = first.items.iter().map(|w| w.warning.as_str()).collect();
+    ids.sort();
+    assert_eq!(ids, vec!["warning-legacy", "warning-open"]);
+    db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,decision_at)
+            VALUES ('warning-clear','i','t',3,'warn','{}',5,0);
+        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id)
+            VALUES ('warning-clear',5,'t',0,'invitee','invitation','transition:warning-clear');
+        UPDATE warning_conditions SET clear_warning_id='warning-clear',cleared_seq=5 WHERE open_warning_id='warning-open';
+        UPDATE threads SET next_sequence=4 WHERE id='t';").unwrap();
+    let CommandResult::ActiveWarnings(second) = query(&store, "i", &q, &budget()).unwrap() else {
+        panic!()
+    };
+    assert_eq!(
+        second
+            .items
+            .iter()
+            .map(|w| w.warning.as_str())
+            .collect::<Vec<_>>(),
+        vec!["warning-legacy"]
+    );
+}
+
+#[test]
+fn warning_continuations_keep_published_identity_during_projection() {
+    let (store, db) = fixture();
+    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at)
+            VALUES ('first-invitation','t','s',1,'pending',1,0,300,300);
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,decision_at)
+            VALUES ('first-warning','i','t',1,'warn','{}',2,0);
+        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id)
+            VALUES ('first-warning',2,'t',0,'s','invitation','first-invitation');
+        INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq)
+            VALUES ('invitation','t','first-invitation','s','first-warning',2);
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status)
+            VALUES ('projection-prep','i','actor','projection-op',zeroblob(32),'t',0,0,0,0,0,0,0,'sealed');
+        INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json)
+            VALUES ('projection-prep','projection-key','second-warning','s',1,1,'{}');
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq)
+            VALUES ('i','ordinary-base','t',2,'ordinary','s','body',10,10);
+        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count)
+            VALUES ('i','projection-prep','ordinary-base','t',10,10,2,0,0,1);
+        UPDATE threads SET next_sequence=4 WHERE id='t';").unwrap();
+    let mut active_page = PageRequest {
+        cursor: None,
+        limit: 1,
+        max_bytes: 65_536,
+    };
+    let CommandResult::ActiveWarnings(first) = query(
+        &store,
+        "i",
+        &Command::ActiveWarnings(crate::protocol::commands::ActiveWarningsQuery {
+            thread: ThreadId::new("t"),
+            page: active_page.clone(),
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    assert_eq!(first.items[0].warning.as_str(), "first-warning");
+    active_page.cursor = first.next_cursor;
+    let mut inbox_page = PageRequest {
+        cursor: None,
+        limit: 1,
+        max_bytes: 65_536,
+    };
+    let CommandResult::InboxBatch(first_inbox) = query(
+        &store,
+        "i",
+        &Command::InboxBatch(InboxQuery {
+            seat: Some(SeatId::new("s")),
+            page: inbox_page.clone(),
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    inbox_page.cursor = first_inbox.next_cursor;
+    db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,event_offset,decision_at)
+            VALUES ('second-warning','i','t',3,'warn','{}',10,1,10);
+        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id)
+            VALUES ('second-warning',10,'t',0,'s','unavailable','projection-key');
+        DELETE FROM digest_open_warnings WHERE source='prepared' AND warning_id='second-warning';").unwrap();
+    let CommandResult::ActiveWarnings(second) = query(
+        &store,
+        "i",
+        &Command::ActiveWarnings(crate::protocol::commands::ActiveWarningsQuery {
+            thread: ThreadId::new("t"),
+            page: active_page,
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    assert_eq!(
+        second
+            .items
+            .iter()
+            .map(|w| w.warning.as_str())
+            .collect::<Vec<_>>(),
+        vec!["second-warning"]
+    );
+    let mut warning_ids = Vec::new();
+    for _ in 0..10 {
+        let CommandResult::InboxBatch(batch) = query(
+            &store,
+            "i",
+            &Command::InboxBatch(InboxQuery {
+                seat: Some(SeatId::new("s")),
+                page: inbox_page.clone(),
+            }),
+            &budget(),
+        )
+        .unwrap() else {
+            panic!()
+        };
+        warning_ids.extend(batch.items.iter().filter_map(|item| match item {
+            crate::protocol::results::InboxBatchItem::Warning { warning, .. } => {
+                Some(warning.as_str().to_owned())
+            }
+            _ => None,
+        }));
+        if !batch.has_more {
+            break;
+        }
+        inbox_page.cursor = batch.next_cursor;
+    }
+    assert_eq!(warning_ids, vec!["first-warning", "second-warning"]);
+}
+
+#[test]
+fn queued_close_hides_active_condition_without_inventing_clear_and_allows_reopen() {
+    let (store, db) = fixture();
+    db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,decision_at)
+            VALUES ('open-before-sweep','i','t',1,'warn','{}',1,0);
+        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id)
+            VALUES ('open-before-sweep',1,'t',0,'s','receipt','transition:open-before-sweep');
+        INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq)
+            VALUES ('receipt','t','receipt-backlog','s','open-before-sweep',1);
+        UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
+    let active = || {
+        let CommandResult::ActiveWarnings(page) = query(
+            &store,
+            "i",
+            &Command::ActiveWarnings(crate::protocol::commands::ActiveWarningsQuery {
+                thread: ThreadId::new("t"),
+                page: page(None),
+            }),
+            &budget(),
+        )
+        .unwrap() else {
+            panic!()
+        };
+        page.items
+            .iter()
+            .map(|w| w.warning.as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let inbox = || {
+        let CommandResult::InboxBatch(page) = query(
+            &store,
+            "i",
+            &Command::InboxBatch(InboxQuery {
+                seat: Some(SeatId::new("s")),
+                page: page(None),
+            }),
+            &budget(),
+        )
+        .unwrap() else {
+            panic!()
+        };
+        page.items
+            .iter()
+            .filter_map(|item| match item {
+                crate::protocol::results::InboxBatchItem::Warning { warning, .. } => {
+                    Some(warning.as_str().to_owned())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(active(), vec!["open-before-sweep"]);
+    assert_eq!(inbox(), vec!["open-before-sweep"]);
+    db.execute("INSERT INTO warning_close_sweeps(id,condition_kind,affected_seat_id,after_ordinal,through_ordinal,close_decision_seq,interval_high_water,decision_at) VALUES ('sweep','receipt','s',0,1,2,0,2)", []).unwrap();
+    assert!(active().is_empty(), "queued close is logically closed");
+    assert_eq!(
+        inbox(),
+        vec!["open-before-sweep"],
+        "queued work cannot fabricate a clear event"
+    );
+    db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,decision_at)
+            VALUES ('reopened-warning','i','t',2,'warn','{}',3,0);
+        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id)
+            VALUES ('reopened-warning',3,'t',0,'s','receipt','transition:reopened-warning');
+        INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq)
+            VALUES ('receipt','t','receipt-backlog','s','reopened-warning',3);
+        UPDATE threads SET next_sequence=3 WHERE id='t';").unwrap();
+    assert_eq!(
+        active(),
+        vec!["reopened-warning"],
+        "sweep high water must not close a later open"
+    );
+    assert_eq!(inbox(), vec!["open-before-sweep", "reopened-warning"]);
+}
+
+#[test]
+fn unavailable_close_sweep_matches_exact_episode() {
+    let (store, db) = fixture();
+    db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,decision_at)
+            VALUES ('unavailable-open','i','t',1,'warn','{}',1,0);
+        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id)
+            VALUES ('unavailable-open',1,'t',0,'s','unavailable','transition:unavailable-open');
+        INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,episode,open_warning_id,opened_seq)
+            VALUES ('unavailable','t','seat-episode-1','s',1,'unavailable-open',1);
+        UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
+    db.execute("INSERT INTO warning_close_sweeps(id,condition_kind,affected_seat_id,episode,after_ordinal,through_ordinal,close_decision_seq,interval_high_water,decision_at) VALUES ('wrong-episode','unavailable','s',2,0,1,2,0,2)", []).unwrap();
+    let list = || {
+        let CommandResult::ActiveWarnings(result) = query(
+            &store,
+            "i",
+            &Command::ActiveWarnings(crate::protocol::commands::ActiveWarningsQuery {
+                thread: ThreadId::new("t"),
+                page: page(None),
+            }),
+            &budget(),
+        )
+        .unwrap() else {
+            panic!()
+        };
+        result
+            .items
+            .iter()
+            .map(|w| w.warning.as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(list(), vec!["unavailable-open"]);
+    db.execute("INSERT INTO warning_close_sweeps(id,condition_kind,affected_seat_id,episode,after_ordinal,through_ordinal,close_decision_seq,interval_high_water,decision_at) VALUES ('right-episode','unavailable','s',1,0,1,3,0,3)", []).unwrap();
+    assert!(list().is_empty());
+}
+
+#[test]
+fn inbox_clear_recipient_is_frozen_at_close_decision_before_projection() {
+    let (store, db) = fixture();
+    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at)
+            VALUES ('early','i','resolved','native',1,0),('late','i','resolved','native',1,0);
+        INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq)
+            VALUES ('t','early',1,1),('t','late',1,3);
+        INSERT INTO warning_close_sweeps(id,condition_kind,affected_seat_id,after_ordinal,through_ordinal,close_decision_seq,interval_high_water,decision_at)
+            VALUES ('close-before-join','receipt','s',0,1,2,2,2);
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,decision_at)
+            VALUES ('clear-after-close','i','t',1,'warn','{}',4,4);
+        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id,recipient_cutoff_seq)
+            VALUES ('clear-after-close',4,'t',2,'s','receipt','transition:clear-after-close',2);
+        INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq,clear_warning_id,cleared_seq)
+            VALUES ('receipt','t','backlog','s','prior-open',1,'clear-after-close',4);
+        UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
+    let warnings_for = |seat| {
+        let CommandResult::InboxBatch(result) = query(
+            &store,
+            "i",
+            &Command::InboxBatch(InboxQuery {
+                seat: Some(SeatId::new(seat)),
+                page: page(None),
+            }),
+            &budget(),
+        )
+        .unwrap() else {
+            panic!()
+        };
+        result
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::protocol::results::InboxBatchItem::Warning { warning, .. } => {
+                    Some(warning.as_str().to_owned())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(warnings_for("early"), vec!["clear-after-close"]);
+    assert!(warnings_for("late").is_empty());
 }
 
 #[test]

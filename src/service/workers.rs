@@ -1160,6 +1160,30 @@ impl WakePort for ScheduledStore {
     ) -> Result<Page<WakeCandidate>, ApiError> {
         self.store.wake_candidates(page, budget)
     }
+    fn wake_batch_seats(
+        &self,
+        after: Option<&crate::protocol::ids::SeatId>,
+        limit: u16,
+        budget: &CallBudget,
+    ) -> Result<Vec<crate::protocol::ids::SeatId>, ApiError> {
+        self.store.wake_batch_seats(after, limit, budget)
+    }
+    fn clear_wake_batch_if_empty(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        let _turn = self.writer.enter_background(budget, self.store.clock())?;
+        self.store.clear_wake_batch_if_empty(seat, budget)
+    }
+    fn wake_batch_window(
+        &self,
+        candidate: &WakeCandidate,
+        budget: &CallBudget,
+    ) -> Result<Option<(crate::protocol::time::UtcMillis, u64)>, ApiError> {
+        let _turn = self.writer.enter_background(budget, self.store.clock())?;
+        self.store.wake_batch_window(candidate, budget)
+    }
     fn reserve_wake(
         &self,
         candidate: &WakeCandidate,
@@ -1335,6 +1359,28 @@ impl<P: WakePort + ?Sized> WakePort for ObservedWakePort<'_, P> {
             None,
             self.port.wake_candidates(page, budget),
         )
+    }
+    fn wake_batch_seats(
+        &self,
+        after: Option<&crate::protocol::ids::SeatId>,
+        limit: u16,
+        budget: &CallBudget,
+    ) -> Result<Vec<crate::protocol::ids::SeatId>, ApiError> {
+        self.port.wake_batch_seats(after, limit, budget)
+    }
+    fn clear_wake_batch_if_empty(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        self.port.clear_wake_batch_if_empty(seat, budget)
+    }
+    fn wake_batch_window(
+        &self,
+        candidate: &WakeCandidate,
+        budget: &CallBudget,
+    ) -> Result<Option<(crate::protocol::time::UtcMillis, u64)>, ApiError> {
+        self.port.wake_batch_window(candidate, budget)
     }
     fn reserve_wake(
         &self,

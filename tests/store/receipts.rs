@@ -852,7 +852,7 @@ fn committed_ack_replay_survives_retirement_without_new_attribution() {
 
 #[test]
 fn unavailable_joined_recipient_gets_one_warning_for_its_episode() {
-    let (context, mut conn, _) = setup();
+    let (context, mut conn, clock) = setup();
     for key in ["op", "op2"] {
         let mut send = send_request(vec!["c"]);
         send.operation = OperationId::new(key);
@@ -873,8 +873,77 @@ fn unavailable_joined_recipient_gets_one_warning_for_its_episode() {
         .unwrap()
         .map(Result::unwrap)
         .collect();
+    drop(stmt);
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].contains("\"seat\":\"b\""));
+    let open: i64 = conn.query_row("SELECT count(*) FROM warning_conditions WHERE condition_kind='unavailable' AND clear_warning_id IS NULL", [], |r| r.get(0)).unwrap();
+    assert_eq!(open, 1);
+    let tx = conn.transaction().unwrap();
+    assert_eq!(
+        crate::store::schema::clear_open_unavailability_for_seat(&tx, "b", UtcMillis(2_000))
+            .unwrap(),
+        1
+    );
+    tx.execute("UPDATE seats SET unavailability_open=0 WHERE id='b'", [])
+        .unwrap();
+    assert_eq!(
+        crate::store::schema::clear_open_unavailability_for_seat(&tx, "b", UtcMillis(2_000))
+            .unwrap(),
+        0
+    );
+    tx.commit().unwrap();
+    let transitions_before: i64 = conn.query_row("SELECT count(*) FROM warning_jobs WHERE warning_id IN (SELECT open_warning_id FROM warning_conditions UNION SELECT clear_warning_id FROM warning_conditions)", [], |r| r.get(0)).unwrap();
+    assert_eq!(transitions_before, 1);
+    let mut next = send_request(vec!["c"]);
+    next.operation = OperationId::new("op3");
+    let blocked = send_prepared(
+        &context,
+        &mut conn,
+        &next,
+        &mut permit(&next),
+        messages::MessageLimits::default(),
+    )
+    .unwrap_err();
+    assert_eq!(blocked.code, crate::protocol::results::ErrorCode::StoreBusy);
+    drop(conn);
+    let mut conn = context.open_writer().unwrap();
+    let close_job: String = conn
+        .query_row(
+            "SELECT id FROM work_jobs WHERE kind='warning_condition_close'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: crate::protocol::time::Cancellation::default(),
+    };
+    while crate::store::materialization::advance_work(
+        &mut conn,
+        &close_job,
+        crate::ports::DurableWorkAdmission { max_units: 16 },
+        &budget,
+        clock.as_ref(),
+    )
+    .unwrap()
+    .has_more
+    {}
+    let transitions: i64 = conn.query_row("SELECT count(*) FROM warning_jobs WHERE warning_id IN (SELECT open_warning_id FROM warning_conditions UNION SELECT clear_warning_id FROM warning_conditions)", [], |r| r.get(0)).unwrap();
+    assert_eq!(transitions, 2);
+    let mut retry = next.clone();
+    retry.operation = OperationId::new("op4");
+    send_prepared(
+        &context,
+        &mut conn,
+        &retry,
+        &mut permit(&retry),
+        messages::MessageLimits::default(),
+    )
+    .unwrap();
+    let transitions: Vec<(i64, Option<i64>)> = conn.prepare("SELECT opened_seq,cleared_seq FROM warning_conditions WHERE condition_kind='unavailable' ORDER BY ordinal").unwrap().query_map([], |r| Ok((r.get(0)?,r.get(1)?))).unwrap().collect::<Result<_,_>>().unwrap();
+    assert_eq!(transitions.len(), 2);
+    assert!(transitions[0].0 < transitions[0].1.unwrap());
+    assert!(transitions[0].1.unwrap() < transitions[1].0);
 }
 
 #[test]
@@ -1673,6 +1742,84 @@ fn ack_records_binding_generation_separately_from_target_generation() {
         )
         .unwrap();
     assert_eq!(generation, 3);
+}
+
+#[test]
+fn inbox_display_ack_records_claim_and_only_settles_addressed_pending_agent_receipt() {
+    let (context, mut conn, _) = setup();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('displayed','i','t',1,'ordinary','a','read body',0,2),('foreign','i','t',2,'ordinary','a','other body',0,3)", []).unwrap();
+    conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('displayed','t','b','pending',300000),('foreign','t','c','pending',300000)", []).unwrap();
+    conn.execute("UPDATE threads SET next_sequence=3 WHERE id='t'", [])
+        .unwrap();
+    conn.execute("UPDATE host_instances SET decision_seq=3 WHERE id='i'", [])
+        .unwrap();
+    let request = ack_request(vec![MessageId::new("displayed")]);
+    let digest =
+        crate::store::schema::canonical_digest(&receipts::ack_displayed_payload(&request)).unwrap();
+    let mut grant = cooperative_permit(
+        &request.claim,
+        &request.operation,
+        ObligationRef::CheckIn(SeatId::new("b")),
+        digest,
+        (1, 0),
+    );
+    receipts::ack_displayed(
+        &context,
+        &mut conn,
+        &crate::protocol::time::CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
+        &request,
+        &mut grant,
+    )
+    .unwrap();
+    let observation: String = conn
+        .query_row(
+            "SELECT ack_observation FROM receipts WHERE message_id='displayed' AND seat_id='b'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let observation: serde_json::Value = serde_json::from_str(&observation).unwrap();
+    assert_eq!(observation["provenance"], "cooperative_top_level");
+    assert_eq!(
+        observation["action_provenance"],
+        "cooperative_inbox_display"
+    );
+    let foreign_state: String = conn
+        .query_row(
+            "SELECT state FROM receipts WHERE message_id='foreign' AND seat_id='c'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(foreign_state, "pending");
+
+    let mut foreign = ack_request(vec![MessageId::new("foreign")]);
+    foreign.operation = OperationId::new("foreign-display-op");
+    let digest =
+        crate::store::schema::canonical_digest(&receipts::ack_displayed_payload(&foreign)).unwrap();
+    let mut grant = cooperative_permit(
+        &foreign.claim,
+        &foreign.operation,
+        ObligationRef::CheckIn(SeatId::new("b")),
+        digest,
+        (1, 0),
+    );
+    assert!(
+        receipts::ack_displayed(
+            &context,
+            &mut conn,
+            &crate::protocol::time::CallBudget {
+                deadline: MonoInstant(u64::MAX),
+                cancellation: Default::default()
+            },
+            &foreign,
+            &mut grant
+        )
+        .is_err()
+    );
 }
 
 #[test]

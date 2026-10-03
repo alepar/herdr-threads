@@ -1,0 +1,108 @@
+{
+  "case": "0s",
+  "wake_batch_delay_ms": 0,
+  "restart_during_window": false,
+  "run_id": "f0a2febc-d940-4dcf-bd2c-6f97929a25e6",
+  "private_root": "/private/tmp/ih.wake-overhead-23l_vfq5",
+  "status": "passed",
+  "schema": {
+    "state": "ready",
+    "detail": null
+  },
+  "start_utc_ms": 1791051346230,
+  "horizon_ms": 35000.577749917284,
+  "sends": [
+    {
+      "message": "mh5YGhVjL",
+      "sent_after_ms": 67.2821250045672
+    },
+    {
+      "message": "mC3uJphqD",
+      "sent_after_ms": 1051.1606249492615
+    },
+    {
+      "message": "mKRUSJGhg",
+      "sent_after_ms": 2040.3065419523045
+    },
+    {
+      "message": "mUlMCcX1D",
+      "sent_after_ms": 3058.2297089276835
+    },
+    {
+      "message": "mmCOR9GYP",
+      "sent_after_ms": 4059.7492499509826
+    },
+    {
+      "message": "mXh1fXVuh",
+      "sent_after_ms": 5048.223499907181
+    }
+  ],
+  "received": [
+    {
+      "mono_ms": 997405943.074208,
+      "utc_ms": 1791051346646,
+      "text": "herdr-threads: attention pending; run herdr-threads inbox"
+    },
+    {
+      "mono_ms": 997436518.331208,
+      "utc_ms": 1791051377221,
+      "text": "herdr-threads: attention pending; run herdr-threads inbox"
+    }
+  ],
+  "transport_lines": [
+    {
+      "mono_ms": 997405943.074208,
+      "utc_ms": 1791051346646,
+      "text": "herdr-threads: attention pending; run herdr-threads inbox"
+    },
+    {
+      "mono_ms": 997406186.38175,
+      "utc_ms": 1791051346889,
+      "text": ""
+    },
+    {
+      "mono_ms": 997436518.331208,
+      "utc_ms": 1791051377221,
+      "text": "herdr-threads: attention pending; run herdr-threads inbox"
+    },
+    {
+      "mono_ms": 997436881.768291,
+      "utc_ms": 1791051377585,
+      "text": ""
+    }
+  ],
+  "wake_count": 2,
+  "first_wake_after_ms": 415.591166973114,
+  "wake_work": {
+    "seat_id": "sO84j5mEt",
+    "reason_bits": 1,
+    "attention_version": 7,
+    "checkpoint_version": 0,
+    "binding_generation": 2,
+    "retry_step": 1,
+    "reservation_id": null,
+    "reservation_boot": null,
+    "reserved_at_utc": 1791051376874,
+    "completed_at_utc": 1791051377545,
+    "minimum_delay_ms": 30000,
+    "effective_delay_ms": 60000,
+    "last_reservation_id": "5bac3758-c10c-412f-943e-ad6885a6b23e",
+    "last_reservation_boot": "319657d9-40b3-4312-9308-4f9f15a5071c",
+    "last_reserved_at_utc": 1791051376874,
+    "last_invitation_seq": null,
+    "last_invitation_offset": null,
+    "last_receipt_seq": 14,
+    "last_receipt_offset": 0,
+    "last_warning_seq": null,
+    "last_warning_offset": null,
+    "last_outcome": "submitted"
+  },
+  "wake_batch": null,
+  "pending_receipts": 6,
+  "existing_foreign_servers_unchanged": true,
+  "leak_check": {
+    "exit_code": 0,
+    "stdout": "no leaked test processes\n",
+    "stderr": ""
+  }
+}

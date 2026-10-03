@@ -136,6 +136,9 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "service_notification_recipients",
     "snapshot_generations",
     "snapshot_targets",
+    // Open and clear writes also enqueue warning_jobs, which kick deadlines.
+    "warning_conditions",
+    "warning_close_sweeps",
     // Thread summaries (epic ht-1ip): derived data; a stored block's deadline
     // effect is written to `catch_up`, which kicks the deadline lane.
     "summary_blocks",

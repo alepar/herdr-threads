@@ -134,6 +134,7 @@ fn fake_wake_store() -> FakeWakeStore {
     FakeWakeStore {
         clock: Arc::new(FakeClock(AtomicU64::new(0))),
         events: Arc::new(Mutex::new(Vec::new())),
+        batch: None,
         fail_reservation: AtomicBool::new(false),
     }
 }

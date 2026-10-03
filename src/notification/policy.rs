@@ -12,6 +12,33 @@ use crate::protocol::{
 };
 
 pub const MARKER: &str = "herdr-threads: attention pending; run herdr-threads inbox";
+/// A durable UTC deadline gets one monotonic projection per process. A clock
+/// rollback on restart adds at most one configured batching interval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BatchGuard {
+    pub deadline: crate::protocol::time::UtcMillis,
+    pub mature_at: MonoInstant,
+}
+
+impl BatchGuard {
+    pub fn restore(
+        deadline: crate::protocol::time::UtcMillis,
+        delay_ms: u64,
+        now_utc: crate::protocol::time::UtcMillis,
+        now_mono: MonoInstant,
+    ) -> Self {
+        let remaining = deadline.0.saturating_sub(now_utc.0).max(0) as u64;
+        Self {
+            deadline,
+            mature_at: MonoInstant(now_mono.0.saturating_add(remaining.min(delay_ms))),
+        }
+    }
+
+    pub fn eligible(self, now: MonoInstant) -> bool {
+        now.0 >= self.mature_at.0
+    }
+}
+
 const STEPS_MS: [u64; 4] = [30_000, 60_000, 120_000, 300_000];
 
 /// Selection uses the store's effective logical candidate, including manifest

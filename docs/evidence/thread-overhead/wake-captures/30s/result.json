@@ -1,0 +1,96 @@
+{
+  "case": "30s",
+  "wake_batch_delay_ms": 30000,
+  "restart_during_window": false,
+  "run_id": "de2d7cc6-524c-4c8b-98a6-dcea0a31fb35",
+  "private_root": "/private/tmp/ih.wake-overhead-nqc57zr8",
+  "status": "passed",
+  "schema": {
+    "state": "ready",
+    "detail": null
+  },
+  "start_utc_ms": 1791051304738,
+  "horizon_ms": 35005.778416991234,
+  "sends": [
+    {
+      "message": "mhWBsOvDZ",
+      "sent_after_ms": 40.9747080411762
+    },
+    {
+      "message": "mkZWu926I",
+      "sent_after_ms": 1045.07704207208
+    },
+    {
+      "message": "mSHTPnLpH",
+      "sent_after_ms": 2057.382500031963
+    },
+    {
+      "message": "mu5wOrThB",
+      "sent_after_ms": 3065.6395830446854
+    },
+    {
+      "message": "m9PU9BU42",
+      "sent_after_ms": 4057.8622079920024
+    },
+    {
+      "message": "m4nJ0AILd",
+      "sent_after_ms": 5067.732625058852
+    }
+  ],
+  "received": [
+    {
+      "mono_ms": 997394401.803166,
+      "utc_ms": 1791051335105,
+      "text": "herdr-threads: attention pending; run herdr-threads inbox"
+    }
+  ],
+  "transport_lines": [
+    {
+      "mono_ms": 997394401.803166,
+      "utc_ms": 1791051335105,
+      "text": "herdr-threads: attention pending; run herdr-threads inbox"
+    },
+    {
+      "mono_ms": 997394658.340291,
+      "utc_ms": 1791051335361,
+      "text": ""
+    }
+  ],
+  "wake_count": 1,
+  "first_wake_after_ms": 30366.13958311081,
+  "wake_work": {
+    "seat_id": "sl9VEQHQp",
+    "reason_bits": 1,
+    "attention_version": 7,
+    "checkpoint_version": 0,
+    "binding_generation": 2,
+    "retry_step": 0,
+    "reservation_id": null,
+    "reservation_boot": null,
+    "reserved_at_utc": 1791051334778,
+    "completed_at_utc": 1791051335340,
+    "minimum_delay_ms": 30000,
+    "effective_delay_ms": 30000,
+    "last_reservation_id": "679e57e3-d261-4049-8df3-93bc53280979",
+    "last_reservation_boot": "777ba723-30d9-4fa5-af63-9ed519181dc3",
+    "last_reserved_at_utc": 1791051334778,
+    "last_invitation_seq": null,
+    "last_invitation_offset": null,
+    "last_receipt_seq": 14,
+    "last_receipt_offset": 0,
+    "last_warning_seq": null,
+    "last_warning_offset": null,
+    "last_outcome": "submitted"
+  },
+  "wake_batch": {
+    "seat_id": "sl9VEQHQp",
+    "deadline_at": 1791051334773
+  },
+  "pending_receipts": 6,
+  "existing_foreign_servers_unchanged": true,
+  "leak_check": {
+    "exit_code": 0,
+    "stdout": "no leaked test processes\n",
+    "stderr": ""
+  }
+}

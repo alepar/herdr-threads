@@ -3,6 +3,7 @@
 use super::{
     connection::{api_error, store_error},
     effective::{EffectiveReceiptState, effective_receipt, effective_warning_by_id},
+    schema,
     work::commit_work_prefix,
 };
 use crate::{
@@ -17,6 +18,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 #[derive(Clone, Copy)]
 enum Kind {
     Warning,
+    WarningClose,
     Send,
     Timer,
     Cleanup,
@@ -169,6 +171,7 @@ fn load_job(tx: &Connection, id: &str) -> Result<Job, ApiError> {
     };
     let kind = match kind.as_str() {
         "warning_attribution" => Kind::Warning,
+        "warning_condition_close" => Kind::WarningClose,
         "send_attention" => Kind::Send,
         "receipt_timer_materialization" => Kind::Timer,
         "preparation_cleanup" => Kind::Cleanup,
@@ -188,11 +191,53 @@ fn load_job(tx: &Connection, id: &str) -> Result<Job, ApiError> {
 fn advance_unit(tx: &Connection, job: &Job, position: u64) -> Result<(u64, bool), ApiError> {
     match job.kind {
         Kind::Warning => warning_unit(tx, &job.subject, position, job.high_water),
+        Kind::WarningClose => warning_close_unit(tx, &job.subject, position, job.high_water),
         Kind::Send => send_unit(tx, &job.subject, position, job.high_water),
         Kind::Timer => timer_unit(tx, &job.subject, position, job.high_water),
         Kind::Cleanup => cleanup_unit(tx, &job.subject, position),
         Kind::HumanReceipts => human_receipt_unit(tx, &job.subject, position, job.high_water),
     }
+}
+
+/// Drain one condition by keyset. Event, recipient snapshot job and cursor
+/// commit together in the enclosing work transaction, so retry is exact.
+fn warning_close_unit(
+    tx: &Connection,
+    sweep: &str,
+    position: u64,
+    high_water: u64,
+) -> Result<(u64, bool), ApiError> {
+    let (kind, seat, episode, decision_at, after, bound, cutoff, intervals): (String, String, Option<i64>, i64, i64, i64, i64, i64) = tx
+        .query_row(
+            "SELECT condition_kind,affected_seat_id,episode,decision_at,after_ordinal,through_ordinal,close_decision_seq,interval_high_water FROM warning_close_sweeps WHERE id=?1",
+            [sweep],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
+        )
+        .map_err(store_error)?;
+    if bound != sql(high_water)? {
+        return Err(api_error(
+            ErrorCode::StoreCorrupt,
+            "warning close high water changed",
+        ));
+    }
+    let next: Option<i64> = tx.query_row(
+        "SELECT c.ordinal FROM warning_conditions c INDEXED BY warning_conditions_close_scope WHERE c.affected_seat_id=?1 AND c.condition_kind=?2 AND c.episode IS ?3 AND c.ordinal>?4 AND c.ordinal<=?5 AND c.clear_warning_id IS NULL ORDER BY c.ordinal LIMIT 1",
+        params![seat,kind,episode,sql(position)?.max(after),bound], |r| r.get(0),
+    ).optional().map_err(store_error)?;
+    let Some(next) = next else {
+        return Ok((high_water, true));
+    };
+    schema::clear_warning_condition_at_snapshot(
+        tx,
+        next,
+        crate::protocol::time::UtcMillis(decision_at),
+        Some((cutoff, intervals)),
+    )?;
+    Ok((
+        u64::try_from(next)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative close ordinal"))?,
+        false,
+    ))
 }
 
 /// Reconcile one ordinal from each physical source. Both cursors share the
@@ -249,15 +294,15 @@ fn warning_unit(
     position: u64,
     high_water: u64,
 ) -> Result<(u64, bool), ApiError> {
-    let (event_seq,thread,affected,phase):(i64,String,Option<String>,String)=tx.query_row("SELECT event_seq,thread_id,affected_seat_id,phase FROM warning_jobs WHERE warning_id=?1 AND status IN ('pending','failed')",[warning],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(store_error)?;
+    let (event_seq,recipient_seq,thread,affected,phase):(i64,i64,String,Option<String>,String)=tx.query_row("SELECT event_seq,COALESCE(recipient_cutoff_seq,event_seq),thread_id,affected_seat_id,phase FROM warning_jobs WHERE warning_id=?1 AND status IN ('pending','failed')",[warning],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(store_error)?;
     match phase.as_str() {
         "intervals" => {
             type RowColumns = Option<(i64, String, i64, Option<i64>, Option<i64>)>;
             let row:RowColumns=tx.query_row("SELECT mi.ordinal,mi.seat_id,mi.joined_seq,mi.left_seq,s.retired_seq FROM membership_intervals mi JOIN seats s ON s.id=mi.seat_id WHERE mi.thread_id=?1 AND mi.ordinal>?2 AND mi.ordinal<=?3 ORDER BY mi.ordinal LIMIT 1",params![thread,sql(position)?,sql(high_water)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(store_error)?;
             if let Some((ordinal, seat, joined, left, retired)) = row {
-                if joined <= event_seq
-                    && left.is_none_or(|v| v > event_seq)
-                    && retired.is_none_or(|v| v > event_seq)
+                if joined <= recipient_seq
+                    && left.is_none_or(|v| v > recipient_seq)
+                    && retired.is_none_or(|v| v > recipient_seq)
                 {
                     attribute(tx, warning, &seat, event_seq)?;
                 }
@@ -281,7 +326,7 @@ fn warning_unit(
                         |r| r.get(0),
                     )
                     .map_err(store_error)?;
-                if retired.is_none_or(|v| v > event_seq) {
+                if retired.is_none_or(|v| v > recipient_seq) {
                     attribute(tx, warning, &seat, event_seq)?;
                 }
             }
@@ -328,6 +373,13 @@ fn actionable(tx: &Connection, warning: &str, seat: &str) -> Result<bool, ApiErr
         .map_err(store_error)?;
     if state == "retired" {
         return Ok(false);
+    }
+    let transition: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1 OR clear_warning_id=?1)",
+        [warning], |r| r.get(0),
+    ).map_err(store_error)?;
+    if transition {
+        return Ok(true);
     }
     let (kind,condition,affected):(String,String,Option<String>)=tx.query_row("SELECT condition_kind,condition_id,affected_seat_id FROM warning_jobs WHERE warning_id=?1",[warning],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(store_error)?;
     match kind.as_str() {
@@ -418,8 +470,67 @@ fn send_unit(
     if next <= recipients + warnings {
         let offset = next - recipients;
         let (warning,affected,key):(String,String,String)=tx.query_row("SELECT warning_id,affected_seat_id,warning_key FROM prepared_unavailable_warnings WHERE preparation_id=?1 AND warning_offset=?2",params![preparation,offset],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(store_error)?;
-        tx.execute("INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES(?1,?2,?3,?4,?5,'unavailable',?6)",params![warning,seq,thread,interval_high_water,affected,key]).map_err(store_error)?;
-        tx.execute("INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES(?1,'warning_attribution',?2,?3)",params![format!("work:{warning}"),warning,interval_high_water]).map_err(store_error)?;
+        let transitioned: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1)",
+                [&warning],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        let condition_id = if transitioned {
+            format!("transition:{warning}")
+        } else {
+            key
+        };
+        let existing: Option<(i64,String,i64,Option<String>,String,String)> = tx.query_row(
+            "SELECT event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id FROM warning_jobs WHERE warning_id=?1",
+            [&warning], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)),
+        ).optional().map_err(store_error)?;
+        if let Some(row) = existing {
+            if row
+                != (
+                    seq,
+                    thread.clone(),
+                    interval_high_water,
+                    Some(affected.clone()),
+                    "unavailable".to_owned(),
+                    condition_id,
+                )
+            {
+                return Err(api_error(
+                    ErrorCode::StoreCorrupt,
+                    "warning job identity collision",
+                ));
+            }
+        } else {
+            tx.execute("INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES(?1,?2,?3,?4,?5,'unavailable',?6)",params![warning,seq,thread,interval_high_water,affected,condition_id]).map_err(store_error)?;
+        }
+        let work_id = format!("work:{warning}");
+        let existing_work: Option<(String, String, i64)> = tx
+            .query_row(
+                "SELECT kind,subject_id,high_water FROM work_jobs WHERE id=?1",
+                [&work_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if let Some(row) = existing_work {
+            if row
+                != (
+                    "warning_attribution".to_owned(),
+                    warning.clone(),
+                    interval_high_water,
+                )
+            {
+                return Err(api_error(
+                    ErrorCode::StoreCorrupt,
+                    "warning work identity collision",
+                ));
+            }
+        } else {
+            tx.execute("INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES(?1,'warning_attribution',?2,?3)",
+                params![work_id,warning,interval_high_water]).map_err(store_error)?;
+        }
         return Ok((position + 1, false));
     }
     Ok((high_water, true))

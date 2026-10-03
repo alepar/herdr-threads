@@ -215,7 +215,8 @@ fn public_facade_late_accept_and_ack_share_unique_due_warnings() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(warnings, 2);
+    // Both overdue opens remain followed by one clearance each.
+    assert_eq!(warnings, 4);
     let by_source: (i64, i64) = db.query_row("SELECT SUM(source_invitation_id='inv'),SUM(source_message_id='m') FROM messages WHERE thread_id='t' AND kind='warn'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
     assert_eq!(by_source, (1, 1));
     drop(db);

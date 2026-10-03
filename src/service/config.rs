@@ -23,6 +23,7 @@ const O_NOFOLLOW: i32 = 0x0002_0000;
 pub struct ServiceConfig {
     timing: SchedulerTiming,
     minimum_wake_delay_ms: u64,
+    wake_batch_delay_ms: u64,
     summary: SummarySettings,
 }
 
@@ -31,6 +32,7 @@ impl Default for ServiceConfig {
         Self {
             timing: SchedulerTiming::default(),
             minimum_wake_delay_ms: crate::daemon::settings::DEFAULT_MINIMUM_WAKE_DELAY_MS,
+            wake_batch_delay_ms: crate::daemon::settings::DEFAULT_WAKE_BATCH_DELAY_MS,
             summary: SummarySettings::default(),
         }
     }
@@ -161,6 +163,7 @@ impl ServiceConfig {
             settings.receipt_default_ms,
             settings.minimum_wake_delay_ms,
         )
+        .and_then(|config| config.with_wake_batch_delay(settings.wake_batch_delay_ms))
         .and_then(|config| config.with_summary(settings.summary.clone()))
     }
 
@@ -176,8 +179,17 @@ impl ServiceConfig {
         Ok(Self {
             timing,
             minimum_wake_delay_ms,
+            wake_batch_delay_ms: crate::daemon::settings::DEFAULT_WAKE_BATCH_DELAY_MS,
             summary: SummarySettings::default(),
         })
+    }
+
+    pub fn with_wake_batch_delay(mut self, delay_ms: u64) -> Result<Self, &'static str> {
+        if delay_ms > i64::MAX as u64 {
+            return Err("invalid wake batch delay");
+        }
+        self.wake_batch_delay_ms = delay_ms;
+        Ok(self)
     }
 
     /// Replace the summary settings after validating them (spec §13).
@@ -201,6 +213,7 @@ impl ServiceConfig {
             invitation_default_ms: self.timing.invitation.as_millis() as u64,
             receipt_default_ms: self.timing.receipt.as_millis() as u64,
             minimum_wake_delay_ms: self.minimum_wake_delay_ms,
+            wake_batch_delay_ms: self.wake_batch_delay_ms,
         }
     }
 
@@ -217,6 +230,7 @@ impl ServiceConfig {
             },
             daemon_boot: Some(daemon_boot),
             minimum_wake_delay_ms: self.minimum_wake_delay_ms,
+            wake_batch_delay_ms: self.wake_batch_delay_ms,
             summary: self.summary.clone(),
         }
     }

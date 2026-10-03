@@ -189,6 +189,23 @@ fn doctor_text_has_one_claude_path_line() {
     assert_eq!(lines, ["claude on PATH: not found"]);
 }
 
+#[test]
+fn doctor_debug_text_shows_effective_wake_batch_setting() {
+    let report = json!({
+        "daemon": {"state": "healthy", "settings": {
+            "invitation_default_ms": 300000,
+            "receipt_default_ms": 300000,
+            "minimum_wake_delay_ms": 30000,
+            "wake_batch_delay_ms": 0
+        }}
+    });
+    let text = render_debug_text(&report);
+    assert!(
+        text.contains("daemon.settings.wake_batch_delay_ms: 0\n"),
+        "{text}"
+    );
+}
+
 // -- version honesty (ht-p03.23) -------------------------------------------
 
 fn warning_for(case: &PathCase) -> Option<String> {

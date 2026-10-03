@@ -63,7 +63,7 @@ fn migration_waives_legacy_human_receipts_before_later_agent_mail() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        16
+        schema::LATEST_VERSION
     );
 }
 use crate::store::schema::{self, record_overdue_if_pending};
@@ -2500,6 +2500,725 @@ fn receipt_warning_keys_distinguish_ids_containing_colons() {
 }
 
 #[test]
+fn receipt_warning_condition_is_quiet_for_second_pending_source() {
+    let (context, mut db, _) = seeded_db(300_000);
+    for (id, sequence) in [("m1", 1), ("m2", 2)] {
+        db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,'t',?2,'ordinary','body',0,?2)", params![id,sequence]).unwrap();
+        db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','s','pending',300000,0,300000)", [id]).unwrap();
+    }
+    db.execute("UPDATE threads SET next_sequence=3 WHERE id='t'", [])
+        .unwrap();
+    let warn = |tx: &rusqlite::Transaction<'_>, id: &str, at: UtcMillis| {
+        record_overdue_if_pending(
+            tx,
+            &ObligationRef::Receipt {
+                message: MessageId::new(id),
+                seat: SeatId::new("s"),
+            },
+            &TimeBasis::Decision,
+            at,
+        )
+    };
+    context
+        .execute_decision(
+            &mut db,
+            |_| Ok(()),
+            |tx, at, _| {
+                assert!(warn(tx, "m1", at.utc)?.inserted);
+                assert!(!warn(tx, "m2", at.utc)?.inserted);
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM warning_jobs", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn receipt_warning_condition_survives_writer_reopen() {
+    let (context, mut db, _) = seeded_db(300_000);
+    for (id, sequence) in [("m1", 1), ("m2", 2)] {
+        db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,'t',?2,'ordinary','body',0,?2)", params![id,sequence]).unwrap();
+        db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','s','pending',300000,0,300000)", [id]).unwrap();
+    }
+    db.execute("UPDATE threads SET next_sequence=3 WHERE id='t'", [])
+        .unwrap();
+    context
+        .execute_decision(
+            &mut db,
+            |_| Ok(()),
+            |tx, at, _| {
+                assert!(
+                    record_overdue_if_pending(
+                        tx,
+                        &ObligationRef::Receipt {
+                            message: MessageId::new("m1"),
+                            seat: SeatId::new("s")
+                        },
+                        &TimeBasis::Decision,
+                        at.utc
+                    )?
+                    .inserted
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+    drop(db);
+    let mut db = context.open_writer().unwrap();
+    context
+        .execute_decision(
+            &mut db,
+            |_| Ok(()),
+            |tx, at, _| {
+                assert!(
+                    !record_overdue_if_pending(
+                        tx,
+                        &ObligationRef::Receipt {
+                            message: MessageId::new("m2"),
+                            seat: SeatId::new("s")
+                        },
+                        &TimeBasis::Decision,
+                        at.utc
+                    )?
+                    .inserted
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM warning_conditions WHERE clear_warning_id IS NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn unavailable_recovery_records_one_bounded_close_job_for_many_threads() {
+    let (context, mut db, clock) = seeded_db(300_000);
+    const CONDITIONS: i64 = 256;
+    for number in 0..CONDITIONS {
+        let thread = format!("u{number}");
+        let warning = format!("e{number}");
+        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)", [&thread]).unwrap();
+        db.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,episode,open_warning_id,opened_seq) VALUES ('unavailable',?1,'1:s:1','s',1,?2,1)", params![thread,warning]).unwrap();
+    }
+    let before: i64 = db
+        .query_row("SELECT total_changes()", [], |r| r.get(0))
+        .unwrap();
+    context
+        .execute_decision(
+            &mut db,
+            |_| Ok(()),
+            |tx, at, _| {
+                assert_eq!(
+                    schema::clear_open_unavailability_for_seat(tx, "s", at.utc)?,
+                    1
+                );
+                tx.execute("UPDATE seats SET unavailability_open=0 WHERE id='s'", [])
+                    .unwrap();
+                Ok(())
+            },
+        )
+        .unwrap();
+    let after: i64 = db
+        .query_row("SELECT total_changes()", [], |r| r.get(0))
+        .unwrap();
+    assert!(
+        after - before <= 5,
+        "foreground touched {} rows",
+        after - before
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM warning_conditions WHERE clear_warning_id IS NOT NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(db.query_row("SELECT count(*) FROM work_jobs WHERE kind='warning_condition_close' AND status='pending'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    let job: String = db
+        .query_row(
+            "SELECT id FROM work_jobs WHERE kind='warning_condition_close'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let budget = CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Cancellation::default(),
+    };
+    let first = crate::store::materialization::advance_work(
+        &mut db,
+        &job,
+        crate::ports::DurableWorkAdmission { max_units: 1 },
+        &budget,
+        clock.as_ref(),
+    )
+    .unwrap();
+    assert!(first.has_more);
+    assert_eq!(first.processed_this_turn, 1);
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM warning_conditions WHERE clear_warning_id IS NOT NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    drop(db);
+    let mut db = context.open_writer().unwrap();
+    while crate::store::materialization::advance_work(
+        &mut db,
+        &job,
+        crate::ports::DurableWorkAdmission { max_units: 16 },
+        &budget,
+        clock.as_ref(),
+    )
+    .unwrap()
+    .has_more
+    {}
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM warning_conditions WHERE clear_warning_id IS NOT NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        CONDITIONS
+    );
+    assert_eq!(db.query_row("SELECT count(*) FROM work_jobs WHERE kind='warning_condition_close' AND status='complete'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+}
+
+#[test]
+fn overlapping_waiver_sweeps_keep_each_conditions_first_close_time() {
+    let (context, mut db, clock) = seeded_db(300_000);
+    for (thread, warning) in [("t", "eold"), ("t2", "enew")] {
+        if thread == "t2" {
+            db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','i','topic','goal',0,0)", []).unwrap();
+        }
+        db.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('receipt',?1,'s','s',?2,1)", params![thread, warning]).unwrap();
+        if thread == "t" {
+            context
+                .execute_decision(
+                    &mut db,
+                    |_| Ok(()),
+                    |tx, _, _| {
+                        assert_eq!(
+                            schema::clear_waived_receipt_conditions_for_seat(
+                                tx,
+                                "s",
+                                UtcMillis(100)
+                            )?,
+                            1
+                        );
+                        Ok(())
+                    },
+                )
+                .unwrap();
+        }
+    }
+    context
+        .execute_decision(
+            &mut db,
+            |_| Ok(()),
+            |tx, _, _| {
+                assert_eq!(
+                    schema::clear_waived_receipt_conditions_for_seat(tx, "s", UtcMillis(200))?,
+                    1
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+    let jobs: Vec<String> = db
+        .prepare("SELECT id FROM work_jobs WHERE kind='warning_condition_close' ORDER BY ordinal")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(jobs.len(), 2);
+    let budget = CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Cancellation::default(),
+    };
+    while crate::store::materialization::advance_work(
+        &mut db,
+        &jobs[1],
+        crate::ports::DurableWorkAdmission { max_units: 16 },
+        &budget,
+        clock.as_ref(),
+    )
+    .unwrap()
+    .has_more
+    {}
+    let old: Option<String> = db
+        .query_row(
+            "SELECT clear_warning_id FROM warning_conditions WHERE open_warning_id='eold'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(old.is_none());
+    while crate::store::materialization::advance_work(
+        &mut db,
+        &jobs[0],
+        crate::ports::DurableWorkAdmission { max_units: 16 },
+        &budget,
+        clock.as_ref(),
+    )
+    .unwrap()
+    .has_more
+    {}
+    let times: Vec<i64> = db.prepare("SELECT m.decision_at FROM warning_conditions c JOIN messages m ON m.id=c.clear_warning_id ORDER BY c.ordinal").unwrap()
+        .query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+    assert_eq!(times, vec![100, 200]);
+}
+
+#[test]
+fn deferred_clear_recipient_snapshot_excludes_member_joining_after_close() {
+    let (context, mut db, clock) = seeded_db(300_000);
+    for seat in ["early", "late"] {
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','resolved','native',1,0)", [seat]).unwrap();
+    }
+    db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','early',1,1)", []).unwrap();
+    db.execute("UPDATE host_instances SET decision_seq=2 WHERE id='i'", [])
+        .unwrap();
+    db.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('receipt','t','s','s','eopen',1)", []).unwrap();
+    context
+        .execute_decision(
+            &mut db,
+            |_| Ok(()),
+            |tx, _, _| {
+                schema::clear_waived_receipt_conditions_for_seat(tx, "s", UtcMillis(100))?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','late',1,3)", []).unwrap();
+    db.execute("UPDATE host_instances SET decision_seq=3 WHERE id='i'", [])
+        .unwrap();
+    let job: String = db
+        .query_row(
+            "SELECT id FROM work_jobs WHERE kind='warning_condition_close'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let budget = CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Cancellation::default(),
+    };
+    while crate::store::materialization::advance_work(
+        &mut db,
+        &job,
+        crate::ports::DurableWorkAdmission { max_units: 16 },
+        &budget,
+        clock.as_ref(),
+    )
+    .unwrap()
+    .has_more
+    {}
+    let clear: String = db
+        .query_row(
+            "SELECT clear_warning_id FROM warning_conditions WHERE open_warning_id='eopen'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(crate::store::effective::is_warning_recipient(&db, &clear, "early").unwrap());
+    assert!(!crate::store::effective::is_warning_recipient(&db, &clear, "late").unwrap());
+    let fanout = format!("work:{clear}");
+    while crate::store::materialization::advance_work(
+        &mut db,
+        &fanout,
+        crate::ports::DurableWorkAdmission { max_units: 16 },
+        &budget,
+        clock.as_ref(),
+    )
+    .unwrap()
+    .has_more
+    {}
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM warning_recipients WHERE warning_id=?1 AND seat_id='early'",
+            [&clear],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM warning_recipients WHERE warning_id=?1 AND seat_id='late'",
+            [&clear],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn receipt_reopen_publishes_queued_clear_before_new_open() {
+    let (context, mut db, _) = seeded_db(300_000);
+    db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m1','t',1,'ordinary','first',0,1)", []).unwrap();
+    db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('m1','t','s','pending',300000,0,300000)", []).unwrap();
+    db.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
+        .unwrap();
+    context
+        .execute_decision(
+            &mut db,
+            |_| Ok(()),
+            |tx, at, _| {
+                record_overdue_if_pending(
+                    tx,
+                    &ObligationRef::Receipt {
+                        message: MessageId::new("m1"),
+                        seat: SeatId::new("s"),
+                    },
+                    &TimeBasis::Decision,
+                    at.utc,
+                )?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    context.execute_decision(&mut db, |_| Ok(()), |tx, at, _| {
+        let cutoff = schema::next_decision_seq(tx, "i")?;
+        tx.execute("INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES ('s',?1,1,?2)", params![cutoff as i64,at.utc.0]).unwrap();
+        schema::clear_waived_receipt_conditions_for_seat(tx, "s", at.utc)?;
+        Ok(())
+    }).unwrap();
+    let cutoff: i64 = db
+        .query_row(
+            "SELECT close_decision_seq FROM warning_close_sweeps",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let next_seq = cutoff + 1;
+    db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m2','t',3,'ordinary','second',0,?1)", [next_seq]).unwrap();
+    db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('m2','t','s','pending',300000,0,300000)", []).unwrap();
+    db.execute(
+        "UPDATE host_instances SET decision_seq=?1 WHERE id='i'",
+        [next_seq],
+    )
+    .unwrap();
+    db.execute("UPDATE threads SET next_sequence=4 WHERE id='t'", [])
+        .unwrap();
+    context
+        .execute_decision(
+            &mut db,
+            |_| Ok(()),
+            |tx, at, _| {
+                assert!(
+                    record_overdue_if_pending(
+                        tx,
+                        &ObligationRef::Receipt {
+                            message: MessageId::new("m2"),
+                            seat: SeatId::new("s")
+                        },
+                        &TimeBasis::Decision,
+                        at.utc
+                    )?
+                    .inserted
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+    let rows: Vec<(i64, Option<i64>, Option<i64>)> = db.prepare("SELECT opened_seq,cleared_seq,(SELECT recipient_cutoff_seq FROM warning_jobs WHERE warning_id=c.clear_warning_id) FROM warning_conditions c WHERE condition_kind='receipt' ORDER BY ordinal").unwrap()
+        .query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap().collect::<Result<_,_>>().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows[0].0 < rows[0].1.unwrap() && rows[0].1.unwrap() < rows[1].0);
+    assert_eq!(rows[0].2, Some(cutoff));
+}
+
+#[test]
+fn human_waiver_closes_warned_receipt_without_acking_it() {
+    let (context, mut db, clock) = seeded_db(300_000);
+    db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m','t',1,'ordinary','body',0,1)", []).unwrap();
+    db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('m','t','s','pending',300000,0,300000)", []).unwrap();
+    db.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
+        .unwrap();
+    context
+        .execute_decision(
+            &mut db,
+            |_| Ok(()),
+            |tx, at, _| {
+                record_overdue_if_pending(
+                    tx,
+                    &ObligationRef::Receipt {
+                        message: MessageId::new("m"),
+                        seat: SeatId::new("s"),
+                    },
+                    &TimeBasis::Decision,
+                    at.utc,
+                )?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    context.execute_decision(&mut db, |_| Ok(()), |tx, at, _| {
+        let cutoff = schema::next_decision_seq(tx, "i")?;
+        tx.execute("INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES ('s',?1,1,?2)", params![cutoff as i64,at.utc.0]).unwrap();
+        assert_eq!(schema::clear_waived_receipt_conditions_for_seat(tx, "s", at.utc)?, 1);
+        Ok(())
+    }).unwrap();
+    let job: String = db
+        .query_row(
+            "SELECT id FROM work_jobs WHERE kind='warning_condition_close'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    while crate::store::materialization::advance_work(
+        &mut db,
+        &job,
+        crate::ports::DurableWorkAdmission { max_units: 16 },
+        &CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Cancellation::default(),
+        },
+        clock.as_ref(),
+    )
+    .unwrap()
+    .has_more
+    {}
+    let (state, clear): (String, Option<String>) = db.query_row("SELECT r.state,c.clear_warning_id FROM receipts r JOIN warning_conditions c ON c.open_warning_id=r.warning_message_id WHERE r.message_id='m'", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+    assert_eq!(state, "pending");
+    assert!(clear.is_some());
+}
+
+#[test]
+fn invitation_warning_clear_is_recorded_once_after_terminal_settlement() {
+    let (context, mut db, _) = seeded_db(300_000);
+    add_invitation(&db, "v1", 300_000, "pending");
+    context
+        .execute_decision(
+            &mut db,
+            |_| Ok(()),
+            |tx, at, _| {
+                record_overdue_if_pending(
+                    tx,
+                    &ObligationRef::Invitation(InvitationId::new("v1")),
+                    &TimeBasis::Decision,
+                    at.utc,
+                )?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    context
+        .execute_decision(
+            &mut db,
+            |_| Ok(()),
+            |tx, at, _| {
+                tx.execute(
+                    "UPDATE invitations SET state='recipient_retired',retired_at=?1 WHERE id='v1'",
+                    [at.utc.0],
+                )
+                .unwrap();
+                assert!(schema::clear_warning_condition_for_invitation(
+                    tx, "v1", at.utc
+                )?);
+                assert!(!schema::clear_warning_condition_for_invitation(
+                    tx, "v1", at.utc
+                )?);
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM warning_jobs", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn receipt_warning_condition_clears_once_and_reopens_with_new_source() {
+    let (context, mut db, _) = seeded_db(300_000);
+    for (id, sequence) in [("m1", 1), ("m2", 2), ("m3", 3)] {
+        db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,'t',?2,'ordinary','body',0,?2)", params![id,sequence]).unwrap();
+        db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','s','pending',300000,0,300000)", [id]).unwrap();
+    }
+    db.execute("UPDATE threads SET next_sequence=4 WHERE id='t'", [])
+        .unwrap();
+    let warn = |tx: &rusqlite::Transaction<'_>, id: &str, at: UtcMillis| {
+        record_overdue_if_pending(
+            tx,
+            &ObligationRef::Receipt {
+                message: MessageId::new(id),
+                seat: SeatId::new("s"),
+            },
+            &TimeBasis::Decision,
+            at,
+        )
+    };
+    context
+        .execute_decision(
+            &mut db,
+            |_| Ok(()),
+            |tx, at, _| {
+                warn(tx, "m1", at.utc)?;
+                warn(tx, "m2", at.utc)?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    context
+        .execute_decision(
+            &mut db,
+            |_| Ok(()),
+            |tx, at, _| {
+                tx.execute(
+                    "UPDATE receipts SET state='acked' WHERE message_id='m1'",
+                    [],
+                )
+                .unwrap();
+                assert_eq!(
+                    schema::clear_warning_conditions_for_receipts(tx, "t", "s", at.utc)?,
+                    0
+                );
+                tx.execute(
+                    "UPDATE receipts SET state='acked' WHERE message_id='m2'",
+                    [],
+                )
+                .unwrap();
+                assert_eq!(
+                    schema::clear_warning_conditions_for_receipts(tx, "t", "s", at.utc)?,
+                    1
+                );
+                assert_eq!(
+                    schema::clear_warning_conditions_for_receipts(tx, "t", "s", at.utc)?,
+                    0
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+    context
+        .execute_decision(
+            &mut db,
+            |_| Ok(()),
+            |tx, at, _| {
+                assert!(warn(tx, "m3", at.utc)?.inserted);
+                Ok(())
+            },
+        )
+        .unwrap();
+    let phases: Vec<String> = db.prepare("SELECT CASE WHEN id IN (SELECT clear_warning_id FROM warning_conditions) THEN 'clear' ELSE 'open' END FROM messages WHERE kind='warn' ORDER BY sequence")
+        .unwrap().query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+    assert_eq!(phases, ["open", "clear", "open"]);
+}
+
+#[test]
+fn delayed_warning_attribution_keeps_open_and_clear_actionable_in_order() {
+    let (context, mut db, clock) = seeded_db(300_000);
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('p','i','resolved','native',1,0)", []).unwrap();
+    for seat in ["s", "p"] {
+        db.execute(
+            "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'joined')",
+            [seat],
+        )
+        .unwrap();
+        db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t',?1,1,1)", [seat]).unwrap();
+    }
+    db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m','t',1,'ordinary','body',0,1)", []).unwrap();
+    db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('m','t','s','pending',300000,0,300000)", []).unwrap();
+    db.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
+        .unwrap();
+    context
+        .execute_decision(
+            &mut db,
+            |_| Ok(()),
+            |tx, at, _| {
+                record_overdue_if_pending(
+                    tx,
+                    &ObligationRef::Receipt {
+                        message: MessageId::new("m"),
+                        seat: SeatId::new("s"),
+                    },
+                    &TimeBasis::Decision,
+                    at.utc,
+                )?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    context
+        .execute_decision(
+            &mut db,
+            |_| Ok(()),
+            |tx, at, _| {
+                tx.execute("UPDATE receipts SET state='acked' WHERE message_id='m'", [])
+                    .unwrap();
+                assert_eq!(
+                    schema::clear_warning_conditions_for_receipts(tx, "t", "s", at.utc)?,
+                    1
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+    let warnings: Vec<(String, i64)> = db
+        .prepare("SELECT id,sequence FROM messages WHERE kind='warn' ORDER BY sequence")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(warnings.len(), 2);
+    assert!(warnings[0].1 < warnings[1].1);
+    for (id, _) in &warnings {
+        let job = format!("work:{id}");
+        while crate::store::materialization::advance_work(
+            &mut db,
+            &job,
+            crate::ports::DurableWorkAdmission { max_units: 16 },
+            &CallBudget {
+                deadline: MonoInstant(u64::MAX),
+                cancellation: Cancellation::default(),
+            },
+            clock.as_ref(),
+        )
+        .unwrap()
+        .has_more
+        {}
+    }
+    for (id, _) in warnings {
+        let recipients: i64 = db
+            .query_row(
+                "SELECT count(*) FROM warning_recipients WHERE warning_id=?1 AND seat_id='p'",
+                [id.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(recipients, 1);
+        let warning = crate::store::effective::effective_warning_by_id(&db, &id)
+            .unwrap()
+            .unwrap();
+        assert!(crate::store::effective::warning_condition_actionable(&db, &warning).unwrap());
+    }
+}
+
+#[test]
 fn event_helper_rejects_invalid_structured_payload() {
     let (context, mut db, _) = seeded_db(50);
     let thread = ThreadId::new("t");
@@ -4063,4 +4782,77 @@ fn v14_preparations_get_fresh_grace_once_and_retention_shape_is_audited() {
         schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
         ErrorCode::IncompatibleSchema
     );
+}
+
+#[test]
+fn wake_batch_migration_from_v16_preserves_retry_history_and_human_waiver() {
+    let db = Connection::open_in_memory().unwrap();
+    for migration in [
+        include_str!("../../migrations/0001_initial.sql"),
+        include_str!("../../migrations/0002_service_substrate.sql"),
+        include_str!("../../migrations/0003_invitation_cancellations.sql"),
+        include_str!("../../migrations/0004_voluntary_membership.sql"),
+        include_str!("../../migrations/0005_service_notifications.sql"),
+        include_str!("../../migrations/0006_retirement_health.sql"),
+        include_str!("../../migrations/0007_attention_digest.sql"),
+        include_str!("../../migrations/0008_digest_pending_paths.sql"),
+        include_str!("../../migrations/0009_human_occupant.sql"),
+        include_str!("../../migrations/0010_b5_trust_guards.sql"),
+        include_str!("../../migrations/0011_cooperative_only.sql"),
+        include_str!("../../migrations/0012_harness_version_evidence.sql"),
+        include_str!("../../migrations/0013_thread_summaries.sql"),
+        include_str!("../../migrations/0014_catch_up_release.sql"),
+        include_str!("../../migrations/0015_preparation_retention.sql"),
+        include_str!("../../migrations/0016_human_receipt_waivers.sql"),
+    ] {
+        db.execute_batch(migration).unwrap();
+    }
+    db.execute_batch("PRAGMA user_version=16;
+        INSERT INTO host_instances(id,created_at) VALUES ('i',0);
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','unresolved','native',0,0);
+        INSERT INTO wake_work(seat_id,retry_step,minimum_delay_ms,effective_delay_ms,last_reservation_id,last_reservation_boot,last_reserved_at_utc) VALUES ('s',2,45000,120000,'attempt','00000000-0000-4000-8000-000000000001',13);
+        INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES ('s',5,0,12);").unwrap();
+    schema::initialize(&db, || UtcMillis(100)).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        schema::LATEST_VERSION
+    );
+    assert_eq!(db.query_row("SELECT retry_step,minimum_delay_ms,effective_delay_ms,last_reserved_at_utc FROM wake_work WHERE seat_id='s'",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?))).unwrap(),(2,45000,120000,13));
+    assert_eq!(
+        db.query_row(
+            "SELECT through_decision_seq FROM human_receipt_waivers WHERE seat_id='s'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        5
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM wake_batches", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn wake_batch_schema_audit_rejects_missing_or_altered_clear_trigger() {
+    for replacement in [
+        None,
+        Some(
+            "CREATE TRIGGER wake_batches_clear_retired AFTER UPDATE OF state ON seats BEGIN DELETE FROM wake_batches; END;",
+        ),
+    ] {
+        let db = Connection::open_in_memory().unwrap();
+        schema::initialize(&db, || UtcMillis(0)).unwrap();
+        db.execute_batch("DROP TRIGGER wake_batches_clear_retired")
+            .unwrap();
+        if let Some(replacement) = replacement {
+            db.execute_batch(replacement).unwrap();
+        }
+        let error = schema::verify_existing(&db).unwrap_err();
+        assert_eq!(error.code, ErrorCode::IncompatibleSchema);
+        assert!(error.detail.contains("wake batching"));
+    }
 }

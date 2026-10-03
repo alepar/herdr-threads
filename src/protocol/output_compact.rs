@@ -20,8 +20,8 @@ use super::{
 use crate::protocol::{
     pagination::Page,
     results::{
-        CheckInResult, CommandResult, InboxItem, MessageContent, MessageDetails, MessageKind,
-        MessageSummary, Participant, PendingReceipt, ThreadDetails, WarningRef,
+        CheckInResult, CommandResult, InboxBatchItem, InboxItem, MessageContent, MessageDetails,
+        MessageKind, MessageSummary, Participant, PendingReceipt, ThreadDetails, WarningRef,
     },
     service::EventAuthor,
     time::UtcMillis,
@@ -46,6 +46,127 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
         CommandResult::Inbox(page) => {
             out.push_str("inbox\n");
             inbox_rows(page, spec, &mut out);
+            next("next", page, &mut out);
+        }
+        CommandResult::InboxBatch(page) => {
+            if page.items.is_empty() && !page.has_more {
+                out.push_str("empty\n");
+            } else {
+                for item in &page.items {
+                    match item {
+                        InboxBatchItem::Invitation {
+                            thread,
+                            topic_data,
+                            invitation,
+                            required_service,
+                        } => {
+                            out.push_str(&format!(
+                                "invitation {} {}: {}\n",
+                                invitation.as_str(),
+                                thread.as_str(),
+                                one_line(topic_data)
+                            ));
+                            if let Some(required) = required_service {
+                                let revision = required.revision.to_string();
+                                out.push_str("  accept-required: ");
+                                out.push_str(&format_command_argv(&detail_argv(
+                                    spec,
+                                    &[
+                                        "accept-required",
+                                        thread.as_str(),
+                                        "--invitation",
+                                        invitation.as_str(),
+                                        "--requirement",
+                                        required.requirement.as_str(),
+                                        "--revision",
+                                        &revision,
+                                    ],
+                                )));
+                            } else {
+                                out.push_str("  accept: ");
+                                out.push_str(&format_command_argv(&detail_argv(
+                                    spec,
+                                    &["accept", thread.as_str()],
+                                )));
+                            }
+                            out.push('\n');
+                        }
+                        InboxBatchItem::Message {
+                            thread,
+                            topic_data,
+                            message,
+                            sequence,
+                            sender,
+                            body,
+                            body_start,
+                            body_end,
+                            body_len,
+                            ..
+                        } => {
+                            out.push_str(&format!(
+                                "message {} {}#{} from {} bytes {}..{}/{}: {}\n",
+                                message.as_str(),
+                                thread.as_str(),
+                                sequence,
+                                sender.as_ref().map_or("service", |s| s.as_str()),
+                                body_start,
+                                body_end,
+                                body_len,
+                                one_line(topic_data)
+                            ));
+                            for line in body.split('\n') {
+                                out.push_str("  ");
+                                out.push_str(&one_line(line));
+                                out.push('\n');
+                            }
+                            if body_end < body_len {
+                                out.push_str("  read: ");
+                                out.push_str(&format_command_argv(&detail_argv(
+                                    spec,
+                                    &["body", message.as_str()],
+                                )));
+                                out.push('\n');
+                            }
+                        }
+                        InboxBatchItem::Warning {
+                            thread,
+                            topic_data,
+                            warning,
+                            sequence,
+                        } => {
+                            out.push_str(&format!(
+                                "warning {} {}#{}: {}\n",
+                                warning.as_str(),
+                                thread.as_str(),
+                                sequence,
+                                one_line(topic_data)
+                            ));
+                            out.push_str("  read: ");
+                            out.push_str(&format_command_argv(&detail_argv(
+                                spec,
+                                &["body", warning.as_str()],
+                            )));
+                            out.push('\n');
+                        }
+                    }
+                }
+                next("next", page, &mut out);
+            }
+        }
+        CommandResult::ActiveWarnings(page) => {
+            out.push_str("active_warnings\n");
+            if page.items.is_empty() && !page.has_more {
+                out.push_str("empty\n");
+            }
+            for warning in &page.items {
+                warning_row(warning, &mut out);
+                out.push_str("  body: ");
+                out.push_str(&format_command_argv(&detail_argv(
+                    spec,
+                    &["body", warning.warning.as_str()],
+                )));
+                out.push('\n');
+            }
             next("next", page, &mut out);
         }
         CommandResult::PendingReceipts(page) => {
@@ -680,5 +801,74 @@ fn message_body(details: &MessageDetails, out: &mut String) {
                 ));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod inbox_batch_tests {
+    use super::*;
+    use crate::protocol::{
+        ids::{MessageId, ThreadId},
+        pagination::{Consistency, StopReason},
+    };
+
+    #[test]
+    fn body_fallback_names_message_id_for_partial_content_and_warning() {
+        let page = Page {
+            items: vec![
+                InboxBatchItem::Message {
+                    thread: ThreadId::new("full-thread-id"),
+                    topic_data: "Topic".into(),
+                    message: MessageId::new("full-message-id"),
+                    sequence: 1,
+                    sender: None,
+                    body: "part".into(),
+                    body_start: 0,
+                    body_end: 4,
+                    body_len: 8,
+                    ack_candidate: None,
+                },
+                InboxBatchItem::Warning {
+                    thread: ThreadId::new("full-thread-id"),
+                    topic_data: "Topic".into(),
+                    warning: MessageId::new("full-warning-id"),
+                    sequence: 2,
+                },
+            ],
+            next_cursor: None,
+            next_argv: None,
+            high_water_ordinal: 2,
+            scope_revision: None,
+            has_more: false,
+            stop_reason: StopReason::Complete,
+            consistency: Consistency::BoundedLive,
+        };
+        let text = render(&CommandResult::InboxBatch(page), &OutputSpec::default()).unwrap();
+        assert!(text.contains("body full-message-id"), "{text}");
+        assert!(text.contains("body full-warning-id"), "{text}");
+        assert!(!text.contains("read full-message-id"), "{text}");
+        assert!(!text.contains("read full-warning-id"), "{text}");
+    }
+
+    #[test]
+    fn active_warning_rows_keep_full_ids_and_copyable_detail_command() {
+        let page = Page {
+            items: vec![WarningRef {
+                warning: MessageId::new("full-warning-id"),
+                thread: ThreadId::new("full-thread-id"),
+                sequence: 7,
+                event_seq: 42,
+            }],
+            next_cursor: None,
+            next_argv: None,
+            high_water_ordinal: 42,
+            scope_revision: None,
+            has_more: false,
+            stop_reason: StopReason::Complete,
+            consistency: Consistency::BoundedLive,
+        };
+        let text = render(&CommandResult::ActiveWarnings(page), &OutputSpec::default()).unwrap();
+        assert!(text.contains("full-warning-id full-thread-id#7"), "{text}");
+        assert!(text.contains("body full-warning-id"), "{text}");
     }
 }

@@ -45,12 +45,17 @@ fn configured_timing_reaches_store_and_rejects_unsafe_wake_spacing() {
     assert_eq!(settings.message_limits.receipt_duration_ms, 300_000);
     assert_eq!(settings.minimum_wake_delay_ms, 30_000);
     assert_eq!(settings.daemon_boot, Some(boot));
+    assert_eq!(settings.wake_batch_delay_ms, 30_000);
 
     let custom = ServiceConfig::new(120_000, 240_000, 45_000).unwrap();
     let settings = custom.store_settings(boot);
     assert_eq!(settings.invitation_default_ms, Some(120_000));
     assert_eq!(settings.message_limits.receipt_duration_ms, 240_000);
     assert_eq!(settings.minimum_wake_delay_ms, 45_000);
+    let immediate = custom.with_wake_batch_delay(0).unwrap();
+    assert_eq!(immediate.store_settings(boot).wake_batch_delay_ms, 0);
+    assert_eq!(immediate.health_settings().wake_batch_delay_ms, 0);
+    assert!(immediate.with_wake_batch_delay(u64::MAX).is_err());
     assert!(ServiceConfig::new(120_000, 240_000, 29_999).is_err());
     assert!(ServiceConfig::new(120_000, 240_000, u64::MAX).is_err());
 }
@@ -798,6 +803,7 @@ fn health_unknown_settings_stay_absent_and_resolved_settings_are_forwarded() {
         invitation_default_ms: 120_000,
         receipt_default_ms: 240_000,
         minimum_wake_delay_ms: 45_000,
+        wake_batch_delay_ms: 30_000,
     });
     let actual = inputs.assemble().settings.unwrap();
     assert_eq!(actual.invitation_default_ms, 120_000);

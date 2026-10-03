@@ -1,0 +1,103 @@
+{
+  "case": "restart",
+  "wake_batch_delay_ms": 30000,
+  "restart_during_window": true,
+  "run_id": "fb35ec0f-2e24-4075-9084-810821cd3efd",
+  "private_root": "/private/tmp/ih.wake-overhead-l5qlio_o",
+  "status": "passed",
+  "schema": {
+    "state": "ready",
+    "detail": null
+  },
+  "restart": {
+    "at_ms": 10095.638041966595,
+    "before_boot": "e5865c5a-bcbf-45d5-9b4a-5ee1517c0303",
+    "after_boot": "612675f2-d93f-47e0-85fb-c48c0380264f",
+    "before_deadline": 1791051417672,
+    "after_deadline": 1791051417672
+  },
+  "start_utc_ms": 1791051387625,
+  "horizon_ms": 35003.28449998051,
+  "sends": [
+    {
+      "message": "myS1YsXnd",
+      "sent_after_ms": 53.22579201310873
+    },
+    {
+      "message": "mDwoQTMh2",
+      "sent_after_ms": 1060.3015839587897
+    },
+    {
+      "message": "mEVRzrPFX",
+      "sent_after_ms": 2058.6994999321178
+    },
+    {
+      "message": "mE78z3zaV",
+      "sent_after_ms": 3058.697499916889
+    },
+    {
+      "message": "mmH88FyZT",
+      "sent_after_ms": 4055.255249957554
+    },
+    {
+      "message": "mrTcIFxzk",
+      "sent_after_ms": 5051.1717919725925
+    }
+  ],
+  "received": [
+    {
+      "mono_ms": 997477322.422541,
+      "utc_ms": 1791051418026,
+      "text": "herdr-threads: attention pending; run herdr-threads inbox"
+    }
+  ],
+  "transport_lines": [
+    {
+      "mono_ms": 997477322.422541,
+      "utc_ms": 1791051418026,
+      "text": "herdr-threads: attention pending; run herdr-threads inbox"
+    },
+    {
+      "mono_ms": 997477781.138,
+      "utc_ms": 1791051418485,
+      "text": ""
+    }
+  ],
+  "wake_count": 1,
+  "first_wake_after_ms": 30400.355999946594,
+  "wake_work": {
+    "seat_id": "s3h7LWRPv",
+    "reason_bits": 1,
+    "attention_version": 7,
+    "checkpoint_version": 0,
+    "binding_generation": 2,
+    "retry_step": 0,
+    "reservation_id": null,
+    "reservation_boot": null,
+    "reserved_at_utc": 1791051417678,
+    "completed_at_utc": 1791051418448,
+    "minimum_delay_ms": 30000,
+    "effective_delay_ms": 30000,
+    "last_reservation_id": "695b56b0-d6ba-4210-a4f8-b464d50326b8",
+    "last_reservation_boot": "612675f2-d93f-47e0-85fb-c48c0380264f",
+    "last_reserved_at_utc": 1791051417678,
+    "last_invitation_seq": null,
+    "last_invitation_offset": null,
+    "last_receipt_seq": 14,
+    "last_receipt_offset": 0,
+    "last_warning_seq": null,
+    "last_warning_offset": null,
+    "last_outcome": "submitted"
+  },
+  "wake_batch": {
+    "seat_id": "s3h7LWRPv",
+    "deadline_at": 1791051417672
+  },
+  "pending_receipts": 6,
+  "existing_foreign_servers_unchanged": true,
+  "leak_check": {
+    "exit_code": 0,
+    "stdout": "no leaked test processes\n",
+    "stderr": ""
+  }
+}
