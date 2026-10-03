@@ -139,12 +139,26 @@ fn encoded(result: &CommandResult, output: &OutputSpec) -> Vec<u8> {
     encode_selected(result, output).unwrap()
 }
 
+/// The encoded length of every growing prefix (0..=len) of a shape's page.
+/// It does not depend on the budget, so each shape encodes its prefixes once
+/// and the oracle reads them for every budget.
+fn prefix_lengths(shape: &Shape<'_>, output: &OutputSpec) -> Vec<usize> {
+    (0..=shape.len)
+        .map(|count| encoded(&(shape.render)(count).unwrap(), output).len())
+        .collect()
+}
+
 /// The pre-D5 loop, kept as the oracle: the largest count whose page fits,
-/// found by encoding every growing prefix.
-fn greedy_oracle(shape: &Shape<'_>, output: &OutputSpec, max: usize) -> (usize, Vec<u8>) {
+/// walking every growing prefix (`prefix_lengths`) up to the first that does not.
+fn greedy_oracle(
+    shape: &Shape<'_>,
+    output: &OutputSpec,
+    prefixes: &[usize],
+    max: usize,
+) -> (usize, Vec<u8>) {
     let mut accepted = 0;
-    for count in 0..=shape.len {
-        if encoded(&(shape.render)(count).unwrap(), output).len() > max {
+    for (count, &len) in prefixes.iter().enumerate() {
+        if len > max {
             break;
         }
         accepted = count;
@@ -198,6 +212,7 @@ fn differential_matches_greedy_for_every_site() {
             let n = if trial == 0 { 300 } else { rng.below(150) };
             let (threads, seats, inboxes, hits) = fixtures(&mut rng, n);
             for shape in shapes(&threads, &seats, &inboxes, &hits) {
+                let prefixes = prefix_lengths(&shape, &output);
                 let full = encoded(&(shape.render)(shape.len).unwrap(), &output).len();
                 let single = if shape.len > 0 {
                     encoded(&(shape.render)(1).unwrap(), &output).len()
@@ -217,7 +232,7 @@ fn differential_matches_greedy_for_every_site() {
                     full + rng.below(200),
                 ];
                 for max in maxes {
-                    let (want, want_bytes) = greedy_oracle(&shape, &output, max);
+                    let (want, want_bytes) = greedy_oracle(&shape, &output, &prefixes, max);
                     let mut fit = PageFit::for_command(&output, max);
                     let exact = fit
                         .fit_with(&vec![(); shape.len], &shape.render, &shape.render_one)

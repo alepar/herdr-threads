@@ -189,3 +189,54 @@ impl Drop for OwnedChild {
         let _ = self.stop();
     }
 }
+
+/// Marks the child process [`ran_in_own_process`] started: the named test runs
+/// its body there.
+const OWN_PROCESS_TEST_ENV: &str = "HT_OWN_PROCESS_TEST";
+
+/// Runs the calling test in a child of this test binary (`--exact`, one test,
+/// its own stdout/stderr and panic hook) and returns true once it passed; in
+/// that child it returns false and the test runs its body. A test whose
+/// in-process daemon would hold a binary-wide lock for seconds (the daemon
+/// redirects the process-wide descriptors) runs beside the others instead:
+/// the daemon redirects only the child's descriptors. The child inherits this
+/// environment (no added timeout scale) and is an owned test child (its group
+/// is stopped on Drop). Under cargo-nextest (a process per test) it returns
+/// false at once. `module` is the caller's `module_path!()`.
+/// Use: `if ran_in_own_process(module_path!(), "name") { return; }`.
+pub fn ran_in_own_process(module: &str, test: &str) -> bool {
+    let module = module.split_once("::").map_or("", |(_, rest)| rest);
+    let name = if module.is_empty() {
+        test.to_owned()
+    } else {
+        format!("{module}::{test}")
+    };
+    if std::env::var_os(OWN_PROCESS_TEST_ENV).is_some_and(|value| value == name.as_str()) {
+        return false;
+    }
+    // cargo-nextest already runs every test in a process of its own.
+    if std::env::var_os("NEXTEST_EXECUTION_MODE").is_some_and(|mode| mode == "process-per-test") {
+        return false;
+    }
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", &name, "--nocapture", "--test-threads=1"])
+        .env(OWN_PROCESS_TEST_ENV, &name)
+        .env_remove(crate::protocol::time::TEST_TIMEOUT_SCALE_ENV)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn_owned()
+        .unwrap()
+        .wait_with_output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    print!("{stdout}");
+    eprint!("{stderr}");
+    assert!(
+        output.status.success() && stdout.contains("test result: ok. 1 passed"),
+        "{name} in its own process: {:?}",
+        output.status
+    );
+    true
+}

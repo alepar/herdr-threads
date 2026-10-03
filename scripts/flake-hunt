@@ -15,7 +15,7 @@ Usage (run under `nice`, from the repository root or anywhere inside it):
   nice scripts/flake-hunt --only target/flake-hunt/latest/broken.txt
   nice scripts/flake-hunt --filter 'service::'  # regex over test ids
   nice scripts/flake-hunt --binaries -n 20      # loop whole binaries: in-process interference
-  nice scripts/flake-hunt --full-suite 10       # then 10 unpinned `cargo test` runs
+  nice scripts/flake-hunt --full-suite 10       # then 10 full-suite runs (cargo nextest run)
 
 A test id is `<target>::<test path>`, where target is `lib`, `bin.<name>` or
 `test.<name>` (the cargo target), e.g. `test.service::service::up_reports_ready`.
@@ -354,7 +354,7 @@ def write_report(out: Path, results: list[dict], meta: dict) -> list[dict]:
     for l in meta["leak_check"]["foreign"]:
         lines.append(f"- not ours, left alone: `{l}`")
     if meta.get("full_suite"):
-        lines += ["", "## Full unpinned suite runs", ""]
+        lines += ["", "## Full suite runs (cargo nextest run)", ""]
         for k, ok in enumerate(meta["full_suite"], 1):
             lines.append(f"- run {k}: {'green' if ok else 'RED'} (full-suite-{k}.log)")
     (out / "report.md").write_text("\n".join(lines) + "\n")
@@ -395,7 +395,7 @@ def full_suite(root: Path, out: Path, n: int, env: dict) -> list[bool]:
         log = out / f"full-suite-{k}.log"
         with log.open("w") as f:
             rc = subprocess.run(
-                ["cargo", "test", *CARGO_FLAGS], cwd=root, env=env,
+                ["cargo", "nextest", "run", *CARGO_FLAGS], cwd=root, env=env,
                 stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
             ).returncode
         greens.append(rc == 0)
@@ -421,7 +421,7 @@ def main():
                     help="loop whole test binaries (default libtest threads) instead of one test per "
                          "process, to surface in-process interference; -n is then runs per binary")
     ap.add_argument("--full-suite", type=int, default=0, metavar="N",
-                    help="afterwards, run the unpinned full `cargo test` N times")
+                    help="afterwards, run the full suite (`cargo nextest run`) N times")
     ap.add_argument("--seed", type=int, help="shuffle seed for the run order")
     ap.add_argument("--target-dir", type=Path,
                     help="cargo target dir for the hunt's build (default target/flake-hunt/build)")

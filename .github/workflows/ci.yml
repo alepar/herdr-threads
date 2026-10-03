@@ -47,6 +47,16 @@ jobs:
           cargo --version
           rustc --version
 
+      - name: cargo-nextest (pinned)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -LsSf https://get.nexte.st/0.9.146/mac -o nextest.tar.gz
+          echo "39785160b3c2f6ed9a765049cf4fa79f3b39aa02eb7598a5a0e2a1a0b9ffb9a8  nextest.tar.gz" | shasum -a 256 -c -
+          tar zxf nextest.tar.gz -C "$HOME/.cargo/bin"
+          rm nextest.tar.gz
+          cargo nextest --version
+
       - name: Provision pinned Herdr 0.9.1
         shell: bash
         run: |
@@ -113,8 +123,9 @@ jobs:
           tests/release/install_test.sh bin/herdr-threads 2>&1 | tee install_test.log
 
       - name: Tests (parallel)
-        # Default test threads: every test isolates its own state (ht-zo4: 5
-        # consecutive green unpinned full-suite runs, scripts/full-suite-gate).
+        # cargo-nextest, one process per test, every binary in one pool; the
+        # serialized chains are test groups in .config/nextest.toml. Every test
+        # isolates its own state (ht-zo4, scripts/full-suite-gate).
         # --all-features enables `test-support`, which tests/hook_entrypoint.rs
         # requires. The package suite runs
         # tests/service/check_failpoints_absent.sh (two extra release builds).
@@ -123,7 +134,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --locked --all-targets --all-features 2>&1 | tee test.log
+          cargo nextest run --locked --all-targets --all-features --profile ci 2>&1 | tee test.log
 
       - name: Python demo, validator and canary suites
         shell: bash
@@ -153,7 +164,8 @@ jobs:
             echo "Pinned Herdr $HERDR_VERSION provisioned; HT_SKIP_HERDR_TESTS=${HT_SKIP_HERDR_TESTS:-unset}."
             echo 'Skipped by name (empty means none skipped):'
             echo '```'
-            grep -h 'skipped: no herdr' test.log install_test.log 2>/dev/null | sort -u || true
+            grep -ho 'skipped: no herdr[^<&]*' test.log install_test.log \
+              target/nextest/ci/junit.xml 2>/dev/null | sort -u || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

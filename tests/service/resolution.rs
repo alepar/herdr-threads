@@ -1082,18 +1082,21 @@ fn real_ipc_exact_resolution_replay_after_retirement_and_hold_is_historical_with
         [first.as_str()],
     )
     .unwrap();
-    db.execute("UPDATE host_instances SET baseline_hold_unclaimed=1", [])
-        .unwrap();
     // Keep the hold legitimately in force (TRUST-POLICY C1-C3, main's B5):
     // the baseline hold lifts as soon as a reconciliation pass finds no
     // unresolved nonretired seat, and this branch's commit kicks run that
     // pass promptly, so an unresolved saved seat stands for the seats the
-    // hold protects.
-    db.execute(
+    // hold protects. One transaction: a pass between the two writes would
+    // see the hold with no unresolved seat and lift it.
+    let hold = db.unchecked_transaction().unwrap();
+    hold.execute("UPDATE host_instances SET baseline_hold_unclaimed=1", [])
+        .unwrap();
+    hold.execute(
         "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,generation,created_at) SELECT 'still-unresolved',instance_id,'unresolved','other','native',1,0 FROM seats WHERE id=?1",
         [first.as_str()],
     )
     .unwrap();
+    hold.commit().unwrap();
     fixture.host.fail.store(true, Ordering::SeqCst);
     assert_eq!(
         fixture.resolve("original").unwrap(),
@@ -1236,6 +1239,13 @@ fn real_cli_resolve_journals_before_submission_and_exact_retry_survives_output_f
 /// failure): an unknown outcome must stay pending for exact `retry`.
 #[test]
 fn real_cli_resolve_discards_intent_only_after_correlated_definitive_rejection() {
+    // Seconds of in-process daemon time: runs beside, not behind, IN_PROCESS_DAEMON.
+    if herdr_threads::test_support::spawn::ran_in_own_process(
+        module_path!(),
+        "real_cli_resolve_discards_intent_only_after_correlated_definitive_rejection",
+    ) {
+        return;
+    }
     use herdr_threads::cli::{self, journal::Journal};
     let fixture = Fixture::new(false);
     let state = fixture.root.join("state").to_string_lossy().into_owned();
@@ -1416,6 +1426,13 @@ fn elected_health_reports_unverified_then_verified_host_evidence() {
 /// the prior `Published` stays sticky and Health over-claims).
 #[test]
 fn elected_health_does_not_keep_verified_host_after_errored_capture() {
+    // Seconds of in-process daemon time: runs beside, not behind, IN_PROCESS_DAEMON.
+    if herdr_threads::test_support::spawn::ran_in_own_process(
+        module_path!(),
+        "elected_health_does_not_keep_verified_host_after_errored_capture",
+    ) {
+        return;
+    }
     use herdr_threads::protocol::results::{CapabilityState, ComponentState};
     let fixture = Fixture::start(false, false, 0);
     let health = |fixture: &Fixture| {
@@ -1509,6 +1526,13 @@ fn elected_health_does_not_keep_verified_host_after_errored_capture() {
 /// reviewed repro, unavailable -> degraded while the writer is held).
 #[test]
 fn elected_health_keeps_unavailable_host_after_errored_capture() {
+    // Seconds of in-process daemon time: runs beside, not behind, IN_PROCESS_DAEMON.
+    if herdr_threads::test_support::spawn::ran_in_own_process(
+        module_path!(),
+        "elected_health_keeps_unavailable_host_after_errored_capture",
+    ) {
+        return;
+    }
     use herdr_threads::protocol::results::{CapabilityState, ComponentState};
     let fixture = Fixture::start(false, false, 1);
     let health = |fixture: &Fixture| {
@@ -2160,6 +2184,13 @@ fn elected_failed_partial_unknown_captures_cannot_create_allocation_baseline() {
 
 #[test]
 fn elected_hung_snapshot_keeps_health_deadlines_and_owner_until_physical_join() {
+    // Seconds of in-process daemon time: runs beside, not behind, IN_PROCESS_DAEMON.
+    if herdr_threads::test_support::spawn::ran_in_own_process(
+        module_path!(),
+        "elected_hung_snapshot_keeps_health_deadlines_and_owner_until_physical_join",
+    ) {
+        return;
+    }
     let mut fixture = Fixture::start(false, false, 4);
     let until = std::time::Instant::now() + Duration::from_secs(30);
     while fixture.host.snapshots.load(Ordering::SeqCst) == 0 {
@@ -2335,6 +2366,13 @@ fn elected_driver_reconciles_multiple_saved_pages_and_reopens_with_fresh_capture
 
 #[test]
 fn elected_driver_periodically_refreshes_without_target_requests() {
+    // Seconds of in-process daemon time: runs beside, not behind, IN_PROCESS_DAEMON.
+    if herdr_threads::test_support::spawn::ran_in_own_process(
+        module_path!(),
+        "elected_driver_periodically_refreshes_without_target_requests",
+    ) {
+        return;
+    }
     let fixture = Fixture::start(false, false, 0);
     let until = std::time::Instant::now() + Duration::from_secs(30);
     loop {

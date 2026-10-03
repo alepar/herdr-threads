@@ -306,6 +306,13 @@ fn retention_keeps_tables_bounded_while_discovery_stays_flat() {
 /// finishing in batches.
 #[test]
 fn retention_runs_alongside_the_wake_idle_bound() {
+    // Long real-time waits: runs beside, not behind, ONE_DAEMON.
+    if herdr_threads::test_support::spawn::ran_in_own_process(
+        module_path!(),
+        "retention_runs_alongside_the_wake_idle_bound",
+    ) {
+        return;
+    }
     let Some(s) = Session::new("sweep_retention_idle_bound") else {
         return;
     };

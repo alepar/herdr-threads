@@ -497,6 +497,13 @@ fn send_is_attempted_within_100ms_without_a_tick_wait() {
 /// to a lane and so wakes the wake lane every cycle.
 #[test]
 fn idle_daemon_commits_nothing_from_deadline_wake_request_for_30s() {
+    // Long real-time waits: runs beside, not behind, ONE_DAEMON.
+    if herdr_threads::test_support::spawn::ran_in_own_process(
+        module_path!(),
+        "idle_daemon_commits_nothing_from_deadline_wake_request_for_30s",
+    ) {
+        return;
+    }
     let Some(scene) = Scene::new("idle_daemon_30s", 1) else {
         return;
     };
@@ -678,6 +685,13 @@ fn most_attempts(elapsed: f64) -> u64 {
 /// ladder (the seats would not be submitted promptly after the restore).
 #[test]
 fn herdr_stopped_bounds_wake_commits_per_seat() {
+    // Long real-time waits: runs beside, not behind, ONE_DAEMON.
+    if herdr_threads::test_support::spawn::ran_in_own_process(
+        module_path!(),
+        "herdr_stopped_bounds_wake_commits_per_seat",
+    ) {
+        return;
+    }
     const SEATS: u64 = 3;
     const OUTAGE: Duration = Duration::from_secs(45);
     let Some(scene) = Scene::new("herdr_stopped_bounds_wake_commits", SEATS as usize) else {

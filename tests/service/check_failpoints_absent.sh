@@ -15,9 +15,19 @@ count=$(printf '%s\n' "$names" | grep -c . || true)
 echo "failpoint hooks in source: $count"
 printf '  %s\n' $names
 
-CARGO_TARGET_DIR="$target/failpoints-release" cargo build --locked --release --quiet
+# The two builds use separate target directories (separate build locks) and
+# are independent: run them side by side; each one's release crate compile is
+# mostly a serial tail. Lowest CPU priority: the suite runs this beside tests
+# that assert wall-clock budgets.
+CARGO_TARGET_DIR="$target/failpoints-release" nice -n 19 cargo build --locked --release --quiet &
+release_build=$!
+CARGO_TARGET_DIR="$target/failpoints-control" nice -n 19 cargo build --locked --release --features test-support --quiet &
+control_build=$!
+built=0
+wait "$release_build" || built=1
+wait "$control_build" || built=1
+[ "$built" -eq 0 ] || { echo "FAIL: release build failed"; exit 1; }
 release="$target/failpoints-release/release/herdr-threads"
-CARGO_TARGET_DIR="$target/failpoints-control" cargo build --locked --release --features test-support --quiet
 control="$target/failpoints-control/release/herdr-threads"
 
 status=0

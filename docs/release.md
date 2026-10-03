@@ -36,7 +36,7 @@ Nothing in this repository establishes an inference-interruption guarantee, exac
 4. `cargo fmt --all -- --check`.
 5. `./scripts/build.sh`, then checks that every command in `herdr-plugin.toml` resolves to an executable file.
    Then `tests/release/install_test.sh bin/herdr-threads` drives `scripts/install.sh` offline against fake releases (stub Herdr, scratch HOME).
-6. `cargo test --locked --all-targets --all-features` (parallel, no thread pin). `--all-features` enables `test-support`, which `hook_entrypoint` requires. The package suite runs `check_failpoints_absent.sh`, which makes two extra release builds. Ignored tests (the package lifecycle gate and the 10^5 to 10^6 scale tests) do not run.
+6. `cargo nextest run --locked --all-targets --all-features` (one process per test, no thread pin; test groups in `.config/nextest.toml`). `--all-features` enables `test-support`, which `hook_entrypoint` requires. The package suite runs `check_failpoints_absent.sh`, which makes two extra release builds. Ignored tests (the package lifecycle gate and the 10^5 to 10^6 scale tests) do not run.
 7. The Python fixture tests under `tests/native/` with `unittest`.
 
 The `package-lifecycle` job runs the ignored package gate (`install::clean_package_install_lifecycle`) with the same pinned Herdr. It runs **only on manual dispatch** (`workflow_dispatch`) because it takes several minutes and starts private Herdr servers. It has never run on GitHub. It has passed only locally (see [validation/package.md](validation/package.md)).
@@ -85,7 +85,7 @@ Done by a person after this work merges; nothing here has been done. Every step 
 3. **Tag.** Push the tag `v0.1.0`. Confirm the release workflow creates a draft, uploads all five assets, verifies the checksums and then publishes.
 4. **Clean-machine rehearsal, macOS and Linux.** `curl | bash` install, upgrade from the tag's own artifact, and uninstall, each with Herdr up and with Herdr down. Confirm the final status lines and exit codes match the [installer contract](install.md#installer-contract-final-status-and-exit-codes).
 5. **Linux link.** If Herdr refuses the Linux link, flip `platforms` back to `["macos"]` or file an upstream Herdr issue, and update the README and these docs accordingly.
-6. **Parallel tests on CI.** Done for macOS locally (ht-zo4: CI runs the suite unpinned, 5 consecutive green unpinned runs). Confirm it on CI's two OSes (macOS and Linux); a failure is filed as a test-isolation bug against the merged suite.
+6. **Parallel tests on CI.** Done for macOS locally (ht-zo4: CI runs the suite with no thread pin, 5 consecutive green unpinned runs; it now runs under cargo-nextest). Confirm it on CI's two OSes (macOS and Linux); a failure is filed as a test-isolation bug against the merged suite.
 
 ## Marketplace prerequisites (follow-on, not done)
 

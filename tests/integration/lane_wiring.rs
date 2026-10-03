@@ -479,6 +479,13 @@ fn committed_wake_work_insert_kicks_the_wake_pacer() {
 /// and a status that stays degraded after a success.
 #[test]
 fn injected_lane_failure_logs_and_degrades_then_clears() {
+    // Long real-time waits: runs beside, not behind, ONE_DAEMON.
+    if herdr_threads::test_support::spawn::ran_in_own_process(
+        module_path!(),
+        "injected_lane_failure_logs_and_degrades_then_clears",
+    ) {
+        return;
+    }
     let Some(s) = Session::new("injected_lane_failure_logs") else {
         return;
     };
@@ -703,6 +710,11 @@ fn spawn_blocking_revoke_counts_as_request_origin() {
 /// one) missing from the production worker set.
 #[test]
 fn idle_five_lanes_30s() {
+    // Long real-time waits: runs beside, not behind, ONE_DAEMON.
+    if herdr_threads::test_support::spawn::ran_in_own_process(module_path!(), "idle_five_lanes_30s")
+    {
+        return;
+    }
     let Some(s) = Session::new("idle_five_lanes_30s") else {
         return;
     };

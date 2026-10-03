@@ -72,3 +72,8 @@ debug = false
 # builds (tests and dev daemons).
 [profile.dev.package.sha2]
 opt-level = 3
+
+# Bundled SQLite's C is built with the profile's opt-level (cargo passes it to
+# the cc build script): unoptimized, every store test pays for -O0 SQLite.
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3

@@ -1,0 +1,65 @@
+# The full suite runs under cargo-nextest (AGENTS.md): every test is its own
+# process, and tests of different binaries run side by side instead of one
+# binary after another as under `cargo test`. The process-wide locks in the
+# test binaries (hook_entrypoint's SERIAL, integration's ONE_DAEMON, service's
+# IN_PROCESS_DAEMON) cannot span processes; the test groups below keep each
+# chain's tests one at a time, as under `cargo test`.
+
+[test-groups]
+# hook_entrypoint asserts wall-clock hook budgets (1.5 s tool, 5 s lifecycle);
+# its spawned hooks starve each other when run together (ht-p03.8).
+hook-budget = { max-threads = 1 }
+# Tests that ran behind ONE_DAEMON (integration) or IN_PROCESS_DAEMON
+# (service): an elected in-process daemon each, several asserting latency
+# budgets (100 ms). The long real-time ones (ran_in_own_process) are not in a
+# group: under `cargo test` they already ran beside the chain.
+integration-daemon = { max-threads = 1 }
+service-daemon = { max-threads = 1 }
+
+[profile.default]
+# A hang guard, not a budget: the longest test waits ~70 s by design.
+slow-timeout = { period = "60s", terminate-after = 5 }
+# Report every failure at the end of the run, not only the first.
+fail-fast = false
+final-status-level = "slow"
+
+# Start the longest tests first, so they overlap the rest of the run instead
+# of trailing it: the failpoints check's two release builds, then the tests
+# that wait in real time for most of a minute (and the long chains).
+[[profile.default.overrides]]
+filter = "binary(package) & test(=manifest::failpoints_are_compiled_out_of_release_builds)"
+priority = 100
+
+[[profile.default.overrides]]
+filter = """
+binary(integration) & test(/::(herdr_stopped_bounds_wake_commits_per_seat|herdr_stopped_logs_once_then_capped_summaries|herdr_stopped_costs_one_commit_per_backoff_step|idle_daemon_commits_nothing_from_deadline_wake_request_for_30s|retention_runs_alongside_the_wake_idle_bound|idle_five_lanes_30s|lapsed_reservation_fetch_is_honoured_while_free)$/)
+"""
+priority = 90
+
+[[profile.default.overrides]]
+filter = "binary(hook_entrypoint)"
+priority = 80
+test-group = "hook-budget"
+
+[[profile.default.overrides]]
+filter = """
+binary(integration) & test(/^(lanes_latency|lane_wiring|sweep_remaining)::/)
+& !test(/::(herdr_stopped_bounds_wake_commits_per_seat|idle_daemon_commits_nothing_from_deadline_wake_request_for_30s|retention_runs_alongside_the_wake_idle_bound|idle_five_lanes_30s|injected_lane_failure_logs_and_degrades_then_clears)$/)
+"""
+test-group = "integration-daemon"
+
+[[profile.default.overrides]]
+filter = """
+binary(service) & test(/^(resolution|composition|operator|graph_d2)::/)
+& !test(/::(elected_health_does_not_keep_verified_host_after_errored_capture|elected_health_keeps_unavailable_host_after_errored_capture|elected_hung_snapshot_keeps_health_deadlines_and_owner_until_physical_join|real_cli_resolve_discards_intent_only_after_correlated_definitive_rejection|elected_driver_periodically_refreshes_without_target_requests|elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined)$/)
+"""
+test-group = "service-daemon"
+
+# CI: a JUnit report (per-test times; success output kept for the
+# skipped-Herdr summary).
+[profile.ci]
+fail-fast = false
+
+[profile.ci.junit]
+path = "junit.xml"
+store-success-output = true

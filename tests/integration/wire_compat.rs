@@ -226,7 +226,11 @@ impl Plugin {
             .env("HOME", self.root.join("home"))
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude-config"))
             .env("CODEX_HOME", self.root.join("codex-home"))
-            .env("NO_COLOR", "1");
+            .env("NO_COLOR", "1")
+            // No harness-manifest fetch from the daemon this starts: its
+            // late "fetch failed" line would land in the daemon log a test
+            // compares, and wire compatibility does not involve it.
+            .env("HERDR_THREADS_OFFLINE", "1");
         command
     }
     fn raw(&self, agent: Option<(&str, &str, &str)>, args: &[&str]) -> Output {
@@ -600,6 +604,10 @@ fn hook_parse_failure_under_optimistic_sends_no_report_to_an_old_daemon() {
 
     proxy.set_mode(OLD);
     let log_before = daemon_log();
+    assert!(
+        log_before.contains("harness manifest: off (HERDR_THREADS_OFFLINE=1)"),
+        "no manifest fetch can append to the compared log: {log_before}"
+    );
     let (output, elapsed) = run_hook();
     let stderr = text(&output.stderr);
     assert_eq!(output.status.code(), Some(0), "{stderr}");

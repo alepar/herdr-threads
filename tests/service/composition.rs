@@ -1379,6 +1379,13 @@ impl herdr_threads::ports::HostPort for HungWakeHost {
 
 #[test]
 fn elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined() {
+    // Seconds of in-process daemon time: runs beside, not behind, IN_PROCESS_DAEMON.
+    if herdr_threads::test_support::spawn::ran_in_own_process(
+        module_path!(),
+        "elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined",
+    ) {
+        return;
+    }
     let _stdio_guard = super::IN_PROCESS_DAEMON
         .lock()
         .unwrap_or_else(|error| error.into_inner());

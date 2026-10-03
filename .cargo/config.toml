@@ -1,0 +1,12 @@
+[env]
+# Bundled SQLite without its global allocation statistics: with the default
+# SQLITE_DEFAULT_MEMSTATUS=1 every sqlite3_malloc/free takes one process-wide
+# mutex, which parallel store tests (and threads of the daemon) contend on.
+# SQLite lists MEMSTATUS=0 among its recommended compile-time options.
+# libsqlite3-sys also defines SQLITE_ENABLE_MEMORY_MANAGEMENT, which puts every
+# connection's pages in one shared cache behind one more process-wide mutex
+# (pcache1); undefining it restores SQLite's default per-connection caches.
+# Nothing here reads sqlite3_memory_used, the heap limits or calls
+# sqlite3_release_memory. An explicit LIBSQLITE3_FLAGS in the environment
+# takes precedence.
+LIBSQLITE3_FLAGS = "-DSQLITE_DEFAULT_MEMSTATUS=0 -USQLITE_ENABLE_MEMORY_MANAGEMENT"

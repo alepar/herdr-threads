@@ -1,8 +1,8 @@
 #!/bin/sh
-# Run the unpinned full suite N times in a row (default 10), keeping every
-# log, and stop at the first red run. After each run, check-no-leaked-processes
-# must find nothing tagged with the run's HT_LEAK_RUN_ID (ht-zo4 acceptance:
-# 10 consecutive green `cargo test --locked --all-targets --all-features`).
+# Run the full suite (`cargo nextest run`, AGENTS.md) N times in a row
+# (default 10), keeping every log, and stop at the first red run. After each
+# run, check-no-leaked-processes must find nothing tagged with the run's
+# HT_LEAK_RUN_ID (ht-zo4 acceptance: 10 consecutive green full-suite runs).
 #
 # Usage: nice scripts/full-suite-gate [N]   (logs: target/full-suite-gate/<stamp>/)
 set -u
@@ -17,14 +17,14 @@ for k in $(seq 1 "$runs"); do
     export HT_LEAK_RUN_ID
     log="$out/run-$k.log"
     start=$(date +%s)
-    cargo test --locked --all-targets --all-features </dev/null >"$log" 2>&1
+    cargo nextest run --locked --all-targets --all-features </dev/null >"$log" 2>&1
     status=$?
     secs=$(( $(date +%s) - start ))
     leaks=$(cd / && "$root/scripts/check-no-leaked-processes" --run-id "$HT_LEAK_RUN_ID" --root "$root" 2>&1 \
         | grep -E 'rule=run-id' | grep -v 'check-no-leaked' || true)
     if [ "$status" -ne 0 ] || [ -n "$leaks" ]; then
         echo "run $k: RED (exit $status, ${secs}s) after $green consecutive green; log $log" | tee -a "$out/summary"
-        grep -E '^test .*FAILED|panicked at' "$log" | head -20 | tee -a "$out/summary"
+        grep -E '^ +(FAIL|SIGSEGV|SIGABRT|TIMEOUT) |^test .*FAILED|panicked at' "$log" | head -20 | tee -a "$out/summary"
         [ -n "$leaks" ] && echo "leaked: $leaks" | tee -a "$out/summary"
         exit 1
     fi
