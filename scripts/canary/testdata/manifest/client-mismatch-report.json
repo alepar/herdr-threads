@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-02T06:00:00Z",
+  "canary_commit": "1111111111111111111111111111111111111111",
+  "herdr_threads": "0.1.0",
+  "runner": {
+    "os": "linux",
+    "arch": "x86_64"
+  },
+  "inputs": {},
+  "harnesses": [
+    {
+      "harness": "claude",
+      "package": "@anthropic-ai/claude-code",
+      "verified_max": "2.1.285",
+      "candidates": [
+        "2.1.286"
+      ],
+      "status": "all_pass",
+      "first_bad": null,
+      "last_good": null,
+      "failing_checks": [],
+      "signals": [],
+      "suggested_action": null,
+      "excluded": [],
+      "assumes_monotone": true,
+      "probes": [
+        {
+          "version": "2.1.286",
+          "role": "newest",
+          "result": "pass",
+          "flaky": false,
+          "attempts": [
+            {
+              "result": "pass",
+              "tier1": false,
+              "duration_ms": 1,
+              "checks": [
+                {
+                  "id": "t0.payload-parse",
+                  "status": "pass"
+                }
+              ],
+              "contract": {
+                "contract_id": "c1a0c1a0c1a0c1a0",
+                "payloads": [
+                  {
+                    "event": "SessionStart",
+                    "kind": "ok",
+                    "field": null
+                  }
+                ],
+                "release": null
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "exit_code": 0
+}

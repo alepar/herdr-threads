@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline self-test for the harness canary (nested spec §D11): drives scripts/canary/bisect.py with
 stub_probe.py over the planted cases and asserts each report. No network, npm, cargo or harness."""
-import importlib.util, json, math, os, pathlib, shlex, sys, tempfile, unittest
+import importlib.util, json, math, os, pathlib, shlex, subprocess, sys, tempfile, unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
 CANARY = HERE.parent / "canary"
@@ -27,6 +27,88 @@ CASES = sorted((HERE / "cases").glob("*.json"))
 EXPECTED_CASES = {"all-pass", "break-mid", "break-first", "flip", "baseline-broken", "flaky", "infra",
                   "tier1-retry", "known-broken-then-new-break", "break-persists-above-range",
                   "open-ended-known-broken"}
+
+
+MANIFEST_CASES = sorted((HERE / "manifest-cases").glob("*.json"))
+EXPECTED_MANIFEST_CASES = {"all-pass", "payload-break", "known-broken-persists", "flaky", "tier0-failure-issue-only",
+                           "retention", "size-cap-failure", "schema1-baseline-upgrade"}
+MANIFEST_PY = CANARY / "manifest.py"
+STUB_HT = CANARY / "testdata" / "manifest" / "stub-herdr-threads"
+STUB_IDS = {"claude": "c1a0c1a0c1a0c1a0", "codex": "c0dec0dec0dec0de"}
+
+
+def expand_baseline(case):
+    """The case's baseline document, with `baseline_rows_gen` entries expanded into schema-2 canary rows:
+    {harness, count, prefix} -> `<prefix>0 .. <prefix>count-1`; {harness, version} -> one row; optional status,
+    recipe, source, issue_url_pad."""
+    base = json.loads(json.dumps(case["baseline"]))
+    for g in case.get("baseline_rows_gen", []):
+        versions_ = [g["version"]] if "version" in g else [f"{g['prefix']}{i}" for i in range(g["count"])]
+        for v in versions_:
+            status = g.get("status", "verified")
+            row = {"harness": g["harness"], "version": v, "status": status,
+                   "evidence": "live" if status == "verified" else "schema", "contract_id": STUB_IDS[g["harness"]],
+                   "source": g.get("source", "canary"), "supported_since": None,
+                   "broken_event": "SessionStart" if status == "known_broken" else None,
+                   "broken_field": "session_id" if status == "known_broken" else None,
+                   "last_working": None, "issue_url": "x" * g["issue_url_pad"] if g.get("issue_url_pad") else None,
+                   "recipe": g.get("recipe"), "known_broken": []}
+            base["rows"].append(row)
+    return base
+
+
+def run_manifest_case(path, state):
+    """Run manifest.py write over one case's inputs; (case, completed process, output document or None)."""
+    case = json.loads(path.read_text())
+    state = pathlib.Path(state)
+    (state / "baseline.json").write_text(json.dumps(expand_baseline(case)))
+    (state / "report.json").write_text(json.dumps(case["report"]))
+    out = state / "out.json"
+    cmd = [sys.executable, str(MANIFEST_PY), "write", "--baseline", str(state / "baseline.json"),
+           "--report", str(state / "report.json"), "--binary", str(STUB_HT), "--generated-at", "2026-10-02T06:00:00Z",
+           "--out", str(out)]
+    if "release_results" in case:
+        (state / "release.json").write_text(json.dumps(case["release_results"]))
+        cmd += ["--release-results", str(state / "release.json"), "--latest-release", case.get("latest_release", "v0.4.0")]
+    cp = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    return case, cp, (json.loads(out.read_text()) if out.exists() else None)
+
+
+class ManifestCases(unittest.TestCase):
+    def test_case_files_are_the_planted_set(self):
+        self.assertEqual({p.stem for p in MANIFEST_CASES}, EXPECTED_MANIFEST_CASES)
+
+    def test_cases(self):
+        for path in MANIFEST_CASES:
+            with self.subTest(case=path.stem), tempfile.TemporaryDirectory() as state:
+                self.check_case(path, state)
+
+    def check_case(self, path, state):
+        case, cp, out = run_manifest_case(path, state)
+        exp = case["expect"]
+        self.assertEqual(cp.returncode, exp["exit"], cp.stdout + cp.stderr)
+        if "stdout" in exp:
+            self.assertIn(exp["stdout"], cp.stdout)
+        if exp.get("no_output_file"):
+            self.assertIsNone(out)
+            return
+        self.assertEqual(out["schema_version"], exp.get("schema_version", 2))
+        for want in exp.get("rows", []):
+            matches = [r for r in out["rows"] if r["harness"] == want["harness"] and r["version"] == want["version"]]
+            self.assertEqual(len(matches), 1, f"{want['harness']} {want['version']}: {len(matches)} rows")
+            for k, v in want.items():
+                self.assertEqual(matches[0][k], v, f"{want['harness']} {want['version']}.{k}")
+        for h, v in exp.get("absent", []):
+            self.assertFalse([r for r in out["rows"] if r["harness"] == h and r["version"] == v], f"{h} {v} must be absent")
+        if "row_count" in exp:
+            self.assertEqual(len(out["rows"]), exp["row_count"])
+        if "claude_versions_count" in exp:
+            self.assertEqual(len([r for r in out["rows"] if r["harness"] == "claude"]), exp["claude_versions_count"])
+        keys = {(r["harness"], r["version"], r["contract_id"]) for r in out["rows"]}
+        self.assertEqual(len(keys), len(out["rows"]), "no duplicate (harness, version, contract_id) keys")
+        vp = subprocess.run([sys.executable, str(MANIFEST_PY), "validate", str(pathlib.Path(state) / "out.json")],
+                            capture_output=True, text=True)
+        self.assertEqual(vp.returncode, 0, vp.stdout)
 
 
 def run_case(path):

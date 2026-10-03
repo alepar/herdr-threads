@@ -58,6 +58,8 @@ jobs:
         run: scripts/harness-canary.sh --self-test
       - name: Issue filing dry-run cases (offline)
         run: python3 scripts/canary/test_file_issues.py
+      - name: Manifest writer cases (offline)
+        run: python3 -m unittest discover -s scripts/canary -p 'test_manifest.py'
 
   canary:
     name: canary
@@ -87,6 +89,19 @@ jobs:
           rustup default "$RUST_TOOLCHAIN"
       - name: Build herdr-threads
         run: cargo build --locked
+      - name: Fetch the published manifest (candidate baseline)
+        run: |
+          # The canary's candidate selection reads the harness-manifest branch file; the in-repo file is the
+          # fallback until the branch exists. It is a baseline only: the recipes under test stay the in-repo ones.
+          baseline="$RUNNER_TEMP/baseline.json"
+          if git fetch --depth 1 origin harness-manifest \
+            && git show FETCH_HEAD:harness-versions.json > "$baseline"; then
+            echo "baseline: harness-manifest branch file"
+          else
+            echo "::notice::no harness-manifest branch file yet; the in-repo harness-versions.json is the baseline"
+            cp docs/compatibility/harness-versions.json "$baseline"
+          fi
+          echo "BASELINE_JSON=$baseline" >> "$GITHUB_ENV"
       - name: Run canary
         id: canary
         env:
@@ -99,7 +114,7 @@ jobs:
         run: |
           set +e
           scripts/harness-canary.sh --harness "$CANARY_HARNESS" --versions "$CANARY_VERSIONS" \
-            --bisect --model-tier "$CANARY_MODEL_TIER" --keep --out "$CANARY_OUT"
+            --bisect --model-tier "$CANARY_MODEL_TIER" --keep --baseline-json "$BASELINE_JSON" --out "$CANARY_OUT"
           code=$?
           echo "code=$code" >> "$GITHUB_OUTPUT"
           exit 0
@@ -129,9 +144,130 @@ jobs:
           fi
           python3 scripts/canary/file_issues.py --report "$CANARY_OUT/canary-report.json" \
             --repo "$GITHUB_REPOSITORY" \
-            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --write-urls "$CANARY_OUT/issues.json"
+      - name: Run the latest release's contract over the probes
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The canary keeps one manifest row per live contract: this tree's and the latest release's.
+          # A release that predates contract ids (or cannot be built) is recorded as unsupported.
+          if [ ! -f "$CANARY_OUT/canary-report.json" ]; then exit 0; fi
+          tag=$(gh release view --json tagName -q .tagName 2>/dev/null || true)
+          echo "LATEST_RELEASE=$tag" >> "$GITHUB_ENV"
+          if [ -z "$tag" ]; then
+            echo "::notice::no release yet; the manifest keeps one live contract"
+            exit 0
+          fi
+          if ! git fetch --depth 1 origin "refs/tags/$tag:refs/tags/$tag"; then
+            echo "::notice::cannot fetch release tag $tag; the manifest keeps one live contract"
+            exit 0
+          fi
+          scripts/canary/release_contract.sh "$tag" "$CANARY_OUT"
+      - name: Write the manifest
+        if: always()
+        run: |
+          if [ ! -f "$CANARY_OUT/canary-report.json" ]; then
+            echo "::notice::no canary-report.json; no manifest written"
+            exit 0
+          fi
+          args=(write --baseline "$BASELINE_JSON" --report "$CANARY_OUT/canary-report.json"
+            --binary target/debug/herdr-threads --out "$CANARY_OUT/harness-versions.json")
+          if [ -f "$CANARY_OUT/issues.json" ]; then args+=(--issue-urls "$CANARY_OUT/issues.json"); fi
+          if [ -f "$CANARY_OUT/release-contract.json" ] && [ -n "${LATEST_RELEASE:-}" ]; then
+            args+=(--release-results "$CANARY_OUT/release-contract.json" --latest-release "$LATEST_RELEASE")
+          fi
+          python3 scripts/canary/manifest.py "${args[@]}"
+      - name: Upload the manifest
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: harness-canary-manifest
+          path: ${{ env.CANARY_OUT }}/harness-versions.json
+          if-no-files-found: ignore
+          retention-days: 30
       - name: Exit with the canary result
         if: always()
         env:
           CANARY_CODE: ${{ steps.canary.outputs.code }}
         run: exit "${CANARY_CODE:-2}"
+
+  publish-manifest:
+    name: publish-manifest
+    # The only job with contents: write. It pushes the canary's manifest to the harness-manifest branch by a
+    # direct bot commit, and refuses to push unless the repository rulesets protect the default branch and the
+    # v* tags (docs/compatibility/harnesses.md, "Manifest publishing"): the token is repo-wide.
+    if: always() && needs.canary.result != 'cancelled' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    needs: canary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: harness-manifest
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: true
+      - name: Download the manifest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: harness-canary-manifest
+          path: ${{ runner.temp }}/manifest
+        continue-on-error: true
+      - name: Check the manifest
+        id: manifest
+        run: |
+          file="$RUNNER_TEMP/manifest/harness-versions.json"
+          if [ ! -f "$file" ]; then
+            echo "::notice::the canary produced no harness-versions.json; nothing to publish"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 scripts/canary/manifest.py validate "$file"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+      - name: Check the repository rulesets
+        if: steps.manifest.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+        run: |
+          # A 403/404 (or any gh failure) counts as "no ruleset": the publish job then refuses to push.
+          rulesets="$RUNNER_TEMP/rulesets.json"
+          details="$RUNNER_TEMP/rulesets.ndjson"
+          : > "$details"
+          if ids=$(gh api "repos/$GITHUB_REPOSITORY/rulesets?includes_parents=true" --jq '.[].id'); then
+            for id in $ids; do
+              gh api "repos/$GITHUB_REPOSITORY/rulesets/$id" >> "$details" || true
+            done
+          fi
+          jq -s . "$details" > "$rulesets"
+          if ! python3 scripts/canary/manifest.py check-ruleset --rulesets-json "$rulesets" --default-branch "$DEFAULT_BRANCH"; then
+            echo "::error::refusing to push to harness-manifest: the repository needs an active ruleset protecting the default branch against deletion and force-push, and one protecting refs/tags/v* against deletion and update (docs/compatibility/harnesses.md, 'Manifest publishing')"
+            exit 1
+          fi
+      - name: Commit to the harness-manifest branch
+        if: steps.manifest.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          if git fetch --depth 1 origin harness-manifest; then
+            git worktree add --detach "$work" FETCH_HEAD
+            cd "$work"
+          else
+            git worktree add --detach "$work"
+            cd "$work"
+            git checkout --orphan harness-manifest
+            git rm -rf --quiet .
+          fi
+          cp "$RUNNER_TEMP/manifest/harness-versions.json" harness-versions.json
+          git add harness-versions.json
+          if git rev-parse -q --verify HEAD >/dev/null && git diff --cached --quiet; then
+            echo "harness-manifest is already up to date"
+            exit 0
+          fi
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -q -m "harness-manifest: canary run $GITHUB_RUN_ID"
+          git push origin HEAD:refs/heads/harness-manifest

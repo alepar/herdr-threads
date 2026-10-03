@@ -1,0 +1,83 @@
+{
+  "description": "padding past 80% of the 256 KB cap fails the writer and writes nothing",
+  "baseline": {
+    "schema_version": 2,
+    "generated_from": "harness-canary 0000",
+    "generated_at": "2026-09-30T06:00:00Z",
+    "latest_release": "0.4.0",
+    "contracts": {
+      "claude": "c1a0c1a0c1a0c1a0",
+      "codex": "c0dec0dec0dec0de"
+    },
+    "rows": []
+  },
+  "baseline_rows_gen": [
+    {
+      "harness": "claude",
+      "count": 120,
+      "prefix": "3.",
+      "source": "manual",
+      "issue_url_pad": 2000
+    }
+  ],
+  "report": {
+    "schema_version": 1,
+    "canary_commit": "1111111111111111111111111111111111111111",
+    "herdr_threads": "0.1.0",
+    "runner": {
+      "os": "linux",
+      "arch": "x86_64"
+    },
+    "harnesses": [
+      {
+        "harness": "claude",
+        "package": "pkg",
+        "status": "all_pass",
+        "first_bad": null,
+        "last_good": null,
+        "probes": [
+          {
+            "version": "2.1.288",
+            "role": "newest",
+            "result": "pass",
+            "flaky": false,
+            "attempts": [
+              {
+                "result": "pass",
+                "tier1": false,
+                "duration_ms": 1,
+                "checks": [
+                  {
+                    "id": "t0.payload-parse",
+                    "status": "pass"
+                  }
+                ],
+                "contract": {
+                  "contract_id": "c1a0c1a0c1a0c1a0",
+                  "payloads": [
+                    {
+                      "event": "SessionStart",
+                      "kind": "ok",
+                      "field": null
+                    },
+                    {
+                      "event": "PreToolUse",
+                      "kind": "ok",
+                      "field": null
+                    }
+                  ],
+                  "release": null
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "exit": 1,
+    "stdout": "manifest too large:",
+    "no_output_file": true
+  }
+}

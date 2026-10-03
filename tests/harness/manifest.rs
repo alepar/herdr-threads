@@ -229,6 +229,46 @@ fn canary_writer_shape_passes_the_reader() {
     );
 }
 
+/// `writer-output.json` is the canary writer's own output (scripts/canary/manifest.py `write`): the
+/// selftest `all-pass` case, then `payload-break` on top of its output, with the stub binary's contract
+/// ids. Regenerate with `HT_BLESS=1 python3 -m unittest scripts/canary/test_manifest.py`; that Python test
+/// fails when the committed bytes drift from the writer, so this reader check cannot go stale.
+#[test]
+fn writer_output_passes_the_reader() {
+    let bytes = std::fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/harness/testdata/manifest/writer-output.json"),
+    )
+    .unwrap();
+    let manifest = parse(&bytes).unwrap();
+    assert_eq!(manifest.contracts["claude"], "c1a0c1a0c1a0c1a0");
+    let verified = manifest
+        .rows
+        .iter()
+        .find(|r| r.harness == "claude" && r.version == "2.1.287")
+        .expect("verified row");
+    assert_eq!(verified.status, Some(RowStatus::Verified));
+    assert_eq!(verified.evidence, Some(RowEvidence::Live));
+    assert_eq!(verified.source, Some(RowSource::Canary));
+    assert_eq!(verified.contract_id.as_deref(), Some("c1a0c1a0c1a0c1a0"));
+    let broken = manifest
+        .rows
+        .iter()
+        .find(|r| r.status == Some(RowStatus::KnownBroken))
+        .expect("known_broken row");
+    assert_eq!(broken.version, "2.1.289");
+    assert_eq!(broken.broken_event.as_deref(), Some("SessionStart"));
+    assert_eq!(broken.broken_field.as_deref(), Some("session_id"));
+    assert_eq!(broken.last_working.as_deref(), Some("2.1.288"));
+    let own = manifest.contracts["claude"].clone();
+    assert_eq!(
+        manifest
+            .status_row("claude", "2.1.289", &own)
+            .map(|row| row.status),
+        Some(Some(RowStatus::KnownBroken))
+    );
+}
+
 #[test]
 fn schema_1_and_3_are_unsupported() {
     assert_eq!(
