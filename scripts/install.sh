@@ -194,14 +194,14 @@ confirm() {
 # whose setup is project-scoped (`--project`, default: the current directory)
 # would write into whatever directory the installer happens to run from.
 user_level_setup() {
-    "$installed_binary" setup --help 2>/dev/null | grep -qi 'user level'
+    "$installed_binary" setup --help 2>/dev/null | grep -i 'user level' >/dev/null
 }
 
 # Builds whose bare `setup` / `unsetup` cover every detected harness (and
 # print a per-harness summary) say so in `setup --help`; older ones need the
 # harness named, one call each.
 bare_setup() {
-    "$installed_binary" setup --help 2>/dev/null | grep -qi 'sets up every detected harness'
+    "$installed_binary" setup --help 2>/dev/null | grep -i 'sets up every detected harness' >/dev/null
 }
 
 # The pid in an instance directory's endpoint.json, when that process is a

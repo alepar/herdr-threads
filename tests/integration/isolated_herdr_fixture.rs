@@ -64,6 +64,70 @@ fn every_helper_state_is_reachable() {
 }
 
 #[test]
+fn stop_survives_terminating_a_lingering_stop_client_under_errexit() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(h) =
+        IsolatedHerdr::new("stop_survives_terminating_a_lingering_stop_client_under_errexit")
+    else {
+        return;
+    };
+    let Availability::Present(real_herdr) = availability(std::env::var_os("PATH").as_deref(), None)
+    else {
+        unreachable!("the fixture requires Herdr");
+    };
+    h.start();
+    let server = h.pid().unwrap();
+    let shim = h.root().join("herdr-stop-client");
+    let stopper_file = h.root().join("stop-client.pid");
+    std::fs::write(
+        &shim,
+        r#"#!/bin/sh
+if [ "$1 ${2:-}" = "server stop" ]; then
+    echo "$$" > "$HT_STOPPER_PID_FILE"
+    "$HT_REAL_HERDR" "$@" || exit "$?"
+    exec sleep 30
+fi
+exec "$HT_REAL_HERDR" "$@"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let out = h
+        .command("/bin/sh")
+        .args([
+            OsStr::new("-ec"),
+            OsStr::new(r#". "$1"; IH_HERDR=$2; ih_stop "$3"; echo stop-returned"#),
+            OsStr::new("sh"),
+            OsStr::new(SCRIPT),
+            shim.as_os_str(),
+            h.root().as_os_str(),
+        ])
+        .env("HT_REAL_HERDR", real_herdr)
+        .env("HT_STOPPER_PID_FILE", &stopper_file)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "ih_stop aborted its errexit caller ({}): {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "stop-returned");
+    let stopper: u32 = std::fs::read_to_string(stopper_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(!pid_alive(stopper), "stop client {stopper} survived");
+    assert!(!pid_alive(server), "server {server} survived");
+    assert_eq!(h.state(), HerdrState::Stopped);
+    assert!(!h.root().join("server.pid").exists());
+    assert!(!h.socket_path().exists());
+}
+
+#[test]
 fn teardown_runs_after_a_panicking_test() {
     let seen: Mutex<Option<(u32, PathBuf)>> = Mutex::new(None);
     let result = catch_unwind(AssertUnwindSafe(|| {

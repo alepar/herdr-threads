@@ -165,7 +165,10 @@ ih_stop() { # ROOT
             stopper=$!; i=0
             while kill -0 "$pid" 2>/dev/null && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
             kill -0 "$stopper" 2>/dev/null && kill -TERM "$stopper" 2>/dev/null
-            wait "$stopper" 2>/dev/null
+            # The stop client may outlive the server and be TERMed above.
+            # Its wait status must not abort an errexit caller; server liveness
+            # below determines whether the bounded TERM/KILL fallback is needed.
+            wait "$stopper" 2>/dev/null || true
         fi
         kill -0 "$pid" 2>/dev/null && kill -TERM "$pid"; i=0
         while kill -0 "$pid" 2>/dev/null && [ $i -lt 150 ]; do sleep 0.1; i=$((i + 1)); done

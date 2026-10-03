@@ -112,6 +112,10 @@ case "$1" in
         if [ "${2:-}" = --help ]; then
             echo "No harness named: every harness. \`setup\` sets up every detected harness"
             echo "Scope (user level, like Herdr's own agent hooks):"
+            # Help may arrive in multiple writes. An early-exiting grep must
+            # not SIGPIPE the producer and misclassify setup under pipefail.
+            sleep 0.02
+            echo "Usage: herdr-threads setup [HARNESS]"
             exit 0
         fi
         printf '%s\n' "$*" >> "$STUB_LOG"
