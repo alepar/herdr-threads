@@ -18,3 +18,7 @@ approvals:
 - coverage-round-2 · canonical R-list: R1-R16 (coverage-round-2-requirements.md) · requirements: 16 · mapped: 16 · unmapped: 0 · divergence: findings 11 → 8, novel 100%, widening: no · auto 8 applied (C12-C19), C20 NEEDS-SPEC not honored (findings actionable) · new edge ht-xoc.2←ht-xoc.1 · integration sweep ht-xoc.7 adopted
 
 roastDesignRound: 1
+roast-design: 2026-10-02-harness-version-evidence-roast-design-1.md
+
+parked:
+- 2026-10-02-harness-version-evidence-roast-design-1.md · escalation · "Material dissent: attribution step 3 vs the Codex shared app-server daemon (process start older than exe mtime on the same inode) — reproduced on a live daemon; unresolved"
