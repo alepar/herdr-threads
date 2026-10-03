@@ -21,9 +21,34 @@ def stable(versions):
 def load_versions_json(path):
     with open(path, encoding="utf-8") as f:
         doc = json.load(f)
-    if not isinstance(doc, dict) or doc.get("schema_version") != 1 or not isinstance(doc.get("rows"), list):
-        raise ValueError(f"{path}: not a harness-versions.json (schema_version 1)")
+    if not isinstance(doc, dict) or doc.get("schema_version") not in (1, 2) or not isinstance(doc.get("rows"), list):
+        raise ValueError(f"{path}: not a harness-versions.json (schema_version 1 or 2)")
+    if doc["schema_version"] == 1:
+        doc = upgrade_schema_1(doc)
     return doc
+
+
+# Canary-only fields a schema-2 row carries and a schema-1 row lacks (null there).
+SCHEMA_2_NULL_ROW_FIELDS = ("contract_id", "supported_since", "broken_event", "broken_field", "last_working",
+                            "issue_url")
+
+
+def upgrade_schema_1(doc):
+    """Map a schema-1 document to the schema-2 shape (upgraded on read, never written back): every row is
+    `verified`, source `manual`, canary-only fields null. The rest of the canary reads only `version`/`known_broken`."""
+    rows = []
+    for row in doc["rows"]:
+        row = dict(row)
+        row.setdefault("status", "verified")
+        row.setdefault("source", "manual")
+        for key in SCHEMA_2_NULL_ROW_FIELDS:
+            row.setdefault(key, None)
+        rows.append(row)
+    out = dict(doc, schema_version=2, rows=rows)
+    for key in ("generated_at", "latest_release"):
+        out.setdefault(key, None)
+    out.setdefault("contracts", {})
+    return out
 
 
 def _rows(doc, harness):

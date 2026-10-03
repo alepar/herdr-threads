@@ -143,6 +143,35 @@ class Helpers(unittest.TestCase):
             with self.assertRaises(ValueError):
                 versions.candidates(npm, "list", doc, "codex", explicit=bad)
 
+    def test_schema_1_and_2_documents_give_the_same_answers(self):
+        committed_path = HERE.parents[1] / "docs" / "compatibility" / "harness-versions.json"
+        committed = versions.load_versions_json(committed_path)
+        self.assertEqual(committed["schema_version"], 2)
+        # The same rows written as a schema-1 document (no schema-2 fields) upgrade to the same answers.
+        v1 = {"schema_version": 1,
+              "rows": [{k: r[k] for k in ("harness", "version", "recipe", "evidence", "known_broken")}
+                       for r in committed["rows"]]}
+        with tempfile.TemporaryDirectory() as tmp:
+            v1_path = pathlib.Path(tmp) / "v1.json"
+            v1_path.write_text(json.dumps(v1))
+            upgraded = versions.load_versions_json(v1_path)
+        self.assertEqual(upgraded["schema_version"], 2)
+        for harness in ("codex", "claude"):
+            self.assertIsNotNone(versions.verified_max(committed, harness))
+            self.assertEqual(versions.verified_max(upgraded, harness), versions.verified_max(committed, harness))
+            self.assertEqual(versions.known_broken(upgraded, harness), versions.known_broken(committed, harness))
+        self.assertEqual(versions.verified_max(committed, "codex"), "0.159.3")
+        self.assertTrue(all(r["status"] == "verified" and r["contract_id"] is None for r in upgraded["rows"]))
+        # The checked-in schema-1 fixture still loads.
+        fixture = versions.load_versions_json(FIX / "harness-versions.json")
+        self.assertEqual(versions.verified_max(fixture, "codex"), "0.157.1")
+        self.assertEqual(versions.known_broken(fixture, "codex"), [])
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = pathlib.Path(tmp) / "v3.json"
+            bad.write_text(json.dumps({"schema_version": 3, "rows": []}))
+            with self.assertRaises(ValueError):
+                versions.load_versions_json(bad)
+
     def test_claude_candidates_sort_numerically(self):
         npm = json.loads((FIX / "npm-claude-versions.json").read_text())
         doc = versions.load_versions_json(FIX / "harness-versions.json")

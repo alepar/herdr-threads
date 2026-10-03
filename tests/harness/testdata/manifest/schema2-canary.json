@@ -1,0 +1,44 @@
+{
+  "schema_version": 2,
+  "generated_from": "canary run 2026-10-02 (hand-written fixture in the shape ht-xoc.6's writer produces)",
+  "generated_at": "2026-10-02T06:00:00Z",
+  "latest_release": "0.4.0",
+  "contracts": {
+    "claude": "c1a0000000000000000000000000000000000000000000000000000000000001",
+    "codex": "c0de000000000000000000000000000000000000000000000000000000000002"
+  },
+  "future_top_level_field": {"ignored": true},
+  "rows": [
+    {
+      "harness": "claude",
+      "version": "2.1.288",
+      "status": "verified",
+      "evidence": "live",
+      "contract_id": "c1a0000000000000000000000000000000000000000000000000000000000001",
+      "source": "canary",
+      "supported_since": "0.3.0",
+      "broken_event": null,
+      "broken_field": null,
+      "last_working": null,
+      "issue_url": null,
+      "recipe": null,
+      "known_broken": [],
+      "future_row_field": 7
+    },
+    {
+      "harness": "codex",
+      "version": "0.160.0",
+      "status": "known_broken",
+      "evidence": "schema",
+      "contract_id": "c0de000000000000000000000000000000000000000000000000000000000002",
+      "source": "canary",
+      "supported_since": null,
+      "broken_event": "UserPromptSubmit",
+      "broken_field": "session_id",
+      "last_working": "0.159.3",
+      "issue_url": "https://github.com/alepar/herdr-threads/issues/12",
+      "recipe": null,
+      "known_broken": []
+    }
+  ]
+}

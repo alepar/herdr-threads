@@ -29,6 +29,10 @@ mod context_tests;
 #[path = "../../tests/harness/cooperative.rs"]
 mod cooperative;
 pub mod launch;
+pub mod manifest;
+#[cfg(test)]
+#[path = "../../tests/harness/manifest.rs"]
+mod manifest_tests;
 #[cfg(test)]
 #[path = "../../tests/harness/optimistic_render.rs"]
 mod optimistic_render;

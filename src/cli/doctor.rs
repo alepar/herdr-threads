@@ -320,6 +320,67 @@ fn unsafe_private_dir(paths: &InstancePaths) -> Option<String> {
 }
 
 /// Assemble the report and its exit status. Split from rendering for tests.
+/// The effective harness-manifest fetch policy and the cache state, for
+/// `report["harness_manifest"]`. Informational only: never a limitation.
+/// `offline_env` is this process's `HERDR_THREADS_OFFLINE`; the daemon reads
+/// its own environment (and `settings.json`) once at start.
+pub(crate) fn harness_manifest_report(
+    instance_dir: &std::path::Path,
+    offline_env: Option<&std::ffi::OsStr>,
+) -> Value {
+    use crate::harness::manifest::{
+        ManifestPolicy, OffReason, SUPPORTED_SCHEMA_VERSION, cache_dir, format_rfc3339_utc,
+        policy_from, read_meta,
+    };
+    let meta = read_meta(&cache_dir(instance_dir));
+    let cache_fetched_at = meta.fetched_at_ms.map(format_rfc3339_utc);
+    let (policy, source, settings_error) = match crate::daemon::settings::load(instance_dir) {
+        Ok(settings) => {
+            let (policy, source) = match policy_from(&settings, offline_env) {
+                ManifestPolicy::Auto => ("auto", "default"),
+                ManifestPolicy::Off(OffReason::Settings) => ("off", "settings"),
+                ManifestPolicy::Off(OffReason::OfflineEnv) => ("off", "offline_env"),
+            };
+            (json!(policy), json!(source), Value::Null)
+        }
+        Err(error) => (Value::Null, Value::Null, json!(error.to_string())),
+    };
+    json!({
+        "policy": policy,
+        "source": source,
+        "settings_error": settings_error,
+        "cache_fetched_at": cache_fetched_at,
+        "cache_etag": meta.etag,
+        "embedded_schema_version": SUPPORTED_SCHEMA_VERSION,
+    })
+}
+
+/// The text lines for [`harness_manifest_report`].
+fn harness_manifest_text(manifest: &Value) -> String {
+    let mut out = String::new();
+    if let Some(error) = manifest["settings_error"].as_str() {
+        out.push_str(&format!("harness manifest: settings error: {error}\n"));
+    } else {
+        match (manifest["policy"].as_str(), manifest["source"].as_str()) {
+            (Some("off"), Some("settings")) => {
+                out.push_str("harness manifest: off (settings.json)\n")
+            }
+            (Some("off"), _) => out.push_str(
+                "harness manifest: off (HERDR_THREADS_OFFLINE=1 in this environment; the daemon reads its own environment at start)\n",
+            ),
+            _ => out.push_str("harness manifest: auto\n"),
+        }
+    }
+    match manifest["cache_fetched_at"].as_str() {
+        Some(at) => out.push_str(&format!(
+            "manifest cache: fetched {at} (etag {})\n",
+            manifest["cache_etag"].as_str().unwrap_or("none")
+        )),
+        None => out.push_str("manifest cache: never fetched (using the embedded copy)\n"),
+    }
+    out
+}
+
 pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Value, i32) {
     let mut report = json!({
         "version": env!("CARGO_PKG_VERSION"),
@@ -380,6 +441,10 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
         Ok(paths) => {
             report["instance_dir"] = json!(paths.instance_dir.display().to_string());
             report["daemon_log"] = json!(daemon_log_path(&paths).display().to_string());
+            report["harness_manifest"] = harness_manifest_report(
+                &paths.instance_dir,
+                std::env::var_os("HERDR_THREADS_OFFLINE").as_deref(),
+            );
             match probe_daemon(&paths) {
                 Ok(Daemon::NotRunning) => {
                     report["daemon"] = if state_error.is_some() {
@@ -676,6 +741,9 @@ pub fn render_text(report: &Value) -> String {
         }
         if !report["daemon_log"].is_null() {
             out.push_str(&format!("daemon_log: {}\n", scalar(&report["daemon_log"])));
+        }
+        if report["harness_manifest"].is_object() {
+            out.push_str(&harness_manifest_text(&report["harness_manifest"]));
         }
         let daemon = &report["daemon"];
         out.push_str(&format!("daemon: {}\n", scalar(&daemon["state"])));
