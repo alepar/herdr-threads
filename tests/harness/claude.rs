@@ -919,8 +919,11 @@ fn claude_declared_groups_are_the_single_source_for_the_hook_object() {
     let groups = claude::declared_hook_groups(command);
     let events: Vec<_> = groups.iter().map(|(event, _)| *event).collect();
     assert_eq!(events, ["SessionStart", "PreToolUse"]);
-    for (_, group) in &groups {
-        assert_eq!(group["hooks"][0]["command"], command);
+    for (event, group) in &groups {
+        assert_eq!(
+            group["hooks"][0]["command"],
+            crate::harness::setup::event_command(command, event)
+        );
         assert_eq!(group["hooks"][0]["timeout"], 10);
     }
     let object = claude::declared_hooks_for_argv(&["/tmp/hook".into()]).unwrap();

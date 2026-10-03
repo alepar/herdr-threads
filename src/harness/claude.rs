@@ -8,6 +8,9 @@
 //! durable receipts remain separate, unqualified gates.
 use super::admission::{self, OptimisticAdmission, Refusal, Row};
 use super::context::{ContextError, EventKind, Harness, Role};
+use super::contract::{
+    EventClass, EventContract, HarnessContract, JsonType::String as Str, field as f,
+};
 pub use super::recipe::NativeSupport;
 use super::recipe::{self, Evidence, LookupError, Recipe, Version, VersionSet};
 use super::{
@@ -18,6 +21,40 @@ use crate::protocol::results::CapabilityState;
 use serde_json::{Value, json};
 
 pub const MAX_HOOK_OUTPUT: usize = 4096;
+
+/// The native hook payload contract `parse_hooks_2_1_283` consumes. Kept in
+/// step with the parser by the drift tests in `tests/harness/contract.rs`: a
+/// parser that requires an undeclared field fails them. Changing it changes
+/// the contract id, which must be deliberate.
+pub const CONTRACT: HarnessContract = HarnessContract {
+    harness: "claude",
+    discriminator: "hook_event_name",
+    events: &[
+        EventContract {
+            event: "SessionStart",
+            class: EventClass::Lifecycle,
+            fields: &[
+                f("hook_event_name", Str, true),
+                f("session_id", Str, true),
+                f("source", Str, true),
+                f("agent_id", Str, false),
+                f("agent_type", Str, false),
+            ],
+        },
+        EventContract {
+            event: "PreToolUse",
+            class: EventClass::Tool,
+            fields: &[
+                f("hook_event_name", Str, true),
+                f("session_id", Str, true),
+                f("tool_name", Str, true),
+                f("tool_use_id", Str, true),
+                f("agent_id", Str, false),
+                f("agent_type", Str, false),
+            ],
+        },
+    ],
+};
 
 /// Native hook-input schema a recipe parses. Recipes with identical payloads
 /// share a variant; a version whose payloads differ gets a new variant.
@@ -540,15 +577,18 @@ fn glob_matches(pattern: &[u8], text: &[u8]) -> bool {
 
 /// An adapter-owned declaration consumed by the shared setup composer.
 /// Order is stable; setup derives owned entries from exactly these groups.
+/// `command` is the base hook command: each group registers it with
+/// `--event <its event>` ([`super::setup::event_command`]).
 pub fn declared_hook_groups(command: &str) -> Vec<(&'static str, Value)> {
+    use super::setup::event_command;
     vec![
         (
             "SessionStart",
-            json!({"hooks":[{"type":"command","command":command,"timeout":10}]}),
+            json!({"hooks":[{"type":"command","command":event_command(command, "SessionStart"),"timeout":10}]}),
         ),
         (
             "PreToolUse",
-            json!({"matcher":"Bash","hooks":[{"type":"command","command":command,"timeout":10}]}),
+            json!({"matcher":"Bash","hooks":[{"type":"command","command":event_command(command, "PreToolUse"),"timeout":10}]}),
         ),
     ]
 }

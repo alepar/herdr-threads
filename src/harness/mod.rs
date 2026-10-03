@@ -25,6 +25,10 @@ pub mod context;
 #[cfg(test)]
 #[path = "../../tests/harness/context.rs"]
 mod context_tests;
+pub mod contract;
+#[cfg(test)]
+#[path = "../../tests/harness/contract.rs"]
+mod contract_tests;
 #[cfg(test)]
 #[path = "../../tests/harness/cooperative.rs"]
 mod cooperative;

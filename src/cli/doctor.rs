@@ -538,6 +538,7 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
             claude["setup"] = json!({
                 "settings": settings.display().to_string(),
                 "installed": inspection.installed,
+                "event_registration": event_registration(inspection.legacy_event_registration),
                 "adopted": inspection.adopted.as_ref().map(|adoption| json!({
                     "owner": adoption.owner,
                     "recorded": adoption.recorded,
@@ -562,6 +563,7 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
         Ok((file, inspection)) => json!({
             "hooks_file": file.display().to_string(),
             "installed": inspection.installed,
+            "event_registration": event_registration(inspection.legacy_event_registration),
             "adopted": inspection.adopted.as_ref().map(|adoption| json!({
                 "owner": adoption.owner,
                 "recorded": adoption.recorded,
@@ -677,6 +679,23 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
     (report, code)
 }
 
+/// The `setup.event_registration` value: `legacy` for hooks installed before per-event
+/// registration (still working, informational only), else `current`.
+fn event_registration(legacy: bool) -> &'static str {
+    if legacy { "legacy" } else { "current" }
+}
+
+/// The informational line for hooks that predate per-event registration. Never a limitation:
+/// the hooks work, so doctor does not turn `degraded` over it.
+fn legacy_registration_line(harness: &str, setup: &Value) -> Option<String> {
+    (setup["event_registration"] == json!("legacy")).then(|| {
+        format!(
+            "{harness} hooks predate per-event registration (no --event): re-run \
+             `herdr-threads setup {harness}`\n"
+        )
+    })
+}
+
 fn clean(value: &str) -> String {
     escape_for_terminal(value, Context::SingleLine).into_owned()
 }
@@ -784,6 +803,9 @@ pub fn render_text(report: &Value) -> String {
                 "no"
             }
         ));
+        if let Some(line) = legacy_registration_line("claude", &claude["setup"]) {
+            out.push_str(&line);
+        }
         let claude_installed = &claude["installed"];
         out.push_str(&claude_path_line(claude_installed));
         out.push('\n');
@@ -859,6 +881,9 @@ pub fn render_text(report: &Value) -> String {
                 "no"
             }
         ));
+        if let Some(line) = legacy_registration_line("codex", setup) {
+            out.push_str(&line);
+        }
         let installed = &report["hooks"]["codex"]["installed"];
         out.push_str(&format!(
             "hooks.codex.installed: {}\n",
