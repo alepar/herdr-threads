@@ -278,8 +278,6 @@ def build(baseline, report, binary, release=None, latest_release=None, issue_url
             if rel_id.get(h) != main_id[h]:  # the same contract folds into the main probes' rows
                 obs.append((h, v, rel_id[h], oc, None))
 
-    baseline_max = {h: versions.verified_max(baseline, h) for h in HARNESSES}
-
     def upsert(h, v, cid, fields):
         key = (h, v, cid)
         old = rows.get(key)
@@ -300,10 +298,12 @@ def build(baseline, report, binary, release=None, latest_release=None, issue_url
     for h, v, cid, oc, first_bad in obs:
         if oc[0] != "broken":
             continue
+        # the greatest verified version strictly below v that counts under this row's contract (its own rows
+        # or a null-contract row); none when there is no such row, so the action falls through to the recipe
         below = [r["version"] for r in rows.values()
-                 if r["harness"] == h and r["contract_id"] == cid and r["status"] == "verified"
+                 if r["harness"] == h and versions.applies(r, cid) and r["status"] == "verified"
                  and version_key(r["version"]) < version_key(v)]
-        last_working = max(below, key=version_key) if below else baseline_max[h]
+        last_working = max(below, key=version_key) if below else None
         old = rows.get((h, v, cid)) or {}
         url = issue_urls.get(f"{h} {first_bad}") if first_bad else None
         upsert(h, v, cid, {"status": "known_broken", "evidence": "schema", "broken_event": oc[1],
