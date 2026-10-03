@@ -19,6 +19,7 @@ use crate::{
         dispatch::DomainService,
         fair_writer::FairWriter,
         host_evidence::HostEvidenceStatus,
+        host_reachability::HostReachability,
         kicks::{CommitKicks, Lane},
         pacer::Pacer,
         workers::{
@@ -685,6 +686,8 @@ struct ProbeState {
     faults: Arc<LaneFaults>,
     /// Where the lane error log writes instead of the process stderr.
     lane_log_path: Option<std::path::PathBuf>,
+    /// The host reachability the observation lane feeds the wake lane.
+    reachability: Option<Arc<HostReachability>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -718,6 +721,17 @@ impl LaneProbe {
     }
     fn attach_pacer(&self, lane: Lane, pacer: &Arc<Pacer>) {
         self.state().pacers.push((lane, Arc::clone(pacer)));
+    }
+    fn attach_reachability(&self, reachability: &Arc<HostReachability>) {
+        self.state().reachability = Some(Arc::clone(reachability));
+    }
+    /// Whether the observation lane has the host marked down (the wake lane
+    /// is frozen); false before the daemon is attached.
+    pub fn host_down(&self) -> bool {
+        self.state()
+            .reachability
+            .as_ref()
+            .is_some_and(|reachability| reachability.is_down())
     }
     /// Whether the daemon's store and both worker-lane Pacers are attached.
     pub fn attached(&self) -> bool {
@@ -868,6 +882,7 @@ impl LaneProbe {
     fn attach_store(&self, _: &Arc<SqliteStore>) {}
     fn attach_registry(&self, _: &Arc<CommitKicks>, _: Vec<Arc<WorkerStatus>>) {}
     fn attach_pacer(&self, _: Lane, _: &Arc<Pacer>) {}
+    fn attach_reachability(&self, _: &Arc<HostReachability>) {}
     fn lane_log(&self, clock: Arc<dyn Clock>) -> crate::daemon::logs::RateLimitedLaneLog {
         crate::daemon::logs::RateLimitedLaneLog::to_stderr(clock)
     }
@@ -1066,6 +1081,13 @@ where
                 Arc::clone(&factory_status),
             )?;
             workers.push(worker);
+            // Shared by the observation lane (writer) and the wake lane: the
+            // wake lane freezes while Herdr is unavailable and the observation
+            // lane's first answered capture kicks it (ht-72q).
+            let reachability = Arc::new(HostReachability::default());
+            let wake_pacer = register_lane(Lane::Wakes);
+            reachability.attach_wake_pacer(Arc::clone(&wake_pacer));
+            factory_probe.attach_reachability(&reachability);
             workers.push(start_wake_worker(
                 Arc::clone(&store),
                 Arc::clone(&writer),
@@ -1073,10 +1095,11 @@ where
                 instance.to_string(),
                 boot,
                 config.retry_config(),
-                register_lane(Lane::Wakes),
+                wake_pacer,
                 factory_stop.clone(),
                 Arc::clone(&factory_wake_status),
                 Arc::new(ObservedPokeCapabilities::new(Arc::clone(&harnesses))),
+                Arc::clone(&reachability),
             )?);
             let observation_pacer = Arc::new(Pacer::new(
                 Lane::Observation.name(),
@@ -1176,6 +1199,7 @@ where
                 Arc::clone(&factory_observation_status),
                 Arc::clone(&factory_host_evidence),
                 observation_pacer,
+                reachability,
             )?);
             drop(workers);
             factory_probe.attach_registry(

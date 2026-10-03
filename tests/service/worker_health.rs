@@ -1176,6 +1176,7 @@ fn observation_worker_loop_feeds_production_health_at_both_call_sites() {
                 observation.clone(),
                 Arc::new(Default::default()),
                 pacer.clone(),
+                Arc::new(Default::default()),
             )
             .unwrap(),
         ),
@@ -1924,6 +1925,7 @@ fn refusal_free_pass_records_marker_once() {
                 observation,
                 Arc::new(Default::default()),
                 pacer.clone(),
+                Arc::new(Default::default()),
             )
             .unwrap(),
         ),
@@ -1993,6 +1995,7 @@ fn stale_refused_pass_skips_reconciliation_marker() {
                 observation,
                 Arc::new(Default::default()),
                 pacer.clone(),
+                Arc::new(Default::default()),
             )
             .unwrap(),
         ),

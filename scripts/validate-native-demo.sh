@@ -135,15 +135,16 @@ cell_ran_versions() { # DRIVER-OUT -> the harness version(s) the agent itself re
     [ -n "$ev" ] && [ -d "$ev" ] || return 0
     run=$(dirname "$ev")
     {
-        cat "$ev"/*.jsonl 2>/dev/null | sed -n 's/.*"claude_code_version":"\([0-9.]*\)".*/\1/p'
-        cat "$ev"/pane-*.txt 2>/dev/null | sed -n 's/.*Claude Code v\([0-9][0-9.]*\).*/\1/p; s/.*OpenAI Codex (v\([0-9][0-9.]*\)).*/\1/p'
-        find "$run/codex-home/sessions" -name '*.jsonl' -exec sed -n 's/.*"cli_version":"\([0-9.]*\)".*/\1/p' {} + 2>/dev/null
+        # Under set -e a failed step would end the group early; every source may be absent (ht-4p6).
+        { cat "$ev"/*.jsonl 2>/dev/null || true; } | sed -n 's/.*"claude_code_version":"\([0-9.]*\)".*/\1/p'
+        { cat "$ev"/pane-*.txt 2>/dev/null || true; } | sed -n 's/.*Claude Code v\([0-9][0-9.]*\).*/\1/p; s/.*OpenAI Codex (v\([0-9][0-9.]*\)).*/\1/p'
+        find "$run/codex-home/sessions" -name '*.jsonl' -exec sed -n 's/.*"cli_version":"\([0-9.]*\)".*/\1/p' {} + 2>/dev/null || true
         # The session transcripts the driver recorded (a managed launch streams into the pane, not into the evidence
         # dir): Claude writes its own "version" on every entry. Read-only.
         python3 -c 'import json, sys
 for path in (json.load(open(sys.argv[1])).get("facts", {}).get("phase_transcripts") or {}).values():
     print(path)' "$ev/summary.json" 2>/dev/null | while IFS= read -r t; do
-            [ -f "$t" ] && sed -n 's/.*"version":"\([0-9][0-9.]*\)".*/\1/p; s/.*"cli_version":"\([0-9.]*\)".*/\1/p' "$t"
+            [ ! -f "$t" ] || sed -n 's/.*"version":"\([0-9][0-9.]*\)".*/\1/p; s/.*"cli_version":"\([0-9.]*\)".*/\1/p' "$t"
         done
     } | sort -u | tr '\n' ' ' | sed 's/ $//'
 }
@@ -247,6 +248,11 @@ run_matrix() {
 if [ "${1:-}" = --matrix ]; then
     shift
     run_matrix "$@"
+    exit 0
+fi
+if [ "${1:-}" = --ran-versions ]; then # DRIVER-OUT: the harness_ran detector alone (tests)
+    [ $# -eq 2 ] || { echo "usage: $0 --ran-versions DRIVER-OUT" >&2; exit 2; }
+    cell_ran_versions "$2"
     exit 0
 fi
 if [ "${1:-}" = --cell ]; then

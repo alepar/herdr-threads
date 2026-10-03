@@ -150,7 +150,7 @@ offered frontier (`last_*_seq/offset`), so a refused warning wake counts as offe
 | `Wakes` | `wake_work`, `seats`, `occupant_bindings`, `seat_availability`, `warning_recipients`, `warning_offer` | Wake candidates come from `wake_work` reason bits joined to seat/binding state. A binding change can make a refused seat sendable. (`snapshot_generations` removed by design roast round 2: one observation publish is several separate commits on it — begin, one stage commit per target chunk, seal, publish — so it kicked the wake lane several times per idle 5 s cycle. Wake discovery, `store/wake.rs`, never reads it.) |
 | `Deadlines` | `work_jobs`, `warning_jobs`, `retirements`, `invitations`, `invitation_cancellations`, `receipts`, `receipt_state` | Newly enqueued jobs need an immediate quantum. Invitation and receipt rows can create, cancel or settle obligations. The kick also calls `DeadlineDriver::after_committed_change()` so the tick gate does not skip the pass. |
 | `Observation` | none | Host-driven. Its cadence and host-event dirty hints are unchanged. |
-| none (explicit) | `host_instances` (holds `observation_admission_sequence` and `observation_decided_sequence`, migrations/0001_initial.sql:22-23; written by the admission fence in `store/seats.rs`) | Explicitly NOT in the Wakes or Retention kick sets. Observation-lane admission commits must not kick the wake lane, or the 5 s observation cadence would wake it every cycle and defeat the idle acceptance. `snapshot_generations` and `snapshot_targets` (observation stage, seal and publish) are classified "none" too (design roast round 2). A publication that changes seat or binding state kicks Wakes through `seats` and `occupant_bindings`. A publication whose only wake-relevant effect is the new active snapshot pointer (`host_instances`) reaches the wake lane at its 5 s safety tick or at a refused seat's D5 `next_due_at`, whichever is first. |
+| none (explicit) | `host_instances` (holds `observation_admission_sequence` and `observation_decided_sequence`, migrations/0001_initial.sql:22-23; written by the admission fence in `store/seats.rs`) | Explicitly NOT in the Wakes or Retention kick sets. Observation-lane admission commits must not kick the wake lane, or the 5 s observation cadence would wake it every cycle and defeat the idle acceptance. `snapshot_generations` and `snapshot_targets` (observation stage, seal and publish) are classified "none" too (design roast round 2). A publication that changes seat or binding state kicks Wakes through `seats` and `occupant_bindings`. A publication whose only wake-relevant effect is the new active snapshot pointer (`host_instances`) reaches the wake lane at its 5 s safety tick or at a refused seat's D5 `next_due_at`, whichever is first, unless it ends a Herdr outage: the observation lane's down-to-up reachability transition kicks the wake lane directly (D4 scope note, ht-72q). |
 | `Retention` (B1, ht-p03.12) | no table (ht-p03.12 D4) — Amended by coverage r2, 2026-10-01: ~~added by ht-p03.12 when its lane lands (expected: `snapshot_generations`)~~ superseded; the kick row is empty and Retention-origin commits kick no lane | The variant exists so B1 only registers an empty-set lane; no table maps to it, so kicks to it never fire. |
 | `AdmissionObserver` (ht-p03.9.6) | no kicked tables — Amended by coverage r2, 2026-10-01 | Lane::AdmissionObserver is the harness-admission observer loop on the Pacer (L6); its row is empty and the lane has its own per-origin counter key (lane wiring contract ht-p03.39). Its commits, if any, kick no lane. |
 | — | every other table | Classified explicitly as "no lane" in the same `match`. |
@@ -258,18 +258,18 @@ truth); *`async` mutex for the gate* (rejected: `decision_guard` is held from sy
 - The first `Published` result resets the Pacer and the counter, clears `last_invalidation_reason`, and
   cadence returns to 5 s.
 
-**Scope of "≤ 1 commit per backoff step"** (stated by design roast round 1; this does not resolve the
-open escalation). The bound covers the **observation lane only**. It does not bound the wake lane's
-durable commits while Herdr is down. Under D5, each refused wake attempt costs a reserve commit plus a
-fenced completion commit, once per refused seat per refusal-backoff step (100 ms × 2ⁿ, cap 30 s).
-Whether that wake-lane cost is acceptable as specified, or needs its own bound and an outage-test
-assertion, is the round-1 escalation "pacer D5 vs root §B2 D2: wake-lane durable commits while Herdr is
-down" (material dissent). It **remains parked for the human** (run.md `parked:`). This spec neither
-accepts nor rejects that cost. Cross-reference (design roast round 2): the task tree pins the cost as
-currently specified. ht-p03.9.4's outage test asserts **≤ 2 durable commits per seat per
-refusal-backoff step** (reservation + restoring completion). That criterion records D5's cost, not a
-decision to accept it. If the human resolves the escalation with a different bound, the criterion is
-revised to match.
+**Scope of "≤ 1 commit per backoff step"** (stated by design roast round 1). The bound covers the
+**observation lane only**. The wake lane's cost while Herdr is down was the round-1 escalation "pacer D5
+vs root §B2 D2: wake-lane durable commits while Herdr is down". Resolved by the human (2026-10-03,
+ht-72q): **everything freezes**. The observation lane marks the host down on a capture frozen for
+unavailability (`ObservationOutcome::Frozen`) and up on any capture Herdr answers; this
+`HostReachability` is shared with the wake lane. While it is down the wake lane skips its pass
+entirely: no completion retry, no recovery, no reservation, no refused completion and no Herdr call, so
+zero durable commits. The down-to-up transition kicks the wake lane and drops every seat's in-memory
+refusal backoff, so the first pass after recovery attempts every due seat at once. Before the first
+frozen capture (at most one 5 s observation cycle) D5's per-refusal cost still applies: a reserve plus a
+restoring completion per seat per refusal-backoff step. ht-p03.9.4's outage test asserts zero
+wake-origin commits once the lane is frozen.
 
 Considered:
 - *Skip the admission too while failing*: rejected. The admission sequence is the fence that orders
@@ -382,9 +382,9 @@ disjoint functions in it, and the merge gate handles the rest.
   idle (skip-unchanged deferred; that retention idle bound is asserted by ht-p03.12.6).
 - **Herdr stopped mid-run** (isolated named session, ht-p03.1): the observation lane makes ≤ 1 durable
   commit per backoff step, reaches the 30 s cap, and Health shows `retrying (attempt N …)`. After
-  restart, the first publish returns it to the 5 s cadence (L5). This asserts the observation lane
-  only (D4 scope note; the wake-lane bound is the parked escalation, and the ≤ 2 commits per seat per
-  step that L4 asserts records D5's cost as specified).
+  restart, the first publish returns it to the 5 s cadence (L5). The wake lane is frozen once the
+  first capture is frozen and makes zero durable commits for the rest of the outage (D4 scope note,
+  ht-72q); L4 asserts it.
 - **Skip contract** (L5): a first failure whose marking pages error part-way leaves
   `last_invalidation_reason` clear, so the next same-reason failure re-runs the full invalidation from
   ordinal 0 and marks the seats past the abort point unresolved. A skipped failure returns

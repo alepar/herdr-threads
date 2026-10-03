@@ -54,6 +54,11 @@ pub enum Command {
     ResolveSeat(ResolveSeat),
     /// TRUST-POLICY C1: seatless resume-only reattachment decision.
     ContinuityCheckIn(ContinuityCheckIn),
+    /// TRUST-POLICY A3 `managed_launch`: `launch` reports a correlated,
+    /// observed startup so the daemon can open an unregistered occupant
+    /// binding on a seat with no open binding (ht-5n6). Sent only to a daemon
+    /// advertising `seat.managed_launch`.
+    RecordManagedLaunch(RecordManagedLaunch),
     CheckIn(CheckIn),
     /// Person check-in over an agent's binding, as the local account
     /// (TRUST-POLICY A4 override). Human lifecycle only.
@@ -431,6 +436,38 @@ impl ContinuityCheckIn {
         Ok(())
     }
 }
+/// The startup evidence of one accepted managed launch (a host-correlated
+/// `ObservedStartup`): which seat's pane Herdr started which harness in, and
+/// the structural identity (terminal, Herdr incarnation and boot, target
+/// generation) the launcher observed. The daemon decides against its own
+/// effective observation; these values only have to agree with it. The
+/// launcher's host epoch is its own connection counter and is not sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordManagedLaunch {
+    pub seat: SeatId,
+    pub target: HostTargetId,
+    pub harness: crate::protocol::authority::Harness,
+    pub terminal: TerminalId,
+    pub incarnation: String,
+    pub host_boot: HostBootId,
+    pub target_generation: u64,
+}
+impl RecordManagedLaunch {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.harness == crate::protocol::authority::Harness::Human {
+            return Err("a managed launch starts an agent, never a person");
+        }
+        if self.incarnation.is_empty()
+            || self.incarnation.len() > 128
+            || self.terminal.as_str().is_empty()
+            || self.host_boot.as_str().is_empty()
+        {
+            return Err("managed launch evidence out of range");
+        }
+        Ok(())
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CheckIn {
@@ -672,6 +709,7 @@ impl Command {
             }
             Self::AcceptRequired(accept) => accept.validate(),
             Self::ContinuityCheckIn(continuity) => continuity.validate(),
+            Self::RecordManagedLaunch(launch) => launch.validate(),
             Self::OperatorOrphanInvite(invite) if invite.deadline_millis == Some(0) => {
                 Err("deadline must be positive")
             }

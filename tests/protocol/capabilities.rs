@@ -209,6 +209,35 @@ fn probe_history_full_bodies() {
     assert_eq!(error.code, ErrorCode::NotFound);
 }
 
+/// Sends a `RecordManagedLaunch` (ht-5n6) through the daemon handler: it must
+/// validate, survive the wire and reach the domain service (which here
+/// answers NotFound), not be refused as a control route.
+fn probe_seat_managed_launch() {
+    use crate::protocol::{
+        authority::Harness,
+        commands::RecordManagedLaunch,
+        ids::{HostBootId, HostTargetId, SeatId, TerminalId},
+    };
+    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let command = Command::RecordManagedLaunch(RecordManagedLaunch {
+        seat: SeatId::new("s"),
+        target: HostTargetId::new("w1:p1"),
+        harness: Harness::Codex,
+        terminal: TerminalId::new("term_1"),
+        incarnation: "herdr-server:pid=1".into(),
+        host_boot: HostBootId::new("boot"),
+        target_generation: 1,
+    });
+    assert!(command.validate().is_ok());
+    let json = serde_json::to_value(&command).unwrap();
+    assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
+    let outcome = handler.handle(command, PeerIdentity::from_kernel(501), &budget());
+    assert_eq!(
+        outcome.expect_err("NoDomain answers NotFound").code,
+        ErrorCode::NotFound
+    );
+}
+
 #[test]
 fn capability_constants_are_stable() {
     assert_eq!(HISTORY_FULL_BODIES, "history.full_bodies");
@@ -216,6 +245,7 @@ fn capability_constants_are_stable() {
     assert_eq!(SERVICE_SEND_V1, "service.send_v1");
     assert_eq!(HARNESS_EVIDENCE, "hook.harness_evidence");
     assert_eq!(HARNESS_STATES, "harness.states");
+    assert_eq!(SEAT_MANAGED_LAUNCH, "seat.managed_launch");
     assert_eq!(
         ADVERTISED,
         &[
@@ -223,7 +253,8 @@ fn capability_constants_are_stable() {
             "hook.parse_failure_report",
             "service.send_v1",
             "hook.harness_evidence",
-            "harness.states"
+            "harness.states",
+            "seat.managed_launch"
         ]
     );
 }
@@ -241,6 +272,7 @@ fn every_advertised_capability_has_a_handler() {
             SERVICE_SEND_V1 => probe_service_send_v1(),
             HARNESS_EVIDENCE => probe_harness_evidence(),
             HARNESS_STATES => probe_harness_states(),
+            SEAT_MANAGED_LAUNCH => probe_seat_managed_launch(),
             other => panic!("{other} is advertised but has no handler probe here"),
         }
     }

@@ -10,7 +10,7 @@ use crate::{
     },
     protocol::{
         ids::{MessageId, ServiceAuthorId, prefix},
-        results::{ApiError, ErrorCode, MessageKind, MessageSummary},
+        results::{ApiError, ErrorCode, MessageKind},
         service::{NotificationSeverity, ServiceNotification, ServiceNotify, ServiceResult},
         time::{CallBudget, UtcMillis},
     },
@@ -524,8 +524,8 @@ pub(crate) fn publish_notify_internal(
         NotificationSeverity::Warn => "warn",
     };
     let now = context.clock().utc_now();
-    tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,actor_label,event_json,decision_seq,decision_at,author_kind,author_service_id,author_role) VALUES(?1,?2,?3,?4,?5,?6,'herdr-graph',?7,?8,?9,'programmatic',?10,'service')",
-        params![message.as_str(),instance,request.thread.as_str(),next_sequence,kind,format!("system_notify:{}",message.as_str()),body,seq as i64,now.0,decision.author().as_str()]).map_err(store_error)?;
+    tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,actor_label,event_json,decision_seq,decision_at,author_kind,author_service_id,author_role) VALUES(?1,?2,?3,?4,?5,?6,?11,?7,?8,?9,'programmatic',?10,'service')",
+        params![message.as_str(),instance,request.thread.as_str(),next_sequence,kind,format!("system_notify:{}",message.as_str()),body,seq as i64,now.0,decision.author().as_str(),super::service_substrate::SERVICE_ACTOR_LABEL]).map_err(store_error)?;
     tx.execute("INSERT INTO service_notification_publications(preparation_id,message_id,decision_seq,recipient_count) VALUES(?1,?2,?3,?4)",params![id,message.as_str(),seq as i64,count]).map_err(store_error)?;
     tx.execute(
         "UPDATE service_notification_preparations SET status='published' WHERE id=?1",
@@ -551,27 +551,19 @@ pub(crate) fn publish_notify_internal(
             params![format!("work:service-notify:{id}"),format!("service-notify:{id}"),high]).map_err(store_error)?;
     }
     let result = ServiceResult::Notification(ServiceNotification {
-        summary: MessageSummary {
+        summary: super::service_substrate::service_message_summary(
             message,
-            thread: request.thread.clone(),
-            author: None,
-            kind: match request.severity {
+            request.thread.clone(),
+            decision.author().clone(),
+            match request.severity {
                 NotificationSeverity::Info => MessageKind::Info,
                 NotificationSeverity::Warn => MessageKind::Warn,
             },
-            sequence: next_sequence as u64,
-            created_at: UtcMillis(now.0),
-            actor_label: Some("herdr-graph".into()),
-            preview_data: body.chars().take(256).collect(),
-            preview_omitted: body.chars().count() > 256,
-            preview_detail_argv: None,
-            event_author: Some(crate::protocol::service::EventAuthor::Programmatic(
-                decision.author().clone(),
-            )),
-            author_role: Some(crate::protocol::summary::AuthorRole::Service),
-            relays_user: false,
-            author_role_backfilled: false,
-        },
+            next_sequence as u64,
+            UtcMillis(now.0),
+            &body,
+            None,
+        ),
         author: decision.author().clone(),
     });
     tx.execute("INSERT INTO operations(actor_scope,operation_key,digest,result_json,decided_at) VALUES(?1,?2,?3,?4,?5)",

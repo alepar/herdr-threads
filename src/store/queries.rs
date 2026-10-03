@@ -1814,11 +1814,12 @@ fn search(
                 let Some(candidate) = slice.candidates.into_iter().next() else {
                     break;
                 };
-                let (seq, author, body, at): (i64, Option<String>, Option<String>, i64) = db
+                type BodyRow = (i64, Option<String>, Option<String>, Option<String>, i64);
+                let (seq, author, label, body, at): BodyRow = db
                     .query_row(
-                        "SELECT sequence,actor_seat_id,body,decision_at FROM messages WHERE id=?1 AND instance_id=?2 AND kind='ordinary'",
+                        "SELECT sequence,actor_seat_id,actor_label,body,decision_at FROM messages WHERE id=?1 AND instance_id=?2 AND kind='ordinary'",
                         params![candidate.id, instance],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
                     )
                     .optional()
                     .map_err(|e| db.map_error(e))?
@@ -1850,7 +1851,7 @@ fn search(
                         seq,
                         &candidate.kind,
                         author.as_deref(),
-                        None,
+                        label.as_deref(),
                         body.as_deref(),
                         None,
                         at,

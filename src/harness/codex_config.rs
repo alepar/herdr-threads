@@ -305,19 +305,40 @@ pub fn plan_install(
 }
 
 /// The dotted keys under `features.network_proxy` in `base` that the allowance does not own
-/// (everything but `enabled` and `unix_sockets`): turning `network_access` on makes them
-/// effective.
-pub fn foreign_network_proxy_keys(base: &[u8]) -> Result<Vec<String>, SetupError> {
+/// (everything but `enabled` and this instance's `unix_sockets` entry, so the user's other
+/// `unix_sockets` entries included): turning `network_access` on makes them effective.
+pub fn foreign_network_proxy_keys(base: &[u8], socket: &str) -> Result<Vec<String>, SetupError> {
     let doc = parse(base)?;
     let proxy_path = ["features".to_owned(), "network_proxy".to_owned()];
     let Some(table) = lookup(&doc, &proxy_path).and_then(Item::as_table_like) else {
         return Ok(Vec::new());
     };
-    Ok(table
-        .iter()
-        .filter(|(key, _)| !matches!(*key, "enabled" | "unix_sockets"))
-        .map(|(key, _)| dotted(&[proxy_path[0].clone(), proxy_path[1].clone(), key.to_owned()]))
-        .collect())
+    let mut foreign = Vec::new();
+    for (key, item) in table.iter() {
+        match key {
+            "enabled" => {}
+            "unix_sockets" => {
+                if let Some(sockets) = item.as_table_like() {
+                    foreign.extend(sockets.iter().filter(|(path, _)| *path != socket).map(
+                        |(path, _)| {
+                            dotted(&[
+                                proxy_path[0].clone(),
+                                proxy_path[1].clone(),
+                                key.to_owned(),
+                                path.to_owned(),
+                            ])
+                        },
+                    ));
+                }
+            }
+            _ => foreign.push(dotted(&[
+                proxy_path[0].clone(),
+                proxy_path[1].clone(),
+                key.to_owned(),
+            ])),
+        }
+    }
+    Ok(foreign)
 }
 
 /// Re-add the owned keys missing from `base` (a prepared installation or upgrade publishing).
@@ -534,7 +555,7 @@ pub fn install(
         phase: InstallPhase::Prepared,
         restore_exact: true,
         upgrade_base: None,
-        foreign_network_proxy: foreign_network_proxy_keys(&current)?,
+        foreign_network_proxy: foreign_network_proxy_keys(&current, socket)?,
     };
     let manifest_bytes = serde_json::to_vec(&manifest).map_err(|_| SetupError::Invalid)?;
     publish_manifest(manifest_path, &manifest_bytes, false)?;
@@ -840,8 +861,17 @@ mod tests {
         );
         // A file without such keys records none (the owned keys are not foreign).
         assert_eq!(
-            foreign_network_proxy_keys(b"[features.network_proxy]\nenabled = true\n").unwrap(),
+            foreign_network_proxy_keys(b"[features.network_proxy]\nenabled = true\n", SOCK)
+                .unwrap(),
             Vec::<String>::new()
+        );
+        // The user's own `unix_sockets` entries are foreign; this instance's socket is not.
+        let sockets = format!(
+            "[features.network_proxy.unix_sockets]\n\"/tmp/other.sock\" = \"allow\"\n\"{SOCK}\" = \"allow\"\n"
+        );
+        assert_eq!(
+            foreign_network_proxy_keys(sockets.as_bytes(), SOCK).unwrap(),
+            ["features.network_proxy.unix_sockets.\"/tmp/other.sock\""]
         );
         // Removal restores the user's bytes exactly, foreign keys included.
         assert!(remove(&config, &manifest).unwrap());

@@ -1145,6 +1145,27 @@ fn launch_refused_when_bound_codex_agent_is_live_elsewhere() {
     launch_refused_for_live_bound_agent("codex");
 }
 
+/// TRUST-POLICY A4 (ht-5n6): an agent `launch` started that has not checked
+/// in yet (`managed_launch` binding) is the seat's bound agent too. Kills: a
+/// second launch for the seat while the first launched agent is live.
+#[test]
+fn launch_refused_when_launched_agent_is_live_before_check_in() {
+    for kind in ["claude", "codex"] {
+        let (host, seats, hooks, clock, budget) = bound_fixture("managed_launch", Some(kind));
+        let err = launch_managed(
+            &host,
+            &seats,
+            &hooks,
+            &clock,
+            request(Harness::Codex, &[]),
+            &budget,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::TargetUnsafe, "{kind}");
+        assert!(host.submitted.lock().unwrap().is_empty());
+    }
+}
+
 fn launch_refused_for_live_bound_agent(kind: &str) {
     let (host, seats, hooks, clock, budget) = bound_fixture("cooperative_top_level", Some(kind));
     let err = launch_managed(

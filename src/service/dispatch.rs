@@ -384,6 +384,26 @@ impl LocalService for DomainService {
                     _ => unreachable!("matched a summary command"),
                 }
             }
+            // TRUST-POLICY A3 `managed_launch`: the launcher reports a
+            // correlated startup; the store decides against its effective
+            // observation in one transaction (A2) and opens nothing but an
+            // unregistered binding on a seat with none.
+            Command::RecordManagedLaunch(launch) => {
+                let (owner_uid, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+                    error(
+                        ErrorCode::CallerUnverified,
+                        "cooperative elected runtime unavailable",
+                    )
+                })?;
+                if peer.effective_uid() != *owner_uid {
+                    return Err(error(
+                        ErrorCode::Unauthorized,
+                        "caller peer does not match elected owner",
+                    ));
+                }
+                let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+                self.store.record_managed_launch(launch, budget)
+            }
             Command::LocalIntents(_) => Err(error(
                 ErrorCode::Unsupported,
                 "local intents are client-owned",

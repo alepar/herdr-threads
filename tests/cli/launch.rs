@@ -145,9 +145,20 @@ impl HostPort for FakeHost {
     }
 }
 
+/// How the fake daemon answers a `RecordManagedLaunch`.
+#[derive(Clone)]
+enum RecordAnswer {
+    Recorded,
+    AlreadyBound,
+    /// An older daemon without the `seat.managed_launch` capability.
+    Unsupported,
+    Refused,
+}
 struct FakeSeats {
     calls: AtomicUsize,
     held: bool,
+    answer: RecordAnswer,
+    recorded: Mutex<Vec<crate::protocol::commands::RecordManagedLaunch>>,
 }
 impl LaunchSeatResolver for FakeSeats {
     fn resolve_for_launch(
@@ -161,6 +172,33 @@ impl LaunchSeatResolver for FakeSeats {
             return Err(api(ErrorCode::TargetUnresolved, "recovery hold"));
         }
         Ok(SeatId::new("seat_launch"))
+    }
+    fn record_managed_launch(
+        &self,
+        startup: &CorrelatedStartup,
+        _: &CallBudget,
+    ) -> Result<Option<ManagedLaunchRecord>, ApiError> {
+        self.recorded
+            .lock()
+            .unwrap()
+            .push(managed_launch_command(startup));
+        let record = |recorded: bool, provenance: &str| {
+            Ok(Some(ManagedLaunchRecord {
+                seat: startup.seat.clone(),
+                recorded,
+                binding_generation: 3,
+                provenance: provenance.into(),
+            }))
+        };
+        match self.answer {
+            RecordAnswer::Recorded => record(true, "managed_launch"),
+            RecordAnswer::AlreadyBound => record(false, "cooperative_top_level"),
+            RecordAnswer::Unsupported => Ok(None),
+            RecordAnswer::Refused => Err(api(
+                ErrorCode::StaleHostObservation,
+                "launch evidence differs from the current pane observation",
+            )),
+        }
     }
 }
 
@@ -280,9 +318,14 @@ impl Drop for Scratch {
 }
 
 fn seats() -> FakeSeats {
+    seats_answering(RecordAnswer::Recorded)
+}
+fn seats_answering(answer: RecordAnswer) -> FakeSeats {
     FakeSeats {
         calls: AtomicUsize::new(0),
         held: false,
+        answer,
+        recorded: Mutex::new(Vec::new()),
     }
 }
 fn handoff() -> FakeHandoff {
@@ -457,8 +500,8 @@ fn held_target_refuses_without_start() {
     s.setup_claude();
     let (host, handoff) = (FakeHost::new(), handoff());
     let held = FakeSeats {
-        calls: AtomicUsize::new(0),
         held: true,
+        ..seats()
     };
     assert_eq!(
         code(s.launch(&host, &held, &handoff, request(ContextHarness::Claude, &[]),)),
@@ -1400,4 +1443,111 @@ fn launch_with_no_open_binding_skips_the_live_agent_check() {
         None
     );
     assert_eq!(*client.limits.lock().unwrap(), vec![1]);
+}
+
+// ---- TRUST-POLICY A3 `managed_launch` (ht-5n6) ----
+
+/// An accepted, correlated startup is reported to the daemon exactly once,
+/// with the correlation's seat, pane, harness and structural evidence, and
+/// the report and launch record show the binding as launched, not checked
+/// in. Kills: a launch that leaves the seat unbound (no lost-prompt wake),
+/// evidence taken from somewhere other than the correlation, or a binding
+/// presented as a check-in.
+#[test]
+fn accepted_startup_records_a_managed_launch_binding() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.285 (Claude Code)", b"");
+    s.setup_claude();
+    let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
+    let out = s
+        .launch(
+            &host,
+            &seats,
+            &handoff,
+            request(ContextHarness::Claude, &[]),
+        )
+        .unwrap();
+    assert_eq!(out.exit, 0);
+    let recorded = seats.recorded.lock().unwrap().clone();
+    assert_eq!(
+        recorded,
+        [crate::protocol::commands::RecordManagedLaunch {
+            seat: SeatId::new("seat_launch"),
+            target: HostTargetId::new("w9:p1"),
+            harness: Harness::Claude,
+            terminal: TerminalId::new("term_9"),
+            incarnation: "herdr-server:pid=1".into(),
+            host_boot: HostBootId::new("boot"),
+            target_generation: 1,
+        }]
+    );
+    assert_eq!(out.report["binding"]["recorded"], true);
+    assert_eq!(out.report["binding"]["state"], "launched, not checked in");
+    assert_eq!(out.report["binding"]["provenance"], "managed_launch");
+    assert!(
+        out.report["receipt"]
+            .as_str()
+            .unwrap()
+            .contains("not receipt")
+    );
+    assert_eq!(s.records()[0]["binding"]["recorded"], true);
+}
+
+/// Kills: reporting an unconfirmed start (exit 5) to the daemon, which would
+/// bind the seat to an agent nobody saw start.
+#[test]
+fn unconfirmed_start_records_no_binding() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.285 (Claude Code)", b"");
+    s.setup_claude();
+    let mut host = FakeHost::new();
+    host.unknown = true;
+    let (seats, handoff) = (seats(), handoff());
+    let out = s
+        .launch(
+            &host,
+            &seats,
+            &handoff,
+            request(ContextHarness::Claude, &[]),
+        )
+        .unwrap();
+    assert_eq!(out.exit, 5);
+    assert!(seats.recorded.lock().unwrap().is_empty());
+    assert!(out.report["binding"].is_null());
+}
+
+/// The agent started either way: an older daemon, a refusal, or a seat that
+/// already has a binding never fails the launch; the report says what
+/// happened. Kills: a launch exit that depends on the binding record.
+#[test]
+fn binding_record_outcomes_never_fail_the_launch() {
+    for (answer, recorded, needle) in [
+        (RecordAnswer::AlreadyBound, false, "left unchanged"),
+        (RecordAnswer::Unsupported, false, "seat.managed_launch"),
+        (RecordAnswer::Refused, false, "StaleHostObservation"),
+    ] {
+        let s = Scratch::new();
+        s.harness("claude", "2.1.285 (Claude Code)", b"");
+        s.setup_claude();
+        let (host, seats, handoff) = (FakeHost::new(), seats_answering(answer), handoff());
+        let out = s
+            .launch(
+                &host,
+                &seats,
+                &handoff,
+                request(ContextHarness::Claude, &[]),
+            )
+            .unwrap();
+        assert_eq!(out.exit, 0, "{needle}");
+        assert_eq!(out.report["outcome"], "started");
+        assert_eq!(out.report["binding"]["recorded"], recorded, "{needle}");
+        assert!(
+            out.report["binding"]["note"]
+                .as_str()
+                .unwrap()
+                .contains(needle),
+            "{needle}: {}",
+            out.report["binding"]
+        );
+    }
 }

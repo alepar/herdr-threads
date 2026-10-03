@@ -660,41 +660,38 @@ fn most_attempts(elapsed: f64) -> u64 {
     most
 }
 
-/// Herdr stopped with `SEATS` seats holding pending wake work: the wake lane
-/// stays within `2 x SEATS x steps` durable commits (a refused attempt costs a
-/// reservation and a restoring completion, once per refusal-backoff step),
-/// never hot-loops against the dead host, and after Herdr returns and the
-/// operator repairs the seats each one is submitted exactly once. The bound
-/// records pacer D5's cost as currently specified. It does not resolve the
-/// parked round-1 escalation (wake-lane durable commits while Herdr is down,
-/// run.md `parked:`); if the human resolves that with a different bound, this
-/// test is revised to match (design roast r2, ht-p03.70).
+/// Herdr stopped with `SEATS` seats holding pending wake work: once the
+/// observation lane's first capture of the dead host is frozen (TRUST-POLICY
+/// C4), the wake lane is frozen too (ht-72q): for the rest of the outage it
+/// makes no wake reservation, records no refusal and calls no Herdr method, so
+/// it commits nothing at all, while still waking on its safety tick. Only the
+/// detection window (Herdr stopped, no frozen capture yet; at most one 5 s
+/// observation cadence) may see refused attempts, within the per-seat
+/// refusal backoff bound (`2 x SEATS x steps`). After Herdr returns and the
+/// operator repairs the seats each one is submitted exactly once.
 ///
-/// A real stop is Herdr unavailability, which freezes state (TRUST-POLICY C4,
-/// ht-yms): no invalidation is written and every seat stays resolved, so the
-/// wake lane keeps attempting each recipient against the dead host for the
-/// whole outage and the bound is exercised end to end. The backoff schedule
-/// itself (growth, the 30 s cap, two commits per step) is also pinned in
-/// `tests/service/lanes.rs`
-/// (`refusal_backoff_costs_two_commits_per_seat_per_step_and_caps_at_30s`).
-/// The restarted Herdr is a new incarnation: the lane's first capture of it
-/// unresolves every seat (C2), so nothing is prompted until the repair.
-/// Kills: a wake lane that retries a down host on every pass or tick (far
-/// more than `2 x SEATS x steps` commits), a frozen capture that unresolves
-/// seats or writes an invalidation, and a refusal path that climbs the 30 s
+/// A real stop is Herdr unavailability, which freezes state (ht-yms): no
+/// invalidation is written and every seat stays resolved, so without the
+/// freeze the wake lane would keep attempting each recipient against the
+/// dead host. The restarted Herdr is a new incarnation: the lane's first
+/// capture of it ends the freeze and unresolves every seat (C2), so nothing
+/// is prompted until the repair.
+/// Kills: a wake lane that keeps reserving or refusing against a down host,
+/// a frozen capture that unresolves seats or writes an invalidation, a
+/// frozen lane that stops ticking, and a refusal path that climbs the 30 s
 /// ladder (the seats would not be submitted promptly after the restore).
 #[test]
-fn herdr_stopped_bounds_wake_commits_per_seat() {
+fn herdr_stopped_freezes_wake_lane() {
     // Long real-time waits: runs beside, not behind, ONE_DAEMON.
     if herdr_threads::test_support::spawn::ran_in_own_process(
         module_path!(),
-        "herdr_stopped_bounds_wake_commits_per_seat",
+        "herdr_stopped_freezes_wake_lane",
     ) {
         return;
     }
     const SEATS: u64 = 3;
-    const OUTAGE: Duration = Duration::from_secs(45);
-    let Some(scene) = Scene::new("herdr_stopped_bounds_wake_commits", SEATS as usize) else {
+    const OUTAGE: Duration = Duration::from_secs(30);
+    let Some(scene) = Scene::new("herdr_stopped_freezes_wake_lane", SEATS as usize) else {
         return;
     };
     let s = &scene.session;
@@ -730,19 +727,42 @@ fn herdr_stopped_bounds_wake_commits_per_seat() {
             .unwrap()
     };
     let revision = invalidation_revision();
+    assert!(
+        !s.probe.host_down(),
+        "the host is reachable before the stop"
+    );
     s.herdr.stop();
     let stopped = Instant::now();
-    std::thread::sleep(OUTAGE);
-    let commits = s.commits("wake") - before;
+    // The observation lane's next capture (within its 5 s cadence) is frozen
+    // and marks the host down; a wake pass already running finishes.
+    wait_until(
+        "the frozen capture to freeze the wake lane",
+        Duration::from_secs(15),
+        || s.probe.host_down(),
+    );
+    s.wait_commits_quiet("wake", Duration::from_millis(500));
+    let detection = s.commits("wake") - before;
     let bound = 2 * SEATS * most_attempts(stopped.elapsed().as_secs_f64());
     assert!(
-        commits <= bound,
-        "{commits} wake commits in {:?} with Herdr down exceed 2 x {SEATS} seats x steps ({bound})",
+        detection <= bound,
+        "{detection} wake commits in the {:?} detection window exceed 2 x {SEATS} seats x steps ({bound})",
         stopped.elapsed()
     );
+    let frozen = s.commits("wake");
+    let frozen_idle = s.probe.idle_events(Lane::Wakes);
+    std::thread::sleep(OUTAGE);
+    assert_eq!(
+        s.commits("wake"),
+        frozen,
+        "the wake lane committed while Herdr was down"
+    );
+    assert!(s.probe.host_down(), "the host came back while stopped");
+    assert!(
+        s.probe.idle_events(Lane::Wakes) > frozen_idle,
+        "the frozen wake lane stopped ticking"
+    );
     // Herdr unavailability is not evidence (TRUST-POLICY C4, ht-yms): no
-    // seat was unresolved, so every recipient stayed in wake discovery and
-    // its wakes were refused at the dead host, within the bound above.
+    // seat was unresolved and no invalidation was written.
     let unresolved = || -> i64 {
         s.db()
             .query_row(
@@ -758,19 +778,6 @@ fn herdr_stopped_bounds_wake_commits_per_seat() {
         revision,
         "Herdr unavailability wrote an invalidation"
     );
-    let refused: i64 = s
-        .db()
-        .query_row(
-            "SELECT count(*) FROM wake_work WHERE last_outcome='unavailable'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(
-        refused, SEATS as i64,
-        "every recipient's wake was attempted and refused at the dead host"
-    );
-    assert!(commits > 0, "the wake lane never attempted the dead host");
     // Herdr returns as a new incarnation with fresh terminals: once the lane
     // captures it, C2 unresolves every saved seat (restore holds) and they
     // stay unresolved until the operator repairs them, as in the
@@ -781,6 +788,7 @@ fn herdr_stopped_bounds_wake_commits_per_seat() {
         Duration::from_secs(60),
         || unresolved() == SEATS as i64 + 1,
     );
+    assert!(!s.probe.host_down(), "an answered capture ends the freeze");
     for (caller, _) in &scene.recipients {
         s.run_stand_in(&caller.pane);
         // First contact after the Herdr restart: the published boot is the

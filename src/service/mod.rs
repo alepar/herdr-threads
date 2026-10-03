@@ -3,6 +3,7 @@ pub mod config;
 pub mod dispatch;
 pub mod fair_writer;
 pub mod host_evidence;
+pub mod host_reachability;
 pub mod kicks;
 pub mod live_gate;
 pub mod pacer;

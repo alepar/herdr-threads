@@ -288,3 +288,43 @@ pub fn message_author(db: &Connection, message: &MessageId) -> Result<EventAutho
         )),
     }
 }
+
+/// The actor label every service-authored message row carries.
+pub const SERVICE_ACTOR_LABEL: &str = "herdr-graph";
+
+/// The summary of a service-authored message, as history reads it back
+/// (`queries::message_summary`): built on the write path, where the decided
+/// row is not yet readable through a query connection.
+// Allowed: the message row's parts, each from the caller's transaction.
+#[allow(clippy::too_many_arguments)]
+pub fn service_message_summary(
+    message: MessageId,
+    thread: ThreadId,
+    author: ServiceAuthorId,
+    kind: crate::protocol::results::MessageKind,
+    sequence: u64,
+    created_at: UtcMillis,
+    source: &str,
+    preview_detail_argv: Option<Vec<String>>,
+) -> crate::protocol::results::MessageSummary {
+    let snippet: String = source
+        .chars()
+        .take(crate::protocol::output::PREVIEW_SNIPPET_CHARS)
+        .collect();
+    crate::protocol::results::MessageSummary {
+        message,
+        thread,
+        author: None,
+        event_author: Some(EventAuthor::Programmatic(author)),
+        author_role: Some(crate::protocol::summary::AuthorRole::Service),
+        relays_user: false,
+        author_role_backfilled: false,
+        kind,
+        sequence,
+        created_at,
+        actor_label: Some(SERVICE_ACTOR_LABEL.into()),
+        preview_omitted: snippet.len() < source.len(),
+        preview_data: snippet,
+        preview_detail_argv,
+    }
+}

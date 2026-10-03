@@ -1593,6 +1593,14 @@ impl StorePort for SqliteStore {
         let mut writer = self.writer(budget)?;
         seats::decide_continuity(&self.context, &mut writer, &self.instance, request)
     }
+    fn record_managed_launch(
+        &self,
+        command: crate::protocol::commands::RecordManagedLaunch,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let mut writer = self.writer(budget)?;
+        seats::record_managed_launch(&self.context, &mut writer, &self.instance, &command)
+    }
     fn issue_cooperative_permit(
         &self,
         request: crate::ports::CooperativePermitRequest,

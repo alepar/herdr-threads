@@ -3162,7 +3162,9 @@ fn reconciliation_lags(tx: &Transaction<'_>, instance: &str) -> Result<bool, Api
 
 /// TRUST-POLICY C1 candidates: nonretired unresolved seats of the instance
 /// whose *latest* binding is this harness's session `native_session`.
-/// Sentinel (`plugin_context:`), empty and human values never match; NULL
+/// Sentinel (`plugin_context:`), empty and human values never match, and a
+/// latest `managed_launch` binding (no session: the agent never checked in)
+/// makes the seat no candidate (ht-5n6); NULL
 /// never equals anything. Returns at most two (the caller only needs to tell
 /// zero, one and several apart).
 pub(crate) fn continuity_candidates(
@@ -3173,7 +3175,7 @@ pub(crate) fn continuity_candidates(
 ) -> Result<Vec<SeatId>, ApiError> {
     let mut statement = tx
         .prepare(
-            "SELECT s.id FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.ordinal=(SELECT MAX(l.ordinal) FROM occupant_bindings l WHERE l.seat_id=s.id) WHERE s.instance_id=?1 AND s.state='unresolved' AND b.harness=?2 AND b.harness<>'human' AND b.native_session=?3 AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' ORDER BY s.id LIMIT 2",
+            "SELECT s.id FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.ordinal=(SELECT MAX(l.ordinal) FROM occupant_bindings l WHERE l.seat_id=s.id) WHERE s.instance_id=?1 AND s.state='unresolved' AND b.harness=?2 AND b.harness<>'human' AND b.observation_provenance<>'managed_launch' AND b.native_session=?3 AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' ORDER BY s.id LIMIT 2",
         )
         .map_err(store_error)?;
     let rows = statement
@@ -3637,6 +3639,10 @@ pub(crate) struct CooperativeMapping {
     pub revision: u64,
     pub invalidation_revision: u64,
     pub generation: u64,
+    /// The claim's binding generation: `generation`, or one less when a
+    /// lifecycle check-in replaces a `managed_launch` binding recorded after
+    /// it was prepared (ht-5n6).
+    pub claimed_generation: u64,
     /// Terminal and host incarnation from the same verified effective
     /// observation that proved this mapping. A binding written from this
     /// mapping stores them so snapshot reconciliation can later reconfirm it.
@@ -3729,11 +3735,30 @@ pub(crate) fn cooperative_mapping(
             "cooperative mapping or generation changed",
         ));
     }
-    if generation != checked_host_number(claim.binding_generation)? {
-        let code = if matches!(
-            mode,
-            Some(crate::protocol::commands::CheckInMode::Lifecycle { .. })
-        ) {
+    let lifecycle_mode = matches!(
+        mode,
+        Some(crate::protocol::commands::CheckInMode::Lifecycle { .. })
+    );
+    let claimed = checked_host_number(claim.binding_generation)?;
+    // TRUST-POLICY A4 (ht-5n6): a lifecycle check-in prepared against the
+    // seat generation just before `launch` recorded its `managed_launch`
+    // binding (exactly one generation earlier) still replaces it: the agent
+    // that launch started checked in while launch was reporting it.
+    let behind_launch = lifecycle_mode
+        && claimed.checked_add(1) == Some(generation)
+        && db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND ended_at IS NULL AND observation_provenance=?3)",
+                params![
+                    claim.seat.as_str(),
+                    generation,
+                    crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE
+                ],
+                |r| r.get::<_, bool>(0),
+            )
+            .map_err(store_error)?;
+    if generation != claimed && !behind_launch {
+        let code = if lifecycle_mode {
             ErrorCode::Conflict
         } else {
             ErrorCode::CallerUnverified
@@ -3775,8 +3800,10 @@ pub(crate) fn cooperative_mapping(
             }
         }
         _ => {
-            let exact: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND target_id=?3 AND harness=?4 AND native_session=?5 AND execution_id=?6 AND ended_at IS NULL)",
-                params![claim.seat.as_str(),generation,claim.target.as_str(),claim.harness.as_str(),claim.native_session.as_str(),claim.execution.as_str()], |r|r.get(0)).map_err(store_error)?;
+            // A `managed_launch` binding is never a caller's context (A2/A3):
+            // only a lifecycle check-in replaces it.
+            let exact: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND target_id=?3 AND harness=?4 AND native_session=?5 AND execution_id=?6 AND ended_at IS NULL AND observation_provenance<>?7)",
+                params![claim.seat.as_str(),generation,claim.target.as_str(),claim.harness.as_str(),claim.native_session.as_str(),claim.execution.as_str(),crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE], |r|r.get(0)).map_err(store_error)?;
             if !exact {
                 return Err(api_error(
                     ErrorCode::CallerUnverified,
@@ -3791,6 +3818,7 @@ pub(crate) fn cooperative_mapping(
         revision: revision as u64,
         invalidation_revision: invalidation as u64,
         generation: generation as u64,
+        claimed_generation: claimed as u64,
         terminal: observation.as_ref().and_then(|o| o.terminal_id.clone()),
         incarnation: observation.and_then(|o| o.incarnation),
     })
@@ -3875,7 +3903,9 @@ pub(crate) fn decide_cooperative(
         seat: claim.seat.clone(),
         target: claim.target.clone(),
         mapping_revision: mapping.revision,
-        binding_generation: mapping.generation,
+        // The claim's own generation: equal to the seat's, or one behind a
+        // `managed_launch` binding the cooperative mapping accepted.
+        binding_generation: mapping.claimed_generation,
         invalidation_revision: mapping.invalidation_revision,
         known_invalidated: false,
     };
@@ -3946,15 +3976,22 @@ pub fn register_available(
             if lifecycle
                 && claim.harness == crate::protocol::authority::Harness::Human
                 && let Some(open) = crate::store::queries::open_binding(tx, seat.as_str())?
-                && open.provenance == crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE
+                && crate::protocol::authority::AGENT_BINDING_PROVENANCES
+                    .contains(&open.provenance.as_str())
                 && operator.is_none()
             {
                 return Err(api_error(
                     ErrorCode::Unauthorized,
                     format!(
-                        "seat {} is bound to a {} agent (cooperative_top_level); a person's check-in never replaces an agent's binding. Run it in your own shell pane, or override as the local account: `herdr-threads me init --operator`",
+                        "seat {} is bound to a {} agent ({}); a person's check-in never replaces an agent's binding. Run it in your own shell pane, or override as the local account: `herdr-threads me init --operator`",
                         seat.as_str(),
-                        open.harness
+                        open.harness,
+                        if open.provenance == crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE
+                        {
+                            "launched, not checked in"
+                        } else {
+                            open.provenance.as_str()
+                        }
                     ),
                 ));
             }
@@ -4050,6 +4087,166 @@ pub fn register_available(
             Ok(CommandResult::CheckedIn(offer))
         },
         present_check_in_result,
+    )
+}
+
+/// TRUST-POLICY A3 `managed_launch` (ht-5n6): after `launch` observed Herdr's
+/// guarded start correlate with its request, open an unregistered occupant
+/// binding for the started harness so the seat has the open binding wake
+/// discovery requires, before the agent's first check-in. Decided in one
+/// transaction against the canonical view (A2): the seat must be resolved
+/// onto the launch target with no recovery hold, the effective observation
+/// must be current for the instance's host boot and epoch and the seat's
+/// target generation, and the launcher's terminal, Herdr incarnation, boot and
+/// target generation must equal it. A seat that already has an open binding
+/// (an agent or person that checked in, or an earlier launch) is left
+/// unchanged and reported with `recorded: false`. The new binding bumps the
+/// seat generation by exactly one, carries placeholder session and execution
+/// ids no caller claim can match, has no `registered_at` and starts no
+/// availability, receipt timer or wake binding generation: it authorizes
+/// nothing but a wake prompt to the bound harness.
+pub fn record_managed_launch(
+    context: &StoreContext,
+    conn: &mut Connection,
+    instance: &str,
+    command: &crate::protocol::commands::RecordManagedLaunch,
+) -> Result<CommandResult, ApiError> {
+    command
+        .validate()
+        .map_err(|e| api_error(ErrorCode::InvalidRequest, e))?;
+    let target_generation = checked_host_number(command.target_generation)?;
+    context.execute_decision(
+        conn,
+        |tx| {
+            type SeatColumns = Option<(String, Option<String>, i64, i64, Option<String>, i64)>;
+            let row: SeatColumns = tx
+                .query_row(
+                    "SELECT s.state,s.target_id,s.generation,s.target_generation,h.host_boot,h.host_epoch FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
+                    params![command.seat.as_str(), instance],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+                )
+                .optional()
+                .map_err(store_error)?;
+            let Some((state, target, generation, seat_target_generation, boot, epoch)) = row else {
+                return Err(api_error(ErrorCode::NotFound, "launched seat not found"));
+            };
+            if state != "resolved" || target.as_deref() != Some(command.target.as_str()) {
+                return Err(api_error(
+                    ErrorCode::TargetUnresolved,
+                    "launched seat is no longer resolved onto the launch pane",
+                ));
+            }
+            let held: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE instance_id=?1 AND target_id=?2 AND released_at IS NULL)",
+                    params![instance, command.target.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            let observation =
+                effective::effective_observation(tx, instance, command.target.as_str())?;
+            let Some(observation) = observation.filter(|o| {
+                !held
+                    && o.structural_generation == seat_target_generation
+                    && Some(o.host_boot.as_str()) == boot.as_deref()
+                    && o.epoch == epoch
+            }) else {
+                return Err(api_error(
+                    ErrorCode::StaleHostObservation,
+                    "launch pane is held or its observation is not current",
+                ));
+            };
+            let (terminal, incarnation) = binding_evidence(
+                observation.terminal_id.as_deref(),
+                observation.incarnation.as_deref(),
+            )?;
+            if terminal != command.terminal.as_str()
+                || incarnation != command.incarnation
+                || observation.host_boot != command.host_boot.as_str()
+                || observation.structural_generation != target_generation
+            {
+                return Err(api_error(
+                    ErrorCode::StaleHostObservation,
+                    "launch evidence differs from the current pane observation",
+                ));
+            }
+            Ok((
+                generation,
+                seat_target_generation,
+                observation.host_boot.clone(),
+                epoch,
+                terminal.to_owned(),
+                incarnation.to_owned(),
+            ))
+        },
+        |tx, at, (generation, seat_target_generation, boot, epoch, terminal, incarnation)| {
+            let open: Option<(i64, String)> = tx
+                .query_row(
+                    "SELECT generation,observation_provenance FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC LIMIT 1",
+                    [command.seat.as_str()],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .map_err(store_error)?;
+            if let Some((bound_generation, provenance)) = open {
+                return Ok(CommandResult::ManagedLaunchRecorded(
+                    crate::protocol::results::ManagedLaunchRecord {
+                        seat: command.seat.clone(),
+                        recorded: false,
+                        binding_generation: u64::try_from(bound_generation).map_err(|_| {
+                            api_error(ErrorCode::StoreCorrupt, "negative binding generation")
+                        })?,
+                        provenance,
+                    },
+                ));
+            }
+            // Exactly one past the seat generation, so a lifecycle check-in
+            // prepared just before this decision is recognized (cooperative
+            // mapping) and still replaces the launch binding.
+            let next = generation.checked_add(1).ok_or_else(|| {
+                api_error(ErrorCode::SequenceExhausted, "seat binding generation exhausted")
+            })?;
+            let taken: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND generation>=?2)",
+                    params![command.seat.as_str(), next],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            if taken {
+                return Err(api_error(
+                    ErrorCode::Conflict,
+                    "seat binding history is ahead of the seat generation; the agent's check-in registers it",
+                ));
+            }
+            let changed = tx
+                .execute(
+                    "UPDATE seats SET generation=?1 WHERE id=?2 AND generation=?3",
+                    params![next, command.seat.as_str(), generation],
+                )
+                .map_err(store_error)?;
+            if changed != 1 {
+                return Err(api_error(ErrorCode::Conflict, "managed launch generation CAS failed"));
+            }
+            let placeholder = format!(
+                "{}{}",
+                crate::protocol::authority::MANAGED_LAUNCH_PLACEHOLDER_PREFIX,
+                uuid::Uuid::new_v4()
+            );
+            tx.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8,?9,?10,NULL,?11,?12)",
+                params![command.seat.as_str(),next,command.target.as_str(),boot,epoch,seat_target_generation,
+                    command.harness.as_str(),placeholder,crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE,at.utc.0,terminal,incarnation]).map_err(store_error)?;
+            Ok(CommandResult::ManagedLaunchRecorded(
+                crate::protocol::results::ManagedLaunchRecord {
+                    seat: command.seat.clone(),
+                    recorded: true,
+                    binding_generation: u64::try_from(next).map_err(|_| {
+                        api_error(ErrorCode::StoreCorrupt, "negative seat generation")
+                    })?,
+                    provenance: crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE.into(),
+                },
+            ))
+        },
     )
 }
 

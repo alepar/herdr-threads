@@ -21,9 +21,8 @@ use crate::{
     },
     protocol::{
         ids::{MessageId, SeatId, ServiceAuthorId, prefix},
-        output::PREVIEW_SNIPPET_CHARS,
-        results::{ApiError, ErrorCode, MessageKind, MessageSummary},
-        service::{EventAuthor, ServiceMessageSent, ServiceResult, ServiceSend},
+        results::{ApiError, ErrorCode, MessageKind},
+        service::{ServiceMessageSent, ServiceResult, ServiceSend},
         time::{CallBudget, UtcMillis},
     },
 };
@@ -469,7 +468,6 @@ pub(crate) fn publish_service_send(
         &request.body,
         PublicationAuthor::Programmatic(&author),
     )?;
-    let snippet: String = request.body.chars().take(PREVIEW_SNIPPET_CHARS).collect();
     let recipient_count = u64::try_from(published.recipient_count)
         .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative recipient count"))?;
     let receipt_duration_millis = u64::try_from(published.duration_ms)
@@ -478,26 +476,20 @@ pub(crate) fn publish_service_send(
         .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative message sequence"))?;
     let message: MessageId = published.message;
     let result = ServiceResult::MessageSent(ServiceMessageSent {
-        summary: MessageSummary {
-            message: message.clone(),
-            thread: request.thread.clone(),
-            author: None,
-            event_author: Some(EventAuthor::Programmatic(author.clone())),
-            author_role: Some(crate::protocol::summary::AuthorRole::Service),
-            relays_user: false,
-            author_role_backfilled: false,
-            kind: MessageKind::Ordinary,
+        summary: super::service_substrate::service_message_summary(
+            message.clone(),
+            request.thread.clone(),
+            author.clone(),
+            MessageKind::Ordinary,
             sequence,
-            created_at: UtcMillis(now.0),
-            actor_label: Some("herdr-graph".into()),
-            preview_omitted: snippet.len() < request.body.len(),
-            preview_data: snippet,
-            preview_detail_argv: Some(vec![
+            UtcMillis(now.0),
+            &request.body,
+            Some(vec![
                 "herdr-threads".into(),
                 "body".into(),
                 message.as_str().into(),
             ]),
-        },
+        ),
         author: author.clone(),
         recipient_count,
         receipt_duration_millis,

@@ -694,7 +694,7 @@ impl PersistentServiceClient {
             }),
         }
     }
-    /// Read a managed thread's history; never journaled.
+    /// Read the history of any thread in the instance; never journaled.
     pub async fn history(
         &self,
         query: ServiceHistoryQuery,

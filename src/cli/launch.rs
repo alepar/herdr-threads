@@ -18,11 +18,16 @@
 //!    top level (`harness::launch::compose_native_argv`), or not at all when
 //!    the pane shell's `codex` wrapper already passes it ([`CodexShellProbe`]).
 //!
-//! Launch never registers, accepts or ACKs. Invitations and messages that
-//! were committed before launch stay pending and are surfaced by the
-//! SessionStart hook's check-in, or by `inbox`, even when the agent's
-//! initial prompt is lost. Each submitted start is appended to a private
-//! launch record in the instance directory.
+//! Launch never registers, accepts or ACKs. After an accepted, correlated
+//! startup it asks the daemon to record a `managed_launch` binding on a seat
+//! with no open binding (TRUST-POLICY A3): an unregistered occupant record
+//! that authorizes nothing but a wake prompt to the launched harness, so an
+//! agent that never checks in before its first turn (Codex 0.159.3 TUI) is
+//! still woken for pending work; its first lifecycle check-in replaces it.
+//! Invitations and messages that were committed before launch stay pending
+//! and are surfaced by the SessionStart hook's check-in, or by `inbox`, even
+//! when the agent's initial prompt is lost. Each submitted start is appended
+//! to a private launch record in the instance directory.
 
 use super::{
     RunError,
@@ -37,18 +42,21 @@ use crate::{
         context::Harness as ContextHarness,
         launch::{
             LaunchHookConfiguration, LaunchHookInspector, LaunchSeatResolver, ManagedLaunchRequest,
-            OpenBinding, launch_managed,
+            OpenBinding, launch_managed, managed_launch_command,
         },
     },
     host::observation::PaneName,
-    ports::{ConfiguredHook, HostObservation, HostPort, LocalClient, NativeLaunchOutcome},
+    ports::{
+        ConfiguredHook, CorrelatedStartup, HostObservation, HostPort, LocalClient,
+        NativeLaunchOutcome,
+    },
     protocol::{
         authority::Harness,
         commands::{Command, InboxQuery},
         ids::{HostTargetId, SeatId},
         output::OutputSpec,
         pagination::PageRequest,
-        results::{ApiError, CommandResult, ErrorCode},
+        results::{ApiError, CommandResult, ErrorCode, ManagedLaunchRecord},
         time::{CallBudget, Cancellation, Clock, MonoInstant},
     },
 };
@@ -236,6 +244,10 @@ auto-approve flag is added.
 Launch is not receipt: it never checks in, accepts or ACKs. Invitations and messages
 sent before launch stay pending; the agent's SessionStart hook shows them, and
 `herdr-threads inbox --seat SEAT` lists them even when the initial prompt is lost.
+After an observed start, a seat with no open binding gets a `managed_launch` binding
+(report `binding`; `seat inspect` shows it as launched, not checked in): it lets the
+daemon wake the idle agent for pending work before its first check-in (Codex runs no
+SessionStart hook until its first turn), and the agent's first check-in replaces it.
 
 A harness that exits right after the start (for example Codex refusing its arguments)
 fails launch at once with invalid_request and the pane's last lines. Codex launches report
@@ -511,6 +523,40 @@ impl LaunchSeatResolver for DaemonSeatResolver<'_> {
     ) -> Result<Option<OpenBinding>, ApiError> {
         open_binding_of(self.client, seat, budget)
     }
+
+    fn record_managed_launch(
+        &self,
+        startup: &CorrelatedStartup,
+        budget: &CallBudget,
+    ) -> Result<Option<ManagedLaunchRecord>, ApiError> {
+        record_managed_launch_with(self.client, startup, budget)
+    }
+}
+
+/// Send one accepted startup to a daemon that records managed launches; an
+/// older daemon (no `seat.managed_launch` capability) is never sent the
+/// command it cannot decode.
+fn record_managed_launch_with(
+    client: &LocalSocketClient,
+    startup: &CorrelatedStartup,
+    budget: &CallBudget,
+) -> Result<Option<ManagedLaunchRecord>, ApiError> {
+    if !client
+        .capabilities(budget)
+        .supports(crate::protocol::capabilities::SEAT_MANAGED_LAUNCH)
+    {
+        return Ok(None);
+    }
+    match client.call(
+        Command::RecordManagedLaunch(managed_launch_command(startup)),
+        budget,
+    )? {
+        CommandResult::ManagedLaunchRecorded(record) => Ok(Some(record)),
+        _ => Err(api(
+            ErrorCode::InvalidRequest,
+            "service returned no managed launch record",
+        )),
+    }
 }
 
 /// The seat's open binding from one `SeatInspect` call (`limit: 1`): the
@@ -569,7 +615,65 @@ impl LaunchSeatResolver for RecordingResolver<'_> {
     ) -> Result<Option<OpenBinding>, ApiError> {
         self.inner.open_binding(seat, budget)
     }
+
+    fn record_managed_launch(
+        &self,
+        startup: &CorrelatedStartup,
+        budget: &CallBudget,
+    ) -> Result<Option<ManagedLaunchRecord>, ApiError> {
+        self.inner.record_managed_launch(startup, budget)
+    }
 }
+
+/// The report's `binding` block for an accepted startup: whether the daemon
+/// opened the seat's `managed_launch` binding (TRUST-POLICY A3), or why not.
+/// Never a launch failure: the agent started either way.
+fn binding_report(
+    seats: &dyn LaunchSeatResolver,
+    startup: &CorrelatedStartup,
+    clock: &dyn Clock,
+) -> Value {
+    let budget = CallBudget {
+        deadline: MonoInstant(clock.monotonic_now().0.saturating_add(5_000)),
+        cancellation: Cancellation::default(),
+    };
+    match seats.record_managed_launch(startup, &budget) {
+        Ok(Some(record)) if record.recorded => json!({
+            "recorded": true,
+            "state": MANAGED_LAUNCH_STATE,
+            "provenance": record.provenance,
+            "binding_generation": record.binding_generation,
+        }),
+        Ok(Some(record)) => json!({
+            "recorded": false,
+            "state": if record.provenance == crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE {
+                MANAGED_LAUNCH_STATE
+            } else {
+                "checked in"
+            },
+            "provenance": record.provenance,
+            "binding_generation": record.binding_generation,
+            "note": "the seat already had an open binding; it was left unchanged",
+        }),
+        Ok(None) => json!({
+            "recorded": false,
+            "note": "this daemon does not record managed launches (no seat.managed_launch \
+                     capability): the seat stays unbound until the agent checks in, so a lost \
+                     initial prompt is not recovered by a wake before then",
+        }),
+        Err(error) => json!({
+            "recorded": false,
+            "note": format!(
+                "the launch binding was not recorded ({:?}: {}); the agent started and \
+                 registers at its first check-in",
+                error.code, error.detail
+            ),
+        }),
+    }
+}
+
+/// How `launch`, `seat inspect` and `me init` name a `managed_launch` binding.
+pub const MANAGED_LAUNCH_STATE: &str = "launched, not checked in";
 
 /// Pending handoff of the launched seat, read after launch (never mutated).
 pub trait HandoffReader {
@@ -808,6 +912,14 @@ pub fn execute(request: &LaunchRequest, parts: &LaunchParts<'_>) -> Result<Launc
         ),
         NativeLaunchOutcome::OutcomeUnknown => ("outcome_unknown", None, None, 5),
     };
+    // TRUST-POLICY A3 `managed_launch`: only an accepted, correlated startup
+    // is reported to the daemon, never an unconfirmed one.
+    let binding = match &outcome {
+        NativeLaunchOutcome::ObservedStartup { correlation, .. } => {
+            Some(binding_report(&seats, correlation, parts.clock))
+        }
+        NativeLaunchOutcome::OutcomeUnknown => None,
+    };
     // Unconfirmed: either name may now be live in the pane.
     let agent_name_candidates = match (&outcome, &seat) {
         (NativeLaunchOutcome::OutcomeUnknown, Some(seat)) => {
@@ -865,6 +977,7 @@ pub fn execute(request: &LaunchRequest, parts: &LaunchParts<'_>) -> Result<Launc
         "codex": codex,
         "harness_version": observed.version,
         "recipe": observed.recipe,
+        "binding": binding,
     });
     if let Some(dir) = parts.record_dir
         && let Err(error) = append_record(dir, &record)
@@ -889,10 +1002,12 @@ pub fn execute(request: &LaunchRequest, parts: &LaunchParts<'_>) -> Result<Launc
             "recipe": observed.recipe,
         },
         "handoff": handoff,
+        "binding": binding,
         "receipt": "launch is not receipt: nothing was checked in, accepted or ACKed",
         "next": format!(
             "the agent's SessionStart hook shows pending invitations and messages; if its \
-             initial prompt is lost, `herdr-threads inbox --seat {seat_word}` still lists them"
+             initial prompt is lost, the idle agent is woken for pending work, and \
+             `herdr-threads inbox --seat {seat_word}` still lists it"
         ),
         "warnings": warnings,
     });

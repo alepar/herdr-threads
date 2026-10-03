@@ -282,6 +282,14 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
         Ok(())
     }
 
+    /// Drops every seat's in-memory refusal backoff. The wake lane calls it
+    /// when Herdr comes back after an outage (ht-72q), so its first pass
+    /// attempts every due seat instead of waiting out a pre-outage backoff.
+    pub fn clear_wake_refusals(&self) -> Result<(), ApiError> {
+        self.wakes
+            .clear_refusals_not_in(&std::collections::HashSet::new())
+    }
+
     /// Examines at most one bounded page per call. Unvisited rows from a
     /// partially attempted page remain in memory, preserving exact position.
     pub fn drive_wakes(&self, budget: &CallBudget) -> Result<WakeDriveOutcome, ApiError> {
@@ -1061,6 +1069,14 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
                 }
             };
             let joined = worker.join().is_ok();
+            // A submitted prompt was delivered; the post-send verification
+            // that ran on after it cannot make that unknown.
+            if joined
+                && let Some(Ok(attempt)) = &result
+                && attempt.outcome == WakeOutcome::Submitted
+            {
+                return Ok(attempt.clone());
+            }
             if !joined || expired || self.store.clock().monotonic_now().0 >= lease_end {
                 return Ok(unknown());
             }

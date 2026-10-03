@@ -268,6 +268,8 @@ struct Fixture {
     clock: Arc<TestClock>,
     /// The real `SqliteStore` behind the production wake/deadline port.
     store: ScheduledStore,
+    /// The same store, for starting the production wake worker.
+    sqlite: Arc<SqliteStore>,
     path: PathBuf,
     _guard: RemoveOnDrop,
 }
@@ -321,9 +323,11 @@ impl Fixture {
             },
         )
         .unwrap();
+        let store = Arc::new(store);
         Self {
             clock,
-            store: ScheduledStore::new(Arc::new(store), Arc::new(FairWriter::new(32))),
+            store: ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32))),
+            sqlite: store,
             path,
             _guard: guard,
         }
@@ -907,4 +911,66 @@ fn human_bound_seat_costs_no_reservation() {
     assert_eq!(fx.poked(), [("t1".into(), None)]);
     assert!(host.prompts().is_empty());
     assert!(host.log().is_empty());
+}
+
+/// While Herdr is down the wake lane is frozen (ht-72q), and the frozen pass
+/// also skips the soft-deadline poke drive: a seat past its soft point is
+/// neither read nor poked until the observation lane's recovery kick, which
+/// alone (no clock movement) makes the production wake worker poke it.
+/// Kills: a freeze that gates the wake drive but still runs `drive_pokes`.
+#[test]
+fn frozen_wake_lane_neither_reads_nor_pokes_until_recovery() {
+    use crate::service::{
+        host_reachability::HostReachability,
+        pacer::Pacer,
+        workers::{WorkerStatus, start_wake_worker},
+    };
+    use std::time::{Duration, Instant};
+    struct Stop(Cancellation, Option<std::thread::JoinHandle<()>>);
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            self.0.cancel();
+            if let Some(worker) = self.1.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+    let fx = Fixture::new(&["t1"]);
+    fx.clock.set(SOFT);
+    let host = Arc::new(RecordingHost::new(HostUiState::Idle, false));
+    let cancel = Cancellation::default();
+    let pacer = Arc::new(Pacer::new("wake", fx.clock.clone(), cancel.clone()));
+    let reachability = Arc::new(HostReachability::default());
+    reachability.attach_wake_pacer(pacer.clone());
+    reachability.mark_down();
+    let worker = start_wake_worker(
+        fx.sqlite.clone(),
+        Arc::new(FairWriter::new(32)),
+        host.clone(),
+        "i".into(),
+        uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
+        RetryConfig::default(),
+        pacer.clone(),
+        cancel.clone(),
+        Arc::new(WorkerStatus::default()),
+        Arc::new(Declared(PokeCapabilities::NONE)),
+        reachability.clone(),
+    )
+    .unwrap();
+    let _stop = Stop(cancel, Some(worker));
+    let until = Instant::now() + Duration::from_secs(5);
+    while pacer.idle_events() < 1 {
+        assert!(Instant::now() < until, "the frozen lane never blocked");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    std::thread::sleep(Duration::from_millis(60));
+    assert!(host.log().is_empty(), "a frozen lane read the host");
+    assert_eq!(fx.poked(), [("t1".into(), None)], "a frozen lane poked");
+    reachability.mark_up();
+    let until = Instant::now() + Duration::from_secs(5);
+    while fx.poked() != [("t1".into(), Some(SOFT))] {
+        assert!(Instant::now() < until, "no poke after the recovery kick");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(host.prompts().len(), 1, "one poke after recovery");
 }

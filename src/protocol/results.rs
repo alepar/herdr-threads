@@ -47,6 +47,8 @@ pub enum CommandResult {
     RetirementJobs(Page<RetirementStatus>),
     SeatResolved(SeatId),
     ContinuityReattached(ContinuityReattachment),
+    /// The seat's open binding after a `RecordManagedLaunch` decision.
+    ManagedLaunchRecorded(ManagedLaunchRecord),
     CheckedIn(CheckInResult),
     /// Local presentation of an immutable completed CheckIn fragment.
     #[serde(skip_deserializing)]
@@ -673,6 +675,18 @@ pub struct RepairHistory {
     /// only; it never decided the reattachment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuity_diagnostic: Option<String>,
+}
+/// The outcome of one `RecordManagedLaunch` (TRUST-POLICY A3
+/// `managed_launch`): `recorded` when this decision opened the seat's
+/// unregistered `managed_launch` binding, otherwise the seat already had an
+/// open binding, left unchanged and described here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedLaunchRecord {
+    pub seat: SeatId,
+    pub recorded: bool,
+    pub binding_generation: u64,
+    pub provenance: String,
 }
 /// The seat a resumed session was reattached to and the generation of the
 /// successor binding the same transaction opened; the caller writes its

@@ -13,6 +13,7 @@ use crate::protocol::{
     time::{CallBudget, Clock},
 };
 use crate::service::fair_writer::FairWriter;
+use crate::service::host_reachability::HostReachability;
 use crate::service::kicks::{self, Lane};
 use crate::service::pacer::{Pacer, Wake};
 use crate::{
@@ -1438,6 +1439,7 @@ pub fn start_wake_worker(
     cancellation: Cancellation,
     status: Arc<WorkerStatus>,
     poke_capabilities: Arc<dyn crate::ports::PokeCapabilitySource>,
+    reachability: Arc<HostReachability>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("herdr-wakes".into())
@@ -1454,6 +1456,7 @@ pub fn start_wake_worker(
             // The first pass runs at boot, before the first wait.
             let mut next_due_at: Option<crate::protocol::time::MonoInstant> = None;
             let mut waited = false;
+            let mut recoveries = reachability.recoveries();
             while !cancellation.is_cancelled() {
                 if waited {
                     let tick = wake_wait(safety_tick, next_due_at, pacer.now());
@@ -1464,7 +1467,26 @@ pub fn start_wake_worker(
                 waited = true;
                 next_due_at = None;
                 let mut wakes_failed = false;
+                // Herdr down (TRUST-POLICY C4): the lane is frozen. No
+                // completion retry, recovery, reservation, refusal record or
+                // Herdr call; it waits for the observation lane's recovery
+                // kick (or a safety tick). A frozen pass is not a failure.
+                if reachability.is_down() {
+                    status.record_success(port.store.clock().utc_now());
+                    continue;
+                }
+                // Back after an outage: refusal backoff from before it says
+                // nothing about the host now, so every due seat goes at once.
+                let seen = reachability.recoveries();
+                if seen != recoveries {
+                    recoveries = seen;
+                    let _ = scheduler.clear_wake_refusals();
+                }
                 loop {
+                    // An outage seen mid-drain stops the drain too.
+                    if reachability.is_down() {
+                        break;
+                    }
                     let budget = CallBudget {
                         deadline: crate::protocol::time::MonoInstant(
                             port.store.clock().monotonic_now().0.saturating_add(5_000),
@@ -1502,7 +1524,8 @@ pub fn start_wake_worker(
                 // A failed wake pass leaves its retained completion to the
                 // wake path's next tick (no back-off for a store-callback
                 // failure); the poke drive waits for a clean pass.
-                if wakes_failed {
+                // An outage seen mid-pass freezes the poke drive too (ht-72q).
+                if wakes_failed || reachability.is_down() {
                     continue;
                 }
                 // Spec §10: soft-deadline pokes share the wake dispatcher and
@@ -1685,6 +1708,8 @@ fn pass_complete(
 
 /// The elected owner joins this thread before releasing its lease. A cancelled
 /// host call must physically return before this worker can finish.
+// Allowed: worker start-up wiring: each argument is a distinct dependency.
+#[allow(clippy::too_many_arguments)]
 pub fn start_observation_worker(
     identity: Arc<crate::identity::repair::OrdinaryIdentity>,
     store: Arc<dyn StorePort>,
@@ -1693,6 +1718,7 @@ pub fn start_observation_worker(
     status: Arc<WorkerStatus>,
     host_evidence: Arc<crate::service::host_evidence::HostEvidenceStatus>,
     pacer: Arc<Pacer>,
+    reachability: Arc<HostReachability>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
     spawn_observation_loop(
         identity,
@@ -1701,6 +1727,7 @@ pub fn start_observation_worker(
         status,
         host_evidence,
         pacer,
+        reachability,
     )
 }
 
@@ -1717,6 +1744,7 @@ fn spawn_observation_loop<S>(
     status: Arc<WorkerStatus>,
     host_evidence: Arc<crate::service::host_evidence::HostEvidenceStatus>,
     pacer: Arc<Pacer>,
+    reachability: Arc<HostReachability>,
 ) -> std::io::Result<thread::JoinHandle<()>>
 where
     S: crate::identity::reconcile::observation_store::ObservationStore + 'static,
@@ -1773,6 +1801,16 @@ where
                     status.observe_capture(&captured);
                     match captured {
                         Ok(Some(outcome)) => {
+                            // Host reachability for the wake lane (ht-72q):
+                            // a frozen capture is the outage; any capture
+                            // Herdr answered ends it and kicks the wake lane.
+                            match &outcome {
+                                crate::identity::reconcile::ObservationOutcome::Frozen {
+                                    ..
+                                } => reachability.mark_down(),
+                                crate::identity::reconcile::ObservationOutcome::Superseded => {}
+                                _ => reachability.mark_up(),
+                            }
                             match &outcome {
                                 crate::identity::reconcile::ObservationOutcome::Published(_) => {
                                     host_evidence.record_published();

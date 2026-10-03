@@ -1656,3 +1656,72 @@ fn human_bound_seat_with_agent_in_pane_gets_no_wake_authority() {
     drop(store);
     let _ = std::fs::remove_file(path);
 }
+
+/// TRUST-POLICY A3 `managed_launch` (ht-5n6): a seat whose agent was launched
+/// without a prompt and never checked in (Codex 0.159.3 runs no SessionStart
+/// before its first turn) still gets the lost-prompt idle-recovery wake: the
+/// launch binding is the open binding cooperative wake authority requires,
+/// unregistered (no binding generation) and naming the launched harness.
+/// Kills: the unbound seat that never reserved a wake (bd ht-5n6).
+#[test]
+fn managed_launch_binding_reserves_a_cooperative_wake() {
+    let (store, path) = bound_seat_store("codex");
+    store
+        .context
+        .open_writer()
+        .unwrap()
+        .execute("DELETE FROM occupant_bindings", [])
+        .unwrap();
+    let unbound = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    assert!(
+        StorePort::reserve_wake(&store, &unbound, &budget())
+            .unwrap()
+            .is_none(),
+        "control: no binding, no wake"
+    );
+    let recorded = StorePort::record_managed_launch(
+        &store,
+        crate::protocol::commands::RecordManagedLaunch {
+            seat: SeatId::new("s"),
+            target: crate::protocol::ids::HostTargetId::new("pane"),
+            harness: crate::protocol::authority::Harness::Codex,
+            terminal: crate::protocol::ids::TerminalId::new("term-pane"),
+            incarnation: "inc".into(),
+            host_boot: crate::protocol::ids::HostBootId::new("host"),
+            target_generation: 1,
+        },
+        &budget(),
+    )
+    .unwrap();
+    assert!(matches!(
+        recorded,
+        crate::protocol::results::CommandResult::ManagedLaunchRecorded(ref record) if record.recorded
+    ));
+    let reservation = reserve_for_seat(&store).expect("launched seat gets a wake");
+    assert_eq!(
+        reservation.authority,
+        crate::ports::ReservedWakeAuthority::Cooperative {
+            terminal: crate::protocol::ids::TerminalId::new("term-pane"),
+            incarnation: "inc".into(),
+            binding_generation: None,
+            harness: Some("codex".to_string()),
+        }
+    );
+    assert!(StorePort::validate_wake_reservation(&store, &reservation, &budget()).unwrap());
+    let wake_generation: Option<i64> = store
+        .context
+        .open_writer()
+        .unwrap()
+        .query_row(
+            "SELECT binding_generation FROM wake_work WHERE seat_id='s'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(wake_generation, None);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}

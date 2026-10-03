@@ -115,9 +115,8 @@ fn codex_cleared_composer_with_marker_in_history_reads_submitted() {
 
 #[test]
 fn marker_fifth_from_bottom_reads_submitted() {
-    // Pins `COMPOSER_TAIL_LINES = 4`: in the just-submitted, no-output Claude
-    // layout the marker is the 5th non-empty line from the bottom, so a window
-    // of 5 under the whole-line rule would read it as still holding.
+    // In the just-submitted, no-output Claude layout the marker is the 5th
+    // non-empty line from the bottom, above the composer's prompt line.
     let pane = format!(
         "> {MARKER}\n\n╭──────────────╮\n│ >            │\n╰──────────────╯\n  ? for shortcuts\n"
     );
@@ -128,5 +127,36 @@ fn marker_fifth_from_bottom_reads_submitted() {
     assert_eq!(
         composer_state_from_read(Some(&read_wrapper(&pane))),
         AgentComposerState::Submitted
+    );
+}
+
+// The tail window matters only when no prompt line is in it: the whole tail
+// is then the composer. These two pin `COMPOSER_TAIL_LINES = 4` from both sides.
+
+#[test]
+fn without_prompt_line_marker_fourth_from_bottom_reads_holding() {
+    let pane = format!("{MARKER}\nstatus one\nstatus two\nstatus three\n");
+    assert_eq!(
+        composer_state_from_text(Some(&pane)),
+        AgentComposerState::HoldingPrompt
+    );
+}
+
+#[test]
+fn without_prompt_line_marker_fifth_from_bottom_reads_submitted() {
+    let pane = format!("{MARKER}\nstatus one\nstatus two\nstatus three\nstatus four\n");
+    assert_eq!(
+        composer_state_from_text(Some(&pane)),
+        AgentComposerState::Submitted
+    );
+}
+
+#[test]
+fn without_prompt_line_wrapped_marker_reads_holding() {
+    let (head, tail) = MARKER.split_at(MARKER.len() / 2);
+    let pane = format!("\u{2502} {head} \u{2502}\n\u{2502} {tail} \u{2502}\n");
+    assert_eq!(
+        composer_state_from_text(Some(&pane)),
+        AgentComposerState::HoldingPrompt
     );
 }

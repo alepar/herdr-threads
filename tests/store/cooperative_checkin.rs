@@ -2165,3 +2165,342 @@ fn operator_human_override_replaces_agent_binding_and_is_audited() {
         .unwrap();
     assert_eq!(leaked, 0);
 }
+
+// ---- TRUST-POLICY A3 `managed_launch` (ht-5n6) ----
+
+/// The fixture pane's launch evidence: terminal, incarnation, boot and target
+/// generation of its effective observation.
+fn managed_launch() -> crate::protocol::commands::RecordManagedLaunch {
+    crate::protocol::commands::RecordManagedLaunch {
+        seat: SeatId::new("s"),
+        target: HostTargetId::new("p"),
+        harness: Harness::Codex,
+        terminal: TerminalId::new("term-p"),
+        incarnation: "inc".into(),
+        host_boot: HostBootId::new("b"),
+        target_generation: 0,
+    }
+}
+fn record_launch(
+    store: &SqliteStore,
+    command: crate::protocol::commands::RecordManagedLaunch,
+) -> Result<crate::protocol::results::ManagedLaunchRecord, crate::protocol::results::ApiError> {
+    match store.record_managed_launch(command, &budget())? {
+        CommandResult::ManagedLaunchRecorded(record) => Ok(record),
+        other => panic!("wrong result {other:?}"),
+    }
+}
+type BindingRow = (
+    i64,
+    String,
+    String,
+    String,
+    Option<i64>,
+    Option<i64>,
+    String,
+);
+fn bindings(conn: &Connection) -> Vec<BindingRow> {
+    let mut statement = conn
+        .prepare("SELECT generation,observation_provenance,native_session,execution_id,registered_at,ended_at,harness FROM occupant_bindings WHERE seat_id='s' ORDER BY ordinal")
+        .unwrap();
+    statement
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+            ))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+fn seat_generation(conn: &Connection) -> i64 {
+    conn.query_row("SELECT generation FROM seats WHERE id='s'", [], |r| {
+        r.get(0)
+    })
+    .unwrap()
+}
+
+/// Kills: a launch that leaves the seat unbound (no wake authority before the
+/// first check-in), a registered or available launch binding, a binding with
+/// a claimable session or execution, a seat generation not bumped by exactly
+/// one, or a wake binding generation set from it.
+#[test]
+fn managed_launch_on_an_unbound_seat_opens_an_unregistered_binding() {
+    let (store, conn, _) = fixture();
+    let record = record_launch(&store, managed_launch()).unwrap();
+    assert!(record.recorded);
+    assert_eq!(record.binding_generation, 1);
+    assert_eq!(record.provenance, "managed_launch");
+    assert_eq!(seat_generation(&conn), 1);
+    let rows = bindings(&conn);
+    assert_eq!(rows.len(), 1);
+    let (generation, provenance, session, execution, registered, ended, harness) = &rows[0];
+    assert_eq!(*generation, 1);
+    assert_eq!(provenance, "managed_launch");
+    assert!(session.starts_with("launch:"), "{session}");
+    assert!(execution.starts_with("launch:"), "{execution}");
+    assert!(uuid::Uuid::parse_str(execution).is_err());
+    assert_eq!((*registered, *ended), (None, None));
+    assert_eq!(harness, "codex");
+    let (terminal, incarnation, boot, epoch, target_generation): (String, String, String, i64, i64) = conn
+        .query_row(
+            "SELECT terminal_id,incarnation,host_boot,host_epoch,target_generation FROM occupant_bindings WHERE seat_id='s'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (
+            terminal.as_str(),
+            incarnation.as_str(),
+            boot.as_str(),
+            epoch,
+            target_generation
+        ),
+        ("term-p", "inc", "b", 1, 0)
+    );
+    let anchors: i64 = conn
+        .query_row("SELECT count(*) FROM seat_availability", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(anchors, 0, "a launch is not availability");
+    let wake: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM wake_work WHERE binding_generation IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(wake, 0);
+}
+
+/// Kills: a launch record that replaces or duplicates an open binding (an
+/// agent or person that already checked in, or an earlier launch).
+#[test]
+fn managed_launch_leaves_an_open_binding_unchanged() {
+    let (store, conn, _) = fixture();
+    check_in(&store, lifecycle(claim(), "initial")).unwrap();
+    let before = bindings(&conn);
+    let record = record_launch(&store, managed_launch()).unwrap();
+    assert!(!record.recorded);
+    assert_eq!(record.binding_generation, 1);
+    assert_eq!(record.provenance, "cooperative_top_level");
+    assert_eq!(bindings(&conn), before);
+    assert_eq!(seat_generation(&conn), 1);
+
+    let (store, conn, _) = fixture();
+    assert!(record_launch(&store, managed_launch()).unwrap().recorded);
+    let again = record_launch(&store, managed_launch()).unwrap();
+    assert!(!again.recorded);
+    assert_eq!(again.provenance, "managed_launch");
+    assert_eq!(bindings(&conn).len(), 1);
+    assert_eq!(seat_generation(&conn), 1);
+}
+
+/// Kills: deciding from the launcher's evidence instead of the daemon's
+/// canonical view (A2): another terminal, incarnation, Herdr boot or target
+/// generation, a person "launch", a held pane or a seat mapped elsewhere.
+#[test]
+fn managed_launch_is_refused_when_evidence_differs_from_the_canonical_view() {
+    use crate::protocol::commands::RecordManagedLaunch;
+    type Case = (&'static str, fn(&mut RecordManagedLaunch), ErrorCode);
+    let cases: [Case; 6] = [
+        (
+            "terminal",
+            |c| c.terminal = TerminalId::new("term-q"),
+            ErrorCode::StaleHostObservation,
+        ),
+        (
+            "incarnation",
+            |c| c.incarnation = "other".into(),
+            ErrorCode::StaleHostObservation,
+        ),
+        (
+            "boot",
+            |c| c.host_boot = HostBootId::new("old"),
+            ErrorCode::StaleHostObservation,
+        ),
+        (
+            "generation",
+            |c| c.target_generation = 3,
+            ErrorCode::StaleHostObservation,
+        ),
+        (
+            "human",
+            |c| c.harness = Harness::Human,
+            ErrorCode::InvalidRequest,
+        ),
+        (
+            "target",
+            |c| c.target = HostTargetId::new("q"),
+            ErrorCode::TargetUnresolved,
+        ),
+    ];
+    for (label, change, code) in cases {
+        let (store, conn, _) = fixture();
+        let mut command = managed_launch();
+        change(&mut command);
+        assert_eq!(
+            record_launch(&store, command).unwrap_err().code,
+            code,
+            "{label}"
+        );
+        assert!(bindings(&conn).is_empty(), "{label}");
+        assert_eq!(seat_generation(&conn), 0, "{label}");
+    }
+    let (store, conn, _) = fixture();
+    conn.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('i','p','b',1,'restore')", [])
+        .unwrap();
+    assert_eq!(
+        record_launch(&store, managed_launch()).unwrap_err().code,
+        ErrorCode::StaleHostObservation
+    );
+    assert!(bindings(&conn).is_empty());
+}
+
+/// TRUST-POLICY A4 "agent to agent, same seat": the started agent's first
+/// lifecycle check-in replaces the launch binding, also when it read the seat
+/// generation before launch recorded it. Kills: a launch binding that blocks
+/// or survives the agent's registration, or a stale-generation tolerance that
+/// reaches past one launch.
+#[test]
+fn lifecycle_check_in_replaces_a_managed_launch_binding() {
+    for prepared_before_launch in [false, true] {
+        let (store, conn, _) = fixture();
+        record_launch(&store, managed_launch()).unwrap();
+        let mut context = claim();
+        context.binding_generation = if prepared_before_launch { 0 } else { 1 };
+        let result = check_in(&store, lifecycle(context, "startup")).unwrap();
+        assert_eq!(result.context.binding_generation, 2);
+        let rows = bindings(&conn);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1, "managed_launch");
+        assert!(rows[0].5.is_some(), "the launch binding ended");
+        assert_eq!(rows[1].1, "cooperative_top_level");
+        assert!(rows[1].4.is_some(), "registered");
+        assert_eq!(rows[1].5, None);
+        assert_eq!(seat_generation(&conn), 2);
+    }
+    // Two generations behind is a stale context, not a launch race.
+    let (store, conn, _) = fixture();
+    check_in(&store, lifecycle(claim(), "first")).unwrap();
+    conn.execute("UPDATE occupant_bindings SET ended_at=1", [])
+        .unwrap();
+    record_launch(&store, managed_launch()).unwrap();
+    assert_eq!(seat_generation(&conn), 2);
+    let mut stale = claim();
+    stale.execution = ExecutionId::new("00000000-0000-4000-8000-000000000003");
+    assert_eq!(
+        check_in(&store, lifecycle(stale, "stale"))
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+}
+
+/// TRUST-POLICY A2/A3: a Current (non-lifecycle) check-in never adopts or
+/// registers a launch binding, whatever session and execution it claims.
+/// Kills: a tool-boundary check-in turning the launch into availability.
+#[test]
+fn current_check_in_never_adopts_a_managed_launch_binding() {
+    let (store, conn, _) = fixture();
+    record_launch(&store, managed_launch()).unwrap();
+    let (session, execution): (String, String) = conn
+        .query_row(
+            "SELECT native_session,execution_id FROM occupant_bindings",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let mut guessed = claim();
+    guessed.binding_generation = 1;
+    let mut exact = guessed.clone();
+    exact.native_session = NativeSessionId::new(session);
+    exact.execution = ExecutionId::new(execution);
+    for context in [guessed, exact] {
+        let current = CheckIn {
+            mode: CheckInMode::Current,
+            claim: context,
+            operation: OperationId::new(format!("current-{}", uuid::Uuid::new_v4())),
+        };
+        assert_eq!(
+            check_in(&store, current).unwrap_err().code,
+            ErrorCode::CallerUnverified
+        );
+    }
+    let rows = bindings(&conn);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].4, None, "still not registered");
+}
+
+/// TRUST-POLICY A4: `me init` (a human lifecycle check-in) is refused over a
+/// launch binding unless the local account overrides it. Kills: a person
+/// silently taking the seat of an agent launch just started.
+#[test]
+fn human_check_in_over_a_managed_launch_needs_the_operator() {
+    let (store, conn, _) = fixture();
+    record_launch(&store, managed_launch()).unwrap();
+    let mut person = claim();
+    person.harness = Harness::Human;
+    person.binding_generation = 1;
+    let error = check_in(&store, lifecycle(person.clone(), "me-init")).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Unauthorized);
+    assert!(
+        error.detail.contains("launched, not checked in"),
+        "{}",
+        error.detail
+    );
+    assert_eq!(bindings(&conn)[0].1, "managed_launch");
+    let operator = crate::protocol::authority::OperatorActor::from_peer(
+        crate::protocol::authority::PeerIdentity::from_kernel(501),
+        501,
+    )
+    .unwrap();
+    let result = check_in_as(
+        &store,
+        lifecycle(person, "me-init-operator"),
+        Some(operator),
+    )
+    .unwrap();
+    assert_eq!(result.context.binding_generation, 2);
+    assert_eq!(bindings(&conn)[1].1, "operator_human");
+}
+
+/// TRUST-POLICY C1: a launch binding has no harness session, so a seat whose
+/// latest binding is one is never a cooperative-continuity candidate. Kills:
+/// a resume matching a placeholder or reattaching through a launch.
+#[test]
+fn continuity_candidates_ignore_managed_launch_bindings() {
+    let (store, mut conn, _) = fixture();
+    record_launch(&store, managed_launch()).unwrap();
+    let session: String = conn
+        .query_row("SELECT native_session FROM occupant_bindings", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    conn.execute("UPDATE seats SET state='unresolved'", [])
+        .unwrap();
+    let tx = conn.transaction().unwrap();
+    assert!(
+        crate::store::seats::continuity_candidates(&tx, "i", "codex", &session)
+            .unwrap()
+            .is_empty()
+    );
+    // Control: the same row as an agent's binding is a candidate.
+    tx.execute(
+        "UPDATE occupant_bindings SET observation_provenance='cooperative_top_level'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        crate::store::seats::continuity_candidates(&tx, "i", "codex", &session)
+            .unwrap()
+            .len(),
+        1
+    );
+}

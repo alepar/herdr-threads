@@ -79,6 +79,22 @@ pub const CARRIED_BINDING_PROVENANCES: [&str; 2] =
 /// and never the provenance of a binding (the binding the reattached seat
 /// opens stays `cooperative_top_level`).
 pub const COOPERATIVE_CONTINUITY_PROVENANCE: &str = "cooperative_continuity";
+/// TRUST-POLICY A3: Herdr's guarded `agent.start` in this pane was observed
+/// starting the harness and the agent has not checked in. Bindings only (an
+/// unregistered occupant binding the daemon opens after a correlated launch,
+/// on a seat with no open binding); never on receipts; it authorizes nothing
+/// but a wake prompt to the bound harness. Its session and execution are
+/// placeholders ([`MANAGED_LAUNCH_PLACEHOLDER_PREFIX`]) that no caller claim
+/// can match, and the first lifecycle check-in replaces it.
+pub const MANAGED_LAUNCH_PROVENANCE: &str = "managed_launch";
+/// Prefix of a `managed_launch` binding's placeholder native session and
+/// execution: never a canonical UUID, so no cooperative claim matches it.
+pub const MANAGED_LAUNCH_PLACEHOLDER_PREFIX: &str = "launch:";
+/// TRUST-POLICY A4: the open-binding provenances that are an agent's, which a
+/// person's `me init` never replaces without `--operator` and a second
+/// `launch` respects.
+pub const AGENT_BINDING_PROVENANCES: [&str; 2] =
+    [COOPERATIVE_TOP_LEVEL_PROVENANCE, MANAGED_LAUNCH_PROVENANCE];
 
 /// Obtained from the local socket kernel credential, never from JSON.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -144,9 +144,23 @@ impl HostPort for WakeHost {
         Ok(self.observation(target))
     }
     fn enumerate_targets(&self, _: &HostCallContext) -> Result<HostSnapshot, ApiError> {
-        Err(ApiError::unsupported(
-            "fixture has no enumeration authority",
-        ))
+        // This is a reachable idle host. An enumeration error would freeze
+        // the wake lane, even while current-target reads still succeed.
+        let mut observation = self.observation(&HostTargetId::new("pane-worker"));
+        observation.provenance = ObservationProvenance::CoherentEnumeration;
+        observation.incarnation = IncarnationEvidence::Verified {
+            identity: "inc".into(),
+            evidence_kind: herdr_threads::ports::EvidenceKind::CoherentEnumeration,
+        };
+        Ok(HostSnapshot {
+            boot: observation.host_boot.clone(),
+            epoch: observation.epoch,
+            observation_sequence: observation.observation_sequence,
+            complete: true,
+            enumeration: herdr_threads::ports::EnumerationEvidence::CoherentVerified,
+            incarnation: observation.incarnation.clone(),
+            targets: vec![observation],
+        })
     }
     fn safe_wake_target(
         &self,

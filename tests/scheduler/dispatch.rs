@@ -489,6 +489,44 @@ fn lease_expiry_cancels_and_joins_owned_transport_before_slot_release() {
     });
 }
 
+/// Delivers the prompt, then spends past the attempt lease in post-send
+/// verification (a slow pane read), as `NativeWakeDispatcher` can.
+struct SlowVerificationNotifier {
+    clock: Arc<FakeClock>,
+}
+impl NotificationPort for SlowVerificationNotifier {
+    fn attempt_wake(
+        &self,
+        _: WakeReservation,
+        _: &HostCallContext,
+    ) -> Result<WakeOutcome, ApiError> {
+        self.clock.0.store(5_000, Ordering::SeqCst);
+        Ok(WakeOutcome::Submitted)
+    }
+}
+
+#[test]
+fn delivered_prompt_stays_submitted_when_verification_outlives_the_lease() {
+    let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+    let store = FakeWakeStore {
+        clock: clock.clone(),
+        events: Arc::new(Mutex::new(Vec::new())),
+        fail_reservation: AtomicBool::new(false),
+    };
+    let notifier = SlowVerificationNotifier {
+        clock: clock.clone(),
+    };
+    let runner = WakeRunner::new(&store, &notifier, RetryConfig::default(), daemon_boot());
+    let budget = CallBudget {
+        deadline: MonoInstant(10_000),
+        cancellation: Cancellation::default(),
+    };
+    assert_eq!(
+        runner.try_candidate(&due_candidate(), &budget).unwrap(),
+        Some(WakeOutcome::Submitted)
+    );
+}
+
 #[test]
 fn four_connected_owned_calls_block_a_fifth_until_their_transports_exit() {
     let clock = Arc::new(FakeClock(AtomicU64::new(0)));
@@ -1681,6 +1719,7 @@ fn sqlite_actual_wake_worker_retries_completion_and_yields_to_foreground() {
         cancellation.clone(),
         status.clone(),
         Arc::new(crate::ports::NoPokeCapabilities),
+        Arc::new(crate::service::host_reachability::HostReachability::default()),
     )
     .unwrap();
     let cleanup = WakeWorkerCleanup {

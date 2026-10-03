@@ -12,6 +12,7 @@ use crate::protocol::{
     time::{Cancellation, Clock, MonoInstant, UtcMillis},
 };
 use crate::service::host_evidence::HostEvidenceStatus;
+use crate::service::host_reachability::HostReachability;
 use crate::service::kicks::{Lane, LaneSet};
 use crate::store::{SqliteStore, StoreSettings, connection::StoreContext};
 use std::sync::{
@@ -163,6 +164,7 @@ struct Rig {
     host: Arc<LaneHost>,
     status: Arc<WorkerStatus>,
     evidence: Arc<HostEvidenceStatus>,
+    reachability: Arc<HostReachability>,
     identity: Arc<OrdinaryIdentity>,
     cancel: Cancellation,
     kicked: Kicked,
@@ -208,6 +210,7 @@ impl Rig {
             host,
             status: Arc::new(WorkerStatus::default()),
             evidence: Arc::new(HostEvidenceStatus::default()),
+            reachability: Arc::new(HostReachability::default()),
             identity,
             cancel,
             kicked,
@@ -225,6 +228,7 @@ impl Rig {
                 self.status.clone(),
                 self.evidence.clone(),
                 self.pacer.clone(),
+                self.reachability.clone(),
             )
             .unwrap(),
         );
@@ -351,6 +355,46 @@ fn explicit_target_read_during_backoff_runs_one_capture() {
         rig.snapshots() >= 3 && rig.pacer.attempts() == 0
     });
     assert!(rig.status.retry().is_none(), "success clears the retry");
+}
+
+/// The lane is the host-reachability writer (ht-72q): a capture frozen for
+/// unavailability marks the host down without kicking the wake lane, and the
+/// first capture Herdr answers marks it up and kicks the wake lane once.
+/// Kills: a lane that never reports the outage (the wake lane keeps
+/// attempting the dead host), and a recovery that leaves the wake lane to its
+/// safety tick.
+#[test]
+fn frozen_capture_marks_host_down_and_publication_kicks_wake_lane() {
+    let mut rig = Rig::new();
+    let wake = Arc::new(Pacer::new("wake", rig.clock.clone(), rig.cancel.clone()));
+    rig.reachability.attach_wake_pacer(wake.clone());
+    rig.host.down.store(true, Ordering::SeqCst);
+    rig.start();
+    rig.wait("the frozen capture", &|| rig.snapshots() == 1);
+    rig.wait_idle(1);
+    assert!(
+        rig.reachability.is_down(),
+        "a frozen capture marks the host down"
+    );
+    assert_eq!(rig.reachability.recoveries(), 0);
+    // Herdr is back: the next capture (after the 100 ms-ish backoff) publishes.
+    rig.host.down.store(false, Ordering::SeqCst);
+    rig.advance(1_000);
+    rig.wait("the publishing capture", &|| !rig.reachability.is_down());
+    assert_eq!(rig.reachability.recoveries(), 1, "one recovery");
+    // The wake lane's Pacer holds the latched recovery kick.
+    assert_eq!(
+        wake.wait_blocking(Duration::from_secs(5)),
+        crate::service::pacer::Wake::Kicked,
+        "recovery kicked the wake lane"
+    );
+    // Steady publications are no transition: no further kick. The lane
+    // must be blocked again before the clock moves, or the move is missed.
+    rig.wait_idle(2);
+    rig.advance(5_000);
+    rig.wait("another publication", &|| rig.snapshots() >= 3);
+    rig.wait_idle(3);
+    assert_eq!(rig.reachability.recoveries(), 1, "no recovery while up");
 }
 
 #[test]

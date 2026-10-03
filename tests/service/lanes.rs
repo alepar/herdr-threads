@@ -1525,6 +1525,7 @@ mod pacer_lanes {
         },
         service::{
             fair_writer::FairWriter,
+            host_reachability::HostReachability,
             pacer::{Backoff, Pacer},
             workers::{WorkerStatus, start_deadline_worker, start_wake_worker},
         },
@@ -1809,6 +1810,24 @@ mod pacer_lanes {
         pacer: &Arc<Pacer>,
         status: &Arc<WorkerStatus>,
     ) -> Lane {
+        start_wake_reachable(
+            f,
+            host,
+            pacer,
+            status,
+            &Arc::new(HostReachability::default()),
+        )
+    }
+
+    /// [`start_wake`] sharing `reachability` with the test (the observation
+    /// lane's role).
+    pub(super) fn start_wake_reachable(
+        f: &Fixture,
+        host: &Arc<RefusingHost>,
+        pacer: &Arc<Pacer>,
+        status: &Arc<WorkerStatus>,
+        reachability: &Arc<HostReachability>,
+    ) -> Lane {
         let cancel = pacer.cancellation().clone();
         let worker = start_wake_worker(
             f.store.clone(),
@@ -1821,6 +1840,7 @@ mod pacer_lanes {
             cancel.clone(),
             status.clone(),
             Arc::new(herdr_threads::ports::NoPokeCapabilities),
+            Arc::clone(reachability),
         )
         .unwrap();
         Lane {
@@ -2015,6 +2035,7 @@ mod pacer_lanes {
                 cancel.clone(),
                 status.clone(),
                 Arc::new(herdr_threads::ports::NoPokeCapabilities),
+                Arc::new(HostReachability::default()),
             )
             .unwrap();
             Lane {
@@ -2049,8 +2070,11 @@ mod pacer_lanes {
     /// restoring completion (two durable commits) and nothing else, the gap
     /// before the n-th retry follows `100 ms x 2^(n-1)` (+-20 %) up to the
     /// 30 s cap, no refusal climbs the ladder, and the lane's own Pacer never
-    /// backs off. `tests/integration/lanes_latency.rs` runs the real
-    /// stopped-Herdr case, where seats go unresolved and the wake lane idles.
+    /// backs off. This is the cost of a per-seat refusal while the host is
+    /// reachable (or before the observation lane notices an outage): once a
+    /// capture is frozen the wake lane makes no attempt at all
+    /// (`host_down_freezes_wake_lane_until_recovery_kick`, and the real
+    /// stopped-Herdr case in `tests/integration/lanes_latency.rs`).
     /// Kills: a refusal path that commits more than two rows per attempt, a
     /// backoff that is flat, uncapped or not per seat, and a refusal that
     /// advances `retry_step`.
@@ -2137,5 +2161,72 @@ mod pacer_lanes {
             steps.iter().all(|(_, step)| *step == 0),
             "refusals climbed the ladder: {steps:?}"
         );
+    }
+
+    /// While the observation lane reports the host down, the wake lane is
+    /// frozen (ht-72q): across several safety ticks with every seat due it
+    /// reserves nothing, records no refusal and calls no Herdr method. The
+    /// recovery kick then has it attempt every seat without waiting for its
+    /// safety tick (the fake clock never reaches the next one).
+    /// Kills: a wake lane that ignores reachability, one that still reserves
+    /// or records refusals while down, and one that resumes only at its tick.
+    #[test]
+    fn host_down_freezes_wake_lane_until_recovery_kick() {
+        const SEATS: usize = 3;
+        let f = Fixture::new("lane-host-down");
+        f.seed_wake_seats(SEATS);
+        let cancel = Cancellation::default();
+        let pacer = pacer(&f, "wake", &cancel);
+        let status = Arc::new(WorkerStatus::default());
+        let host = RefusingHost::new(&f.clock);
+        let reachability = Arc::new(HostReachability::default());
+        reachability.attach_wake_pacer(Arc::clone(&pacer));
+        reachability.mark_down();
+        let mut lane = start_wake_reachable(&f, &host, &pacer, &status, &reachability);
+        let wake_commits = || f.store.commit_counts().get("wake").copied().unwrap_or(0);
+        wait_until("the lane to block", || pacer.idle_events() >= 1);
+        // 20 s of fake time: four safety ticks, every seat due throughout.
+        for tick in 1..=40u64 {
+            f.clock.set_and_settle(tick * 500, &pacer);
+        }
+        assert!(host.calls().is_empty(), "a frozen lane called Herdr");
+        assert_eq!(wake_commits(), 0, "a frozen lane committed");
+        assert_eq!(pacer.attempts(), 0, "a frozen pass is not a lane failure");
+        assert!(status.last_tick().is_some(), "a frozen pass completes");
+        // Recovery: the kick alone (no clock movement) resumes the lane.
+        host.ready.store(true, Ordering::SeqCst);
+        reachability.mark_up();
+        wait_until("every seat attempted after recovery", || {
+            host.calls().len() >= SEATS
+        });
+        lane.stop();
+    }
+
+    /// A seat refused while the host looked up keeps an in-memory refusal
+    /// backoff; a down-to-up cycle drops it, so the first pass after recovery
+    /// attempts the seat at once, even when the lane ran no pass while the
+    /// host was down.
+    /// Kills: a recovery that leaves refusal backoff in place.
+    #[test]
+    fn recovery_drops_refusal_backoff() {
+        let f = Fixture::new("lane-host-recovery");
+        f.seed_wake_seat();
+        let cancel = Cancellation::default();
+        let pacer = pacer(&f, "wake", &cancel);
+        let status = Arc::new(WorkerStatus::default());
+        let host = RefusingHost::new(&f.clock);
+        let reachability = Arc::new(HostReachability::default());
+        reachability.attach_wake_pacer(Arc::clone(&pacer));
+        let mut lane = start_wake_reachable(&f, &host, &pacer, &status, &reachability);
+        wait_until("the refused attempt", || host.calls().len() == 1);
+        wait_until("the lane to block", || pacer.idle_events() >= 1);
+        // The seat now waits 100 ms of fake time, which never passes.
+        stays("a refused seat retried before its backoff", || {
+            host.calls().len() != 1
+        });
+        reachability.mark_down();
+        reachability.mark_up();
+        wait_until("the retry after recovery", || host.calls().len() == 2);
+        lane.stop();
     }
 }

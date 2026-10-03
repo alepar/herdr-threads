@@ -346,6 +346,16 @@ fn encode_text(result: &CommandResult, spec: &OutputSpec) -> Result<Vec<u8>, Api
             text.push_str(&text_json(&without_commands(value)));
             text.push('\n');
         }
+        // TRUST-POLICY A3: a `managed_launch` binding is an agent launch has
+        // started that has not checked in (ht-5n6).
+        if let CommandResult::SeatInspect(inspection) = result
+            && inspection
+                .open_binding
+                .as_ref()
+                .is_some_and(|open| open.provenance == super::authority::MANAGED_LAUNCH_PROVENANCE)
+        {
+            text.push_str("open_binding_state: launched, not checked in\n");
+        }
     } else {
         text.push_str("value: ");
         text.push_str(&text_json(data));

@@ -83,6 +83,7 @@ impl Lane5 {
             Arc::clone(&status),
             Arc::new(HostEvidenceStatus::default()),
             Arc::clone(&pacer),
+            Arc::new(Default::default()),
         )
         .unwrap();
         Self {

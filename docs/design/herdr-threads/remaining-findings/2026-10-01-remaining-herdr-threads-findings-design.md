@@ -169,15 +169,14 @@ one durable commit (the admission fence) per backoff step. (Amended: pacer neste
 repeat-invalidation skip is a complete contract: it applies only after the previous invalidation's
 unresolved-marking pass completed, returns a dedicated outcome that keeps the invalidated Health
 classification and host-evidence recording, starts no reconciliation pages and counts as a backoff
-failure.) **Scope of this bound:** it covers the observation lane only. The wake lane's durable
-commits for refused wakes while Herdr is down (a reserve plus a fenced completion per refused attempt,
-pacer D5) are not bounded by it; whether that cost is acceptable or needs its own bound is the parked
-round-1 escalation (pacer D5 vs this Decision) and remains open for the human — this spec does not
-resolve it. (Cross-reference, design roast round 2: the task tree already pins that cost as currently
-specified — ht-p03.9.4's outage test asserts **≤ 2 durable commits per seat per refusal-backoff step**
-(the reservation plus the restoring completion). That criterion records D5's cost; it does not accept
-it. The escalation stays parked, and if the human resolves it with a different bound, ht-p03.9.4's
-criterion is revised to match.)
+failure.) **Scope of this bound:** it covers the observation lane only. The wake lane has its own bound, set by
+the human's resolution of the parked round-1 escalation (pacer D5 vs this Decision; resolved 2026-10-03,
+ht-72q): while Herdr is down the wake lane is frozen and makes **zero** durable commits and zero Herdr
+calls (no reservation, no refused completion); the observation lane's first answered capture kicks it.
+Only the detection window before the first frozen capture (at most one 5 s observation cycle) can see
+refused wakes, at D5's cost of a reserve plus a restoring completion per seat per refusal-backoff step.
+ht-p03.9.4's outage test (`lanes_latency::herdr_stopped_freezes_wake_lane`) now asserts zero wake-origin
+commits once the lane is frozen.
 (Superseded wording: the earlier "zero commits per retry" and "idle: no durable commits" are replaced by the nested spec D4 resolution: on an idle daemon, zero durable commits from the deadline and wake lanes and from request paths; the retention lane zero absent publication and ≤ 1 commit per 60 s tick while observation publishes at idle (skip-unchanged deferred); the observation lane at most one cycle's commits per 5 s cadence; with Herdr down, the observation lane at most 1 commit per backoff step. See `pacer-adoption-design.md` D4.)
 
 **Decision 3 — cancellation.** The 10 ms `AtomicBool` sleep-poll in `daemon/transport.rs:67/68` is

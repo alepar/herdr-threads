@@ -718,3 +718,34 @@ fn service_reads_reject_foreign_instance_connection() {
         .unwrap_err();
     assert_eq!(receipts.code, ErrorCode::Unauthorized);
 }
+
+/// A body search hit on a service-authored message carries the service's
+/// actor label, as history does (ht-e3l).
+#[test]
+fn search_hit_on_a_service_message_keeps_its_actor_label() {
+    let mut fx = fixture();
+    let sent = fx.own_send("labelled", &["s1"]);
+    let command = Command::Search(crate::protocol::commands::SearchQuery {
+        literal: "service message labelled".into(),
+        thread: Some(fx.thread.clone()),
+        page: page_of(10, None),
+        max_candidates: 100,
+    });
+    let CommandResult::Search(result) =
+        queries::query(fx.context(), "i", &command, &budget()).unwrap()
+    else {
+        panic!("wrong result")
+    };
+    let hits: Vec<_> = result
+        .matches
+        .items
+        .iter()
+        .filter_map(|hit| match hit {
+            crate::protocol::results::SearchHit::Body(summary) => Some(summary),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(hits.len(), 1, "{result:?}");
+    assert_eq!(hits[0].message, sent);
+    assert_eq!(hits[0].actor_label.as_deref(), Some("herdr-graph"));
+}

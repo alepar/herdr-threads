@@ -171,7 +171,8 @@ pub struct ServiceSend {
     pub operation: OperationId,
 }
 
-/// Read a managed thread's history; mirrors the native history query.
+/// Read the history of any thread in the instance (managed or not); mirrors
+/// the native history query.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceHistoryQuery {

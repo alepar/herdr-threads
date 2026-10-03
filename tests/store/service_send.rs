@@ -16,8 +16,8 @@ use crate::{
         pagination::PageRequest,
         results::{CommandResult, ReceiptStatus},
         service::{
-            EnsureManagedThread, InvitationConstraint, NotificationSeverity, ServiceInvite,
-            ServiceNotify, ServiceOperation, ServiceThreadMutation,
+            EnsureManagedThread, EventAuthor, InvitationConstraint, NotificationSeverity,
+            ServiceInvite, ServiceNotify, ServiceOperation, ServiceThreadMutation,
         },
         time::{Cancellation, Clock, MonoInstant},
     },

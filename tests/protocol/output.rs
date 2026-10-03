@@ -718,6 +718,36 @@ fn compound_inspections_and_retirement_diagnostics_render_complete_fields() {
     );
 }
 
+/// TRUST-POLICY A3 (ht-5n6): `seat inspect` names a `managed_launch` open
+/// binding as launched, not checked in, and says nothing extra for an agent
+/// that checked in. Kills: a launch binding that reads like a registration.
+#[test]
+fn seat_inspect_text_names_a_managed_launch_binding() {
+    let render = |provenance: &str| {
+        let seat: CommandResult = serde_json::from_value(serde_json::json!({"kind":"seat_inspect","data":{
+            "summary":{"seat":"s-1","continuity":"resolved","target":"w1:p1","generation":1,"created_at":1,"retired_at":null},
+            "mapping":{"state":"resolved","target":"w1:p1","detail_argv":null},
+            "hold":null,
+            "retirement":null,
+            "open_binding":{"provenance":provenance,"harness":"codex","target":"w1:p1"},
+            "history":{"items":[],"next_cursor":null,"next_argv":null,"high_water_ordinal":1,"scope_revision":null,"has_more":false,"stop_reason":"complete","consistency":"bounded_live"}
+        }})).unwrap();
+        String::from_utf8(
+            encode_selected(
+                &seat,
+                &OutputSpec {
+                    format: OutputFormat::Text,
+                    context: ContinuationContext::default(),
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    assert!(render("managed_launch").contains("open_binding_state: launched, not checked in\n"));
+    assert!(!render("cooperative_top_level").contains("open_binding_state"));
+}
+
 #[test]
 fn maximum_cursor_and_context_bytes_are_fully_counted() {
     let cursor = format!("c2:{}", "x".repeat(1021));

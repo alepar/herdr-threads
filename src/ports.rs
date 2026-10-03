@@ -2357,6 +2357,14 @@ pub trait StorePort: Send + Sync {
         request: ContinuityRequest,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError>;
+    /// TRUST-POLICY A3 `managed_launch` (ht-5n6): open an unregistered
+    /// occupant binding for a correlated managed launch on a seat with no
+    /// open binding, decided against the effective observation.
+    fn record_managed_launch(
+        &self,
+        command: crate::protocol::commands::RecordManagedLaunch,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError>;
     /// Local durable validation only; implementations must not invent native proof.
     fn issue_cooperative_permit(
         &self,

@@ -1,7 +1,7 @@
 //! Managed native launch policy. Application composition supplies seat and hook producers.
 
 use crate::ports::{
-    ConfiguredHook, HostCallContext, HostObservation, HostPort, HostUiState,
+    ConfiguredHook, CorrelatedStartup, HostCallContext, HostObservation, HostPort, HostUiState,
     NativeLaunchCapability, NativeLaunchOutcome, NativeLaunchRequest, StructuralOccupancy,
 };
 use crate::protocol::{
@@ -53,6 +53,35 @@ pub trait LaunchSeatResolver: Send + Sync {
         _budget: &CallBudget,
     ) -> Result<Option<OpenBinding>, ApiError> {
         Ok(None)
+    }
+
+    /// TRUST-POLICY A3 `managed_launch` (ht-5n6): report one accepted,
+    /// correlated startup so the daemon can open an unregistered binding on a
+    /// seat with none. Called only after an accepted `ObservedStartup`, never
+    /// on `OutcomeUnknown`. `Ok(None)`: the daemon does not record managed
+    /// launches (an older daemon); the default records nothing.
+    fn record_managed_launch(
+        &self,
+        _startup: &CorrelatedStartup,
+        _budget: &CallBudget,
+    ) -> Result<Option<crate::protocol::results::ManagedLaunchRecord>, ApiError> {
+        Ok(None)
+    }
+}
+
+/// The daemon command an accepted, correlated startup becomes: the seat, pane
+/// and harness Herdr started, and the structural evidence it was started in.
+pub fn managed_launch_command(
+    startup: &CorrelatedStartup,
+) -> crate::protocol::commands::RecordManagedLaunch {
+    crate::protocol::commands::RecordManagedLaunch {
+        seat: startup.seat.clone(),
+        target: startup.target.clone(),
+        harness: startup.harness,
+        terminal: startup.terminal.clone(),
+        incarnation: startup.expected_incarnation.clone(),
+        host_boot: startup.host_boot.clone(),
+        target_generation: startup.expected_generation,
     }
 }
 
@@ -500,7 +529,8 @@ pub fn launch_managed(
     }
     let seat = seats.resolve_for_launch(&request.target, &first, &budget)?;
     if let Some(bound) = seats.open_binding(&seat, &budget)?
-        && bound.provenance == crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE
+        && crate::protocol::authority::AGENT_BINDING_PROVENANCES
+            .contains(&bound.provenance.as_str())
     {
         let observed = host.observe_pane_agent(
             &bound.target,

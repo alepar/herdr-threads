@@ -153,6 +153,7 @@ jobs:
             python3 -m unittest discover -s scripts/canary -p "$(basename "$f")"
           done
           python3 -m unittest discover -s scripts/tests -p 'test_check_no_leaked_processes.py'
+          python3 -m unittest discover -s scripts/tests -p 'test_cell_ran_versions.py'
 
       - name: Skipped Herdr tests (job summary)
         if: always()

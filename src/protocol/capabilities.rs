@@ -10,12 +10,14 @@ pub const HOOK_PARSE_FAILURE_REPORT: &str = "hook.parse_failure_report";
 pub const SERVICE_SEND_V1: &str = "service.send_v1";
 pub const HARNESS_EVIDENCE: &str = "hook.harness_evidence";
 pub const HARNESS_STATES: &str = "harness.states";
+pub const SEAT_MANAGED_LAUNCH: &str = "seat.managed_launch";
 
 /// Everything this daemon build serves. A capability is listed only once its
 /// handler has landed (ht-p03.105): `HISTORY_FULL_BODIES` landed with
 /// ht-p03.12.8; `HOOK_PARSE_FAILURE_REPORT` landed with ht-p03.23;
 /// `SERVICE_SEND_V1` landed with ht-5nb.2/.3; `HARNESS_EVIDENCE` landed with
-/// ht-xoc.4; `HARNESS_STATES` landed with ht-xoc.5. Each entry
+/// ht-xoc.4; `HARNESS_STATES` landed with ht-xoc.5; `SEAT_MANAGED_LAUNCH`
+/// landed with ht-5n6. Each entry
 /// has a probe arm in `every_advertised_capability_has_a_handler`.
 pub const ADVERTISED: &[&str] = &[
     HISTORY_FULL_BODIES,
@@ -23,6 +25,7 @@ pub const ADVERTISED: &[&str] = &[
     SERVICE_SEND_V1,
     HARNESS_EVIDENCE,
     HARNESS_STATES,
+    SEAT_MANAGED_LAUNCH,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

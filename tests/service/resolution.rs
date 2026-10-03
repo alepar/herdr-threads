@@ -2755,8 +2755,9 @@ impl HostPort for LaunchHost {
 /// launch is addressed to it), the owned Claude installation from real
 /// setup, and the handoff from a real inbox read. Both an observed startup
 /// and a lost start (outcome unknown, the lost-initial-prompt case) leave
-/// the prelaunch invitation pending and discoverable, with no binding,
-/// acceptance or ACK. Kills: a launch path that registers, accepts, ACKs or
+/// the prelaunch invitation pending and discoverable, with no registration,
+/// acceptance or ACK. Only the observed startup records a wake-only binding.
+/// Kills: a launch path that registers, accepts, ACKs or
 /// allocates a second seat, and a report without the durable handoff.
 #[test]
 fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
@@ -2891,8 +2892,19 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
         .unwrap();
     assert_eq!(
         (membership.as_str(), bindings, acks, seats),
-        ("invited", 0, 0, 1)
+        ("invited", 1, 0, 1)
     );
+    // The accepted launch records a wake-only binding; the later unknown
+    // launch neither replaces it nor checks the agent in.
+    let (provenance, registered_at): (String, Option<i64>) = db
+        .query_row(
+            "SELECT observation_provenance,registered_at FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
+            [seat.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(provenance, "managed_launch");
+    assert_eq!(registered_at, None);
     let records = fs::read_to_string(fixture.paths.instance_dir.join("launches.jsonl")).unwrap();
     assert_eq!(records.lines().count(), 2);
 }
