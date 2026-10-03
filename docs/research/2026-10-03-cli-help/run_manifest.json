@@ -1,0 +1,13 @@
+{
+  "query": "Research CLI help/usability and fix herdr-threads service inspect unsupported output",
+  "mode": "standard",
+  "date": "2026-10-03",
+  "baseline": "0d70765e",
+  "assumptions": [
+    "Technical and operator audience",
+    "Keep established syntax and output contracts",
+    "Doctor-specific implementation is separately owned"
+  ],
+  "report": "research_report_20261003_cli_help.md",
+  "source_policy": "primary official documentation plus repository inspection"
+}

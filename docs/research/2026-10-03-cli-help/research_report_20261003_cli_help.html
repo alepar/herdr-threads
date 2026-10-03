@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.11" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>CLI help and usability research for herdr-threads</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">CLI help and usability research for herdr-threads</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#cli-help-and-usability-research-for-herdr-threads"
+id="toc-cli-help-and-usability-research-for-herdr-threads">CLI help and
+usability research for herdr-threads</a>
+<ul>
+<li><a href="#executive-summary" id="toc-executive-summary">Executive
+Summary</a></li>
+<li><a href="#introduction-and-method"
+id="toc-introduction-and-method">Introduction and method</a></li>
+<li><a href="#main-analysis" id="toc-main-analysis">Main Analysis</a>
+<ul>
+<li><a href="#finding-1-a-usage-grammar-is-not-a-purpose-statement"
+id="toc-finding-1-a-usage-grammar-is-not-a-purpose-statement">Finding 1:
+A usage grammar is not a purpose statement</a></li>
+<li><a
+href="#finding-2-explain-options-defaults-and-constraints-where-they-are-used"
+id="toc-finding-2-explain-options-defaults-and-constraints-where-they-are-used">Finding
+2: Explain options, defaults, and constraints where they are
+used</a></li>
+<li><a
+href="#finding-3-examples-should-show-the-task-and-the-next-safe-step"
+id="toc-finding-3-examples-should-show-the-task-and-the-next-safe-step">Finding
+3: Examples should show the task and the next safe step</a></li>
+<li><a
+href="#finding-4-output-format-is-a-local-presentation-choice-for-recovery-results"
+id="toc-finding-4-output-format-is-a-local-presentation-choice-for-recovery-results">Finding
+4: Output format is a local presentation choice for recovery
+results</a></li>
+<li><a
+href="#finding-5-compatibility-and-accessibility-are-part-of-help-quality"
+id="toc-finding-5-compatibility-and-accessibility-are-part-of-help-quality">Finding
+5: Compatibility and accessibility are part of help quality</a></li>
+</ul></li>
+<li><a href="#synthesis-and-recommendations"
+id="toc-synthesis-and-recommendations">Synthesis and
+recommendations</a></li>
+<li><a href="#limitations-and-caveats"
+id="toc-limitations-and-caveats">Limitations and caveats</a></li>
+<li><a href="#bibliography" id="toc-bibliography">Bibliography</a></li>
+<li><a href="#methodology-appendix"
+id="toc-methodology-appendix">Methodology appendix</a></li>
+</ul></li>
+</ul>
+</nav>
+<h1 id="cli-help-and-usability-research-for-herdr-threads">CLI help and
+usability research for herdr-threads</h1>
+<h2 id="executive-summary">Executive Summary</h2>
+<p>The reported <code>service</code> help gap is representative of the
+command tree. At baseline <code>0d70765e</code>,
+<code>herdr-threads service --help</code> began with
+<code>Usage: herdr-threads service [OPTIONS] &lt;COMMAND&gt;</code> and
+gave empty summaries for <code>inspect</code> and
+<code>disconnect</code>. The root help likewise listed many public
+commands with no descriptions. A caller had to guess whether
+<code>service</code> inspected a process, connection, thread service, or
+agent. An effective group help page should state its purpose, summarize
+each action, and show one workflow that can be copied after replacing
+named placeholders. The Command Line Interface Guidelines explicitly
+recommend a description, example invocations, flag explanations, and
+discoverable subcommand help; Microsoft’s command line guidance treats a
+grouping command as an area that organizes related actions. [1][2]</p>
+<p>The <code>service inspect</code> error is a separate real defect. The
+CLI defaults to text output. The daemon’s recovery route accepts only
+its default wire output specification, which is JSON with no
+continuation context. The ordinary CLI path always sent the selected
+output specification, so a normal <code>service inspect</code> request
+was rejected with
+<code>selected output is unavailable for service recovery (unsupported)</code>
+before the daemon ran the inspection. The typed recovery response is
+already serializable, and the CLI already encodes it as text or JSON.
+The narrow repair is to send service recovery commands through the
+existing default wire request and render the returned result in the
+caller’s selected format locally. This respects the daemon’s protocol
+restriction and does not assert an unsupported server feature. The same
+route covers <code>service disconnect</code>; its boot and generation
+preconditions remain enforced by the daemon.</p>
+<p>The highest value help changes are purpose lines for public commands,
+a service recovery example, required-value descriptions, message input
+choices, and accurate page defaults. They leave command names, grammar,
+output shapes, and exit codes intact. The existing <code>--json</code>,
+<code>--human</code>, and <code>--machine</code> selection deserves
+explanation because terminal presentation and script output have
+different consumers. Official AWS and Azure references document human
+and machine formats, while the CLI Guidelines distinguish result data on
+stdout from diagnostic messaging on stderr. [1][7][8]</p>
+<p>This report is an evidence-based audit of the current public help and
+the specific <code>service inspect</code> failure. It is not a
+recommendation to rename commands, add new output formats, or change
+seat authority. Doctor-specific parser, output, debug, and fix work is
+assigned to the separate doctor-redesign branch. Its research is noted
+below for coordination, not implemented here.</p>
+<h2 id="introduction-and-method">Introduction and method</h2>
+<p>The research question was: what should a multi-command CLI’s help say
+so a person can find and safely complete a task, and how does that apply
+to herdr-threads? The primary sources were the CLI Guidelines,
+documentation from the maintainers of clap and Python argparse,
+Microsoft’s command-line design guidance, Google’s documentation and
+accessibility style guides, and official GitHub, AWS, and Azure CLI
+references. GNU coding standards supplied a conventional
+<code>--help</code> baseline. Sources were selected for direct design or
+implementation guidance rather than commentary about other products.
+[1][2][3][4][5][6][7][8][9][10][11]</p>
+<p>The local audit inspected the clap parser in
+<code>src/cli/commands.rs</code>, the terminal entrypoint in
+<code>src/main.rs</code>, the selected encoder in
+<code>src/protocol/output.rs</code>, the wire read in
+<code>src/cli/mod.rs</code>, the recovery gate in
+<code>src/daemon/transport.rs</code>, and the command result types. It
+also ran the built binary’s root, <code>service</code>,
+<code>thread</code>, <code>seat</code>, and <code>daemon</code> help.
+This provides direct evidence about this repository rather than assuming
+that a framework’s advertised features appear in our generated help. The
+audit did not contact or restart the user’s daemon. [12]</p>
+<p>The recommendations favor precise wording and a minimal service
+request repair. Herdr-threads is both human-facing and
+automation-facing, so the research evaluates discoverability and script
+compatibility together. A CLI documentation convention is guidance, not
+a requirement to copy every pattern. In particular, the current product
+uses <code>--machine</code> as a stable <code>key: value</code>
+representation and <code>--json</code> for structured output; replacing
+that contract merely to resemble another CLI would impose compatibility
+cost. Microsoft explicitly warns that a CLI is hard to change once
+scripts rely on it. [2]</p>
+<h2 id="main-analysis">Main Analysis</h2>
+<h3 id="finding-1-a-usage-grammar-is-not-a-purpose-statement">Finding 1:
+A usage grammar is not a purpose statement</h3>
+<p><code>Usage: herdr-threads service [OPTIONS] &lt;COMMAND&gt;</code>
+describes syntax only. It does not say that the group observes and,
+under explicit preconditions, disconnects the daemon’s live service
+connection. At baseline the <code>Commands:</code> section showed
+<code>inspect</code> and <code>disconnect</code> with empty
+descriptions. The same issue appeared in the <code>thread</code>,
+<code>seat</code>, and <code>daemon</code> group pages. At the root,
+actions such as <code>inbox</code>, <code>read</code>,
+<code>send</code>, <code>ack</code>, <code>search</code>, and
+<code>service</code> also had empty summaries, while setup had a much
+longer multi-sentence summary. This inconsistent density makes scanning
+the help harder: the names that new users need first carry the least
+explanation. [12]</p>
+<p>The CLI Guidelines’ concise-help recipe is a description, one or two
+examples, flag descriptions, and a path to full help. Its
+discoverability section links examples and next-step suggestions to
+lower recall burden. Microsoft’s guidance explains that group commands
+organize related subcommands. GitHub’s official CLI reference shows a
+related navigational pattern: a user can ask for a command group or
+append <code>--help</code> to a nested command. Those sources converge
+on a small information hierarchy: a group-level purpose, action-level
+summaries, and detailed action help. [1][2][6]</p>
+<p>Clap supports that hierarchy directly. Its derive documentation maps
+command <code>about</code> and <code>long_about</code> to command
+descriptions, and <code>Arg::help</code> and <code>long_help</code> to
+parameter descriptions. Doc comments are a supported way to supply those
+values. A parser change is therefore unnecessary for most of this audit:
+short doc comments on the existing variants and arguments improve
+generated help while keeping grammar and dispatch unchanged. Python
+argparse’s <code>description</code> and <code>epilog</code> roles
+provide an independent example of separating the command’s purpose from
+material after the option list. [3][11]</p>
+<p>For herdr-threads, the service group should say “Inspect or
+disconnect the live service connection for recovery.”
+<code>inspect</code> should state that it observes the live connection,
+boot and generation, and does not attest native agent liveness.
+<code>disconnect</code> should state that it revokes one observed
+connection and does not stop the daemon. The distinction matters because
+<code>daemon stop</code> is a different action, and recovery results
+explicitly represent a connection rather than general process health.
+[12]</p>
+<p>The root help should prioritize one-line descriptions that let a
+reader distinguish the daily loop: <code>inbox</code> finds attention,
+<code>read</code> observes messages without ACK, <code>send</code>
+publishes a message, and <code>ack</code> records exact message IDs. A
+short example sequence in root help gives a route into the full grammar.
+The examples use placeholders <code>THREAD</code> and
+<code>MESSAGE</code> whose meaning follows from the corresponding action
+help. Google’s syntax guide recommends explaining placeholders and
+removing optional syntax from copyable examples when it obscures the
+real invocation. [1][4]</p>
+<h3
+id="finding-2-explain-options-defaults-and-constraints-where-they-are-used">Finding
+2: Explain options, defaults, and constraints where they are used</h3>
+<p>Generated help at baseline included <code>--json</code> with no text
+and <code>service disconnect --expected-boot</code> and
+<code>--expected-generation</code> without explanations. The latter are
+safety preconditions: the operator must pass a boot and connection
+generation observed from <code>service inspect</code>. Without that
+explanation, a syntactically valid flag list does not tell an operator
+how to obtain its values or why stale values fail. The daemon checks
+both and returns a typed stale-generation error when the observed state
+is no longer active. [12]</p>
+<p>Argument descriptions should answer what a value is, where it comes
+from, and what changes when it is supplied. Google’s syntax and
+placeholder guidance explicitly asks documentation to explain
+placeholder meanings. The CLI Guidelines recommend describing flags in
+concise help and providing practical error recovery. Clap exposes a
+distinct help value for each argument, so the wording can live beside
+its parser declaration. For <code>service disconnect</code>, an example
+using <code>BOOT</code> and <code>GENERATION</code> plus a sentence
+naming the <code>inspect</code> fields closes the workflow without
+adding a command or relaxing a guard. [1][3][4]</p>
+<p>Defaults matter when omission changes the amount or presentation of
+data. Python argparse offers a formatter that automatically appends
+defaults to argument help, illustrating the discoverability value.
+Herdr-threads uses <code>PageRequest</code> defaults of 20 items and
+16,384 encoded bytes, and <code>read --follow</code> starts with 20
+recent messages unless a different initial range is selected. Its output
+presentation defaults to human text on an ordinary terminal and machine
+text when stdout is not a terminal or an agent harness is detected.
+Stating these actual defaults in help is useful; stating an inferred or
+stale value would be worse than leaving it blank. [11][12]</p>
+<p>The same principle applies to <code>send</code>: <code>--body</code>,
+<code>--file</code>, and <code>--stdin</code> are mutually exclusive
+input choices; <code>--require-ack</code> names recipients, and
+<code>--deadline</code> is parsed in positive seconds. A reader should
+see these meanings in <code>send --help</code>. The parser already
+enforces the body-source group and rejects duplicate explicit
+recipients, so these descriptions do not create new behavior. The help
+text should avoid a claim that every send requires ACK, because
+<code>--require-ack</code> is optional. [12]</p>
+<p>Clarity also requires restraint. Four cooperative-context flags are
+exposed as global options, but their exact combination is part of a
+specialized agent path. Short descriptions can identify the seat,
+target, harness, and role and say that all four must be supplied
+together. A future pass could move them to an advanced section if
+compatibility permits. This report does not recommend hiding or changing
+them now: the concrete complaint concerns absent purpose and the
+recovery failure, and speculative help restructuring would enlarge the
+review surface. [1][12]</p>
+<h3
+id="finding-3-examples-should-show-the-task-and-the-next-safe-step">Finding
+3: Examples should show the task and the next safe step</h3>
+<p>An example that merely repeats <code>Usage:</code> adds little. A
+service recovery example has two steps: inspect, then disconnect with
+the returned boot and generation. It communicates an order of operations
+and identifies the exact values needed for an irreversible connection
+revocation. The help also needs to say that a stale boot or generation
+is refused, since that is a meaningful recovery outcome. The CLI
+Guidelines recommend examples early in help and errors that suggest a
+correction or next action. GitHub’s CLI reference demonstrates help at
+each level of a command tree. [1][6]</p>
+<p>At the root, examples of <code>inbox</code>,
+<code>read THREAD</code>, <code>send THREAD --body 'Hello'</code>, and
+<code>ack MESSAGE</code> map to the ordinary user loop. Their placement
+after options is a clap <code>after_help</code> tradeoff: the parser
+makes it easy to add examples without replacing the full help template.
+That preserves the parser’s generated usage and flag list. For a later
+documentation pass, a task-oriented short-help template could move
+examples higher, but that requires checking all nested help for
+consistency and terminal width; it is not necessary to resolve the
+present gap. [1][3][12]</p>
+<p>Examples need compatibility review. They should use documented
+commands and flags, avoid shell constructs that may execute
+unexpectedly, and not imply that a read ACKs or that a service
+inspection proves agent liveness. A single example with named
+placeholders is easier to maintain than a transcript of dynamic IDs or
+state. Google’s command-line style guidance distinguishes input commands
+from output and asks for placeholder explanation. Its accessibility
+guidance recommends short direct sentences and putting distinguishing
+information first, which helps a reader scan help in a narrow terminal
+or through assistive technology. [4][5]</p>
+<p>Doctor-specific examples belong in doctor-redesign. In coordination,
+that branch reported that other CLIs distinguish concise defaults from
+verbose or debug checks and make <code>--fix</code> report the repairs
+attempted. That is a useful comparison for doctor help, but an
+implementation must describe doctor’s actual checks and bounded repairs,
+not inherit another CLI’s promises. The doctor branch owns its parser,
+output, debug, and fix semantics. [12]</p>
+<h3
+id="finding-4-output-format-is-a-local-presentation-choice-for-recovery-results">Finding
+4: Output format is a local presentation choice for recovery
+results</h3>
+<p>The observed <code>service inspect</code> failure is not malformed
+syntax. The parser accepts it as a typed <code>ServiceInspect</code>
+command. The CLI’s parsed output defaults to <code>Text</code>;
+<code>--json</code> selects <code>Json</code>, and context selectors may
+be present. The daemon’s service-control branch compares the request
+output against <code>OutputSpec::default()</code>, which is
+<code>Json</code> with empty context, and emits <code>Unsupported</code>
+on any difference. Consequently the ordinary text invocation and JSON
+plus an explicit context both fail at the recovery gate. A transport
+test demonstrates that a default recovery request can return a typed
+<code>ServiceInspection</code>, so the missing operation is not
+inspection itself. [12]</p>
+<p>The service result has no server-generated continuation command. The
+CLI’s selected encoder already serializes any <code>CommandResult</code>
+as JSON and has a text fallback for result objects. Thus the selected
+format can be applied after the typed result returns. The bounded repair
+uses <code>LocalClient::call</code>, whose transport request omits
+selected output, only for <code>ServiceInspect</code> and
+<code>ServiceDisconnect</code>; the existing <code>write_selected</code>
+path then produces text or JSON locally. This is an inference from, and
+a change to, the local code path. It does not require the daemon to
+accept selected recovery output or change its authority and generation
+checks. [12]</p>
+<p>AWS and Azure both document distinct machine and human-friendly
+output forms and the role of an explicit output selector. Their exact
+format lists differ from this product’s and are not a reason to add YAML
+or TSV. The relevant design principle is that a selected presentation
+should reliably affect a successful command’s result. Here, a local
+typed result supports that principle without enlarging the recovery wire
+contract. AWS additionally documents that machine formats may have
+ordering hazards, which reinforces preserving the existing stable
+<code>key: value</code> and JSON contracts rather than treating a pretty
+table as a script API. [7][8][9]</p>
+<p>The current error taxonomy is already useful: an unsupported
+capability is exit 4, while invalid arguments are exit 2, unavailable
+daemon or host is exit 3, and an unknown mutation outcome is exit 5. The
+reported error was correctly typed for the daemon branch it reached but
+misleading for a normal command that had a supported local rendering
+path. Removing the accidental rejection is better than changing the
+error text or reclassifying it. The CLI Guidelines and AWS CLI reference
+both emphasize meaningful return codes; the fix preserves those
+distinctions for real failures. [1][10][12]</p>
+<h3
+id="finding-5-compatibility-and-accessibility-are-part-of-help-quality">Finding
+5: Compatibility and accessibility are part of help quality</h3>
+<p>The current entrypoint prints successful requested help to stdout and
+usage for a bare invocation to stderr with exit 2. Ordinary result
+output goes to stdout; error display is written to stderr. These choices
+follow the CLI Guidelines’ stream separation and exit-status convention.
+The top-level help also documents the product’s status map, including
+the specific action for an unknown outcome. The audit found no reason to
+change those contracts to solve the reported problems. [1][12]</p>
+<p>Large multi-command CLIs create two competing needs: overview and
+precision. Short group summaries help discover a command. Focused action
+help explains a value or safety constraint. The root page should remain
+scannable: one-line action descriptions fit better there than long
+implementation details, while <code>service disconnect --help</code> can
+explain the observed-value workflow. Google’s accessibility guide
+recommends direct language, short sentences, descriptive headings, and
+meaningful links. Applying those recommendations to terminal help means
+making the first phrase identify the action and avoiding unexplained
+jargon where a plain term exists. [5]</p>
+<p>Compatibility limits speculative cleanup. The top-level
+<code>--json</code>, <code>--human</code>, and <code>--machine</code>
+flags, the stable machine output, result envelope, command spellings,
+and exit statuses may be used by scripts. Microsoft specifically
+cautions that changing an established CLI can break those scripts. This
+report recommends help copy and a narrow request-path correction, with
+tests against the generated help and selected recovery output. It does
+not propose a new hierarchy, renamed actions, or a broad error renderer
+rewrite. [2][12]</p>
+<h2 id="synthesis-and-recommendations">Synthesis and
+recommendations</h2>
+<p>The sources agree on a practical order: explain purpose, show the
+common action, describe required input, and give recovery guidance when
+a command can fail. The repository’s observed gap is concentrated in
+missing <code>about</code> text despite clap’s ability to generate a
+useful hierarchy. The <code>service inspect</code> report exposed a
+deeper mismatch between a global output selector and a special recovery
+route. The two issues meet at the same workflow: help should teach the
+recovery operation, and the normal inspection invocation must actually
+work. [1][2][3][12]</p>
+<p>First, retain one-line purpose statements on every public root action
+and on key nested actions. Verify the service, thread, seat, daemon, and
+root help as rendered, because source comments alone cannot prove the
+final help is readable. Second, document actual defaults and value
+origins for page flags, message input, and service recovery
+preconditions. Third, keep a short root example sequence and a two-step
+service recovery example. Fourth, send service recovery commands with
+the default wire request and encode the typed result locally; keep the
+daemon restriction and explicit disconnect guards. Finally, integrate
+doctor help only after the doctor branch settles its actual behavior, so
+its documentation reflects supported debug and repair operations.
+[1][3][4][12]</p>
+<h2 id="limitations-and-caveats">Limitations and caveats</h2>
+<p>The study reviews generated help and selected local code paths, not a
+usability study with new users. The service defect was reproduced with a
+fake client implementing the daemon’s documented rejection and traced
+through the actual daemon guard; it did not invoke the user’s shared
+daemon. A private end-to-end recovery run would strengthen confidence
+but would also require a private service instance, so the focused
+regression and existing transport tests are the right first checks. The
+output fix applies only to recovery commands whose results do not
+contain server-generated continuations. Future recovery commands with
+continuation fields would need a separate review. [12]</p>
+<p>The cited official CLI references provide examples of good
+documentation and output contracts, not a single universal standard.
+Their defaults and flags differ. This report transfers the principle of
+clear selection and stable script output, not another product’s exact
+syntax. The deep-research skill’s default artifact directory under
+<code>~/Documents</code> is outside this task’s writable workspace, so
+the evidence and report are kept in this branch under
+<code>docs/research/2026-10-03-cli-help/</code> for review and
+integration.</p>
+<h2 id="bibliography">Bibliography</h2>
+<p>[1] Prasad, Firshman, Tashian, and Parish (accessed 2026-10-03).
+“Command Line Interface Guidelines.” https://clig.dev/ [2] Microsoft
+(accessed 2026-10-03). “Command-line design guidance for
+System.CommandLine.”
+https://learn.microsoft.com/en-us/dotnet/standard/commandline/design-guidance
+[3] clap maintainers (accessed 2026-10-03). “clap derive documentation.”
+https://docs.rs/clap/latest/clap/_derive/ [4] Google (accessed
+2026-10-03). “Document command-line syntax.”
+https://developers.google.com/style/code-syntax [5] Google (accessed
+2026-10-03). “Write accessible documentation.”
+https://developers.google.com/style/accessibility [6] GitHub (accessed
+2026-10-03). “GitHub CLI reference.”
+https://docs.github.com/en/github-cli/github-cli/github-cli-reference
+[7] Amazon Web Services (accessed 2026-10-03). “Setting the output
+format in the AWS CLI.”
+https://docs.aws.amazon.com/cli/latest/userguide/cli-usage-output-format.html
+[8] Microsoft (accessed 2026-10-03). “Output formats for Azure CLI
+commands.”
+https://learn.microsoft.com/en-us/cli/azure/format-output-azure-cli [9]
+Microsoft (accessed 2026-10-03). “Query Azure CLI command results.”
+https://learn.microsoft.com/en-us/cli/azure/use-azure-cli-successfully-query
+[10] Amazon Web Services (accessed 2026-10-03). “Command line return
+codes in the AWS CLI.”
+https://docs.aws.amazon.com/cli/latest/userguide/cli-usage-returncodes.html
+[11] Python Software Foundation (accessed 2026-10-03). “argparse —
+Parser for command-line options, arguments and sub-commands.”
+https://docs.python.org/3/library/argparse.html [12] herdr-threads
+(baseline <code>0d70765e</code>, audited 2026-10-03).
+<code>src/cli/commands.rs</code>, <code>src/cli/mod.rs</code>,
+<code>src/cli/output.rs</code>, <code>src/protocol/output.rs</code>,
+<code>src/daemon/transport.rs</code>, <code>src/main.rs</code>;
+generated <code>--help</code> and focused tests in this branch.</p>
+<h2 id="methodology-appendix">Methodology appendix</h2>
+<p>The search plan covered purpose statements, nested help, examples,
+placeholders, default values, errors, stdout/stderr, exit statuses,
+human and machine formats, compatibility, and accessibility. Results
+were limited to primary official documentation and directly inspected
+project files. Every external source has a canonical URL in
+<code>sources.jsonl</code>; excerpts and locators are persisted in
+<code>evidence.jsonl</code>; the principal conclusions are in
+<code>claims.jsonl</code>. Claims about this CLI are grounded in source
+files and baseline command output, not transferred from the external
+examples. Source agreement was strongest for purpose/help, examples, and
+output/error separation. The main local finding was the recovery route’s
+default-output gate, which shifted the implementation from changing help
+alone to correcting the client request path.</p>
+<p>The report was checked for source support and for counterexamples:
+adding a new server-selected output capability was considered and
+rejected because the current recovery route explicitly does not accept
+one; changing only the error message was rejected because it would leave
+the normal invocation unusable. Doctor behavior was kept in its
+separately owned branch. No user configuration, shared Herdr server, or
+real daemon was changed during research.</p>
+</body>
+</html>

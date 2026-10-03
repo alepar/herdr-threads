@@ -164,6 +164,13 @@ recipients and service notices. Counts in the inbox and digest are
 
 ## Errors and recovery
 
+For service connection recovery, `herdr-threads service inspect` is a
+read-only observation of the current connection, daemon boot and generation;
+it does not attest agent liveness. Only on an explicit operator request,
+use `service disconnect --expected-boot BOOT --expected-generation GENERATION`
+with values returned by inspect. The daemon refuses stale values, and
+disconnect does not stop the daemon. Subagents must not disconnect.
+
 Errors print `herdr-threads: DETAIL (error_code)` on stderr. Exit status:
 
 | Code | Meaning | What to do |
@@ -178,3 +185,7 @@ Never resend a message just because a send's outcome was unknown: use
 `pending-ops` and `retry`. `herdr-threads doctor` is a read-only diagnosis.
 `--json` selects JSON output for commands that return a result; `skill` always
 prints this guide. It cannot be combined with `--human` or `--machine`.
+Without a format flag, an ordinary terminal gets human text where available;
+non-terminal output and recognized agent harnesses get stable machine text.
+Run `herdr-threads <command> --help` for purpose, options and examples before
+using an unfamiliar command.

@@ -391,17 +391,19 @@ impl MutationSpec {
 #[command(
     name = "herdr-threads",
     version,
-    after_help = format!("{}\n\n{}", exit_status_help(), super::skill::AI_HELP_FOOTER),
+    after_help = format!("Examples:\n  herdr-threads inbox\n  herdr-threads read THREAD\n  herdr-threads send THREAD --body 'Hello'\n  herdr-threads ack MESSAGE\n\n{}\n\n{}", exit_status_help(), super::skill::AI_HELP_FOOTER),
     about = "Read threads and explicitly ACK exact message IDs. Accept invitations separately. Optional cheap subagents can summarize recent or full history without ACK authority."
 )]
 struct Cli {
-    /// May repeat when every value is identical (a wrapper that pins it plus
-    /// a ready command that names it); conflicting values are refused.
+    /// Select the local herdr-threads state directory. May repeat with an
+    /// identical value; conflicting values are refused.
     #[arg(long, global = true, action = ArgAction::Append)]
     state_dir: Vec<String>,
-    /// May repeat when every value is identical; conflicting values are refused.
+    /// Select the local Herdr host socket path. May repeat with an identical
+    /// value; conflicting values are refused.
     #[arg(long, global = true, action = ArgAction::Append)]
     host_endpoint: Vec<String>,
+    /// Emit a structured JSON result on stdout.
     #[arg(long, global = true, action = ArgAction::SetTrue)]
     json: bool,
     /// Human-readable tables and transcripts (the default on a terminal).
@@ -411,12 +413,17 @@ struct Cli {
     /// when stdout is not a terminal).
     #[arg(long, global = true, action = ArgAction::SetTrue, conflicts_with = "json")]
     machine: bool,
+    /// Explicit seat ID for a cooperative agent call; requires all four
+    /// --cooperative-* options.
     #[arg(long, global = true)]
     cooperative_seat: Option<String>,
+    /// Herdr target ID bound to the cooperative seat.
     #[arg(long, global = true)]
     cooperative_target: Option<String>,
+    /// Agent harness making the cooperative call.
     #[arg(long, global = true, value_parser = ["codex", "claude"])]
     cooperative_harness: Option<String>,
+    /// Agent role for the cooperative call.
     #[arg(long, global = true, value_parser = ["top-level", "subagent"])]
     cooperative_role: Option<String>,
     #[command(subcommand)]
@@ -425,10 +432,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Top {
+    /// Create, list and inspect threads and their participants.
     Thread {
         #[command(subcommand)]
         command: ThreadSub,
     },
+    /// Invite a seat to join a thread.
     Invite(InviteArgs),
     /// Same as `thread participants THREAD` (the caller's own seat is marked
     /// `"self": true`).
@@ -437,9 +446,9 @@ enum Top {
         #[command(flatten)]
         page: PageArgs,
     },
-    Accept {
-        thread: String,
-    },
+    /// Accept an invitation to a thread.
+    Accept { thread: String },
+    /// Accept a service-required invitation with its exact revision.
     AcceptRequired {
         thread: String,
         #[arg(long)]
@@ -449,42 +458,58 @@ enum Top {
         #[arg(long)]
         revision: u64,
     },
-    Leave {
-        thread: String,
-    },
+    /// Leave a thread without changing other participants.
+    Leave { thread: String },
+    /// Send a message to a thread, with optional explicit ACK recipients.
     Send(SendArgs),
+    /// ACK exact message IDs after reading them.
     Ack {
         #[arg(required = true, num_args = 1..)]
         messages: Vec<String>,
     },
-    Archive {
-        thread: String,
-    },
-    Reopen {
-        thread: String,
-    },
+    /// Archive a thread.
+    Archive { thread: String },
+    /// Reopen an archived thread.
+    Reopen { thread: String },
+    /// List threads and messages needing this seat's attention.
     Inbox(InboxArgs),
+    /// List current warnings for a seat.
     Warnings(WarningsArgs),
+    /// Check in so pending work can be delivered to this seat.
     CheckIn(CheckInArgs),
+    /// Read a cached check-in page by its reference.
     CachedCheckIn(CachedCheckInArgs),
+    /// List messages still waiting for ACKs.
     PendingReceipts(PendingReceiptsArgs),
+    /// Read thread history or follow new messages; reading never ACKs.
     Read(ReadArgs),
+    /// Read a message body, including pages beyond its preview.
     Body(BodyArgs),
+    /// Search for literal text in thread topics and messages.
     Search(SearchArgs),
+    /// Inspect and repair durable seat mappings.
     Seat {
         #[command(subcommand)]
         command: SeatSub,
     },
+    /// Inspect who received a message and each delivery state.
     Delivery {
         #[command(subcommand)]
         command: DeliverySub,
     },
+    /// List overdue obligations across seats and threads.
     Overdue(PageArgs),
+    /// Read service diagnostics, optionally filtered by seat or thread.
     Diagnostics(DiagnosticsArgs),
+    /// Check, start or stop the local herdr-threads daemon.
     Daemon {
         #[command(subcommand)]
         command: DaemonSub,
     },
+    /// Inspect or disconnect the live service connection for recovery.
+    #[command(
+        after_help = "Recovery workflow:\n  herdr-threads service inspect\n  herdr-threads service disconnect --expected-boot BOOT --expected-generation GENERATION\n\nUse the boot and generation returned by inspect. Disconnect revokes that exact connection; it does not stop the daemon."
+    )]
     Service {
         #[command(subcommand)]
         command: ServiceSub,
@@ -510,10 +535,11 @@ enum Top {
     /// observation) and whether the installed harness version is supported.
     #[command(after_help = super::setup::SETUP_HELP)]
     SetupStatus(SetupArgs),
+    /// List local mutations whose outcome is still unknown.
     PendingOps(PageArgs),
-    Retry {
-        recovery_ref: String,
-    },
+    /// Retry a local recovery reference from pending-ops.
+    Retry { recovery_ref: String },
+    /// Show a local attention view of threads and actions.
     View(ViewArgs),
     /// Start Codex or Claude in one explicit existing empty shell pane with
     /// the owned hooks, after resolving the pane's seat. Launch never
@@ -617,23 +643,30 @@ enum MeSub {
 
 #[derive(Subcommand)]
 enum ThreadSub {
+    /// Create a thread with a topic and optional goal.
     Create {
+        /// Initial topic shown in the thread directory.
         #[arg(long)]
         topic: String,
+        /// Goal for participants (default: the topic).
         #[arg(long)]
         goal: Option<String>,
     },
+    /// Show a thread's topic, or change it with --set.
     Topic {
         thread: String,
         #[arg(long = "set")]
         set: Option<String>,
     },
+    /// List threads, optionally filtered by membership or topic text.
     List(ThreadListArgs),
+    /// Show a thread's topic, state and recent details.
     Show {
         thread: String,
         #[command(flatten)]
         page: PageArgs,
     },
+    /// List the seats participating in a thread.
     Participants {
         thread: String,
         #[command(flatten)]
@@ -643,6 +676,7 @@ enum ThreadSub {
 #[derive(Subcommand)]
 enum SeatSub {
     List(PageArgs),
+    /// Resolve a pane to its seat; --new-seat creates a fresh operator seat.
     Resolve {
         #[arg(long)]
         pane: String,
@@ -651,11 +685,13 @@ enum SeatSub {
         #[arg(long, requires = "new_seat")]
         operator: bool,
     },
+    /// Inspect one seat's mapping, binding and obligations.
     Inspect {
         seat: String,
         #[command(flatten)]
         page: PageArgs,
     },
+    /// Rebind a seat to a pane through explicit operator repair.
     Rebind {
         seat: String,
         #[arg(long)]
@@ -675,15 +711,18 @@ enum SeatSub {
         #[arg(long)]
         operator: bool,
     },
+    /// List retired seats and their cleanup progress.
     Retirements(PageArgs),
 }
 #[derive(Subcommand)]
 enum DeliverySub {
+    /// List the recipients of a message and their receipt states.
     Recipients {
         message: String,
         #[command(flatten)]
         page: PageArgs,
     },
+    /// Inspect one message's delivery and ACK details.
     Inspect {
         message: String,
         #[command(flatten)]
@@ -692,16 +731,26 @@ enum DeliverySub {
 }
 #[derive(Subcommand)]
 enum DaemonSub {
+    /// Show the local daemon's health and limitations.
     Health,
+    /// Ensure the local daemon is running.
     Ensure,
+    /// Stop the local daemon.
     Stop,
 }
 #[derive(Subcommand)]
 enum ServiceSub {
+    /// Observe the live service connection and its generation; does not attest agent liveness.
     Inspect,
+    /// Revoke one observed service connection without stopping the daemon.
+    #[command(
+        after_help = "First run `herdr-threads service inspect`, then pass its daemon_boot and connection_generation values. A stale boot or generation is refused."
+    )]
     Disconnect {
+        /// Daemon boot ID observed by `service inspect`.
         #[arg(long)]
         expected_boot: String,
+        /// Connection generation observed by `service inspect`.
         #[arg(long)]
         expected_generation: u64,
     },
@@ -727,10 +776,13 @@ struct CachedCheckInArgs {
 }
 #[derive(Args)]
 struct PageArgs {
+    /// Continue from a cursor returned by an earlier page.
     #[arg(long)]
     cursor: Option<String>,
+    /// Maximum items in this page (default: 20).
     #[arg(long)]
     limit: Option<u16>,
+    /// Maximum encoded bytes in this page (default: 16384).
     #[arg(long)]
     max_bytes: Option<u32>,
 }
@@ -758,25 +810,35 @@ struct InboxArgs {
 }
 #[derive(Args)]
 struct InviteArgs {
+    /// Thread to invite the seat into.
     thread: String,
+    /// Seat ID to invite.
     #[arg(long)]
     seat: String,
+    /// Invitation deadline in positive seconds.
     #[arg(long)]
     deadline: Option<u64>,
+    /// Mark this as an explicit operator invitation.
     #[arg(long)]
     operator: bool,
 }
 #[derive(Args)]
 struct SendArgs {
+    /// Thread that receives the message.
     thread: String,
+    /// Message body given directly on the command line.
     #[arg(long, group = "body_source")]
     body: Option<String>,
+    /// Read the message body from this file.
     #[arg(long, group = "body_source")]
     file: Option<String>,
+    /// Read the message body from standard input.
     #[arg(long, group = "body_source")]
     stdin: bool,
+    /// Require an ACK from this seat; repeat for more seats.
     #[arg(long = "require-ack", num_args = 1.., action = ArgAction::Append)]
     require_ack: Vec<String>,
+    /// ACK deadline in positive seconds.
     #[arg(long)]
     deadline: Option<u64>,
     #[arg(
@@ -812,6 +874,7 @@ struct WarningsArgs {
 }
 #[derive(Args)]
 struct ReadArgs {
+    /// Thread to read.
     thread: String,
     /// Keep running: print the recent messages (default 20, or --recent N)
     /// oldest first, then each new message as it is committed, IRC style for
@@ -822,10 +885,13 @@ struct ReadArgs {
     /// With --follow: hide system notices (joins, ACKs, warnings).
     #[arg(long, requires = "follow")]
     no_system: bool,
+    /// Number of latest messages to read; with --follow, defaults to 20.
     #[arg(long, group = "initial")]
     recent: Option<u16>,
+    /// Read messages after this sequence number.
     #[arg(long, group = "initial")]
     after: Option<u64>,
+    /// Read messages before this sequence number.
     #[arg(long, group = "initial")]
     before: Option<u64>,
     #[command(flatten)]

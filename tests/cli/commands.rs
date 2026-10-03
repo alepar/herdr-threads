@@ -540,6 +540,28 @@ fn operator_service_recovery_uses_observed_boot_and_generation() {
 }
 
 #[test]
+fn service_help_explains_recovery_workflow_and_safety_boundary() {
+    fn help(args: &[&str]) -> String {
+        match parse_argv_or_informational(args.iter().copied()).unwrap_err() {
+            ParseFailure::Informational(text) => text,
+            other => panic!("expected help, got {other:?}"),
+        }
+    }
+    let root = help(&["herdr-threads", "--help"]);
+    assert!(root.contains("service") && root.contains("Inspect or disconnect"));
+    let group = help(&["herdr-threads", "service", "--help"]);
+    assert!(group.contains("live service connection"));
+    assert!(group.contains("service inspect"));
+    assert!(group.contains("service disconnect"));
+    let inspect = help(&["herdr-threads", "service", "inspect", "--help"]);
+    assert!(inspect.contains("does not attest agent liveness"));
+    let disconnect = help(&["herdr-threads", "service", "disconnect", "--help"]);
+    assert!(disconnect.contains("--expected-boot"));
+    assert!(disconnect.contains("--expected-generation"));
+    assert!(disconnect.contains("service inspect"));
+}
+
+#[test]
 fn ordinary_seat_resolution_requires_durable_mutation_key() {
     let parsed = parse_argv(["herdr-threads", "seat", "resolve", "--pane", "p1"]).unwrap();
     let CliAction::Mutation(MutationSpec::Resolve(pane)) = parsed.action else {

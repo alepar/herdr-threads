@@ -735,7 +735,17 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
         Command::Inbox(query) => query.seat.clone(),
         _ => None,
     };
-    let result = client.call_with_output(command, output_spec, &budget())?;
+    // Service recovery deliberately accepts only the default wire output.
+    // Its result has no server-generated continuations, so render the user's
+    // selected text or JSON locally after the ordinary typed request returns.
+    let result = if matches!(
+        command,
+        Command::ServiceInspect | Command::ServiceDisconnect(_)
+    ) {
+        client.call(command, &budget())?
+    } else {
+        client.call_with_output(command, output_spec, &budget())?
+    };
     let topics = match (&result, inbox_seat) {
         (CommandResult::Inbox(page), Some(seat))
             if output::human_active()
@@ -1574,6 +1584,9 @@ mod cooperative_tests;
 #[cfg(test)]
 #[path = "../../tests/cli/read_cost.rs"]
 mod read_cost_tests;
+#[cfg(test)]
+#[path = "../../tests/cli/service_output.rs"]
+mod service_output_tests;
 
 /// Runtime composition seam for an already service-resolved durable seat and
 /// private context directory. The provider declares honest role and harness;
@@ -1866,7 +1879,14 @@ pub struct SelectedSocketClient<'a> {
 }
 impl LocalClient for SelectedSocketClient<'_> {
     fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
-        self.client.call_with_output(command, self.output, budget)
+        if matches!(
+            command,
+            Command::ServiceInspect | Command::ServiceDisconnect(_)
+        ) {
+            self.client.call(command, budget)
+        } else {
+            self.client.call_with_output(command, self.output, budget)
+        }
     }
     fn call_definitive(
         &self,
