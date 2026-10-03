@@ -469,3 +469,203 @@ fn unreachable_manifest_url_does_not_delay_recording() {
     assert!(row.is_some(), "the evidence row exists");
     assert!(manifest.wait_idle(Duration::from_secs(20)));
 }
+
+/// The recorder's store, failing on cue: each `true` popped from a script
+/// fails that write with `store_busy`; an empty script lets writes
+/// through to the real store.
+struct FlakyWrites {
+    inner: Arc<SqliteStore>,
+    evidence: Mutex<VecDeque<bool>>,
+    unattributed: Mutex<VecDeque<bool>>,
+}
+
+impl FlakyWrites {
+    fn fail(script: &Mutex<VecDeque<bool>>) -> bool {
+        script.lock().unwrap().pop_front().unwrap_or(false)
+    }
+}
+
+impl EvidenceWrites for FlakyWrites {
+    fn record_harness_evidence(
+        &self,
+        record: &EvidenceRecord<'_>,
+        budget: &CallBudget,
+    ) -> Result<crate::store::harness_evidence::Recorded, ApiError> {
+        if Self::fail(&self.evidence) {
+            return Err(ApiError::store_busy("injected evidence write failure"));
+        }
+        self.inner.record_harness_evidence(record, budget)
+    }
+
+    fn record_unattributed(
+        &self,
+        harness: &str,
+        reason: &str,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        if Self::fail(&self.unattributed) {
+            return Err(ApiError::store_busy("injected reason write failure"));
+        }
+        self.inner.record_unattributed(harness, reason, budget)
+    }
+}
+
+/// An [`Fx`] whose recorder writes through [`FlakyWrites`].
+fn flaky_fx(label: &str, evidence: &[bool], unattributed: &[bool]) -> Fx {
+    let mut fx = Fx::new(label);
+    let writes = Arc::new(FlakyWrites {
+        inner: fx.store.clone(),
+        evidence: Mutex::new(evidence.iter().copied().collect()),
+        unattributed: Mutex::new(unattributed.iter().copied().collect()),
+    });
+    fx.recorder = HarnessEvidenceRecorder::with_writes(
+        writes,
+        Some(fx.triggers.clone() as Arc<dyn ManifestTrigger>),
+        fx.clock.clone(),
+    );
+    fx
+}
+
+fn held_start(session: &str, outcome: HarnessEvidenceOutcome) -> HarnessEvidence {
+    let mut start = note(None, "SessionStart", outcome, Some(session));
+    start.contract_id = HELD_CONTRACT.into();
+    start
+}
+
+#[test]
+fn held_session_start_survives_a_failed_flush() {
+    let fx = flaky_fx("her-flush-fail", &[true], &[]);
+    assert!(
+        !fx.recorder
+            .record(&held_start("sess-1", ok()), &budget())
+            .unwrap()
+    );
+    let tool = note(Some("2.1.286"), "PreToolUse", ok(), Some("sess-1"));
+    assert!(fx.recorder.record(&tool, &budget()).is_err());
+    assert!(fx.row("2.1.286", HELD_CONTRACT).is_none());
+    assert!(fx.row("2.1.286", CONTRACT).is_none());
+    fx.advance(1000);
+    fx.recorder.record(&tool, &budget()).unwrap();
+    assert!(
+        fx.row("2.1.286", HELD_CONTRACT)
+            .unwrap()
+            .lifecycle_ok_at
+            .is_some()
+    );
+    assert!(fx.row("2.1.286", CONTRACT).unwrap().tool_ok_at.is_some());
+}
+
+#[test]
+fn stored_held_start_is_not_replayed_when_the_event_write_fails() {
+    let fx = flaky_fx("her-no-replay", &[false, true], &[]);
+    let violation = HarnessEvidenceOutcome::Violation {
+        field: "session_id".into(),
+    };
+    fx.recorder
+        .record(&held_start("sess-1", violation), &budget())
+        .unwrap();
+    let tool = note(Some("2.1.286"), "PreToolUse", ok(), Some("sess-1"));
+    assert!(fx.recorder.record(&tool, &budget()).is_err());
+    assert!(fx.row("2.1.286", HELD_CONTRACT).is_some());
+    assert!(fx.row("2.1.286", CONTRACT).is_none());
+    fx.recorder.record(&tool, &budget()).unwrap();
+    let fresh = fx
+        .triggers
+        .calls()
+        .into_iter()
+        .filter(|(_, reason)| *reason == FetchReason::FreshViolation)
+        .count();
+    assert_eq!(fresh, 1, "the held violation was written once");
+}
+
+#[test]
+fn unattributed_session_start_is_held_even_when_the_reason_write_fails() {
+    let fx = flaky_fx("her-reason-fail", &[], &[true]);
+    assert!(
+        fx.recorder
+            .record(&held_start("sess-1", ok()), &budget())
+            .is_err()
+    );
+    fx.recorder
+        .record(
+            &note(Some("2.1.286"), "PreToolUse", ok(), Some("sess-1")),
+            &budget(),
+        )
+        .unwrap();
+    assert!(
+        fx.row("2.1.286", HELD_CONTRACT)
+            .unwrap()
+            .lifecycle_ok_at
+            .is_some()
+    );
+}
+
+#[test]
+fn unattributed_event_reason_write_failure_is_returned() {
+    let fx = flaky_fx("her-reason-event", &[], &[true]);
+    assert!(
+        fx.recorder
+            .record(&note(None, "PreToolUse", ok(), Some("sess-1")), &budget())
+            .is_err()
+    );
+    fx.recorder
+        .record(
+            &note(Some("2.1.286"), "PreToolUse", ok(), Some("sess-1")),
+            &budget(),
+        )
+        .unwrap();
+    let row = fx.row("2.1.286", CONTRACT).unwrap();
+    assert!(row.tool_ok_at.is_some());
+    assert!(row.lifecycle_ok_at.is_none(), "nothing was held");
+}
+
+#[test]
+fn event_write_failure_without_a_held_start_is_returned() {
+    let fx = flaky_fx("her-event-fail", &[true], &[]);
+    let tool = note(Some("2.1.286"), "PreToolUse", ok(), Some("sess-1"));
+    assert!(fx.recorder.record(&tool, &budget()).is_err());
+    assert!(fx.row("2.1.286", CONTRACT).is_none());
+    fx.recorder.record(&tool, &budget()).unwrap();
+    assert!(fx.row("2.1.286", CONTRACT).unwrap().tool_ok_at.is_some());
+}
+
+fn held(session: &str, received_ms: i64, contract: &str) -> Held {
+    Held {
+        harness: "claude".into(),
+        session_id: session.into(),
+        received_ms,
+        contract_id: contract.into(),
+        event: "SessionStart".into(),
+        outcome: EvidenceOutcome::Ok,
+    }
+}
+
+#[test]
+fn restore_yields_to_a_newer_hold() {
+    let mut pending = PendingSessionStarts::default();
+    pending.hold(held("s", T0, "a"), T0);
+    let a = pending.take("claude", "s", T0).unwrap();
+    pending.hold(held("s", T0 + 1, "b"), T0 + 1);
+    pending.restore(a, T0 + 2);
+    assert_eq!(
+        pending.take("claude", "s", T0 + 2).unwrap().received_ms,
+        T0 + 1
+    );
+    assert!(pending.take("claude", "s", T0 + 2).is_none());
+
+    // An expired entry is dropped.
+    pending.restore(held("old", T0, "a"), T0 + PENDING_MAX_AGE_MS);
+    assert!(pending.0.is_empty());
+
+    // Restoring into a full queue keeps the bound and the order.
+    for i in 0..PENDING_MAX_ENTRIES {
+        pending.hold(held(&format!("s{i}"), T0 + 10 + i as i64, "a"), T0 + 10);
+    }
+    pending.restore(held("back", T0 + 5, "a"), T0 + 20);
+    assert_eq!(pending.0.len(), PENDING_MAX_ENTRIES);
+    assert!(
+        pending.take("claude", "back", T0 + 20).is_none(),
+        "the oldest was evicted"
+    );
+    assert!(pending.take("claude", "s0", T0 + 20).is_some());
+}
