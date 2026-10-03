@@ -2,7 +2,7 @@
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
 resumeChange: 2026-10-02 · "[coordinator update] flakiness side quest landed on main (a7255713) ... 'no full suite' pause is lifted. Speed budgets in AGENTS.md still apply" · base main merged in at a7255713; phase-6 sweep command = nice scripts/full-suite-gate 1
-phase: roast-code
+phase: report
 
 idea: Epic ht-xoc (harness version evidence), base main (26eef585, B6 landed). Design already exists: spec docs/superpowers/specs/2026-10-02-harness-version-evidence-design.md (two design roasts already run: docs/superpowers/reviews/2026-10-02-harness-version-evidence-roast-design-{1,2}.md, round 2 converged) and the filed bead tree ht-xoc.1-.8 — start from the design's coverage checks. Fully autonomous (no questions), both roasts on (design roast and code roast). Merge back into main at the end (user pre-authorized). Test policy: ht-zo4 (flakiness side quest) is closed, so the full suite may run; respect AGENTS.md speed budgets on main.
 branch: super-auto/harness-version-evidence
@@ -42,7 +42,7 @@ codeBuckets:
   sweep: SWEEP DEFERRED (caller-owned)
   slowness: launch 1 drained on BLOCKED-AUTH spike (ht-xoc.8) — answered by session, relaunched
 roastCodeRound: 2
-roast-code: 2026-10-02-harness-version-evidence-roast-pr-1.md
+roast-code: 2026-10-02-harness-version-evidence-roast-pr-1.md, 2026-10-02-harness-version-evidence-roast-pr-2.md
 stepBack-round-1: patch — 12 r1 findings are independent local defects plus one spec clause (Codex resume attribution) narrowed to the spike's verdict; 4 clusters swept (codex-resume-attribution, user-visible-docs-sync, hook-path-bounded, store-error-paths); red loop_inventory test fixed alongside
 scopeFilter-round-1: [Should-fix] src/harness/attribution.rs:87 in-scope — Codex resumed session attributed to old version; breaks broken-only-when-observed
 scopeFilter-round-1: [Should-fix] src/daemon/harness_evidence.rs:162 in-scope — failed store write loses held SessionStart outcome
@@ -60,3 +60,4 @@ scope-filter: 4 in-scope · 8 punch-listed
 fixLoop-round-1: epic reopened; filed ht-xoc.18 (codex-resume-attribution), .19 (store-error-paths), .20 (user-visible-docs-sync), .21 (manifest.py:306), .22 (loop_inventory test); re-entering super-code
 fixLoop-launch-1: wf_a0cdda7f-a67 (super-code re-entry, deferSweep, beads ht-xoc.18-.22)
 fixLoop-launch-1 result: root-closed; 15 merges, 0 failed; final review NOT READY (see fixloop-1-final-review.json)
+- roast-code loop exit · converged at round 2 (Nit 1 confirmed [converged], 0 Blocking, 0 fix-regression Should-fix) · punch list: [Nit] integrations/claude/README.md:32 (stale foreign-session sentence) plus the 8 round-1 punch-listed Nits; round-2 'resolved' entries for punch-listed keys mean not re-surfaced, not fixed
