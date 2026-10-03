@@ -22,9 +22,25 @@ pub struct EndpointDescriptor {
     pub socket_inode: u64,
 }
 
+/// The locked owner-lease file. Dropping the last holder releases the lease
+/// explicitly (`flock(LOCK_UN)`) before the descriptor closes: a process
+/// spawned concurrently by another thread holds a transient copy of every
+/// descriptor until its exec completes, and relying on close alone kept the
+/// lock held through that copy, so an immediate re-election saw WouldBlock
+/// (ht-w7n). An explicit unlock releases the shared open file description
+/// whatever copies exist.
+#[derive(Debug)]
+struct LeaseFile(File);
+
+impl Drop for LeaseFile {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
 #[derive(Debug)]
 pub struct OwnerLock {
-    lock_file: Arc<File>,
+    lock_file: Arc<LeaseFile>,
     paths: InstancePaths,
     instance_uuid: Uuid,
     owner_token: Uuid,
@@ -40,7 +56,7 @@ pub struct OwnedListener {
     socket_device: u64,
     socket_inode: u64,
     owner_token: Uuid,
-    _lock_file: Arc<File>,
+    _lock_file: Arc<LeaseFile>,
 }
 
 /// Tokio accept handle that retains the same advisory lock lease. It exposes
@@ -53,7 +69,7 @@ pub struct OwnedAsyncListener {
     socket_device: u64,
     socket_inode: u64,
     owner_token: Uuid,
-    _lock_file: Arc<File>,
+    _lock_file: Arc<LeaseFile>,
 }
 
 impl OwnedListener {
@@ -139,7 +155,7 @@ impl OwnerLock {
                 Err(err) => return Err(err),
             };
             Ok(Self {
-                lock_file: Arc::new(file),
+                lock_file: Arc::new(LeaseFile(file)),
                 paths: paths.clone(),
                 instance_uuid: namespace,
                 owner_token: Uuid::new_v4(),

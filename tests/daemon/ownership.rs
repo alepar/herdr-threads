@@ -821,3 +821,24 @@ fn legacy_per_boot_descriptor_is_read_and_cleaned_up() {
     fs::remove_file(&instance.socket_path).unwrap();
     fs::remove_dir_all(root).unwrap();
 }
+
+/// Releasing the lease releases the lock even while another copy of its
+/// descriptor exists, as when a process spawned concurrently by another
+/// thread still holds the transient copy it inherited until its exec
+/// completes. Kills: relying on close alone (the copy kept the lock held and
+/// the immediate re-election saw WouldBlock, ht-w7n).
+#[test]
+fn dropping_the_lease_releases_it_despite_a_transient_descriptor_copy() {
+    use std::os::fd::AsRawFd;
+    let root = fixture();
+    let paths = paths(&root, root.sock("lease.sock"));
+    let owner = OwnerLock::acquire(&paths).unwrap();
+    // SAFETY: duplicates a descriptor this test owns; closed below.
+    let copy = unsafe { libc::dup(owner.lock_file.0.as_raw_fd()) };
+    assert!(copy >= 0);
+    drop(owner);
+    let next = OwnerLock::acquire(&paths);
+    // SAFETY: closes the duplicate made above.
+    unsafe { libc::close(copy) };
+    drop(next.expect("the dropped lease was released despite the descriptor copy"));
+}
