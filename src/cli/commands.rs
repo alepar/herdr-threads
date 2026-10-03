@@ -675,7 +675,13 @@ enum ThreadSub {
 }
 #[derive(Subcommand)]
 enum SeatSub {
-    List(PageArgs),
+    /// List current seats, newest first. Use --include-retired for history.
+    List {
+        #[arg(long, help = "Include retired seats in the list")]
+        include_retired: bool,
+        #[command(flatten)]
+        page: PageArgs,
+    },
     /// Resolve a pane to its seat; --new-seat creates a fresh operator seat.
     Resolve {
         #[arg(long)]
@@ -1432,9 +1438,13 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
             max_candidates: MAX_SEARCH_CANDIDATES,
         })),
         Top::Seat { command } => match command {
-            SeatSub::List(args) => CliAction::Wire(WireCommand::Seats(SeatsQuery {
+            SeatSub::List {
+                include_retired,
+                page: args,
+            } => CliAction::Wire(WireCommand::Seats(SeatsQuery {
                 page: page(args)?,
                 target: None,
+                include_retired,
             })),
             SeatSub::Resolve {
                 pane,

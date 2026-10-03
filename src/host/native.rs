@@ -475,6 +475,15 @@ impl NativeCli {
         crate::host::observation::normalize_pane_names(&raw)
     }
 
+    /// Advisory labels for seat-list presentation, from one bounded snapshot.
+    pub fn seat_labels(
+        &self,
+        budget: &CallBudget,
+    ) -> Result<Vec<crate::host::observation::SeatHostLabels>, ApiError> {
+        let raw = self.run_unfenced(&["api", "snapshot"], budget, Duration::from_secs(2))?;
+        crate::host::observation::normalize_seat_labels(&raw)
+    }
+
     pub fn snapshot(&self, budget: &CallBudget) -> Result<NativeSnapshot, ApiError> {
         self.snapshot_witnessed(budget)
             .map(|(snapshot, _)| snapshot)

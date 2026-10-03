@@ -2342,6 +2342,7 @@ fn seat_directory_pages_205_rows_without_offset() {
         let q = Command::Seats(SeatsQuery {
             page: page(cursor),
             target: None,
+            include_retired: false,
         });
         let CommandResult::Seats(result) = query(&store, "i", &q, &budget()).unwrap() else {
             panic!()
@@ -2353,8 +2354,76 @@ fn seat_directory_pages_205_rows_without_offset() {
         }
     }
     assert_eq!(seats.len(), 206);
-    assert_eq!(seats[0], "s");
-    assert_eq!(seats.last().unwrap(), "s205");
+    assert_eq!(seats[0], "s205");
+    assert_eq!(seats.last().unwrap(), "s");
+}
+
+#[test]
+fn seat_directory_excludes_retired_and_freezes_newest_first_page() {
+    let (store, db) = fixture();
+    for (id, state) in [("a", "resolved"), ("b", "retired"), ("c", "unresolved")] {
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at) VALUES (?1,'i',?2,'native',0,0,CASE WHEN ?2='retired' THEN 1 END)", params![id,state]).unwrap();
+    }
+    let ask = |cursor: Option<String>, include_retired: bool| {
+        let q = Command::Seats(SeatsQuery {
+            page: PageRequest {
+                cursor,
+                limit: 1,
+                max_bytes: 65536,
+            },
+            target: None,
+            include_retired,
+        });
+        let CommandResult::Seats(result) = query(&store, "i", &q, &budget()).unwrap() else {
+            panic!()
+        };
+        result
+    };
+    let first = ask(None, false);
+    assert_eq!(first.items[0].seat.as_str(), "c");
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('new','i','resolved','native',0,0)", []).unwrap();
+    let second = ask(first.next_cursor, false);
+    assert_eq!(second.items[0].seat.as_str(), "a");
+    let third = ask(second.next_cursor, false);
+    assert_eq!(third.items[0].seat.as_str(), "s");
+    assert!(third.next_cursor.is_none());
+    let all = ask(None, true);
+    assert_eq!(all.items[0].seat.as_str(), "new");
+    assert!(
+        all.next_argv
+            .as_ref()
+            .unwrap()
+            .contains(&"--include-retired".to_owned())
+    );
+    assert!(matches!(
+        parse_argv(all.next_argv.clone().unwrap()).unwrap().action,
+        CliAction::Wire(Command::Seats(ref q)) if q.include_retired
+    ));
+    let mut cursor = all.next_cursor;
+    let mut ids = Vec::new();
+    while let Some(next) = cursor {
+        let part = ask(Some(next), true);
+        ids.push(part.items[0].seat.as_str().to_owned());
+        cursor = part.next_cursor;
+    }
+    assert_eq!(ids, ["c", "b", "a", "s"]);
+
+    let old_cursor = ask(None, false).next_cursor.unwrap();
+    let changed_filter = Command::Seats(SeatsQuery {
+        page: PageRequest {
+            cursor: Some(old_cursor),
+            limit: 1,
+            max_bytes: 65536,
+        },
+        target: None,
+        include_retired: true,
+    });
+    assert_eq!(
+        query(&store, "i", &changed_filter, &budget())
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidCursor
+    );
 }
 
 #[test]
@@ -2370,6 +2439,7 @@ fn seat_target_filter_finds_live_seat_after_many_retired_seats_in_one_request() 
         let q = Command::Seats(SeatsQuery {
             page: page(None),
             target: Some(HostTargetId::new(target)),
+            include_retired: false,
         });
         let CommandResult::Seats(result) = query(&store, "i", &q, &budget()).unwrap() else {
             panic!()
@@ -2384,6 +2454,20 @@ fn seat_target_filter_finds_live_seat_after_many_retired_seats_in_one_request() 
     assert_eq!(unresolved.items.len(), 1);
     assert_eq!(unresolved.items[0].seat.as_str(), "unres");
     assert!(ask("missing").items.is_empty());
+    let with_history = Command::Seats(SeatsQuery {
+        page: PageRequest {
+            cursor: None,
+            limit: 2,
+            max_bytes: 65_536,
+        },
+        target: Some(HostTargetId::new("pane")),
+        include_retired: true,
+    });
+    let CommandResult::Seats(page) = query(&store, "i", &with_history, &budget()).unwrap() else {
+        panic!()
+    };
+    assert_eq!(page.items[0].seat.as_str(), "live");
+    assert_eq!(page.items[1].seat.as_str(), "r0900");
 }
 
 #[test]
@@ -2391,6 +2475,7 @@ fn seats_query_target_is_additive_on_the_wire() {
     let legacy: SeatsQuery =
         serde_json::from_str(r#"{"page":{"cursor":null,"limit":5,"max_bytes":4096}}"#).unwrap();
     assert!(legacy.target.is_none());
+    assert!(!legacy.include_retired);
     assert!(!serde_json::to_string(&legacy).unwrap().contains("target"));
 }
 

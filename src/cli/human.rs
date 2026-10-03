@@ -11,14 +11,15 @@
 //! control character, C1 control, line separator and bidi override is shown
 //! as a visible escape so it cannot drive the terminal.
 
+use crate::host::observation::SeatHostLabels;
 use crate::protocol::{
-    ids::ThreadId,
+    ids::{HostTargetId, ThreadId},
     output::{OutputSpec, detail_argv, format_command_argv, selected_result},
     pagination::Page,
     results::{
         AckResult, CheckInContextDisposition, CheckInResult, CommandResult, InboxItem,
         MembershipStatus, MessageContent, MessageDetails, MessageKind, MessageSummary, Participant,
-        PendingReceipt, SearchHit, ThreadDetails, ThreadSummary,
+        PendingReceipt, SearchHit, SeatSummary, ThreadDetails, ThreadSummary,
     },
     service::EventAuthor,
     time::UtcMillis,
@@ -33,6 +34,23 @@ type InboxTopics = HashMap<ThreadId, (String, bool)>;
 
 thread_local! {
     static INBOX_TOPICS: RefCell<Option<InboxTopics>> = const { RefCell::new(None) };
+    static SEAT_LABELS: RefCell<Option<HashMap<HostTargetId, SeatHostLabels>>> = const { RefCell::new(None) };
+}
+
+/// Make one advisory host snapshot available while rendering a seat list.
+pub fn with_seat_labels<T>(labels: Vec<SeatHostLabels>, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<HashMap<HostTargetId, SeatHostLabels>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SEAT_LABELS.with(|cell| *cell.borrow_mut() = self.0.take());
+        }
+    }
+    let map = labels
+        .into_iter()
+        .map(|label| (label.target.clone(), label))
+        .collect();
+    let _restore = Restore(SEAT_LABELS.with(|cell| cell.borrow_mut().replace(map)));
+    f()
 }
 
 /// Run `f` with `topics` available to the human inbox renderer, which then
@@ -57,6 +75,7 @@ pub fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String> {
     match &selected {
         CommandResult::Inbox(page) => inbox(page, spec, &mut out),
         CommandResult::Directory(page) => directory(page, &mut out),
+        CommandResult::Seats(page) => seats(page, &mut out),
         CommandResult::History(page) => transcript(page, &mut out),
         CommandResult::Thread(details) => thread(details, &mut out),
         CommandResult::Participants(page) => participants(page, &mut out),
@@ -149,6 +168,138 @@ pub fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String> {
         _ => return None,
     }
     Some(out)
+}
+
+fn seats(page: &Page<SeatSummary>, out: &mut String) {
+    if page.items.is_empty() {
+        out.push_str("No seats in this page.\n");
+        more(page, out);
+        return;
+    }
+    out.push_str(
+        "Current host labels are advisory; unavailable labels do not change seat identity.\n",
+    );
+    let rows = SEAT_LABELS.with(|cell| {
+        let labels = cell.borrow();
+        page.items
+            .iter()
+            .map(|seat| {
+                let target = seat.target.as_ref();
+                let current =
+                    if seat.continuity == crate::protocol::results::ContinuityStatus::Resolved {
+                        target.and_then(|target| labels.as_ref()?.get(target))
+                    } else {
+                        None
+                    };
+                let labeled = |id: &str, name: Option<&str>| {
+                    format!(
+                        "{} ({})",
+                        escape_for_terminal(id, Context::SingleLine),
+                        name.map_or_else(|| "unnamed".to_owned(), |name| one_line(name, false, 40))
+                    )
+                };
+                let state = match seat.continuity {
+                    crate::protocol::results::ContinuityStatus::Resolved => "resolved",
+                    crate::protocol::results::ContinuityStatus::Unresolved => "unresolved",
+                    crate::protocol::results::ContinuityStatus::Retired => "retired",
+                };
+                vec![
+                    seat.seat.as_str().to_owned(),
+                    state.to_owned(),
+                    timestamp(seat.created_at),
+                    current.map_or_else(
+                        || "-".to_owned(),
+                        |name| labeled(&name.workspace_id, name.workspace_label.as_deref()),
+                    ),
+                    current.map_or_else(
+                        || "-".to_owned(),
+                        |name| labeled(&name.tab_id, name.tab_label.as_deref()),
+                    ),
+                    match (target, current) {
+                        (Some(_), Some(name)) => {
+                            labeled(name.target.as_str(), name.pane_label.as_deref())
+                        }
+                        (Some(target), None) => format!("{} (unavailable)", target.as_str()),
+                        (None, None) => "-".to_owned(),
+                        (None, Some(_)) => unreachable!(),
+                    },
+                ]
+            })
+            .collect::<Vec<_>>()
+    });
+    table(
+        &["SEAT", "STATE", "CREATED", "SPACE", "TAB", "PANE"],
+        &rows,
+        out,
+    );
+    more(page, out);
+}
+
+#[cfg(test)]
+mod seat_list_tests {
+    use super::*;
+    use crate::protocol::{
+        ids::SeatId,
+        pagination::{Consistency, StopReason},
+        results::ContinuityStatus,
+    };
+
+    #[test]
+    fn labels_only_describe_resolved_targets_present_in_current_snapshot() {
+        let mut rows: Vec<_> = [
+            ContinuityStatus::Resolved,
+            ContinuityStatus::Unresolved,
+            ContinuityStatus::Retired,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, continuity)| SeatSummary {
+            seat: SeatId::new(format!("s{i}")),
+            continuity,
+            target: Some(HostTargetId::new("w4:p1")),
+            generation: 1,
+            created_at: UtcMillis(0),
+            retired_at: (i == 2).then_some(UtcMillis(1)),
+        })
+        .collect();
+        rows.push(SeatSummary {
+            seat: SeatId::new("s3"),
+            continuity: ContinuityStatus::Resolved,
+            target: Some(HostTargetId::new("w4:p2")),
+            generation: 1,
+            created_at: UtcMillis(0),
+            retired_at: None,
+        });
+        let page = Page {
+            items: rows,
+            next_cursor: None,
+            next_argv: None,
+            high_water_ordinal: 4,
+            scope_revision: None,
+            has_more: false,
+            stop_reason: StopReason::Complete,
+            consistency: Consistency::BoundedLive,
+        };
+        let labels = vec![SeatHostLabels {
+            target: HostTargetId::new("w4:p1"),
+            workspace_id: "w4".into(),
+            workspace_label: Some("Space".into()),
+            tab_id: "w4:t1".into(),
+            tab_label: Some("Tab".into()),
+            pane_label: Some("Pane\nForged".into()),
+        }];
+        let text = with_seat_labels(labels, || {
+            let mut out = String::new();
+            seats(&page, &mut out);
+            out
+        });
+        assert!(text.contains("w4 (Space)"));
+        assert!(text.contains("w4:t1 (Tab)"));
+        assert!(text.contains("w4:p1 (Pane\\nForged)"));
+        assert_eq!(text.matches("w4 (Space)").count(), 1);
+        assert_eq!(text.matches("w4:p1 (unavailable)").count(), 2);
+        assert!(text.contains("w4:p2 (unavailable)"));
+    }
 }
 
 fn inbox(page: &Page<InboxItem>, spec: &OutputSpec, out: &mut String) {

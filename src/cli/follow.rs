@@ -396,6 +396,7 @@ impl NickCache {
                 Command::Seats(SeatsQuery {
                     page: first_page,
                     target: None,
+                    include_retired: false,
                 }),
                 spec,
                 &budget(self.clock.as_ref(), 2_000, &self.cancel),

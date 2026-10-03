@@ -156,6 +156,14 @@ revision=N` row) for the exact values, then run
 reread and decide again. A required membership cannot be left until its
 owner releases it.
 
+## Seats
+
+`herdr-threads seat list` pages nonretired seats newest first; run `next:`
+for older seats. `--include-retired` persists in continuation commands.
+`--human` adds workspace/tab/pane labels for resolved seats; they never prove continuity.
+`--json` and machine text keep IDs, state and timestamps without host lookup;
+use `seat inspect SEAT` before operator repair.
+
 ## Warnings
 
 `warnings --seat SEAT` lists overdue invitations and receipts, unavailable

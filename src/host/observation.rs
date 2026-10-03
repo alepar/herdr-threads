@@ -257,6 +257,81 @@ pub fn normalize_pane_names(raw: &str) -> Result<Vec<PaneName>, ApiError> {
         .collect())
 }
 
+/// Current host labels for display only. A seat's saved target is never
+/// reconciled from these labels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeatHostLabels {
+    pub target: HostTargetId,
+    pub workspace_id: String,
+    pub workspace_label: Option<String>,
+    pub tab_id: String,
+    pub tab_label: Option<String>,
+    pub pane_label: Option<String>,
+}
+
+/// Read all three label levels from one validated Herdr snapshot.
+pub fn normalize_seat_labels(raw: &str) -> Result<Vec<SeatHostLabels>, ApiError> {
+    let snapshot = normalize_snapshot(raw)?;
+    let value: Value = serde_json::from_str(raw).map_err(|_| invalid("invalid host JSON"))?;
+    let root = value
+        .pointer("/result/snapshot")
+        .ok_or_else(|| invalid("missing snapshot"))?;
+    let label = |item: &Value| {
+        item.get("label")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+    };
+    let find = |collection: &str, key: &str, id: &str| {
+        root.get(collection)
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|item| item.get(key).and_then(Value::as_str) == Some(id))
+            })
+            .and_then(&label)
+    };
+    Ok(snapshot
+        .panes
+        .into_iter()
+        .map(|pane| SeatHostLabels {
+            pane_label: find("panes", "pane_id", pane.target.as_str()),
+            workspace_label: find("workspaces", "workspace_id", &pane.workspace_id),
+            tab_label: find("tabs", "tab_id", &pane.tab_id),
+            target: pane.target,
+            workspace_id: pane.workspace_id,
+            tab_id: pane.tab_id,
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod seat_label_tests {
+    use super::*;
+
+    #[test]
+    fn seat_labels_join_workspace_tab_and_pane_by_exact_ids() {
+        let raw = serde_json::json!({"id":"x","result":{"type":"session_snapshot","snapshot":{
+            "version":"0.9.1","protocol":22,"agents":[],"layouts":[],
+            "workspaces":[{"workspace_id":"w4","label":"Space"}],
+            "tabs":[{"tab_id":"w4:t1","label":"Tab"}],
+            "panes":[{"pane_id":"w4:p1","terminal_id":"term_1","workspace_id":"w4",
+                "tab_id":"w4:t1","focused":false,"agent_status":"idle","revision":1,
+                "label":"Pane"},
+                {"pane_id":"w4:p2","terminal_id":"term_2","workspace_id":"w4",
+                "tab_id":"w4:t1","focused":false,"agent_status":"idle","revision":1}]}}})
+        .to_string();
+        let names = normalize_seat_labels(&raw).unwrap();
+        assert_eq!(names.len(), 2);
+        assert_eq!(names[0].workspace_label.as_deref(), Some("Space"));
+        assert_eq!(names[0].tab_label.as_deref(), Some("Tab"));
+        assert_eq!(names[0].pane_label.as_deref(), Some("Pane"));
+        assert_eq!(names[0].target.as_str(), "w4:p1");
+        assert_eq!(names[1].pane_label, None);
+    }
+}
+
 /// Herdr `agent.get` for one pane. Detection-based kind and the
 /// integration's agent session are diagnostic/best-effort evidence only.
 pub fn normalize_pane_agent(

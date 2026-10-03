@@ -1071,10 +1071,11 @@ fn seats(
     q: &SeatsQuery,
     output: &OutputSpec,
 ) -> Result<CommandResult, ApiError> {
-    let filter = match &q.target {
-        None => digest(&"seats")?,
-        Some(target) => digest(&("seats", target.as_str()))?,
-    };
+    let filter = digest(&(
+        "seats",
+        q.target.as_ref().map(HostTargetId::as_str),
+        q.include_retired,
+    ))?;
     let target = q.target.as_ref().map(|t| t.as_str().to_owned());
     let cursor = decode_cursor(
         &q.page,
@@ -1082,7 +1083,7 @@ fn seats(
         CursorScope::Seats,
         "*",
         &filter,
-        CursorDirection::Ascending,
+        CursorDirection::Descending,
     )?;
     let high = cursor.as_ref().map_or_else(
         || {
@@ -1096,46 +1097,66 @@ fn seats(
         },
         |c| Ok(c.high_water_ordinal),
     )?;
-    let mut last = cursor.as_ref().map_or(0, |c| c.after_ordinal);
+    let mut last = cursor
+        .as_ref()
+        .map_or_else(|| high.saturating_add(1), |c| c.after_ordinal);
     let mut items = Vec::new();
     let mut stop = StopReason::Complete;
+    type Row = (i64, String, String, Option<String>, i64, i64, Option<i64>);
+    let map_row = |r: &rusqlite::Row<'_>| {
+        Ok((
+            r.get(0)?,
+            r.get(1)?,
+            r.get(2)?,
+            r.get(3)?,
+            r.get(4)?,
+            r.get(5)?,
+            r.get(6)?,
+        ))
+    };
+    // Resolve both a candidate and the final-page probe through the same
+    // indexed query. A sparse pane target must not scan unrelated seat history.
+    let next_row = |before: u64| -> Result<Option<Row>, ApiError> {
+        let before = before as i64;
+        let high = high as i64;
+        let row: rusqlite::Result<Option<Row>> = match (&target, q.include_retired) {
+            (None, true) => db
+                .query_row(
+                    "SELECT ordinal,id,state,target_id,generation,created_at,retired_at FROM seats WHERE instance_id=?1 AND ordinal<?2 AND ordinal<=?3 ORDER BY ordinal DESC LIMIT 1",
+                    params![instance, before, high],
+                    map_row,
+                )
+                .optional(),
+            (None, false) => db
+                .query_row(
+                    "SELECT ordinal,id,state,target_id,generation,created_at,retired_at FROM seats WHERE instance_id=?1 AND state='resolved' AND ordinal<?2 AND ordinal<=?3 UNION ALL SELECT ordinal,id,state,target_id,generation,created_at,retired_at FROM seats WHERE instance_id=?1 AND state='unresolved' AND ordinal<?2 AND ordinal<=?3 ORDER BY ordinal DESC LIMIT 1",
+                    params![instance, before, high],
+                    map_row,
+                )
+                .optional(),
+            (Some(target), false) => db
+                .query_row(
+                    "SELECT ordinal,id,state,target_id,generation,created_at,retired_at FROM seats WHERE ordinal IN (SELECT ordinal FROM seats WHERE instance_id=?1 AND target_id=?4 AND state='resolved' UNION ALL SELECT ordinal FROM seats WHERE instance_id=?1 AND state='unresolved' AND target_id=?4) AND ordinal<?2 AND ordinal<=?3 ORDER BY ordinal DESC LIMIT 1",
+                    params![instance, before, high, target],
+                    map_row,
+                )
+                .optional(),
+            (Some(target), true) => db
+                .query_row(
+                    "SELECT ordinal,id,state,target_id,generation,created_at,retired_at FROM seats WHERE instance_id=?1 AND target_id=?4 AND ordinal<?2 AND ordinal<=?3 ORDER BY ordinal DESC LIMIT 1",
+                    params![instance, before, high, target],
+                    map_row,
+                )
+                .optional(),
+        };
+        row.map_err(|error| db.map_error(error))
+    };
     for _ in 0..CANDIDATE_LIMIT {
         if items.len() == q.page.limit as usize {
             stop = StopReason::Rows;
             break;
         }
-        type Row = (i64, String, String, Option<String>, i64, i64, Option<i64>);
-        // Target-filtered lookups probe the partial `seats_live_target` index
-        // (resolved) and `seats_instance_state_ordinal` (unresolved) instead of
-        // walking every seat, retired ones included.
-        let map_row = |r: &rusqlite::Row<'_>| {
-            Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get(4)?,
-                r.get(5)?,
-                r.get(6)?,
-            ))
-        };
-        let row: Option<Row> = match &target {
-            None => db
-                .query_row(
-                    "SELECT ordinal,id,state,target_id,generation,created_at,retired_at FROM seats WHERE instance_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT 1",
-                    params![instance, last as i64, high as i64],
-                    map_row,
-                )
-                .optional(),
-            Some(target) => db
-                .query_row(
-                    "SELECT ordinal,id,state,target_id,generation,created_at,retired_at FROM seats WHERE ordinal IN (SELECT ordinal FROM seats WHERE instance_id=?1 AND target_id=?4 AND state='resolved' UNION ALL SELECT ordinal FROM seats WHERE instance_id=?1 AND state='unresolved' AND target_id=?4) AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT 1",
-                    params![instance, last as i64, high as i64, target],
-                    map_row,
-                )
-                .optional(),
-        }
-        .map_err(|e| db.map_error(e))?;
+        let row = next_row(last)?;
         let Some((ordinal, id, state, target, generation, created_at, retired_at)) = row else {
             break;
         };
@@ -1152,7 +1173,7 @@ fn seats(
             CursorScope::Seats,
             "*",
             &filter,
-            CursorDirection::Ascending,
+            CursorDirection::Descending,
             ordinal as u64,
             high,
         )
@@ -1160,11 +1181,14 @@ fn seats(
         .map_err(|e| api_error(ErrorCode::InvalidCursor, e))?;
         items.push(Cand {
             item,
-            argv: seats_argv(&raw, &q.page),
+            argv: seats_argv(&raw, q),
             raw,
             before: last,
         });
         last = ordinal as u64;
+    }
+    if stop == StopReason::Rows && next_row(last)?.is_none() {
+        stop = StopReason::Complete;
     }
     let (items, cut) = fit_candidates(
         items,
@@ -1189,13 +1213,13 @@ fn seats(
             CursorScope::Seats,
             "*",
             &filter,
-            CursorDirection::Ascending,
+            CursorDirection::Descending,
             last,
             high,
         )
         .encode()
         .map_err(|e| api_error(ErrorCode::InvalidCursor, e))?;
-        Some((raw.clone(), seats_argv(&raw, &q.page)))
+        Some((raw.clone(), seats_argv(&raw, q)))
     };
     Ok(CommandResult::Seats(sized(
         items,
@@ -2385,15 +2409,18 @@ fn directory_argv(q: &DirectoryQuery, cursor: Option<&str>) -> Vec<String> {
     argv
 }
 
-fn seats_argv(cursor: &str, page: &PageRequest) -> Vec<String> {
+fn seats_argv(cursor: &str, q: &SeatsQuery) -> Vec<String> {
     let mut argv = vec!["herdr-threads".into(), "seat".into(), "list".into()];
+    if q.include_retired {
+        argv.push("--include-retired".into());
+    }
     argv.extend([
         "--cursor".into(),
         cursor.into(),
         "--limit".into(),
-        page.limit.to_string(),
+        q.page.limit.to_string(),
         "--max-bytes".into(),
-        page.max_bytes.to_string(),
+        q.page.max_bytes.to_string(),
     ]);
     argv
 }

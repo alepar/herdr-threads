@@ -227,10 +227,13 @@ pub enum DirectoryMembership {
 #[serde(deny_unknown_fields)]
 pub struct SeatsQuery {
     pub page: PageRequest,
-    /// Optional pane filter: only the nonretired seat(s) mapped to this
-    /// target (resolved or unresolved). Absent on the wire when unset.
+    /// Optional pane filter: only seat(s) mapped to this target. Includes
+    /// retired seats only when `include_retired` is true. Absent when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<HostTargetId>,
+    /// Include retired seats in the directory. Absent means active only.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub include_retired: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

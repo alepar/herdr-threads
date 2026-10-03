@@ -168,6 +168,8 @@ The daemon's retention lane keeps the database bounded without touching anything
 
 Every collection (`thread list`, `thread show`, `thread participants`, `inbox`, `warnings`, `pending-receipts`, `read`, `search`, `seat list`, `seat inspect`, `seat retirements`, `delivery inspect`, `delivery recipients`, `overdue`, `diagnostics`, `pending-ops`, `view`) takes `--limit`, `--max-bytes` and `--cursor`. `body MESSAGE` returns bounded chunks with `--offset` and `--max-bytes`.
 
+`seat list` shows nonretired seats from newest to oldest by creation ordinal, including seats with equal creation timestamps. Use `--include-retired` to see retired seats as well. Each continuation keeps its initial high-water mark and filter; a cursor made before this order change is invalid and the list must be restarted. JSON and machine text keep the seat summary fields and do not perform a host lookup. Human text shows current Herdr workspace, tab, and pane names from one advisory snapshot for resolved seats; absent or stale targets show unavailable names. Labels never establish seat continuity or availability.
+
 - Each page reports `has_more`, `stop_reason` (`complete`, `rows`, `bytes` or `work`) and `next_argv`. **Run the exact returned `next_argv`**; do not build a cursor yourself.
 - A `search` page may contain no matches and still advance; keep following it until it completes.
 - A filtered or mutable view can return `cursor_stale`; restart with the returned restart command.

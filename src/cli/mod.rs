@@ -434,16 +434,26 @@ where
     let connection = LazyConnection::new(|| {
         connect(&paths, &clock).map(|(instance, _, client)| (instance, client))
     });
-    let Some(parsed) = run_caller_scoped(
-        parsed,
-        caller_pane,
-        &context,
-        &paths,
-        &connection,
-        &clock,
-        &budget,
-        writer,
-    )?
+    let seat_labels =
+        if matches!(&parsed.action, CliAction::Wire(Command::Seats(_))) && output::human_active() {
+            crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(&clock))
+                .seat_labels(&budget())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+    let Some(parsed) = human::with_seat_labels(seat_labels, || {
+        run_caller_scoped(
+            parsed,
+            caller_pane,
+            &context,
+            &paths,
+            &connection,
+            &clock,
+            &budget,
+            writer,
+        )
+    })?
     else {
         return Ok(());
     };
@@ -1366,6 +1376,7 @@ pub(crate) fn collect_pane_seats(
                 max_bytes: crate::protocol::pagination::MAX_PAGE_BYTES,
             },
             target: Some(pane.clone()),
+            include_retired: false,
         }))
         .map_err(PaneSeatsError::Api)?;
         let CommandResult::Seats(page) = result else {
