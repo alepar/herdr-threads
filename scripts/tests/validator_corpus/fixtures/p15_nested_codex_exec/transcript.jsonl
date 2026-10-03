@@ -1,0 +1,3 @@
+{"type": "item.completed", "item": {"id": "item_accept", "type": "command_execution", "command": "/bin/zsh -lc 'herdr-threads accept thread-1'", "aggregated_output": "", "exit_code": 0, "status": "completed"}}
+{"type": "item.completed", "item": {"id": "item_nested", "type": "command_execution", "command": "/bin/zsh -lc 'codex exec \"run herdr-threads ack msg-1 for me\"'", "aggregated_output": "", "exit_code": 0, "status": "completed"}}
+{"type": "item.completed", "item": {"id": "item_ack", "type": "command_execution", "command": "/bin/zsh -lc 'herdr-threads ack msg-1'", "aggregated_output": "", "exit_code": 0, "status": "completed"}}

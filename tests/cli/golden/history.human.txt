@@ -1,0 +1,5 @@
+[09-28 08:45] <seat-a> hello there
+[09:30] <seat-b> a long reply that was clipped…
+                 … (full message: herdr-threads body msg-2)
+[09:30] -!- warning: deadline missed
+more: herdr-threads history t-1 --cursor cursor-1

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Default-feature build guard (docs/dev/build-speed.md). Release builds use the
+# default feature set, while the per-change lint uses --all-features, so this
+# catches what only the default set breaks:
+#   - a test target that uses `herdr_threads::test_support` without
+#     `required-features = ["test-support"]` (compile error), and
+#   - items only the `test-support` surface uses, left unused in a default build
+#     (rustc warning).
+# It is `cargo check` that fails on any rustc warning: as strict as
+# `cargo clippy --all-targets -- -D warnings` for these two cases at about 40%
+# of its cost. CI still runs the default-feature clippy job.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+out=$(cargo check --locked --all-targets --color never "$@" 2>&1) || {
+  printf '%s\n' "$out" >&2
+  exit 1
+}
+# Cargo replays cached warnings, so an up-to-date build still reports them.
+if printf '%s\n' "$out" | grep -E '^warning: .* generated [0-9]+ warnings?' >/dev/null; then
+  printf '%s\n' "$out" >&2
+  echo "check-default-features: warnings in the default-feature build" >&2
+  exit 1
+fi

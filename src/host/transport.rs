@@ -75,12 +75,7 @@ fn encode_request(value: &Value) -> Result<Vec<u8>, ApiError> {
 }
 
 fn error(code: ErrorCode, detail: impl Into<String>) -> ApiError {
-    ApiError {
-        code,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::new(code, detail)
 }
 
 fn check(
@@ -159,7 +154,13 @@ async fn exchange(
         started,
         limit,
     )?;
-    let mut stream = bounded(UnixStream::connect(socket), clock, budget, started, limit).await?;
+    let connect = async {
+        UnixStream::connect(socket).await.map_err(|e| {
+            let (_, reason) = crate::client::classify_connect_error(&e);
+            io::Error::new(e.kind(), format!("{reason}: {e}"))
+        })
+    };
+    let mut stream = bounded(connect, clock, budget, started, limit).await?;
     let witness = budgeted_capture(
         || {
             provider
@@ -369,6 +370,7 @@ fn request_inner(
                     }
                     let expected = match method {
                         "pane.get" => "pane_info",
+                        "pane.read" => "pane_read",
                         "session.snapshot" => "session_snapshot",
                         "agent.prompt" => "agent_prompted",
                         "agent.start" => "agent_started",
@@ -475,9 +477,16 @@ fn witness_error(error_value: super::continuity::CaptureError) -> ApiError {
     } else {
         ErrorCode::StaleHostObservation
     };
+    // A missing or non-socket endpoint is Herdr not running (never started,
+    // or its socket removed): say so in the same words as a refused connect.
+    let prefix = if error_value == super::continuity::CaptureError::EndpointUnavailable {
+        "server not running: "
+    } else {
+        ""
+    };
     error(
         code,
-        format!("host endpoint witness unavailable: {error_value:?}"),
+        format!("{prefix}host endpoint witness unavailable: {error_value:?}"),
     )
 }
 

@@ -4,6 +4,18 @@ use crate::protocol::{
     pagination::{Consistency, StopReason},
 };
 
+/// 2026-09-30 13:00:00Z: the day of every fixture timestamp below, so times
+/// render bare (older or later days carry a date; see the golden contract).
+const NOW: UtcMillis = UtcMillis(1_790_773_200_000);
+
+fn render_message(summary: &MessageSummary, lookup: &mut dyn Lookup, style: &Style) -> String {
+    crate::protocol::output::with_render_now(NOW, || super::render_message(summary, lookup, style))
+}
+
+fn render_page(page: &Page<MessageSummary>, lookup: &mut dyn Lookup, style: &Style) -> String {
+    crate::protocol::output::with_render_now(NOW, || super::render_page(page, lookup, style))
+}
+
 fn summary(seq: u64, author: &str, body: &str) -> MessageSummary {
     MessageSummary {
         message: MessageId::new(format!("msg-{seq}")),
@@ -326,7 +338,11 @@ fn pages_render_oldest_first_with_a_continuation() {
 
 #[test]
 fn clock_is_hours_and_minutes() {
-    assert_eq!(clock(UtcMillis(1_790_771_696_000), false), "12:34");
-    assert_eq!(clock(UtcMillis(0), false), "00:00");
-    assert_eq!(clock(UtcMillis(1_790_771_696_000), true).len(), 5);
+    crate::protocol::output::with_render_now(NOW, || {
+        assert_eq!(clock(UtcMillis(1_790_771_696_000), false), "12:34");
+        assert_eq!(clock(UtcMillis(1_790_771_696_000), true).len(), 5);
+    });
+    crate::protocol::output::with_render_now(UtcMillis(1), || {
+        assert_eq!(clock(UtcMillis(0), false), "00:00");
+    });
 }

@@ -93,6 +93,20 @@ pub struct InstancePaths {
     pub locator: String,
 }
 
+/// The store database's file name inside an instance directory.
+pub const DATABASE_FILE: &str = "threads.sqlite3";
+
+/// Whether `state_dir` holds a store: some `instances/<id>/` directory contains the store
+/// database. A state directory that only ever held a socket, a lock or setup manifests (a
+/// leftover from an uninstalled plugin) does not.
+pub fn holds_store(state_dir: &Path) -> bool {
+    std::fs::read_dir(state_dir.join("instances")).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|entry| entry.path().join(DATABASE_FILE).is_file())
+    })
+}
+
 impl InstancePaths {
     pub fn resolve(context: &RuntimeContext) -> io::Result<Self> {
         let locator = context.host_endpoint.to_string_lossy().into_owned();
@@ -106,7 +120,7 @@ impl InstancePaths {
             descriptor_path: instance_dir.join("endpoint.json"),
             locator_path: instance_dir.join("locator"),
             namespace_path: instance_dir.join("namespace"),
-            database_path: instance_dir.join("threads.sqlite3"),
+            database_path: instance_dir.join(DATABASE_FILE),
             instance_dir,
             socket_path,
             locator,

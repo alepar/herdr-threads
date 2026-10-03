@@ -1,0 +1,6 @@
+{
+  "finding": "p31_sh_c_and_backticks_and_dollar_paren",
+  "entry": "verify",
+  "verdict": "FAIL",
+  "reason": "harness denied 3 herdr-threads command(s) (permission_denials): sh -c 'herdr-threads ack msg-1'; echo `herdr-threads ack msg-1`; x=$(herdr-threads ack msg-1); info: 1 other permission denial(s), not herdr-threads commands: echo \"herdr-threads\" ack msg-1"
+}

@@ -6,13 +6,14 @@
 //! is bounded by explicit deadlines.
 
 use super::sweep::{FakeHost, Scratch, pane};
+use herdr_threads::test_support::spawn::SpawnOwned;
 use serde_json::{Value, json};
 use std::{
     fs,
     io::{BufRead, BufReader},
     os::unix::fs::DirBuilderExt,
     path::PathBuf,
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     sync::mpsc::{Receiver, channel},
     time::{Duration, Instant},
 };
@@ -25,8 +26,7 @@ struct Plugin {
 }
 impl Plugin {
     fn command(&self) -> Command {
-        let mut command = Command::new(BIN);
-        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
+        let mut command = crate::scrubbed_command(BIN);
         command
             .arg("--state-dir")
             .arg(&self.state)
@@ -56,7 +56,20 @@ impl Plugin {
                 "top-level",
             ]);
         }
-        let output = command.args(args).output().unwrap();
+        command.args(args);
+        // A call that races the daemon's first observation publication may be
+        // refused `stale_host_observation`; that refusal is transient.
+        let until = Instant::now() + Duration::from_secs(10);
+        let output = loop {
+            let output = command.output().unwrap();
+            if output.status.success()
+                || !String::from_utf8_lossy(&output.stderr).contains("stale_host_observation")
+                || Instant::now() >= until
+            {
+                break output;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         assert!(
             output.status.success(),
@@ -77,7 +90,7 @@ impl Plugin {
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
+            .spawn_owned()
             .unwrap();
         let stdout = child.stdout.take().unwrap();
         let (tx, rx) = channel();
@@ -103,7 +116,7 @@ impl Drop for Plugin {
 }
 
 struct Follower {
-    child: Child,
+    child: herdr_threads::test_support::spawn::OwnedChild,
     lines: Receiver<String>,
     seen: Vec<String>,
 }

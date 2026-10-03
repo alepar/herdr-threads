@@ -260,6 +260,17 @@ impl RetryGuard {
         Ok(self)
     }
 
+    /// Back to the pre-reservation guard after a pre-send refusal: same
+    /// durable ladder row and anchor, not in flight. A shortening applied by
+    /// new attention while the attempt was in flight is kept.
+    pub fn restored_to(self, prior: Self) -> Self {
+        Self {
+            shortened: prior.shortened || self.shortened,
+            in_flight: false,
+            ..prior
+        }
+    }
+
     pub fn new_attention(mut self) -> Result<Self, RetryError> {
         self.shortened = true;
         self.earliest()?;

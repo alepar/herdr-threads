@@ -1,0 +1,1 @@
+already_joined t-1 seat-a: no invitation sent

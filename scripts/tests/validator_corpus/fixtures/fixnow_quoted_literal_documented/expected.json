@@ -1,0 +1,6 @@
+{
+  "finding": "fixnow_quoted_literal_documented",
+  "entry": "verify",
+  "verdict": "PASS",
+  "reason": "model ACK of msg-1 (transcript root call) matches SQLite; DB provenance ack=cooperative_top_level accept=cooperative_top_level -> cooperative (cooperative claim, NOT native proof)"
+}

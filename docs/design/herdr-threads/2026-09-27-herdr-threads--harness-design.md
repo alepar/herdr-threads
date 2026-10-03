@@ -50,7 +50,10 @@ Managed launch and a manually started agent use the same hooks/check-in. A launc
 
 ### Typed managed-launch seam
 
+> **Superseded (2026-10, ht-p03.2 / B4):** the adversarial verification layer described here was removed; see "Cooperative reality (2026-10)".
+
 Use `HostPort::launch_native(NativeLaunchRequest, HostCallContext)` with explicit seat/target/harness/argv, configured-hook reference and expected terminal/generation. Setup owns a narrow configured-hook inspection function returning the supported scope/path/fingerprint descriptor, not authority or an implicit global configuration write. Structural `EmptyShell|Occupied|Unknown` observation must prove emptiness; missing native occupant metadata is not proof. Resolve the seat first, then take the fresh ordered empty-target recheck immediately before supported direct argument-array native start. If an atomic host expected-empty guard is absent, report the optimistic recheck/start race rather than invent it.
+<!-- end superseded -->
 
 Preserve caller native argument bytes/order and permissions; add only supported owned-hook configuration and Codex --no-daemon exactly once. An explicit conflicting daemon mode rejects instead of silently rewriting caller policy. Outcome distinguishes bounded host-observed startup from OutcomeUnknown after possible start; do not blindly duplicate a launch. The call uses absolute budgets/cancellation/late-result fencing and never registers, creates availability anchors, advances warning offers, accepts or ACKs. Both managed and manual startup still require the original verified hook path and ht-910 gate.
 
@@ -70,6 +73,37 @@ Setup inspection tests distinguish installed configuration from observed capabil
 ## Shared-contract adoption record
 
 2026-09-27: Reconciled this canonical spec with the adopted revision-4 shared contract. Detailed normative algorithms/types and preserved revision responses are in the [adopted shared-contract amendment, revision 4](shared-contract-amendment-adopted.md). This is specification work before the next formal design review; no source implementation or native-support completion is asserted.
+
+## Cooperative reality (2026-10)
+
+- **Hooks transport a claim.** The Claude and Codex hooks carry the seat's private context and the lifecycle or tool-boundary CheckIn; the service records the top-level claim as `cooperative_top_level`. Subagents are told (not forced) to read and summarize only.
+- **Managed launch has one capability.** `NativeLaunchCapability` is `HostGuardedStart | Unsupported`; the proven-empty-shell capability is removed, so launch relies on the host's guarded start and the optimistic fresh target recheck, never on an empty-shell proof. Launch still creates no registration, anchor, offer, accept or ACK.
+- **Ready-command rank.** The hook's plugin-authored command block (`harness::next_actions`) is ordered so a budget keeps a prefix: (1) each thread with a pending require-ACK receipt (its accept, read, then ACK lines; `pinned` ends at the first ACK line); (2) other threads with a required invitation (accept-required, read); (3) one reply form for the first receipt thread; (4) at most `MAX_OPTIONAL_ACCEPTS` (2) plain invitations, labelled "optional, only if you intend to join". The header names the caller's seat and says `thread participants` and `thread show` mark it as self.
+- **No lifecycle subscription.** The host lifecycle subscription and its hint types were removed; reconciliation rests on periodic complete snapshots.
+
+Decision record: [root spec §B4](remaining-findings/2026-10-01-remaining-herdr-threads-findings-design.md#b4-remove-the-pre-cooperative-verification-layer) (ht-p03.2 deleted the code, ht-p03.5 rewrote these docs). Normative trust rules: `TRUST-POLICY.md` (branch `trust-model-invariants`), which supersedes any text above that requires adversarial proof of who is calling. Text above that describes the removed layer stays for history and is marked superseded where it names a removed symbol.
+
+## Optimistic admission and the versions document (2026-10)
+
+The compiled recipe tables (`claude::RECIPES`, `codex::RECIPES`) stay the authority for which harness versions are understood. `harness::admission::classify` maps any observed version to exactly one row of a ladder, evaluated top to bottom, first match wins, identically for both harnesses:
+
+| Row | Observed version | Admission |
+|---|---|---|
+| 1 | unparsable | refused |
+| 2 | inside a recipe's `known_broken` range (checked before every admitting row) | refused, naming the range and the newest working version |
+| 3 | listed by a recipe | listed |
+| 4 | Codex only: unlisted, not older than every recipe minimum, hook-schema fingerprint matches a recipe | schema-matched, live-unverified |
+| 5 | older than every recipe minimum | refused |
+| 6a | unlisted, newer than every recipe maximum | optimistic |
+| 6b | unlisted, inside the supported span (a gap between recipes or inside a recipe's version set) | optimistic |
+
+An optimistic version assumes a recipe (6a: the recipe with the greatest maximum; 6b: the recipe whose span contains it, else the nearest recipe below). It maps to the cooperative, live-unverified harness state and is never `Supported`. Health shows it as an informational note, not as degraded, and `doctor` as a warning: `optimistic — newer than verified X` or `optimistic — unlisted within the supported span`, then `assumed compatible with recipe ID`, with `; major version change` when the major differs from the assumed recipe's maximum and, in `doctor`, the issues URL. Hook payloads the assumed recipe cannot parse are counted and logged (rate limited) and Health reports `N hook payloads not understood (HARNESS)` instead of silence; the CLI reports a parse failure to the daemon only when it advertises `hook.parse_failure_report`.
+
+**Source of truth.** `docs/compatibility/harness-versions.json` is generated from the recipe tables (one row per listed version with its recipe, evidence level `live`, `no_model` or `none`, and `known_broken` ranges) and a guard test fails when the committed file and the tables differ (`HT_BLESS=1` regenerates it). Health and `doctor` wording, the setup sandbox constants and the documented version lists derive from the same tables.
+
+**Re-observation and the canary.** An admission-observer lane re-runs admission on a Pacer tick (60 s) and replaces the cached observations when the resolved binary's path, inode, size or mtime changes, logging the change; `doctor` checks the `claude` on `PATH` as it does Codex. `scripts/harness-canary.sh` is the single canary implementation (isolated installs, a no-model tier 0, a model tier 1 when keys exist, bisect to the first failing version) and the scheduled workflow only calls it; its output suggests a new recipe or a `known_broken` range, never an automatic code change. See [harnesses.md](../../compatibility/harnesses.md) for the registry and canary liveness rule.
+
+Decision records: [root spec §B6](remaining-findings/2026-10-01-remaining-herdr-threads-findings-design.md#b6-optimistic-harness-admission-and-the-version-canary) and the nested [harness canary spec](remaining-findings/2026-10-01-remaining-herdr-threads-findings--harness-canary-design.md).
 
 ## Post-Implementation Notes
 

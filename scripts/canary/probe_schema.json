@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "herdr-threads/canary/probe_schema.json",
+  "title": "herdr-threads canary probe contract (ht-p03.14.8)",
+  "$defs": {
+    "check": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "status"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^t[01]\\.[a-z0-9-]+$"},
+        "status": {"enum": ["pass", "fail", "warn", "skip"]},
+        "detail": {"type": "string"}
+      }
+    },
+    "probeResult": {
+      "description": "--probe stdout: one probe's outcome. failed_tier is 1 when a tier-1 check failed (bisect retries twice), 0 for a tier-0 failure (retried once), null when nothing failed.",
+      "type": "object", "additionalProperties": false,
+      "required": ["result", "checks", "failed_tier"],
+      "properties": {
+        "result": {"enum": ["pass", "fail", "infra"]},
+        "checks": {"type": "array", "items": {"$ref": "#/$defs/check"}},
+        "failed_tier": {"enum": [0, 1, null]}
+      }
+    },
+    "canaryProbe": {
+      "description": "<P>/canary-probe.json, written by harness-canary.sh from versions.py data (harness-versions.json or --versions-json; never --baseline).",
+      "type": "object", "additionalProperties": false,
+      "required": ["harness", "version", "binary", "expected_admission"],
+      "properties": {
+        "harness": {"enum": ["claude", "codex"]},
+        "version": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,5})\\.(0|[1-9][0-9]{0,5})\\.(0|[1-9][0-9]{0,5})$"},
+        "binary": {"type": "string", "pattern": "^/"},
+        "expected_admission": {"enum": ["listed", "optimistic", "schema-matched-or-optimistic", "refused", "unasserted"]}
+      }
+    }
+  },
+  "x-files": {
+    "help": "<P>/help/<cmd>.txt — raw `codex --help` and `codex exec --help` output, written by harness-canary.sh, read by launch_tables; file names: codex.txt, codex-exec.txt"
+  }
+}

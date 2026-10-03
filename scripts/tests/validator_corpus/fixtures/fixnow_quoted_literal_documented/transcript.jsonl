@@ -1,0 +1,3 @@
+{"type": "assistant", "parent_tool_use_id": null, "message": {"content": [{"type": "tool_use", "id": "toolu_accept", "name": "Bash", "input": {"command": "herdr-threads accept thread-1"}}]}}
+{"type": "assistant", "parent_tool_use_id": null, "message": {"content": [{"type": "tool_use", "id": "toolu_ack", "name": "Bash", "input": {"command": "herdr-threads ack msg-1"}}]}}
+{"type": "assistant", "parent_tool_use_id": "toolu_task", "message": {"content": [{"type": "tool_use", "id": "toolu_child_echo", "name": "Bash", "input": {"command": "echo \"herdr-threads\" ack msg-1"}}]}, "isSidechain": true}

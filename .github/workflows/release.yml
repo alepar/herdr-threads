@@ -1,19 +1,21 @@
 name: Release
 
-# On a v* tag: build prebuilt release archives for macOS (arm64, x86_64) and
-# Linux (x86_64, aarch64), write SHA256SUMS and attach them to a GitHub
-# release for that tag. scripts/install.sh installs these archives.
+# Builds prebuilt release archives for macOS (arm64, x86_64) and Linux (x86_64,
+# aarch64) and, on a v* tag push only, writes SHA256SUMS and publishes them as a
+# GitHub release for that tag. scripts/install.sh installs these archives.
 #
 # Linux is built as static musl executables (x86_64/aarch64-unknown-linux-musl)
 # on native GitHub runners for each architecture: no cross toolchain, and the
 # binary runs on any distribution regardless of its glibc version. rusqlite
-# compiles its bundled SQLite with musl-gcc. Linux support is EXPERIMENTAL and
-# unvalidated: herdr-plugin.toml declares platforms = ["macos"] and the host
-# incarnation witness is macOS-only. Intel macOS is cross-compiled on the arm64
+# compiles its bundled SQLite with musl-gcc. herdr-plugin.toml declares
+# platforms = ["macos", "linux"]. Intel macOS is cross-compiled on the arm64
 # runner and only its architecture is checked.
 #
-# workflow_dispatch builds and uploads the archives as workflow artifacts
-# without creating a release.
+# workflow_dispatch builds and uploads the archives as workflow artifacts only:
+# the publish job is skipped and the workflow holds no write permission there.
+# Publishing is tag-push only and re-runnable: the release is created as a draft
+# if absent, assets are uploaded with --clobber, every downloaded asset is
+# verified against SHA256SUMS, and the draft is flipped to published last.
 
 on:
   push:
@@ -34,7 +36,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - id: version
         name: Compare versions
         shell: bash
@@ -63,7 +65,7 @@ jobs:
           - { os: linux, arch: x86_64, runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, file: 'x86-64', native: true }
           - { os: linux, arch: aarch64, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, file: 'ARM aarch64', native: true }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: musl toolchain
         if: matrix.os == 'linux'
@@ -122,7 +124,7 @@ jobs:
             --version "${{ needs.version.outputs.version }}" --out dist
           tar -tzvf "dist/herdr-threads-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: herdr-threads-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/herdr-threads-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
@@ -131,14 +133,14 @@ jobs:
   release:
     name: Publish GitHub release
     needs: [version, build]
-    if: github.ref_type == 'tag'
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           pattern: herdr-threads-*
@@ -175,11 +177,43 @@ jobs:
           | --- | --- |
           | herdr-threads-macos-aarch64.tar.gz | supported (macOS arm64) |
           | herdr-threads-macos-x86_64.tar.gz | built, not exercised (Intel macOS) |
-          | herdr-threads-linux-x86_64.tar.gz | experimental, unvalidated (static musl) |
-          | herdr-threads-linux-aarch64.tar.gz | experimental, unvalidated (static musl) |
+          | herdr-threads-linux-x86_64.tar.gz | static musl |
+          | herdr-threads-linux-aarch64.tar.gz | static musl |
 
           Verify with SHA256SUMS. See the README for the support matrix.
           EOF
-          gh release create "$TAG" --verify-tag --title "herdr-threads $TAG" \
-            --notes-file notes.md "${prerelease[@]}" \
-            dist/herdr-threads-*.tar.gz dist/SHA256SUMS
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --draft --verify-tag --title "herdr-threads $TAG" \
+              --notes-file notes.md "${prerelease[@]}"
+
+      - name: Upload assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" dist/herdr-threads-*.tar.gz dist/SHA256SUMS --clobber
+
+      - name: Verify uploaded assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          rm -rf verify
+          gh release download "$TAG" --dir verify \
+            --pattern 'herdr-threads-*.tar.gz' --pattern SHA256SUMS --clobber
+          (cd verify && sha256sum -c SHA256SUMS)
+          count=$(gh release view "$TAG" --json assets --jq '.assets | length')
+          test "$count" -eq 5 || { echo "::error::expected 5 assets (4 archives + SHA256SUMS), found $count"; exit 1; }
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --draft=false

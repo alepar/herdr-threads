@@ -1,0 +1,6 @@
+{
+  "finding": "w6_d4_tui_without_transcript_is_unverified",
+  "entry": "gate",
+  "verdict": "UNVERIFIED",
+  "reason": "cannot tell whether the model saw the burst instruction (no readable transcript for this phase); unverified: judge failed"
+}

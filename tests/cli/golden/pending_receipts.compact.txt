@@ -1,0 +1,6 @@
+pending_receipts seat-a
+msg-3 t-1#3 from seat-b due 09-28 08:45Z overdue
+msg-4 t-1#4 from seat-b due 09:30Z
+msg-5 t-1#5 from seat-b due 10-03 09:30Z
+msg-6 t-1#6 from seat-b
+next: herdr-threads pending-receipts --cursor cursor-1

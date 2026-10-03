@@ -7,9 +7,11 @@ pub mod invitation_due;
 pub mod materialization;
 pub mod messages;
 pub mod operator;
+pub mod page_fit;
 pub(crate) mod public_ids;
 pub mod queries;
 pub mod receipts;
+pub mod retention;
 pub mod schema;
 pub mod seats;
 pub mod service_controls;
@@ -18,26 +20,29 @@ pub mod service_substrate;
 pub mod wake;
 pub mod work;
 
+use crate::service::kicks::{self, CommitKicks};
+#[cfg(any(test, feature = "test-support"))]
+use crate::service::kicks::{Lane, LaneSet};
 use crate::{
     ports::{
         ClosureEvidence, DuePhase, DuePhaseCursor, DuePhaseProgress, DueScanProgress,
         DueScanRequest, DurableWorkAdmission, GuardedInvalidationTransition, GuardedSeatTransition,
         HostInvalidationFence, HostInvalidationReason, HostObservation, HostObservationAdmission,
-        InvalidationSeatPage, OperationReadScope, OperatorRequest, OrdinaryAllocationGuard,
+        InvalidationSeatPage, OperationReadScope, OperatorRequest, PriorLadder, PruneProgress,
         PublishedSnapshot, ReadContext, ReceiptSparseCursor, ReconciliationOutcome,
-        RegisterAvailableRequest, RegistrationRevocation, RetirementJob, RetirementProgress,
-        RetirementSummary, SendPreparationProgress, SnapshotCleanupProgress, SnapshotGenerationId,
-        SnapshotHeader, SnapshotSeatPage, SnapshotStage, SnapshotStageProgress, StorePort,
-        WakeCandidate, WakeOutcome, WakeRecoveryCandidate, WakeRecoveryOutcome,
-        WakeRecoveryRequest, WakeReservation, WorkAdmission, WorkCandidate, WorkKind, WorkProgress,
+        RegisterAvailableRequest, RetirementJob, RetirementProgress, RetirementSummary,
+        SendPreparationProgress, SnapshotCleanupProgress, SnapshotGenerationId, SnapshotHeader,
+        SnapshotSeatPage, SnapshotStage, SnapshotStageProgress, StorePort, WakeCandidate,
+        WakeOutcome, WakeRecoveryCandidate, WakeRecoveryOutcome, WakeRecoveryRequest,
+        WakeReservation, WorkAdmission, WorkCandidate, WorkKind, WorkProgress,
     },
     protocol::{
-        authority::{DecisionFence, MutationPermit, OperatorActor},
+        authority::{MutationPermit, OperatorActor},
         commands::{
             Command, DirectoryMembership, OperatorCommand, PermitMutation, ResolveSeat,
             RetirementJobsQuery, SendMessage, WarningsQuery,
         },
-        ids::{HostBootId, HostTargetId, RetirementJobId, SeatId, WakeAttemptId},
+        ids::{RetirementJobId, SeatId, WakeAttemptId},
         pagination::{
             Consistency, Cursor, CursorDirection, CursorScope, Page, PageRequest, StopReason,
         },
@@ -45,9 +50,13 @@ use crate::{
         time::{CallBudget, Clock, UtcMillis},
     },
 };
-use connection::{DecisionInstant, StoreContext, api_error, store_error};
-use rusqlite::{Connection, OptionalExtension, Transaction, ffi, params};
-use std::{ffi::c_void, sync::Mutex};
+use connection::{StoreContext, api_error, store_error};
+use rusqlite::{Connection, OptionalExtension, ffi, params};
+use std::{
+    ffi::c_void,
+    ops::{Deref, DerefMut},
+    sync::{Arc, Mutex},
+};
 
 #[derive(Debug, Clone)]
 pub struct StoreSettings {
@@ -75,6 +84,72 @@ pub struct SqliteStore {
     instance: String,
     settings: StoreSettings,
     writer: Mutex<Connection>,
+    /// Hook state of `writer`; declared after it so it outlives the connection.
+    hooks: Box<connection::KickHooks>,
+    kicks: Arc<CommitKicks>,
+    /// Change mark (`retention::change_mark`) at which the last retention
+    /// snapshot scan found no candidate; the scan is skipped while it holds.
+    retention_idle: Mutex<Option<(u64, i64)>>,
+    #[cfg(any(test, feature = "test-support"))]
+    retention_cost: Mutex<Option<Arc<crate::test_support::isolation::CostCounter>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    kick_sink: Mutex<Option<KickSink>>,
+    #[cfg(any(test, feature = "test-support"))]
+    kick_pause: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+type KickSink = Arc<dyn Fn(LaneSet, Option<Lane>) + Send + Sync>;
+
+/// One turn on the serialized domain writer. The mutex guard is private to
+/// this type, so no caller can hold the writer outside a turn. Dropping the
+/// turn takes the commits' sealed lane set while the guard is still held,
+/// releases the guard, then kicks those lanes minus the committing thread's
+/// own origin lane: taking the set after release would let another thread's
+/// turn merge its tables into it and flush it minus its own origin.
+pub struct WriterTurn<'a> {
+    guard: Option<std::sync::MutexGuard<'a, Connection>>,
+    store: &'a SqliteStore,
+}
+impl Deref for WriterTurn<'_> {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        self.guard.as_deref().expect("writer guard held until drop")
+    }
+}
+impl DerefMut for WriterTurn<'_> {
+    fn deref_mut(&mut self) -> &mut Connection {
+        self.guard
+            .as_deref_mut()
+            .expect("writer guard held until drop")
+    }
+}
+impl Drop for WriterTurn<'_> {
+    fn drop(&mut self) {
+        let sealed = self.store.hooks.take_sealed();
+        self.store.hooks.settle_generation();
+        drop(self.guard.take());
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let pause = self.store.kick_pause.lock().ok().and_then(|p| p.clone());
+            if let Some(pause) = pause {
+                pause();
+            }
+        }
+        let origin = kicks::current_origin();
+        let lanes = origin.map_or(sealed, |lane| sealed.without(lane));
+        if lanes.is_empty() {
+            return;
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let sink = self.store.kick_sink.lock().ok().and_then(|s| s.clone());
+            if let Some(sink) = sink {
+                sink(lanes, origin);
+            }
+        }
+        self.store.kicks.kick(lanes);
+    }
 }
 
 struct WriterProgress<'a> {
@@ -148,14 +223,70 @@ impl SqliteStore {
             context,
             instance,
             settings,
+            hooks: connection::KickHooks::install(&writer),
             writer: Mutex::new(writer),
+            kicks: Arc::new(CommitKicks::default()),
+            retention_idle: Mutex::new(None),
+            #[cfg(any(test, feature = "test-support"))]
+            retention_cost: Mutex::new(None),
+            #[cfg(any(test, feature = "test-support"))]
+            kick_sink: Mutex::new(None),
+            #[cfg(any(test, feature = "test-support"))]
+            kick_pause: Mutex::new(None),
         })
     }
 
-    fn writer(
+    /// Replaces the lane registry commits kick through. The daemon passes the
+    /// one registry its lanes register their Pacers with.
+    #[must_use]
+    pub fn with_commit_kicks(mut self, kicks: Arc<CommitKicks>) -> Self {
+        self.kicks = kicks;
+        self
+    }
+
+    /// Test hook: commits that changed rows, per origin lane name (`request`
+    /// when no origin).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn commit_counts(&self) -> std::collections::BTreeMap<String, u64> {
+        self.hooks.commit_counts()
+    }
+
+    /// Test hook: counts the VM units of retention's read queries.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_retention_cost_counter(
         &self,
-        budget: &CallBudget,
-    ) -> Result<std::sync::MutexGuard<'_, Connection>, ApiError> {
+        counter: Option<Arc<crate::test_support::isolation::CostCounter>>,
+    ) {
+        *self.retention_cost.lock().unwrap() = counter;
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn cost_probe(&self) -> Option<Arc<crate::test_support::isolation::CostCounter>> {
+        self.retention_cost.lock().ok().and_then(|c| c.clone())
+    }
+
+    /// Test hook: records every flushed kick (lanes, origin) after the writer
+    /// guard is released and before the Pacers are kicked.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_kick_sink(&self, sink: Box<dyn Fn(LaneSet, Option<Lane>) + Send + Sync>) {
+        *self.kick_sink.lock().unwrap() = Some(Arc::from(sink));
+    }
+
+    /// Test hook: runs in `WriterTurn::drop` between guard release and kick.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_kick_pause(&self, pause: Box<dyn Fn() + Send + Sync>) {
+        *self.kick_pause.lock().unwrap() = Some(Arc::from(pause));
+    }
+
+    /// Test hook: fails store access (writer turns and query connections) on
+    /// a thread whose lane origin the closure maps to an error.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_lane_fault(&self, fault: Option<connection::LaneFault>) {
+        self.context.set_lane_fault(fault);
+    }
+
+    fn writer(&self, budget: &CallBudget) -> Result<WriterTurn<'_>, ApiError> {
+        self.context.lane_fault_check()?;
         loop {
             self.live_budget(budget)?;
             match self.writer.try_lock() {
@@ -166,7 +297,10 @@ impl SqliteStore {
                         self.context.failpoint_scope(),
                         connection = &guard
                     );
-                    return Ok(guard);
+                    return Ok(WriterTurn {
+                        guard: Some(guard),
+                        store: self,
+                    });
                 }
                 Err(std::sync::TryLockError::Poisoned(_)) => {
                     return Err(api_error(ErrorCode::StoreCorrupt, "writer lock poisoned"));
@@ -195,34 +329,6 @@ impl SqliteStore {
         } else {
             Ok(())
         }
-    }
-
-    fn decision_fence(
-        &self,
-        tx: &Transaction<'_>,
-        at: DecisionInstant,
-        seat: &SeatId,
-        target: &HostTargetId,
-    ) -> Result<DecisionFence, ApiError> {
-        let (boot,epoch,binding_generation,target_generation,observed_boot,observed_epoch,observed_generation):(String,i64,i64,i64,String,i64,i64)=tx.query_row(
-            "SELECT h.host_boot,h.host_epoch,s.generation,s.target_generation,o.host_boot,o.epoch,o.generation \
-             FROM seats s JOIN host_instances h ON h.id=s.instance_id JOIN observed_targets o ON o.instance_id=s.instance_id AND o.target_id=s.target_id \
-             WHERE s.id=?1 AND s.instance_id=?2 AND s.target_id=?3 AND s.state='resolved'",
-            params![seat.as_str(),self.instance,target.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).map_err(store_error)?;
-        let nonnegative = |value: i64| {
-            u64::try_from(value)
-                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative authority generation"))
-        };
-        Ok(DecisionFence {
-            now: at.monotonic,
-            host_boot: HostBootId::new(&boot),
-            host_epoch: nonnegative(epoch)?,
-            target_generation: nonnegative(target_generation)?,
-            binding_generation: nonnegative(binding_generation)?,
-            known_invalidated: boot != observed_boot
-                || epoch != observed_epoch
-                || target_generation != observed_generation,
-        })
     }
 }
 
@@ -303,21 +409,238 @@ fn exported_receipt_cursor(value: &receipts::ReceiptDueCursor) -> Result<DuePhas
     })
 }
 
-/// Internal pages use their complete, fixed JSON representation for byte
-/// admission. This includes both copies of a continuation cursor and every
-/// candidate field, even though the pages never become CLI-selected output.
-fn internal_page_bytes<T: serde::Serialize>(page: &Page<T>) -> Result<usize, ApiError> {
-    serde_json::to_vec(page)
-        .map(|bytes| bytes.len())
-        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "internal page encoding failed"))
+fn internal_page_budget_error(detail: &'static str, minimum: usize) -> ApiError {
+    ApiError::invalid_budget(detail)
+        .with_required_minimum_bytes(minimum.min(u32::MAX as usize) as u32)
 }
 
-fn internal_page_budget_error(detail: &'static str, minimum: usize) -> ApiError {
-    ApiError {
-        code: ErrorCode::InvalidBudget,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: Some(minimum.min(u32::MAX as usize) as u32),
+/// Which internal discovery page a continuation cursor belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageKind {
+    Work,
+    Wake,
+    Recovery,
+}
+
+/// On: wake discovery completes each seat within one call, so it never emits the
+/// legacy mid-seat fields and a cursor carrying them is `InvalidCursor`.
+pub const WAKE_CURSOR_REJECTS_LEGACY_FIELDS: bool = true;
+
+fn encode_internal_cursor(
+    instance: &str,
+    scope: CursorScope,
+    after_ordinal: u64,
+    high_water_ordinal: u64,
+    legacy: Option<&LegacyWakePosition>,
+) -> Result<String, ApiError> {
+    Cursor {
+        instance: instance.into(),
+        scope,
+        scope_key: "all".into(),
+        filter_digest: "all".into(),
+        direction: CursorDirection::Ascending,
+        order_version: 1,
+        last_examined_key: legacy.map(|legacy| legacy.last_examined_key.clone()),
+        after_ordinal,
+        high_water_ordinal,
+        scope_revision: legacy.map(|legacy| legacy.scope_revision),
+        filter_revision: None,
+        search: None,
+        attention: legacy.map(|legacy| legacy.attention.clone()),
+        inbox: None,
+        binding: None,
+    }
+    .encode()
+    .map_err(|why| api_error(ErrorCode::StoreCorrupt, why))
+}
+
+fn decode_internal_cursor(
+    raw: &str,
+    instance: &str,
+    scope: CursorScope,
+) -> Result<Cursor, ApiError> {
+    let cursor = Cursor::decode_for(
+        raw,
+        instance,
+        scope,
+        "all",
+        "all",
+        CursorDirection::Ascending,
+        1,
+    )
+    .map_err(|why| api_error(ErrorCode::InvalidCursor, why))?;
+    cursor
+        .validate_for(instance, scope, "all", "all", CursorDirection::Ascending, 1)
+        .map_err(|why| api_error(ErrorCode::InvalidCursor, why))?;
+    if cursor.filter_revision.is_some() || cursor.search.is_some() || cursor.inbox.is_some() {
+        return Err(api_error(
+            ErrorCode::InvalidCursor,
+            "cursor carries fields foreign to its scope",
+        ));
+    }
+    Ok(cursor)
+}
+
+fn reject_positional_fields(cursor: &Cursor) -> Result<(), ApiError> {
+    if cursor.last_examined_key.is_some()
+        || cursor.scope_revision.is_some()
+        || cursor.attention.is_some()
+    {
+        return Err(api_error(
+            ErrorCode::InvalidCursor,
+            "cursor carries fields foreign to its scope",
+        ));
+    }
+    Ok(())
+}
+
+/// Work-discovery continuation (scope WorkJobs, ascending physical ordinal; unchanged by ht-p03.12.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkPageCursor {
+    pub after_ordinal: u64,
+    pub high_water_ordinal: u64,
+}
+impl WorkPageCursor {
+    pub fn encode(&self, instance: &str) -> Result<String, ApiError> {
+        encode_internal_cursor(
+            instance,
+            CursorScope::WorkJobs,
+            self.after_ordinal,
+            self.high_water_ordinal,
+            None,
+        )
+    }
+    pub fn decode(raw: &str, instance: &str) -> Result<Self, ApiError> {
+        let cursor = decode_internal_cursor(raw, instance, CursorScope::WorkJobs)?;
+        reject_positional_fields(&cursor)?;
+        Ok(Self {
+            after_ordinal: cursor.after_ordinal,
+            high_water_ordinal: cursor.high_water_ordinal,
+        })
+    }
+}
+
+/// Wake-discovery continuation. Post-D2 shape: ordinals only. `legacy` is the
+/// pre-D2 mid-seat position (`last_examined_key`, `scope_revision`, `attention`);
+/// discovery never emits it and `decode` rejects it
+/// (`WAKE_CURSOR_REJECTS_LEGACY_FIELDS`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WakePageCursor {
+    pub after_ordinal: u64,
+    pub high_water_ordinal: u64,
+    pub legacy: Option<LegacyWakePosition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyWakePosition {
+    pub last_examined_key: String,
+    pub scope_revision: u64,
+    pub attention: crate::protocol::pagination::SeatAttentionCursorState,
+}
+
+impl WakePageCursor {
+    pub fn encode(&self, instance: &str) -> Result<String, ApiError> {
+        encode_internal_cursor(
+            instance,
+            CursorScope::WakeCandidates,
+            self.after_ordinal,
+            self.high_water_ordinal,
+            self.legacy.as_ref(),
+        )
+    }
+    pub fn decode(raw: &str, instance: &str) -> Result<Self, ApiError> {
+        Self::decode_with(raw, instance, WAKE_CURSOR_REJECTS_LEGACY_FIELDS)
+    }
+    pub fn decode_with(raw: &str, instance: &str, reject_legacy: bool) -> Result<Self, ApiError> {
+        let cursor = decode_internal_cursor(raw, instance, CursorScope::WakeCandidates)?;
+        let any_legacy = cursor.last_examined_key.is_some()
+            || cursor.scope_revision.is_some()
+            || cursor.attention.is_some();
+        if any_legacy && reject_legacy {
+            return Err(api_error(
+                ErrorCode::InvalidCursor,
+                "legacy wake cursor fields are no longer accepted",
+            ));
+        }
+        let legacy = match (
+            cursor.last_examined_key,
+            cursor.scope_revision,
+            cursor.attention,
+        ) {
+            (None, None, None) => None,
+            (Some(last_examined_key), Some(scope_revision), Some(attention)) => {
+                Some(LegacyWakePosition {
+                    last_examined_key,
+                    scope_revision,
+                    attention,
+                })
+            }
+            _ => {
+                return Err(api_error(
+                    ErrorCode::InvalidCursor,
+                    "invalid wake attention continuation",
+                ));
+            }
+        };
+        Ok(Self {
+            after_ordinal: cursor.after_ordinal,
+            high_water_ordinal: cursor.high_water_ordinal,
+            legacy,
+        })
+    }
+}
+
+/// Wake-recovery continuation, ordered by seat ordinal (preserved by ht-p03.12.9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryPageCursor {
+    pub after_seat_ordinal: u64,
+    pub high_water_ordinal: u64,
+}
+impl RecoveryPageCursor {
+    pub fn encode(&self, instance: &str) -> Result<String, ApiError> {
+        encode_internal_cursor(
+            instance,
+            CursorScope::WakeRecovery,
+            self.after_seat_ordinal,
+            self.high_water_ordinal,
+            None,
+        )
+    }
+    pub fn decode(raw: &str, instance: &str) -> Result<Self, ApiError> {
+        let cursor = decode_internal_cursor(raw, instance, CursorScope::WakeRecovery)?;
+        reject_positional_fields(&cursor)?;
+        Ok(Self {
+            after_seat_ordinal: cursor.after_ordinal,
+            high_water_ordinal: cursor.high_water_ordinal,
+        })
+    }
+}
+
+/// Upper bound on the encoded length of any continuation cursor of `kind`; the
+/// base allowance for the page-fit estimate. Work and Recovery cursors are
+/// bounded by their widest encoding: the payload carries `after` and
+/// `high_water - after` as varints, so their total width peaks at
+/// `after = 2^63`, `high_water = u64::MAX`, not at both `u64::MAX`. The Wake bound is
+/// the same ordinal-only bound, because
+/// `WAKE_CURSOR_REJECTS_LEGACY_FIELDS` rejects the wider legacy encoding.
+pub fn longest_cursor_bytes(kind: PageKind) -> usize {
+    static ORDINAL_ONLY: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let ordinal_only = *ORDINAL_ONLY.get_or_init(|| {
+        let instance = "0".repeat(36);
+        let widest = WorkPageCursor {
+            after_ordinal: 1 << 63,
+            high_water_ordinal: u64::MAX,
+        };
+        widest
+            .encode(&instance)
+            .map_or(crate::protocol::pagination::MAX_CURSOR_BYTES, |raw| {
+                raw.len()
+            })
+    });
+    match kind {
+        PageKind::Work | PageKind::Recovery => ordinal_only,
+        PageKind::Wake if WAKE_CURSOR_REJECTS_LEGACY_FIELDS => ordinal_only,
+        PageKind::Wake => crate::protocol::pagination::MAX_CURSOR_BYTES,
     }
 }
 
@@ -331,25 +654,11 @@ fn work_page_at(
     let has_more = after < high_water;
     let next_cursor = if has_more {
         Some(
-            Cursor {
-                instance: instance.into(),
-                scope: CursorScope::WorkJobs,
-                scope_key: "all".into(),
-                filter_digest: "all".into(),
-                direction: CursorDirection::Ascending,
-                order_version: 1,
-                last_examined_key: None,
+            WorkPageCursor {
                 after_ordinal: after,
                 high_water_ordinal: high_water,
-                scope_revision: None,
-                filter_revision: None,
-                search: None,
-                attention: None,
-                inbox: None,
-                binding: None,
             }
-            .encode()
-            .map_err(|why| api_error(ErrorCode::StoreCorrupt, why))?,
+            .encode(instance)?,
         )
     } else {
         None
@@ -374,37 +683,17 @@ fn wake_page_at(
     items: Vec<WakeCandidate>,
     after: u64,
     high_water: u64,
-    pending: Option<&effective::SeatAttentionPosition>,
     stop: StopReason,
 ) -> Result<Page<WakeCandidate>, ApiError> {
-    let has_more = pending.is_some() || after < high_water;
-    let pending_revision = pending
-        .map(|position| {
-            u64::try_from(position.decision_seq)
-                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative wake attention revision"))
-        })
-        .transpose()?;
+    let has_more = after < high_water;
     let next_cursor = if has_more {
         Some(
-            Cursor {
-                instance: instance.into(),
-                scope: CursorScope::WakeCandidates,
-                scope_key: "all".into(),
-                filter_digest: "all".into(),
-                direction: CursorDirection::Ascending,
-                order_version: 1,
-                last_examined_key: pending.map(|position| position.seat_id.clone()),
+            WakePageCursor {
                 after_ordinal: after,
                 high_water_ordinal: high_water,
-                scope_revision: pending_revision,
-                filter_revision: None,
-                search: None,
-                attention: pending.map(effective::SeatAttentionPosition::to_cursor_state),
-                inbox: None,
-                binding: None,
+                legacy: None,
             }
-            .encode()
-            .map_err(|why| api_error(ErrorCode::StoreCorrupt, why))?,
+            .encode(instance)?,
         )
     } else {
         None
@@ -434,25 +723,11 @@ fn wake_recovery_page_at(
     let has_more = after < high_water;
     let next_cursor = if has_more {
         Some(
-            Cursor {
-                instance: instance.into(),
-                scope: CursorScope::WakeRecovery,
-                scope_key: "all".into(),
-                filter_digest: "all".into(),
-                direction: CursorDirection::Ascending,
-                order_version: 1,
-                last_examined_key: None,
-                after_ordinal: after,
+            RecoveryPageCursor {
+                after_seat_ordinal: after,
                 high_water_ordinal: high_water,
-                scope_revision: None,
-                filter_revision: None,
-                search: None,
-                attention: None,
-                inbox: None,
-                binding: None,
             }
-            .encode()
-            .map_err(|why| api_error(ErrorCode::StoreCorrupt, why))?,
+            .encode(instance)?,
         )
     } else {
         None
@@ -472,6 +747,15 @@ fn wake_recovery_page_at(
     })
 }
 
+/// Rows one recovery walk query returns.
+const WAKE_RECOVERY_WALK_LIMIT: usize = 100;
+
+/// The recovery walk: reserved seats only, in seat-ordinal order (the recovery
+/// cursor's order). Cost follows the reserved set, not settled or retired seats.
+/// `CROSS JOIN` pins `wake_work` as the outer loop: with a plain join the planner
+/// drives from `seats` in ordinal order and walks every seat.
+pub(crate) const WAKE_RECOVERY_WALK_SQL: &str = "SELECT s.ordinal,s.id,w.reservation_id,w.reservation_boot FROM wake_work w INDEXED BY wake_work_reserved CROSS JOIN seats s ON s.id=w.seat_id WHERE w.reservation_id IS NOT NULL AND s.instance_id=?1 AND s.ordinal>?2 AND s.ordinal<=?3 ORDER BY s.ordinal LIMIT 100";
+
 fn wake_recovery_page(
     context: &StoreContext,
     instance: &str,
@@ -490,31 +774,8 @@ fn wake_recovery_page(
     let cursor = page
         .cursor
         .as_ref()
-        .map(|raw| {
-            Cursor::decode_for(
-                raw,
-                instance,
-                CursorScope::WakeRecovery,
-                "all",
-                "all",
-                CursorDirection::Ascending,
-                1,
-            )
-            .map_err(|why| api_error(ErrorCode::InvalidCursor, why))
-        })
+        .map(|raw| RecoveryPageCursor::decode(raw, instance))
         .transpose()?;
-    if let Some(cursor) = &cursor {
-        cursor
-            .validate_for(
-                instance,
-                CursorScope::WakeRecovery,
-                "all",
-                "all",
-                CursorDirection::Ascending,
-                1,
-            )
-            .map_err(|why| api_error(ErrorCode::InvalidCursor, why))?;
-    }
     let db = context.open_query(budget.clone())?;
     db.execute_batch("BEGIN DEFERRED")
         .map_err(|error| db.map_error(error))?;
@@ -532,13 +793,16 @@ fn wake_recovery_page(
                 .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative seat high water"))?
         }
     };
-    let mut after = cursor.as_ref().map_or(0, |cursor| cursor.after_ordinal);
+    let mut after = cursor
+        .as_ref()
+        .map_or(0, |cursor| cursor.after_seat_ordinal);
     let mut items = Vec::new();
     let mut positions = Vec::new();
     let mut visited = 0usize;
     let mut stop = StopReason::Complete;
-    let mut statement = db.prepare("SELECT s.ordinal,s.id,w.reservation_id,w.reservation_boot FROM seats s LEFT JOIN wake_work w ON w.seat_id=s.id WHERE s.instance_id=?1 AND s.ordinal>?2 AND s.ordinal<=?3 ORDER BY s.ordinal LIMIT 100")
-        .map_err(|error|db.map_error(error))?;
+    let mut statement = db
+        .prepare(WAKE_RECOVERY_WALK_SQL)
+        .map_err(|error| db.map_error(error))?;
     let mut rows = statement
         .query(params![instance, due_i64(after)?, due_i64(high_water)?])
         .map_err(|error| db.map_error(error))?;
@@ -579,7 +843,6 @@ fn wake_recovery_page(
                     });
                 }
             }
-            (None, None) => {}
             _ => {
                 return Err(api_error(
                     ErrorCode::StoreCorrupt,
@@ -591,50 +854,25 @@ fn wake_recovery_page(
             .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative seat ordinal"))?;
         visited += 1;
     }
-    if visited == 100 && after < high_water && stop == StopReason::Complete {
-        stop = StopReason::Work;
+    // The walk reads reserved seats only, so a short result means the whole
+    // range up to the high water has been covered, not that the last reserved
+    // seat was the high-water seat.
+    if visited < WAKE_RECOVERY_WALK_LIMIT && stop == StopReason::Complete {
+        after = high_water;
     }
     if after < high_water && stop == StopReason::Complete {
         stop = StopReason::Work;
     }
-    let mut result = wake_recovery_page_at(instance, items, after, high_water, stop)?;
-    loop {
-        let measured = internal_page_bytes(&result)?;
-        if measured <= page.max_bytes as usize {
-            return Ok(result);
-        }
-        if result.items.len() <= 1 {
-            if result.items.len() == 1 {
-                let (_, ordinal) = positions[0];
-                let single = wake_recovery_page_at(
-                    instance,
-                    result.items,
-                    ordinal,
-                    high_water,
-                    StopReason::Bytes,
-                )?;
-                let minimum = internal_page_bytes(&single)?;
-                if minimum <= page.max_bytes as usize {
-                    return Ok(single);
-                }
-                return Err(internal_page_budget_error(
-                    "wake recovery page cannot fit",
-                    minimum,
-                ));
-            }
-            return Err(internal_page_budget_error(
-                "wake recovery page cannot fit",
-                measured,
-            ));
-        }
-        let (before, _) = positions
-            .pop()
-            .expect("one position per recovery candidate");
-        result.items.pop();
-        after = before;
-        result =
-            wake_recovery_page_at(instance, result.items, after, high_water, StopReason::Bytes)?;
-    }
+    page_fit::fit_internal(
+        page.max_bytes as usize,
+        items,
+        &positions,
+        |items| wake_recovery_page_at(instance, items, after, high_water, stop),
+        |items, before| {
+            wake_recovery_page_at(instance, items, before, high_water, StopReason::Bytes)
+        },
+        "wake recovery page cannot fit",
+    )
 }
 
 fn pending_work_page(
@@ -648,32 +886,20 @@ fn pending_work_page(
     let cursor = page
         .cursor
         .as_ref()
-        .map(|raw| {
-            Cursor::decode_for(
-                raw,
-                instance,
-                CursorScope::WorkJobs,
-                "all",
-                "all",
-                CursorDirection::Ascending,
-                1,
-            )
-            .map_err(|why| api_error(ErrorCode::InvalidCursor, why))
-        })
+        .map(|raw| WorkPageCursor::decode(raw, instance))
         .transpose()?;
-    if let Some(cursor) = &cursor {
-        cursor
-            .validate_for(
-                instance,
-                CursorScope::WorkJobs,
-                "all",
-                "all",
-                CursorDirection::Ascending,
-                1,
-            )
-            .map_err(|why| api_error(ErrorCode::InvalidCursor, why))?;
-    }
     let db = context.open_query(budget.clone())?;
+    pending_work_page_on(context, &db, instance, page, cursor, budget)
+}
+
+fn pending_work_page_on(
+    context: &StoreContext,
+    db: &connection::QueryConnection,
+    instance: &str,
+    page: PageRequest,
+    cursor: Option<WorkPageCursor>,
+    budget: &CallBudget,
+) -> Result<Page<WorkCandidate>, ApiError> {
     db.execute_batch("BEGIN DEFERRED")
         .map_err(|e| db.map_error(e))?;
     let high_water = match &cursor {
@@ -693,7 +919,7 @@ fn pending_work_page(
     let mut item_positions = Vec::new();
     let mut visited = 0usize;
     let mut stop = StopReason::Complete;
-    let mut statement=db.prepare("SELECT ordinal,id,kind,position,high_water,status FROM work_jobs WHERE ordinal>?1 AND ordinal<=?2 ORDER BY ordinal LIMIT 100").map_err(|e|db.map_error(e))?;
+    let mut statement=db.prepare("SELECT ordinal,id,kind,position,high_water,status FROM work_jobs INDEXED BY work_jobs_live WHERE status IN ('pending','failed') AND ordinal>?1 AND ordinal<=?2 ORDER BY ordinal LIMIT 100").map_err(|e|db.map_error(e))?;
     let mut rows = statement
         .query(params![due_i64(after)?, due_i64(high_water)?])
         .map_err(|e| db.map_error(e))?;
@@ -710,33 +936,35 @@ fn pending_work_page(
         let position: i64 = row.get(3).map_err(store_error)?;
         let high: i64 = row.get(4).map_err(store_error)?;
         let status: String = row.get(5).map_err(store_error)?;
-        if status == "pending" || status == "failed" {
-            if items.len() >= usize::from(page.limit) {
-                stop = StopReason::Rows;
-                break;
-            }
-            let kind = match kind.as_str() {
-                "warning_attribution" => WorkKind::WarningAttribution,
-                "send_attention" => WorkKind::SendAttention,
-                "receipt_timer_materialization" => WorkKind::ReceiptTimerMaterialization,
-                "preparation_cleanup" => WorkKind::PreparationCleanup,
-                _ => return Err(api_error(ErrorCode::StoreCorrupt, "invalid work kind")),
-            };
-            item_positions.push((
-                after,
-                u64::try_from(ordinal)
-                    .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative work ordinal"))?,
-            ));
-            items.push(WorkCandidate {
-                id,
-                kind,
-                position: u64::try_from(position)
-                    .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative work position"))?,
-                high_water: u64::try_from(high)
-                    .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative work bound"))?,
-                has_more: position < high,
-            });
+        debug_assert!(
+            status == "pending" || status == "failed",
+            "work_jobs_live yielded a {status} job"
+        );
+        if items.len() >= usize::from(page.limit) {
+            stop = StopReason::Rows;
+            break;
         }
+        let kind = match kind.as_str() {
+            "warning_attribution" => WorkKind::WarningAttribution,
+            "send_attention" => WorkKind::SendAttention,
+            "receipt_timer_materialization" => WorkKind::ReceiptTimerMaterialization,
+            "preparation_cleanup" => WorkKind::PreparationCleanup,
+            _ => return Err(api_error(ErrorCode::StoreCorrupt, "invalid work kind")),
+        };
+        item_positions.push((
+            after,
+            u64::try_from(ordinal)
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative work ordinal"))?,
+        ));
+        items.push(WorkCandidate {
+            id,
+            kind,
+            position: u64::try_from(position)
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative work position"))?,
+            high_water: u64::try_from(high)
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative work bound"))?,
+            has_more: position < high,
+        });
         after = u64::try_from(ordinal)
             .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative work ordinal"))?;
         visited += 1;
@@ -744,38 +972,104 @@ fn pending_work_page(
     if visited == 100 && after < high_water && stop == StopReason::Complete {
         stop = StopReason::Work;
     }
+    if visited < 100 && stop == StopReason::Complete {
+        // The live-row scan ran dry before the cap: nothing live remains up to
+        // the high-water, so the cursor advances past the skipped dead rows.
+        after = high_water;
+    }
     if after < high_water && stop == StopReason::Complete {
         stop = StopReason::Work;
     }
-    let mut result = work_page_at(instance, items, after, high_water, stop)?;
-    loop {
-        let measured = internal_page_bytes(&result)?;
-        if measured <= page.max_bytes as usize {
-            return Ok(result);
+    page_fit::fit_internal(
+        page.max_bytes as usize,
+        items,
+        &item_positions,
+        |items| work_page_at(instance, items, after, high_water, stop),
+        |items, before| work_page_at(instance, items, before, high_water, StopReason::Bytes),
+        "work page cannot fit",
+    )
+}
+
+/// The seat walk of wake discovery: live (`seats_live_ordinal`) seats in ordinal
+/// order, excluding any seat whose current occupant is human (Wave 18).
+pub(crate) const WAKE_SEAT_WALK: &str = "SELECT s.ordinal,s.id FROM seats s INDEXED BY seats_live_ordinal WHERE s.instance_id=?1 AND s.state!='retired' AND s.ordinal>?2 AND s.ordinal<=?3 AND NOT EXISTS (SELECT 1 FROM occupant_bindings INDEXED BY occupant_bindings_current WHERE seat_id=s.id AND ended_at IS NULL AND harness='human') ORDER BY s.ordinal LIMIT 1";
+
+/// What one discovery pass found: the candidates, the `(before, ordinal)` position
+/// of each, the last seat ordinal passed, and why the pass stopped.
+pub(crate) struct WakeDiscovery {
+    pub items: Vec<WakeCandidate>,
+    pub item_positions: Vec<(u64, u64)>,
+    pub after: u64,
+    pub stop: StopReason,
+}
+
+/// The discovery loop of `wake_candidates_page`, inside the caller's read
+/// transaction: walk live non-human seats after `after` up to `high_water`,
+/// probe each for pending rows, examine only seats with a hit (one unit of the
+/// 100-unit cap each) and emit those whose candidate has actionable work.
+pub(crate) fn discover_wake_candidates(
+    db: &Connection,
+    instance: &str,
+    mut after: u64,
+    high_water: u64,
+    limit: usize,
+    check_budget: &dyn Fn() -> Result<(), ApiError>,
+) -> Result<WakeDiscovery, ApiError> {
+    let mut items = Vec::new();
+    let mut item_positions = Vec::new();
+    let mut examined = 0u16;
+    let mut stop = StopReason::Complete;
+    while examined < 100 {
+        check_budget()?;
+        let next: Option<(i64, String)> = db
+            .prepare_cached(WAKE_SEAT_WALK)
+            .map_err(store_error)?
+            .query_row(
+                params![instance, due_i64(after)?, due_i64(high_water)?],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(store_error)?;
+        let Some((ordinal, seat_raw)) = next else {
+            // No live seat remains up to the high water (trailing retired or
+            // human seats are never visited): the walk is complete.
+            after = high_water;
+            break;
+        };
+        let ordinal = u64::try_from(ordinal)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative seat ordinal"))?;
+        if !attention::seat_has_pending_rows(db, &seat_raw)? {
+            after = ordinal;
+            continue;
         }
-        if result.items.len() <= 1 {
-            if result.items.len() == 1 {
-                let (_, ordinal) = item_positions[0];
-                let single = work_page_at(
-                    instance,
-                    result.items,
-                    ordinal,
-                    high_water,
-                    StopReason::Bytes,
-                )?;
-                let minimum = internal_page_bytes(&single)?;
-                if minimum <= page.max_bytes as usize {
-                    return Ok(single);
-                }
-                return Err(internal_page_budget_error("work page cannot fit", minimum));
+        examined += 1;
+        let wake_attention = attention::wake_seat_attention(db, &seat_raw)?;
+        let candidate = wake::load_candidate(
+            db,
+            instance,
+            &SeatId::new(&seat_raw),
+            &wake_attention.attention,
+            wake_attention.decision_seq,
+        )?;
+        if candidate.has_actionable_work() {
+            if items.len() >= limit {
+                stop = StopReason::Rows;
+                break;
             }
-            return Err(internal_page_budget_error("work page cannot fit", measured));
+            item_positions.push((after, ordinal));
+            items.push(candidate);
         }
-        let (before, _) = item_positions.pop().expect("one position per work item");
-        result.items.pop();
-        after = before;
-        result = work_page_at(instance, result.items, after, high_water, StopReason::Bytes)?;
+        after = ordinal;
     }
+    if after < high_water && stop == StopReason::Complete {
+        stop = StopReason::Work;
+    }
+    Ok(WakeDiscovery {
+        items,
+        item_positions,
+        after,
+        stop,
+    })
 }
 
 fn wake_candidates_page(
@@ -789,39 +1083,8 @@ fn wake_candidates_page(
     let cursor = page
         .cursor
         .as_ref()
-        .map(|raw| {
-            Cursor::decode_for(
-                raw,
-                instance,
-                CursorScope::WakeCandidates,
-                "all",
-                "all",
-                CursorDirection::Ascending,
-                1,
-            )
-            .map_err(|why| api_error(ErrorCode::InvalidCursor, why))
-        })
+        .map(|raw| WakePageCursor::decode(raw, instance))
         .transpose()?;
-    if let Some(cursor) = &cursor {
-        cursor
-            .validate_for(
-                instance,
-                CursorScope::WakeCandidates,
-                "all",
-                "all",
-                CursorDirection::Ascending,
-                1,
-            )
-            .map_err(|why| api_error(ErrorCode::InvalidCursor, why))?;
-        if cursor.attention.is_some() != cursor.last_examined_key.is_some()
-            || (cursor.attention.is_some() && cursor.scope_revision.is_none())
-        {
-            return Err(api_error(
-                ErrorCode::InvalidCursor,
-                "invalid wake attention continuation",
-            ));
-        }
-    }
     let db = context.open_query(budget.clone())?;
     db.execute_batch("BEGIN DEFERRED")
         .map_err(|e| db.map_error(e))?;
@@ -838,150 +1101,35 @@ fn wake_candidates_page(
         u64::try_from(value)
             .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative seat high water"))?
     };
-    let mut after = cursor.as_ref().map_or(0, |c| c.after_ordinal);
-    let mut pending = cursor
-        .as_ref()
-        .and_then(|c| {
-            c.attention
-                .clone()
-                .zip(c.last_examined_key.clone())
-                .zip(c.scope_revision)
-        })
-        .map(|((state, seat), decision_seq)| {
-            Ok(effective::SeatAttentionPosition::from_cursor_state(
-                seat,
-                due_i64(decision_seq)?,
-                state,
-            ))
-        })
-        .transpose()?;
-    let mut items = Vec::new();
-    let mut item_positions = Vec::new();
-    let mut examined = 0u16;
-    let mut stop = StopReason::Complete;
-    while examined < 100 {
-        if budget.is_exhausted(context.clock()) {
-            return Err(api_error(
-                ErrorCode::ReadBudgetExhausted,
-                "wake discovery budget exhausted",
-            ));
-        }
-        let next:Option<(i64,String)>=db.query_row(
-            "SELECT ordinal,id FROM seats WHERE instance_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT 1",
-            params![instance,due_i64(after)?,due_i64(high_water)?],|r|Ok((r.get(0)?,r.get(1)?)))
-            .optional().map_err(|e|db.map_error(e))?;
-        let Some((ordinal, seat_raw)) = next else {
-            break;
-        };
-        if pending
-            .as_ref()
-            .is_some_and(|position| position.seat_id != seat_raw)
-        {
-            return Err(api_error(
-                ErrorCode::CursorStale,
-                "wake seat continuation changed",
-            ));
-        }
-        let slice = effective::scan_effective_seat_attention(
-            &db,
-            &seat_raw,
-            pending.take(),
-            100 - examined,
-        )?;
-        if slice.has_more && slice.visited == 0 {
-            return Err(api_error(
-                ErrorCode::StoreCorrupt,
-                "wake attention scan made no progress",
-            ));
-        }
-        examined = examined.saturating_add(slice.visited.max(1));
-        if slice.has_more {
-            pending = Some(slice.position);
-            stop = StopReason::Work;
-            break;
-        }
-        let attention = slice.attention.ok_or_else(|| {
-            api_error(
-                ErrorCode::StoreCorrupt,
-                "completed wake scan lacks attention",
-            )
-        })?;
-        let seat = SeatId::new(&seat_raw);
-        let candidate = wake::load_candidate(
-            &db,
-            instance,
-            &seat,
-            &attention,
-            slice.position.decision_seq,
-        )?;
-        let historical: bool = db
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM wake_work WHERE seat_id=?1)",
-                [seat_raw.as_str()],
-                |r| r.get(0),
-            )
-            .map_err(|e| db.map_error(e))?;
-        if candidate.has_actionable_work() || historical {
-            if items.len() >= usize::from(page.limit) {
-                stop = StopReason::Rows;
-                break;
-            }
-            item_positions.push((
-                after,
-                u64::try_from(ordinal)
-                    .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative seat ordinal"))?,
-            ));
-            items.push(candidate);
-        }
-        after = u64::try_from(ordinal)
-            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative seat ordinal"))?;
-    }
-    if (pending.is_some() || after < high_water) && stop == StopReason::Complete {
-        stop = StopReason::Work;
-    }
-    let mut result = wake_page_at(instance, items, after, high_water, pending.as_ref(), stop)?;
-    loop {
-        let measured = internal_page_bytes(&result)?;
-        if measured <= page.max_bytes as usize {
-            return Ok(result);
-        }
-        if result.items.len() <= 1 {
-            if result.items.len() == 1 {
-                let (_, ordinal) = item_positions[0];
-                let single = wake_page_at(
-                    instance,
-                    result.items,
-                    ordinal,
-                    high_water,
-                    None,
-                    StopReason::Bytes,
-                )?;
-                let minimum = internal_page_bytes(&single)?;
-                if minimum <= page.max_bytes as usize {
-                    return Ok(single);
-                }
-                return Err(internal_page_budget_error(
-                    "wake candidate page cannot fit",
-                    minimum,
+    let WakeDiscovery {
+        items,
+        item_positions,
+        after,
+        stop,
+    } = discover_wake_candidates(
+        &db,
+        instance,
+        cursor.as_ref().map_or(0, |c| c.after_ordinal),
+        high_water,
+        usize::from(page.limit),
+        &|| {
+            if budget.is_exhausted(context.clock()) {
+                return Err(api_error(
+                    ErrorCode::ReadBudgetExhausted,
+                    "wake discovery budget exhausted",
                 ));
             }
-            return Err(internal_page_budget_error(
-                "wake candidate page cannot fit",
-                measured,
-            ));
-        }
-        let (before, _) = item_positions.pop().expect("one position per wake item");
-        result.items.pop();
-        after = before;
-        result = wake_page_at(
-            instance,
-            result.items,
-            after,
-            high_water,
-            None,
-            StopReason::Bytes,
-        )?;
-    }
+            Ok(())
+        },
+    )?;
+    page_fit::fit_internal(
+        page.max_bytes as usize,
+        items,
+        &item_positions,
+        |items| wake_page_at(instance, items, after, high_water, stop),
+        |items, before| wake_page_at(instance, items, before, high_water, StopReason::Bytes),
+        "wake candidate page cannot fit",
+    )
 }
 
 impl StorePort for SqliteStore {
@@ -1057,13 +1205,24 @@ impl StorePort for SqliteStore {
         connection: &crate::ports::ServiceConnectionAuthority,
         gate: &dyn crate::ports::ServiceAuthorityGate,
         budget: &CallBudget,
+        admission: Option<&crate::service::fair_writer::FairWriter>,
     ) -> Result<crate::protocol::service::ServiceResult, ApiError> {
         operation
             .validate()
             .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
         if let crate::protocol::service::ServiceOperation::Notify(ref request) = operation {
-            return self.service_notify(request, connection, gate, budget);
+            return self.service_notify_with_admission(
+                request,
+                connection,
+                gate,
+                budget,
+                admission,
+                |_, _| {},
+            );
         }
+        let _turn = admission
+            .map(|lane| lane.enter_foreground(budget, self.context.clock()))
+            .transpose()?;
         let mut writer = self.writer(budget)?;
         service_controls::operate(
             &self.context,
@@ -1075,24 +1234,6 @@ impl StorePort for SqliteStore {
             budget,
             self.settings.invitation_default_ms,
         )
-    }
-
-    fn service_operation_admitted(
-        &self,
-        operation: crate::protocol::service::ServiceOperation,
-        connection: &crate::ports::ServiceConnectionAuthority,
-        gate: &dyn crate::ports::ServiceAuthorityGate,
-        budget: &CallBudget,
-        admission: &crate::service::workers::FairWriter,
-    ) -> Result<crate::protocol::service::ServiceResult, ApiError> {
-        operation
-            .validate()
-            .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
-        if let crate::protocol::service::ServiceOperation::Notify(ref request) = operation {
-            return self.service_notify_admitted(request, connection, gate, budget, admission);
-        }
-        let _turn = admission.enter_foreground(budget, self.context.clock())?;
-        self.service_operation(operation, connection, gate, budget)
     }
 
     fn query(
@@ -1168,16 +1309,12 @@ impl StorePort for SqliteStore {
         permit: MutationPermit,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError> {
-        if permit
-            .cooperative_claim()
-            .is_some_and(|claim| claim.instance != self.instance)
-        {
+        if permit.claim().instance != self.instance {
             return Err(api_error(
                 ErrorCode::CallerUnverified,
                 "cooperative permit instance mismatch",
             ));
         }
-        let seat = permit.seat_for_replay_scope().clone();
         let mut writer = self.writer(budget)?;
         match command {
             PermitMutation::CheckIn(_) => Err(api_error(
@@ -1185,9 +1322,7 @@ impl StorePort for SqliteStore {
                 "check-in requires verified registration and read context",
             )),
             PermitMutation::CreateThread(v) => {
-                control::create_thread(&self.context, &mut writer, budget, &v, permit, |tx, at| {
-                    self.decision_fence(tx, at, &seat, &v.claim.target)
-                })
+                control::create_thread(&self.context, &mut writer, budget, &v, permit)
             }
             PermitMutation::Invite(v) => control::invite(
                 &self.context,
@@ -1195,64 +1330,35 @@ impl StorePort for SqliteStore {
                 budget,
                 &v,
                 permit,
-                |tx, at| self.decision_fence(tx, at, &seat, &v.claim.target),
                 self.settings.invitation_default_ms,
             ),
             PermitMutation::Accept(v) => {
-                control::accept(&self.context, &mut writer, budget, &v, permit, |tx, at| {
-                    self.decision_fence(tx, at, &seat, &v.claim.target)
-                })
+                control::accept(&self.context, &mut writer, budget, &v, permit)
             }
-            PermitMutation::AcceptRequired(v) => control::accept_required(
-                &self.context,
-                &mut writer,
-                budget,
-                &v,
-                permit,
-                |tx, at| self.decision_fence(tx, at, &seat, &v.claim.target),
-            ),
+            PermitMutation::AcceptRequired(v) => {
+                control::accept_required(&self.context, &mut writer, budget, &v, permit)
+            }
             PermitMutation::SendMessage(v) => {
                 let mut permit = permit;
-                messages::publish_send(
-                    &self.context,
-                    &mut writer,
-                    &v,
-                    &mut permit,
-                    budget,
-                    |tx, at| self.decision_fence(tx, at, &seat, &v.claim.target),
-                    || self.settings.message_limits.body_bytes,
-                )
+                messages::publish_send(&self.context, &mut writer, &v, &mut permit, budget, || {
+                    self.settings.message_limits.body_bytes
+                })
             }
             PermitMutation::Ack(v) => {
                 let mut permit = permit;
-                receipts::ack(
-                    &self.context,
-                    &mut writer,
-                    budget,
-                    &v,
-                    &mut permit,
-                    |tx, at| self.decision_fence(tx, at, &seat, &v.claim.target),
-                )
+                receipts::ack(&self.context, &mut writer, budget, &v, &mut permit)
             }
             PermitMutation::Leave(v) => {
-                control::leave(&self.context, &mut writer, budget, &v, permit, |tx, at| {
-                    self.decision_fence(tx, at, &seat, &v.claim.target)
-                })
+                control::leave(&self.context, &mut writer, budget, &v, permit)
             }
             PermitMutation::SetTopic(v) => {
-                control::set_topic(&self.context, &mut writer, budget, &v, permit, |tx, at| {
-                    self.decision_fence(tx, at, &seat, &v.claim.target)
-                })
+                control::set_topic(&self.context, &mut writer, budget, &v, permit)
             }
             PermitMutation::Archive(v) => {
-                control::archive(&self.context, &mut writer, budget, &v, permit, |tx, at| {
-                    self.decision_fence(tx, at, &seat, &v.claim.target)
-                })
+                control::archive(&self.context, &mut writer, budget, &v, permit)
             }
             PermitMutation::Reopen(v) => {
-                control::reopen(&self.context, &mut writer, budget, &v, permit, |tx, at| {
-                    self.decision_fence(tx, at, &seat, &v.claim.target)
-                })
+                control::reopen(&self.context, &mut writer, budget, &v, permit)
             }
         }
     }
@@ -1262,7 +1368,7 @@ impl StorePort for SqliteStore {
         admission: DurableWorkAdmission,
         budget: &CallBudget,
     ) -> Result<SendPreparationProgress, ApiError> {
-        if !request.claim.instance.is_empty() && request.claim.instance != self.instance {
+        if request.claim.instance != self.instance {
             return Err(api_error(
                 ErrorCode::CallerUnverified,
                 "cooperative send instance mismatch",
@@ -1287,15 +1393,6 @@ impl StorePort for SqliteStore {
         let mut writer = self.writer(budget)?;
         messages::abandon_send_preparation(&mut writer, expected_preparation_id)?;
         Ok(())
-    }
-    fn allocate_seat(
-        &self,
-        request: ResolveSeat,
-        guard: OrdinaryAllocationGuard,
-        budget: &CallBudget,
-    ) -> Result<SeatId, ApiError> {
-        let mut writer = self.writer(budget)?;
-        seats::allocate(&self.context, &mut writer, &self.instance, request, guard)
     }
     fn resolve_seat(
         &self,
@@ -1396,25 +1493,22 @@ impl StorePort for SqliteStore {
                 "registration instance mismatch",
             ));
         }
-        if permit.cooperative_claim().is_some_and(|claim| {
-            claim.instance != self.instance || request.command.claim.instance != self.instance
-        }) {
+        if permit.claim().instance != self.instance
+            || request.command.claim.instance != self.instance
+        {
             return Err(api_error(
                 ErrorCode::CallerUnverified,
                 "cooperative registration instance mismatch",
             ));
         }
-        let seat = permit.seat_for_replay_scope().clone();
         let mut writer = self.writer(budget)?;
         let result = seats::register_available(
             &self.context,
             &mut writer,
             &request.command,
-            request.registration.as_ref(),
             request.operator.as_ref(),
-            budget,
             permit,
-            |tx, at| self.decision_fence(tx, at, &seat, &request.command.claim.target),
+            budget,
             |tx, seat, seq| {
                 let _progress = WriterProgressGuard::install(tx, budget, self.context.clock());
                 let page = PageRequest {
@@ -1531,14 +1625,6 @@ impl StorePort for SqliteStore {
             }
             other => other,
         }
-    }
-    fn revoke_registration(
-        &self,
-        evidence: RegistrationRevocation,
-        budget: &CallBudget,
-    ) -> Result<bool, ApiError> {
-        let mut writer = self.writer(budget)?;
-        seats::revoke_registration(&self.context, &mut writer, evidence)
     }
     fn persisted_host_epoch(&self, instance: &str, budget: &CallBudget) -> Result<u64, ApiError> {
         if instance != self.instance {
@@ -1696,6 +1782,9 @@ impl StorePort for SqliteStore {
     ) -> Result<SnapshotCleanupProgress, ApiError> {
         let mut writer = self.writer(budget)?;
         seats::discard_snapshot_stage(&self.context, &mut writer, stage, admission, budget)
+    }
+    fn prune_retention(&self, budget: &CallBudget) -> Result<PruneProgress, ApiError> {
+        retention::prune_once(self, budget)
     }
     fn saved_seats_page(
         &self,
@@ -2021,8 +2110,9 @@ impl StorePort for SqliteStore {
         &self,
         attempt: WakeAttemptId,
         outcome: WakeOutcome,
+        refused_restore: Option<&PriorLadder>,
         budget: &CallBudget,
-    ) -> Result<(), ApiError> {
+    ) -> Result<bool, ApiError> {
         let Some(daemon_boot) = &self.settings.daemon_boot else {
             return Err(api_error(
                 ErrorCode::InvalidRequest,
@@ -2036,11 +2126,21 @@ impl StorePort for SqliteStore {
             &attempt,
             daemon_boot,
             outcome,
+            refused_restore,
             budget,
         )
     }
 }
 
+#[cfg(test)]
+#[path = "../../tests/store/discovery_cost.rs"]
+mod discovery_cost_tests;
+#[cfg(test)]
+#[path = "../../tests/store/page_cursor_seam.rs"]
+mod page_cursor_seam_tests;
+#[cfg(test)]
+#[path = "../../tests/store/page_cursor.rs"]
+mod page_cursor_tests;
 #[cfg(test)]
 #[path = "../../tests/store/facade.rs"]
 mod tests;
@@ -2053,8 +2153,16 @@ mod wake_tests;
 mod writer_budget_tests;
 
 #[cfg(test)]
+#[path = "../../tests/store/commit_kicks.rs"]
+mod commit_kicks_tests;
+
+#[cfg(test)]
 #[path = "../../tests/store/cooperative_checkin.rs"]
 mod cooperative_checkin_tests;
+
+#[cfg(test)]
+#[path = "../../tests/store/wake_discovery_cost.rs"]
+mod discovery_cost;
 
 /// Canonical service-local permit input for every accountable cooperative route.
 /// Accept freezes its current InvitationId inside the issuer, preserving episode

@@ -1,0 +1,196 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-01T06:17:00Z",
+  "canary_commit": "0123456789abcdef0123456789abcdef01234567",
+  "herdr_threads": "0.1.0",
+  "runner": {
+    "os": "linux",
+    "arch": "x86_64"
+  },
+  "inputs": {
+    "harness": "both",
+    "versions": "since-verified",
+    "bisect": true,
+    "model_tier": "auto"
+  },
+  "harnesses": [
+    {
+      "harness": "claude",
+      "package": "@anthropic-ai/claude-code",
+      "verified_max": "2.1.283",
+      "candidates": [
+        "2.1.284"
+      ],
+      "status": "all_pass",
+      "first_bad": null,
+      "last_good": null,
+      "failing_checks": [],
+      "signals": [],
+      "suggested_action": null,
+      "excluded": [],
+      "probes": [
+        {
+          "version": "2.1.284",
+          "role": "newest",
+          "result": "pass",
+          "flaky": false,
+          "attempts": [
+            {
+              "result": "pass",
+              "tier1": false,
+              "duration_ms": 1234,
+              "checks": [
+                {
+                  "id": "t0.version",
+                  "status": "pass",
+                  "detail": "2.1.284 (Claude Code)"
+                },
+                {
+                  "id": "t0.setup",
+                  "status": "pass",
+                  "detail": "installed"
+                },
+                {
+                  "id": "t0.hook-fires",
+                  "status": "pass",
+                  "detail": "SessionStart captured"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "assumes_monotone": false
+    },
+    {
+      "harness": "codex",
+      "package": "@openai/codex",
+      "verified_max": "0.159.3",
+      "candidates": [
+        "0.160.0",
+        "0.160.1"
+      ],
+      "status": "inconclusive",
+      "first_bad": null,
+      "last_good": "0.160.0",
+      "failing_checks": [
+        {
+          "id": "t1.payload-parse",
+          "status": "fail",
+          "detail": "PreToolUse: missing tool_input"
+        }
+      ],
+      "signals": [],
+      "suggested_action": null,
+      "excluded": [],
+      "probes": [
+        {
+          "version": "0.160.1",
+          "role": "newest",
+          "result": "fail",
+          "flaky": false,
+          "attempts": [
+            {
+              "result": "fail",
+              "tier1": true,
+              "duration_ms": 1234,
+              "checks": [
+                {
+                  "id": "t1.payload-parse",
+                  "status": "fail",
+                  "detail": "PreToolUse: missing tool_input"
+                }
+              ]
+            },
+            {
+              "result": "fail",
+              "tier1": true,
+              "duration_ms": 1241,
+              "checks": [
+                {
+                  "id": "t1.payload-parse",
+                  "status": "fail",
+                  "detail": "PreToolUse: missing tool_input"
+                }
+              ]
+            },
+            {
+              "result": "fail",
+              "tier1": true,
+              "duration_ms": 1248,
+              "checks": [
+                {
+                  "id": "t1.payload-parse",
+                  "status": "fail",
+                  "detail": "PreToolUse: missing tool_input"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "version": "0.160.0",
+          "role": "search",
+          "result": "pass",
+          "flaky": false,
+          "attempts": [
+            {
+              "result": "pass",
+              "tier1": false,
+              "duration_ms": 1234,
+              "checks": [
+                {
+                  "id": "t0.version",
+                  "status": "pass",
+                  "detail": "2.1.284 (Claude Code)"
+                },
+                {
+                  "id": "t0.setup",
+                  "status": "pass",
+                  "detail": "installed"
+                },
+                {
+                  "id": "t0.hook-fires",
+                  "status": "pass",
+                  "detail": "SessionStart captured"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "version": "0.160.1",
+          "role": "confirm",
+          "result": "pass",
+          "flaky": false,
+          "attempts": [
+            {
+              "result": "pass",
+              "tier1": false,
+              "duration_ms": 1234,
+              "checks": [
+                {
+                  "id": "t0.version",
+                  "status": "pass",
+                  "detail": "2.1.284 (Claude Code)"
+                },
+                {
+                  "id": "t0.setup",
+                  "status": "pass",
+                  "detail": "installed"
+                },
+                {
+                  "id": "t0.hook-fires",
+                  "status": "pass",
+                  "detail": "SessionStart captured"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "assumes_monotone": false
+    }
+  ],
+  "exit_code": 1
+}

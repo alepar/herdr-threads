@@ -1,0 +1,20 @@
+{
+  "harness": "codex",
+  "scenario": "child",
+  "db": {
+    "messages": [
+      {
+        "id": "msg-1",
+        "seq": 5,
+        "acked": true
+      }
+    ],
+    "invitations": [
+      {
+        "id": "inv-1",
+        "seq": 3,
+        "state": "accepted"
+      }
+    ]
+  }
+}

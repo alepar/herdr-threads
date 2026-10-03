@@ -105,8 +105,10 @@ fn complete(store: &SqliteStore, budget: &CallBudget) -> Result<(), ApiError> {
         store,
         WakeAttemptId::new("attempt"),
         WakeOutcome::Submitted,
+        None,
         budget,
     )
+    .map(|_| ())
 }
 fn blocked_completion(in_process: bool, cancel: bool) {
     // Break caught: an unconditional writer lock or fixed SQLite busy timeout.

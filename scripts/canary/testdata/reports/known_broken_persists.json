@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-01T06:17:00Z",
+  "canary_commit": "0123456789abcdef0123456789abcdef01234567",
+  "herdr_threads": "0.1.0",
+  "runner": {
+    "os": "linux",
+    "arch": "x86_64"
+  },
+  "inputs": {
+    "harness": "both",
+    "versions": "since-verified",
+    "bisect": true,
+    "model_tier": "auto"
+  },
+  "harnesses": [
+    {
+      "harness": "claude",
+      "package": "@anthropic-ai/claude-code",
+      "verified_max": "2.1.283",
+      "candidates": [
+        "2.1.284"
+      ],
+      "status": "known_broken_persists",
+      "first_bad": null,
+      "last_good": null,
+      "failing_checks": [
+        {
+          "id": "t0.hook-fires",
+          "status": "fail",
+          "detail": "still broken"
+        }
+      ],
+      "signals": [],
+      "suggested_action": null,
+      "excluded": [
+        "2.1.283"
+      ],
+      "probes": [
+        {
+          "version": "2.1.284",
+          "role": "newest",
+          "result": "fail",
+          "flaky": false,
+          "attempts": [
+            {
+              "result": "fail",
+              "tier1": false,
+              "duration_ms": 1234,
+              "checks": [
+                {
+                  "id": "t0.version",
+                  "status": "pass",
+                  "detail": "2.1.285 (Claude Code)"
+                },
+                {
+                  "id": "t0.setup",
+                  "status": "pass",
+                  "detail": "installed"
+                },
+                {
+                  "id": "t0.hook-fires",
+                  "status": "fail",
+                  "detail": "line 1: PreToolUse payload missing tool_input\nline 2: PreToolUse payload missing tool_input\nline 3: PreToolUse payload missing tool_input\nline 4: PreToolUse payload missing tool_input\nline 5: PreToolUse payload missing tool_input\nline 6: PreToolUse payload missing tool_input\nline 7: PreToolUse payload missing tool_input\nline 8: PreToolUse payload missing tool_input\nline 9: PreToolUse payload missing tool_input\nline 10: PreToolUse payload missing tool_input\nline 11: PreToolUse payload missing tool_input\nline 12: PreToolUse payload missing tool_input\nline 13: PreToolUse payload missing tool_input\nline 14: PreToolUse payload missing tool_input\nline 15: PreToolUse payload missing tool_input\nline 16: PreToolUse payload missing tool_input\nline 17: PreToolUse payload missing tool_input\nline 18: PreToolUse payload missing tool_input\nline 19: PreToolUse payload missing tool_input\nline 20: PreToolUse payload missing tool_input\nline 21: PreToolUse payload missing tool_input\nline 22: PreToolUse payload missing tool_input\nline 23: PreToolUse payload missing tool_input\nline 24: PreToolUse payload missing tool_input\nline 25: PreToolUse payload missing tool_input\nline 26: PreToolUse payload missing tool_input\nline 27: PreToolUse payload missing tool_input\nline 28: PreToolUse payload missing tool_input\nline 29: PreToolUse payload missing tool_input\nline 30: PreToolUse payload missing tool_input\nline 31: PreToolUse payload missing tool_input\nline 32: PreToolUse payload missing tool_input\nline 33: PreToolUse payload missing tool_input\nline 34: PreToolUse payload missing tool_input\nline 35: PreToolUse payload missing tool_input\nline 36: PreToolUse payload missing tool_input\nline 37: PreToolUse payload missing tool_input\nline 38: PreToolUse payload missing tool_input\nline 39: PreToolUse payload missing tool_input\nline 40: PreToolUse payload missing tool_input\nline 41: PreToolUse payload missing tool_input\nline 42: PreToolUse payload missing tool_input\nline 43: PreToolUse payload missing tool_input\nline 44: PreToolUse payload missing tool_input\nline 45: PreToolUse payload missing tool_input\nline 46: PreToolUse payload missing tool_input\nline 47: PreToolUse payload missing tool_input\nline 48: PreToolUse payload missing tool_input\nline 49: PreToolUse payload missing tool_input\nline 50: PreToolUse payload missing tool_input\nline 51: PreToolUse payload missing tool_input\nline 52: PreToolUse payload missing tool_input\nline 53: PreToolUse payload missing tool_input\nline 54: PreToolUse payload missing tool_input\nline 55: PreToolUse payload missing tool_input\nline 56: PreToolUse payload missing tool_input\nline 57: PreToolUse payload missing tool_input\nline 58: PreToolUse payload missing tool_input\nline 59: PreToolUse payload missing tool_input\nline 60: PreToolUse payload missing tool_input"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "assumes_monotone": false
+    }
+  ],
+  "exit_code": 0
+}

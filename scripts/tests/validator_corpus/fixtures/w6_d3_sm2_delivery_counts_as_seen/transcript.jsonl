@@ -1,0 +1,1 @@
+{"type": "assistant", "parent_tool_use_id": null, "message": {"content": [{"type": "tool_use", "id": "toolu_first", "name": "Bash", "input": {"command": "herdr-threads inbox"}}]}}

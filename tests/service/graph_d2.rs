@@ -102,12 +102,7 @@ impl PausedHost {
         while !self.0.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_millis(5));
         }
-        Err(ApiError {
-            code: ErrorCode::Cancelled,
-            detail: "fixture host released".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        })
+        Err(ApiError::cancelled("fixture host released"))
     }
 }
 impl HostPort for PausedHost {
@@ -129,12 +124,6 @@ impl HostPort for PausedHost {
         self.wait()?;
         unreachable!()
     }
-    fn subscribe_lifecycle(
-        &self,
-        _: &herdr_threads::ports::HostCallContext,
-    ) -> Result<Box<dyn herdr_threads::ports::HostLifecycleSubscription>, ApiError> {
-        unreachable!()
-    }
     fn safe_wake_target(
         &self,
         _: &SeatId,
@@ -150,12 +139,28 @@ impl HostPort for PausedHost {
     ) -> Result<herdr_threads::ports::PromptOutcome, ApiError> {
         unreachable!()
     }
+    fn pane_agent_state(
+        &self,
+        _target: &herdr_threads::ports::SafeWakeTarget,
+        _context: &herdr_threads::ports::HostCallContext,
+    ) -> Result<herdr_threads::ports::AgentComposerState, herdr_threads::protocol::results::ApiError>
+    {
+        Ok(herdr_threads::ports::AgentComposerState::Submitted)
+    }
+
     fn launch_native(
         &self,
         _: herdr_threads::ports::NativeLaunchRequest,
         _: &herdr_threads::ports::HostCallContext,
     ) -> Result<herdr_threads::ports::NativeLaunchOutcome, ApiError> {
         unreachable!()
+    }
+    fn send_submit_key(
+        &self,
+        _: &herdr_threads::ports::SafeWakeTarget,
+        _: &herdr_threads::ports::HostCallContext,
+    ) -> Result<(), herdr_threads::protocol::results::ApiError> {
+        Ok(())
     }
 }
 struct Daemon {

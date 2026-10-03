@@ -12,18 +12,42 @@
 //! as a visible escape so it cannot drive the terminal.
 
 use crate::protocol::{
-    output::{OutputSpec, format_command_argv, selected_result},
+    ids::ThreadId,
+    output::{OutputSpec, detail_argv, format_command_argv, selected_result},
     pagination::Page,
     results::{
-        AckResult, CheckInResult, CommandResult, InboxItem, MembershipStatus, MessageContent,
-        MessageDetails, MessageKind, MessageSummary, Participant, PendingReceipt, SearchHit,
-        ThreadDetails, ThreadSummary,
+        AckResult, CheckInContextDisposition, CheckInResult, CommandResult, InboxItem,
+        MembershipStatus, MessageContent, MessageDetails, MessageKind, MessageSummary, Participant,
+        PendingReceipt, SearchHit, ThreadDetails, ThreadSummary,
     },
     service::EventAuthor,
     time::UtcMillis,
 };
+use crate::view::escape::{Context, display_width, escape_for_terminal, pad_to_width};
+use std::{cell::RefCell, collections::HashMap};
 
 const TOPIC_COLUMN: usize = 48;
+
+/// Thread topics known to the inbox renderer: `thread -> (topic, clipped)`.
+type InboxTopics = HashMap<ThreadId, (String, bool)>;
+
+thread_local! {
+    static INBOX_TOPICS: RefCell<Option<InboxTopics>> = const { RefCell::new(None) };
+}
+
+/// Run `f` with `topics` available to the human inbox renderer, which then
+/// adds a TOPIC column (a thread not in the map shows `-`). The wire inbox
+/// carries no topic, so the CLI reads them separately for a person only.
+pub fn with_inbox_topics<T>(topics: InboxTopics, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<InboxTopics>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            INBOX_TOPICS.with(|cell| *cell.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(INBOX_TOPICS.with(|cell| cell.borrow_mut().replace(topics)));
+    f()
+}
 
 /// Render a result for a person at a terminal. Returns `None` for result
 /// kinds without a dedicated human form; callers then emit the machine text.
@@ -31,7 +55,7 @@ pub fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String> {
     let selected = selected_result(result, spec);
     let mut out = String::new();
     match &selected {
-        CommandResult::Inbox(page) => inbox(page, &mut out),
+        CommandResult::Inbox(page) => inbox(page, spec, &mut out),
         CommandResult::Directory(page) => directory(page, &mut out),
         CommandResult::History(page) => transcript(page, &mut out),
         CommandResult::Thread(details) => thread(details, &mut out),
@@ -57,7 +81,7 @@ pub fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String> {
             }
             more(&search.matches, &mut out);
         }
-        CommandResult::CheckedIn(check) => checked_in(check, &mut out),
+        CommandResult::CheckedIn(check) => checked_in(check, spec, &mut out),
         CommandResult::SeatResolved(seat) => {
             out.push_str(&format!("You are seat {}.\n", seat.as_str()))
         }
@@ -118,32 +142,71 @@ pub fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String> {
     Some(out)
 }
 
-fn inbox(page: &Page<InboxItem>, out: &mut String) {
+fn inbox(page: &Page<InboxItem>, spec: &OutputSpec, out: &mut String) {
     if page.items.is_empty() {
         out.push_str("Inbox is empty.\n");
         more(page, out);
         return;
     }
-    let rows: Vec<Vec<String>> = page
-        .items
-        .iter()
-        .map(|item| {
-            vec![
-                item.thread.as_str().to_owned(),
-                count(item.pending_receipts, item.pending_receipts_has_more),
-                count(item.invitations, item.invitations_has_more),
-                count(item.warnings, item.warnings_has_more),
-                item.pending_requirement
-                    .as_ref()
-                    .map_or_else(|| "-".to_owned(), |_| "required".to_owned()),
-            ]
-        })
-        .collect();
-    table(
-        &["THREAD", "PENDING", "INVITATIONS", "WARNINGS", "MEMBERSHIP"],
-        &rows,
-        out,
-    );
+    INBOX_TOPICS.with(|cell| {
+        let topics = cell.borrow();
+        let rows: Vec<Vec<String>> = page
+            .items
+            .iter()
+            .map(|item| {
+                let mut row = vec![item.thread.as_str().to_owned()];
+                if let Some(topics) = topics.as_ref() {
+                    row.push(topics.get(&item.thread).map_or_else(
+                        || "-".to_owned(),
+                        |(topic, omitted)| one_line(topic, *omitted, TOPIC_COLUMN),
+                    ));
+                }
+                row.extend([
+                    count(item.pending_receipts, item.pending_receipts_has_more),
+                    count(item.invitations, item.invitations_has_more),
+                    count(item.warnings, item.warnings_has_more),
+                    item.pending_requirement.as_ref().map_or_else(
+                        || "-".to_owned(),
+                        |required| {
+                            format!(
+                                "required inv={} rev={}",
+                                required.invitation.as_str(),
+                                required.revision
+                            )
+                        },
+                    ),
+                ]);
+                row
+            })
+            .collect();
+        let mut headers = vec!["THREAD"];
+        if topics.is_some() {
+            headers.push("TOPIC");
+        }
+        headers.extend(["PENDING", "INVITATIONS", "WARNINGS", "MEMBERSHIP"]);
+        table(&headers, &rows, out);
+    });
+    for item in &page.items {
+        if let Some(required) = &item.pending_requirement {
+            let revision = required.revision.to_string();
+            out.push_str(&format!(
+                "accept-required: {}\n",
+                format_command_argv(&detail_argv(
+                    spec,
+                    &[
+                        "accept-required",
+                        item.thread.as_str(),
+                        "--invitation",
+                        required.invitation.as_str(),
+                        "--requirement",
+                        required.requirement.as_str(),
+                        "--revision",
+                        &revision,
+                    ],
+                ))
+            ));
+        }
+    }
     more(page, out);
 }
 
@@ -367,19 +430,52 @@ fn pending(page: &Page<PendingReceipt>, out: &mut String) {
     more(page, out);
 }
 
-fn checked_in(check: &CheckInResult, out: &mut String) {
+fn checked_in(check: &CheckInResult, spec: &OutputSpec, out: &mut String) {
     out.push_str(&format!("Checked in as seat {}.\n", check.seat.as_str()));
+    let disposition = match check.context_disposition {
+        CheckInContextDisposition::Current => "current",
+        CheckInContextDisposition::Historical => "historical",
+    };
+    out.push_str(&format!("Context: {disposition}"));
+    if let Some(through) = &check.offered_through {
+        out.push_str(&format!(
+            ", offered through {}",
+            one_line(through, false, usize::MAX)
+        ));
+    }
+    out.push('\n');
     if check.warning_count > 0 || check.warning_count_has_more {
         out.push_str(&format!(
             "Warnings: {}\n",
             count(check.warning_count, check.warning_count_has_more)
         ));
     }
+    if !check.warnings.items.is_empty() || check.warnings.has_more {
+        out.push_str("Warning history:\n");
+        for warning in &check.warnings.items {
+            out.push_str(&format!(
+                "  {} {}#{}\n",
+                warning.warning.as_str(),
+                warning.thread.as_str(),
+                warning.sequence
+            ));
+        }
+        more(&check.warnings, out);
+    }
     if let Some(notices) = check.notices.summary() {
         out.push_str(&notices);
         out.push('\n');
     }
-    inbox(&check.inbox, out);
+    if check.notices.has_more {
+        out.push_str(&format!(
+            "notices.more: {}\n",
+            format_command_argv(&detail_argv(
+                spec,
+                &["warnings", "--seat", check.seat.as_str()]
+            ))
+        ));
+    }
+    inbox(&check.inbox, spec, out);
 }
 
 fn acknowledged(ack: &AckResult, out: &mut String) {
@@ -433,19 +529,19 @@ fn count(value: u64, has_more: bool) -> String {
 }
 
 fn table(headers: &[&str], rows: &[Vec<String>], out: &mut String) {
-    let mut widths: Vec<usize> = headers.iter().map(|h| h.chars().count()).collect();
+    let mut widths: Vec<usize> = headers.iter().map(|h| display_width(h)).collect();
     for row in rows {
         for (index, cell) in row.iter().enumerate() {
-            widths[index] = widths[index].max(cell.chars().count());
+            widths[index] = widths[index].max(display_width(cell));
         }
     }
     let line = |cells: Vec<&str>, out: &mut String| {
         let last = cells.len() - 1;
         for (index, cell) in cells.into_iter().enumerate() {
-            out.push_str(cell);
             if index < last {
-                let pad = widths[index] - cell.chars().count() + 2;
-                out.extend(std::iter::repeat_n(' ', pad));
+                out.push_str(&pad_to_width(cell, widths[index] + 2));
+            } else {
+                out.push_str(cell);
             }
         }
         out.push('\n');
@@ -453,23 +549,6 @@ fn table(headers: &[&str], rows: &[Vec<String>], out: &mut String) {
     line(headers.to_vec(), out);
     for row in rows {
         line(row.iter().map(String::as_str).collect(), out);
-    }
-}
-
-fn is_unsafe(ch: char) -> bool {
-    ch.is_control()
-        || matches!(
-            ch,
-            '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-        )
-}
-
-fn push_escaped(ch: char, out: &mut String) {
-    match ch {
-        '\n' => out.push_str("\\n"),
-        '\r' => out.push_str("\\r"),
-        '\t' => out.push_str("\\t"),
-        ch => out.push_str(&format!("\\u{{{:04x}}}", ch as u32)),
     }
 }
 
@@ -482,11 +561,11 @@ pub(crate) fn one_line(text: &str, omitted: bool, max: usize) -> String {
             out.push('…');
             return out;
         }
-        if is_unsafe(ch) {
-            push_escaped(ch, &mut out);
-        } else {
-            out.push(ch);
-        }
+        let mut buffer = [0; 4];
+        out.push_str(&escape_for_terminal(
+            ch.encode_utf8(&mut buffer),
+            Context::SingleLine,
+        ));
     }
     if omitted {
         out.push('…');
@@ -496,15 +575,7 @@ pub(crate) fn one_line(text: &str, omitted: bool, max: usize) -> String {
 
 /// Body text keeps its line breaks and tabs; every other control is escaped.
 pub(crate) fn multi_line(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for ch in text.chars() {
-        if ch == '\n' || ch == '\t' || !is_unsafe(ch) {
-            out.push(ch);
-        } else {
-            push_escaped(ch, &mut out);
-        }
-    }
-    out
+    escape_for_terminal(text, Context::MultiLine).into_owned()
 }
 
 /// `YYYY-MM-DD HH:MMZ` (UTC) for a Unix-millisecond timestamp.
@@ -532,3 +603,7 @@ fn timestamp(at: UtcMillis) -> String {
 #[cfg(test)]
 #[path = "../../tests/cli/human.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/cli/golden_contract.rs"]
+mod golden_contract;

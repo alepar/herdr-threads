@@ -56,6 +56,10 @@ pub enum CliAction {
     },
     /// Print the embedded agent skill (`skill` or `--skill`); local only.
     Skill,
+    /// Hidden `internal json-field PATH`: print a field of the JSON on stdin.
+    InternalJsonField {
+        path: String,
+    },
     /// `read THREAD --follow`: recent messages, then each new one as it is
     /// committed. Read-only: never ACKs or accepts.
     Follow(FollowRequest),
@@ -106,12 +110,7 @@ pub trait CliBackend {
         _action: LocalAction,
         _output: &OutputSpec,
     ) -> Result<CommandResult, ApiError> {
-        Err(ApiError {
-            code: ErrorCode::Unsupported,
-            detail: "local command backend unavailable".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        })
+        Err(ApiError::unsupported("local command backend unavailable"))
     }
 }
 
@@ -148,13 +147,11 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::Launch(_)
         | CliAction::MeInit { .. }
         | CliAction::Skill
+        | CliAction::InternalJsonField { .. }
         | CliAction::Follow(_) => {
-            return Err(ApiError {
-                code: ErrorCode::Unsupported,
-                detail: "setup and launch are local compositions without a backend".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
+            return Err(ApiError::unsupported(
+                "setup, launch and skill are local compositions without a daemon backend",
+            ));
         }
     };
     backend.call(command, &parsed.output)
@@ -371,7 +368,7 @@ impl MutationSpec {
 #[command(
     name = "herdr-threads",
     version,
-    after_help = format!("{EXIT_STATUS_HELP}\n\n{}", super::skill::AI_HELP_FOOTER),
+    after_help = format!("{}\n\n{}", exit_status_help(), super::skill::AI_HELP_FOOTER),
     about = "Read threads and explicitly ACK exact message IDs. Accept invitations separately. Optional cheap subagents can summarize recent or full history without ACK authority."
 )]
 struct Cli {
@@ -477,7 +474,9 @@ enum Top {
     /// Claude: `$CLAUDE_CONFIG_DIR/settings.json` (hooks and allow rule).
     /// Codex: `$CODEX_HOME/hooks.json` plus the sandbox socket allowance in
     /// `$CODEX_HOME/config.toml`. Ownership manifests stay private in the
-    /// plugin state. Refuses a harness version no adapter recipe covers.
+    /// plugin state. Refuses a harness version that is unparsable,
+    /// known broken or older than every recipe; a newer unlisted version is
+    /// admitted optimistically.
     #[command(after_help = super::setup::SETUP_HELP)]
     Setup(SetupArgs),
     /// Remove the owned herdr-threads hooks installed by `setup`, keeping
@@ -507,6 +506,18 @@ enum Top {
     /// Also available as `--skill`. Local only; never contacts the daemon.
     #[command(long_flag = "skill")]
     Skill,
+    /// Helpers for scripts/install.sh; not part of the public interface.
+    #[command(hide = true)]
+    Internal {
+        #[command(subcommand)]
+        command: InternalSub,
+    },
+}
+
+#[derive(Subcommand)]
+enum InternalSub {
+    /// Read JSON on stdin and print the value at a dotted path (exit 1 when absent).
+    JsonField { path: String },
 }
 
 #[derive(Subcommand)]
@@ -822,12 +833,7 @@ fn setup_action(verb: super::setup::SetupVerb, args: SetupArgs) -> Result<CliAct
 }
 
 fn invalid(detail: impl Into<String>) -> ApiError {
-    ApiError {
-        code: ErrorCode::InvalidRequest,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::invalid_request(detail)
 }
 fn validation_error(detail: &'static str) -> ApiError {
     let code = if detail.contains("cursor") {
@@ -837,12 +843,7 @@ fn validation_error(detail: &'static str) -> ApiError {
     } else {
         ErrorCode::InvalidRequest
     };
-    ApiError {
-        code,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::new(code, detail)
 }
 fn id<T>(
     value: String,
@@ -905,14 +906,27 @@ fn deadline(seconds: Option<u64>) -> Result<Option<u64>, ApiError> {
 
 /// Exit statuses are part of the CLI contract; `cli::RunError::exit_code`
 /// implements this table.
-pub const EXIT_STATUS_HELP: &str = "Exit status:
+pub fn exit_status_help() -> String {
+    format!(
+        "Exit status:
   0  success (a reachable but degraded daemon still counts as success for `daemon ensure`)
   1  the request failed (not found, conflict, unauthorized, stale state, ...)
   2  invalid arguments or invalid local context
-  3  daemon or host unavailable; run `herdr-threads daemon ensure` and retry
+  3  daemon or host unavailable; {}
+     (version mismatch: {})
   4  unsupported capability in this build or environment (including transport_denied:
      a sandbox refused the daemon socket; see `herdr-threads setup codex`)
-  5  outcome unknown; inspect `herdr-threads pending-ops` and `retry` the local reference";
+  5  outcome unknown; inspect `herdr-threads pending-ops` and `retry` the local reference",
+        crate::daemon::remedy::remedy(
+            Some(crate::protocol::results::ErrorClass::Unavailable),
+            &crate::daemon::remedy::RemedyContext::Exit3
+        ),
+        crate::daemon::remedy::remedy(
+            Some(crate::protocol::results::ErrorClass::VersionSkew),
+            &crate::daemon::remedy::RemedyContext::Exit3
+        )
+    )
+}
 
 /// Parser outcome that is not a command: help or version text requested by
 /// the caller. It is printed to stdout and exits successfully.
@@ -1211,6 +1225,7 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
                 thread: thread_id(args.thread)?,
                 page,
                 initial,
+                full_bodies: false,
             }))
         }
         Top::Body(args) => CliAction::Wire(WireCommand::Message(MessageQuery {
@@ -1359,6 +1374,9 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
         }
         Top::PendingOps(args) => CliAction::PendingOps(page(args)?),
         Top::Skill => CliAction::Skill,
+        Top::Internal {
+            command: InternalSub::JsonField { path },
+        } => CliAction::InternalJsonField { path },
         Top::Retry { recovery_ref } => CliAction::Retry(id(recovery_ref, LocalRecoveryRef::parse)?),
         Top::View(args) => CliAction::View {
             once: args.once,

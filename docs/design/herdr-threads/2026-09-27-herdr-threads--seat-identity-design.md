@@ -73,7 +73,10 @@ Every accountable native command, including registration/checkpoint, content/mem
 
 1. Validate the versioned native invocation evidence, root/execution identity and expiry with bounded work outside the writer. Reject child, missing, unknown and unsupported shapes.
 2. Initiate a new target read after this request arrives. Startup registration, a periodic snapshot and an unexpired invocation context cannot replace this read. Match host incarnation, explicit terminal, native root and actual execution to the claim. Reconcile a detected replacement before evaluating its predecessor; mismatch returns `stale_occupant`, missing/ambiguous/hung freshness returns `identity_unavailable`, both uncommitted.
+> **Superseded (2026-10, ht-p03.2 / B4):** the adversarial verification layer described here was removed; see "Cooperative reality (2026-10)".
+
 3. Mint internal nonserializable `MutationPermit { request_id, payload_digest, boot_id, epoch, observation_seq, seat, binding_generation, root, execution, observed_at, expires_at }`, bound once to this payload. Expiry is at most 250 ms after read completion and no later than invocation/request expiry.
+<!-- end superseded -->
 4. Retain the observation lane until this decision applies or discards, while submitting a short transaction to the domain writer. After queue/lock/preparation waits, at StorePort's transaction decision recheck permit expiry, boot/epoch, binding generation and known invalidation. A known change before that point rejects. No host wait occurs inside the transaction. Expired permits reject without mutation; a subsequent retry retains the operation key and obtains new evidence.
 
 The authorization observation point is the actual fresh host/native view used in step 2. For a successful operation, the caller was current at that point and passed the internal fences at the transaction decision. Record that observation identity/time with actor provenance separately from the transaction's `decision_at`. A replacement visible before the fresh read rejects even when its event was silently lost and stored generation was previously unchanged. An event/invalidation learned after the read but before decision also rejects. Without a host expected-session guard, a replacement after the read that remains unobserved can occur before decision/SQLite COMMIT; this bounded observation gap is not an atomic native-current-at-COMMIT guarantee. A permitted operation retains the original observed caller, never attributes it to the successor. If stronger physical-commit authority is required, host support is required before claiming it.
@@ -108,7 +111,10 @@ There are exactly five typed administrative domain actions (the last two added b
 - `seat retire SEAT --operator`: abandon a seat explicitly (trust policy C3). Uses the ordinary bounded retirement cutover; obligations settle as recipient-retired.
 - `seat rebind OLD --pane ADDRESS --replace NEW --operator`: abandon the new role NEW that occupies ADDRESS and rebind OLD onto it in one decision. NEW retires; nothing moves from NEW to OLD.
 
+> **Superseded (2026-10, ht-p03.2 / B4):** the adversarial verification layer described here was removed; see "Cooperative reality (2026-10)". The operator actions above (including the B5 `seat retire` and `seat rebind --replace` repairs) remain current; [TRUST-POLICY.md](../../../TRUST-POLICY.md) is normative for them.
+
 No operator ACK, accept, send, joined-seat control or checkpoint advancement exists. Missing explicit administrative mode on repair/fresh-role override returns `operator_required`. Ordinary joined-seat invitations continue to require native authority. Target rebind/fresh allocation uses the fresh observation lane and internal decision guards without requiring a native recipient (the target may be empty). Service-side allocation/repair permits are distinct from native MutationPermit and cannot authorize receipt/content actions. Corrected P11 pairs the operator command instance/target with its non-wire fresh guard and consumes against matching instance/target, boot/epoch/generation, invalidation, expiry and single-use fences; durable ownership/recovery-hold checks remain in the deciding transaction. Preserve stable operation keys and original operator provenance after response-loss replay.
+<!-- end superseded -->
 
 ## Restore holds (F6 resolved 2026-10-01)
 
@@ -122,7 +128,10 @@ Never merge colliding seats or use a hold as proof of lineage. Keep all-target a
 
 ## Decomposition and acceptance
 
+> **Superseded (2026-10, ht-p03.2 / B4):** the adversarial verification layer described here was removed; see "Cooperative reality (2026-10)".
+
 The host adapter owns bounded calls and observation/incarnation capability evidence. Reconciliation owns ordered observations, lazy allocation/holds and typed StorePort transitions. CallerVerifier owns recipe validation and internal native permits. Identity facade owns check-in, local resolve and administrative routing. Shared contracts expose distinct target safety, proof, peer identity and permit types; no client actor object deserializes into authority.
+<!-- end superseded -->
 
 Tests retain rename/reorder/move, native restart/clear/resume/compaction, socket denial, retirement and isolated restore coverage. Add connected hung snapshot/target/prompt, bounded cancellation and late-epoch discard; delayed snapshot versus new target read, duplicate/stale events and silent lost replacement; unknown/incoherent snapshot cannot retire. Verify old generation never returns.
 
@@ -139,6 +148,16 @@ Allocation/repair tests cover empty-pane prelaunch resolve without native proof;
 ## Shared-contract adoption record
 
 2026-09-27: Reconciled this canonical spec with the adopted revision-4 shared contract. Detailed normative algorithms/types and preserved revision responses are in the [adopted shared-contract amendment, revision 4](shared-contract-amendment-adopted.md). This is specification work before the next formal design review; no source implementation or native-support completion is asserted.
+
+## Cooperative reality (2026-10)
+
+- **Check-in creates and binds the seat.** The pane's top-level agent checks in through its hook; `register_available` binds the seat to the observed target and records availability. Ordinary resolution (`seat resolve`, `launch`, `me init`) allocates a seat through `resolve_seat` and the recovery-hold rules; the guarded allocation path (recovery-baseline guard) is removed.
+- **Accept and ACK are claims.** A model-issued accept or ACK is recorded as `cooperative_top_level`; no per-request native execution proof, native permit or 250 ms permit window exists.
+- **Continuity is `ReconfirmStructure` only.** The planner emits `ReconfirmStructure`, `Move`, `MarkUnresolved` and `BeginRetirement`. The occupant-unavailable action, the proven-empty-shell bridge, reconfirmation from execution evidence and `Replace` (P10) are removed. A restored seat gets a registration only from its next lifecycle check-in at the new generation.
+- **Holds and operator repair are unchanged.** Recovery holds, `seat rebind`, `seat resolve --new-seat`, `seat retire` and `invite --operator` keep their fresh-observation guards (`OperatorTargetGuard`, which keeps its decision fence). Registration revocation from trusted host loss was never wired in production and is removed; host invalidation marks the seat unresolved instead.
+- **Pane names are a lookup aid.** `--pane` takes a pane ID or a unique pane/tab name resolved once from one host snapshot (`src/cli/panes.rs`); only pane IDs reach the service. See the caller attribution design for how `self` and the ready-command rank use the resolved seat.
+
+Decision record: [root spec §B4](remaining-findings/2026-10-01-remaining-herdr-threads-findings-design.md#b4-remove-the-pre-cooperative-verification-layer) (ht-p03.2 deleted the code, ht-p03.5 rewrote these docs). Normative trust rules: `TRUST-POLICY.md` (branch `trust-model-invariants`), which supersedes any text above that requires adversarial proof of who is calling. Text above that describes the removed layer stays for history and is marked superseded where it names a removed symbol.
 
 ## Post-Implementation Notes
 

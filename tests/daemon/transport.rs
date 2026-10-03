@@ -37,7 +37,7 @@ fn guarded_listener() -> (
     let root = std::env::temp_dir().join(format!("herdr-ipc-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let host = std::env::temp_dir().join("herdr-ipc-host-placeholder.sock");
+    let host = root.join("host-placeholder.sock");
     let context = RuntimeContext::explicit(root.clone(), host, None).unwrap();
     let paths = InstancePaths::resolve(&context).unwrap();
     let owner = OwnerLock::acquire(&paths).unwrap();
@@ -72,6 +72,12 @@ struct HeldStopService {
     boot: String,
 }
 impl LocalService for HeldStopService {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        service_operation,
+        handle_with_output
+    );
     fn handle(
         &self,
         command: Command,
@@ -156,6 +162,12 @@ async fn admitted_stop_returns_correlated_acceptance_after_shutdown_cancellation
 
 struct RejectOtherService;
 impl LocalService for RejectOtherService {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        service_operation,
+        handle_with_output
+    );
     fn handle(
         &self,
         _: Command,
@@ -374,6 +386,12 @@ impl Clock for TestClock {
 }
 struct CountingService(AtomicUsize, String, String);
 impl LocalService for CountingService {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        service_operation,
+        handle_with_output
+    );
     fn handle(
         &self,
         _: Command,
@@ -411,13 +429,37 @@ async fn malformed_requests_do_not_reach_service_and_peer_uid_is_kernel_supplied
     ));
     for bytes in [
         b"not json".to_vec(),
-        format!(r#"{{"version":{},"request_id":"r","expected_instance":"{}","command":{{"kind":"health"}}}}"#, PROTOCOL_VERSION + 1, instance_id(&instance)).into_bytes(),
         format!(r#"{{"version":{},"request_id":"r","expected_instance":"{}","operator_actor":"forged","command":{{"kind":"health"}}}}"#, PROTOCOL_VERSION, instance_id(&instance)).into_bytes(),
     ] {
         let mut stream = UnixStream::connect(&path).await.unwrap();
         write_frame(&mut stream, &bytes).await.unwrap();
         assert!(read_frame(&mut stream).await.is_err());
     }
+    // A request of another wire version never reaches the service either, but
+    // it is answered with a decodable skew error instead of a closed socket
+    // (ht-p03.10); the real release skew pair is a protocol-1 client against
+    // this protocol-2 daemon. An invalid request id is still just closed.
+    let mut other = UnixStream::connect(&path).await.unwrap();
+    let skewed = format!(
+        r#"{{"version":1,"request_id":"r","expected_instance":"{}","command":{{"kind":"health"}}}}"#,
+        instance_id(&instance)
+    );
+    write_frame(&mut other, skewed.as_bytes()).await.unwrap();
+    let reply: WireResponse =
+        serde_json::from_slice(&read_frame(&mut other).await.unwrap()).unwrap();
+    assert_eq!(reply.version, 1);
+    assert_eq!(reply.request_id, "r");
+    assert_eq!(
+        reply.result.unwrap_err().code,
+        ErrorCode::UnknownWireVersion
+    );
+    let mut bad_id = UnixStream::connect(&path).await.unwrap();
+    let skewed = format!(
+        r#"{{"version":1,"request_id":"","expected_instance":"{}","command":{{"kind":"health"}}}}"#,
+        instance_id(&instance)
+    );
+    write_frame(&mut bad_id, skewed.as_bytes()).await.unwrap();
+    assert!(read_frame(&mut bad_id).await.is_err());
     let mut truncated = UnixStream::connect(&path).await.unwrap();
     truncated.write_all(&4_u32.to_be_bytes()).await.unwrap();
     truncated.write_all(b"ab").await.unwrap();
@@ -481,6 +523,12 @@ struct CancellableService {
     cancelled: AtomicUsize,
 }
 impl LocalService for CancellableService {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        service_operation,
+        handle_with_output
+    );
     fn handle(
         &self,
         _: Command,
@@ -596,7 +644,7 @@ async fn mismatched_kernel_uid_never_reaches_handler() {
         Cancellation::default(),
         Arc::new(Semaphore::new(5)),
         Arc::new(Semaphore::new(1)),
-        Arc::new(service_connection::LiveServiceGate::new()),
+        Arc::new(LiveServiceGate::new()),
     )
     .await
     .unwrap_err();
@@ -610,6 +658,12 @@ struct HeldSearchService {
     boot: String,
 }
 impl LocalService for HeldSearchService {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        service_operation,
+        handle_with_output
+    );
     fn handle(
         &self,
         command: Command,
@@ -777,6 +831,12 @@ struct PausedService {
     release: std::sync::atomic::AtomicBool,
 }
 impl LocalService for PausedService {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        service_operation,
+        handle_with_output
+    );
     fn handle(
         &self,
         _: Command,
@@ -921,18 +981,19 @@ async fn shutdown_interrupts_incomplete_frame_and_reports_unfinished_worker() {
 
 struct OversizedResultService;
 impl LocalService for OversizedResultService {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        service_operation,
+        handle_with_output
+    );
     fn handle(
         &self,
         _: Command,
         _: PeerIdentity,
         _: &CallBudget,
     ) -> Result<CommandResult, ApiError> {
-        Err(ApiError {
-            code: ErrorCode::Unsupported,
-            detail: "x".repeat(MAX_FRAME_BYTES + 1),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        })
+        Err(ApiError::unsupported("x".repeat(MAX_FRAME_BYTES + 1)))
     }
 }
 
@@ -1014,19 +1075,18 @@ async fn drain_wait_keeps_owner_lease_after_an_earlier_task_error() {
     let (listener, path, root, instance) = guarded_listener();
     let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let gate = release.clone();
+    let mut tasks = JoinSet::new();
+    tasks.spawn(async { Err(io::Error::other("earlier client failed")) });
+    tasks.spawn(async move {
+        while !gate.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        Ok(())
+    });
     let mut pending = PendingDrain {
         _listener: listener,
-        next: 0,
         first_error: None,
-        tasks: vec![
-            tokio::spawn(async { Err(io::Error::other("earlier client failed")) }),
-            tokio::spawn(async move {
-                while !gate.load(Ordering::SeqCst) {
-                    tokio::time::sleep(Duration::from_millis(2)).await;
-                }
-                Ok(())
-            }),
-        ],
+        tasks,
     };
     assert!(
         tokio::time::timeout(Duration::from_millis(30), pending.wait())
@@ -1811,7 +1871,7 @@ async fn restart_starts_with_empty_live_slot_and_same_reserved_author() {
 #[test]
 fn late_generation_cleanup_cannot_revoke_successor() {
     use crate::ports::ServiceAuthorityGate;
-    let gate = service_connection::LiveServiceGate::new();
+    let gate = LiveServiceGate::new();
     let author = crate::protocol::ids::ServiceAuthorId::new("graph");
     let old = gate.register("instance", "boot", author.clone()).unwrap();
     assert!(gate.revoke_exact(&old));
@@ -1828,6 +1888,11 @@ struct DecisionBarrierService {
     release: std::sync::atomic::AtomicBool,
 }
 impl LocalService for DecisionBarrierService {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        handle_with_output
+    );
     fn handle(
         &self,
         _: Command,
@@ -2111,6 +2176,11 @@ impl LargeCompletedService {
 }
 
 impl LocalService for LargeCompletedService {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        handle_with_output
+    );
     fn handle(
         &self,
         _: Command,
@@ -2257,6 +2327,7 @@ struct RecoveryDomain {
 }
 
 impl LocalService for RecoveryDomain {
+    crate::unserved_local_service_routes!(service_control, handle_with_output);
     fn handle(
         &self,
         _: Command,
@@ -2510,6 +2581,7 @@ struct CommittedWaitDomain {
 }
 
 impl LocalService for CommittedWaitDomain {
+    crate::unserved_local_service_routes!(service_control, handle_with_output);
     fn handle(
         &self,
         _: Command,
@@ -2661,6 +2733,7 @@ async fn operator_disconnect_after_commit_preserves_history_and_closes_socket() 
 struct StoreAuditDomain(Arc<crate::store::SqliteStore>);
 
 impl LocalService for StoreAuditDomain {
+    crate::unserved_local_service_routes!(service_control, service_operation, handle_with_output);
     fn handle(
         &self,
         _: Command,
@@ -2888,7 +2961,7 @@ fn elected_health_control(
         crate::service::config::ServiceConfig::default().health_settings(),
         clock,
         store,
-        Default::default(),
+        <[std::sync::Arc<crate::service::workers::WorkerStatus>; 3]>::default(),
         // No observation lane runs here: no recorded host evidence, under the
         // macOS adapter's witness (Unknown until a capture is observed).
         crate::app::ElectedHostEvidence {
@@ -3088,8 +3161,167 @@ async fn elected_health_transport_disconnect_cancels_locked_retirement_read() {
     std::fs::remove_dir_all(store_root).unwrap();
 }
 
+async fn started_server(
+    service: Arc<dyn LocalService>,
+) -> (
+    tokio::task::JoinHandle<io::Result<ServeOutcome>>,
+    Cancellation,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    crate::daemon::paths::InstancePaths,
+) {
+    let (listener, path, root, instance) = guarded_listener();
+    let uid = UnixStream::pair().unwrap().0.peer_cred().unwrap().uid();
+    let shutdown = Cancellation::default();
+    let server = tokio::spawn(serve(
+        listener,
+        instance_id(&instance),
+        service,
+        Arc::new(TestClock),
+        uid,
+        shutdown.clone(),
+    ));
+    (server, shutdown, path, root, instance)
+}
+
+#[tokio::test]
+async fn cancelled_serve_loop_returns_without_polling() {
+    let service = Arc::new(PausedService {
+        entered: AtomicUsize::new(0),
+        release: std::sync::atomic::AtomicBool::new(false),
+    });
+    let (server, shutdown, path, root, _instance) = started_server(service).await;
+    // Let the loop park in accept so the cancel has to wake it.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let started = std::time::Instant::now();
+    shutdown.cancel();
+    let outcome = server.await.unwrap().unwrap();
+    let elapsed = started.elapsed();
+    assert!(matches!(outcome, ServeOutcome::Drained));
+    assert!(
+        elapsed < Duration::from_millis(20),
+        "serve took {elapsed:?} to stop"
+    );
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn waiting_client_returns_on_cancel() {
+    let path = std::env::temp_dir().join(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
+    let listener = UnixListener::bind(&path).unwrap();
+    let clock = Arc::new(TestClock);
+    let cancellation = Cancellation::default();
+    let budget = CallBudget {
+        deadline: MonoInstant(clock.monotonic_now().0 + 5000),
+        cancellation: cancellation.clone(),
+    };
+    let client = crate::client::local::LocalSocketClient::new(
+        path.clone(),
+        clock,
+        uuid::Uuid::new_v4(),
+        None,
+    );
+    let call = tokio::spawn(async move { client.call_async(Command::Health, &budget).await });
+    // The fixture server reads the request and never replies.
+    let (mut stream, _) = listener.accept().await.unwrap();
+    let _ = read_frame(&mut stream).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let started = std::time::Instant::now();
+    cancellation.cancel();
+    let error = call.await.unwrap().unwrap_err();
+    let elapsed = started.elapsed();
+    assert_eq!(error.code, ErrorCode::UnknownOutcome);
+    assert!(
+        elapsed < Duration::from_millis(20),
+        "client took {elapsed:?} to return"
+    );
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn accept_drain_returns_at_deadline_when_a_task_never_finishes() {
+    use crate::daemon::ownership::OwnerLock;
+    let service = Arc::new(PausedService {
+        entered: AtomicUsize::new(0),
+        release: std::sync::atomic::AtomicBool::new(false),
+    });
+    let (server, shutdown, path, root, instance) = started_server(service.clone()).await;
+    let mut deciding = UnixStream::connect(&path).await.unwrap();
+    write_frame(&mut deciding, &health_request(instance_id(&instance), "r"))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while service.entered.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let started = tokio::time::Instant::now();
+    shutdown.cancel();
+    let outcome = server.await.unwrap().unwrap();
+    let elapsed = started.elapsed();
+    let ServeOutcome::Incomplete(mut pending) = outcome else {
+        panic!("a task that never finishes must leave the drain incomplete");
+    };
+    assert!(
+        elapsed >= SHUTDOWN_DRAIN && elapsed < SHUTDOWN_DRAIN + Duration::from_millis(50),
+        "drain returned after {elapsed:?}, expected about {SHUTDOWN_DRAIN:?}"
+    );
+    assert_eq!(pending.remaining(), 1);
+    service.release.store(true, Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(1), pending.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    drop(pending);
+    drop(OwnerLock::acquire(&instance).unwrap());
+    drop(deciding);
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn accept_drain_returns_promptly_when_tasks_finish() {
+    let service = Arc::new(PausedService {
+        entered: AtomicUsize::new(0),
+        release: std::sync::atomic::AtomicBool::new(false),
+    });
+    let (server, shutdown, path, root, _instance) = started_server(service).await;
+    // Idle connections finish as soon as shutdown is observed.
+    let idle: Vec<_> = futures_idle(&path, 3).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let started = tokio::time::Instant::now();
+    shutdown.cancel();
+    let outcome = server.await.unwrap().unwrap();
+    let elapsed = started.elapsed();
+    assert!(matches!(outcome, ServeOutcome::Drained));
+    assert!(
+        elapsed < SHUTDOWN_DRAIN / 2,
+        "drain took {elapsed:?} although every task finished at once"
+    );
+    drop(idle);
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+async fn futures_idle(path: &std::path::Path, count: usize) -> Vec<UnixStream> {
+    let mut streams = Vec::new();
+    for _ in 0..count {
+        streams.push(UnixStream::connect(path).await.unwrap());
+    }
+    streams
+}
+
 struct BootCheckService(Arc<AtomicUsize>);
 impl LocalService for BootCheckService {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        service_operation,
+        handle_with_output
+    );
     fn handle(
         &self,
         _: Command,

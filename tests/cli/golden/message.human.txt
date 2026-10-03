@@ -1,0 +1,7 @@
+Message msg-2 in thread t-1 (#2)
+From seat-b at 2026-10-01 09:30Z
+
+Here is the first part
+of a longer body
+
+(continued: herdr-threads body msg-2 --offset 39)

@@ -1,3 +1,4 @@
+use herdr_threads::test_support::spawn::SpawnOwned;
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -30,7 +31,7 @@ fn manifest_matches_pinned_091_documented_argv_shape() {
     assert_eq!(doc["name"], "Threads");
     assert_eq!(doc["version"], "0.1.0");
     assert_eq!(doc["min_herdr_version"], "0.9.1");
-    assert_eq!(doc["platforms"], serde_json::json!(["macos"]));
+    assert_eq!(doc["platforms"], serde_json::json!(["macos", "linux"]));
     assert_eq!(
         doc["build"][0]["command"],
         serde_json::json!(["./scripts/build.sh"])
@@ -628,7 +629,7 @@ fn view_refreshes_on_enter_and_exits_on_q() {
         .env("CALL_LOG", &log)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .spawn()
+        .spawn_owned()
         .unwrap();
     use std::io::Write;
     child.stdin.take().unwrap().write_all(b"\nq\n").unwrap();
@@ -650,7 +651,7 @@ fn unrelated_view_input_does_not_refresh() {
         .env("CALL_LOG", &log)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .spawn()
+        .spawn_owned()
         .unwrap();
     use std::io::Write;
     child

@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-01T06:17:00Z",
+  "canary_commit": "0123456789abcdef0123456789abcdef01234567",
+  "herdr_threads": "0.1.0",
+  "runner": {
+    "os": "linux",
+    "arch": "x86_64"
+  },
+  "inputs": {
+    "harness": "both",
+    "versions": "since-verified",
+    "bisect": true,
+    "model_tier": "auto"
+  },
+  "harnesses": [
+    {
+      "harness": "claude",
+      "package": "@anthropic-ai/claude-code",
+      "verified_max": "2.1.283",
+      "candidates": [
+        "2.1.284"
+      ],
+      "status": "inconclusive",
+      "first_bad": null,
+      "last_good": null,
+      "failing_checks": [
+        {
+          "id": "t0.setup",
+          "status": "fail",
+          "detail": "baseline failed on confirmation"
+        }
+      ],
+      "signals": [],
+      "suggested_action": null,
+      "excluded": [],
+      "probes": [
+        {
+          "version": "2.1.284",
+          "role": "newest",
+          "result": "fail",
+          "flaky": false,
+          "attempts": [
+            {
+              "result": "fail",
+              "tier1": false,
+              "duration_ms": 1234,
+              "checks": [
+                {
+                  "id": "t0.setup",
+                  "status": "fail",
+                  "detail": "baseline failed on confirmation"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "assumes_monotone": false
+    }
+  ],
+  "exit_code": 1
+}

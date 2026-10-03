@@ -16,6 +16,14 @@ use std::{
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
 
+/// A spawned binary with every inherited HERDR_/CLAUDE/CODEX variable removed
+/// (ht-p03.24); a test sets the variables it needs after this call.
+fn scrubbed_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::new(program);
+    herdr_threads::test_support::isolation::scrub_env(&mut command);
+    command
+}
+
 struct Scratch {
     root: PathBuf,
     state: PathBuf,
@@ -53,6 +61,28 @@ impl Scratch {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
+    /// A fake `codex` for a version admitted by hook-schema match (0.159.x): it prints
+    /// `codex-cli <version>` and embeds the committed hook schemas after its exit.
+    fn codex_with_schemas(&self, version: &str) {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("docs/evidence/codex-158-hook-capture/schemas-0.158.0");
+        let mut files: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.to_string_lossy().ends_with(".schema.json"))
+            .collect();
+        files.sort();
+        let mut bytes =
+            format!("#!/bin/sh\nprintf 'codex-cli {version}\\n'\nexit 0\n").into_bytes();
+        for file in files {
+            bytes.extend_from_slice(&fs::read(file).unwrap());
+            bytes.push(b'\n');
+        }
+        let path = self.bin.join("codex");
+        fs::write(&path, bytes).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
     fn run(&self, args: &[&str]) -> Output {
         self.run_in(&self.root, args)
     }
@@ -82,8 +112,7 @@ impl Scratch {
     /// The scratch environment with no Herdr instance on the command line
     /// or in the environment (detection uses the fake `herdr`, if any).
     fn command(&self, cwd: &Path) -> Command {
-        let mut command = Command::new(BIN);
-        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
+        let mut command = scrubbed_command(BIN);
         command
             .current_dir(cwd)
             .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
@@ -196,7 +225,10 @@ fn claude_install_status_remove_round_trip_restores_settings_byte_for_byte() {
     // doctor reports the user-level installation.
     let doctor = s.run(&["doctor"]);
     let report = text(&doctor.stdout);
-    assert!(report.contains("hooks.claude.installed: yes\n"), "{report}");
+    assert!(
+        report.contains("hooks.claude.setup_installed: yes\n"),
+        "{report}"
+    );
     assert!(
         report.contains(&format!("hooks.claude.allow_rule.rule: {RULE}\n")),
         "{report}"
@@ -287,8 +319,8 @@ fn created_settings_are_deleted_by_unsetup() {
     assert!(!s.claude_config.exists());
 }
 
-/// Installed-version observation is enforced: an uncovered, non-canonical or
-/// missing harness is refused with exit 4 and a message naming the supported
+/// Installed-version observation is enforced: an older-than-supported,
+/// non-canonical or missing harness is refused with exit 4 and a message naming the supported
 /// recipes, and nothing is written. Kills: skipping the observation, matching
 /// a version by prefix/nearest recipe, accepting a bare `X.Y.Z` line the hook
 /// entrypoint would refuse, and mapping the refusal to another status.
@@ -299,8 +331,8 @@ fn unsupported_harness_version_is_refused_with_status_four() {
     fs::write(s.settings(), ORIGINAL).unwrap();
     for (line, expect) in [
         (
-            "2.1.287 (Claude Code)",
-            "claude 2.1.287 has no adapter recipe",
+            "2.1.200 (Claude Code)",
+            "claude 2.1.200 has no adapter recipe",
         ),
         ("2.1.284", "not a canonical"),
     ] {
@@ -311,7 +343,7 @@ fn unsupported_harness_version_is_refused_with_status_four() {
         assert!(stderr.starts_with("herdr-threads: "), "{stderr}");
         assert!(stderr.contains(expect), "{line}: {stderr}");
         assert!(
-            stderr.contains("claude-hooks-2.1.283 [2.1.283, 2.1.286]"),
+            stderr.contains("claude-hooks-2.1.283 [2.1.283, 2.1.287]"),
             "{stderr}"
         );
         assert!(stderr.contains("(unsupported_harness)"), "{stderr}");
@@ -325,12 +357,34 @@ fn unsupported_harness_version_is_refused_with_status_four() {
     assert!(text(&missing.stderr).contains("no executable `claude` on PATH"));
 
     // Status reports the refusal without failing.
-    s.harness("claude", "2.1.287 (Claude Code)");
+    s.harness("claude", "2.1.200 (Claude Code)");
     let status = s.run(&["--json", "setup-status", "claude"]);
     assert_eq!(status.status.code(), Some(0), "{}", text(&status.stderr));
     let status = json(&status);
     assert_eq!(status["harness_version"]["supported"], false);
     assert_eq!(status["installed"], false);
+}
+
+/// An unlisted version newer than every recipe is admitted optimistically
+/// (B6 D2, ladder row 6a): setup succeeds under the newest recipe and
+/// writes the hooks. Kills: refusing a newer version, and admitting it
+/// under a recipe other than the assumed one.
+#[test]
+fn newer_unlisted_harness_version_is_admitted_optimistically() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.288 (Claude Code)");
+    fs::create_dir(&s.claude_config).unwrap();
+    fs::write(s.settings(), ORIGINAL).unwrap();
+    let out = s.run(&["--json", "setup", "claude"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let report = json(&out);
+    assert_eq!(report["harness_version"]["supported"], true, "{report}");
+    assert_eq!(report["harness_version"]["version"], "2.1.288", "{report}");
+    assert_eq!(
+        report["harness_version"]["recipe"], "claude-hooks-2.1.283",
+        "{report}"
+    );
+    assert_ne!(fs::read(s.settings()).unwrap(), ORIGINAL);
 }
 
 /// An owned group edited by hand is never removed or overwritten: unsetup and
@@ -512,7 +566,8 @@ fn setup_detects_the_herdr_instance_with_the_herdr_cli() {
 /// `$CODEX_HOME/hooks.json` after the groups already there (Herdr's own
 /// hook keeps its position and so its Codex trust key), the report names
 /// each owned group's trust key, nothing outside CODEX_HOME and the state
-/// directory is written, an uncovered version is refused with 4, and
+/// directory is written, an older-than-supported version is refused with 4
+/// (a newer unlisted one is admitted optimistically), and
 /// unsetup restores the file byte for byte. Kills: writing anywhere else,
 /// prepending (shifting the trust keys of existing hooks), planning without
 /// the observed-version witness, and a hook command that disagrees with
@@ -579,12 +634,32 @@ fn codex_setup_installs_user_hooks_and_unsetup_restores_bytes() {
     let text_out = s.run(&["setup", "codex"]);
     assert!(text(&text_out.stdout).contains("action: already_installed"));
 
+    // A newer unlisted version (fake binary, no embedded schemas) is admitted
+    // optimistically; setup-status is read-only so the restore below is intact.
     s.harness("codex", "codex-cli 0.159.2");
+    let optimistic = s.run(&["--json", "setup-status", "codex"]);
+    assert_eq!(
+        optimistic.status.code(),
+        Some(0),
+        "{}",
+        text(&optimistic.stderr)
+    );
+    let optimistic = json(&optimistic);
+    assert_eq!(
+        optimistic["harness_version"]["supported"], true,
+        "{optimistic}"
+    );
+    assert_eq!(
+        optimistic["harness_version"]["recipe"], "codex-hooks-v1",
+        "{optimistic}"
+    );
+
+    s.harness("codex", "codex-cli 0.150.0");
     let refused = s.run(&["setup", "codex"]);
     let stderr = text(&refused.stderr);
     assert_eq!(refused.status.code(), Some(4), "{stderr}");
     assert!(
-        stderr.contains("codex 0.159.2 has no adapter recipe"),
+        stderr.contains("codex 0.150.0 has no adapter recipe"),
         "{stderr}"
     );
 
@@ -817,8 +892,7 @@ fn codex_setup_refuses_a_hook_command_a_config_layer_already_runs() {
 #[test]
 fn setup_help_documents_scope_and_exit_statuses() {
     for command in ["setup", "unsetup", "setup-status"] {
-        let help = Command::new(BIN)
-            .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
+        let help = scrubbed_command(BIN)
             .args([command, "--help"])
             .output()
             .unwrap();
@@ -832,16 +906,25 @@ fn setup_help_documents_scope_and_exit_statuses() {
             "setup never writes trust",
             "sets up every detected harness",
             "Exit status:",
+            "optimistic",
+            "schema-matched, live-unverified",
+            "known-broken",
+            "older than every recipe",
         ] {
             assert!(stdout.contains(needle), "{needle}: {stdout}");
         }
+        assert!(
+            !stdout.contains("refuses a version no adapter recipe covers"),
+            "{stdout}"
+        );
         assert!(!stdout.contains("--project"), "{stdout}");
     }
-    let top = Command::new(BIN).arg("--help").output().unwrap();
+    let top = scrubbed_command(BIN).arg("--help").output().unwrap();
     let stdout = text(&top.stdout);
     for command in ["setup ", "unsetup ", "setup-status "] {
         assert!(stdout.contains(command), "{stdout}");
     }
+    assert!(!stdout.contains("no adapter recipe covers"), "{stdout}");
 }
 
 /// A user who already allows the identical rule keeps exactly one copy, and
@@ -1117,14 +1200,14 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
 #[test]
 fn bare_setup_skips_missing_and_reports_refused_harnesses() {
     let s = Scratch::new();
-    s.harness("claude", "2.1.287 (Claude Code)");
+    s.harness("claude", "2.1.200 (Claude Code)");
     fs::create_dir(&s.claude_config).unwrap();
     fs::write(s.settings(), ORIGINAL).unwrap();
     let out = s.run(&["setup"]);
     let stdout = text(&out.stdout);
     assert_eq!(out.status.code(), Some(0), "{stdout}{}", text(&out.stderr));
     assert!(
-        stdout.contains("claude: refused: claude 2.1.287 has no adapter recipe"),
+        stdout.contains("claude: refused: claude 2.1.200 has no adapter recipe"),
         "{stdout}"
     );
     assert!(
@@ -1381,4 +1464,422 @@ fn copied_claude_settings_are_adopted_without_changing_bytes() {
             .contains("herdr-threads-owner")
     );
     assert_eq!(fs::read(s.settings()).unwrap(), first);
+}
+
+/// Wave 25 (ht-p03.15): a fresh `setup codex` on Codex 0.159.3 and an isolated home writes the
+/// hooks and the sandbox allowance, and `unsetup codex` removes both and leaves config.toml
+/// as it was (absent on a fresh home). Kills: an allowance withheld for 0.159.3, an unsetup
+/// that leaves the created config.toml or hooks.json behind, and a config.toml that differs
+/// from the user's after a round trip.
+#[test]
+fn fresh_setup_codex_0_159_3_writes_the_allowance() {
+    let s = Scratch::new();
+    s.codex_with_schemas("0.159.3");
+    let config = s.codex_home.join("config.toml");
+    assert!(!s.codex_home.exists() && !s.home.join(".codex").exists());
+
+    let setup = s.run(&["--json", "setup", "codex"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    let report = json(&setup);
+    assert_eq!(report["action"], "installed", "{report}");
+    assert_eq!(report["harness_version"]["version"], "0.159.3", "{report}");
+    assert_eq!(report["created_config_file"], true, "{report}");
+    assert_eq!(report["sandbox"]["present"], true, "{report}");
+    assert!(s.hooks().exists());
+    let doc: toml_edit::DocumentMut = fs::read_to_string(&config).unwrap().parse().unwrap();
+    assert_eq!(
+        doc["sandbox_workspace_write"]["network_access"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        doc["features"]["network_proxy"]["enabled"].as_bool(),
+        Some(true)
+    );
+    let socket = report["sandbox"]["socket_path"].as_str().unwrap();
+    assert_eq!(
+        doc["features"]["network_proxy"]["unix_sockets"][socket].as_str(),
+        Some("allow")
+    );
+    assert!(
+        !s.home.join(".codex").exists(),
+        "CODEX_HOME must be the scratch one"
+    );
+
+    let unsetup = s.run(&["--json", "unsetup", "codex"]);
+    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
+    let removed = json(&unsetup);
+    assert_eq!(removed["allowance_removed"], true, "{removed}");
+    assert_eq!(removed["hooks_removed"], true, "{removed}");
+    assert!(!s.hooks().exists(), "created hooks.json must be deleted");
+    assert!(!config.exists(), "created config.toml must be deleted");
+
+    // A user's config.toml is byte-identical after the round trip.
+    let original = "# mine\nmodel = \"m\"\n";
+    fs::write(&config, original).unwrap();
+    assert_eq!(s.run(&["setup", "codex"]).status.code(), Some(0));
+    assert_ne!(fs::read_to_string(&config).unwrap(), original);
+    assert_eq!(s.run(&["unsetup", "codex"]).status.code(), Some(0));
+    assert_eq!(fs::read_to_string(&config).unwrap(), original);
+}
+
+/// Wave 17 (ht-p03.15): other `features.network_proxy` keys the user already had stay as they
+/// are, and setup, setup-status and doctor each name every one (enabling network access for
+/// the sandbox makes them effective). Kills: a warning-free setup that quietly widens
+/// `dangerously_allow_all_unix_sockets`, and a doctor that misses the recorded keys.
+#[test]
+fn preexisting_network_proxy_keys_are_warned_by_setup_status_and_doctor() {
+    let s = Scratch::new();
+    s.codex_with_schemas("0.159.3");
+    fs::create_dir(&s.codex_home).unwrap();
+    let config = s.codex_home.join("config.toml");
+    fs::write(
+        &config,
+        "[features.network_proxy]\ndomains = [\"x\"]\ndangerously_allow_all_unix_sockets = true\n",
+    )
+    .unwrap();
+    let want = |text: &str| {
+        for key in ["domains", "dangerously_allow_all_unix_sockets"] {
+            assert!(
+                text.contains(&format!(
+                    "features.network_proxy.{key} was already set in {}; enabling network \
+                     access for the sandbox makes it effective",
+                    config.display()
+                )),
+                "{key}: {text}"
+            );
+        }
+    };
+    let setup = s.run(&["--json", "setup", "codex"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    want(&json(&setup)["warnings"].to_string());
+    let after = fs::read_to_string(&config).unwrap();
+    assert!(after.contains("domains = [\"x\"]"), "{after}");
+    assert!(
+        after.contains("dangerously_allow_all_unix_sockets = true"),
+        "{after}"
+    );
+    want(&json(&s.run(&["--json", "setup-status", "codex"]))["warnings"].to_string());
+    let doctor = s.run(&["--json", "doctor"]);
+    let doctor: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    want(&doctor["doctor"]["limitations"].to_string());
+    want(&doctor["doctor"]["hooks"]["codex"]["sandbox_proxy_warnings"].to_string());
+}
+
+/// Wave 17 (ht-p03.15): hooks are installed first and the allowance second; when the
+/// allowance cannot be recorded, the hooks are rolled back so a failed `setup codex` leaves
+/// nothing behind. The config manifest path is a dangling symlink, which fails the allowance
+/// after the hooks went in. Kills: an exit-with-error that leaves hooks.json installed (or
+/// created), a rollback that loses the user's own hooks, and an error that does not say
+/// nothing was installed.
+#[test]
+fn codex_install_rolls_back_hooks_when_config_write_fails() {
+    for existing in [false, true] {
+        let s = Scratch::new();
+        s.codex_with_schemas("0.159.3");
+        fs::create_dir(&s.codex_home).unwrap();
+        let hooks_before: Option<&[u8]> = existing.then_some(
+            br#"{"hooks":{"SessionStart":[{"hooks":[{"command":"mine","type":"command"}]}]}}"#
+                as &[u8],
+        );
+        if let Some(bytes) = hooks_before {
+            fs::write(s.hooks(), bytes).unwrap();
+        }
+        let config = s.codex_home.join("config.toml");
+        let config_before = "model = \"m\"\n";
+        fs::write(&config, config_before).unwrap();
+        fs::DirBuilder::new().mode(0o700).create(&s.state).unwrap();
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(s.state.join("setup"))
+            .unwrap();
+        let manifest = herdr_threads::cli::setup::manifest_path(&s.state, "codex-config", &config);
+        std::os::unix::fs::symlink(s.root.join("nowhere"), &manifest).unwrap();
+
+        let setup = s.run(&["setup", "codex"]);
+        let stderr = text(&setup.stderr);
+        assert_ne!(setup.status.code(), Some(0), "{stderr}");
+        assert!(stderr.contains("nothing was installed"), "{stderr}");
+        assert_eq!(fs::read_to_string(&config).unwrap(), config_before);
+        match hooks_before {
+            Some(bytes) => assert_eq!(fs::read(s.hooks()).unwrap(), bytes),
+            None => assert!(!s.hooks().exists(), "created hooks.json must be removed"),
+        }
+        // The hooks manifest went with the rolled-back installation.
+        let leftovers: Vec<_> = fs::read_dir(s.state.join("setup"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("codex-user-"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+}
+
+/// Wave 25 (ht-p03.15): a state directory the fast default finds under Herdr's plugin state
+/// root, whose plugin Herdr's registry does not list, is a leftover of an uninstalled plugin:
+/// `setup` refuses with "plugin not installed (leftover state dir ...)" and changes nothing,
+/// `doctor` warns, and `unsetup` and `setup-status` keep working on it. Kills: a setup that
+/// silently takes a leftover directory, a refusal for an installed plugin, and a hard failure
+/// of the other commands.
+#[test]
+fn setup_refuses_a_leftover_fast_state_dir_but_other_commands_work() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    let state = s.home.join(".local/state/herdr/plugins/herdr-threads");
+    fs::create_dir_all(&state).unwrap();
+    let registry = s.home.join(".config/herdr/plugins.json");
+    fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    fs::write(&registry, "[]").unwrap();
+    let run = |args: &[&str]| {
+        s.command(&s.root)
+            .arg("--host-endpoint")
+            .arg(s.host())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    let setup = run(&["setup", "claude"]);
+    let stderr = text(&setup.stderr);
+    assert_eq!(setup.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "plugin not installed (leftover state dir {})",
+            state.display()
+        )),
+        "{stderr}"
+    );
+    assert!(!s.settings().exists(), "a refused setup must write nothing");
+    let all = run(&["--json", "setup"]);
+    assert_eq!(all.status.code(), Some(2), "{}", text(&all.stderr));
+
+    let status = run(&["--json", "setup-status", "claude"]);
+    assert_eq!(status.status.code(), Some(0), "{}", text(&status.stderr));
+    let unsetup = run(&["--json", "unsetup", "claude"]);
+    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
+    let doctor: serde_json::Value =
+        serde_json::from_slice(&run(&["--json", "doctor"]).stdout).unwrap();
+    assert!(
+        doctor["doctor"]["limitations"]
+            .to_string()
+            .contains("plugin not installed (leftover state dir"),
+        "{doctor}"
+    );
+    assert!(
+        doctor["doctor"]["context"]["source"]["state_dir_leftover"].is_string(),
+        "{doctor}"
+    );
+
+    // Listed by Herdr's registry: the same directory is the installed plugin's.
+    fs::write(
+        &registry,
+        r#"[{"plugin_id":"herdr-threads","enabled":true}]"#,
+    )
+    .unwrap();
+    let setup = run(&["--json", "setup", "claude"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    assert!(s.settings().exists());
+}
+
+/// P29 (ht-p03.15): re-running `setup` from a binary at another path than the recorded hook
+/// command's is refused with a message naming the recorded path, the current path and the fix
+/// (not the generic "removed by hand" causes), and the named fix works. Kills: the generic
+/// conflict text for a moved executable, a message naming only one path, and a fix that does
+/// not unblock setup.
+#[test]
+fn moved_binary_conflict_names_both_paths() {
+    for harness in ["claude", "codex"] {
+        let s = Scratch::new();
+        if harness == "claude" {
+            s.harness("claude", "2.1.284 (Claude Code)");
+        } else {
+            s.harness("codex", "codex-cli 0.158.0");
+        }
+        let first = s.run(&["--json", "setup", harness]);
+        assert_eq!(first.status.code(), Some(0), "{}", text(&first.stderr));
+
+        let moved_dir = s.root.join("moved bin");
+        fs::create_dir(&moved_dir).unwrap();
+        fs::copy(BIN, moved_dir.join("herdr-threads")).unwrap();
+        let moved = moved_dir.join("herdr-threads").canonicalize().unwrap();
+        let recorded = Path::new(BIN).canonicalize().unwrap();
+        // `Scratch::command` runs the built binary: run the copy with the same environment.
+        let run_moved = |verb: &str| {
+            let mut command = scrubbed_command(&moved);
+            let template = s.command(&s.root);
+            command.current_dir(&s.root);
+            for (key, value) in template.get_envs() {
+                match value {
+                    Some(value) => command.env(key, value),
+                    None => command.env_remove(key),
+                };
+            }
+            let out = command
+                .arg("--state-dir")
+                .arg(&s.state)
+                .arg("--host-endpoint")
+                .arg(s.host())
+                .args([verb, harness])
+                .output()
+                .unwrap();
+            (out.status.code(), text(&out.stderr))
+        };
+        let refused = run_moved("setup");
+        assert_eq!(refused.0, Some(1), "{}", refused.1);
+        assert!(
+            refused.1.contains(&recorded.display().to_string())
+                && refused.1.contains(&moved.display().to_string()),
+            "{}",
+            refused.1
+        );
+        assert!(
+            refused
+                .1
+                .contains(&format!("herdr-threads unsetup {harness}"))
+                && !refused.1.contains("removed by hand"),
+            "{}",
+            refused.1
+        );
+        // The named fix: unsetup (from the moved binary), then setup.
+        assert_eq!(run_moved("unsetup").0, Some(0));
+        assert_eq!(run_moved("setup").0, Some(0));
+    }
+}
+
+/// Wave 17 docs (ht-p03.15): docs/install.md says a symlinked `settings.json` or `hooks.json`
+/// is refused (status 2) and neither the link nor its target is changed; setup does not follow
+/// the link. Kills: a docs statement that outlives a change in behavior, and a setup that
+/// writes through the link.
+#[test]
+fn symlinked_dotfiles_are_refused_and_left_alone() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    s.harness("codex", "codex-cli 0.158.0");
+    fs::create_dir(&s.claude_config).unwrap();
+    fs::create_dir(&s.codex_home).unwrap();
+    let dotfiles = s.root.join("dotfiles");
+    fs::create_dir(&dotfiles).unwrap();
+    for (harness, link) in [("claude", s.settings()), ("codex", s.hooks())] {
+        let target = dotfiles.join(format!("{harness}.json"));
+        fs::write(&target, "{}\n").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let out = s.run(&["setup", harness]);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{harness}: {}",
+            text(&out.stderr)
+        );
+        assert!(
+            text(&out.stderr).contains("symlink"),
+            "{}",
+            text(&out.stderr)
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"{}\n");
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+}
+
+/// The doctor JSON for `hooks.<harness>.installed` (ht-p03.47): Claude's is
+/// the binary object mirroring Codex's, with no claude on PATH the stub fill
+/// (`not_found`, nulls); the hooks-installed flag moved to `hooks.claude.setup`.
+/// Kills: a bool left at `hooks.claude.installed`, a fifth or missing key,
+/// a non-null field for an absent claude, the flag missing from `setup`, and a
+/// Codex admission outside the closed set.
+#[test]
+fn doctor_json_claude_installed_is_the_admission_object() {
+    let s = Scratch::new();
+    s.harness("codex", "codex-cli 0.158.0");
+    let report = json_doctor(&s);
+    let claude = &report["hooks"]["claude"];
+    let installed = claude["installed"].as_object().expect("object, not bool");
+    let mut keys: Vec<_> = installed.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        ["admission", "binary", "recipe", "version"],
+        "{claude}"
+    );
+    assert_eq!(installed["admission"], "not_found");
+    for key in ["binary", "version", "recipe"] {
+        assert!(installed[key].is_null(), "{key}: {claude}");
+    }
+    assert!(claude["setup"]["installed"].is_boolean(), "{claude}");
+    assert_eq!(claude["setup"]["installed"], false);
+    assert_eq!(
+        claude["setup"]["settings"],
+        s.settings().display().to_string()
+    );
+    let codex = &report["hooks"]["codex"]["installed"];
+    let closed = [
+        "listed",
+        "schema-matched, live-unverified",
+        "optimistic",
+        "refused",
+        "not_found",
+    ];
+    assert!(
+        closed.contains(&codex["admission"].as_str().unwrap()),
+        "{codex}"
+    );
+    assert_eq!(codex["admission"], "listed", "{codex}");
+    assert_eq!(codex["version"], "0.158.0", "{codex}");
+    assert_eq!(codex["recipe"], "codex-hooks-v1", "{codex}");
+    assert!(
+        codex["binary"].as_str().unwrap().ends_with("/codex"),
+        "{codex}"
+    );
+    assert!(codex["evidence"].is_string(), "{codex}");
+}
+
+fn json_doctor(s: &Scratch) -> serde_json::Value {
+    let out = s.run(&["--json", "doctor"]);
+    serde_json::from_slice::<serde_json::Value>(&out.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}{}", text(&out.stdout), text(&out.stderr)))["doctor"]
+        .clone()
+}
+
+/// The text renderer names the moved flag and the admission lines. Kills:
+/// printing the old `hooks.claude.installed: yes|no` flag, and dropping the
+/// four admission lines.
+#[test]
+fn doctor_text_renders_claude_setup_flag_and_admission_lines() {
+    let s = Scratch::new();
+    let out = text(&s.run(&["doctor"]).stdout);
+    assert!(out.contains("hooks.claude.setup_installed: no\n"), "{out}");
+    assert!(
+        out.contains("hooks.claude.installed.admission: not_found\n"),
+        "{out}"
+    );
+    for key in ["binary", "version", "recipe"] {
+        assert!(
+            out.contains(&format!("hooks.claude.installed.{key}: none\n")),
+            "{out}"
+        );
+    }
+    assert!(!out.contains("hooks.claude.installed: "), "{out}");
+}
+
+/// The built doctor fills `hooks.claude.installed` from the claude on its
+/// PATH and prints one PATH line. Kills: the stub left in place for a present
+/// claude, and the PATH line missing from the text report.
+#[test]
+fn doctor_reports_the_claude_on_path_end_to_end() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    let installed = json_doctor(&s)["hooks"]["claude"]["installed"].clone();
+    assert_eq!(installed["admission"], "listed", "{installed}");
+    assert_eq!(installed["version"], "2.1.284", "{installed}");
+    assert_eq!(installed["recipe"], "claude-hooks-2.1.283", "{installed}");
+    let binary = installed["binary"].as_str().unwrap().to_owned();
+    assert!(binary.ends_with("/claude"), "{installed}");
+    let out = text(&s.run(&["doctor"]).stdout);
+    assert!(
+        out.contains(&format!("claude on PATH: {binary} 2.1.284 (listed)\n")),
+        "{out}"
+    );
 }

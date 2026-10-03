@@ -1,7 +1,7 @@
 //! Health is assembled from injected observations without scanning durable work.
 use crate::protocol::results::{
-    CapabilityState, ComponentState, HarnessHealth, HarnessState, Health, HealthComponent,
-    HealthSettings, HealthState,
+    CapabilityState, ComponentState, ErrorClass, HarnessHealth, HarnessState, Health,
+    HealthComponent, HealthSettings, HealthState,
 };
 use crate::protocol::time::UtcMillis;
 use crate::protocol::wire::PROTOCOL_VERSION;
@@ -37,8 +37,14 @@ pub enum HarnessStatus {
         detail: String,
         live_unverified: bool,
     },
-    /// Admitted by a recipe that declares native-verified receipt.
+    /// Admitted by a recipe that declares native-verified receipt: a listed
+    /// version whose recipe proves native receipt, never an unlisted one.
     Supported(String),
+    /// Unlisted but admitted by the ladder's optimistic rows, parsed under an
+    /// assumed recipe, live-unverified. The detail is the operator-facing
+    /// label (`crate::harness::optimistic_label`); Health renders it as an
+    /// informational note, never a limitation or a degradation.
+    Optimistic(String),
 }
 
 impl HarnessStatus {
@@ -46,7 +52,7 @@ impl HarnessStatus {
         match self {
             Self::Unknown => HarnessState::Unknown,
             Self::NotInstalled(_) | Self::Refused(_) => HarnessState::Unsupported,
-            Self::Cooperative { .. } => HarnessState::Cooperative,
+            Self::Cooperative { .. } | Self::Optimistic(_) => HarnessState::Cooperative,
             Self::Supported(_) => HarnessState::Supported,
         }
     }
@@ -56,7 +62,10 @@ impl HarnessStatus {
     fn acceptable(&self) -> bool {
         matches!(
             self,
-            Self::NotInstalled(_) | Self::Cooperative { .. } | Self::Supported(_)
+            Self::NotInstalled(_)
+                | Self::Cooperative { .. }
+                | Self::Supported(_)
+                | Self::Optimistic(_)
         )
     }
 }
@@ -67,6 +76,35 @@ pub struct RetirementHealth {
     pub pending: bool,
     pub degraded: bool,
 }
+
+/// One scheduler lane that recorded a failure after its last success: its
+/// name and its typed, redacted Health summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaneDegradation {
+    pub lane: &'static str,
+    pub summary: String,
+    /// The failure's class (its code's default class); `None` when the
+    /// failure carries no code or the code has no class.
+    pub class: Option<ErrorClass>,
+}
+
+/// The class the degraded pointer's remedy is chosen for: `Corrupt` if any
+/// lane is, else `Unavailable` if any is, else the first lane's class.
+fn pointer_class(lanes: &[LaneDegradation]) -> Option<ErrorClass> {
+    [ErrorClass::Corrupt, ErrorClass::Unavailable]
+        .into_iter()
+        .find(|class| lanes.iter().any(|lane| lane.class == Some(*class)))
+        .or_else(|| lanes.first().and_then(|lane| lane.class))
+}
+
+/// The most Health lines (limitations, and notes, each) the daemon itself
+/// assembles: the wire cap is 16 and the remaining 4 are headroom for lines
+/// a later producer adds (an optimistic-admission note, a hook-parse-failure
+/// count). Past it the lowest-priority lines are folded, never silently lost.
+pub const HEALTH_LINE_BUDGET: usize = 12;
+
+/// More degraded lanes than this fold into one summary line.
+pub const LANE_LINES_BEFORE_FOLD: usize = 2;
 
 pub struct HealthInputs {
     pub instance: Uuid,
@@ -99,6 +137,26 @@ pub struct HealthInputs {
     pub binding_evidence: Option<crate::ports::BindingEvidenceStartup>,
     /// Unresolved seats now. None means no reliable observation, never zero.
     pub unresolved: Option<crate::ports::UnresolvedSeatSummary>,
+    /// The elected daemon's log (`logs::daemon_log_path`); None when the
+    /// provider is not bound to an instance. Rendered only as the
+    /// `degraded: <remedy>` pointer (`remedy()`'s lane-degraded line) while a
+    /// lane is degraded.
+    pub log_path: Option<std::path::PathBuf>,
+    /// Lanes whose latest pass failed (a failure recorded after their last
+    /// success), in `Lane::ALL` order.
+    pub degraded_lanes: Vec<LaneDegradation>,
+    /// Guarded seat transitions the store refused during reconciliation since
+    /// boot (skipped, never fatal).
+    pub transitions_refused: u64,
+    /// Hook payloads each harness's hook reported as not understood while it
+    /// ran under an optimistic admission, since daemon boot (harness, count).
+    pub hook_parse_failures: Vec<(String, u64)>,
+}
+
+/// Health's informational line counting hook payloads the optimistically
+/// admitted recipe could not parse.
+pub fn hook_parse_failure_line(harness: &str, count: u64) -> String {
+    format!("{count} hook payloads not understood ({harness})")
 }
 
 fn bounded(text: &str, limit: usize) -> String {
@@ -126,9 +184,28 @@ pub const COOPERATIVE_WAKE_LINE: &str = "wake cooperative: prompts only Herdr's 
 /// Health's note stating the cooperative receipt basis while a harness is
 /// `cooperative`: an admitted recipe, but no native-verified model receipt
 /// (no recipe proves one). accept/ACK work through the cooperative caller
-/// contract, recorded as `cooperative_top_level` provenance and demonstrated
-/// live only on the versions named here (docs/validation/report.md).
-pub const COOPERATIVE_RECEIPT_LINE: &str = "receipt cooperative: harness cooperative means an admitted recipe without native-verified receipt; model-issued accept/ACK is recorded as cooperative_top_level, shown live on claude 2.1.285-2.1.286 and codex 0.159.2 (schema-matched, live-unverified)";
+/// contract, recorded as `cooperative_top_level` provenance. The admitted
+/// versions are derived from the recipe tables (never written here); live
+/// demonstrations are recorded in docs/validation/report.md.
+pub fn cooperative_receipt_line() -> String {
+    use crate::harness::{claude, codex};
+    format!(
+        "receipt cooperative: an admitted recipe without native-verified receipt; accept/ACK is \
+         recorded as cooperative_top_level; admitted: claude {}, codex {}; live runs: \
+         docs/validation/report.md",
+        versions_of(claude::RECIPES),
+        versions_of(codex::RECIPES),
+    )
+}
+
+/// The recipes' version sets, `; `-joined in table order.
+fn versions_of<P>(table: &[crate::harness::recipe::Recipe<P>]) -> String {
+    table
+        .iter()
+        .map(|recipe| recipe.versions.to_string())
+        .collect::<Vec<_>>()
+        .join("; ")
+}
 
 /// Health's limitation when the host offers neither native current-execution
 /// authority nor the cooperative wake prompt: no wake can be delivered.
@@ -172,6 +249,34 @@ fn component(
     }
 }
 
+/// The one line a fold of more than two degraded lanes renders.
+fn folded_lanes_text(lanes: &[LaneDegradation], log: Option<&std::path::Path>) -> String {
+    let names: Vec<&str> = lanes.iter().map(|lane| lane.lane).collect();
+    let mut text = format!("{} lanes degraded ({})", lanes.len(), names.join(", "));
+    if let Some(log) = log {
+        text.push_str(&format!(": see {}", log.display()));
+    }
+    text
+}
+
+/// Keeps `lines` within [`HEALTH_LINE_BUDGET`]: the unresolved-seat sample
+/// lines at `sample_at..sample_at + sample_len` go first (the summary line
+/// before them already states the count), then the tail folds into one line
+/// counting what it hides.
+fn fit_budget(lines: &mut Vec<String>, sample_at: usize, sample_len: usize) {
+    if lines.len() > HEALTH_LINE_BUDGET {
+        let drop = (lines.len() - HEALTH_LINE_BUDGET).min(sample_len);
+        lines.drain(sample_at + sample_len - drop..sample_at + sample_len);
+    }
+    if lines.len() > HEALTH_LINE_BUDGET {
+        let hidden = lines.len() - (HEALTH_LINE_BUDGET - 1);
+        lines.truncate(HEALTH_LINE_BUDGET - 1);
+        lines.push(format!(
+            "{hidden} more lines not shown; run `herdr-threads doctor` and see the daemon log"
+        ));
+    }
+}
+
 fn push(lines: &mut Vec<String>, line: String) {
     if lines.len() < 16 {
         lines.push(bounded(&line, 256));
@@ -207,7 +312,9 @@ fn harness_line(
                 push(notes, line);
             }
         }
-        HarnessStatus::Supported(detail) => push(notes, format!("harness {name}: {detail}")),
+        HarnessStatus::Supported(detail) | HarnessStatus::Optimistic(detail) => {
+            push(notes, format!("harness {name}: {detail}"))
+        }
     }
 }
 
@@ -305,6 +412,10 @@ impl HealthInputs {
             last_reconciliation_at: None,
             binding_evidence: None,
             unresolved: None,
+            log_path: None,
+            degraded_lanes: Vec::new(),
+            transitions_refused: 0,
+            hook_parse_failures: Vec::new(),
         }
     }
 
@@ -329,7 +440,40 @@ impl HealthInputs {
         health.host.coherent_enumeration = self.coherent_enumeration;
         health.host.safe_prompt = self.safe_prompt;
         health.host.receipt_registration = self.receipt_registration;
-        let scheduler = component("scheduler", self.scheduler, &mut health.limitations);
+        // More than two degraded lanes fold into one summary line; fewer keep
+        // one line each (the first through the scheduler component).
+        let folded = self.degraded_lanes.len() > LANE_LINES_BEFORE_FOLD;
+        let scheduler_status = if folded {
+            ComponentStatus::Degraded(folded_lanes_text(
+                &self.degraded_lanes,
+                self.log_path.as_deref(),
+            ))
+        } else {
+            self.scheduler
+        };
+        let scheduler = component("scheduler", scheduler_status, &mut health.limitations);
+        if !folded {
+            for lane in self.degraded_lanes.iter().skip(1) {
+                push(
+                    &mut health.limitations,
+                    format!("scheduler degraded: {}", lane.summary),
+                );
+            }
+            if let (false, Some(path)) = (self.degraded_lanes.is_empty(), &self.log_path) {
+                push(
+                    &mut health.limitations,
+                    format!(
+                        "degraded: {}",
+                        crate::daemon::remedy::remedy(
+                            pointer_class(&self.degraded_lanes),
+                            &crate::daemon::remedy::RemedyContext::LaneDegraded {
+                                log: path.clone(),
+                            },
+                        )
+                    ),
+                );
+            }
+        }
         health.last_scheduler_tick_at = self.last_scheduler_tick_at;
         health.harness = HarnessHealth {
             codex: self.codex.state(),
@@ -338,11 +482,19 @@ impl HealthInputs {
         for (name, status) in [("claude", &self.claude), ("codex", &self.codex)] {
             harness_line(name, status, &mut health.limitations, &mut health.notes);
         }
-        let cooperative_harness = [&self.claude, &self.codex]
-            .iter()
-            .any(|status| matches!(status, HarnessStatus::Cooperative { .. }));
+        let cooperative_harness = [&self.claude, &self.codex].iter().any(|status| {
+            matches!(
+                status,
+                HarnessStatus::Cooperative { .. } | HarnessStatus::Optimistic(_)
+            )
+        });
         if cooperative_harness {
-            push(&mut health.notes, COOPERATIVE_RECEIPT_LINE.into());
+            push(&mut health.notes, cooperative_receipt_line());
+        }
+        for (harness, count) in &self.hook_parse_failures {
+            if *count > 0 {
+                push(&mut health.notes, hook_parse_failure_line(harness, *count));
+            }
         }
         let cooperative_wake = self.safe_prompt == CapabilityState::Supported
             && self.current_execution != CapabilityState::Supported;
@@ -373,15 +525,27 @@ impl HealthInputs {
                 .limitations
                 .push(binding_evidence_health_line(report));
         }
+        if self.transitions_refused > 0 {
+            push(
+                &mut health.notes,
+                format!(
+                    "reconciliation: the store refused {} seat transition(s) since boot; those \
+                     seats were skipped, the others reconciled",
+                    self.transitions_refused
+                ),
+            );
+        }
         health.unresolved_seats = self.unresolved.as_ref().map(|summary| summary.count);
         let unresolved = self
             .unresolved
             .as_ref()
             .is_some_and(|summary| summary.count > 0);
+        let (mut sample_at, mut sample_len) = (0, 0);
         if let Some(summary) = self.unresolved.as_ref().filter(|summary| summary.count > 0) {
             // At most 1 + UNRESOLVED_SEAT_SAMPLE lines; with every other
             // source present Health stays within its 16-line bound.
             health.limitations.push(unresolved_seats_line(summary));
+            sample_at = health.limitations.len();
             health.limitations.extend(
                 summary
                     .sample
@@ -389,12 +553,15 @@ impl HealthInputs {
                     .take(crate::ports::UNRESOLVED_SEAT_SAMPLE)
                     .map(unresolved_seat_line),
             );
+            sample_len = health.limitations.len() - sample_at;
         }
         if self.retirement.degraded {
             health.limitations.push(
                 "retirement cleanup degraded; inspect the exact seat for the retained error".into(),
             );
         }
+        fit_budget(&mut health.limitations, sample_at, sample_len);
+        fit_budget(&mut health.notes, 0, 0);
         // Healthy is the designed operating mode, not native verification:
         // cooperative wake (or native current execution), cooperative or
         // supported harnesses, and no host receipt registration needed
@@ -419,3 +586,10 @@ impl HealthInputs {
         health
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/daemon/health_budget.rs"]
+mod health_budget;
+#[cfg(test)]
+#[path = "../../tests/daemon/health_optimistic.rs"]
+mod health_optimistic;

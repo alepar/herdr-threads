@@ -1164,20 +1164,11 @@ fn selected_len(page: &PendingPage, output: &OutputSpec) -> Result<usize, ApiErr
     Ok(encode_selected(&CommandResult::LocalIntents(page.clone()), output)?.len())
 }
 fn budget_error(minimum: usize) -> ApiError {
-    ApiError {
-        code: ErrorCode::InvalidBudget,
-        detail: "intent output budget too small".into(),
-        restart_argv: None,
-        required_minimum_bytes: Some(u32::try_from(minimum).unwrap_or(u32::MAX)),
-    }
+    ApiError::invalid_budget("intent output budget too small")
+        .with_required_minimum_bytes(u32::try_from(minimum).unwrap_or(u32::MAX))
 }
 fn api(code: ErrorCode, detail: impl Into<String>) -> ApiError {
-    ApiError {
-        code,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::new(code, detail)
 }
 fn io_api(error: impl std::fmt::Display) -> ApiError {
     api(ErrorCode::StoreCorrupt, error.to_string())

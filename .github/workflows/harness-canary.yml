@@ -1,0 +1,137 @@
+name: harness-canary
+
+# Daily harness version canary (docs/compatibility/harnesses.md, "Harness canary").
+# The pull_request trigger runs the offline selftest job only; the canary job needs the network,
+# npm, a Rust build and (optionally) API keys, so it runs on schedule and manual dispatch.
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+    inputs:
+      harness:
+        description: Harness to check
+        type: choice
+        options: [both, claude, codex]
+        default: both
+      versions:
+        description: latest, since-verified, or a comma-separated version list
+        type: string
+        default: since-verified
+      model_tier:
+        description: Tier 1 (model) checks
+        type: choice
+        options: [auto, off, required]
+        default: auto
+      runner:
+        description: Runner image for the canary job
+        type: choice
+        options: [ubuntu-24.04, macos-15]
+        default: ubuntu-24.04
+  pull_request:
+    paths:
+      - scripts/harness-canary.sh
+      - scripts/canary/**
+      - scripts/harness-canary-selftest/**
+      - .github/workflows/harness-canary.yml
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: 1.94.0
+
+jobs:
+  selftest:
+    name: selftest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - name: Canary self-test (offline)
+        run: scripts/harness-canary.sh --self-test
+      - name: Issue filing dry-run cases (offline)
+        run: python3 scripts/canary/test_file_issues.py
+
+  canary:
+    name: canary
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: selftest
+    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      issues: write
+    concurrency:
+      group: harness-canary
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Choose the output directory
+        run: echo "CANARY_OUT=$RUNNER_TEMP/canary" >> "$GITHUB_ENV"
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Set up Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      - name: Build herdr-threads
+        run: cargo build --locked
+      - name: Run canary
+        id: canary
+        env:
+          CANARY_HARNESS: ${{ inputs.harness || 'both' }}
+          CANARY_VERSIONS: ${{ inputs.versions || 'since-verified' }}
+          CANARY_MODEL_TIER: ${{ inputs.model_tier || 'auto' }}
+          # Empty when the secret is absent: tier 1 is then skipped for that harness.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set +e
+          scripts/harness-canary.sh --harness "$CANARY_HARNESS" --versions "$CANARY_VERSIONS" \
+            --bisect --model-tier "$CANARY_MODEL_TIER" --keep --out "$CANARY_OUT"
+          code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Upload report and probe logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: harness-canary-report
+          path: |
+            ${{ env.CANARY_OUT }}/canary-report.json
+            ${{ env.CANARY_OUT }}/summary.md
+            ${{ env.CANARY_OUT }}/work/**/logs/**
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Job summary
+        if: always()
+        run: |
+          if [ -f "$CANARY_OUT/summary.md" ]; then cat "$CANARY_OUT/summary.md" >> "$GITHUB_STEP_SUMMARY"; fi
+      - name: File issues
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ ! -f "$CANARY_OUT/canary-report.json" ]; then
+            echo "no canary-report.json (the canary failed before writing one); no issues filed"
+            exit 0
+          fi
+          python3 scripts/canary/file_issues.py --report "$CANARY_OUT/canary-report.json" \
+            --repo "$GITHUB_REPOSITORY" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+      - name: Exit with the canary result
+        if: always()
+        env:
+          CANARY_CODE: ${{ steps.canary.outputs.code }}
+        run: exit "${CANARY_CODE:-2}"

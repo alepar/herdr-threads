@@ -3,7 +3,7 @@
 Status: **passing** (see Results). The platform is Herdr `0.9.1` (the pinned binary, sha256 `5fc7a7e7…c89de`) on macOS arm64. Run the gate with:
 
 ```sh
-cargo test --locked --test package install::clean_package_install_lifecycle -- --ignored --exact --nocapture
+cargo test --locked --features test-support --test package install::clean_package_install_lifecycle -- --ignored --exact --nocapture
 # or directly, optionally against another repository/ref:
 scripts/validate-package.sh [SOURCE_REPOSITORY [REF]]
 ```

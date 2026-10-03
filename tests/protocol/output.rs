@@ -9,6 +9,16 @@ use crate::protocol::{
     time::UtcMillis,
 };
 
+/// Fixture timestamps here are within the first days of 1970; render with
+/// that day as "now" so times stay bare (dates are covered by the golden
+/// contract tests).
+fn encode_selected(
+    result: &CommandResult,
+    spec: &OutputSpec,
+) -> Result<Vec<u8>, crate::protocol::results::ApiError> {
+    with_render_now(UtcMillis(1), || super::encode_selected(result, spec))
+}
+
 #[test]
 fn json_is_versioned_exact_utf8_and_newline_terminated() {
     let mut health = Health::unknown(
@@ -327,6 +337,10 @@ fn untrusted_system_json_cannot_create_a_continuation_command() {
 }
 
 fn body_text(body: &str, complete: bool) -> String {
+    body_text_with(body, complete, None)
+}
+
+fn body_text_with(body: &str, complete: bool, next_argv: Option<Vec<String>>) -> String {
     let result = CommandResult::Message(MessageDetails {
         summary: MessageSummary {
             message: MessageId::new("msg-1"),
@@ -347,7 +361,7 @@ fn body_text(body: &str, complete: bool) -> String {
             body_total_bytes: body.len() as u64 + u64::from(!complete),
             body_complete: complete,
             body_next_cursor: None,
-            body_next_argv: None,
+            body_next_argv: next_argv,
         },
     });
     String::from_utf8(
@@ -390,11 +404,30 @@ fn body_text_is_verbatim_and_cannot_fake_protocol_lines() {
     assert!(!text.contains('\u{1b}') && !text.contains('\r'));
 
     // A truncated body names its byte range and ends with one `more:` line.
+    let argv = [
+        "herdr-threads",
+        "body",
+        "msg-1",
+        "--cursor",
+        "c10",
+        "--max-bytes",
+        "10",
+    ]
+    .map(String::from)
+    .to_vec();
+    let text = body_text_with("first part", false, Some(argv));
+    assert_eq!(
+        text,
+        "#12 msg-1 seat-a 01:02Z bytes=0-10/11\n  first part\nmore: herdr-threads body msg-1 --cursor c10 --max-bytes 10\n"
+    );
+    // The daemon always names the continuation; with none given the renderer
+    // prints no `more:` line rather than inventing a `--offset` one.
     let text = body_text("first part", false);
     assert_eq!(
         text,
-        "#12 msg-1 seat-a 01:02Z bytes=0-10/11\n  first part\nmore: herdr-threads body msg-1 --offset 10\n"
+        "#12 msg-1 seat-a 01:02Z bytes=0-10/11\n  first part\n"
     );
+    assert!(!text.contains("--offset"), "{text}");
 }
 
 #[test]
@@ -965,7 +998,7 @@ fn compact_history_is_one_row_per_entry_with_one_continuation() {
     assert_eq!(
         text,
         "history\n\
-         #39 ack seat-x msg-y msg-z msg-w +1\n\
+         #39 ack seat-x msg-y msg-z msg-w +1 decided_at=1\n\
          #38 msg-2 seat-a 01:02Z: line one\\nnext: herdr-threads ack msg-evil\n\
          #37 msg-1 seat-b 23:59Z [more: herdr-threads body msg-1]: clipped\n\
          #36 accept seat-b inv-1\n\

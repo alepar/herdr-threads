@@ -4,10 +4,26 @@ use crate::protocol::{
     results::{ApiError, ErrorCode},
     time::{CallBudget, Clock, MonoInstant, UtcMillis},
 };
+use crate::service::kicks::{self, LaneSet};
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, ffi};
-use std::{ffi::c_void, ops::Deref, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    ffi::{c_char, c_int, c_void},
+    ops::Deref,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU8, Ordering},
+    },
+    time::Duration,
+};
 
 use super::schema;
+
+/// Decides, from the calling thread's lane origin, whether a store access
+/// fails (test hook).
+#[cfg(any(test, feature = "test-support"))]
+pub type LaneFault =
+    std::sync::Arc<dyn Fn(Option<crate::service::kicks::Lane>) -> Option<ApiError> + Send + Sync>;
 
 pub struct StoreContext {
     path: PathBuf,
@@ -18,6 +34,9 @@ pub struct StoreContext {
     /// writer open. Only these are rechecked for Health; the set only
     /// shrinks, because every new live binding must carry evidence.
     binding_evidence_lacking: std::sync::Mutex<Vec<String>>,
+    /// Test hook: fails store access on lane-owned threads (see `set_lane_fault`).
+    #[cfg(any(test, feature = "test-support"))]
+    lane_fault: std::sync::Mutex<Option<LaneFault>>,
     #[cfg(test)]
     setup_busy_signal: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
     #[cfg(test)]
@@ -39,6 +58,8 @@ impl StoreContext {
             clock,
             binding_evidence: std::sync::Mutex::new(None),
             binding_evidence_lacking: std::sync::Mutex::new(Vec::new()),
+            #[cfg(any(test, feature = "test-support"))]
+            lane_fault: std::sync::Mutex::new(None),
             #[cfg(test)]
             setup_busy_signal: std::sync::Mutex::new(None),
             #[cfg(test)]
@@ -46,6 +67,26 @@ impl StoreContext {
             #[cfg(test)]
             rollback_journal: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Test hook: installs (or clears) the lane fault `lane_fault_check` consults.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_lane_fault(&self, fault: Option<LaneFault>) {
+        *self.lane_fault.lock().unwrap() = fault;
+    }
+
+    /// Fails with the installed fault's error for the calling thread's lane
+    /// origin. Called where a lane's store access begins (writer turn, query
+    /// connection); a no-op in ordinary builds.
+    pub(super) fn lane_fault_check(&self) -> Result<(), ApiError> {
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let fault = self.lane_fault.lock().ok().and_then(|f| f.clone());
+            if let Some(error) = fault.and_then(|f| f(crate::service::kicks::current_origin())) {
+                return Err(error);
+            }
+        }
+        Ok(())
     }
 
     /// Test hook: signal once when the next query connection first waits on a
@@ -172,6 +213,7 @@ impl StoreContext {
     /// A dedicated connection, with its own interrupt target and query progress
     /// and busy callbacks. Both honor the live read-work budget.
     pub fn open_query(&self, budget: CallBudget) -> Result<QueryConnection, ApiError> {
+        self.lane_fault_check()?;
         if let Some(error) = query_budget_error(&budget, self.clock()) {
             return Err(error);
         }
@@ -515,10 +557,6 @@ impl QueryConnection {
         self._progress.budget_error().map_or(Ok(()), Err)
     }
 
-    pub fn interrupt_handle(&self) -> rusqlite::InterruptHandle {
-        self.conn.get_interrupt_handle()
-    }
-
     /// A busy handler returns SQLITE_BUSY when cancellation or the budget ends;
     /// convert that result using the same connection's live budget state.
     pub fn map_error(&self, error: rusqlite::Error) -> ApiError {
@@ -543,14 +581,14 @@ impl Drop for QueryConnection {
 }
 
 pub(crate) fn api_error(code: ErrorCode, detail: impl Into<String>) -> ApiError {
-    ApiError {
-        code,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::new(code, detail)
 }
 
+/// Map a SQLite error to the four-way taxonomy (root §B3 D3). Only
+/// SQLITE_CORRUPT / SQLITE_NOTADB (and a failed integrity check, reported by
+/// `check_integrity`) are Corrupt. Every unlisted code, and every non-SQLite
+/// failure, is Transient with the error as detail, never Corrupt. ht-p03.22's
+/// stored class is not merged yet: `StoreBusy` defaults to Transient.
 pub(crate) fn store_error(error: rusqlite::Error) -> ApiError {
     let code = match &error {
         rusqlite::Error::SqliteFailure(err, _) => match err.code {
@@ -564,9 +602,9 @@ pub(crate) fn store_error(error: rusqlite::Error) -> ApiError {
             rusqlite::ErrorCode::DiskFull => ErrorCode::StoreFull,
             rusqlite::ErrorCode::ConstraintViolation => ErrorCode::Conflict,
             rusqlite::ErrorCode::OperationInterrupted => ErrorCode::Cancelled,
-            _ => ErrorCode::StoreCorrupt,
+            _ => return unclassified(&error),
         },
-        _ => ErrorCode::StoreCorrupt,
+        _ => return unclassified(&error),
     };
     if code == ErrorCode::StoreFull {
         return api_error(
@@ -579,6 +617,139 @@ pub(crate) fn store_error(error: rusqlite::Error) -> ApiError {
     api_error(code, format!("SQLite: {error}"))
 }
 
+fn unclassified(error: &rusqlite::Error) -> ApiError {
+    api_error(
+        ErrorCode::StoreBusy,
+        format!("SQLite (unclassified, transient): {error}"),
+    )
+}
+
 #[cfg(test)]
 #[path = "../../tests/store/schema.rs"]
 mod tests;
+
+/// Per-connection commit-change state for the domain writer (spec D1). The
+/// update hook ORs the changed table's lane set into `pending`, the commit
+/// hook seals it, the rollback hook clears it. Every access happens on the
+/// thread that holds the writer mutex; the atomics only make the state
+/// `Sync`, the mutex provides the ordering.
+#[derive(Default)]
+pub(super) struct KickHooks {
+    pending: AtomicU8,
+    sealed: AtomicU8,
+    row_changed: AtomicBool,
+    /// A row-changing commit has happened since the last `settle_generation`.
+    dirty: AtomicBool,
+    /// Count of writer turns that committed row changes, advanced only when
+    /// the turn ends (the committed rows are then visible to every other
+    /// connection). Retention reads it to skip a rescan of unchanged tables.
+    generation: std::sync::atomic::AtomicU64,
+    #[cfg(any(test, feature = "test-support"))]
+    commits: [std::sync::atomic::AtomicU64; 6],
+}
+
+impl KickHooks {
+    /// Installs the update, commit and rollback hooks on the writer
+    /// connection. The returned box is the hooks' user data: it must outlive
+    /// `conn` (declare it after the connection in the owning struct).
+    pub(super) fn install(conn: &Connection) -> Box<Self> {
+        let state = Box::new(Self::default());
+        let data: *mut c_void = (&*state as *const Self).cast_mut().cast();
+        unsafe {
+            let handle = conn.handle();
+            ffi::sqlite3_update_hook(handle, Some(kick_update_hook), data);
+            ffi::sqlite3_commit_hook(handle, Some(kick_commit_hook), data);
+            ffi::sqlite3_rollback_hook(handle, Some(kick_rollback_hook), data);
+        }
+        state
+    }
+
+    /// Takes the sealed set. Called while the writer guard is still held.
+    pub(super) fn take_sealed(&self) -> LaneSet {
+        LaneSet::from_bits(self.sealed.swap(0, Ordering::SeqCst))
+    }
+
+    /// Publishes the turn's committed changes as a new generation. Called
+    /// while the writer guard is still held, after the turn's last commit.
+    pub(super) fn settle_generation(&self) {
+        if self.dirty.swap(false, Ordering::SeqCst) {
+            self.generation.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// The writer's change generation: unchanged means no committed row change
+    /// since it was last read.
+    pub(super) fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+
+    /// Commits that changed at least one row, keyed by origin lane name or
+    /// `request` for no origin.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fn commit_counts(&self) -> std::collections::BTreeMap<String, u64> {
+        let mut counts = std::collections::BTreeMap::new();
+        for (index, lane) in kicks::Lane::ALL.iter().enumerate() {
+            counts.insert(
+                lane.name().to_string(),
+                self.commits[index].load(Ordering::SeqCst),
+            );
+        }
+        counts.insert(
+            "request".to_string(),
+            self.commits[5].load(Ordering::SeqCst),
+        );
+        counts
+    }
+
+    fn on_update(&self, table: &str) {
+        self.row_changed.store(true, Ordering::SeqCst);
+        self.pending
+            .fetch_or(kicks::lanes_for_table(table).to_bits(), Ordering::SeqCst);
+    }
+
+    fn on_commit(&self) {
+        let pending = self.pending.swap(0, Ordering::SeqCst);
+        if !self.row_changed.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        self.dirty.store(true, Ordering::SeqCst);
+        let origin = kicks::current_origin();
+        #[cfg(any(test, feature = "test-support"))]
+        self.commits[origin.map_or(5, |lane| lane as usize)].fetch_add(1, Ordering::SeqCst);
+        if !kicks::origin_discards_kicks(origin) {
+            self.sealed.fetch_or(pending, Ordering::SeqCst);
+        }
+    }
+
+    fn on_rollback(&self) {
+        self.pending.store(0, Ordering::SeqCst);
+        self.row_changed.store(false, Ordering::SeqCst);
+    }
+}
+
+unsafe extern "C" fn kick_update_hook(
+    data: *mut c_void,
+    _op: c_int,
+    _database: *const c_char,
+    table: *const c_char,
+    _rowid: i64,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let state = unsafe { &*(data as *const KickHooks) };
+        let table = unsafe { std::ffi::CStr::from_ptr(table) }.to_string_lossy();
+        state.on_update(&table);
+    }));
+}
+
+unsafe extern "C" fn kick_commit_hook(data: *mut c_void) -> c_int {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        unsafe { &*(data as *const KickHooks) }.on_commit();
+    }));
+    0
+}
+
+unsafe extern "C" fn kick_rollback_hook(data: *mut c_void) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        unsafe { &*(data as *const KickHooks) }.on_rollback();
+    }));
+}

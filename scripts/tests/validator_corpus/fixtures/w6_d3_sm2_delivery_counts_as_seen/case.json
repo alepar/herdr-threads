@@ -1,0 +1,35 @@
+{
+  "harness": "claude",
+  "scenario": "midturn",
+  "db": {
+    "messages": [
+      {
+        "id": "msg-1",
+        "seq": 5,
+        "acked": true
+      },
+      {
+        "id": "msg-mid",
+        "seq": 6
+      }
+    ]
+  },
+  "facts": {
+    "messages": {
+      "initial": "msg-1",
+      "midturn": "msg-mid"
+    },
+    "midturn": {
+      "message": "msg-mid",
+      "after_call": "toolu_first",
+      "sent_utc": "2026-09-30T00:00:05+00:00",
+      "delivery": "additional_context"
+    }
+  },
+  "steps": [
+    [
+      "SM2",
+      "PASS"
+    ]
+  ]
+}

@@ -1,7 +1,7 @@
 use super::*;
 use crate::ports::{
-    CorrelatedStartup, EvidenceKind, ExecutionEvidence, HostLifecycleSubscription, HostSnapshot,
-    IncarnationEvidence, ObservationProvenance, PromptOutcome, SafeWakeTarget,
+    CorrelatedStartup, EvidenceKind, ExecutionEvidence, HostSnapshot, IncarnationEvidence,
+    ObservationProvenance, PromptOutcome, SafeWakeTarget,
 };
 use crate::protocol::{
     ids::{HostBootId, HostCallId},
@@ -45,12 +45,6 @@ impl HostPort for FakeHost {
     fn enumerate_targets(&self, _: &HostCallContext) -> Result<HostSnapshot, ApiError> {
         unreachable!()
     }
-    fn subscribe_lifecycle(
-        &self,
-        _: &HostCallContext,
-    ) -> Result<Box<dyn HostLifecycleSubscription>, ApiError> {
-        unreachable!()
-    }
     fn safe_wake_target(&self, _: &SeatId, _: &HostObservation) -> Option<SafeWakeTarget> {
         unreachable!()
     }
@@ -62,6 +56,14 @@ impl HostPort for FakeHost {
     ) -> Result<PromptOutcome, ApiError> {
         unreachable!()
     }
+    fn pane_agent_state(
+        &self,
+        _target: &SafeWakeTarget,
+        _context: &HostCallContext,
+    ) -> Result<crate::ports::AgentComposerState, ApiError> {
+        Ok(crate::ports::AgentComposerState::Submitted)
+    }
+
     fn observe_pane_agent(
         &self,
         target: &HostTargetId,
@@ -106,6 +108,13 @@ impl HostPort for FakeHost {
             }
             NativeLaunchOutcome::OutcomeUnknown => NativeLaunchOutcome::OutcomeUnknown,
         })
+    }
+    fn send_submit_key(
+        &self,
+        _: &crate::ports::SafeWakeTarget,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<(), crate::protocol::results::ApiError> {
+        Ok(())
     }
 }
 struct FakeSeats {
@@ -540,30 +549,6 @@ fn guarded_start_delegates_unknown_availability_for_both_harnesses() {
         );
         assert_eq!(seats.calls.load(Ordering::SeqCst), 1);
         assert_eq!(host.submitted.lock().unwrap().len(), 1);
-    }
-}
-
-#[test]
-fn direct_start_rejects_unknown_availability_for_both_harnesses() {
-    for harness in [Harness::Codex, Harness::Claude] {
-        let (mut host, seats, hooks, clock, budget) = fixture();
-        host.capability = NativeLaunchCapability::ProvenEmptyShell;
-        host.observations.lock().unwrap()[0].occupancy = StructuralOccupancy::Unknown;
-        assert_eq!(
-            launch_managed(
-                &host,
-                &seats,
-                &hooks,
-                &clock,
-                request(harness, &[]),
-                &budget
-            )
-            .unwrap_err()
-            .code,
-            ErrorCode::TargetUnsafe
-        );
-        assert_eq!(seats.calls.load(Ordering::SeqCst), 0);
-        assert!(host.submitted.lock().unwrap().is_empty());
     }
 }
 
@@ -1117,6 +1102,18 @@ fn shell_wrapper_no_daemon_is_never_duplicated() {
         compose_native_argv_with(Harness::Claude, vec!["x".into()], Vec::new(), true).unwrap(),
         ["x"]
     );
+}
+
+/// Kills: the `-c`/`-i` refusal scanning a prompt or the arguments after `--`
+/// as if they were options; options before them are still refused.
+#[test]
+fn config_refusal_ignores_positionals_after_options() {
+    assert!(compose(&["exec", "use -c here"]).is_ok());
+    assert!(compose(&["--", "-c"]).is_ok());
+    assert!(compose(&["exec", "--", "-c", "hooks.x=1"]).is_ok());
+    assert!(compose(&["exec", "-m", "gpt", "run -i now"]).is_ok());
+    assert!(compose(&["-c", "hooks.SessionStart=[]", "exec"]).is_err());
+    assert!(compose(&["exec", "PROMPT", "-c", "hooks.x=1"]).is_err());
 }
 
 fn bound_fixture(

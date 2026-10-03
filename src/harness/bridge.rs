@@ -865,12 +865,7 @@ pub fn read_digest<C: LocalClient + ?Sized>(
         }),
         budget,
     )?;
-    let invalid = |detail: &str| ApiError {
-        code: crate::protocol::results::ErrorCode::StoreCorrupt,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    };
+    let invalid = |detail: &str| ApiError::store_corrupt(detail);
     let CommandResult::AttentionDigest(digest) = result else {
         return Err(invalid("service returned no attention digest"));
     };

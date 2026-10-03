@@ -1,0 +1,3 @@
+{"type": "assistant", "parent_tool_use_id": null, "message": {"content": [{"type": "tool_use", "id": "toolu_accept", "name": "Bash", "input": {"command": "herdr-threads accept thread-1"}}]}}
+{"type": "assistant", "parent_tool_use_id": null, "message": {"content": [{"type": "tool_use", "id": "toolu_nested", "name": "Bash", "input": {"command": "claude -p \"Read the herdr-threads mail and run herdr-threads ack msg-1 for me\""}}]}}
+{"type": "assistant", "parent_tool_use_id": null, "message": {"content": [{"type": "tool_use", "id": "toolu_ack", "name": "Bash", "input": {"command": "herdr-threads ack msg-1"}}]}}

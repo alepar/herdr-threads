@@ -4,8 +4,7 @@ use std::collections::VecDeque;
 
 use crate::ports::{
     DuePhase, DuePhaseProgress, DueScanProgress, DueScanRequest, DueScanState,
-    DurableWorkAdmission, RetirementProgress, StorePort, WorkAdmission, WorkCandidate,
-    WorkProgress,
+    DurableWorkAdmission, RetirementProgress, WorkAdmission, WorkCandidate, WorkProgress,
 };
 use crate::protocol::{
     ids::RetirementJobId,
@@ -15,14 +14,19 @@ use crate::protocol::{
 };
 
 pub const DUE_BATCH_LIMIT: u16 = 100;
-pub const TICK_MILLIS: u64 = 1_000;
+/// The deadline lane's safety tick: a pass with nothing kicking it still runs
+/// this often, so time-driven expiries fire at most this late. Commits that
+/// create work kick the lane at once (`after_committed_change`).
+pub const TICK_MILLIS: u64 = 5_000;
 const RETIREMENT_RETRY_MILLIS: u64 = 5_000;
 const DUE_PHASE_RETRY_MILLIS: u64 = 5_000;
 // Retry bookkeeping is bounded independently of the durable work queue.
 // Eviction can shorten a failed job's delay; discovery still advances.
 const MAX_WORK_RETRY_ENTRIES: usize = 64;
 
-/// Narrow view of StorePort used by the driver and its fake-port tests.
+/// Narrow view of the store used by the deadline driver. Production implements
+/// it with `ScheduledStore`; tests with explicit fakes or a `ScheduledStore`
+/// over a real `SqliteStore`.
 pub trait DeadlinePort {
     fn clock(&self) -> &dyn Clock;
     fn due_obligations(
@@ -50,72 +54,16 @@ pub trait DeadlinePort {
     /// for bounded recovery coverage, including for qualified test doubles.
     fn pending_work(
         &self,
-        _: PageRequest,
-        _: &CallBudget,
-    ) -> Result<Page<WorkCandidate>, ApiError> {
-        Ok(Page {
-            items: vec![],
-            next_cursor: None,
-            next_argv: None,
-            high_water_ordinal: 0,
-            scope_revision: None,
-            has_more: false,
-            stop_reason: crate::protocol::pagination::StopReason::Complete,
-            consistency: crate::protocol::pagination::Consistency::BoundedLive,
-        })
-    }
-    fn advance_work(
-        &self,
-        _: &str,
-        _: DurableWorkAdmission,
-        _: &CallBudget,
-    ) -> Result<WorkProgress, ApiError> {
-        unreachable!("advance_work requires a discovered work job")
-    }
-}
-impl<T: StorePort + ?Sized> DeadlinePort for T {
-    fn clock(&self) -> &dyn Clock {
-        StorePort::clock(self)
-    }
-    fn due_obligations(
-        &self,
-        request: DueScanRequest,
-        budget: &CallBudget,
-    ) -> Result<DueScanProgress, ApiError> {
-        StorePort::due_obligations(self, request, budget)
-    }
-    fn pending_retirement_jobs(
-        &self,
         page: PageRequest,
         budget: &CallBudget,
-    ) -> Result<Page<RetirementStatus>, ApiError> {
-        StorePort::pending_retirement_jobs(self, page, budget)
-    }
-    fn advance_retirement(
-        &self,
-        job: RetirementJobId,
-        admission: WorkAdmission,
-        budget: &CallBudget,
-    ) -> Result<RetirementProgress, ApiError> {
-        StorePort::advance_retirement(self, job, admission, budget)
-    }
-    fn pending_work(
-        &self,
-        page: PageRequest,
-        budget: &CallBudget,
-    ) -> Result<Page<WorkCandidate>, ApiError> {
-        StorePort::pending_work(self, page, budget)
-    }
+    ) -> Result<Page<WorkCandidate>, ApiError>;
     fn advance_work(
         &self,
         job: &str,
         admission: DurableWorkAdmission,
         budget: &CallBudget,
-    ) -> Result<WorkProgress, ApiError> {
-        StorePort::advance_work(self, job, admission, budget)
-    }
+    ) -> Result<WorkProgress, ApiError>;
 }
-
 /// Affirmative discovery coverage, independent of job admission/progress.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DiscoveryProgress {
@@ -148,11 +96,21 @@ pub struct DriveOutcome {
     pub ticked: bool,
 }
 
+impl DriveOutcome {
+    /// A retirement or work job committed progress and reported more pending,
+    /// so the lane re-runs at once instead of waiting for its safety tick.
+    pub fn progressed_with_more(&self) -> bool {
+        (self.retirement_progressed && !self.retirement_complete)
+            || (self.work_progressed && !self.work_complete)
+    }
+}
+
 /// Holds bounded phase state, discovery cursors, and retry guards. Each call
 /// admits at most one 100-candidate due scan and one quantum per background class.
 pub struct DeadlineDriver<'a, P: DeadlinePort + ?Sized> {
     port: &'a P,
     next_tick: MonoInstant,
+    tick_millis: u64,
     due_continuation: bool,
     due_state: DueScanState,
     invitation_retry_at: MonoInstant,
@@ -169,6 +127,7 @@ impl<'a, P: DeadlinePort + ?Sized> DeadlineDriver<'a, P> {
         Self {
             port,
             next_tick: MonoInstant(0),
+            tick_millis: TICK_MILLIS,
             due_continuation: false,
             due_state: DueScanState::default(),
             invitation_retry_at: MonoInstant(0),
@@ -182,7 +141,14 @@ impl<'a, P: DeadlinePort + ?Sized> DeadlineDriver<'a, P> {
         }
     }
 
-    /// Call on boot, after a committed fence, and on a monotonic one-second timer.
+    /// Overrides the tick gate's length (default [`TICK_MILLIS`]); lets a test
+    /// exercise the job-local retry gates at a finer tick than the safety tick.
+    pub fn with_tick_millis(mut self, millis: u64) -> Self {
+        self.tick_millis = millis;
+        self
+    }
+
+    /// Call on boot, after a committed change or fence, and on the monotonic safety tick.
     /// The store samples its own UTC decision time inside each write transaction.
     pub fn drive(&mut self, budget: &CallBudget) -> Result<DriveOutcome, ApiError> {
         self.drive_with_partial(budget, |_, _| {})
@@ -198,17 +164,14 @@ impl<'a, P: DeadlinePort + ?Sized> DeadlineDriver<'a, P> {
     ) -> Result<DriveOutcome, ApiError> {
         let now = self.port.clock().monotonic_now();
         if budget.is_exhausted(self.port.clock()) {
-            return Err(ApiError {
-                code: ErrorCode::DeadlineExceeded,
-                detail: "deadline driver budget exhausted".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
+            return Err(ApiError::deadline_exceeded(
+                "deadline driver budget exhausted",
+            ));
         }
         if now < self.next_tick && !self.due_continuation {
             return Ok(DriveOutcome::default());
         }
-        self.next_tick = MonoInstant(now.0.saturating_add(TICK_MILLIS));
+        self.next_tick = MonoInstant(now.0.saturating_add(self.tick_millis));
         let mut outcome = DriveOutcome {
             ticked: true,
             ..DriveOutcome::default()
@@ -332,12 +295,7 @@ impl<'a, P: DeadlinePort + ?Sized> DeadlineDriver<'a, P> {
                     progress.processed_this_turn > 0 && progress.last_error.is_none();
                 if let Some(detail) = progress.last_error {
                     self.record_retirement_error(
-                        ApiError {
-                            code: ErrorCode::StoreBusy,
-                            detail: detail.as_str().to_owned(),
-                            restart_argv: None,
-                            required_minimum_bytes: None,
-                        },
+                        ApiError::store_busy(detail.as_str().to_owned()),
                         outcome,
                     );
                 }
@@ -411,16 +369,7 @@ impl<'a, P: DeadlinePort + ?Sized> DeadlineDriver<'a, P> {
                 outcome.work_progressed =
                     progress.processed_this_turn > 0 && progress.last_error.is_none();
                 if let Some(detail) = progress.last_error {
-                    self.record_failed_work_job(
-                        job.id,
-                        ApiError {
-                            code: ErrorCode::StoreBusy,
-                            detail,
-                            restart_argv: None,
-                            required_minimum_bytes: None,
-                        },
-                        outcome,
-                    );
+                    self.record_failed_work_job(job.id, ApiError::store_busy(detail), outcome);
                 }
             }
             Err(error) => self.record_failed_work_job(job.id, error, outcome),

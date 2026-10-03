@@ -1,5 +1,6 @@
 use super::*;
 use crate::store::schema;
+use crate::test_support::attention_oracle::scan_effective_seat_attention;
 use rusqlite::Connection;
 
 struct InboxClock;

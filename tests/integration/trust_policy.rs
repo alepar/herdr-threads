@@ -12,6 +12,7 @@
 #![cfg(target_os = "macos")]
 
 use super::sweep::{Scratch, agent_pane, host_reply, pane};
+use herdr_threads::test_support::spawn::SpawnOwned;
 use herdr_threads::{
     cli::hook::installed_argv,
     harness::{context::Harness, setup::plan_claude},
@@ -22,7 +23,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     os::unix::{fs::DirBuilderExt, net::UnixListener},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     time::{Duration, Instant},
 };
 
@@ -112,7 +113,7 @@ struct Herdr {
     socket: PathBuf,
     panes: PathBuf,
     prompts: PathBuf,
-    child: Option<Child>,
+    child: Option<herdr_threads::test_support::spawn::OwnedChild>,
 }
 impl Herdr {
     fn start(root: &Path, panes: Vec<Value>) -> Self {
@@ -123,7 +124,7 @@ impl Herdr {
             child: None,
         };
         herdr.set_panes(panes);
-        herdr.spawn();
+        herdr.spawn(); // leak-guard: fixture method, spawns via spawn_owned
         herdr
     }
     fn spawn(&mut self) {
@@ -140,7 +141,7 @@ impl Herdr {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .spawn()
+            .spawn_owned()
             .unwrap();
         self.child = Some(child);
         let until = Instant::now() + Duration::from_secs(20);
@@ -159,7 +160,7 @@ impl Herdr {
     fn restart(&mut self, panes: Vec<Value>) {
         self.kill();
         self.set_panes(panes);
-        self.spawn();
+        self.spawn(); // leak-guard: fixture method, spawns via spawn_owned
     }
     fn set_panes(&self, panes: Vec<Value>) {
         let temporary = self.panes.with_extension("tmp");
@@ -294,8 +295,8 @@ impl World {
         args: &[&str],
         env: &[(&str, &str)],
     ) -> Output {
-        let mut command = Command::new(BIN);
-        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
+        let mut command = Command::new(BIN); // leak-guard: tagged on the next line via spawn::tag
+        herdr_threads::test_support::spawn::tag(&mut command);
         command
             .arg("--json")
             .arg("--state-dir")
@@ -403,7 +404,7 @@ impl World {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
+            .spawn_owned()
             .unwrap();
         child.stdin.take().unwrap().write_all(stdin).unwrap();
         let output = child.wait_with_output().unwrap();
@@ -1154,6 +1155,10 @@ fn expected_boot_and_carry_forward_give_no_unknown_outcome_across_stop_ensure() 
 
     let registered = binding_rows(&world, &b);
     let first = world.ensure()["boot_id"].clone();
+    // The old daemon's marker must not satisfy `wait_reconciled` before the
+    // new daemon's own first pass (merge note: the combined tree's startup
+    // order exposed this race; `restart_daemon` records it the same way).
+    *world.stale_marker.borrow_mut() = world.marker();
     world.stop();
     let second = world.ensure()["boot_id"].clone();
     assert_ne!(first, second, "a genuinely new daemon boot");

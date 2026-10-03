@@ -1,6 +1,6 @@
 //! Bounded UTF-8 message input from one explicit source.
 
-use crate::protocol::results::{ApiError, ErrorCode};
+use crate::protocol::results::ApiError;
 use std::io::Read;
 
 /// The store's body limit is the single source of truth, so the CLI refuses an
@@ -8,12 +8,7 @@ use std::io::Read;
 pub use crate::store::messages::MAX_BODY_BYTES;
 
 fn invalid(detail: impl Into<String>) -> ApiError {
-    ApiError {
-        code: ErrorCode::InvalidRequest,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::invalid_request(detail)
 }
 
 pub fn read_body(

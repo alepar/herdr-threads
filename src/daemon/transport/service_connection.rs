@@ -2,193 +2,16 @@
 
 use super::*;
 use crate::{
-    ports::{
-        ServiceAuthorityGate, ServiceConnectionAuthority, ServiceDecisionGuard,
-        ServiceWriteTransactionProof,
+    ports::{ServiceAuthorityGate, ServiceConnectionAuthority},
+    protocol::service::{
+        ServiceRegister, ServiceRegistration, ServiceRequest, ServiceResult, ServiceWireRequest,
+        ServiceWireResponse,
     },
-    protocol::{
-        ids::ServiceAuthorId,
-        results::ServiceConnectionInspection,
-        service::{
-            ServiceRegister, ServiceRegistration, ServiceRequest, ServiceResult,
-            ServiceWireRequest, ServiceWireResponse,
-        },
-        time::UtcMillis,
-    },
+    service::live_gate::LiveServiceGate,
 };
-use std::sync::{Mutex, MutexGuard};
-
-struct RegisteredSession {
-    connection: Arc<ServiceConnectionAuthority>,
-    registered_at: UtcMillis,
-    cancellation: Cancellation,
-}
-
-struct LiveState {
-    next_generation: u64,
-    active: Option<RegisteredSession>,
-    last_registered_at: Option<UtcMillis>,
-}
-
-/// The mutex orders revocation against a store decision guard. No database or
-/// external call is made while registering or revoking.
-pub struct LiveServiceGate(Mutex<LiveState>);
-
-impl LiveServiceGate {
-    pub fn new() -> Self {
-        Self(Mutex::new(LiveState {
-            next_generation: 0,
-            active: None,
-            last_registered_at: None,
-        }))
-    }
-
-    fn state(&self) -> MutexGuard<'_, LiveState> {
-        self.0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    fn register_session(
-        &self,
-        instance: &str,
-        boot: &str,
-        author: ServiceAuthorId,
-        registered_at: UtcMillis,
-    ) -> Result<(Arc<ServiceConnectionAuthority>, Cancellation), ApiError> {
-        let mut state = self
-            .0
-            .try_lock()
-            .map_err(|_| service_error(ErrorCode::ServiceBusy, "service authority is deciding"))?;
-        if state.active.is_some() {
-            return Err(service_error(
-                ErrorCode::ServiceBusy,
-                "a service connection is already registered",
-            ));
-        }
-        state.next_generation = state
-            .next_generation
-            .checked_add(1)
-            .ok_or_else(|| service_error(ErrorCode::ServiceBusy, "service generation exhausted"))?;
-        let connection = Arc::new(ServiceConnectionAuthority::new(
-            instance.into(),
-            boot.into(),
-            state.next_generation,
-            author,
-        ));
-        let cancellation = Cancellation::default();
-        state.last_registered_at = Some(registered_at);
-        state.active = Some(RegisteredSession {
-            connection: connection.clone(),
-            registered_at,
-            cancellation: cancellation.clone(),
-        });
-        Ok((connection, cancellation))
-    }
-
-    pub fn inspect(&self, instance: &str, boot: &str) -> ServiceConnectionInspection {
-        let state = self.state();
-        ServiceConnectionInspection {
-            instance: instance.into(),
-            daemon_boot: boot.into(),
-            connected: state.active.is_some(),
-            connection_generation: state.active.as_ref().map_or_else(
-                || (state.next_generation != 0).then_some(state.next_generation),
-                |session| Some(session.connection.generation()),
-            ),
-            registered_at: state
-                .active
-                .as_ref()
-                .map_or(state.last_registered_at, |session| {
-                    Some(session.registered_at)
-                }),
-        }
-    }
-
-    pub fn disconnect(&self, instance: &str, boot: &str, generation: u64) -> bool {
-        let mut state = self.state();
-        if !state.active.as_ref().is_some_and(|session| {
-            session.connection.instance() == instance
-                && session.connection.boot() == boot
-                && session.connection.generation() == generation
-        }) {
-            return false;
-        }
-        let session = state.active.take().expect("matching service session");
-        session.cancellation.cancel();
-        true
-    }
-}
 
 fn service_error(code: ErrorCode, detail: &str) -> ApiError {
     api_error(code, detail)
-}
-
-struct DecisionGuard<'a> {
-    _state: MutexGuard<'a, LiveState>,
-    author: ServiceAuthorId,
-}
-
-impl ServiceDecisionGuard for DecisionGuard<'_> {
-    fn author(&self) -> &ServiceAuthorId {
-        &self.author
-    }
-}
-
-impl ServiceAuthorityGate for LiveServiceGate {
-    fn register(
-        &self,
-        instance: &str,
-        boot: &str,
-        author: ServiceAuthorId,
-    ) -> Result<ServiceConnectionAuthority, ApiError> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
-        let (connection, _) = self.register_session(instance, boot, author, UtcMillis(now))?;
-        Ok(ServiceConnectionAuthority::new(
-            instance.into(),
-            boot.into(),
-            connection.generation(),
-            connection.author().clone(),
-        ))
-    }
-
-    fn decision_guard<'a>(
-        &'a self,
-        _: &ServiceWriteTransactionProof,
-        connection: &ServiceConnectionAuthority,
-    ) -> Result<Box<dyn ServiceDecisionGuard + 'a>, ApiError> {
-        let state = self.state();
-        let matches = state
-            .active
-            .as_ref()
-            .is_some_and(|session| session.connection.as_ref() == connection);
-        if !matches {
-            return Err(service_error(
-                ErrorCode::StaleServiceGeneration,
-                "service connection was revoked",
-            ));
-        }
-        Ok(Box::new(DecisionGuard {
-            _state: state,
-            author: connection.author().clone(),
-        }))
-    }
-
-    fn revoke_exact(&self, connection: &ServiceConnectionAuthority) -> bool {
-        let mut state = self.state();
-        let matches = state
-            .active
-            .as_ref()
-            .is_some_and(|session| session.connection.as_ref() == connection);
-        if matches {
-            let session = state.active.take().expect("matching service session");
-            session.cancellation.cancel();
-        }
-        matches
-    }
 }
 
 struct SessionLease {
@@ -197,10 +20,6 @@ struct SessionLease {
     cancellation: Cancellation,
 }
 impl SessionLease {
-    fn revoke(&self) {
-        self.gate.revoke_exact(&self.connection);
-    }
-
     async fn revoke_after_disconnect(&self) -> io::Result<()> {
         let gate = self.gate.clone();
         let connection = self.connection.clone();
@@ -211,8 +30,26 @@ impl SessionLease {
     }
 }
 impl Drop for SessionLease {
+    /// Never blocks the dropping thread on the gate: a decision guard can hold
+    /// it across a store transaction. On contention the session is cancelled at
+    /// once and the revoke (which still waits for the in-flight decision) runs
+    /// on a blocking thread. That thread carries no lane origin, so its commit
+    /// counts as request origin (ht-p03.39).
     fn drop(&mut self) {
-        self.revoke();
+        if self.gate.try_revoke_exact(&self.connection).is_ok() {
+            return;
+        }
+        self.cancellation.cancel();
+        let gate = self.gate.clone();
+        let connection = self.connection.clone();
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn_blocking(move || gate.revoke_exact(&connection));
+            }
+            Err(_) => {
+                std::thread::spawn(move || gate.revoke_exact(&connection));
+            }
+        }
     }
 }
 
@@ -241,8 +78,8 @@ async fn send(
     let encoded = encode_json(reply)?;
     tokio::select! {
         biased;
-        _ = cancelled(shutdown) => Err(io::Error::new(io::ErrorKind::Interrupted, "service response interrupted by shutdown")),
-        _ = async { if let Some(cancellation) = session_cancellation { cancelled(cancellation).await } else { std::future::pending().await } } => Err(io::Error::new(io::ErrorKind::Interrupted, "service response interrupted by disconnect")),
+        _ = shutdown.cancelled() => Err(io::Error::new(io::ErrorKind::Interrupted, "service response interrupted by shutdown")),
+        _ = async { if let Some(cancellation) = session_cancellation { cancellation.cancelled().await } else { std::future::pending().await } } => Err(io::Error::new(io::ErrorKind::Interrupted, "service response interrupted by disconnect")),
         result = tokio::time::timeout_at(expires, write_frame(stream, &encoded)) =>
             result.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "service response expired"))?,
     }
@@ -261,8 +98,8 @@ async fn next_frame(
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
             Err(error) => return Err(error),
         },
-        _ = cancelled(shutdown) => return Ok(None),
-        _ = cancelled(session_cancellation) => return Ok(None),
+        _ = shutdown.cancelled() => return Ok(None),
+        _ = session_cancellation.cancelled() => return Ok(None),
     };
     let expires = tokio::time::Instant::now() + ORDINARY_TIMEOUT;
     let frame = tokio::select! {
@@ -280,8 +117,8 @@ async fn next_frame(
             stream.read_exact(&mut body).await?;
             Ok(body)
         }) => result.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "service frame expired"))??,
-        _ = cancelled(shutdown) => return Ok(None),
-        _ = cancelled(session_cancellation) => return Ok(None),
+        _ = shutdown.cancelled() => return Ok(None),
+        _ = session_cancellation.cancelled() => return Ok(None),
     };
     Ok(Some((frame, expires)))
 }
@@ -429,8 +266,8 @@ pub async fn serve_registered(
             joined = &mut work => Some(joined.map_err(io::Error::other)?),
             _ = tokio::time::sleep_until(expires) => None,
             _ = stream.read_u8() => None,
-            _ = cancelled(&shutdown) => None,
-            _ = cancelled(&lease.cancellation) => None,
+            _ = shutdown.cancelled() => None,
+            _ = lease.cancellation.cancelled() => None,
         };
         let Some(result) = result else {
             cancellation.cancel();
@@ -451,8 +288,13 @@ pub async fn serve_registered(
 }
 
 #[cfg(test)]
+#[path = "../../../tests/daemon/session_lease.rs"]
+mod session_lease_tests;
+
+#[cfg(test)]
 mod send_tests {
     use super::*;
+    use crate::protocol::ids::ServiceAuthorId;
 
     fn reply(result: Result<ServiceResult, ApiError>) -> ServiceWireResponse {
         let daemon_boot = match &result {
@@ -500,12 +342,9 @@ mod send_tests {
     #[tokio::test]
     async fn blocked_send_keeps_one_absolute_deadline() {
         let (mut writer, _unread_peer) = UnixStream::pair().unwrap();
-        let large = reply(Err(ApiError {
-            code: ErrorCode::Unsupported,
-            detail: "x".repeat(MAX_FRAME_BYTES - 4_096),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        }));
+        let large = reply(Err(ApiError::unsupported(
+            "x".repeat(MAX_FRAME_BYTES - 4_096),
+        )));
         let shutdown = Cancellation::default();
         let expires = tokio::time::Instant::now() + Duration::from_millis(100);
         let result = tokio::time::timeout(

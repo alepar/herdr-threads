@@ -1,0 +1,31 @@
+{
+  "harness": "claude",
+  "db": {
+    "messages": [
+      {
+        "id": "msg-1",
+        "seq": 5,
+        "acked": true
+      }
+    ],
+    "invitations": [
+      {
+        "id": "inv-1",
+        "seq": 3,
+        "state": "accepted"
+      }
+    ]
+  },
+  "facts": {
+    "launch_outcome": {
+      "initial": {
+        "permission_denials": [
+          {
+            "tool_name": "Bash",
+            "command": "env herdr-threads ack msg-1"
+          }
+        ]
+      }
+    }
+  }
+}

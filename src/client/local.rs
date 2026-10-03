@@ -4,31 +4,31 @@ use crate::{
     daemon::transport::{MAX_FRAME_BYTES, encode_json, read_frame},
     ports::LocalClient,
     protocol::{
+        capabilities::Capabilities,
         commands::Command,
         output::OutputSpec,
         results::{ApiError, CommandResult, ErrorCode},
-        time::{CallBudget, Cancellation, Clock},
+        time::{CallBudget, Clock},
         wire::{PROTOCOL_VERSION, WireRequest, WireResponse},
     },
 };
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     net::UnixStream,
 };
 use uuid::Uuid;
 
-async fn cancelled(cancellation: &Cancellation) {
-    while !cancellation.is_cancelled() {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
 pub struct LocalSocketClient {
     path: PathBuf,
     clock: Arc<dyn Clock>,
     expected_instance: Uuid,
     expected_boot: Option<Uuid>,
+    capabilities: OnceLock<Capabilities>,
 }
 impl LocalSocketClient {
     pub fn new(
@@ -42,16 +42,24 @@ impl LocalSocketClient {
             clock,
             expected_instance,
             expected_boot,
+            capabilities: OnceLock::new(),
         }
     }
 
+    /// The capabilities this daemon advertises, asked once per session (ht-p03.43).
+    /// Any refusal or transport error (an older daemon cannot decode the request and
+    /// closes, or answers an error) reads as no capabilities, never as a failure.
+    pub fn capabilities(&self, budget: &CallBudget) -> Capabilities {
+        self.capabilities
+            .get_or_init(|| match self.call(Command::Capabilities, budget) {
+                Ok(CommandResult::Capabilities(list)) => Capabilities::from_list(list.capabilities),
+                _ => Capabilities::none(),
+            })
+            .clone()
+    }
+
     fn error(code: ErrorCode, detail: &str) -> ApiError {
-        ApiError {
-            code,
-            detail: detail.into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        }
+        ApiError::new(code, detail)
     }
     fn remaining(&self, budget: &CallBudget) -> Result<Duration, ApiError> {
         if budget.cancellation.is_cancelled() {
@@ -96,7 +104,7 @@ impl LocalSocketClient {
                             .map_err(|_| Self::error(ErrorCode::HostUnavailable, "incomplete request frame"))?
                             .map_err(|_| Self::error(ErrorCode::HostUnavailable, "incomplete request frame"))?
                     }
-                    _ = cancelled(&budget.cancellation) => return Err(Self::error(ErrorCode::HostUnavailable, "incomplete request frame")),
+                    _ = budget.cancellation.cancelled() => return Err(Self::error(ErrorCode::HostUnavailable, "incomplete request frame")),
                 };
                 if wrote == 0 {
                     return Err(Self::error(
@@ -168,7 +176,7 @@ impl LocalSocketClient {
                 result.map_err(|_| Self::error(ErrorCode::HostUnavailable, "daemon connect timed out"))?
                     .map_err(|error| super::connect_error(&error, &self.path))?
             }
-            _ = cancelled(&budget.cancellation) => return Err(Self::error(ErrorCode::Cancelled, "request cancelled before connect")),
+            _ = budget.cancellation.cancelled() => return Err(Self::error(ErrorCode::Cancelled, "request cancelled before connect")),
         };
         self.write_request(&mut socket, &body, budget).await?;
         let remaining = self.remaining(budget).map_err(|_| {
@@ -183,7 +191,7 @@ impl LocalSocketClient {
         let response_bytes = tokio::select! {
             result = &mut read => result.map_err(|_| Self::error(ErrorCode::UnknownOutcome, "unknown outcome after request submission"))?,
             _ = tokio::time::sleep_until(deadline) => return Err(Self::error(ErrorCode::UnknownOutcome, "unknown outcome after request submission")),
-            _ = cancelled(&budget.cancellation) => return Err(Self::error(ErrorCode::UnknownOutcome, "unknown outcome after request submission")),
+            _ = budget.cancellation.cancelled() => return Err(Self::error(ErrorCode::UnknownOutcome, "unknown outcome after request submission")),
         };
         let response: WireResponse = serde_json::from_slice(&response_bytes).map_err(|_| {
             Self::error(

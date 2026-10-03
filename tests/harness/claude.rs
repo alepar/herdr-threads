@@ -2,6 +2,7 @@ use crate::harness::{
     claude,
     context::{EventKind, Role},
 };
+use crate::test_support::spawn::SpawnOwned;
 use serde_json::{Value, json};
 
 const START: &[u8] = br#"{"hook_event_name":"SessionStart","source":"startup","session_id":"s"}"#;
@@ -27,10 +28,10 @@ fn escaped_len(text: &str) -> usize {
 /// and health claiming Claude support while every recipe lacks model receipt.
 #[test]
 fn unknown_claude_version_refusal_names_recipes_and_health_stays_unsupported() {
-    let message = claude::check_version("2.1.287").unwrap_err();
-    assert!(message.contains("claude 2.1.287"), "{message}");
+    let message = claude::check_version("2.1.282").unwrap_err();
+    assert!(message.contains("claude 2.1.282"), "{message}");
     assert!(
-        message.contains("claude-hooks-2.1.283 [2.1.283, 2.1.286]"),
+        message.contains("claude-hooks-2.1.283 [2.1.283, 2.1.287]"),
         "{message}"
     );
     assert!(
@@ -41,6 +42,7 @@ fn unknown_claude_version_refusal_names_recipes_and_health_stays_unsupported() {
     assert_eq!(claude::check_version("2.1.284"), Ok(&claude::RECIPES[0]));
     assert_eq!(claude::check_version("2.1.285"), Ok(&claude::RECIPES[0]));
     assert_eq!(claude::check_version("2.1.286"), Ok(&claude::RECIPES[0]));
+    assert_eq!(claude::check_version("2.1.287"), Ok(&claude::RECIPES[0]));
     assert_eq!(
         claude::health_capability(),
         crate::protocol::results::CapabilityState::Unsupported
@@ -60,7 +62,7 @@ fn production_claude_entries_refuse_unknown_versions_with_the_recipe_message() {
         let refused = claude::check_version(version).unwrap_err();
         assert!(refused.contains(needle), "{refused}");
         assert!(
-            refused.contains("supported recipes: claude-hooks-2.1.283 [2.1.283, 2.1.286]"),
+            refused.contains("supported recipes: claude-hooks-2.1.283 [2.1.283, 2.1.287]"),
             "{refused}"
         );
         let expected = Err(ContextError::UnsupportedVersion(refused));
@@ -79,7 +81,7 @@ fn production_claude_entries_refuse_unknown_versions_with_the_recipe_message() {
             expected
         );
     };
-    expect("2.1.287", "claude 2.1.287 has no adapter recipe");
+    expect("2.1.282", "claude 2.1.282 has no adapter recipe");
     expect("v2.1.286", "not a canonical X.Y.Z version");
     // No observed version (the caller could not run the executable) is
     // refused as unavailable, still naming the recipes. Kills: an empty
@@ -136,14 +138,14 @@ fn pinned_claude_lifecycle_and_child_shapes_are_normalized() {
     assert!(
         claude::parse_versioned_event(
             br#"{"hook_event_name":"SessionStart","source":"startup","session_id":"s"}"#,
-            "2.1.287",
+            "2.1.282",
             "external"
         )
         .is_err()
     );
     assert!(
         claude::parse_event(
-            "2.1.287",
+            "2.1.282",
             br#"{"hook_event_name":"SessionStart","source":"startup","session_id":"s"}"#,
             "external"
         )
@@ -159,10 +161,11 @@ fn pinned_claude_lifecycle_and_child_shapes_are_normalized() {
     assert_eq!(accepted.role, Role::TopLevel);
 }
 
-// Kills: dropping 2.1.286 (or 2.1.283) from the recipe (shrinking the
-// interval, e.g. leaving max at 2.1.285), widening the interval to 2.1.282 or
-// 2.1.287, and widening the
-// gate to a prefix/pattern (e.g. any 2.1.28x or 2.1.x) or non-canonical text.
+// Kills: dropping 2.1.287 (or 2.1.283) from the recipe (shrinking the
+// interval, e.g. leaving max at 2.1.286), widening the interval to 2.1.282 or
+// 2.1.288 (listing them), and widening the listed set to a prefix/pattern
+// (e.g. any 2.1.28x or 2.1.x) or non-canonical text. Versions newer than the
+// verified max are not listed but are admitted optimistically (ladder row 6a).
 #[test]
 fn claude_version_gate_is_the_exact_evidence_backed_set() {
     assert_eq!(claude::RECIPES.len(), 1);
@@ -171,15 +174,15 @@ fn claude_version_gate_is_the_exact_evidence_backed_set() {
     assert_eq!(
         recipe.versions,
         crate::harness::recipe::VersionSet::Interval {
-            min: crate::harness::recipe::Version::new(2, 1, 283),
-            max: crate::harness::recipe::Version::new(2, 1, 286),
+            min: Some(crate::harness::recipe::Version::new(2, 1, 283)),
+            max: Some(crate::harness::recipe::Version::new(2, 1, 287)),
         }
     );
     assert_eq!(
         recipe.profile.input_schema,
         claude::InputSchema::Hooks2_1_283
     );
-    for version in ["2.1.283", "2.1.284", "2.1.285", "2.1.286"] {
+    for version in ["2.1.283", "2.1.284", "2.1.285", "2.1.286", "2.1.287"] {
         assert_eq!(claude::recipe_for(version), Ok(recipe), "{version}");
         assert!(claude::is_supported_version(version), "{version}");
         assert!(
@@ -195,20 +198,16 @@ fn claude_version_gate_is_the_exact_evidence_backed_set() {
             "{version}"
         );
     }
+    // Not listed, and refused outright: older than the recipe, or not a
+    // canonical version.
     for version in [
         "2.1.282",
-        "2.1.287",
-        "2.1.288",
-        "2.1.289",
         "2.1.28",
-        "2.1.2860",
-        "2.1.2834",
         "2.1.286 (Claude Code)",
         " 2.1.286",
         "2.1.286\n",
         "v2.1.286",
         "2.1.x",
-        "2.2.283",
         "2.1.0283",
         "2.01.284",
         "2.1.286-beta",
@@ -229,6 +228,35 @@ fn claude_version_gate_is_the_exact_evidence_backed_set() {
             "{version:?}"
         );
     }
+    // Not listed, but newer than the verified max: admitted optimistically
+    // under the assumed recipe and parsed live-unverified.
+    for version in ["2.1.288", "2.1.289", "2.1.2870", "2.1.2834", "2.2.283"] {
+        assert!(!claude::is_supported_version(version), "{version:?}");
+        let admitted = claude::admit(version).unwrap();
+        assert_eq!(admitted.recipe, recipe, "{version:?}");
+        assert!(
+            matches!(admitted.admission, claude::ClaudeAdmission::Optimistic(_)),
+            "{version:?}"
+        );
+        assert_eq!(claude::check_version(version), Ok(recipe), "{version:?}");
+        let event = claude::parse_event(version, START, "external").unwrap();
+        assert_eq!(
+            event.capability,
+            crate::harness::Capability::OptimisticInput,
+            "{version:?}"
+        );
+        assert!(
+            claude::encode_lifecycle_response(START, version, "mail", 4096).is_ok(),
+            "{version:?}"
+        );
+    }
+    // A listed version keeps the evidence-backed capability.
+    assert_eq!(
+        claude::parse_event("2.1.286", START, "external")
+            .unwrap()
+            .capability,
+        crate::harness::Capability::ObservedInput
+    );
 }
 
 const CAPTURED_284_STARTUP: &[u8] =
@@ -282,7 +310,7 @@ fn captured_claude_284_payloads_parse_as_observed() {
         assert_eq!(event.native_session.as_deref(), Some(CAPTURED_284_SESSION));
         // The capture had no native event ID; the external identity stays required.
         assert!(claude::parse_event("2.1.284", bytes, "").is_err());
-        assert!(claude::parse_event("2.1.287", bytes, "external").is_err());
+        assert!(claude::parse_event("2.1.282", bytes, "external").is_err());
     }
 
     let root = claude::encode_tool_response(
@@ -380,7 +408,7 @@ fn captured_claude_285_payloads_parse_and_encode_as_applied() {
         assert_eq!(event.event_id, "external");
         assert_eq!(event.native_session.as_deref(), Some(CAPTURED_285_SESSION));
         assert!(claude::parse_event("2.1.285", bytes, "").is_err());
-        assert!(claude::parse_event("2.1.287", bytes, "external").is_err());
+        assert!(claude::parse_event("2.1.282", bytes, "external").is_err());
     }
     assert_eq!(
         claude::encode_tool_response(
@@ -421,7 +449,7 @@ fn captured_claude_285_payloads_parse_and_encode_as_applied() {
             .is_none()
     );
     assert!(
-        claude::encode_tool_response(&input, "2.1.287", "ctx_probe-eb75e8", "mail", 4096).is_err()
+        claude::encode_tool_response(&input, "2.1.282", "ctx_probe-eb75e8", "mail", 4096).is_err()
     );
 }
 
@@ -482,7 +510,7 @@ fn captured_claude_286_payloads_parse_and_encode_as_applied() {
         assert_eq!(event.event_id, "external");
         assert_eq!(event.native_session.as_deref(), Some(CAPTURED_286_SESSION));
         assert!(claude::parse_event("2.1.286", bytes, "").is_err());
-        assert!(claude::parse_event("2.1.287", bytes, "external").is_err());
+        assert!(claude::parse_event("2.1.282", bytes, "external").is_err());
     }
     assert_eq!(
         claude::encode_tool_response(
@@ -523,7 +551,7 @@ fn captured_claude_286_payloads_parse_and_encode_as_applied() {
             .is_none()
     );
     assert!(
-        claude::encode_tool_response(&input, "2.1.287", "ctx_probe-c286f4", "mail", 4096).is_err()
+        claude::encode_tool_response(&input, "2.1.282", "ctx_probe-c286f4", "mail", 4096).is_err()
     );
 }
 
@@ -571,7 +599,7 @@ fn rewritten_bash_receives_stdin_without_changing_quoted_command() {
         .arg(command)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .spawn()
+        .spawn_owned()
         .unwrap();
     child
         .stdin
@@ -756,9 +784,9 @@ fn escape_inflation_is_budgeted_for_both_encoders() {
 #[test]
 fn lifecycle_encoder_applies_version_gate_and_child_suppression() {
     assert_eq!(
-        claude::encode_lifecycle_response(START, "2.1.287", "mail", 4096),
+        claude::encode_lifecycle_response(START, "2.1.282", "mail", 4096),
         Err(crate::harness::context::ContextError::UnsupportedVersion(
-            claude::check_version("2.1.287").unwrap_err()
+            claude::check_version("2.1.282").unwrap_err()
         ))
     );
     assert!(claude::encode_lifecycle_response(START, "2.1.284", "mail", 4096).is_ok());

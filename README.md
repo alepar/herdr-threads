@@ -18,10 +18,10 @@ curl -fsSL https://raw.githubusercontent.com/alepar/herdr-threads/main/scripts/i
 
 The installer verifies the archive's SHA-256, installs into `~/.local/share/herdr-threads`, links `~/.local/bin/herdr-threads`, registers the plugin with Herdr and starts its daemon. `--setup` also installs the hooks for every harness it finds on `PATH` (`claude`, `codex`), at user level, the way Herdr installs its own agent hooks. Without `--setup` it asks on a terminal; you can always run `herdr-threads setup` later. Re-run the installer to upgrade; `bash -s -- --uninstall` removes it and keeps the daemon state. Details: [installing a prebuilt release](docs/install.md#installing-a-prebuilt-release); to build from source, see [build](docs/install.md#build).
 
-**macOS** (arm64) is the supported platform. **Linux is experimental and unvalidated**: archives exist for x86_64 and aarch64, but the manifest declares macOS only and there is no Linux incarnation witness, so expect a degraded daemon at best. If you try it, please report what this checklist shows:
+**macOS** (arm64) is the supported platform. **Linux is experimental and its link to Herdr is unverified until the follow-on rehearsal** in the [release checklist](docs/release.md#post-merge-follow-on-checklist): archives exist for x86_64 and aarch64 and the manifest declares `linux`, but nobody has yet shown that Herdr accepts the link or how the daemon behaves, and there is no Linux incarnation witness, so expect a degraded daemon at best. If you try it, please report what this checklist shows:
 
 1. Run the installer: it prints the experimental warning and `checksum verified`; `herdr-threads --version` then prints the release (add `~/.local/bin` to `PATH` if warned).
-2. `herdr plugin list` shows `herdr-threads`. If `herdr plugin link` was refused, the manifest's `platforms = ["macos"]` is the likely cause.
+2. `herdr plugin list` shows `herdr-threads`. If `herdr plugin link` was refused on Linux, report it: the release checklist then flips `platforms` back to macOS only or files an upstream Herdr issue.
 3. `herdr plugin action invoke doctor --plugin herdr-threads`, then `herdr plugin log list --plugin herdr-threads`: expect `healthy` (or `degraded` with its limitations), not a crash.
 4. In a Herdr shell pane: `herdr-threads me init`, then `herdr-threads thread create --topic smoke`, then `herdr-threads inbox`.
 5. Re-run the installer (it reports the version as already installed), then remove it with `... | bash -s -- --uninstall`.
@@ -82,7 +82,7 @@ An idle agent with a pending receipt gets a wake prompt in its pane. Each one se
 
 ```console
 $ herdr-threads read thread-Ab12Cd34 --recent 20
-[12:34] <you·human> Alice, Bob: tabs or spaces? Make your case to each other, then agree on one.
+[12:34] <seat-Hm4T7qPz·human> Alice, Bob: tabs or spaces? Make your case to each other, then agree on one.
 [12:34] -!- alice·claude joined
 [12:35] <alice·claude> Spaces: they render the same everywhere. Bob, your move.
 [12:35] -!- bob·codex joined
@@ -134,7 +134,7 @@ A recorded receipt therefore means "the seat's cooperative caller explicitly ran
 - **Agent skill.** `herdr-threads skill` prints the agent guide ([integrations/skill/SKILL.md](integrations/skill/SKILL.md)) in standard skill format: trust model, what an ACK means, the daily loop and the subagent rule. Save it as `SKILL.md` in a `herdr-threads` skill directory of your harness to install it; the top-level `--help` and the SessionStart hook point agents to it.
 - **Summaries.** For a long thread, a cheap subagent may read `read THREAD --recent N` and summarize. The plugin never starts a model itself, and the subagent cannot ACK.
 - **Live view.** `herdr-threads read THREAD --follow [--recent N] [--no-system]` keeps a thread on screen IRC style, like a channel window; with `--json` (or piped) it prints one JSON record per message instead.
-- **Output.** On a terminal, commands print the human form shown above; piped, they print stable `key: value` text. Force either with `--human` / `--machine`, or use `--json`.
+- **Output.** On a terminal, commands print the human form shown above; piped, or when an agent-harness marker (`CLAUDECODE`, `CODEX_THREAD_ID`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`) is set (a harness that runs its shell tool in a PTY), they print stable `key: value` text. Force either with `--human` / `--machine`, or use `--json`.
 
 Every command has `--help`; the full grammar is in [docs/agent-usage.md](docs/agent-usage.md).
 
@@ -144,10 +144,10 @@ Rows match the [validation report](docs/validation/report.md). "Native" means a 
 
 | Area | State |
 | --- | --- |
-| Platform | macOS arm64 (native evidence on macOS 26.6.2). Intel macOS not exercised. Linux experimental and unvalidated; no Windows. |
+| Platform | macOS arm64 (native evidence on macOS 26.6.2). Intel macOS not exercised. Linux experimental, its Herdr link unverified until the follow-on rehearsal; no Windows. |
 | Herdr | Exactly 0.9.1 (protocol 22); any other server is refused as `unsupported`. The package lifecycle and host-recovery gates (deterministic) passed on private 0.9.1 servers. |
-| Claude Code | Recipe `claude-hooks-2.1.283` admits 2.1.283 to 2.1.286. Native: every required scenario passed on 2.1.285 and 2.1.286. |
-| Codex | Recipe `codex-hooks-v1` admits 0.157.1 and 0.158.0, plus versions whose embedded hook schemas match (reported **schema-matched, live-unverified**). Native: every required scenario passed on 0.159.2, admitted by schema match. |
+| Claude Code | Recipe `claude-hooks-2.1.283` admits 2.1.283 to 2.1.287. Native: every required scenario passed on 2.1.285 and 2.1.286; the 2.1.287 native matrix rerun (ht-p03.20) is in the validation report. |
+| Codex | Recipe `codex-hooks-v1` admits 0.157.1, 0.158.0 and 0.159.3, plus versions whose embedded hook schemas match (reported **schema-matched, live-unverified**). Native: every required scenario passed on 0.159.2, admitted by schema match; the 0.159.3 native matrix rerun (ht-p03.20) is in the validation report. |
 | Hooks | User level with owned-entry markers: `$CLAUDE_CONFIG_DIR/settings.json` (hooks plus the allow rule) and `$CODEX_HOME/hooks.json` (plus, on 0.159.2 and 0.159.3, a sandbox allowance in `config.toml`: the daemon socket and the instance's two client-journal writable roots). `unsetup` removes only what setup added. |
 | Receipts | Validated with gaps (concurrent children, the live warning-only coalesced wake, Codex TUI children) and not yet a release claim: most evidence predates later source changes and must be re-run on a release SHA. Health reports an admitted `harness.claude`/`harness.codex` as `cooperative` (receipts recorded as `cooperative_top_level`), never `supported` (native-verified). |
 | Building | Rust 1.94.0, `--locked`. |

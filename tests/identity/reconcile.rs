@@ -159,6 +159,37 @@ fn failed_capture_marks_local_lane_unavailable_until_new_publication() {
 }
 
 #[test]
+fn discarded_attempt_waits_for_the_pacer_retry_time_but_event_hints_do_not() {
+    let mut lane = ObservationLane::default();
+    let ticket = lane.begin_observation().unwrap();
+    lane.mark_unavailable();
+    lane.discard(ticket).unwrap();
+    // Gated by the Pacer's next_retry_at(), not immediately due.
+    assert!(!lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400))));
+    assert!(lane.snapshot_due_gated(MonoInstant(400), Some(MonoInstant(400))));
+    // Host-event hints still set dirty and bypass the gate.
+    lane.mark_event_dirty();
+    assert!(lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400))));
+}
+
+#[test]
+fn explicit_capture_request_opens_the_gate_once() {
+    let mut lane = ObservationLane::default();
+    let ticket = lane.begin_observation().unwrap();
+    lane.mark_unavailable();
+    lane.discard(ticket).unwrap();
+    assert!(!lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400))));
+    lane.request_explicit_capture();
+    assert!(lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400))));
+    assert!(!lane.is_available(), "a request is not evidence");
+    // Consumed by the next observation's start.
+    let ticket = lane.begin_observation().unwrap();
+    lane.mark_unavailable();
+    lane.discard(ticket).unwrap();
+    assert!(!lane.snapshot_due_gated(MonoInstant(100), Some(MonoInstant(400))));
+}
+
+#[test]
 fn baseline_holds_every_unclaimed_restored_target_in_bounded_pages() {
     let targets = (0..20)
         .map(|n| target(&format!("pane-{n}"), &format!("terminal-{n}"), None, 2))
@@ -306,9 +337,11 @@ fn indexed_saved_seat_page_plans_move_without_namespace_scan() {
         .as_mut()
         .unwrap()
         .top_level_occupant = true;
+    // A different verified execution is not a replacement: the production
+    // adapter never reports one, so only the structural move is planned.
     assert!(matches!(
         plan_page(&replacement).unwrap()[0].action,
-        crate::ports::ReconciliationAction::Replace { .. }
+        crate::ports::ReconciliationAction::Move { .. }
     ));
     replacement.seats[0]
         .observed_match
@@ -322,7 +355,7 @@ fn indexed_saved_seat_page_plans_move_without_namespace_scan() {
 }
 
 #[test]
-fn current_binding_loss_preserves_structural_seat_and_uses_fenced_revocation() {
+fn occupant_evidence_never_unseats_or_replaces_the_active_occupant() {
     use crate::ports::{
         PublishedSnapshot, SeatState, SnapshotGenerationId, SnapshotSavedSeat, SnapshotSeatPage,
         SnapshotTargetMatch,
@@ -390,35 +423,29 @@ fn current_binding_loss_preserves_structural_seat_and_uses_fenced_revocation() {
         .unwrap()
         .top_level_occupant = true;
     assert!(plan_page(&page).unwrap().is_empty());
-    // Positive evidence still unseats. Kills: a planner that never marks
-    // unavailable (dropping the branch) or ignores an observed empty shell /
-    // non-top-level occupant.
+    // Not even positive absence evidence unseats the occupant: a non-top-level
+    // occupant or an observed empty shell on the same terminal and target plans
+    // nothing, and the same terminal at a new address only moves structure.
+    // Kills: a planner that emits any occupant-loss action.
     page.seats[0]
         .observed_match
         .as_mut()
         .unwrap()
         .top_level_occupant = false;
-    let action = &plan_page(&page).unwrap()[0].action;
     assert!(
-        matches!(action, ReconciliationAction::MarkOccupantUnavailable {
-        target, terminal, expected_execution
-    } if target.as_str()=="pane-a" && terminal.as_str()=="terminal-a" && expected_execution.as_str()=="execution-old"),
-        "a non-top-level occupant is positive loss evidence"
+        plan_page(&page).unwrap().is_empty(),
+        "a non-top-level occupant on the same terminal is not a transition"
     );
     page.seats[0].observed_match.as_mut().unwrap().occupancy = StructuralOccupancy::EmptyShell;
     assert!(
-        matches!(plan_page(&page).unwrap().first().map(|t| &t.action),
-        Some(ReconciliationAction::MarkOccupantUnavailable { expected_execution, .. })
-            if expected_execution.as_str() == "execution-old"),
-        "an observed empty shell is positive loss evidence"
+        plan_page(&page).unwrap().is_empty(),
+        "an observed empty shell on the same terminal is not a transition"
     );
     page.seats[0].observed_match.as_mut().unwrap().target = HostTargetId::new("pane-b");
-    let action = &plan_page(&page).unwrap()[0].action;
-    assert!(
-        matches!(action, ReconciliationAction::MarkOccupantUnavailable {
-        target, expected_execution, ..
-    } if target.as_str()=="pane-b" && expected_execution.as_str()=="execution-old")
-    );
+    assert!(matches!(
+        &plan_page(&page).unwrap()[0].action,
+        ReconciliationAction::Move { target, .. } if target.as_str() == "pane-b"
+    ));
     // An observed move with Unknown occupancy follows the terminal and keeps
     // the occupant.
     page.seats[0].observed_match.as_mut().unwrap().occupancy = StructuralOccupancy::Unknown;
@@ -449,14 +476,17 @@ fn current_binding_loss_preserves_structural_seat_and_uses_fenced_revocation() {
         .as_mut()
         .unwrap()
         .verified_execution = Some(ExecutionId::new("execution-new"));
-    assert!(matches!(
-        plan_page(&page).unwrap()[0].action,
-        ReconciliationAction::Replace { .. }
-    ));
+    assert!(
+        matches!(
+            plan_page(&page).unwrap()[0].action,
+            ReconciliationAction::Move { .. }
+        ),
+        "a different verified execution never plans a replacement"
+    );
 }
 
 #[test]
-fn host_invalidation_reconfirms_only_proven_same_terminal_and_execution() {
+fn host_invalidation_never_reconfirms_from_execution_or_prior_empty_shell_evidence() {
     use crate::ports::{
         PriorPublishedTarget, PublishedSnapshot, SeatState, SnapshotGenerationId,
         SnapshotSavedSeat, SnapshotSeatPage, SnapshotTargetMatch, UnresolvedReason,
@@ -506,14 +536,13 @@ fn host_invalidation_reconfirms_only_proven_same_terminal_and_execution() {
             }),
         }],
     };
+    // A verified execution on the same terminal is not continuity evidence by
+    // itself: with no stored binding or structural proof the seat stays
+    // unresolved, whatever execution the publication reports.
     assert!(matches!(
         &plan_page(&page).unwrap()[0].action,
-        crate::ports::ReconciliationAction::Reconfirm { target, terminal, verified_execution }
-            if target.as_str() == "new-address"
-                && terminal.as_str() == "terminal-a"
-                && verified_execution.as_ref().map(ExecutionId::as_str) == Some("execution-old")
+        crate::ports::ReconciliationAction::MarkUnresolved
     ));
-
     page.seats[0]
         .observed_match
         .as_mut()
@@ -521,8 +550,7 @@ fn host_invalidation_reconfirms_only_proven_same_terminal_and_execution() {
         .verified_execution = Some(ExecutionId::new("execution-new"));
     assert!(matches!(
         &plan_page(&page).unwrap()[0].action,
-        crate::ports::ReconciliationAction::Reconfirm { verified_execution, .. }
-            if verified_execution.as_ref().map(ExecutionId::as_str) == Some("execution-new")
+        crate::ports::ReconciliationAction::MarkUnresolved
     ));
 
     page.seats[0].unresolved_reason = Some(UnresolvedReason::Other);
@@ -574,60 +602,10 @@ fn host_invalidation_reconfirms_only_proven_same_terminal_and_execution() {
             top_level_occupant: false,
         },
     });
+    // A prior published empty shell on the same terminal no longer bridges
+    // a host invalidation: only structural binding or proof evidence does.
     assert!(matches!(
         &plan_page(&page).unwrap()[0].action,
-        crate::ports::ReconciliationAction::Reconfirm {
-            verified_execution: None,
-            ..
-        }
-    ));
-    let proven_shell = page.clone();
-    page.seats[0]
-        .prior_published_observation
-        .as_mut()
-        .unwrap()
-        .target
-        .terminal = Some(TerminalId::new("other-terminal"));
-    assert!(matches!(
-        plan_page(&page).unwrap()[0].action,
-        crate::ports::ReconciliationAction::MarkUnresolved
-    ));
-
-    let mut wrong_generation = proven_shell.clone();
-    wrong_generation.seats[0]
-        .prior_published_observation
-        .as_mut()
-        .unwrap()
-        .prior_binding_generation = 3;
-    assert!(matches!(
-        plan_page(&wrong_generation).unwrap()[0].action,
-        crate::ports::ReconciliationAction::MarkUnresolved
-    ));
-    let mut occupied_before = proven_shell.clone();
-    occupied_before.seats[0]
-        .prior_published_observation
-        .as_mut()
-        .unwrap()
-        .target
-        .occupancy = StructuralOccupancy::Occupied;
-    assert!(matches!(
-        plan_page(&occupied_before).unwrap()[0].action,
-        crate::ports::ReconciliationAction::MarkUnresolved
-    ));
-    let mut unknown_now = proven_shell.clone();
-    unknown_now.seats[0]
-        .observed_match
-        .as_mut()
-        .unwrap()
-        .occupancy = StructuralOccupancy::Unknown;
-    assert!(matches!(
-        plan_page(&unknown_now).unwrap()[0].action,
-        crate::ports::ReconciliationAction::MarkUnresolved
-    ));
-    let mut no_prior = proven_shell;
-    no_prior.seats[0].prior_published_observation = None;
-    assert!(matches!(
-        plan_page(&no_prior).unwrap()[0].action,
         crate::ports::ReconciliationAction::MarkUnresolved
     ));
 }
@@ -712,7 +690,7 @@ fn host_invalidated_seat_reconfirms_structurally_from_binding_evidence_with_unkn
         action(&empty),
         ReconciliationAction::ReconfirmStructure { .. }
     ));
-    // Verified execution evidence keeps its own (unchanged) reconfirmation.
+    // Verified execution evidence is not consulted: the structural bridge decides.
     let mut verified = page.clone();
     let observed = verified.seats[0].observed_match.as_mut().unwrap();
     observed.occupancy = StructuralOccupancy::Occupied;
@@ -720,8 +698,7 @@ fn host_invalidated_seat_reconfirms_structurally_from_binding_evidence_with_unkn
     observed.verified_execution = Some(ExecutionId::new("execution-new"));
     assert!(matches!(
         action(&verified),
-        ReconciliationAction::Reconfirm { verified_execution: Some(ref execution), .. }
-            if execution.as_str() == "execution-new"
+        ReconciliationAction::ReconfirmStructure { .. }
     ));
     let unresolved = |label: &str, page: &SnapshotSeatPage| {
         assert_eq!(
@@ -1258,159 +1235,10 @@ fn real_store_reconfirms_never_registered_seat_from_its_structural_proof() {
 }
 
 #[test]
-fn real_invalidation_page_reconfirms_a_prelaunch_shell_once() {
-    use crate::ports::{
-        DurableWorkAdmission, GuardedInvalidationTransition, HostInvalidationReason,
-        ReconciliationAction, ReconciliationOutcome, SnapshotHeader,
-    };
-    use crate::protocol::time::{CallBudget, Cancellation, Clock};
-    use crate::store::{connection::StoreContext, seats};
-    use std::sync::Arc;
-
-    struct FixedClock;
-    impl Clock for FixedClock {
-        fn utc_now(&self) -> UtcMillis {
-            UtcMillis(100)
-        }
-        fn monotonic_now(&self) -> MonoInstant {
-            MonoInstant(100)
-        }
-    }
-
-    let path = std::env::temp_dir().join(format!("herdr-reconcile-{}.db", uuid::Uuid::new_v4()));
-    let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
-    let mut conn = context.open_writer().unwrap();
-    conn.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'boot-a',1)",
-        [],
-    )
-    .unwrap();
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','old',1,1,0)", []).unwrap();
-    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('i','old','boot-a',1,1,0,'fresh')", []).unwrap();
-    let budget = CallBudget {
-        deadline: MonoInstant(1_000),
-        cancellation: Cancellation::default(),
-    };
-    let shell = |sequence, address: &str| {
-        let mut observation = target(address, "terminal-a", None, sequence);
-        observation.occupancy = StructuralOccupancy::EmptyShell;
-        snapshot(sequence, vec![observation])
-    };
-    fn publish(
-        context: &StoreContext,
-        conn: &mut rusqlite::Connection,
-        budget: &CallBudget,
-        capture: HostSnapshot,
-    ) -> (
-        crate::ports::SnapshotGenerationId,
-        crate::ports::PublishedSnapshot,
-    ) {
-        let admission = seats::begin_host_observation(context, conn, "i", budget).unwrap();
-        let header = SnapshotHeader::from_captured(admission, &capture).unwrap();
-        let stage = seats::begin_snapshot_stage(context, conn, header, budget).unwrap();
-        seats::stage_snapshot_targets(
-            context,
-            conn,
-            &stage.id,
-            0,
-            &capture.targets,
-            DurableWorkAdmission::new(16).unwrap(),
-            budget,
-        )
-        .unwrap();
-        seats::seal_snapshot_stage(context, conn, &stage.id, budget).unwrap();
-        let published = seats::publish_snapshot_stage(context, conn, &stage.id, budget).unwrap();
-        (stage.id, published)
-    }
-    let (prior, _) = publish(&context, &mut conn, &budget, shell(2, "old"));
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
-    let fence = seats::invalidate_host_observation(
-        &context,
-        &mut conn,
-        &admission,
-        HostInvalidationReason::HostUnavailable,
-        &budget,
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(
-        seats::mark_unresolved_from_invalidation(
-            &context,
-            &mut conn,
-            GuardedInvalidationTransition {
-                fence,
-                seat: SeatId::new("s"),
-                expected_binding_generation: 1,
-                expected_target: Some(HostTargetId::new("old")),
-                expected_terminal: None,
-            },
-            &budget
-        )
-        .unwrap(),
-        ReconciliationOutcome::Applied
-    );
-    let (current, _) = publish(&context, &mut conn, &budget, shell(3, "new"));
-    let page = seats::saved_seats_page(&context, &conn, &current, 0, None, 16, &budget).unwrap();
-    assert_eq!(
-        page.seats[0]
-            .prior_published_observation
-            .as_ref()
-            .unwrap()
-            .generation_id,
-        prior
-    );
-    let actions = plan_page(&page).unwrap();
-    assert!(
-        matches!(&actions[0].action, ReconciliationAction::Reconfirm {
-        target, verified_execution: None, ..
-    } if target.as_str() == "new")
-    );
-    assert_eq!(
-        seats::apply_reconciliation_transition(&context, &mut conn, actions[0].clone(), &budget)
-            .unwrap(),
-        ReconciliationOutcome::Applied
-    );
-    assert_eq!(
-        seats::apply_reconciliation_transition(&context, &mut conn, actions[0].clone(), &budget)
-            .unwrap(),
-        ReconciliationOutcome::Stale
-    );
-    let actual: (String, String, i64) = conn
-        .query_row(
-            "SELECT state,target_id,generation FROM seats WHERE id='s'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .unwrap();
-    assert_eq!(actual, ("resolved".into(), "new".into(), 2));
-    let active: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(active, 0);
-    drop(conn);
-    std::fs::remove_file(path).unwrap();
-}
-
-#[test]
 fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
-    ordinary_allocation_lifecycle(None);
-}
-
-#[test]
-fn registered_occupant_loss_crosses_real_saved_page_and_planner() {
-    for address in ["pane-b", "pane-c"] {
-        ordinary_allocation_lifecycle(Some(address));
-    }
-}
-
-fn ordinary_allocation_lifecycle(loss_address: Option<&str>) {
     use crate::ports::{
-        DurableWorkAdmission, OrdinaryAllocationGuard, RecoveryBaseline, RecoveryDisposition,
-        SnapshotHeader,
+        DurableWorkAdmission, OrdinaryResolutionAttempt, OrdinaryResolutionGuard,
+        OrdinaryResolutionOutcome, SnapshotHeader,
     };
     use crate::protocol::{
         commands::ResolveSeat,
@@ -1484,20 +1312,29 @@ fn ordinary_allocation_lifecycle(loss_address: Option<&str>) {
         target: fresh.target.clone(),
         operation: OperationId::new("allocate-shell"),
     };
-    let baseline = RecoveryBaseline::new(
-        HostBootId::new("boot-a"),
-        1,
-        fresh.target.clone(),
-        RecoveryDisposition::UnambiguousUnclaimed,
-    );
-    let guard =
-        OrdinaryAllocationGuard::try_new(&request, fresh.clone(), baseline.clone()).unwrap();
-    let seat = seats::allocate(&context, &mut conn, "i", request.clone(), guard).unwrap();
-    let replay_guard =
-        OrdinaryAllocationGuard::try_new(&request, fresh.clone(), baseline.clone()).unwrap();
+    let guard = || OrdinaryResolutionGuard::try_new(&request, fresh.clone(), &admission).unwrap();
+    let OrdinaryResolutionOutcome::Resolved(seat) = seats::resolve_seat(
+        &context,
+        &mut conn,
+        "i",
+        request.clone(),
+        OrdinaryResolutionAttempt::Observed(guard()),
+        &budget,
+    )
+    .unwrap() else {
+        panic!("seat missing")
+    };
     assert_eq!(
-        seats::allocate(&context, &mut conn, "i", request.clone(), replay_guard).unwrap(),
-        seat
+        seats::resolve_seat(
+            &context,
+            &mut conn,
+            "i",
+            request.clone(),
+            OrdinaryResolutionAttempt::Observed(guard()),
+            &budget,
+        )
+        .unwrap(),
+        OrdinaryResolutionOutcome::Resolved(seat.clone())
     );
     conn.execute(
         "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('handoff','i','handoff','goal',100,100)",
@@ -1551,10 +1388,17 @@ fn ordinary_allocation_lifecycle(loss_address: Option<&str>) {
     assert_eq!(saved, ("resolved".into(), 1));
     drop(conn);
     let mut conn = context.open_writer().unwrap();
-    let replay_guard = OrdinaryAllocationGuard::try_new(&request, fresh, baseline).unwrap();
     assert_eq!(
-        seats::allocate(&context, &mut conn, "i", request, replay_guard).unwrap(),
-        seat
+        seats::resolve_seat(
+            &context,
+            &mut conn,
+            "i",
+            request,
+            OrdinaryResolutionAttempt::ReplayOnly,
+            &budget,
+        )
+        .unwrap(),
+        OrdinaryResolutionOutcome::Resolved(seat.clone())
     );
     let repeated = publish(&context, &mut conn, &budget, snapshot(5, vec![shell(5)]));
     let reopened_page =
@@ -1625,398 +1469,12 @@ fn ordinary_allocation_lifecycle(loss_address: Option<&str>) {
         .unwrap();
     assert_eq!(pending_after_move, 1);
 
-    let mut final_target = "pane-b";
-    if let Some(loss_address) = loss_address {
-        use crate::protocol::{
-            authority::{
-                CallerClaim, DecisionFence, MutationPermit, ObligationRef, ReceiptRegistration,
-                VerifiedCaller,
-            },
-            commands::CheckIn,
-            pagination::{Consistency, Page, StopReason},
-            results::CheckInResult,
-        };
-        let native = target("pane-b", "terminal-a", Some("execution-a"), 7);
-        let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
-        assert!(
-            seats::publish_current_target_observation(
-                &context, &mut conn, &admission, &native, &budget
-            )
-            .unwrap()
-        );
-        let command = CheckIn {
-            mode: crate::protocol::commands::CheckInMode::Current,
-            claim: CallerClaim {
-                instance: String::new(),
-                seat: SeatId::new("legacy-fixture"),
-                binding_generation: 0,
-                role: crate::protocol::authority::CallerRole::TopLevel,
-                harness: Harness::Codex,
-                native_session: NativeSessionId::new("conversation"),
-                execution: ExecutionId::new("execution-a"),
-                target: native.target.clone(),
-            },
-            operation: OperationId::new("register-a"),
-        };
-        // This internal authority fixture exercises the production registration
-        // transaction; native attribution remains its independent validation gate.
-        let permit = MutationPermit::new(
-            VerifiedCaller {
-                seat: seat.clone(),
-                harness: Harness::Codex,
-                native_session: command.claim.native_session.clone(),
-                execution: command.claim.execution.clone(),
-                host_boot: native.host_boot.clone(),
-                target_generation: 1,
-                binding_generation: 1,
-                observed_at_utc: UtcMillis(100),
-            },
-            command.operation.clone(),
-            ObligationRef::CheckIn(seat.clone()),
-            crate::store::schema::canonical_digest(&crate::store::seats::native_check_in_payload(
-                &command,
-            ))
-            .unwrap(),
-            MonoInstant(100),
-            1,
-        );
-        let registration = ReceiptRegistration {
-            seat: seat.clone(),
-            host_boot: native.host_boot.clone(),
-            target_generation: 1,
-            binding_generation: 1,
-            native_session: command.claim.native_session.clone(),
-            execution: command.claim.execution.clone(),
-        };
-        assert!(matches!(
-            seats::register_available(
-                &context,
-                &mut conn,
-                &command,
-                Some(&registration),
-                None,
-                &crate::protocol::time::CallBudget {
-                    deadline: crate::protocol::time::MonoInstant(u64::MAX),
-                    cancellation: Default::default()
-                },
-                permit,
-                |_, at| Ok(DecisionFence {
-                    now: at.monotonic,
-                    host_boot: HostBootId::new("boot-a"),
-                    host_epoch: 1,
-                    target_generation: 1,
-                    binding_generation: 1,
-                    known_invalidated: false,
-                }),
-                |_, seat, sequence| Ok(CheckInResult {
-                    context_disposition:
-                        crate::protocol::results::CheckInContextDisposition::Current,
-                    context: command.claim.clone(),
-                    seat: seat.clone(),
-                    offered_through: Some(sequence.to_string()),
-                    warning_count: 0,
-                    warning_count_has_more: false,
-                    warnings: Page {
-                        items: vec![],
-                        next_cursor: None,
-                        next_argv: None,
-                        high_water_ordinal: 0,
-                        scope_revision: None,
-                        has_more: false,
-                        stop_reason: StopReason::Complete,
-                        consistency: Consistency::BoundedLive
-                    },
-                    notices: Default::default(),
-                    inbox: Page {
-                        items: vec![],
-                        next_cursor: None,
-                        next_argv: None,
-                        high_water_ordinal: 0,
-                        scope_revision: None,
-                        has_more: false,
-                        stop_reason: StopReason::Complete,
-                        consistency: Consistency::BoundedLive
-                    },
-                }),
-            )
-            .unwrap(),
-            crate::protocol::results::CommandResult::CheckedIn(_)
-        ));
-        let anchor: (i64, i64, i64) = conn.query_row(
-            "SELECT ordinal,decision_seq,binding_generation FROM seat_availability WHERE seat_id=?1",
-            [seat.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))
-        ).unwrap();
-        assert_eq!(anchor.2, 1);
-        // native-claude-demo-1 P2: a production-adapter-shaped observation
-        // stream (occupant None, UI/occupancy/execution Unknown, same pane and
-        // terminal in the verified incarnation) over many ~5 s snapshots
-        // plans nothing, and a forged unavailability transition against such
-        // a publication is refused by the store guard. The registered
-        // binding, its availability and the seat's episode stay untouched.
-        // Kills: planner `occupancy != Occupied || execution unverified` ⇒
-        // MarkOccupantUnavailable, and the store guard admitting it for
-        // Unknown occupancy.
-        let seat_episode = |conn: &rusqlite::Connection| -> (i64, i64) {
-            conn.query_row(
-                "SELECT unavailability_episode,unavailability_open FROM seats WHERE id=?1",
-                [seat.as_str()],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap()
-        };
-        let live_binding = |conn: &rusqlite::Connection| -> (i64, i64) {
-            conn.query_row(
-                "SELECT count(*),sum(registered_at IS NOT NULL) FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
-                [seat.as_str()],
-                |r| Ok((r.get(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0))),
-            )
-            .unwrap()
-        };
-        let episode_before = seat_episode(&conn);
-        assert_eq!(live_binding(&conn), (1, 1));
-        let production = |sequence| {
-            let mut observation = target("pane-b", "terminal-a", None, sequence);
-            observation.occupant = None;
-            observation.ui = HostUiState::Unknown;
-            observation.occupancy = StructuralOccupancy::Unknown;
-            observation.execution = ExecutionEvidence::Unknown;
-            observation
-        };
-        let mut last_unknown = None;
-        for sequence in 8..24 {
-            let published = publish(
-                &context,
-                &mut conn,
-                &budget,
-                snapshot(sequence, vec![production(sequence)]),
-            );
-            let unknown_page =
-                seats::saved_seats_page(&context, &conn, &published.id, 0, None, 16, &budget)
-                    .unwrap();
-            assert_eq!(
-                unknown_page.seats[0]
-                    .active_binding_execution
-                    .as_ref()
-                    .map(|e| e.as_str()),
-                Some("execution-a")
-            );
-            assert!(
-                plan_page(&unknown_page).unwrap().is_empty(),
-                "unknown snapshot {sequence} must not unseat the occupant"
-            );
-            last_unknown = Some(published);
-        }
-        let forged = GuardedSeatTransition {
-            publication: last_unknown.unwrap(),
-            seat: seat.clone(),
-            expected_binding_generation: 1,
-            expected_target: Some(HostTargetId::new("pane-b")),
-            expected_terminal: Some(TerminalId::new("terminal-a")),
-            action: ReconciliationAction::MarkOccupantUnavailable {
-                target: HostTargetId::new("pane-b"),
-                terminal: TerminalId::new("terminal-a"),
-                expected_execution: ExecutionId::new("execution-a"),
-            },
-        };
-        assert_ne!(
-            seats::apply_reconciliation_transition(&context, &mut conn, forged, &budget).unwrap(),
-            ReconciliationOutcome::Applied,
-            "store guard admitted unavailability on Unknown occupancy"
-        );
-        assert_eq!(
-            seat_episode(&conn),
-            episode_before,
-            "no unavailability episode opened"
-        );
-        assert_eq!(
-            live_binding(&conn),
-            (1, 1),
-            "registered_at kept, binding live"
-        );
-
-        // Loss needs positive evidence (native-claude-demo-1 P2): an observed
-        // empty shell (moved to pane-c) or an observed non-top-level occupant
-        // on the same terminal (pane-b). Unknown occupancy is not loss.
-        let mut loss = target(loss_address, "terminal-a", None, 108);
-        loss.occupancy = StructuralOccupancy::EmptyShell;
-        if loss_address == "pane-b" {
-            loss.occupancy = StructuralOccupancy::Occupied;
-            loss.occupant = native.occupant.clone().map(|mut occupant| {
-                occupant.is_top_level = false;
-                occupant
-            });
-        }
-        let publication = publish(&context, &mut conn, &budget, snapshot(108, vec![loss]));
-        let page = seats::saved_seats_page(&context, &conn, &publication.id, 0, None, 16, &budget)
-            .unwrap();
-        assert_eq!(
-            page.seats[0]
-                .active_binding_execution
-                .as_ref()
-                .unwrap()
-                .as_str(),
-            "execution-a"
-        );
-        let actions = plan_page(&page).unwrap();
-        assert!(matches!(&actions[0].action,
-            ReconciliationAction::MarkOccupantUnavailable { target, expected_execution, .. }
-                if target.as_str() == loss_address && expected_execution.as_str() == "execution-a"));
-        assert_eq!(
-            seats::apply_reconciliation_transition(
-                &context,
-                &mut conn,
-                actions[0].clone(),
-                &budget
-            )
-            .unwrap(),
-            ReconciliationOutcome::Applied
-        );
-        let after = seats::saved_seats_page(&context, &conn, &publication.id, 0, None, 16, &budget)
-            .unwrap();
-        assert_eq!(after.seats[0].state, crate::ports::SeatState::Resolved);
-        assert_eq!(after.seats[0].binding_generation, 1);
-        assert!(after.seats[0].active_binding_execution.is_none());
-        assert_eq!(
-            after.seats[0].binding_execution.as_ref().unwrap().as_str(),
-            "execution-a",
-            "saved history must remain separate from current authority"
-        );
-        assert!(plan_page(&after).unwrap().is_empty());
-        assert_eq!(conn.query_row(
-            "SELECT count(*),sum(ended_at IS NOT NULL),min(execution_id) FROM occupant_bindings WHERE seat_id=?1",
-            [seat.as_str()], |r| Ok((r.get::<_, i64>(0)?,r.get::<_, i64>(1)?,r.get::<_, String>(2)?))
-        ).unwrap(), (1,1,"execution-a".into()));
-        assert_eq!(conn.query_row(
-            "SELECT ordinal,decision_seq,binding_generation FROM seat_availability WHERE seat_id=?1",
-            [seat.as_str()], |r| Ok((r.get::<_, i64>(0)?,r.get::<_, i64>(1)?,r.get::<_, i64>(2)?))
-        ).unwrap(), anchor, "loss retains the original availability evidence");
-        assert_eq!(
-            seats::apply_reconciliation_transition(
-                &context,
-                &mut conn,
-                actions[0].clone(),
-                &budget
-            )
-            .unwrap(),
-            ReconciliationOutcome::Stale
-        );
-        let mut unknown_again = target(loss_address, "terminal-a", None, 109);
-        unknown_again.occupancy = StructuralOccupancy::Unknown;
-        let repeated = publish(
-            &context,
-            &mut conn,
-            &budget,
-            snapshot(109, vec![unknown_again]),
-        );
-        let repeated_page =
-            seats::saved_seats_page(&context, &conn, &repeated.id, 0, None, 16, &budget).unwrap();
-        assert!(
-            plan_page(&repeated_page).unwrap().is_empty(),
-            "repeated uncertainty must not fabricate replacement or rotate generation"
-        );
-        let same_native = target(loss_address, "terminal-a", Some("execution-a"), 110);
-        let known_again = publish(
-            &context,
-            &mut conn,
-            &budget,
-            snapshot(110, vec![same_native]),
-        );
-        let known_page =
-            seats::saved_seats_page(&context, &conn, &known_again.id, 0, None, 16, &budget)
-                .unwrap();
-        assert!(
-            plan_page(&known_page).unwrap().is_empty(),
-            "same historical execution must not be mistaken for a successor"
-        );
-        assert!(
-            known_page.seats[0].active_binding_execution.is_none(),
-            "snapshot proof must not register native authority"
-        );
-        assert_eq!(conn.query_row(
-            "SELECT ordinal,decision_seq,binding_generation FROM seat_availability WHERE seat_id=?1",
-            [seat.as_str()], |r| Ok((r.get::<_, i64>(0)?,r.get::<_, i64>(1)?,r.get::<_, i64>(2)?))
-        ).unwrap(), anchor, "same-execution reappearance must not restart the receipt anchor");
-        let anchor_jobs: i64 = conn.query_row(
-            "SELECT count(*) FROM work_jobs WHERE kind='receipt_timer_materialization' AND subject_id=?1",
-            [anchor.0.to_string()], |r| r.get(0)
-        ).unwrap();
-        assert_eq!(
-            anchor_jobs, 1,
-            "reappearance creates no extra receipt timer work"
-        );
-        let accept = crate::protocol::commands::Accept {
-            thread: invitation.thread.clone(),
-            operation: OperationId::new("stale-accept"),
-            claim: CallerClaim {
-                target: HostTargetId::new(loss_address),
-                ..command.claim.clone()
-            },
-        };
-        let invitation_id: String = conn
-            .query_row(
-                "SELECT id FROM invitations WHERE seat_id=?1",
-                [seat.as_str()],
-                |r| r.get(0),
-            )
-            .unwrap();
-        let stale_permit = MutationPermit::new(
-            VerifiedCaller {
-                seat: seat.clone(),
-                harness: Harness::Codex,
-                native_session: command.claim.native_session.clone(),
-                execution: command.claim.execution.clone(),
-                host_boot: HostBootId::new("boot-a"),
-                target_generation: 1,
-                binding_generation: 1,
-                observed_at_utc: UtcMillis(100),
-            },
-            accept.operation.clone(),
-            ObligationRef::Invitation(crate::protocol::ids::InvitationId::new(invitation_id)),
-            crate::store::schema::canonical_digest(&("accept", &accept.thread)).unwrap(),
-            MonoInstant(100),
-            1,
-        );
-        let rejected = crate::store::control::accept(
-            &context,
-            &mut conn,
-            &crate::protocol::time::CallBudget {
-                deadline: crate::protocol::time::MonoInstant(u64::MAX),
-                cancellation: Default::default(),
-            },
-            &accept,
-            stale_permit,
-            |_, at| {
-                Ok(DecisionFence {
-                    now: at.monotonic,
-                    host_boot: HostBootId::new("boot-a"),
-                    host_epoch: 1,
-                    target_generation: 1,
-                    binding_generation: 1,
-                    known_invalidated: false,
-                })
-            },
-        )
-        .unwrap_err();
-        assert_eq!(rejected.code, ErrorCode::CallerUnverified);
-        let pending: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM invitations WHERE seat_id=?1 AND state='pending'",
-                [seat.as_str()],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            pending, 1,
-            "stale native authority cannot accept the invitation"
-        );
-        final_target = loss_address;
-    }
     let closed = publish(&context, &mut conn, &budget, snapshot(111, vec![]));
     let closed_page =
         seats::saved_seats_page(&context, &conn, &closed.id, 0, None, 16, &budget).unwrap();
     let close_action = plan_page(&closed_page).unwrap();
     assert!(
-        matches!(&close_action[0].action, ReconciliationAction::BeginRetirement { absent_target } if absent_target.as_str() == final_target)
+        matches!(&close_action[0].action, ReconciliationAction::BeginRetirement { absent_target } if absent_target.as_str() == "pane-b")
     );
     assert!(matches!(
         seats::apply_reconciliation_transition(
@@ -2197,16 +1655,22 @@ fn real_store_registered_seat_follows_observed_move_with_unsupported_execution()
             continue;
         }
         drop(conn);
-        let store = SqliteStore::new(
-            StoreContext::new(path.clone(), Arc::new(FixedClock)),
-            "i",
-            StoreSettings {
-                daemon_boot: Some(uuid::Uuid::new_v4()),
-                ..StoreSettings::default()
-            },
-        )
-        .unwrap();
-        let result = reconcile_published_page(&store, &moved, 0, None, &budget);
+        let store = Arc::new(
+            SqliteStore::new(
+                StoreContext::new(path.clone(), Arc::new(FixedClock)),
+                "i",
+                StoreSettings {
+                    daemon_boot: Some(uuid::Uuid::new_v4()),
+                    ..StoreSettings::default()
+                },
+            )
+            .unwrap(),
+        );
+        let ports = crate::service::workers::ScheduledStore::new(
+            store.clone(),
+            Arc::new(crate::service::fair_writer::FairWriter::new(32)),
+        );
+        let result = reconcile_published_page(&ports, &moved, 0, None, &budget);
         let status = crate::service::workers::WorkerStatus::default();
         status.observe_reconciliation(&result);
         assert_eq!(status.health(), None, "Health must not report CursorStale");
@@ -2245,6 +1709,7 @@ fn real_store_registered_seat_follows_observed_move_with_unsupported_execution()
             "the registered binding moves with the seat and stays live"
         );
         drop(conn);
+        drop(ports);
         drop(store);
         let _ = std::fs::remove_file(path);
     }
@@ -2252,13 +1717,10 @@ fn real_store_registered_seat_follows_observed_move_with_unsupported_execution()
 
 mod fake_port {
     use super::*;
+    use crate::identity::reconcile::observation_store::ObservationStore;
     use crate::ports::*;
     use crate::protocol::{
-        authority::{MutationPermit, OperatorActor},
-        commands::{Command, PermitMutation, ResolveSeat, SendMessage},
-        ids::{RetirementJobId, WakeAttemptId},
-        pagination::{Page, PageRequest},
-        results::{CommandResult, RetirementStatus},
+        ids::RetirementJobId,
         time::{CallBudget, Cancellation, Clock},
     };
     use std::sync::{Arc, Mutex};
@@ -2288,6 +1750,11 @@ mod fake_port {
         invalidation_revision: u64,
         fail_invalidation: bool,
         refuse_seats: Vec<SeatId>,
+        /// When non-empty, `saved_seats_page_for_invalidation` serves these
+        /// seats one per page for whatever fence is asked.
+        invalidation_seats: Vec<SnapshotSavedSeat>,
+        /// Serving the page after this ordinal fails (page k of the pass).
+        fail_invalidation_page_after: Option<u64>,
     }
     struct FakeStore {
         clock: TestClock,
@@ -2301,73 +1768,12 @@ mod fake_port {
             }
         }
     }
-    fn unsupported() -> ApiError {
-        stale("unused fake port operation")
-    }
     fn stage_id() -> SnapshotGenerationId {
         SnapshotGenerationId::store_issued("stage-a".into())
     }
-    impl StorePort for FakeStore {
+    impl ObservationStore for FakeStore {
         fn clock(&self) -> &dyn Clock {
             &self.clock
-        }
-        fn query(
-            &self,
-            _: &Command,
-            _: &ReadContext,
-            _: &CallBudget,
-        ) -> Result<CommandResult, ApiError> {
-            Err(unsupported())
-        }
-        fn mutate(
-            &self,
-            _: PermitMutation,
-            _: MutationPermit,
-            _: &CallBudget,
-        ) -> Result<CommandResult, ApiError> {
-            Err(unsupported())
-        }
-        fn prepare_send_step(
-            &self,
-            _: &SendMessage,
-            _: DurableWorkAdmission,
-            _: &CallBudget,
-        ) -> Result<SendPreparationProgress, ApiError> {
-            Err(unsupported())
-        }
-        fn abandon_send_preparation(&self, _: &str, _: &CallBudget) -> Result<(), ApiError> {
-            Err(unsupported())
-        }
-        fn allocate_seat(
-            &self,
-            _: ResolveSeat,
-            _: OrdinaryAllocationGuard,
-            _: &CallBudget,
-        ) -> Result<SeatId, ApiError> {
-            Err(unsupported())
-        }
-        fn mutate_operator(
-            &self,
-            _: OperatorRequest,
-            _: OperatorActor,
-            _: &CallBudget,
-        ) -> Result<CommandResult, ApiError> {
-            Err(unsupported())
-        }
-        fn register_available(
-            &self,
-            _: RegisterAvailableRequest,
-            _: MutationPermit,
-            _: &CallBudget,
-        ) -> Result<CommandResult, ApiError> {
-            Err(unsupported())
-        }
-        fn revoke_registration(
-            &self,
-            _: RegistrationRevocation,
-            _: &CallBudget,
-        ) -> Result<bool, ApiError> {
-            Err(unsupported())
         }
         fn begin_host_observation(
             &self,
@@ -2386,14 +1792,6 @@ mod fake_port {
                 lifecycle_revision: 0,
                 invalidation_revision: 0,
             })
-        }
-        fn publish_current_target_observation(
-            &self,
-            _: &HostObservationAdmission,
-            _: &HostObservation,
-            _: &CallBudget,
-        ) -> Result<bool, ApiError> {
-            Err(unsupported())
         }
         fn invalidate_host_observation(
             &self,
@@ -2435,11 +1833,34 @@ mod fake_port {
         fn saved_seats_page_for_invalidation(
             &self,
             fence: &HostInvalidationFence,
-            _: u64,
+            after: u64,
             _: Option<u64>,
             _: u8,
             _: &CallBudget,
         ) -> Result<InvalidationSeatPage, ApiError> {
+            {
+                let state = self.state.lock().unwrap();
+                if state.fail_invalidation_page_after == Some(after) {
+                    return Err(stale("injected marking page failure"));
+                }
+                if !state.invalidation_seats.is_empty() {
+                    let remaining: Vec<_> = state
+                        .invalidation_seats
+                        .iter()
+                        .filter(|seat| seat.ordinal > after)
+                        .cloned()
+                        .collect();
+                    let seat = remaining.first().cloned().expect("page past the end");
+                    return Ok(InvalidationSeatPage {
+                        fence: fence.clone(),
+                        high_water_ordinal: state.invalidation_seats.len() as u64,
+                        after_ordinal: seat.ordinal,
+                        visited: 1,
+                        has_more: remaining.len() > 1,
+                        seats: vec![seat],
+                    });
+                }
+            }
             let page = self
                 .state
                 .lock()
@@ -2591,94 +2012,6 @@ mod fake_port {
                 Ok(ReconciliationOutcome::Applied)
             }
         }
-        fn due_obligations(
-            &self,
-            _: DueScanRequest,
-            _: &CallBudget,
-        ) -> Result<DueScanProgress, ApiError> {
-            Err(unsupported())
-        }
-        fn begin_retirement(
-            &self,
-            _: SeatId,
-            _: ClosureEvidence,
-            _: &CallBudget,
-        ) -> Result<RetirementJob, ApiError> {
-            panic!("reconciliation must use guarded transition")
-        }
-        fn advance_retirement(
-            &self,
-            _: RetirementJobId,
-            _: WorkAdmission,
-            _: &CallBudget,
-        ) -> Result<RetirementProgress, ApiError> {
-            panic!("cleanup must be asynchronous")
-        }
-        fn pending_retirement_jobs(
-            &self,
-            _: PageRequest,
-            _: &CallBudget,
-        ) -> Result<Page<RetirementStatus>, ApiError> {
-            Err(unsupported())
-        }
-        fn wake_candidates(
-            &self,
-            _: PageRequest,
-            _: &CallBudget,
-        ) -> Result<Page<WakeCandidate>, ApiError> {
-            Err(unsupported())
-        }
-        fn wake_recovery_candidates(
-            &self,
-            _: PageRequest,
-            _: &CallBudget,
-        ) -> Result<Page<WakeRecoveryCandidate>, ApiError> {
-            Err(unsupported())
-        }
-        fn recover_wake_reservation(
-            &self,
-            _: WakeRecoveryRequest,
-            _: &CallBudget,
-        ) -> Result<WakeRecoveryOutcome, ApiError> {
-            Err(unsupported())
-        }
-        fn pending_work(
-            &self,
-            _: PageRequest,
-            _: &CallBudget,
-        ) -> Result<Page<WorkCandidate>, ApiError> {
-            Err(unsupported())
-        }
-        fn advance_work(
-            &self,
-            _: &str,
-            _: DurableWorkAdmission,
-            _: &CallBudget,
-        ) -> Result<WorkProgress, ApiError> {
-            Err(unsupported())
-        }
-        fn reserve_wake(
-            &self,
-            _: &WakeCandidate,
-            _: &CallBudget,
-        ) -> Result<Option<WakeReservation>, ApiError> {
-            Err(unsupported())
-        }
-        fn validate_wake_reservation(
-            &self,
-            _: &WakeReservation,
-            _: &CallBudget,
-        ) -> Result<bool, ApiError> {
-            Err(unsupported())
-        }
-        fn complete_wake(
-            &self,
-            _: WakeAttemptId,
-            _: WakeOutcome,
-            _: &CallBudget,
-        ) -> Result<(), ApiError> {
-            Err(unsupported())
-        }
     }
 
     fn budget() -> CallBudget {
@@ -2720,12 +2053,6 @@ mod fake_port {
             }
             self.capture.clone()
         }
-        fn subscribe_lifecycle(
-            &self,
-            _: &HostCallContext,
-        ) -> Result<Box<dyn HostLifecycleSubscription>, ApiError> {
-            panic!("unused")
-        }
         fn safe_wake_target(&self, _: &SeatId, _: &HostObservation) -> Option<SafeWakeTarget> {
             panic!("unused")
         }
@@ -2737,12 +2064,27 @@ mod fake_port {
         ) -> Result<PromptOutcome, ApiError> {
             panic!("unused")
         }
+        fn pane_agent_state(
+            &self,
+            _target: &SafeWakeTarget,
+            _context: &HostCallContext,
+        ) -> Result<crate::ports::AgentComposerState, ApiError> {
+            Ok(crate::ports::AgentComposerState::Submitted)
+        }
+
         fn launch_native(
             &self,
             _: NativeLaunchRequest,
             _: &HostCallContext,
         ) -> Result<NativeLaunchOutcome, ApiError> {
             panic!("unused")
+        }
+        fn send_submit_key(
+            &self,
+            _: &crate::ports::SafeWakeTarget,
+            _: &crate::ports::HostCallContext,
+        ) -> Result<(), crate::protocol::results::ApiError> {
+            Ok(())
         }
     }
 
@@ -3134,6 +2476,233 @@ mod fake_port {
         store.state.lock().unwrap().page.as_mut().unwrap().visited = 0;
         let unrelated = reconcile_published_page(&store, &publication, 0, None, &budget()).unwrap();
         assert_eq!(unrelated.transition_count, 0);
+    }
+
+    fn saved_seat(ordinal: u64, name: &str) -> SnapshotSavedSeat {
+        SnapshotSavedSeat {
+            ordinal,
+            seat: SeatId::new(name),
+            state: SeatState::Resolved,
+            unresolved_reason: None,
+            prior_published_observation: None,
+            structural_proof: None,
+            target: Some(HostTargetId::new("p-old")),
+            terminal: Some(TerminalId::new("t-old")),
+            binding_generation: 1,
+            binding_execution: None,
+            active_binding_execution: None,
+            bound_epoch: None,
+            bound_boot: Some(HostBootId::new("boot-a")),
+            bound_incarnation: Some("inc-a".into()),
+            latest_binding_evidence: None,
+            observed_match: None,
+        }
+    }
+
+    fn context() -> HostCallContext {
+        HostCallContext {
+            budget: budget(),
+            expected_boot: None,
+            expected_epoch: None,
+        }
+    }
+
+    /// One capture attempt through `observe_and_publish` with the given host
+    /// result.
+    fn observe(
+        store: &Arc<FakeStore>,
+        lane: &mut ObservationLane,
+        capture: Result<HostSnapshot, ApiError>,
+    ) -> ObservationOutcome {
+        let host = FakeHost {
+            store: store.clone(),
+            capture,
+            cancel_on_return: false,
+        };
+        observe_and_publish(
+            &host,
+            store.as_ref(),
+            lane,
+            "instance-a",
+            &context(),
+            &budget(),
+        )
+        .unwrap()
+    }
+
+    /// Runs the whole unresolved-marking continuation of an `Invalidated`
+    /// outcome the way the lane loop does, feeding the lane each page result.
+    fn run_marking_pass(
+        store: &Arc<FakeStore>,
+        lane: &mut ObservationLane,
+        outcome: &ObservationOutcome,
+    ) -> Result<(), ApiError> {
+        let ObservationOutcome::Invalidated { fence, reason, .. } = outcome else {
+            panic!("not an invalidation: {outcome:?}");
+        };
+        let (mut after, mut high) = (0, None);
+        loop {
+            let page = reconcile_invalidated_page(store.as_ref(), fence, after, high, &budget());
+            lane.note_invalidation_page(*reason, &page);
+            let page = page?;
+            match page.next_after_ordinal {
+                Some(next) => (after, high) = (next, Some(page.high_water_ordinal)),
+                None => return Ok(()),
+            }
+        }
+    }
+
+    fn invalidations(store: &FakeStore) -> usize {
+        let state = store.state.lock().unwrap();
+        state
+            .calls
+            .iter()
+            .filter(|call| call.starts_with("invalidate:"))
+            .count()
+    }
+
+    #[test]
+    fn repeat_failure_with_same_reason_after_completed_marking_writes_no_invalidation() {
+        let store = Arc::new(FakeStore::new());
+        store.state.lock().unwrap().invalidation_seats = vec![saved_seat(1, "seat-a")];
+        let mut lane = ObservationLane::default();
+        let first = observe(&store, &mut lane, Err(stale("host down")));
+        assert!(matches!(first, ObservationOutcome::Invalidated { .. }));
+        // Marker is set only once the marking pass's last page commits.
+        assert_eq!(lane.last_invalidation_reason(), None);
+        run_marking_pass(&store, &mut lane, &first).unwrap();
+        assert_eq!(
+            lane.last_invalidation_reason(),
+            Some(HostInvalidationReason::HostUnavailable)
+        );
+        let second = observe(&store, &mut lane, Err(stale("host still down")));
+        assert!(matches!(
+            second,
+            ObservationOutcome::InvalidationRepeated {
+                reason: HostInvalidationReason::HostUnavailable,
+                cause: Some(_)
+            }
+        ));
+        // The admission (fence) commit stays; the invalidation is not rewritten.
+        assert_eq!(
+            store.state.lock().unwrap().calls,
+            ["admit", "invalidate:HostUnavailable", "admit"]
+        );
+        assert_eq!(lane.repeat_failures(), 1);
+        assert!(!lane.is_available());
+    }
+
+    #[test]
+    fn repeat_before_marking_completes_invalidates_again() {
+        let store = Arc::new(FakeStore::new());
+        let mut lane = ObservationLane::default();
+        observe(&store, &mut lane, Err(stale("host down")));
+        // No marking page ran: the pass has not completed.
+        let second = observe(&store, &mut lane, Err(stale("host down")));
+        assert!(matches!(second, ObservationOutcome::Invalidated { .. }));
+        assert_eq!(invalidations(&store), 2);
+    }
+
+    #[test]
+    fn different_reason_invalidates_again() {
+        let store = Arc::new(FakeStore::new());
+        store.state.lock().unwrap().invalidation_seats = vec![saved_seat(1, "seat-a")];
+        let mut lane = ObservationLane::default();
+        let first = observe(&store, &mut lane, Err(stale("host down")));
+        run_marking_pass(&store, &mut lane, &first).unwrap();
+        let mut partial = snapshot(2, vec![]);
+        partial.complete = false;
+        let second = observe(&store, &mut lane, Ok(partial));
+        assert!(matches!(
+            second,
+            ObservationOutcome::Invalidated {
+                reason: HostInvalidationReason::PartialEnumeration,
+                ..
+            }
+        ));
+        assert_eq!(invalidations(&store), 2);
+        assert_eq!(lane.repeat_failures(), 0);
+    }
+
+    #[test]
+    fn publication_in_between_invalidates_again() {
+        let store = Arc::new(FakeStore::new());
+        store.state.lock().unwrap().invalidation_seats = vec![saved_seat(1, "seat-a")];
+        let mut lane = ObservationLane::default();
+        let first = observe(&store, &mut lane, Err(stale("host down")));
+        run_marking_pass(&store, &mut lane, &first).unwrap();
+        let published = observe(&store, &mut lane, Ok(snapshot(2, vec![])));
+        assert!(matches!(published, ObservationOutcome::Published(_)));
+        assert_eq!(lane.last_invalidation_reason(), None);
+        let again = observe(&store, &mut lane, Err(stale("host down again")));
+        assert!(matches!(again, ObservationOutcome::Invalidated { .. }));
+        assert_eq!(invalidations(&store), 2);
+    }
+
+    #[test]
+    fn interrupted_first_marking_pass_reruns_from_ordinal_zero() {
+        let store = Arc::new(FakeStore::new());
+        {
+            let mut state = store.state.lock().unwrap();
+            state.invalidation_seats = (1..=4)
+                .map(|n| saved_seat(n, &format!("seat-{n}")))
+                .collect();
+            // Page k = the third page (after ordinal 2) fails.
+            state.fail_invalidation_page_after = Some(2);
+        }
+        let mut lane = ObservationLane::default();
+        let first = observe(&store, &mut lane, Err(stale("host down")));
+        assert!(run_marking_pass(&store, &mut lane, &first).is_err());
+        assert_eq!(lane.last_invalidation_reason(), None);
+        assert_eq!(
+            store.state.lock().unwrap().invalidated_seats,
+            [SeatId::new("seat-1"), SeatId::new("seat-2")]
+        );
+        // Same reason again: not skipped, and the pass restarts at ordinal 0.
+        store.state.lock().unwrap().fail_invalidation_page_after = None;
+        store.state.lock().unwrap().invalidated_seats.clear();
+        let second = observe(&store, &mut lane, Err(stale("host down")));
+        assert!(matches!(second, ObservationOutcome::Invalidated { .. }));
+        run_marking_pass(&store, &mut lane, &second).unwrap();
+        assert_eq!(
+            store.state.lock().unwrap().invalidated_seats,
+            (1..=4)
+                .map(|n| SeatId::new(format!("seat-{n}")))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(invalidations(&store), 2);
+    }
+
+    #[test]
+    fn skip_returns_invalidation_repeated_and_keeps_health_invalidated() {
+        use crate::service::workers::{RedactedFailure, WorkerStatus};
+        let store = Arc::new(FakeStore::new());
+        store.state.lock().unwrap().invalidation_seats = vec![saved_seat(1, "seat-a")];
+        let mut lane = ObservationLane::default();
+        let status = WorkerStatus::default();
+        let first = observe(&store, &mut lane, Err(stale("host down")));
+        status.observe_capture(&Ok(Some(first.clone())));
+        run_marking_pass(&store, &mut lane, &first).unwrap();
+        let pages_before = store.state.lock().unwrap().invalidated_seats.len();
+        let second = observe(&store, &mut lane, Err(stale("host down")));
+        assert!(matches!(
+            second,
+            ObservationOutcome::InvalidationRepeated { .. }
+        ));
+        status.observe_capture(&Ok(Some(second)));
+        // Health keeps ObservationInvalidated(reason): not cleared, and not
+        // replaced by ObservationCapture.
+        assert_eq!(
+            status.health().unwrap().failure,
+            Some(RedactedFailure::ObservationInvalidated(
+                HostInvalidationReason::HostUnavailable
+            ))
+        );
+        // No continuation page ran for the skipped failure.
+        assert_eq!(
+            store.state.lock().unwrap().invalidated_seats.len(),
+            pages_before
+        );
     }
 
     #[test]

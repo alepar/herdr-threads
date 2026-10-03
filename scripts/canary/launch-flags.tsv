@@ -1,0 +1,15 @@
+# Launch flags the canary asserts (nested spec D4). Columns, tab separated: harness, help-command, flag, source.
+# t0.launch-flags runs each help command under the isolated environment and requires the flag as a whole word
+# in its output. every_emitted_launch_flag_has_a_tsv_row (tests/harness/canary_payloads.rs) requires a row for every
+# flag the Rust launch/setup code emits (-c is the row --config).
+codex	codex --help	--no-daemon	launch adds it once at top level (harness/launch.rs compose, setup.rs launch_argv)
+codex	codex --help	--config	owned -c hooks.* for the interactive form
+codex	codex --help	exec	handled launch form
+codex	codex --help	resume	handled launch form
+codex	codex exec --help	--config	owned -c hooks.* at exec level (0.159.2 ignores root-level hooks for exec)
+codex	codex exec --help	resume	handled exec resume form
+codex	codex exec --help	--dangerously-bypass-hook-trust	canary tier 0/1 depend on it
+codex	codex resume --help	--config	owned -c hooks.* at resume level
+claude	claude --help	--settings	the launch proposal setup prints (JsonSetupPlan::launch_argv)
+claude	claude --help	--print	tier 0/1 headless run
+claude	claude --help	--setting-sources	documented user/project layering in setup's note

@@ -25,7 +25,10 @@ Each new domain mutation follows this substrate-owned sequence:
 
 `decision_at` is the successful transaction's logical deadline linearization point, not physical COMMIT/fsync completion. A queue/lock wait or pause before sampling counts toward lateness. A pause after sampling does not reclassify the decision, even if synchronization completes after the deadline. A failed transaction has no successful decision. No host call, await, sleep or intentional retry belongs between sample and COMMIT. Test-only barriers immediately before/after sampling make this distinction deterministic. Existing domain fields named committed/created/ACK time store this decision time; durable visibility occurs only at successful commit. A long post-decision stall may consume a timer before its visibility; later due scans preserve that fact.
 
+> **Superseded (2026-10, ht-p03.2 / B4):** the adversarial verification layer described here was removed; see "Cooperative reality (2026-10)".
+
 Every accountable new mutation consumes a nonserializable, single-use, request/payload-bound `MutationPermit` from a fresh per-request host observation, as defined in seat identity. Receipt provenance retains the observation identity/time and decision time. The underlying native execution field must have proven observation semantics; a new RPC returning cached native metadata is not sufficient freshness evidence. The store's fences establish authority at that observation point and reject known changes before decision; they do not claim atomic physical-host/SQLite authority. A replacement after observation with no observable invalidation can remain undetected within the bounded permit window. Child/unknown proof remains unauthorized, and the early both-harness feasibility gate remains mandatory.
+<!-- end superseded -->
 
 ## Schema
 
@@ -172,6 +175,39 @@ Page more than 205 collection entries using exact continuations, mutate inclusio
 ## Shared-contract adoption record
 
 2026-09-27: Reconciled this canonical spec with the adopted revision-4 shared contract. Detailed normative algorithms/types and preserved revision responses are in the [adopted shared-contract amendment, revision 4](shared-contract-amendment-adopted.md). This is specification work before the next formal design review; no source implementation or native-support completion is asserted.
+
+## Cooperative reality (2026-10)
+
+- Every accountable mutation (create, invite, accept, leave, topic, archive, reopen, send, ACK, check-in) is decided in one transaction under a cooperative permit; the per-decision fence closure parameter and the native digest branches (native decision, native accountable actor, the unaccompanied arm of the accountable transaction) no longer exist. Payload digests are cooperative digests only.
+- Receipt provenance is `cooperative_top_level` for a model-issued accept or ACK, `operator_human` for a person's pane, and the operator identity for repair. A replacement after the host read is not detected by a native-current-at-COMMIT guarantee, because none is claimed.
+- `seats::register_available` is the single check-in path (the cooperative branch, renamed); the guarded allocation, registration revocation and native check-in payload were removed.
+- Store helpers with no production caller were deleted by the reachability sweep (work discovery, boot recovery of abandoned preparations, the effective invitation and receipt state helpers, the membership-and-requirement wrapper, the query interrupt handle); the full list is `docs/history/remaining-findings-run/b4-removed-symbols.txt`.
+- **Schema v10 drops no table.** `allocation_decisions`, `recovery_baseline_targets`, `recovery_baseline_releases`, `recovery_holds`, `seat_availability`, `observed_targets` and the rest are still read or written by ordinary resolution, operator repair or effective-disposition statements.
+
+Decision record: [root spec §B4](remaining-findings/2026-10-01-remaining-herdr-threads-findings-design.md#b4-remove-the-pre-cooperative-verification-layer) (ht-p03.2 deleted the code, ht-p03.5 rewrote these docs). Normative trust rules: `TRUST-POLICY.md` (branch `trust-model-invariants`), which supersedes any text above that requires adversarial proof of who is calling. Text above that describes the removed layer stays for history and is marked superseded where it names a removed symbol.
+
+## Live indexes and retention (2026-10)
+
+Background discovery reads only live rows, through partial indexes that queries name with `INDEXED BY`, so a missing index is a prepare-time error rather than a silent scan. Schema v11 (`migrations/0011_cooperative_only.sql`, after the B5 trust guards at v10) adds:
+
+- `seats_live_ordinal(instance_id, ordinal) WHERE state!='retired'` for the observation walk and the publish probe;
+- `work_jobs_live(ordinal) WHERE status IN ('pending','failed')` for work discovery (ascending-ordinal cursor unchanged);
+- `completed_at` on `work_jobs`, written by the Rust path that sets `status='complete'` from the injected clock, with `work_jobs_retention(kind, completed_at) WHERE status='complete'`;
+- `snapshot_generations_retention(instance_id, admission_sequence)`;
+- `wake_work_reserved(seat_id) WHERE reservation_id IS NOT NULL` for the reserved-seats-only wake recovery walk.
+
+Wake discovery derives attention from the v8 pending projections with O(1) per-seat probes over live seats, excluding seats whose current binding is human; it no longer scans effective attention over history. Receipts, invitations and warnings keep their existing pending-only partial indexes and projections.
+
+**Retention lane.** A fifth Pacer lane (60 s safety tick, empty kick set, re-run at once while a pass has more) runs `store::retention::prune_once`: one snapshot transaction then one work-job transaction, each at most 256 rows (`RETENTION_BATCH_ROWS`) and stopping early after 5 ms (`RETENTION_QUANTUM_MS`). Candidates are found on a query connection and a write transaction opens only when a row qualifies.
+
+- **Snapshot keep set, per instance:** the active generation, the previous published one, the recovery baseline (with its current `recovery_baseline_releases`), every generation an unresolved seat references, and every in-flight stage. Older superseded, discarded and dead-stage generations and their targets are pruned.
+- **Work jobs:** completed `send_attention`, `warning_attribution` and `receipt_timer_materialization` jobs are deleted 24 hours after completion (`WORK_JOB_RETENTION_MS`; a null `completed_at` counts as already past). Pending and failed jobs are never deleted. `preparation_cleanup` jobs are kept: their completion row is the operation-key reuse marker.
+- **Retained on purpose:** warnings (`messages kind='warn'`, `warning_jobs`, `warning_recipients`) are user-visible history and attribution records, and discovery already skips settled ones through the pending projections; retired seats, settled receipts and invitations, and `wake_work` rows are kept too.
+- A failed pass backs off on the Pacer schedule and surfaces on the scheduler line; there is no separate retention Health line.
+
+**Page-fit helper.** Every paged result sizes its page through `store::page_fit`: an estimate from per-item single-item encodes, then the exact boundary by galloping and binary search, so the page equals the greedy maximal prefix with O(n) single-item encodes and O(log n) full-page encodes. It replaces re-encoding the page once per candidate.
+
+Decision records: [root spec §B1](remaining-findings/2026-10-01-remaining-herdr-threads-findings-design.md#b1-retention-and-pending-only-discovery) and the nested [retention and live indexes spec](remaining-findings/2026-10-01-remaining-herdr-threads-findings--retention-and-live-indexes-design.md) (D1 live predicates and v10 contents, D2 wake discovery, D3 snapshot keep set, D4 retention lane and policy, D5 page fit).
 
 ## Post-Implementation Notes
 

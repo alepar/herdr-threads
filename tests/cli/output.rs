@@ -146,6 +146,50 @@ fn history_continuation_is_emitted_and_parseable() {
     ));
 }
 
+// Wave 21. Kills: selecting by isatty alone (a PTY harness gets the human
+// form), a marker that also beats `--human`, a marker list that matches an
+// empty value, and a library caller that never recorded a terminal going human.
+#[test]
+fn harness_markers_select_agent_output_even_on_a_tty() {
+    let spec = OutputSpec {
+        format: crate::protocol::output::OutputFormat::Text,
+        ..OutputSpec::default()
+    };
+    let human = |presentation| {
+        let guard = PresentationGuard::enter(presentation, &spec);
+        let active = human_active();
+        drop(guard);
+        active
+    };
+    set_stdout_is_terminal(true);
+    set_harness_marked(false);
+    assert!(human(Presentation::Auto), "a person on a terminal");
+    set_harness_marked(true);
+    assert!(!human(Presentation::Auto), "marked PTY harness is an agent");
+    assert!(human(Presentation::Human), "--human still wins");
+    assert!(!human(Presentation::Machine));
+    set_stdout_is_terminal(false);
+    assert!(!human(Presentation::Auto));
+    set_harness_marked(false);
+    set_stdout_is_terminal(false);
+
+    let env = |set: &'static [(&'static str, &'static str)]| {
+        move |name: &str| {
+            set.iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| std::ffi::OsString::from(value))
+        }
+    };
+    assert!(!harness_marked(env(&[])));
+    assert!(!harness_marked(env(&[("CLAUDECODE", "")])));
+    assert!(!harness_marked(env(&[("TERM", "xterm"), ("HOME", "/h")])));
+    for marker in HARNESS_MARKERS {
+        let set: &'static [(&'static str, &'static str)] =
+            Box::leak(vec![(marker, "1")].into_boxed_slice());
+        assert!(harness_marked(env(set)), "{marker}");
+    }
+}
+
 #[derive(Default)]
 struct FlushSink {
     bytes: Vec<u8>,

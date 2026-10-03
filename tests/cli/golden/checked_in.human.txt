@@ -1,0 +1,14 @@
+Checked in as seat seat-a.
+Context: current, offered through evt-9
+Warnings: 2
+Warning history:
+  warn-4 t-1#4
+  warn-5 t-1#5
+more: herdr-threads warnings --seat seat-a --cursor cursor-1
+offered notices: 1 [warn-6@t-1] +more
+notices.more: herdr-threads warnings --seat seat-a
+THREAD  PENDING  INVITATIONS  WARNINGS  MEMBERSHIP
+t-1     2        1            0         required inv=inv-1 rev=2
+t-2     1+       0            0         -
+accept-required: herdr-threads accept-required t-1 --invitation inv-1 --requirement req-1 --revision 2
+more: herdr-threads inbox --cursor cursor-1

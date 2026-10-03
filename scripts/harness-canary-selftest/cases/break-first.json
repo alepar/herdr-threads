@@ -1,0 +1,38 @@
+{
+  "name": "break-first",
+  "candidates": [
+    "1.0.1",
+    "1.0.2",
+    "1.0.3",
+    "1.0.4",
+    "1.0.5",
+    "1.0.6",
+    "1.0.7",
+    "1.0.8",
+    "1.0.9"
+  ],
+  "baseline": "1.0.0",
+  "bisect": true,
+  "tier1": false,
+  "results": {
+    "default": "pass",
+    "1.0.1": "fail",
+    "1.0.2": "fail",
+    "1.0.3": "fail",
+    "1.0.4": "fail",
+    "1.0.5": "fail",
+    "1.0.6": "fail",
+    "1.0.7": "fail",
+    "1.0.8": "fail",
+    "1.0.9": "fail"
+  },
+  "expect": {
+    "status": "break",
+    "first_bad": "1.0.1",
+    "last_good": "1.0.0",
+    "exit_code": 1,
+    "attempts": {
+      "1.0.0": 1
+    }
+  }
+}

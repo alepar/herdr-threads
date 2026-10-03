@@ -6,7 +6,10 @@ use herdr_threads::{
         time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis},
     },
     scheduler::deadlines::DriveOutcome,
-    service::workers::{BoundedLane, FairWriter, WorkerStatus},
+    service::{
+        fair_writer::FairWriter,
+        workers::{BoundedLane, WorkerStatus},
+    },
 };
 use std::{
     sync::Arc,
@@ -262,12 +265,7 @@ fn deadline_health_does_not_clear_work_failure_on_unrelated_job_success() {
     let status = WorkerStatus::default();
     status.observe(&DriveOutcome {
         work_job: Some("failed-job".into()),
-        work_error: Some(ApiError {
-            code: ErrorCode::StoreBusy,
-            detail: "committed prefix failure".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        }),
+        work_error: Some(ApiError::store_busy("committed prefix failure")),
         ..DriveOutcome::default()
     });
     status.observe(&DriveOutcome {
@@ -399,12 +397,9 @@ impl herdr_threads::scheduler::deadlines::DeadlinePort for HealthDeadlinePort {
             )
             .is_ok()
         {
-            return Err(herdr_threads::protocol::results::ApiError {
-                code: ErrorCode::StoreBusy,
-                detail: "discovery failed".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
+            return Err(herdr_threads::protocol::results::ApiError::store_busy(
+                "discovery failed",
+            ));
         }
         let jobs = self.jobs.lock().unwrap();
         let after: usize = page.cursor.as_deref().unwrap_or("0").parse().unwrap();
@@ -457,7 +452,7 @@ fn deadline_health_saturation_requires_a_later_complete_successful_retry_sweep()
         mode: AtomicU8::new(0),
         invitation_failed: AtomicBool::new(true),
     };
-    let mut driver = DeadlineDriver::new(&port);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
     let status = WorkerStatus::default();
     let step = |driver: &mut DeadlineDriver<'_, HealthDeadlinePort>| {
         port.mono.fetch_add(1_000, Ordering::SeqCst);
@@ -585,12 +580,11 @@ impl HealthCompletionHold {
             .wait_timeout_while(state, Duration::from_secs(2), |state| !state.released)
             .unwrap();
         if !state.released {
-            return Err(herdr_threads::protocol::results::ApiError {
-                code: ErrorCode::DeadlineExceeded,
-                detail: "bounded health completion fixture wait expired".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
+            return Err(
+                herdr_threads::protocol::results::ApiError::deadline_exceeded(
+                    "bounded health completion fixture wait expired",
+                ),
+            );
         }
         Ok(())
     }
@@ -657,12 +651,9 @@ impl HealthWakeFixture {
             )
             .is_ok()
         {
-            Err(herdr_threads::protocol::results::ApiError {
-                code: ErrorCode::StoreBusy,
-                detail: "injected wake operation failure".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            })
+            Err(herdr_threads::protocol::results::ApiError::store_busy(
+                "injected wake operation failure",
+            ))
         } else {
             operation()
         }
@@ -700,13 +691,20 @@ impl herdr_threads::scheduler::WakePort for HealthWakeFixture {
         &self,
         attempt: herdr_threads::protocol::ids::WakeAttemptId,
         outcome: herdr_threads::ports::WakeOutcome,
+        refused_restore: Option<&herdr_threads::ports::PriorLadder>,
         budget: &CallBudget,
-    ) -> Result<(), herdr_threads::protocol::results::ApiError> {
+    ) -> Result<bool, herdr_threads::protocol::results::ApiError> {
         self.result(5, || {
             if let Some(hold) = &self.completion_hold {
                 hold.pause(attempt.as_str())?;
             }
-            herdr_threads::ports::StorePort::complete_wake(&self.store, attempt, outcome, budget)
+            herdr_threads::ports::StorePort::complete_wake(
+                &self.store,
+                attempt,
+                outcome,
+                refused_restore,
+                budget,
+            )
         })
     }
     fn wake_recovery_candidates(
@@ -890,7 +888,7 @@ fn wake_health_keeps_unsettled_completion_through_local_noop_and_healthy_peer() 
         hold.wait_until_claimed();
         observed.begin_drive(&budget);
         let peer = scheduler.drive_wakes(&budget).unwrap();
-        assert_eq!((peer.examined, peer.attempted), (3, 1)); // Failed a is a local no-op; b is committed; old is unresolved.
+        assert_eq!((peer.examined, peer.attempted), (2, 1)); // Failed a is a local no-op; b is committed; old has no pending attention, so discovery no longer lists it (D2).
         assert_eq!(status.last_error().as_deref(), Some(first_error.as_str()));
         let db = rusqlite::Connection::open(&path).unwrap();
         let unsettled: i64 = db
@@ -947,12 +945,10 @@ fn deadline_health_retirement_jobs_recover_independently_of_discovery() {
     for (job, code) in [("a", ErrorCode::StoreBusy), ("b", ErrorCode::Conflict)] {
         status.observe(&DriveOutcome {
             retirement_job: Some(RetirementJobId::new(job)),
-            retirement_error: Some(ApiError {
+            retirement_error: Some(ApiError::new(
                 code,
-                detail: format!("private retirement {job} failed"),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            }),
+                format!("private retirement {job} failed"),
+            )),
             ..Default::default()
         });
     }
@@ -1008,12 +1004,7 @@ fn deadline_health_redacts_retirement_discovery_failure() {
     use herdr_threads::scheduler::deadlines::DiscoveryProgress;
     let status = WorkerStatus::default();
     status.observe(&DriveOutcome {
-        retirement_error: Some(ApiError {
-            code: ErrorCode::StoreBusy,
-            detail: "SQLite: private discovery failure".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        }),
+        retirement_error: Some(ApiError::store_busy("SQLite: private discovery failure")),
         ..Default::default()
     });
     assert_eq!(
@@ -1045,12 +1036,7 @@ fn deadline_health_clears_retirement_failure_on_committed_partial_progress() {
     let status = WorkerStatus::default();
     status.observe(&DriveOutcome {
         retirement_job: Some(RetirementJobId::new("a")),
-        retirement_error: Some(ApiError {
-            code: ErrorCode::Conflict,
-            detail: "SQLite: private failure".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        }),
+        retirement_error: Some(ApiError::conflict("SQLite: private failure")),
         ..Default::default()
     });
     status.observe(&DriveOutcome {
@@ -1085,7 +1071,7 @@ fn deadline_health_real_driver_cooldown_skip_does_not_recover_failed_job() {
         mode: AtomicU8::new(0),
         invitation_failed: AtomicBool::new(false),
     };
-    let mut driver = DeadlineDriver::new(&port);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
     let status = WorkerStatus::default();
     let budget = CallBudget {
         deadline: MonoInstant(10000),
@@ -1172,7 +1158,7 @@ fn deadline_health_recovered_call_is_not_blocked_by_unrelated_incomplete_job() {
         mode: AtomicU8::new(1),
         invitation_failed: AtomicBool::new(false),
     };
-    let mut driver = DeadlineDriver::new(&port);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
     let status = WorkerStatus::default();
     let first = driver.drive(&CallBudget {
         deadline: MonoInstant(0),
@@ -1231,12 +1217,7 @@ impl PartialHealthPort {
         }
     }
     fn error(detail: &str) -> herdr_threads::protocol::results::ApiError {
-        herdr_threads::protocol::results::ApiError {
-            code: ErrorCode::StoreBusy,
-            detail: detail.into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        }
+        herdr_threads::protocol::results::ApiError::store_busy(detail)
     }
 }
 impl herdr_threads::scheduler::deadlines::DeadlinePort for PartialHealthPort {
@@ -1407,7 +1388,7 @@ fn deadline_health_preserves_retirement_failure_before_due_error_through_cooldow
     port.retirement_fail.store(true, Ordering::SeqCst);
     port.due_fail.store(true, Ordering::SeqCst);
     let status = WorkerStatus::default();
-    let mut driver = DeadlineDriver::new(&port);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
     let budget = CallBudget {
         deadline: MonoInstant(20000),
         cancellation: Cancellation::default(),
@@ -1458,7 +1439,7 @@ fn deadline_health_preserves_work_first_prefix_and_top_level_errors_before_due_e
     for (top_error, peer_retirement) in [(false, false), (true, false), (false, true)] {
         let port = PartialHealthPort::new(peer_retirement);
         let status = WorkerStatus::default();
-        let mut driver = DeadlineDriver::new(&port);
+        let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
         let budget = CallBudget {
             deadline: MonoInstant(20000),
             cancellation: Cancellation::default(),
@@ -1526,5 +1507,632 @@ fn deadline_health_preserves_work_first_prefix_and_top_level_errors_before_due_e
             observe_partial_driver(&mut driver, &status, &budget).unwrap();
         }
         assert_eq!(status.last_error(), None);
+    }
+}
+
+/// ht-p03.9.4: the deadline and wake lanes block in their Pacer (kick,
+/// failure backoff, safety tick, cancellation) instead of sleeping 20 ms
+/// turns. Each lane runs on a real thread against a real `SqliteStore` with a
+/// fake clock that only the test moves.
+mod pacer_lanes {
+    use herdr_threads::{
+        notification::policy::RetryConfig,
+        ports::*,
+        protocol::{
+            ids::*,
+            results::{ApiError, ErrorCode},
+            time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis},
+        },
+        service::{
+            fair_writer::FairWriter,
+            pacer::{Backoff, Pacer},
+            workers::{WorkerStatus, start_deadline_worker, start_wake_worker},
+        },
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+        test_support::isolation::TestIsolation,
+    };
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
+    };
+    use std::time::{Duration, Instant};
+
+    pub(super) struct LaneClock {
+        mono: AtomicU64,
+        utc: AtomicI64,
+    }
+    impl Clock for LaneClock {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(self.utc.load(Ordering::SeqCst))
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(self.mono.load(Ordering::SeqCst))
+        }
+    }
+    impl LaneClock {
+        fn now(&self) -> u64 {
+            self.mono.load(Ordering::SeqCst)
+        }
+        /// Moves the clock to `to` and lets a blocked Pacer re-read it.
+        fn set(&self, to: u64, pacer: &Pacer) {
+            self.mono.store(to, Ordering::SeqCst);
+            self.utc.store(to as i64, Ordering::SeqCst);
+            pacer.clock_advanced();
+        }
+        /// [`Self::set`], then waits until the lane has re-read the clock and
+        /// is blocked in its wait again (any pass the new time started is done).
+        fn set_and_settle(&self, to: u64, pacer: &Pacer) {
+            self.mono.store(to, Ordering::SeqCst);
+            self.utc.store(to as i64, Ordering::SeqCst);
+            let seen = pacer.evaluations();
+            pacer.clock_advanced();
+            wait_until("the lane to re-read the clock", || {
+                pacer.evaluations() > seen
+            });
+            wait_until("the lane to finish the pass", || {
+                pacer.idle_events() == pacer.wakes() + 1
+            });
+        }
+    }
+
+    pub(super) fn boot() -> uuid::Uuid {
+        uuid::Uuid::parse_str("00000000-0000-4000-8000-000000000001").unwrap()
+    }
+
+    pub(super) struct Fixture {
+        _iso: TestIsolation,
+        pub(super) clock: Arc<LaneClock>,
+        pub(super) store: Arc<SqliteStore>,
+        pub(super) path: std::path::PathBuf,
+    }
+    impl Fixture {
+        pub(super) fn new(label: &str) -> Self {
+            let iso = TestIsolation::new(label);
+            let path = iso.state_root().join("store.db");
+            let clock = Arc::new(LaneClock {
+                mono: AtomicU64::new(0),
+                utc: AtomicI64::new(0),
+            });
+            let store = Arc::new(
+                SqliteStore::new(
+                    StoreContext::new(path.clone(), clock.clone()),
+                    "i",
+                    StoreSettings {
+                        daemon_boot: Some(boot()),
+                        ..StoreSettings::default()
+                    },
+                )
+                .unwrap(),
+            );
+            Self {
+                _iso: iso,
+                clock,
+                store,
+                path,
+            }
+        }
+        pub(super) fn db(&self) -> rusqlite::Connection {
+            rusqlite::Connection::open(&self.path).unwrap()
+        }
+        /// `count` resolved seats (`seat0`, `seat1`, ...), each with a pending
+        /// invitation and receipt in a thread of its own: the minimum that
+        /// makes the wake lane reserve and attempt a wake per seat.
+        pub(super) fn seed_wake_seats(&self, count: usize) {
+            let db = self.db();
+            db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1)").unwrap();
+            for n in 0..count {
+                let seq = n + 1;
+                db.execute_batch(&format!("\
+                    INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('seat{n}','i','resolved','native','target{n}',1,1,0);\
+                    INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','target{n}','host',1,1,0,'fresh','occupied','idle','execution{n}',1,'term-target{n}','inc','coherent_enumeration',1);\
+                    INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('seat{n}',1,1,'target{n}','host',1,'codex','session{n}','execution{n}','fresh',0,0,'term-target{n}','inc');\
+                    INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('thread{n}','i','topic','goal',0,0);\
+                    INSERT INTO memberships(thread_id,seat_id,state) VALUES ('thread{n}','seat{n}','invited');\
+                    INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,deadline_at,frozen_duration_ms,created_decision_seq) VALUES ('invite{n}','thread{n}','seat{n}',1,'pending',0,100000000,100,1);\
+                    INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('message{n}','i','thread{n}',1,'ordinary','body',{seq},0);\
+                    INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('message{n}','thread{n}','seat{n}','pending',100);\
+                ")).unwrap();
+            }
+        }
+        fn seed_wake_seat(&self) {
+            self.seed_wake_seats(1);
+        }
+    }
+
+    /// Stops and joins a lane thread, also while a failed assertion unwinds.
+    pub(super) struct Lane {
+        cancel: Cancellation,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Lane {
+        pub(super) fn stop(&mut self) {
+            self.cancel.cancel();
+            if let Some(worker) = self.worker.take() {
+                worker.join().unwrap();
+            }
+        }
+    }
+    impl Drop for Lane {
+        fn drop(&mut self) {
+            self.stop();
+        }
+    }
+
+    pub(super) fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
+        let until = Instant::now() + Duration::from_secs(5);
+        while !ready() {
+            assert!(Instant::now() < until, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Asserts nothing happens for 60 ms of real time.
+    fn stays(what: &str, mut changed: impl FnMut() -> bool) {
+        let until = Instant::now() + Duration::from_millis(60);
+        while Instant::now() < until {
+            assert!(!changed(), "{what}");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    pub(super) fn pacer(f: &Fixture, name: &'static str, cancel: &Cancellation) -> Arc<Pacer> {
+        Arc::new(Pacer::with_backoff(
+            name,
+            f.clock.clone(),
+            cancel.clone(),
+            Backoff::with_seed(7),
+        ))
+    }
+
+    /// A host whose current-target read fails (a pre-send refusal) until
+    /// `ready` is set; once ready it observes a verified occupant.
+    pub(super) struct RefusingHost {
+        calls: Mutex<Vec<(u64, String)>>,
+        clock: Arc<LaneClock>,
+        ready: AtomicBool,
+    }
+    impl RefusingHost {
+        pub(super) fn new(clock: &Arc<LaneClock>) -> Arc<Self> {
+            Arc::new(Self {
+                calls: Mutex::new(Vec::new()),
+                clock: clock.clone(),
+                ready: AtomicBool::new(false),
+            })
+        }
+        fn calls(&self) -> Vec<(u64, String)> {
+            self.calls.lock().unwrap().clone()
+        }
+        fn observation(&self, target: &HostTargetId) -> HostObservation {
+            let at = self.clock.monotonic_now();
+            HostObservation {
+                target: target.clone(),
+                host_boot: HostBootId::new("host"),
+                epoch: 1,
+                generation: 1,
+                observed_at_utc: self.clock.utc_now(),
+                observed_at_mono: at,
+                provenance: ObservationProvenance::FreshCurrentTarget,
+                occupant: None,
+                ui: HostUiState::Idle,
+                terminal: Some(TerminalId::new("term-target")),
+                occupancy: StructuralOccupancy::EmptyShell,
+                incarnation: IncarnationEvidence::Verified {
+                    identity: "inc".into(),
+                    evidence_kind: EvidenceKind::CoherentEnumeration,
+                },
+                execution: ExecutionEvidence::Unknown,
+                call_id: HostCallId::new("call"),
+                connection_epoch: 1,
+                observation_sequence: 1,
+                started_at_mono: at,
+                completed_at_mono: at,
+            }
+        }
+    }
+    impl HostPort for RefusingHost {
+        fn native_launch_capability(&self) -> NativeLaunchCapability {
+            NativeLaunchCapability::Unsupported
+        }
+        fn observe_current_target(
+            &self,
+            target: &HostTargetId,
+            _: &HostCallContext,
+        ) -> Result<HostObservation, ApiError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((self.clock.now(), target.as_str().to_owned()));
+            if self.ready.load(Ordering::SeqCst) {
+                Ok(self.observation(target))
+            } else {
+                Err(ApiError::host_unavailable("fixture not ready"))
+            }
+        }
+        fn enumerate_targets(&self, _: &HostCallContext) -> Result<HostSnapshot, ApiError> {
+            unreachable!()
+        }
+        fn safe_wake_target(&self, _: &SeatId, _: &HostObservation) -> Option<SafeWakeTarget> {
+            // Never safe: a ready host still refuses before any prompt.
+            None
+        }
+        fn submit_prompt(
+            &self,
+            _: &SafeWakeTarget,
+            _: &str,
+            _: &HostCallContext,
+        ) -> Result<PromptOutcome, ApiError> {
+            unreachable!()
+        }
+        fn pane_agent_state(
+            &self,
+            _: &SafeWakeTarget,
+            _: &HostCallContext,
+        ) -> Result<AgentComposerState, ApiError> {
+            Ok(AgentComposerState::Submitted)
+        }
+        fn launch_native(
+            &self,
+            _: NativeLaunchRequest,
+            _: &HostCallContext,
+        ) -> Result<NativeLaunchOutcome, ApiError> {
+            unreachable!()
+        }
+        fn send_submit_key(&self, _: &SafeWakeTarget, _: &HostCallContext) -> Result<(), ApiError> {
+            Ok(())
+        }
+    }
+
+    pub(super) fn start_deadline(
+        f: &Fixture,
+        pacer: &Arc<Pacer>,
+        status: &Arc<WorkerStatus>,
+    ) -> Lane {
+        let cancel = pacer.cancellation().clone();
+        let worker = start_deadline_worker(
+            f.store.clone(),
+            Arc::new(FairWriter::new(16)),
+            pacer.clone(),
+            cancel.clone(),
+            status.clone(),
+        )
+        .unwrap();
+        Lane {
+            cancel,
+            worker: Some(worker),
+        }
+    }
+
+    pub(super) fn start_wake(
+        f: &Fixture,
+        host: &Arc<RefusingHost>,
+        pacer: &Arc<Pacer>,
+        status: &Arc<WorkerStatus>,
+    ) -> Lane {
+        let cancel = pacer.cancellation().clone();
+        let worker = start_wake_worker(
+            f.store.clone(),
+            Arc::new(FairWriter::new(16)),
+            host.clone(),
+            "i".into(),
+            boot(),
+            RetryConfig::default(),
+            pacer.clone(),
+            cancel.clone(),
+            status.clone(),
+        )
+        .unwrap();
+        Lane {
+            cancel,
+            worker: Some(worker),
+        }
+    }
+
+    /// Kills: a lane that sleeps through backoff instead of using the Pacer
+    /// schedule (100 ms x 2^n, +-20 %, 30 s cap), one that never resets it,
+    /// and one that records a tick for a failed pass.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn deadline_store_failure_backs_off_and_resets() {
+        use herdr_threads::test_support::failpoints::Failpoint;
+        let f = Fixture::new("lane-backoff");
+        let cancel = Cancellation::default();
+        let pacer = pacer(&f, "deadline", &cancel);
+        let status = Arc::new(WorkerStatus::default());
+        // Every due scan takes the writer, so each pass fails at acquisition.
+        let failpoint = Failpoint::error_times(
+            "store.writer.acquired",
+            f.path.display().to_string(),
+            ErrorCode::StoreBusy,
+            usize::MAX,
+        );
+        let _lane = start_deadline(&f, &pacer, &status);
+        for n in 1..=12u32 {
+            wait_until("a failed pass", || pacer.attempts() == n);
+            let delay = (pacer.next_retry_at().unwrap().0 - f.clock.now()) as f64;
+            let nominal = (100.0 * 2f64.powi(n as i32 - 1)).min(30_000.0);
+            assert!(delay >= nominal * 0.8 - 1.0, "n={n} delay={delay}");
+            assert!(
+                delay <= (nominal * 1.2).min(30_000.0) + 1.0,
+                "n={n} delay={delay}"
+            );
+            assert!(status.last_tick().is_none(), "a failed pass never ticks");
+            // A retry that is not yet due does not run.
+            f.clock.set(f.clock.now() + delay as u64 - 2, &pacer);
+            stays("retried before its backoff elapsed", || {
+                pacer.attempts() != n
+            });
+            f.clock.set(f.clock.now() + 2, &pacer);
+        }
+        assert!(status.last_error().is_some(), "Health shows the failure");
+        drop(failpoint);
+        // The pass after the fault clears succeeds: backoff resets, a tick is
+        // recorded and the failure is gone.
+        wait_until("recovery", || pacer.attempts() == 0);
+        assert!(status.last_tick().is_some());
+        wait_until("health to clear", || status.last_error().is_none());
+    }
+
+    /// Kills: a lane that polls for cancellation on a sleep (it would take a
+    /// full turn to notice) or one that cannot be woken while blocked.
+    #[test]
+    fn cancellation_stops_a_blocked_lane_within_20ms() {
+        let f = Fixture::new("lane-cancel");
+        for lane in ["deadline", "wake"] {
+            let cancel = Cancellation::default();
+            let pacer = pacer(&f, "lane", &cancel);
+            let status = Arc::new(WorkerStatus::default());
+            let mut running = if lane == "deadline" {
+                start_deadline(&f, &pacer, &status)
+            } else {
+                start_wake(&f, &RefusingHost::new(&f.clock), &pacer, &status)
+            };
+            // The boot pass is done once the lane first waits.
+            wait_until("the lane to block", || pacer.idle_events() >= 1);
+            std::thread::sleep(Duration::from_millis(30));
+            let started = Instant::now();
+            running.stop();
+            let took = started.elapsed();
+            assert!(took < Duration::from_millis(20), "{lane} took {took:?}");
+            assert!(!status.lane_dead(), "{lane}: a requested stop is not death");
+        }
+    }
+
+    fn row_outcome(f: &Fixture) -> (Option<String>, i64) {
+        f.db()
+            .query_row(
+                "SELECT last_outcome,retry_step FROM wake_work WHERE seat_id='seat0'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    }
+
+    /// Kills: a wake lane that waits out its 5 s safety tick after a refusal
+    /// instead of waking at the seat's `next_due_at`.
+    #[test]
+    fn refused_seat_retried_at_next_due_at_not_the_tick() {
+        let f = Fixture::new("lane-refused-due");
+        f.seed_wake_seat();
+        let cancel = Cancellation::default();
+        let pacer = pacer(&f, "wake", &cancel);
+        let status = Arc::new(WorkerStatus::default());
+        let host = RefusingHost::new(&f.clock);
+        let _lane = start_wake(&f, &host, &pacer, &status);
+        wait_until("the first refused attempt", || host.calls().len() == 1);
+        wait_until("the lane to block", || pacer.idle_events() >= 1);
+        // Refusal n is retried after 100 ms x 2^(n-1) (+-20 %), never at 5 s.
+        let mut now = 0u64;
+        for n in 1..=4u32 {
+            let nominal = 100u64 << (n - 1);
+            let low = nominal * 8 / 10;
+            let high = nominal * 12 / 10 + 1;
+            assert_eq!(host.calls().len(), n as usize);
+            now += low - 2;
+            f.clock.set(now, &pacer);
+            stays("attempted before next_due_at", || {
+                host.calls().len() != n as usize
+            });
+            now += high - low + 4;
+            f.clock.set(now, &pacer);
+            wait_until("the retry at next_due_at", || {
+                host.calls().len() == n as usize + 1
+            });
+            wait_until("the lane to block", || pacer.idle_events() > u64::from(n));
+        }
+        assert!(now < 5_000, "every retry came before the safety tick");
+        let (outcome, step) = row_outcome(&f);
+        assert_eq!(step, 0, "refusals never climb the ladder");
+        assert!(outcome.is_some());
+    }
+
+    /// Kills: a lane that treats a per-seat refusal (a completed pass) as a
+    /// lane failure and so doubles its own backoff on top of the seat's.
+    #[test]
+    fn refused_seat_does_not_increment_lane_attempts() {
+        let f = Fixture::new("lane-refused-attempts");
+        f.seed_wake_seat();
+        let cancel = Cancellation::default();
+        let pacer = pacer(&f, "wake", &cancel);
+        let status = Arc::new(WorkerStatus::default());
+        let host = RefusingHost::new(&f.clock);
+        let _lane = start_wake(&f, &host, &pacer, &status);
+        wait_until("the first refused attempt", || host.calls().len() == 1);
+        wait_until("the lane to block", || pacer.idle_events() >= 1);
+        for n in 1..=3usize {
+            f.clock.set(f.clock.now() + 5_000, &pacer);
+            wait_until("the next refused attempt", || host.calls().len() == n + 1);
+            wait_until("the lane to block", || pacer.idle_events() > n as u64);
+            assert_eq!(pacer.attempts(), 0, "refusal {n} is not a lane failure");
+            assert!(status.retry().is_none());
+            assert!(status.last_tick().is_some(), "a refused pass completed");
+        }
+    }
+
+    /// Kills: a publication that must kick the wake lane to be noticed, and a
+    /// seat left waiting beyond its `next_due_at` once the host is ready.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn publication_only_readiness_waits_for_next_due_or_tick() {
+        use herdr_threads::service::kicks::{CommitKicks, Lane as KickLane};
+        let f = Fixture::new("lane-publication");
+        f.seed_wake_seat();
+        let kicks = Arc::new(CommitKicks::default());
+        let store = Arc::new(
+            SqliteStore::new(
+                StoreContext::new(f.path.clone(), f.clock.clone()),
+                "i",
+                StoreSettings {
+                    daemon_boot: Some(boot()),
+                    ..StoreSettings::default()
+                },
+            )
+            .unwrap()
+            .with_commit_kicks(Arc::clone(&kicks)),
+        );
+        let wake_kicks = Arc::new(AtomicU64::new(0));
+        let counted = Arc::clone(&wake_kicks);
+        store.set_kick_sink(Box::new(move |lanes, _| {
+            if lanes.contains(KickLane::Wakes) {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+        let cancel = Cancellation::default();
+        let pacer = pacer(&f, "wake", &cancel);
+        kicks.register(KickLane::Wakes, Arc::clone(&pacer));
+        let host = RefusingHost::new(&f.clock);
+        let status = Arc::new(WorkerStatus::default());
+        let mut running = {
+            let worker = start_wake_worker(
+                store.clone(),
+                Arc::new(FairWriter::new(16)),
+                host.clone(),
+                "i".into(),
+                boot(),
+                RetryConfig::default(),
+                pacer.clone(),
+                cancel.clone(),
+                status.clone(),
+            )
+            .unwrap();
+            Lane {
+                cancel: cancel.clone(),
+                worker: Some(worker),
+            }
+        };
+        wait_until("the refused attempt", || host.calls().len() == 1);
+        wait_until("the lane to block", || pacer.idle_events() >= 1);
+        wake_kicks.store(0, Ordering::SeqCst);
+        // A new observation publication commits host_instances (admission) and
+        // nothing a wake kick set maps to.
+        let budget = CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Cancellation::default(),
+        };
+        store.begin_host_observation("i", &budget).unwrap();
+        host.ready.store(true, Ordering::SeqCst);
+        stays("the publication kicked the wake lane", || {
+            wake_kicks.load(Ordering::SeqCst) != 0 || host.calls().len() != 1
+        });
+        // The lane notices it at the seat's next_due_at (at most 120 ms), far
+        // before the 5 s safety tick.
+        f.clock.set(121, &pacer);
+        wait_until("the attempt at next_due_at", || host.calls().len() == 2);
+        assert_eq!(wake_kicks.load(Ordering::SeqCst), 0);
+        running.stop();
+    }
+
+    /// Per-seat refusal backoff against a host that refuses while the seats
+    /// stay resolved (pacer D5): every attempt is a reservation plus a
+    /// restoring completion (two durable commits) and nothing else, the gap
+    /// before the n-th retry follows `100 ms x 2^(n-1)` (+-20 %) up to the
+    /// 30 s cap, no refusal climbs the ladder, and the lane's own Pacer never
+    /// backs off. `tests/integration/lanes_latency.rs` runs the real
+    /// stopped-Herdr case, where seats go unresolved and the wake lane idles.
+    /// Kills: a refusal path that commits more than two rows per attempt, a
+    /// backoff that is flat, uncapped or not per seat, and a refusal that
+    /// advances `retry_step`.
+    #[test]
+    fn refusal_backoff_costs_two_commits_per_seat_per_step_and_caps_at_30s() {
+        const SEATS: usize = 3;
+        let f = Fixture::new("lane-refusal-cost");
+        f.seed_wake_seats(SEATS);
+        let cancel = Cancellation::default();
+        let pacer = pacer(&f, "wake", &cancel);
+        let status = Arc::new(WorkerStatus::default());
+        let host = RefusingHost::new(&f.clock);
+        let _lane = start_wake(&f, &host, &pacer, &status);
+        let wake_commits = || f.store.commit_counts().get("wake").copied().unwrap_or(0);
+        // Every seat is attempted at once while the clock still reads 0.
+        wait_until("the first attempt of every seat", || {
+            host.calls().len() == SEATS && pacer.idle_events() >= 1
+        });
+        // Fake time advances in 50 ms steps through 135 s, long enough for the
+        // backoff to reach the cap and take two capped steps.
+        // Each step waits for the lane to see the new time and finish any pass
+        // it starts, so a descheduled lane cannot stretch a gap.
+        for tick in 1..=2_700u64 {
+            f.clock.set_and_settle(tick * 50, &pacer);
+        }
+        // The lane is settled once its commit count stops moving.
+        let mut seen = (wake_commits(), Instant::now());
+        wait_until("the lane to settle", || {
+            let now = wake_commits();
+            if now != seen.0 {
+                seen = (now, Instant::now());
+            }
+            seen.1.elapsed() > Duration::from_millis(150)
+        });
+        let calls = host.calls();
+        let nominal = |n: usize| (100.0 * 2f64.powi(n as i32 - 1)).min(30_000.0);
+        for seat in 0..SEATS {
+            let times: Vec<u64> = calls
+                .iter()
+                .filter(|(_, target)| *target == format!("target{seat}"))
+                .map(|(at, _)| *at)
+                .collect();
+            assert!(
+                times.len() >= 12,
+                "seat{seat} made {} attempts",
+                times.len()
+            );
+            assert_eq!(times[0], 0, "the first attempt is immediate");
+            for (n, pair) in times.windows(2).enumerate() {
+                let gap = (pair[1] - pair[0]) as f64;
+                let want = nominal(n + 1);
+                // 50 ms clock steps and the commits' real latency add a little.
+                assert!(
+                    gap >= want * 0.8 - 100.0 && gap <= (want * 1.2).min(30_000.0) + 600.0,
+                    "seat{seat} gap before retry {}: {gap} ms vs nominal {want} ms",
+                    n + 1
+                );
+            }
+            let last = times.windows(2).last().unwrap();
+            assert!(
+                last[1] - last[0] >= 24_000,
+                "seat{seat}'s backoff never reached the 30 s cap"
+            );
+        }
+        // Two durable commits per attempt: the reservation and the restoring
+        // completion, and nothing in between or after.
+        assert_eq!(
+            wake_commits(),
+            2 * calls.len() as u64,
+            "{} attempts",
+            calls.len()
+        );
+        assert_eq!(pacer.attempts(), 0, "refusals are not lane failures");
+        let steps: Vec<(String, i64)> = f
+            .db()
+            .prepare("SELECT seat_id,retry_step FROM wake_work ORDER BY seat_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(steps.len(), SEATS);
+        assert!(
+            steps.iter().all(|(_, step)| *step == 0),
+            "refusals climbed the ladder: {steps:?}"
+        );
     }
 }

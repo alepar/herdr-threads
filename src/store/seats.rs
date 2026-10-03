@@ -6,9 +6,8 @@ use crate::{
         ExecutionEvidence, GuardedInvalidationTransition, GuardedSeatTransition,
         HostInvalidationFence, HostInvalidationReason, HostObservation, HostObservationAdmission,
         HostUiState, InvalidationSeatPage, ObservationProvenance, OperatorRequest,
-        OrdinaryAllocationGuard, OrdinaryResolutionAttempt, OrdinaryResolutionGuard,
-        OrdinaryResolutionOutcome, PriorPublishedTarget, PublishedSnapshot, ReconciliationAction,
-        ReconciliationOutcome, RecoveryDisposition, RegistrationLossReason, RegistrationRevocation,
+        OrdinaryResolutionAttempt, OrdinaryResolutionGuard, OrdinaryResolutionOutcome,
+        PriorPublishedTarget, PublishedSnapshot, ReconciliationAction, ReconciliationOutcome,
         ResolvedTargetCheck, SeatState, SnapshotCleanupProgress, SnapshotGenerationId,
         SnapshotHeader, SnapshotSavedSeat, SnapshotSeatPage, SnapshotStage, SnapshotStageProgress,
         SnapshotTargetMatch, StructuralOccupancy, UnresolvedReason,
@@ -16,7 +15,7 @@ use crate::{
     protocol::{
         authority::{
             CARRIED_BINDING_PROVENANCES, DecisionFence, MutationPermit, ObligationRef,
-            OperatorActor, ReceiptRegistration,
+            OperatorActor,
         },
         commands::CheckIn,
         ids::{ExecutionId, HostBootId, HostTargetId, SeatId, TerminalId, prefix},
@@ -666,13 +665,7 @@ pub fn publish_snapshot_stage(
             let changed_or_unknown_incarnation = prior_incarnation
                 .as_deref()
                 .is_none_or(|prior| prior != incarnation);
-            let nonretired: bool = tx
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM seats WHERE instance_id=?1 AND state!='retired' LIMIT 1)",
-                    [&instance],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?;
+            let nonretired = has_nonretired_seat(tx, &instance)?;
             let unresolved: bool = tx
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM seats WHERE instance_id=?1 AND state='unresolved' LIMIT 1)",
@@ -718,6 +711,15 @@ pub fn publish_snapshot_stage(
             })
         },
     )
+}
+
+pub(crate) fn has_nonretired_seat(conn: &Connection, instance: &str) -> Result<bool, ApiError> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND state!='retired' LIMIT 1)",
+        [instance],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
 }
 
 fn active_publication(
@@ -1233,7 +1235,7 @@ pub fn saved_seats_page(
     };
     let mut stmt = conn
         .prepare(
-            "SELECT ordinal,id,state,unresolved_reason,target_id,generation FROM seats WHERE instance_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT ?4",
+            "SELECT ordinal,id,state,unresolved_reason,target_id,generation FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND state!='retired' AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT ?4",
         )
         .map_err(store_error)?;
     let mut rows = stmt
@@ -1281,7 +1283,7 @@ pub fn saved_seats_page(
     }
     let has_more: bool = conn
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM seats WHERE instance_id=?1 AND ordinal>?2 AND ordinal<=?3)",
+            "SELECT EXISTS(SELECT 1 FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND state!='retired' AND ordinal>?2 AND ordinal<=?3)",
             params![publication.instance,last,high_water],
             |r| r.get(0),
         )
@@ -1346,7 +1348,7 @@ pub fn saved_seats_page_for_invalidation(
     };
     let mut stmt = conn
         .prepare(
-            "SELECT ordinal,id,state,unresolved_reason,target_id,generation FROM seats WHERE instance_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT ?4",
+            "SELECT ordinal,id,state,unresolved_reason,target_id,generation FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND state!='retired' AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT ?4",
         )
         .map_err(store_error)?;
     let mut rows = stmt
@@ -1394,7 +1396,7 @@ pub fn saved_seats_page_for_invalidation(
     }
     let has_more: bool = conn
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM seats WHERE instance_id=?1 AND ordinal>?2 AND ordinal<=?3)",
+            "SELECT EXISTS(SELECT 1 FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND state!='retired' AND ordinal>?2 AND ordinal<=?3)",
             params![fence.instance(),last,high_water],
             |r| r.get(0),
         )
@@ -1922,108 +1924,13 @@ pub fn apply_reconciliation_transition(
                     transition.expected_binding_generation,
                     transition.expected_target.as_ref(),
                     transition.expected_terminal.as_ref(),
-                    matches!(transition.action, ReconciliationAction::Reconfirm { .. } | ReconciliationAction::ReconfirmStructure { .. } | ReconciliationAction::BeginRetirement { .. }),
+                    matches!(transition.action, ReconciliationAction::ReconfirmStructure { .. } | ReconciliationAction::BeginRetirement { .. }),
                 )?
             {
                 return Ok(None);
             }
             let generation = match &transition.action {
                 ReconciliationAction::MarkUnresolved => 0,
-                ReconciliationAction::MarkOccupantUnavailable { target, terminal, expected_execution } => {
-                    if transition.expected_terminal.as_ref() != Some(terminal) { return Ok(None); }
-                    let Some(observed) = snapshot_match(tx, &publication.id, Some(target.as_str()), Some(terminal.as_str()))? else { return Ok(None); };
-                    if observed.target != *target || observed.terminal.as_ref() != Some(terminal)
-                        || observed.observation_sequence > publication.observation_sequence
-                        || publication_structural_proof(&publication, &observed)?.is_none()
-                        || !observed.shows_occupant_absent()
-                    { return Ok(None); }
-                    let bound: Option<(String, Option<String>, String)> = tx.query_row(
-                        "SELECT host_boot,incarnation,execution_id FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND target_id=?3 AND ended_at IS NULL",
-                        params![transition.seat.as_str(),checked_host_number(transition.expected_binding_generation)?,transition.expected_target.as_ref().map(HostTargetId::as_str)],
-                        |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
-                    ).optional().map_err(store_error)?;
-                    let structural_matches: bool = tx.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND structural_terminal_id=?2 AND structural_host_boot=?3 AND structural_incarnation=?4)",
-                        params![transition.seat.as_str(),terminal.as_str(),publication.boot.as_str(),publication.incarnation], |r| r.get(0),
-                    ).map_err(store_error)?;
-                    if !bound.is_some_and(|(boot, incarnation, execution)| boot == publication.boot.as_str()
-                        && (structural_matches || incarnation.as_deref() == Some(&publication.incarnation)) && execution == expected_execution.as_str())
-                    { return Ok(None); }
-                    let owned: bool = tx.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM seats WHERE instance_id=?1 AND target_id=?2 AND state='resolved' AND id!=?3)",
-                        params![publication.instance,target.as_str(),transition.seat.as_str()], |r| r.get(0),
-                    ).map_err(store_error)?;
-                    if owned { return Ok(None); }
-                    checked_host_number(observed.structural_generation)?
-                },
-                ReconciliationAction::Reconfirm { target, terminal, verified_execution } => {
-                    if transition.expected_terminal.as_ref() != Some(terminal) {
-                        return Ok(None);
-                    }
-                    let Some(observed) = snapshot_match(tx, &publication.id, Some(target.as_str()), Some(terminal.as_str()))? else {
-                        return Ok(None);
-                    };
-                    if observed.target != *target
-                        || observed.terminal.as_ref() != Some(terminal)
-                        || observed.structural_generation == 0
-                        || observed.observation_sequence == 0
-                        || observed.observation_sequence > publication.observation_sequence
-                    {
-                        return Ok(None);
-                    }
-                    if publication_structural_proof(&publication, &observed)?.is_none() {
-                        return Ok(None);
-                    }
-                    match verified_execution {
-                        Some(execution) => {
-                            if !observed.top_level_occupant
-                                || observed.occupancy != StructuralOccupancy::Occupied
-                                || observed.verified_execution.as_ref() != Some(execution)
-                            { return Ok(None); }
-                            let bound: Option<(String, Option<String>)> = tx.query_row(
-                                "SELECT host_boot,incarnation FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1",
-                                [transition.seat.as_str()],
-                                |r| Ok((r.get(0)?,r.get(1)?)),
-                            ).optional().map_err(store_error)?;
-                            if !bound.is_some_and(|(boot, incarnation)| boot == publication.boot.as_str() && incarnation.as_deref() == Some(&publication.incarnation)) {
-                                return Ok(None);
-                            }
-                        }
-                        None => {
-                            if observed.occupancy != StructuralOccupancy::EmptyShell
-                                || observed.top_level_occupant || observed.verified_execution.is_some()
-                            { return Ok(None); }
-                            type PriorColumns = Option<(String, String, String, Option<String>, Option<String>, String, i64, i64)>;
-                            let prior: PriorColumns = tx.query_row(
-                                "SELECT g.host_boot,g.incarnation,t.occupancy,t.verified_execution,t.terminal_id,t.target_id,s.unresolved_prior_binding_generation,t.top_level_occupant FROM seats s JOIN snapshot_generations g ON g.id=s.unresolved_from_generation_id AND g.status='published' AND g.staged_targets=g.expected_targets JOIN snapshot_targets t ON t.generation_id=g.id AND t.target_id=s.target_id WHERE s.id=?1 AND s.instance_id=?2",
-                                params![transition.seat.as_str(),publication.instance],
-                                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)),
-                            ).optional().map_err(store_error)?;
-                            let Some((boot, incarnation, occupancy, prior_execution, prior_terminal, prior_target, prior_generation, prior_top_level)) = prior else { return Ok(None); };
-                            if boot != publication.boot.as_str()
-                                || incarnation != publication.incarnation
-                                || occupancy != "empty_shell"
-                                || prior_execution.is_some()
-                                || prior_top_level != 0
-                                || prior_terminal.as_deref() != Some(terminal.as_str())
-                                || Some(prior_target.as_str()) != transition.expected_target.as_ref().map(HostTargetId::as_str)
-                                || prior_generation.checked_add(1) != Some(checked_host_number(transition.expected_binding_generation)?)
-                            { return Ok(None); }
-                            let registered: bool = tx.query_row(
-                                "SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND registered_at IS NOT NULL)",
-                                [transition.seat.as_str()], |r| r.get(0),
-                            ).map_err(store_error)?;
-                            if registered { return Ok(None); }
-                        }
-                    }
-                    let owned: bool = tx.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM seats WHERE instance_id=?1 AND target_id=?2 AND state='resolved' AND id!=?3)",
-                        params![publication.instance,target.as_str(),transition.seat.as_str()],
-                        |r| r.get(0),
-                    ).map_err(store_error)?;
-                    if owned { return Ok(None); }
-                    checked_host_number(observed.structural_generation)?
-                }
                 ReconciliationAction::ReconfirmStructure { target, terminal }
                 | ReconciliationAction::CarryForward { target, terminal } => {
                     if matches!(transition.action, ReconciliationAction::CarryForward { .. }) {
@@ -2086,8 +1993,7 @@ pub fn apply_reconciliation_transition(
                     if owned { return Ok(None); }
                     checked_host_number(observed.structural_generation)?
                 }
-                ReconciliationAction::Move { target, terminal }
-                | ReconciliationAction::Replace { target, terminal, .. } => {
+                ReconciliationAction::Move { target, terminal } => {
                     let observed = snapshot_match(
                         tx,
                         &publication.id,
@@ -2136,17 +2042,7 @@ pub fn apply_reconciliation_transition(
                                 && incarnation.as_deref() == Some(&publication.incarnation)
                         })
                     { return Ok(None); }
-                    if let ReconciliationAction::Replace { execution, .. } = &transition.action {
-                        let Some((_, _, bound_execution)) = bound.as_ref() else {
-                            return Ok(None);
-                        };
-                        if !observed.top_level_occupant
-                            || observed.verified_execution.as_ref() != Some(execution)
-                            || bound_execution == execution.as_str()
-                        {
-                            return Ok(None);
-                        }
-                    } else if let Some((_, _, bound_execution)) = bound.as_ref() {
+                    if let Some((_, _, bound_execution)) = bound.as_ref() {
                         match observed.verified_execution.as_ref() {
                             // A verified execution must be the bound one: a
                             // different one is a replacement, never a move.
@@ -2162,9 +2058,8 @@ pub fn apply_reconciliation_transition(
                             // the same terminal in the same verified server
                             // incarnation (checked above) carries the seat,
                             // its generation and its binding structurally to
-                            // the new address. Positive loss evidence against
-                            // a registered binding is MarkOccupantUnavailable's
-                            // decision, never a move's.
+                            // the new address. A registered binding whose
+                            // occupant the snapshot shows absent is not carried.
                             None => {
                                 let (bound_terminal, registered): (Option<String>, bool) = tx.query_row(
                                     "SELECT terminal_id,registered_at IS NOT NULL FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
@@ -2261,12 +2156,9 @@ pub fn apply_reconciliation_transition(
                 }
             };
             let proof = match &transition.action {
-                ReconciliationAction::Reconfirm { target, terminal, .. }
-                | ReconciliationAction::ReconfirmStructure { target, terminal }
+                ReconciliationAction::ReconfirmStructure { target, terminal }
                 | ReconciliationAction::CarryForward { target, terminal }
-                | ReconciliationAction::Move { target, terminal }
-                | ReconciliationAction::Replace { target, terminal, .. }
-                | ReconciliationAction::MarkOccupantUnavailable { target, terminal, .. } => {
+                | ReconciliationAction::Move { target, terminal } => {
                     let observed = snapshot_match(tx, &publication.id, Some(target.as_str()), Some(terminal.as_str()))?
                         .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "validated snapshot target disappeared"))?;
                     publication_structural_proof(&publication, &observed)?
@@ -2285,22 +2177,6 @@ pub fn apply_reconciliation_transition(
             let instance = &transition.publication.instance;
             let seat = &transition.seat;
             let outcome = match &transition.action {
-                ReconciliationAction::MarkOccupantUnavailable { target, expected_execution, .. } => {
-                    let changed = tx.execute(
-                        "UPDATE occupant_bindings SET registered_at=CASE WHEN observation_provenance IN (?5,?6) THEN NULL ELSE registered_at END,ended_at=CASE WHEN observation_provenance IN (?5,?6) THEN ended_at ELSE ?1 END WHERE seat_id=?2 AND generation=?3 AND execution_id=?4 AND ended_at IS NULL",
-                        params![at.utc.0,seat.as_str(),checked_host_number(transition.expected_binding_generation)?,expected_execution.as_str(),CARRIED_BINDING_PROVENANCES[0],CARRIED_BINDING_PROVENANCES[1]],
-                    ).map_err(store_error)?;
-                    if changed != 1 { return Ok(ReconciliationOutcome::Stale); }
-                    tx.execute("UPDATE seats SET target_id=?1,target_generation=?2 WHERE id=?3 AND generation=?4 AND state='resolved'",
-                        params![target.as_str(),target_generation,seat.as_str(),checked_host_number(transition.expected_binding_generation)?]).map_err(store_error)?;
-                    update_structural_proof(tx, seat, proof.as_ref().expect("validated structural proof"))?;
-                    tx.execute("DELETE FROM warning_offer WHERE seat_id=?1 AND NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND observation_provenance IN (?2,?3))", params![seat.as_str(),CARRIED_BINDING_PROVENANCES[0],CARRIED_BINDING_PROVENANCES[1]]).map_err(store_error)?;
-                    // Retain the exact active attempt and spacing until its owner completes it.
-                    schema::ensure_unavailability_episode(tx, seat)?;
-                    schema::bump_lifecycle_revision(tx, instance)?;
-                    schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
-                    ReconciliationOutcome::Applied
-                },
                 ReconciliationAction::MarkUnresolved => mark_seat_unresolved(
                     tx,
                     at,
@@ -2309,8 +2185,7 @@ pub fn apply_reconciliation_transition(
                     transition.expected_binding_generation,
                     UnresolvedReason::Other,
                 )?,
-                ReconciliationAction::Reconfirm { target, .. }
-                | ReconciliationAction::ReconfirmStructure { target, .. } => {
+                ReconciliationAction::ReconfirmStructure { target, .. } => {
                     let changed = tx.execute(
                         "UPDATE seats SET state='resolved',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL,target_id=?1,target_generation=?2 WHERE id=?3 AND instance_id=?4 AND generation=?5 AND state='unresolved' AND unresolved_reason='host_invalidation'",
                         params![target.as_str(),target_generation,seat.as_str(),instance,checked_host_number(transition.expected_binding_generation)?],
@@ -2360,31 +2235,6 @@ pub fn apply_reconciliation_transition(
                     schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
                     ReconciliationOutcome::Applied
                 }
-                ReconciliationAction::Replace { target, .. } => {
-                    let generation = checked_host_number(transition.expected_binding_generation)?;
-                    if generation == i64::MAX {
-                        return Err(api_error(ErrorCode::SequenceExhausted, "seat binding generation exhausted"));
-                    }
-                    let changed = tx.execute(
-                        "UPDATE seats SET target_id=?1,target_generation=?2,generation=generation+1 WHERE id=?3 AND generation=?4 AND state='resolved'",
-                        params![target.as_str(),target_generation,seat.as_str(),generation],
-                    ).map_err(store_error)?;
-                    if changed != 1 {
-                        return Ok(ReconciliationOutcome::Stale);
-                    }
-                    tx.execute(
-                        "UPDATE occupant_bindings SET ended_at=?1 WHERE seat_id=?2 AND ended_at IS NULL",
-                        params![at.utc.0,seat.as_str()],
-                    ).map_err(store_error)?;
-                    schema::ensure_unavailability_episode(tx, seat)?;
-                    tx.execute("DELETE FROM warning_offer WHERE seat_id=?1", [seat.as_str()])
-                        .map_err(store_error)?;
-                    // A predecessor attempt remains fenced until its exact owner completes it.
-                    update_structural_proof(tx, seat, proof.as_ref().expect("validated structural proof"))?;
-                    schema::bump_lifecycle_revision(tx, instance)?;
-                    schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
-                    ReconciliationOutcome::Applied
-                }
                 ReconciliationAction::BeginRetirement { absent_target } => {
                     let job = control::begin_retirement_fence(
                         tx,
@@ -2403,332 +2253,6 @@ pub fn apply_reconciliation_transition(
             Ok(outcome)
         },
     )
-}
-
-/// A verified check-in constructs its bounded offer inside the deciding SQLite
-/// transaction. An offer or encoding failure rolls back the anchor and frontier.
-// Allowed: registration inputs plus the fence and offer phase closures.
-#[allow(clippy::too_many_arguments)]
-pub fn register_available(
-    context: &StoreContext,
-    conn: &mut Connection,
-    command: &CheckIn,
-    registration: Option<&ReceiptRegistration>,
-    operator: Option<&OperatorActor>,
-    budget: &CallBudget,
-    mut permit: MutationPermit,
-    decision_fence: impl FnOnce(&Transaction<'_>, DecisionInstant) -> Result<DecisionFence, ApiError>,
-    build_offer: impl FnOnce(&Transaction<'_>, &SeatId, u64) -> Result<CheckInResult, ApiError>,
-) -> Result<CommandResult, ApiError> {
-    if permit.cooperative_claim().is_some() {
-        if registration.is_some() {
-            return Err(api_error(
-                ErrorCode::CallerUnverified,
-                "cooperative registration must not supply native evidence",
-            ));
-        }
-        return register_cooperative(
-            context,
-            conn,
-            command,
-            operator,
-            permit,
-            budget,
-            build_offer,
-        );
-    }
-    let registration = registration.ok_or_else(|| {
-        api_error(
-            ErrorCode::CallerUnverified,
-            "native registration evidence required",
-        )
-    })?;
-    let target_generation_sql = checked_host_number(registration.target_generation)?;
-    let registered_binding_generation = checked_host_number(registration.binding_generation)?;
-    if registration.host_boot.as_str().is_empty()
-        || registration.target_generation == 0
-        || registration.native_session != command.claim.native_session
-        || registration.execution != command.claim.execution
-    {
-        return Err(api_error(
-            ErrorCode::CallerUnverified,
-            "registration does not match claim",
-        ));
-    }
-    let seat = registration.seat.clone();
-    let target = command.claim.target.as_str();
-    let scope = format!("seat:{}", seat.as_str());
-    let digest = schema::canonical_digest(&native_check_in_payload(command))?;
-    schema::execute_idempotent_transaction_presented(
-        context,
-        conn,
-        &scope,
-        command.operation.as_str(),
-        digest,
-        |tx| {
-            let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND target_id=?2 AND state='resolved' AND target_generation=?3 AND generation=?4)",
-                params![seat.as_str(),target,target_generation_sql,registered_binding_generation],|r|r.get(0)).map_err(store_error)?;
-            if !valid {
-                return Err(api_error(
-                    ErrorCode::CallerUnverified,
-                    "registration target or generation changed",
-                ));
-            }
-            Ok(())
-        },
-        |tx, at| {
-            let fence = decision_fence(tx, at)?;
-            let host_epoch = fence.host_epoch;
-            let host_epoch_sql = checked_host_number(host_epoch)?;
-            let actor = control::decide_native(
-                tx,
-                at,
-                fence,
-                &mut permit,
-                &seat,
-                target,
-                &command.operation,
-                &ObligationRef::CheckIn(seat.clone()),
-                &digest,
-            )?;
-            if actor.native_session != registration.native_session
-                || actor.execution != registration.execution
-                || actor.host_boot != registration.host_boot
-                || actor.target_generation != registration.target_generation
-                || actor.binding_generation != registration.binding_generation
-            {
-                return Err(api_error(
-                    ErrorCode::CallerUnverified,
-                    "registration proof differs from permit",
-                ));
-            }
-            let instance: String = tx
-                .query_row(
-                    "SELECT instance_id FROM seats WHERE id=?1",
-                    [seat.as_str()],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?;
-            let prior_binding: Option<(String,i64,i64,i64,i64,i64)> = tx
-                .query_row(
-                    "SELECT b.host_boot,b.host_epoch,b.target_generation,b.generation,s.target_generation,s.generation FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.seat_id=?1 AND b.ended_at IS NULL AND b.registered_at IS NOT NULL",
-                    [seat.as_str()],
-                    |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)),
-                )
-                .optional()
-                .map_err(store_error)?;
-            let effective = effective::effective_observation(tx, &instance, target)?;
-            let (evidence_terminal, evidence_incarnation) = binding_evidence(
-                effective
-                    .as_ref()
-                    .and_then(|observation| observation.terminal_id.as_deref()),
-                effective
-                    .as_ref()
-                    .and_then(|observation| observation.incarnation.as_deref()),
-            )?;
-            let previously_available = prior_binding.as_ref().zip(effective.as_ref()).is_some_and(
-                |(
-                    (
-                        boot,
-                        epoch,
-                        target_generation,
-                        binding_generation,
-                        seat_target_generation,
-                        seat_generation,
-                    ),
-                    observation,
-                )| {
-                    boot == &observation.host_boot
-                        && *epoch == observation.epoch
-                        && *target_generation == *seat_target_generation
-                        && *binding_generation == *seat_generation
-                        && observation.structural_generation == *seat_target_generation
-                },
-            );
-            if !previously_available {
-                schema::ensure_unavailability_episode(tx, &seat)?;
-            }
-            let existing:Option<(i64,String,String,String,i64,i64)>=tx.query_row("SELECT generation,native_session,execution_id,host_boot,host_epoch,target_generation FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
-                [seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(store_error)?;
-            let same = previously_available
-                && existing.as_ref().is_some_and(
-                    |(_, native, execution, boot, epoch, target_generation)| {
-                        native == registration.native_session.as_str()
-                            && execution == registration.execution.as_str()
-                            && boot == registration.host_boot.as_str()
-                            && *epoch == host_epoch_sql
-                            && *target_generation == target_generation_sql
-                    },
-                );
-            let binding_generation = if same {
-                existing.as_ref().unwrap().0
-            } else {
-                tx.execute("UPDATE occupant_bindings SET ended_at=?1 WHERE seat_id=?2 AND ended_at IS NULL",params![at.utc.0,seat.as_str()]).map_err(store_error)?;
-                let prior_generation:i64=tx.query_row("SELECT COALESCE(MAX(generation),0) FROM occupant_bindings WHERE seat_id=?1",[seat.as_str()],|r|r.get(0)).map_err(store_error)?;
-                let generation = prior_generation.checked_add(1).ok_or_else(|| {
-                    api_error(
-                        ErrorCode::SequenceExhausted,
-                        "seat binding generation exhausted",
-                    )
-                })?;
-                let changed = tx
-                    .execute(
-                        "UPDATE seats SET generation=?1 WHERE id=?2 AND generation=?3",
-                        params![generation, seat.as_str(), registered_binding_generation],
-                    )
-                    .map_err(store_error)?;
-                if changed != 1 {
-                    return Err(api_error(
-                        ErrorCode::CallerUnverified,
-                        "registration generation changed",
-                    ));
-                }
-                tx.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
-                    params![seat.as_str(),generation,target,registration.host_boot.as_str(),host_epoch_sql,target_generation_sql,
-                        actor.harness.as_str(),
-                        registration.native_session.as_str(),registration.execution.as_str(),"verified_current_target",actor.observed_at_utc.0,at.utc.0,
-                        evidence_terminal,evidence_incarnation]).map_err(store_error)?;
-                tx.execute(
-                    "DELETE FROM warning_offer WHERE seat_id=?1",
-                    [seat.as_str()],
-                )
-                .map_err(store_error)?;
-                tx.execute("UPDATE wake_work SET binding_generation=?1 WHERE seat_id=?2 AND reservation_id IS NULL",
-                    params![generation,seat.as_str()]).map_err(store_error)?;
-                generation
-            };
-            let seq = schema::next_decision_seq(tx, &instance)?;
-            if !same {
-                tx.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES (?1,?2,?3,?4,?5)",
-                    params![seat.as_str(),seq as i64,at.utc.0,binding_generation,"verified_current_target"]).map_err(store_error)?;
-                let anchor_ordinal = tx.last_insert_rowid();
-                let high_water: i64 = tx
-                    .query_row(
-                        "SELECT COALESCE(MAX(ordinal),0) FROM prepared_recipients WHERE seat_id=?1",
-                        [seat.as_str()],
-                        |r| r.get(0),
-                    )
-                    .map_err(store_error)?;
-                tx.execute("INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES (?1,'receipt_timer_materialization',?2,?3)",
-                    params![format!("receipt-timer:{anchor_ordinal}"),anchor_ordinal.to_string(),high_water]).map_err(store_error)?;
-            }
-            tx.execute(
-                "UPDATE seats SET unavailability_open=0 WHERE id=?1",
-                [seat.as_str()],
-            )
-            .map_err(store_error)?;
-            schema::apply_eligibility_transition(tx, &instance, |_| {
-                Ok(!previously_available || !same)
-            })?;
-            let mut offer = build_offer(tx, &seat, seq)?;
-            offer.context = command.claim.clone();
-            offer.context.instance = instance.clone();
-            offer.context.seat = seat.clone();
-            offer.context.binding_generation = binding_generation as u64;
-            if offer.seat != seat {
-                return Err(api_error(
-                    ErrorCode::StoreCorrupt,
-                    "check-in offer seat mismatch",
-                ));
-            }
-            offer
-                .inbox
-                .validate()
-                .map_err(|reason| api_error(ErrorCode::InvalidBudget, reason))?;
-            tx.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) VALUES (?1,?2,?3,?4) ON CONFLICT(seat_id) DO UPDATE SET binding_generation=excluded.binding_generation,execution_id=excluded.execution_id,offered_through_seq=MAX(warning_offer.offered_through_seq,excluded.offered_through_seq)",
-                params![seat.as_str(),binding_generation,registration.execution.as_str(),seq as i64]).map_err(store_error)?;
-            super::attention::settle_carried_notices(
-                tx,
-                seat.as_str(),
-                binding_generation,
-                registration.execution.as_str(),
-                &offer.notices.items,
-            )?;
-            Ok(CommandResult::CheckedIn(offer))
-        },
-        present_check_in_result,
-    )
-}
-
-/// Revoke only the exact still-current occupant identified by trusted host or
-/// recovery evidence. A delayed predecessor event is a committed no-op.
-pub fn revoke_registration(
-    context: &StoreContext,
-    conn: &mut Connection,
-    evidence: RegistrationRevocation,
-) -> Result<bool, ApiError> {
-    let binding_generation_sql = checked_host_number(evidence.binding_generation())?;
-    match evidence.reason() {
-        RegistrationLossReason::HostStructuralChange {
-            current_epoch,
-            current_target_generation,
-            current_observation_sequence,
-            ..
-        } => {
-            checked_host_number(*current_epoch)?;
-            checked_host_number(*current_target_generation)?;
-            checked_host_number(*current_observation_sequence)?;
-        }
-        RegistrationLossReason::RecoveryHold { baseline_epoch, .. } => {
-            checked_host_number(*baseline_epoch)?;
-        }
-    }
-    context.execute_decision(conn,
-        |tx| {
-            type CurrentColumns = Option<(String,String,String,i64,String,i64,String,i64)>;
-            let current:CurrentColumns = tx.query_row(
-                "SELECT s.instance_id,s.target_id,b.host_boot,b.host_epoch,b.target_id,b.generation,b.execution_id,b.target_generation \
-                 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL \
-                 WHERE s.id=?1 AND s.state='resolved' AND s.generation=?2 AND b.generation=?2 AND b.execution_id=?3",
-                params![evidence.seat().as_str(),binding_generation_sql,evidence.execution().as_str()],
-                |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)))
-                .optional().map_err(store_error)?;
-            let Some((instance,target,binding_boot,binding_epoch,binding_target,_,_,target_generation))=current else {return Ok(None)};
-            if target!=binding_target {return Ok(None)}
-            let proven_loss=match evidence.reason() {
-                RegistrationLossReason::HostStructuralChange {current_boot,current_epoch,current_target_generation,current_observation_sequence} => {
-                    let current_epoch_sql = checked_host_number(*current_epoch)?;
-                    let current_generation_sql = checked_host_number(*current_target_generation)?;
-                    let current_sequence_sql = checked_host_number(*current_observation_sequence)?;
-                    let host = effective::effective_observation(tx, &instance, &target)?;
-                    let decided_sequence: i64 = tx
-                        .query_row(
-                            "SELECT observation_sequence FROM host_instances WHERE id=?1",
-                            [&instance],
-                            |r| r.get(0),
-                        )
-                        .map_err(store_error)?;
-                    host.is_some_and(|observation| {
-                        observation.source == EffectiveObservationSource::NewerCurrentTarget
-                            && observation.host_boot == current_boot.as_str()
-                            && observation.epoch == current_epoch_sql
-                            && decided_sequence == current_sequence_sql
-                            && observation.structural_generation == current_generation_sql
-                            && (binding_boot != observation.host_boot
-                                || binding_epoch != observation.epoch
-                                || target_generation != observation.structural_generation)
-                    })
-                }
-                RegistrationLossReason::RecoveryHold {target:held_target,baseline_boot,baseline_epoch} => {
-                    if held_target.as_str()!=target {false} else {
-                        tx.query_row("SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE instance_id=?1 AND target_id=?2 AND baseline_boot=?3 AND baseline_epoch=?4 AND released_at IS NULL)",
-                            params![instance,target,baseline_boot.as_str(),checked_host_number(*baseline_epoch)?],|r|r.get(0)).map_err(store_error)?
-                    }
-                }
-            };
-            Ok(proven_loss.then_some(instance))
-        },
-        |tx,at,instance| {
-            let Some(instance)=instance else {return Ok(false)};
-            let changed=tx.execute("UPDATE occupant_bindings SET registered_at=CASE WHEN observation_provenance IN (?5,?6) THEN NULL ELSE registered_at END,ended_at=CASE WHEN observation_provenance IN (?5,?6) THEN ended_at ELSE ?1 END WHERE seat_id=?2 AND generation=?3 AND execution_id=?4 AND ended_at IS NULL",
-                params![at.utc.0,evidence.seat().as_str(),binding_generation_sql,evidence.execution().as_str(),CARRIED_BINDING_PROVENANCES[0],CARRIED_BINDING_PROVENANCES[1]]).map_err(store_error)?;
-            if changed==0 {return Ok(false)}
-            schema::ensure_unavailability_episode(tx,evidence.seat())?;
-            schema::apply_eligibility_transition(tx,&instance,|_|Ok(true))?;
-            schema::bump_lifecycle_revision(tx,&instance)?;
-            tx.execute("UPDATE wake_work SET reservation_id=NULL,reservation_boot=NULL WHERE seat_id=?1",[evidence.seat().as_str()]).map_err(store_error)?;
-            Ok(true)
-        })
 }
 
 /// A coherent enumeration updates observation state and establishes one durable
@@ -3266,96 +2790,6 @@ pub fn check_resolved_target(
         },
         |_, _, ()| snapshot_budget(context, budget),
     )
-}
-
-pub fn allocate(
-    context: &StoreContext,
-    conn: &mut Connection,
-    instance: &str,
-    request: crate::protocol::commands::ResolveSeat,
-    guard: OrdinaryAllocationGuard,
-) -> Result<SeatId, ApiError> {
-    let proof = guard.structural_proof().clone();
-    checked_host_number(guard.observation_epoch())?;
-    let baseline_epoch = checked_host_number(guard.baseline_epoch())?;
-    checked_host_number(guard.generation())?;
-    if guard.target() != &request.target
-        || !matches!(
-            guard.disposition(),
-            RecoveryDisposition::UnambiguousUnclaimed | RecoveryDisposition::CreatedAfterBaseline
-        )
-    {
-        return Err(api_error(
-            ErrorCode::TargetUnresolved,
-            "allocation guard mismatch",
-        ));
-    }
-    let scope = format!("service-allocation:{instance}");
-    let digest = schema::canonical_digest(&("resolve_seat", instance, &request.target))?;
-    let result = schema::execute_idempotent_transaction(
-        context,
-        conn,
-        &scope,
-        request.operation.as_str(),
-        digest,
-        |tx| {
-            if !observed_matches(
-                tx,
-                instance,
-                request.target.as_str(),
-                guard.host_boot(),
-                guard.observation_epoch(),
-                guard.generation(),
-            )? || !structural_proof_matches_current(tx, instance, &proof)?
-                || !target_free(tx, instance, request.target.as_str())?
-            {
-                return Err(api_error(
-                    ErrorCode::StaleHostObservation,
-                    "target changed or owned",
-                ));
-            }
-            let recovery: Option<(Option<String>, Option<i64>)> = tx
-                .query_row(
-                    "SELECT recovery_boot,recovery_epoch FROM host_instances WHERE id=?1",
-                    [instance],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()
-                .map_err(store_error)?;
-            let disposition =
-                effective::effective_recovery_disposition(tx, instance, request.target.as_str())?;
-            let disposition_matches = matches!(
-                (guard.disposition(), disposition),
-                (
-                    RecoveryDisposition::UnambiguousUnclaimed,
-                    EffectiveRecoveryDisposition::UnambiguousUnclaimed
-                ) | (
-                    RecoveryDisposition::CreatedAfterBaseline,
-                    EffectiveRecoveryDisposition::CreatedAfterBaseline
-                )
-            );
-            if !disposition_matches
-                || recovery.as_ref().is_none_or(|(boot, epoch)| {
-                    boot.as_deref() != Some(guard.host_boot().as_str())
-                        || *epoch != Some(baseline_epoch)
-                })
-            {
-                return Err(api_error(
-                    ErrorCode::TargetUnresolved,
-                    "target lacks clear recovery baseline",
-                ));
-            }
-            Ok(())
-        },
-        |tx, at| insert_ordinary_allocation(tx, at, instance, &proof),
-    )?;
-    match result {
-        CommandResult::SeatResolved(seat) => Ok(seat),
-        _ => Err(api_error(
-            ErrorCode::StoreCorrupt,
-            "allocation replay result has wrong type",
-        )),
-    }
 }
 
 /// Explicit operator repair still requires a per-request target observation.
@@ -4413,35 +3847,13 @@ pub(crate) fn issue_cooperative_permit(
         request.obligation,
         request.payload_hash,
         context.clock().monotonic_now(),
-        revision,
-        invalidation,
-    )
-    .with_cooperative_budget(budget.clone()))
+        (revision, invalidation),
+        budget.clone(),
+    ))
 }
 
 pub fn check_in_payload(command: &CheckIn) -> impl serde::Serialize + '_ {
     ("check_in", &command.mode, &command.claim)
-}
-
-/// Preserve the original native CheckIn digest, whose claim had four fields.
-/// Cooperative callers use check_in_payload and bind their full context/mode.
-pub fn native_check_in_payload(command: &CheckIn) -> impl serde::Serialize + '_ {
-    #[derive(serde::Serialize)]
-    struct NativeClaim<'a> {
-        harness: &'a crate::protocol::authority::Harness,
-        native_session: &'a crate::protocol::ids::NativeSessionId,
-        execution: &'a ExecutionId,
-        target: &'a HostTargetId,
-    }
-    (
-        "check_in",
-        NativeClaim {
-            harness: &command.claim.harness,
-            native_session: &command.claim.native_session,
-            execution: &command.claim.execution,
-            target: &command.claim.target,
-        },
-    )
 }
 
 // Allowed: one deciding mutation: transaction, permit, claim, mode and the obligation it proves.
@@ -4481,7 +3893,9 @@ pub(crate) fn decide_cooperative(
     Ok(mapping)
 }
 
-fn register_cooperative(
+/// A cooperative check-in constructs its bounded offer inside the deciding SQLite
+/// transaction. An offer or encoding failure rolls back the anchor and frontier.
+pub fn register_available(
     context: &StoreContext,
     conn: &mut Connection,
     command: &CheckIn,
@@ -4531,21 +3945,20 @@ fn register_cooperative(
                 command.mode,
                 crate::protocol::commands::CheckInMode::Lifecycle { .. }
             );
-            if lifecycle && claim.harness == crate::protocol::authority::Harness::Human {
-                if let Some(open) = crate::store::queries::open_binding(tx, seat.as_str())?
-                    && open.provenance
-                        == crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE
-                    && operator.is_none()
-                {
-                    return Err(api_error(
-                        ErrorCode::Unauthorized,
-                        format!(
-                            "seat {} is bound to a {} agent (cooperative_top_level); a person's check-in never replaces an agent's binding. Run it in your own shell pane, or override as the local account: `herdr-threads me init --operator`",
-                            seat.as_str(),
-                            open.harness
-                        ),
-                    ));
-                }
+            if lifecycle
+                && claim.harness == crate::protocol::authority::Harness::Human
+                && let Some(open) = crate::store::queries::open_binding(tx, seat.as_str())?
+                && open.provenance == crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE
+                && operator.is_none()
+            {
+                return Err(api_error(
+                    ErrorCode::Unauthorized,
+                    format!(
+                        "seat {} is bound to a {} agent (cooperative_top_level); a person's check-in never replaces an agent's binding. Run it in your own shell pane, or override as the local account: `herdr-threads me init --operator`",
+                        seat.as_str(),
+                        open.harness
+                    ),
+                ));
             }
             let generation = if lifecycle {
                 let maximum:i64=tx.query_row("SELECT MAX(?2,COALESCE(MAX(generation),0)) FROM occupant_bindings WHERE seat_id=?1",

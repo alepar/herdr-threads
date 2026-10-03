@@ -6,7 +6,7 @@ use crate::ports::{
     HostInvalidationFence, HostInvalidationReason, HostObservationAdmission, HostPort,
     HostSnapshot, PublishedSnapshot, ReconciliationAction, ReconciliationOutcome,
     RecoveryDisposition, SeatState, SnapshotHeader, SnapshotSavedSeat, SnapshotSeatPage,
-    SnapshotTargetMatch, StorePort, StructuralOccupancy, UnresolvedReason,
+    SnapshotTargetMatch, UnresolvedReason,
 };
 use crate::ports::{
     HostObservation, InvalidationSeatPage, SnapshotCleanupProgress, SnapshotStage,
@@ -97,120 +97,6 @@ pub mod observation_store {
             Ok(false)
         }
     }
-    impl<T: StorePort + ?Sized> ObservationStore for T {
-        fn clock(&self) -> &dyn crate::protocol::time::Clock {
-            StorePort::clock(self)
-        }
-        fn begin_host_observation(
-            &self,
-            instance: &str,
-            budget: &CallBudget,
-        ) -> Result<HostObservationAdmission, ApiError> {
-            StorePort::begin_host_observation(self, instance, budget)
-        }
-        fn invalidate_host_observation(
-            &self,
-            admission: &HostObservationAdmission,
-            reason: HostInvalidationReason,
-            budget: &CallBudget,
-        ) -> Result<Option<HostInvalidationFence>, ApiError> {
-            StorePort::invalidate_host_observation(self, admission, reason, budget)
-        }
-        fn mark_unresolved_from_invalidation(
-            &self,
-            transition: GuardedInvalidationTransition,
-            budget: &CallBudget,
-        ) -> Result<ReconciliationOutcome, ApiError> {
-            StorePort::mark_unresolved_from_invalidation(self, transition, budget)
-        }
-        fn saved_seats_page_for_invalidation(
-            &self,
-            fence: &HostInvalidationFence,
-            after_ordinal: u64,
-            high_water_ordinal: Option<u64>,
-            limit: u8,
-            budget: &CallBudget,
-        ) -> Result<InvalidationSeatPage, ApiError> {
-            StorePort::saved_seats_page_for_invalidation(
-                self,
-                fence,
-                after_ordinal,
-                high_water_ordinal,
-                limit,
-                budget,
-            )
-        }
-        fn begin_snapshot_stage(
-            &self,
-            header: SnapshotHeader,
-            budget: &CallBudget,
-        ) -> Result<SnapshotStage, ApiError> {
-            StorePort::begin_snapshot_stage(self, header, budget)
-        }
-        fn stage_snapshot_targets(
-            &self,
-            stage: &SnapshotGenerationId,
-            offset: u64,
-            targets: &[HostObservation],
-            admission: DurableWorkAdmission,
-            budget: &CallBudget,
-        ) -> Result<SnapshotStageProgress, ApiError> {
-            StorePort::stage_snapshot_targets(self, stage, offset, targets, admission, budget)
-        }
-        fn seal_snapshot_stage(
-            &self,
-            stage: &SnapshotGenerationId,
-            budget: &CallBudget,
-        ) -> Result<SnapshotStage, ApiError> {
-            StorePort::seal_snapshot_stage(self, stage, budget)
-        }
-        fn publish_snapshot_stage(
-            &self,
-            stage: &SnapshotGenerationId,
-            budget: &CallBudget,
-        ) -> Result<PublishedSnapshot, ApiError> {
-            StorePort::publish_snapshot_stage(self, stage, budget)
-        }
-        fn discard_snapshot_stage(
-            &self,
-            stage: &SnapshotGenerationId,
-            admission: DurableWorkAdmission,
-            budget: &CallBudget,
-        ) -> Result<SnapshotCleanupProgress, ApiError> {
-            StorePort::discard_snapshot_stage(self, stage, admission, budget)
-        }
-        fn saved_seats_page(
-            &self,
-            published: &SnapshotGenerationId,
-            after_ordinal: u64,
-            high_water_ordinal: Option<u64>,
-            limit: u8,
-            budget: &CallBudget,
-        ) -> Result<SnapshotSeatPage, ApiError> {
-            StorePort::saved_seats_page(
-                self,
-                published,
-                after_ordinal,
-                high_water_ordinal,
-                limit,
-                budget,
-            )
-        }
-        fn apply_reconciliation_transition(
-            &self,
-            transition: GuardedSeatTransition,
-            budget: &CallBudget,
-        ) -> Result<ReconciliationOutcome, ApiError> {
-            StorePort::apply_reconciliation_transition(self, transition, budget)
-        }
-        fn record_reconciliation_pass(
-            &self,
-            published: &PublishedSnapshot,
-            budget: &CallBudget,
-        ) -> Result<bool, ApiError> {
-            StorePort::record_reconciliation_pass(self, published, budget)
-        }
-    }
 }
 
 /// Saved seats arrive in bounded pages from the durable store. This policy
@@ -227,37 +113,6 @@ pub struct RecoveryTargetDecision {
 pub struct RecoveryPage {
     pub targets: Vec<RecoveryTargetDecision>,
     pub next_offset: Option<usize>,
-}
-
-fn proven_empty_shell_bridge(
-    saved: &SnapshotSavedSeat,
-    observed: &SnapshotTargetMatch,
-    publication: &PublishedSnapshot,
-) -> bool {
-    let Some(prior) = saved.prior_published_observation.as_ref() else {
-        return false;
-    };
-    let Some(terminal) = saved.terminal.as_ref() else {
-        return false;
-    };
-    saved.binding_execution.is_none()
-        && saved.target.as_ref() == Some(&prior.target.target)
-        && prior.prior_binding_generation.checked_add(1) == Some(saved.binding_generation)
-        && prior.generation_id != publication.id
-        && prior.host_boot == publication.boot
-        && prior.incarnation == publication.incarnation
-        && prior.host_epoch <= publication.epoch
-        && prior.target.observation_sequence > 0
-        && (prior.host_epoch < publication.epoch
-            || prior.target.observation_sequence < observed.observation_sequence)
-        && prior.target.structural_generation > 0
-        && prior.target.terminal.as_ref() == Some(terminal)
-        && prior.target.occupancy == StructuralOccupancy::EmptyShell
-        && prior.target.verified_execution.is_none()
-        && !prior.target.top_level_occupant
-        && observed.occupancy == StructuralOccupancy::EmptyShell
-        && observed.verified_execution.is_none()
-        && !observed.top_level_occupant
 }
 
 /// Structural reconfirmation (root decision, wave-2 fix1 (b); seat-identity
@@ -401,21 +256,6 @@ pub fn plan_page(page: &SnapshotSeatPage) -> Result<Vec<GuardedSeatTransition>, 
             if recoverable {
                 if saved.terminal.as_ref() != Some(terminal) {
                     Some(ReconciliationAction::MarkUnresolved)
-                } else if let Some(execution) = observed.verified_execution.as_ref().filter(|_| {
-                    observed.occupancy == StructuralOccupancy::Occupied
-                        && observed.top_level_occupant
-                }) {
-                    Some(ReconciliationAction::Reconfirm {
-                        target: observed.target.clone(),
-                        terminal: terminal.clone(),
-                        verified_execution: Some(execution.clone()),
-                    })
-                } else if proven_empty_shell_bridge(saved, observed, &page.publication) {
-                    Some(ReconciliationAction::Reconfirm {
-                        target: observed.target.clone(),
-                        terminal: terminal.clone(),
-                        verified_execution: None,
-                    })
                 } else if same_terminal_binding_bridge(saved, observed, terminal, &page.publication)
                     || never_registered_structural_bridge(
                         saved,
@@ -431,33 +271,6 @@ pub fn plan_page(page: &SnapshotSeatPage) -> Result<Vec<GuardedSeatTransition>, 
                 } else {
                     Some(ReconciliationAction::MarkUnresolved)
                 }
-            } else if observed.occupancy == StructuralOccupancy::Occupied
-                && observed.top_level_occupant
-                && observed.verified_execution.is_some()
-                && observed.verified_execution.as_ref() != saved.binding_execution.as_ref()
-            {
-                observed.verified_execution.as_ref().map(|execution| {
-                    ReconciliationAction::Replace {
-                        target: observed.target.clone(),
-                        terminal: terminal.clone(),
-                        execution: execution.clone(),
-                    }
-                })
-            } else if let Some(active) = saved
-                .active_binding_execution
-                .as_ref()
-                .filter(|_| observed.shows_occupant_absent())
-            {
-                // Only positive evidence (an observed empty shell or a
-                // non-top-level occupant on the same terminal) unseats the
-                // active occupant. Unknown occupancy or unverified execution
-                // keeps it: the same terminal in the same verified host
-                // incarnation is the structural continuity evidence.
-                Some(ReconciliationAction::MarkOccupantUnavailable {
-                    target: observed.target.clone(),
-                    terminal: terminal.clone(),
-                    expected_execution: active.clone(),
-                })
             } else if saved.target.as_ref() != Some(&observed.target) {
                 Some(ReconciliationAction::Move {
                     target: observed.target.clone(),
@@ -528,6 +341,14 @@ pub enum ObservationOutcome {
     },
     /// A newer durable host decision already superseded this attempt.
     Superseded,
+    /// The capture failed with the same reason as the last durable
+    /// invalidation, whose unresolved-marking pass completed, and nothing was
+    /// published since: no invalidation was written and no continuation is
+    /// armed. The admission (fence) commit still happened (pacer spec D4).
+    InvalidationRepeated {
+        reason: HostInvalidationReason,
+        cause: Option<ApiError>,
+    },
 }
 
 /// Apply at most one saved-seat page. Each transition is a separate guarded
@@ -632,12 +453,9 @@ pub fn reconcile_invalidated_page(
             budget,
         )?;
         if result == ReconciliationOutcome::Stale {
-            return Err(ApiError {
-                code: ErrorCode::CursorStale,
-                detail: "host invalidation or saved seat changed".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
+            return Err(ApiError::cursor_stale(
+                "host invalidation or saved seat changed",
+            ));
         }
         if matches!(result, ReconciliationOutcome::RetirementStarted(_)) {
             return Err(stale("host invalidation cannot retire a seat"));
@@ -706,16 +524,7 @@ pub fn observe_and_publish(
         let cause = capture.err();
         lane.mark_unavailable();
         let _ = lane.discard(ticket);
-        return store
-            .invalidate_host_observation(&admission, reason, maintenance_budget)
-            .map(|accepted| match accepted {
-                Some(fence) => ObservationOutcome::Invalidated {
-                    reason,
-                    fence,
-                    cause,
-                },
-                None => ObservationOutcome::Superseded,
-            });
+        return invalidate_or_skip(store, lane, &admission, reason, cause, maintenance_budget);
     }
     let snapshot = capture.expect("reason classified host failure");
     let admission_for_failure = admission.clone();
@@ -725,22 +534,46 @@ pub fn observe_and_publish(
         Err(error) => {
             lane.mark_unavailable();
             let _ = lane.discard(ticket);
-            store
-                .invalidate_host_observation(
-                    &admission_for_failure,
-                    HostInvalidationReason::PublicationFailed,
-                    maintenance_budget,
-                )
-                .map(|accepted| match accepted {
-                    Some(fence) => ObservationOutcome::Invalidated {
-                        reason: HostInvalidationReason::PublicationFailed,
-                        fence,
-                        cause: Some(error),
-                    },
-                    None => ObservationOutcome::Superseded,
-                })
+            invalidate_or_skip(
+                store,
+                lane,
+                &admission_for_failure,
+                HostInvalidationReason::PublicationFailed,
+                Some(error),
+                maintenance_budget,
+            )
         }
     }
+}
+
+/// Writes the durable invalidation for a failed capture, unless the lane
+/// already holds the same reason's completed marking pass with no publication
+/// since (pacer spec D4): then the write is skipped and the outcome is
+/// `InvalidationRepeated`. The admission commit has already happened.
+fn invalidate_or_skip(
+    store: &(impl observation_store::ObservationStore + ?Sized),
+    lane: &mut ObservationLane,
+    admission: &HostObservationAdmission,
+    reason: HostInvalidationReason,
+    cause: Option<ApiError>,
+    maintenance_budget: &CallBudget,
+) -> Result<ObservationOutcome, ApiError> {
+    if lane.skips_repeated_invalidation(reason) {
+        return Ok(ObservationOutcome::InvalidationRepeated { reason, cause });
+    }
+    // A new durable invalidation supersedes the previous marking pass; the
+    // marker returns only when this one's last page commits.
+    lane.last_invalidation_reason = None;
+    store
+        .invalidate_host_observation(admission, reason, maintenance_budget)
+        .map(|accepted| match accepted {
+            Some(fence) => ObservationOutcome::Invalidated {
+                reason,
+                fence,
+                cause,
+            },
+            None => ObservationOutcome::Superseded,
+        })
 }
 
 fn publish_captured(
@@ -811,16 +644,14 @@ fn ensure_budget(
     if !budget.is_exhausted(store.clock()) {
         return Ok(());
     }
-    Err(ApiError {
-        code: if budget.cancellation.is_cancelled() {
+    Err(ApiError::new(
+        if budget.cancellation.is_cancelled() {
             ErrorCode::Cancelled
         } else {
             ErrorCode::DeadlineExceeded
         },
-        detail: "host observation publication budget exhausted".into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    })
+        "host observation publication budget exhausted",
+    ))
 }
 
 /// Classify one bounded page of a captured coherent recovery baseline. The
@@ -867,9 +698,23 @@ pub struct ObservationLane {
     sequence: u64,
     last_snapshot_at: Option<MonoInstant>,
     dirty: bool,
+    /// Set by an explicit target capture; the next lane capture runs even
+    /// inside a backoff wait; cleared when an observation begins.
+    explicit_capture: bool,
+    /// Set by a failed or discarded attempt: the retry waits for the lane
+    /// Pacer's backoff instead of re-running on the next poll. Host-event
+    /// hints still set `dirty`.
+    retry_after_failure: bool,
     available: bool,
     next_ticket: u64,
     in_flight: Option<u64>,
+    /// Reason of the last durable invalidation whose unresolved-marking pass
+    /// completed; cleared by any page error, by a new invalidation and by a
+    /// publication. Empty after a restart (pacer spec D4).
+    last_invalidation_reason: Option<HostInvalidationReason>,
+    /// Failures answered without a durable invalidation since the last
+    /// publication.
+    repeat_failures: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -880,7 +725,7 @@ impl ObservationLane {
     /// even while its durable invalidation write is still pending.
     pub fn mark_unavailable(&mut self) {
         self.available = false;
-        self.dirty = true;
+        self.retry_after_failure = true;
     }
 
     pub fn is_available(&self) -> bool {
@@ -892,11 +737,64 @@ impl ObservationLane {
         self.available = false;
     }
 
+    /// An explicit target capture asks for one lane capture that ignores the
+    /// failure backoff gate. Not evidence: availability is unchanged.
+    pub fn request_explicit_capture(&mut self) {
+        self.explicit_capture = true;
+    }
+
     pub fn snapshot_due(&self, now: MonoInstant) -> bool {
-        self.dirty
-            || self
-                .last_snapshot_at
-                .is_none_or(|last| now.0.saturating_sub(last.0) >= 5_000)
+        self.snapshot_due_gated(now, None)
+    }
+
+    /// `retry_at` is the lane Pacer's `next_retry_at()`. A host-event hint is
+    /// always due; a retry after failure waits for the backoff; otherwise the
+    /// 5 s cadence applies.
+    pub fn snapshot_due_gated(&self, now: MonoInstant, retry_at: Option<MonoInstant>) -> bool {
+        if self.dirty || self.explicit_capture {
+            return true;
+        }
+        if self.retry_after_failure {
+            return retry_at.is_none_or(|at| now.0 >= at.0);
+        }
+        self.last_snapshot_at
+            .is_none_or(|last| now.0.saturating_sub(last.0) >= 5_000)
+    }
+
+    /// The skip predicate (pacer spec D4): same reason as the last completed
+    /// marking pass, and no publication since (a publication clears it).
+    /// Counts the skipped failure.
+    pub fn skips_repeated_invalidation(&mut self, reason: HostInvalidationReason) -> bool {
+        if self.last_invalidation_reason != Some(reason) {
+            return false;
+        }
+        self.repeat_failures = self.repeat_failures.saturating_add(1);
+        true
+    }
+
+    /// Feeds one page result of the continuation armed by an `Invalidated`
+    /// outcome. Only the last page's commit marks the pass complete; any page
+    /// error clears the marker so the next failure re-runs from ordinal 0.
+    pub fn note_invalidation_page(
+        &mut self,
+        reason: HostInvalidationReason,
+        page: &Result<ReconcilePageProgress, ApiError>,
+    ) {
+        match page {
+            Ok(progress) if progress.next_after_ordinal.is_none() => {
+                self.last_invalidation_reason = Some(reason);
+            }
+            Ok(_) => {}
+            Err(_) => self.last_invalidation_reason = None,
+        }
+    }
+
+    pub fn last_invalidation_reason(&self) -> Option<HostInvalidationReason> {
+        self.last_invalidation_reason
+    }
+
+    pub fn repeat_failures(&self) -> u32 {
+        self.repeat_failures
     }
 
     /// Clear only hints known before dispatch. A later event remains dirty
@@ -911,6 +809,8 @@ impl ObservationLane {
             .ok_or_else(|| stale("observation ticket exhausted"))?;
         self.in_flight = Some(self.next_ticket);
         self.dirty = false;
+        self.explicit_capture = false;
+        self.retry_after_failure = false;
         Ok(ObservationTicket(self.next_ticket))
     }
 
@@ -919,7 +819,7 @@ impl ObservationLane {
             return Err(stale("late host observation ticket"));
         }
         self.in_flight = None;
-        self.dirty = true;
+        self.retry_after_failure = true;
         Ok(())
     }
 
@@ -951,6 +851,8 @@ impl ObservationLane {
         self.epoch = snapshot.epoch;
         self.sequence = snapshot.observation_sequence;
         self.last_snapshot_at = Some(now);
+        self.last_invalidation_reason = None;
+        self.repeat_failures = 0;
         // An event received after dispatch remains an invalidation hint;
         // the older in-flight snapshot cannot restore local availability.
         self.available = !self.dirty;
@@ -960,12 +862,7 @@ impl ObservationLane {
 }
 
 fn stale(detail: &str) -> ApiError {
-    ApiError {
-        code: ErrorCode::StaleHostObservation,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::stale_host_observation(detail)
 }
 
 #[cfg(test)]

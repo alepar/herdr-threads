@@ -1,4 +1,5 @@
 use herdr_threads::service::config::ServiceConfig;
+use herdr_threads::test_support::spawn::{OwnedChild, SpawnOwned};
 use herdr_threads::{
     app::SystemClock,
     client::local::LocalSocketClient,
@@ -21,13 +22,13 @@ use std::{
     fs,
     io::Read,
     os::unix::fs::{DirBuilderExt, PermissionsExt},
-    process::{Child, Stdio},
+    process::Stdio,
     sync::Arc,
     time::{Duration, Instant},
 };
 use uuid::Uuid;
 
-struct TestChild(Child);
+struct TestChild(OwnedChild);
 impl Drop for TestChild {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -165,8 +166,7 @@ fn daemon_rejects_invalid_instance_settings_before_endpoint_publication() {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).unwrap();
     let mut child = TestChild(
-        std::process::Command::new(env!("CARGO_BIN_EXE_herdr-threads"))
-            .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
+        super::scrubbed_command(env!("CARGO_BIN_EXE_herdr-threads"))
             .args([
                 "daemon",
                 "run",
@@ -177,7 +177,7 @@ fn daemon_rejects_invalid_instance_settings_before_endpoint_publication() {
             ])
             .stdin(Stdio::null())
             .stderr(Stdio::piped())
-            .spawn()
+            .spawn_owned()
             .unwrap(),
     );
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -234,6 +234,11 @@ fn pending_ops_cli_keeps_explicit_context_in_its_local_journal_route() {
 
 #[test]
 fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
+    // run_elected_with_diagnostics dup2()s the process-wide stdout/stderr: hold
+    // the in-process-daemon lock so a parallel run keeps the binary's output.
+    let _stdio_guard = super::IN_PROCESS_DAEMON
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     use sha2::Digest;
     use std::sync::atomic::{AtomicU64, Ordering};
     struct CountCheckIns {
@@ -241,6 +246,41 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
         calls: Arc<AtomicU64>,
     }
     impl herdr_threads::ports::LocalService for CountCheckIns {
+        fn service_control(
+            &self,
+            command: Command,
+            peer: herdr_threads::protocol::authority::PeerIdentity,
+            instance: &str,
+            boot: &str,
+            gate: &herdr_threads::service::live_gate::LiveServiceGate,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+            self.inner
+                .service_control(command, peer, instance, boot, gate, budget)
+        }
+        fn audit_service_disconnect(
+            &self,
+            boot: &str,
+            generation: u64,
+            peer: herdr_threads::protocol::authority::PeerIdentity,
+            budget: &CallBudget,
+        ) -> Result<(), herdr_threads::protocol::results::ApiError> {
+            self.inner
+                .audit_service_disconnect(boot, generation, peer, budget)
+        }
+        fn service_operation(
+            &self,
+            operation: herdr_threads::protocol::service::ServiceOperation,
+            connection: &herdr_threads::ports::ServiceConnectionAuthority,
+            gate: &dyn herdr_threads::ports::ServiceAuthorityGate,
+            budget: &CallBudget,
+        ) -> Result<
+            herdr_threads::protocol::service::ServiceResult,
+            herdr_threads::protocol::results::ApiError,
+        > {
+            self.inner
+                .service_operation(operation, connection, gate, budget)
+        }
         fn handle(
             &self,
             command: Command,
@@ -300,7 +340,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
                 run_elected_with_diagnostics,
             },
             ports::{LocalService, StorePort},
-            service::{dispatch::DomainService, workers::FairWriter},
+            service::{dispatch::DomainService, fair_writer::FairWriter},
             store::{SqliteStore, StoreSettings},
         };
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
@@ -734,8 +774,7 @@ fn elected_service_fixture(custom_settings: bool) {
         fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
     }
     let mut child = TestChild(
-        std::process::Command::new(env!("CARGO_BIN_EXE_herdr-threads"))
-            .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
+        super::scrubbed_command(env!("CARGO_BIN_EXE_herdr-threads"))
             .args([
                 "daemon",
                 "run",
@@ -747,7 +786,7 @@ fn elected_service_fixture(custom_settings: bool) {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
-            .spawn()
+            .spawn_owned()
             .unwrap(),
     );
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
@@ -805,6 +844,12 @@ fn elected_service_fixture(custom_settings: bool) {
                 .limitations
                 .iter()
                 .any(|detail| detail == "scheduler degraded: invitation due scan failed: Conflict")
+                // ...and the daemon-log pointer (`degraded: <remedy naming daemon.log>`)
+                // sits on its own line.
+                && health
+                    .limitations
+                    .iter()
+                    .any(|detail| detail.starts_with("degraded: "))
             {
                 break;
             }
@@ -860,12 +905,16 @@ fn elected_service_fixture(custom_settings: bool) {
             !health
                 .limitations
                 .iter()
+                // The one deliberate path: the daemon-log pointer (ht-p03.27).
+                .filter(|detail| !detail.starts_with("degraded: "))
                 .any(|detail| detail.contains(&root_text) || detail.contains("host.sock")),
             "private host path reached elected Health: {:?}",
             health.limitations
         );
+        // The lane Pacer's backoff suffix (`; retrying (attempt N, ...)`)
+        // follows the redacted failure while the host stays down.
         if health.limitations.iter().any(|detail| {
-            detail == "scheduler degraded: host observation invalidated: HostUnavailable"
+            detail.starts_with("scheduler degraded: host observation invalidated: HostUnavailable")
         }) {
             break;
         }
@@ -1083,8 +1132,7 @@ fn elected_service_fixture(custom_settings: bool) {
         descriptor.instance_uuid.to_string()
     );
     assert_eq!(output["result"]["data"]["state"], "degraded");
-    let binary = std::process::Command::new(env!("CARGO_BIN_EXE_herdr-threads"))
-        .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
+    let binary = super::scrubbed_command(env!("CARGO_BIN_EXE_herdr-threads"))
         .args([
             "--json",
             "--state-dir",
@@ -1161,12 +1209,9 @@ impl herdr_threads::ports::HostPort for HungWakeHost {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(context.budget.cancellation.is_cancelled());
-        Err(herdr_threads::protocol::results::ApiError {
-            code: ErrorCode::Cancelled,
-            detail: "fixture released after cancellation".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        })
+        Err(herdr_threads::protocol::results::ApiError::cancelled(
+            "fixture released after cancellation",
+        ))
     }
     fn enumerate_targets(
         &self,
@@ -1176,21 +1221,9 @@ impl herdr_threads::ports::HostPort for HungWakeHost {
         while !self.release.load(std::sync::atomic::Ordering::SeqCst) {
             std::thread::sleep(Duration::from_millis(5));
         }
-        Err(herdr_threads::protocol::results::ApiError {
-            code: ErrorCode::Unsupported,
-            detail: "fixture has no enumeration authority".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        })
-    }
-    fn subscribe_lifecycle(
-        &self,
-        _: &herdr_threads::ports::HostCallContext,
-    ) -> Result<
-        Box<dyn herdr_threads::ports::HostLifecycleSubscription>,
-        herdr_threads::protocol::results::ApiError,
-    > {
-        unreachable!()
+        Err(herdr_threads::protocol::results::ApiError::unsupported(
+            "fixture has no enumeration authority",
+        ))
     }
     fn safe_wake_target(
         &self,
@@ -1208,6 +1241,15 @@ impl herdr_threads::ports::HostPort for HungWakeHost {
     {
         unreachable!()
     }
+    fn pane_agent_state(
+        &self,
+        _target: &herdr_threads::ports::SafeWakeTarget,
+        _context: &herdr_threads::ports::HostCallContext,
+    ) -> Result<herdr_threads::ports::AgentComposerState, herdr_threads::protocol::results::ApiError>
+    {
+        Ok(herdr_threads::ports::AgentComposerState::Submitted)
+    }
+
     fn launch_native(
         &self,
         _: herdr_threads::ports::NativeLaunchRequest,
@@ -1215,6 +1257,13 @@ impl herdr_threads::ports::HostPort for HungWakeHost {
     ) -> Result<herdr_threads::ports::NativeLaunchOutcome, herdr_threads::protocol::results::ApiError>
     {
         unreachable!()
+    }
+    fn send_submit_key(
+        &self,
+        _: &herdr_threads::ports::SafeWakeTarget,
+        _: &herdr_threads::ports::HostCallContext,
+    ) -> Result<(), herdr_threads::protocol::results::ApiError> {
+        Ok(())
     }
 }
 
@@ -1294,9 +1343,9 @@ fn elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined() {
         stop: fallback_stop,
         daemon: Some(daemon),
     };
-    let descriptor = ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    let descriptor = ready_rx.recv_timeout(Duration::from_secs(30)).unwrap();
     entered_rx
-        .recv_timeout(Duration::from_secs(3))
+        .recv_timeout(Duration::from_secs(30))
         .expect("real committed reservation did not reach native dispatcher");
     let db = rusqlite::Connection::open(&paths.database_path).unwrap();
     let reserved: String = db
@@ -1324,7 +1373,10 @@ fn elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined() {
         herdr_threads::ports::LocalClient::call(&client, Command::Health, &budget()).unwrap(),
         CommandResult::Health(_)
     ));
-    let until = Instant::now() + Duration::from_secs(2);
+    // The row above is inserted on a separate connection, so it fires no
+    // commit hook and no kick: only the deadline lane's 5 s safety tick finds
+    // it (ht-p03.9.4; it used to be a 1 s gate).
+    let until = Instant::now() + Duration::from_secs(8);
     loop {
         let warnings: i64 = db
             .query_row("SELECT count(*) FROM messages WHERE kind='warn'", [], |r| {
@@ -1395,6 +1447,8 @@ struct ActualNativeFixture {
     peer_eof: Arc<std::sync::atomic::AtomicBool>,
     server: Option<std::thread::JoinHandle<()>>,
     native: std::sync::Weak<herdr_threads::host::native::NativeCli>,
+    /// Kicks the daemon's lanes for rows written on a separate connection.
+    lanes: herdr_threads::app::LaneProbe,
     endpoint: std::path::PathBuf,
     /// Live panes served by the private endpoint's snapshot and pane reads.
     panes: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
@@ -1462,15 +1516,14 @@ impl ActualNativeFixture {
                 // request read racing ahead of the client's write failed
                 // WouldBlock under CPU load. The request read blocks; its
                 // timeout is a hang guard, not a scheduling bound.
-                // A client that already hung up makes these fail (EINVAL on
-                // macOS); drop that connection instead of killing the fake host.
-                if stream.set_nonblocking(false).is_err()
-                    || stream
-                        .set_read_timeout(Some(Duration::from_secs(30)))
-                        .is_err()
-                {
+                // A client that already hung up can make these fail (EINVAL
+                // on macOS). Blocking mode is required: without it, drop that
+                // connection instead of killing the fake host. The timeout is
+                // best effort: the buffered request is still readable.
+                if stream.set_nonblocking(false).is_err() {
                     continue;
                 }
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
                 let mut request = String::new();
                 BufReader::new(&mut stream).read_line(&mut request).unwrap();
                 // The held snapshot polls for stop between short reads. macOS
@@ -1537,12 +1590,18 @@ impl ActualNativeFixture {
                     }
                     method => panic!("unexpected native operation: {method}"),
                 };
-                writeln!(
+                // The observation lane starts a capture at once, so a daemon
+                // shutting down (restart) can hang up with a request in
+                // flight; a reply to a gone peer must not kill the fake host.
+                if writeln!(
                     stream,
                     "{}",
                     serde_json::json!({"id":request["id"],"result":result})
                 )
-                .unwrap();
+                .is_err()
+                {
+                    continue;
+                }
                 // Each accepted connection contains exactly one request. A
                 // transport that reuses ping for the operation hits peer EOF.
             }
@@ -1572,24 +1631,27 @@ impl ActualNativeFixture {
         let thread_paths = paths.clone();
         let thread_clock = clock.clone();
         let (ready, received) = std::sync::mpsc::sync_channel(1);
+        let lanes = herdr_threads::app::LaneProbe::default();
+        let thread_lanes = lanes.clone();
         let daemon = std::thread::spawn(move || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(herdr_threads::app::run_elected(
+                .block_on(herdr_threads::app::run_elected_probed(
                     &thread_paths,
                     thread_clock,
                     thread_stop,
                     ServiceConfig::default(),
                     host,
+                    thread_lanes,
                     move |descriptor| {
                         ready.send(descriptor.clone()).unwrap();
                         Ok(())
                     },
                 ))
         });
-        let descriptor = match received.recv_timeout(Duration::from_secs(3)) {
+        let descriptor = match received.recv_timeout(Duration::from_secs(30)) {
             Ok(descriptor) => descriptor,
             Err(error) => {
                 stop.cancel();
@@ -1611,6 +1673,7 @@ impl ActualNativeFixture {
             peer_eof,
             server: Some(server),
             native,
+            lanes,
             endpoint,
             panes,
             _stdio: stdio,
@@ -1655,24 +1718,27 @@ impl ActualNativeFixture {
         let clock = self.clock.clone();
         let stop = self.stop.clone();
         let (ready, received) = std::sync::mpsc::sync_channel(1);
+        self.lanes = herdr_threads::app::LaneProbe::default();
+        let lanes = self.lanes.clone();
         self.daemon = Some(std::thread::spawn(move || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(herdr_threads::app::run_elected(
+                .block_on(herdr_threads::app::run_elected_probed(
                     &paths,
                     clock,
                     stop,
                     ServiceConfig::default(),
                     host,
+                    lanes,
                     move |descriptor| {
                         ready.send(descriptor.clone()).unwrap();
                         Ok(())
                     },
                 ))
         }));
-        self.descriptor = received.recv_timeout(Duration::from_secs(3)).unwrap();
+        self.descriptor = received.recv_timeout(Duration::from_secs(30)).unwrap();
     }
     fn resolve(
         &self,
@@ -1690,7 +1756,7 @@ impl ActualNativeFixture {
     }
     fn wait_for(&self, what: &str, mut done: impl FnMut(&rusqlite::Connection) -> bool) {
         let db = self.db();
-        let until = Instant::now() + Duration::from_secs(8);
+        let until = Instant::now() + Duration::from_secs(30);
         while !done(&db) {
             assert!(Instant::now() < until, "timed out waiting for {what}");
             std::thread::sleep(Duration::from_millis(20));
@@ -1759,6 +1825,12 @@ fn actual_native_snapshot_cancellation_closes_peer_before_elected_worker_join_an
         .unwrap(),
         CommandResult::Health(_)
     ));
+    // The row above is inserted on a separate connection, so it fires no
+    // commit hook. Kick the deadline lane as that commit would: waiting for
+    // its 5 s safety tick would outlast the held native read's own 5 s budget.
+    fixture
+        .lanes
+        .kick(herdr_threads::service::kicks::Lane::Deadlines);
     loop {
         let warnings: i64 = db
             .query_row("SELECT count(*) FROM messages WHERE kind='warn'", [], |r| {
@@ -2275,16 +2347,30 @@ fn elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log() {
         descriptor.instance_uuid,
         Some(descriptor.boot_id),
     );
-    let CommandResult::Health(health) = herdr_threads::ports::LocalClient::call(
-        &client,
-        Command::Health,
-        &CallBudget {
-            deadline: MonoInstant(clock.monotonic_now().0 + 2_000),
-            cancellation: Cancellation::default(),
-        },
-    )
-    .unwrap() else {
-        panic!("health")
+    // The observation lane captures at once and, host being absent, marks
+    // every saved seat unresolved (host invalidation) without a polling delay;
+    // wait for that marking to settle so Health is read in a steady state.
+    let read_health = || {
+        let CommandResult::Health(health) = herdr_threads::ports::LocalClient::call(
+            &client,
+            Command::Health,
+            &CallBudget {
+                deadline: MonoInstant(clock.monotonic_now().0 + 2_000),
+                cancellation: Cancellation::default(),
+            },
+        )
+        .unwrap() else {
+            panic!("health")
+        };
+        health
+    };
+    let settle_until = std::time::Instant::now() + Duration::from_secs(10);
+    let health = loop {
+        let health = read_health();
+        if health.unresolved_seats == Some(3) || std::time::Instant::now() > settle_until {
+            break health;
+        }
+        std::thread::sleep(Duration::from_millis(20));
     };
     let expected = "store startup binding evidence: backfilled 1, still lacking 1; those seats \
                     cannot be reconfirmed automatically after a host invalidation: repair each \
@@ -2298,7 +2384,8 @@ fn elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log() {
         health.limitations
     );
     assert_eq!(health.state, HealthState::Degraded);
-    assert_eq!(health.unresolved_seats, Some(1));
+    // `stuck` plus the two seats the host invalidation marked unresolved.
+    assert_eq!(health.unresolved_seats, Some(3));
     assert!(
         health
             .limitations
@@ -2310,7 +2397,10 @@ fn elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log() {
     // Wave-2 fix2 (b) / fix2 review N1: Health is recomputed when the
     // evidence changes, not frozen at boot. The lacking seat's agent
     // re-registers with evidence (its latest binding now carries terminal
-    // and incarnation) and the unresolved seat is resolved again.
+    // and incarnation) and the unresolved seats (including the two the host
+    // invalidation marked) are resolved again. The lane's repeated
+    // same-reason failures write no further invalidation, so nothing re-marks
+    // them.
     {
         let db = rusqlite::Connection::open(&paths.database_path).unwrap();
         db.busy_timeout(Duration::from_secs(2)).unwrap();
@@ -2323,7 +2413,7 @@ fn elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log() {
         db.execute("UPDATE seats SET generation=2 WHERE id='noproof'", [])
             .unwrap();
         db.execute(
-            "UPDATE seats SET state='resolved',unresolved_reason=NULL WHERE id='stuck'",
+            "UPDATE seats SET state='resolved',unresolved_reason=NULL WHERE id IN ('stuck','healable','noproof')",
             [],
         )
         .unwrap();

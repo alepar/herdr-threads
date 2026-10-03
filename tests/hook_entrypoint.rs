@@ -1,6 +1,7 @@
 //! Built-binary hook entrypoint against an elected service over its private UDS.
 //! The hook runs exactly as installed: setup's quoted command through `sh -c`,
 //! native JSON on stdin, pane identity from HERDR_* env.
+use herdr_threads::test_support::spawn::SpawnOwned;
 use herdr_threads::{
     app::SystemClock,
     cli::hook::{LIFECYCLE_BUDGET, TOOL_BUDGET, installed_argv},
@@ -31,6 +32,14 @@ use std::{
 use uuid::Uuid;
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
+
+/// A spawned process with every inherited HERDR_/CLAUDE/CODEX variable removed
+/// (ht-p03.24); a test sets the variables it needs after this call.
+fn scrubbed_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    herdr_threads::test_support::isolation::scrub_env(&mut command);
+    command
+}
 
 /// CheckIn fault modes for the counting wrapper.
 const PASS: u8 = 0;
@@ -97,12 +106,8 @@ impl Counting {
         }
         if matches!(command, Command::CheckIn(_)) {
             self.check_ins.fetch_add(1, Ordering::SeqCst);
-            let error = |code, detail: &str| herdr_threads::protocol::results::ApiError {
-                code,
-                detail: detail.into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            };
+            let error =
+                |code, detail: &str| herdr_threads::protocol::results::ApiError::new(code, detail);
             use herdr_threads::protocol::results::ErrorCode;
             match self.mode.load(Ordering::SeqCst) {
                 HANG => std::thread::sleep(Duration::from_millis(3000)),
@@ -123,6 +128,41 @@ impl Counting {
     }
 }
 impl herdr_threads::ports::LocalService for Counting {
+    fn service_control(
+        &self,
+        command: Command,
+        peer: herdr_threads::protocol::authority::PeerIdentity,
+        instance: &str,
+        boot: &str,
+        gate: &herdr_threads::service::live_gate::LiveServiceGate,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+        self.inner
+            .service_control(command, peer, instance, boot, gate, budget)
+    }
+    fn audit_service_disconnect(
+        &self,
+        boot: &str,
+        generation: u64,
+        peer: herdr_threads::protocol::authority::PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<(), herdr_threads::protocol::results::ApiError> {
+        self.inner
+            .audit_service_disconnect(boot, generation, peer, budget)
+    }
+    fn service_operation(
+        &self,
+        operation: herdr_threads::protocol::service::ServiceOperation,
+        connection: &herdr_threads::ports::ServiceConnectionAuthority,
+        gate: &dyn herdr_threads::ports::ServiceAuthorityGate,
+        budget: &CallBudget,
+    ) -> Result<
+        herdr_threads::protocol::service::ServiceResult,
+        herdr_threads::protocol::results::ApiError,
+    > {
+        self.inner
+            .service_operation(operation, connection, gate, budget)
+    }
     fn handle(
         &self,
         command: Command,
@@ -195,8 +235,7 @@ fn harness_path(host: &Path) -> String {
 
 fn run_hook(command: &str, pane: &str, host: &Path, stdin: &[u8]) -> Hook {
     let started = Instant::now();
-    let mut child = std::process::Command::new("/bin/sh")
-        .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
+    let mut child = scrubbed_command("/bin/sh")
         .arg("-c")
         .arg(command)
         .env("HERDR_ENV", "1")
@@ -208,7 +247,7 @@ fn run_hook(command: &str, pane: &str, host: &Path, stdin: &[u8]) -> Hook {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_owned()
         .unwrap();
     child.stdin.take().unwrap().write_all(stdin).unwrap();
     let output = child.wait_with_output().unwrap();
@@ -220,11 +259,62 @@ fn run_hook(command: &str, pane: &str, host: &Path, stdin: &[u8]) -> Hook {
     }
 }
 
-fn start(session: &str) -> Vec<u8> {
-    format!(r#"{{"session_id":"{session}","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"startup"}}"#).into_bytes()
+/// One hook stdin payload (ht-p03.8): every test builds its payload here, so
+/// the native JSON shape lives in one place.
+struct Payload {
+    fields: serde_json::Map<String, serde_json::Value>,
 }
-fn tool(session: &str, extra: &str) -> Vec<u8> {
-    format!(r#"{{"session_id":"{session}","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","permission_mode":"default","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{{"command":"ls"}},"tool_use_id":"toolu_{}"{extra}}}"#, Uuid::new_v4().simple()).into_bytes()
+impl Payload {
+    /// Only the event name: an unknown or malformed-by-omission payload.
+    fn bare(event: &str) -> Self {
+        let mut fields = serde_json::Map::new();
+        fields.insert("hook_event_name".into(), event.into());
+        Self { fields }
+    }
+    /// A Claude-shaped SessionStart (`source` is startup, clear, ...).
+    fn session_start(session: &str, source: &str) -> Self {
+        Self::bare("SessionStart")
+            .with("session_id", session.into())
+            .with("transcript_path", "/tmp/t.jsonl".into())
+            .with("cwd", "/tmp".into())
+            .with("source", source.into())
+    }
+    /// A Claude-shaped Bash PreToolUse with a fresh `tool_use_id`.
+    fn pre_tool_use(session: &str, command: &str) -> Self {
+        Self::bare("PreToolUse")
+            .with("session_id", session.into())
+            .with("transcript_path", "/tmp/t.jsonl".into())
+            .with("cwd", "/tmp".into())
+            .with("permission_mode", "default".into())
+            .with("tool_name", "Bash".into())
+            .with("tool_input", serde_json::json!({ "command": command }))
+            .with(
+                "tool_use_id",
+                format!("toolu_{}", Uuid::new_v4().simple()).into(),
+            )
+    }
+    /// The Codex shape: a turn id, and none of Claude's transcript, cwd or
+    /// permission mode.
+    fn codex(mut self, turn: &str) -> Self {
+        for key in ["transcript_path", "cwd", "permission_mode"] {
+            self.fields.remove(key);
+        }
+        self.with("turn_id", turn.into())
+    }
+    fn with(mut self, key: &str, value: serde_json::Value) -> Self {
+        self.fields.insert(key.into(), value);
+        self
+    }
+    fn bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(&self.fields).unwrap()
+    }
+}
+
+fn start(session: &str) -> Vec<u8> {
+    Payload::session_start(session, "startup").bytes()
+}
+fn tool(session: &str) -> Vec<u8> {
+    Payload::pre_tool_use(session, "ls").bytes()
 }
 
 fn count(db: &Path, sql: &str) -> i64 {
@@ -285,6 +375,19 @@ fn seed(paths: &InstancePaths) -> Uuid {
     instance
 }
 
+/// Every test that spawns the hook runs one at a time (ht-p03.8). They assert
+/// wall-clock hook budgets (`TOOL_BUDGET` 1.5 s, `LIFECYCLE_BUDGET` 5 s) and
+/// share one test process; run concurrently, their store builds and process
+/// spawns starve each other's hooks into a fail-open exit 0 (`UnknownOutcome`,
+/// `installed claude version: Unavailable`, "no registered execution") and
+/// the 20 tests together then take as long as a serial run anyway.
+fn serialized() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn private_root() -> PathBuf {
     // Short path: the host endpoint must stay a valid opaque id (<=128 bytes).
     let root = PathBuf::from(format!(
@@ -311,21 +414,42 @@ struct Fixture {
     command: String,
     /// The Codex hook command built from the same installed argv contract.
     codex: String,
+    /// Released last, after `Drop` stopped the daemon.
+    _gate: Option<std::sync::MutexGuard<'static, ()>>,
 }
 impl Fixture {
     fn start() -> Self {
+        Self::start_at("state")
+    }
+    /// A fixture whose state directory is `<root>/<state_rel>` (the host
+    /// endpoint stays short; the daemon's own socket falls back to the
+    /// private runtime directory when the state path is long).
+    fn start_at(state_rel: &str) -> Self {
+        Self::launch(Some(serialized()), state_rel)
+    }
+    /// `gate` is the caller's `serialized()` guard; a test that already holds
+    /// it passes `None`.
+    fn launch(gate: Option<std::sync::MutexGuard<'static, ()>>, state_rel: &str) -> Self {
         use herdr_threads::{
             daemon::{
                 control::{ControlService, StopController},
+                diagnostics::{BufferLimits, WriterSink},
                 health::HealthInputs,
-                run_elected_with_diagnostics,
+                lifecycle::run_owner_with_factory,
             },
             ports::{LocalService, StorePort},
-            service::{dispatch::DomainService, workers::FairWriter},
+            service::{dispatch::DomainService, fair_writer::FairWriter},
             store::{SqliteStore, StoreSettings},
         };
         let root = private_root();
-        let state = root.join("state");
+        let state = root.join(state_rel);
+        if state_rel != "state" {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&state)
+                .unwrap();
+        }
         let host = root.join("host.sock");
         let context = RuntimeContext::explicit(state.clone(), host.clone(), None).unwrap();
         let paths = InstancePaths::resolve(&context).unwrap();
@@ -350,10 +474,15 @@ impl Fixture {
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(run_elected_with_diagnostics(
+                // Not run_elected_with_diagnostics: its sink dup2()s the
+                // process-wide fd 1/2, which parallel in-process fixtures
+                // corrupt (ht-p03.8). The hook under test is a separate binary.
+                .block_on(run_owner_with_factory(
                     &worker_paths,
                     clock,
                     worker_stop,
+                    WriterSink(std::io::sink()),
+                    BufferLimits::new(64 * 1024, 16 * 1024).unwrap(),
                     move |instance, boot, cancellation| {
                         let store: Arc<dyn StorePort> = Arc::new(
                             SqliteStore::new(
@@ -394,8 +523,6 @@ impl Fixture {
         });
         let descriptor = ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(descriptor.instance_uuid, instance);
-        // The elected daemon installs a quiet panic hook; restore visible failures.
-        std::panic::set_hook(Box::new(|info| eprintln!("{info}")));
         let argv = installed_argv(BIN, Some(state.to_str().unwrap()), None, Harness::Claude);
         let plan = plan_claude(b"{}", &argv).unwrap();
         let settings: serde_json::Value = serde_json::from_slice(&plan.proposed_bytes).unwrap();
@@ -419,10 +546,30 @@ impl Fixture {
             race,
             command,
             codex,
+            _gate: gate,
         }
     }
     fn hook(&self, pane: &str, stdin: &[u8]) -> Hook {
         run_hook(&self.command, pane, &self.host, stdin)
+    }
+    /// Setup, not the subject: SessionStart registers `session` for the pane's
+    /// seat. A hook that fails open on a starved machine (exit 0, nothing
+    /// registered) is retried, as the harness's next SessionStart would; tests
+    /// that assert SessionStart behaviour call `hook` directly.
+    fn register(&self, pane: &str, session: &str) {
+        let mut last = None;
+        for _ in 0..3 {
+            let hook = self.hook(pane, &start(session));
+            if hook.code == Some(0) && !hook.stdout.is_empty() {
+                return;
+            }
+            last = Some(hook);
+        }
+        let hook = last.unwrap();
+        panic!(
+            "SessionStart for {session} never registered: code {:?}, stderr {}",
+            hook.code, hook.stderr
+        );
     }
     fn codex_hook(&self, pane: &str, stdin: &[u8]) -> Hook {
         run_hook(&self.codex, pane, &self.host, stdin)
@@ -514,7 +661,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     // read-only digest query and no CheckIn.
     let before = check_ins.load(Ordering::SeqCst);
     let digests_before = fx.digests.load(Ordering::SeqCst);
-    let quiet = run_hook(&command, "w9:p1", &host, &tool("sess-1", ""));
+    let quiet = run_hook(&command, "w9:p1", &host, &tool("sess-1"));
     assert_eq!(quiet.code, Some(0), "{}", quiet.stderr);
     assert!(
         quiet.stdout.is_empty(),
@@ -568,7 +715,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     let message = sent["result"]["data"].as_str().unwrap().to_owned();
 
     // 4. The next tool hook offers it as marked untrusted data; nothing is ACKed.
-    let offered = run_hook(&command, "w9:p1", &host, &tool("sess-1", ""));
+    let offered = run_hook(&command, "w9:p1", &host, &tool("sess-1"));
     assert_eq!(offered.code, Some(0), "{}", offered.stderr);
     let value = offered.context();
     assert_eq!(value["hookSpecificOutput"]["hookEventName"], "PreToolUse");
@@ -600,7 +747,12 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
 
     // 4b. The Codex hook argv shares the entrypoint (context output only; no
     // updatedInput or permission decision on the fail-closed Codex transport).
-    let codex = fx.codex_hook("w9:p3", br#"{"session_id":"cx-sess","turn_id":"t1","hook_event_name":"SessionStart","source":"startup"}"#);
+    let codex = fx.codex_hook(
+        "w9:p3",
+        &Payload::session_start("cx-sess", "startup")
+            .codex("t1")
+            .bytes(),
+    );
     assert_eq!(codex.code, Some(0), "{}", codex.stderr);
     let value = codex.context();
     assert_eq!(value["hookSpecificOutput"]["hookEventName"], "SessionStart");
@@ -619,7 +771,10 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
         &command,
         "w9:p1",
         &host,
-        &tool("sess-1", r#","agent_id":"a1","agent_type":"worker""#),
+        &Payload::pre_tool_use("sess-1", "ls")
+            .with("agent_id", "a1".into())
+            .with("agent_type", "worker".into())
+            .bytes(),
     );
     assert_eq!(child.code, Some(0), "{}", child.stderr);
     assert!(child.stdout.is_empty());
@@ -627,7 +782,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
 
     // 6. A tool call from an unseen native session is tool-boundary traffic:
     // it registers nothing (quiet, stderr only). Its SessionStart registers.
-    let other = run_hook(&command, "w9:p1", &host, &tool("sess-2", ""));
+    let other = run_hook(&command, "w9:p1", &host, &tool("sess-2"));
     assert_eq!(other.code, Some(0), "{}", other.stderr);
     assert!(other.stdout.is_empty());
     assert!(other.stderr.contains("lifecycle"), "{}", other.stderr);
@@ -650,14 +805,14 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     );
 
     // 7. Unknown payloads and a pane without a seat are quiet, exit 0.
-    let unknown = run_hook(&command, "w9:p1", &host, br#"{"hook_event_name":"Stop"}"#);
+    let unknown = run_hook(&command, "w9:p1", &host, &Payload::bare("Stop").bytes());
     assert_eq!(
         (unknown.code, unknown.stdout.len()),
         (Some(0), 0),
         "{}",
         unknown.stderr
     );
-    let unmapped = run_hook(&command, "w9:p7", &host, &tool("x", ""));
+    let unmapped = run_hook(&command, "w9:p7", &host, &tool("x"));
     assert_eq!(
         (unmapped.code, unmapped.stdout.len()),
         (Some(0), 0),
@@ -672,7 +827,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
 
     // 8. A hung daemon cannot hold the tool call past the 1.5 s budget.
     fx.mode.store(HANG, Ordering::SeqCst);
-    let hung = run_hook(&command, "w9:p1", &host, &tool("sess-2", ""));
+    let hung = run_hook(&command, "w9:p1", &host, &tool("sess-2"));
     fx.mode.store(PASS, Ordering::SeqCst);
     assert_eq!(hung.code, Some(0), "{}", hung.stderr);
     assert!(hung.stdout.is_empty());
@@ -693,14 +848,14 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     );
     std::thread::sleep(Duration::from_millis(3200));
     // A tool-boundary read leaves nothing pending: the next hook is clean.
-    let recovered = run_hook(&command, "w9:p1", &host, &tool("sess-2", ""));
+    let recovered = run_hook(&command, "w9:p1", &host, &tool("sess-2"));
     assert_eq!(recovered.code, Some(0), "{}", recovered.stderr);
     assert!(
         !recovered.stderr.contains("Conflict"),
         "{}",
         recovered.stderr
     );
-    let after_recovery = run_hook(&command, "w9:p1", &host, &tool("sess-2", ""));
+    let after_recovery = run_hook(&command, "w9:p1", &host, &tool("sess-2"));
     assert_eq!(after_recovery.code, Some(0));
     assert!(
         after_recovery.stderr.is_empty(),
@@ -710,7 +865,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
 
     // 9. Daemon gone: tool hook stays quiet and fast.
     fx.stop();
-    let down = run_hook(&command, "w9:p1", &host, &tool("sess-2", ""));
+    let down = run_hook(&command, "w9:p1", &host, &tool("sess-2"));
     assert_eq!(down.code, Some(0), "{}", down.stderr);
     assert!(down.stdout.is_empty());
     assert!(
@@ -724,8 +879,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     // Without a reachable Herdr host that daemon reconciles the saved seats to
     // `unresolved` (host-seat lane), so check-in must report, not allocate.
     let ensured = run_hook(&command, "w9:p1", &host, &start("sess-3"));
-    let stop_daemon = std::process::Command::new(BIN)
-        .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
+    let stop_daemon = scrubbed_command(BIN)
         .args([
             "--state-dir",
             state.to_str().unwrap(),
@@ -793,7 +947,7 @@ fn two_hundred_tool_hooks_on_one_seat_stay_healthy_and_write_no_journal() {
     let mut slowest = Duration::ZERO;
     let clock = Instant::now();
     for n in 0..210 {
-        let hook = fx.hook("w9:p1", &tool("sess-1", ""));
+        let hook = fx.hook("w9:p1", &tool("sess-1"));
         assert_eq!(hook.code, Some(0), "call {n}: {}", hook.stderr);
         assert!(hook.stderr.is_empty(), "call {n}: {}", hook.stderr);
         assert!(
@@ -834,7 +988,12 @@ fn two_hundred_tool_hooks_on_one_seat_stay_healthy_and_write_no_journal() {
     );
     // Codex PreToolUse routes through the same non-durable tool-boundary read.
     // Kills: sending Codex tool events down the durable lifecycle path.
-    let codex = fx.codex_hook("w9:p3", br#"{"session_id":"cx-sess","turn_id":"t1","hook_event_name":"SessionStart","source":"startup"}"#);
+    let codex = fx.codex_hook(
+        "w9:p3",
+        &Payload::session_start("cx-sess", "startup")
+            .codex("t1")
+            .bytes(),
+    );
     assert_eq!(codex.code, Some(0), "{}", codex.stderr);
     let codex_journal = fs::read(fx.context_dir("cx").join("context.json")).unwrap();
     let before = fx.check_ins.load(Ordering::SeqCst);
@@ -842,7 +1001,10 @@ fn two_hundred_tool_hooks_on_one_seat_stay_healthy_and_write_no_journal() {
     for n in 0..3 {
         let tool = fx.codex_hook(
             "w9:p3",
-            format!(r#"{{"session_id":"cx-sess","turn_id":"t{n}","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{{"command":"ls"}},"tool_use_id":"call_{n}"}}"#).as_bytes(),
+            &Payload::pre_tool_use("cx-sess", "ls")
+                .codex(&format!("t{n}"))
+                .with("tool_use_id", format!("call_{n}").into())
+                .bytes(),
         );
         assert_eq!(tool.code, Some(0), "{}", tool.stderr);
         assert!(tool.stderr.is_empty(), "{}", tool.stderr);
@@ -935,7 +1097,7 @@ fn rejection_then_generation_bump_then_session_start_registers_new_generation() 
     assert_eq!(state["abandoned"].as_array().map(Vec::len), Some(2));
     assert_eq!(fx.intents(), 0);
     // Tool calls in the new execution are healthy.
-    let tool = fx.hook("w9:p1", &tool("b-2", ""));
+    let tool = fx.hook("w9:p1", &tool("b-2"));
     assert!(tool.stderr.is_empty(), "{}", tool.stderr);
 }
 
@@ -1006,7 +1168,7 @@ fn offer_then_identical_tool_call_is_quiet_then_new_message_is_emitted() {
         .to_owned();
     fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
     let quiet = |label: &str| {
-        let hook = fx.hook("w9:p1", &tool("sess-1", ""));
+        let hook = fx.hook("w9:p1", &tool("sess-1"));
         assert_eq!(hook.code, Some(0), "{label}: {}", hook.stderr);
         assert!(hook.stderr.is_empty(), "{label}: {}", hook.stderr);
         assert!(
@@ -1016,7 +1178,7 @@ fn offer_then_identical_tool_call_is_quiet_then_new_message_is_emitted() {
         );
     };
     let offered = |label: &str| {
-        let hook = fx.hook("w9:p1", &tool("sess-1", ""));
+        let hook = fx.hook("w9:p1", &tool("sess-1"));
         assert_eq!(hook.code, Some(0), "{label}: {}", hook.stderr);
         assert!(hook.stderr.is_empty(), "{label}: {}", hook.stderr);
         let context = context_of(&hook);
@@ -1057,13 +1219,10 @@ fn offer_then_identical_tool_call_is_quiet_then_new_message_is_emitted() {
     quiet("after third");
     // A lifecycle event re-presents pending attention once and seeds the
     // frontier, so the next routine tool call is quiet until something new.
-    let cleared = fx.hook(
-        "w9:p1",
-        br#"{"session_id":"sess-2","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"clear"}"#,
-    );
+    let cleared = fx.hook("w9:p1", &Payload::session_start("sess-2", "clear").bytes());
     assert_eq!(cleared.code, Some(0), "{}", cleared.stderr);
     assert!(context_of(&cleared).contains("untrusted_peer_data"));
-    let hook = fx.hook("w9:p1", &tool("sess-2", ""));
+    let hook = fx.hook("w9:p1", &tool("sess-2"));
     assert!(hook.stderr.is_empty(), "{}", hook.stderr);
     assert!(
         hook.stdout.is_empty(),
@@ -1071,7 +1230,7 @@ fn offer_then_identical_tool_call_is_quiet_then_new_message_is_emitted() {
         String::from_utf8_lossy(&hook.stdout)
     );
     let _fourth = send("fourth");
-    let hook = fx.hook("w9:p1", &tool("sess-2", ""));
+    let hook = fx.hook("w9:p1", &tool("sess-2"));
     assert!(context_of(&hook).contains("untrusted_peer_data"));
     // Nothing here ACKs on the model's behalf.
     assert_eq!(
@@ -1090,8 +1249,8 @@ fn offer_then_identical_tool_call_is_quiet_then_new_message_is_emitted() {
 #[test]
 fn attention_beyond_the_check_in_page_is_emitted_and_then_coalesced() {
     let fx = Fixture::start();
-    assert_eq!(fx.hook("w9:p1", &start("sess-1")).code, Some(0));
-    assert_eq!(fx.hook("w9:p2", &start("peer-sess")).code, Some(0));
+    fx.register("w9:p1", "sess-1");
+    fx.register("w9:p2", "peer-sess");
     for n in 0..105 {
         fx.cooperative(
             "peer",
@@ -1100,7 +1259,7 @@ fn attention_beyond_the_check_in_page_is_emitted_and_then_coalesced() {
         );
     }
     let call = || {
-        let hook = fx.hook("w9:p1", &tool("sess-1", ""));
+        let hook = fx.hook("w9:p1", &tool("sess-1"));
         assert_eq!(hook.code, Some(0), "{}", hook.stderr);
         assert!(hook.stderr.is_empty(), "{}", hook.stderr);
         hook
@@ -1162,10 +1321,10 @@ fn attention_beyond_the_check_in_page_is_emitted_and_then_coalesced() {
 // starting the watchdog at the 5 s lifecycle budget.
 #[test]
 fn stalled_stdin_cannot_hold_a_hook_past_the_tool_budget() {
+    let _serial = serialized();
     let root = private_root();
     let started = Instant::now();
-    let mut child = std::process::Command::new(BIN)
-        .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
+    let mut child = scrubbed_command(BIN)
         .args([
             "--state-dir",
             root.join("state").to_str().unwrap(),
@@ -1177,7 +1336,7 @@ fn stalled_stdin_cannot_hold_a_hook_past_the_tool_budget() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_owned()
         .unwrap();
     let stdin = child.stdin.take().unwrap();
     let output = child.wait_with_output().unwrap();
@@ -1190,7 +1349,13 @@ fn stalled_stdin_cannot_hold_a_hook_past_the_tool_budget() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(elapsed < Duration::from_millis(2500), "{elapsed:?}");
+    // Midway between the tool and lifecycle budgets: a watchdog started at the
+    // 5 s lifecycle budget still fails, while process spawn latency under a
+    // loaded parallel run does not (a flat 2.5 s ceiling flaked at 2.55 s).
+    assert!(
+        elapsed < (TOOL_BUDGET + LIFECYCLE_BUDGET) / 2,
+        "{elapsed:?}"
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1252,7 +1417,7 @@ struct Calls<'a> {
 }
 impl Calls<'_> {
     fn call(&self) -> Hook {
-        let hook = self.fx.hook("w9:p1", &tool(self.session, ""));
+        let hook = self.fx.hook("w9:p1", &tool(self.session));
         assert_eq!(hook.code, Some(0), "{}", hook.stderr);
         assert!(hook.stderr.is_empty(), "{}", hook.stderr);
         hook
@@ -1330,8 +1495,8 @@ fn carried_notices(label: &str, data: &str) -> (Vec<String>, bool) {
 #[test]
 fn attention_beyond_any_inbox_page_is_emitted_once_then_quiet() {
     let fx = Fixture::start();
-    assert_eq!(fx.hook("w9:p1", &start("sess-1")).code, Some(0));
-    assert_eq!(fx.hook("w9:p2", &start("peer-sess")).code, Some(0));
+    fx.register("w9:p1", "sess-1");
+    fx.register("w9:p2", "peer-sess");
     fx.filler_threads(7_000);
     let calls = Calls {
         fx: &fx,
@@ -1381,8 +1546,8 @@ fn attention_beyond_any_inbox_page_is_emitted_once_then_quiet() {
 #[test]
 fn ack_then_arrival_between_tool_calls_is_emitted_once() {
     let fx = Fixture::start();
-    assert_eq!(fx.hook("w9:p1", &start("sess-1")).code, Some(0));
-    assert_eq!(fx.hook("w9:p2", &start("peer-sess")).code, Some(0));
+    fx.register("w9:p1", "sess-1");
+    fx.register("w9:p2", "peer-sess");
     let calls = Calls {
         fx: &fx,
         session: "sess-1",
@@ -1421,8 +1586,8 @@ fn ack_then_arrival_between_tool_calls_is_emitted_once() {
 #[test]
 fn arrivals_racing_the_offer_are_emitted_on_the_next_call() {
     let fx = Fixture::start();
-    assert_eq!(fx.hook("w9:p1", &start("sess-1")).code, Some(0));
-    assert_eq!(fx.hook("w9:p2", &start("peer-sess")).code, Some(0));
+    fx.register("w9:p1", "sess-1");
+    fx.register("w9:p2", "peer-sess");
     let calls = Calls {
         fx: &fx,
         session: "sess-1",
@@ -1464,10 +1629,7 @@ fn arrivals_racing_the_offer_are_emitted_on_the_next_call() {
     // 3. After a lifecycle offer.
     let (action, sent) = peer_sends(&fx, &thread, "D");
     fx.race(RaceAt::LifecycleCheckIn, action);
-    let cleared = fx.hook(
-        "w9:p1",
-        br#"{"session_id":"sess-2","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"clear"}"#,
-    );
+    let cleared = fx.hook("w9:p1", &Payload::session_start("sess-2", "clear").bytes());
     assert_eq!(cleared.code, Some(0), "{}", cleared.stderr);
     assert!(
         context_of(&cleared).contains("attention digest: "),
@@ -1539,8 +1701,8 @@ impl Fixture {
 #[test]
 fn twenty_thousand_acked_receipts_stay_quiet_and_new_attention_is_emitted() {
     let fx = Fixture::start();
-    assert_eq!(fx.hook("w9:p1", &start("sess-1")).code, Some(0));
-    assert_eq!(fx.hook("w9:p2", &start("peer-sess")).code, Some(0));
+    fx.register("w9:p1", "sess-1");
+    fx.register("w9:p2", "peer-sess");
     fx.settled_history(20_000, 5_000);
     assert_eq!(
         fx.count("SELECT count(*) FROM receipts WHERE seat_id='seat' AND state='acked'"),
@@ -1589,10 +1751,7 @@ fn twenty_thousand_acked_receipts_stay_quiet_and_new_attention_is_emitted() {
     );
     let hook = calls.quiet("message repeat");
     assert!(hook.elapsed < TOOL_BUDGET, "{:?}", hook.elapsed);
-    let cleared = fx.hook(
-        "w9:p1",
-        br#"{"session_id":"sess-2","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"clear"}"#,
-    );
+    let cleared = fx.hook("w9:p1", &Payload::session_start("sess-2", "clear").bytes());
     assert_eq!(cleared.code, Some(0), "{}", cleared.stderr);
     assert!(cleared.stderr.is_empty(), "{}", cleared.stderr);
     assert!(cleared.elapsed < LIFECYCLE_BUDGET, "{:?}", cleared.elapsed);
@@ -1656,8 +1815,8 @@ impl Fixture {
 /// lifecycle budget.
 fn production_history_stays_quiet_and_emits_new_attention(acked: u64) {
     let fx = Fixture::start();
-    assert_eq!(fx.hook("w9:p1", &start("sess-1")).code, Some(0));
-    assert_eq!(fx.hook("w9:p2", &start("peer-sess")).code, Some(0));
+    fx.register("w9:p1", "sess-1");
+    fx.register("w9:p2", "peer-sess");
     let written = fx.production_history(acked);
     assert_eq!(
         fx.count("SELECT count(*) FROM receipt_state WHERE seat_id='seat' AND state='acked'"),
@@ -1720,10 +1879,7 @@ fn production_history_stays_quiet_and_emits_new_attention(acked: u64) {
     assert!(started.elapsed() < TOOL_BUDGET, "{:?}", started.elapsed());
     let hook = calls.quiet("message repeat");
     assert!(hook.elapsed < TOOL_BUDGET, "{:?}", hook.elapsed);
-    let cleared = fx.hook(
-        "w9:p1",
-        br#"{"session_id":"sess-2","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"clear"}"#,
-    );
+    let cleared = fx.hook("w9:p1", &Payload::session_start("sess-2", "clear").bytes());
     assert_eq!(cleared.code, Some(0), "{}", cleared.stderr);
     assert!(cleared.stderr.is_empty(), "{}", cleared.stderr);
     assert!(cleared.elapsed < LIFECYCLE_BUDGET, "{:?}", cleared.elapsed);
@@ -1804,8 +1960,8 @@ impl Fixture {
 /// digest line within the lifecycle budget.
 fn settled_warnings_stay_quiet_and_emit_new_invitation(settled: u64) {
     let fx = Fixture::start();
-    assert_eq!(fx.hook("w9:p1", &start("sess-1")).code, Some(0));
-    assert_eq!(fx.hook("w9:p2", &start("peer-sess")).code, Some(0));
+    fx.register("w9:p1", "sess-1");
+    fx.register("w9:p2", "peer-sess");
     let written = fx.settled_warning_history(settled);
     assert_eq!(
         fx.count("SELECT count(*) FROM messages WHERE kind='warn' AND thread_id='hist'"),
@@ -1851,10 +2007,7 @@ fn settled_warnings_stay_quiet_and_emit_new_invitation(settled: u64) {
     );
     let hook = calls.quiet("invitation repeat");
     assert!(hook.elapsed < TOOL_BUDGET, "{:?}", hook.elapsed);
-    let cleared = fx.hook(
-        "w9:p1",
-        br#"{"session_id":"sess-2","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"clear"}"#,
-    );
+    let cleared = fx.hook("w9:p1", &Payload::session_start("sess-2", "clear").bytes());
     assert_eq!(cleared.code, Some(0), "{}", cleared.stderr);
     assert!(cleared.stderr.is_empty(), "{}", cleared.stderr);
     assert!(cleared.elapsed < LIFECYCLE_BUDGET, "{:?}", cleared.elapsed);
@@ -1970,8 +2123,8 @@ impl Fixture {
 /// SessionStart `clear` carries its digest line within the lifecycle budget.
 fn pending_axis_stays_bounded_and_emits_new_invitation(axis: PendingAxis, n: u64) {
     let fx = Fixture::start();
-    assert_eq!(fx.hook("w9:p1", &start("sess-1")).code, Some(0));
-    assert_eq!(fx.hook("w9:p2", &start("peer-sess")).code, Some(0));
+    fx.register("w9:p1", "sess-1");
+    fx.register("w9:p2", "peer-sess");
     let written = fx.pending_axis_history(axis, n);
     let saturated = |n: u64| {
         if n > 1_000 {
@@ -2037,10 +2190,7 @@ fn pending_axis_stays_bounded_and_emits_new_invitation(axis: PendingAxis, n: u64
     let hook = calls.quiet("invitation repeat");
     assert!(hook.elapsed < TOOL_BUDGET, "{:?}", hook.elapsed);
     timings.push(("invitation repeat", hook.elapsed));
-    let cleared = fx.hook(
-        "w9:p1",
-        br#"{"session_id":"sess-2","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"clear"}"#,
-    );
+    let cleared = fx.hook("w9:p1", &Payload::session_start("sess-2", "clear").bytes());
     assert_eq!(cleared.code, Some(0), "{}", cleared.stderr);
     assert!(cleared.stderr.is_empty(), "{}", cleared.stderr);
     assert!(cleared.elapsed < LIFECYCLE_BUDGET, "{:?}", cleared.elapsed);
@@ -2172,8 +2322,8 @@ impl Fixture {
 fn programmatic_backlog_is_offered_page_by_page(n: u64) {
     assert!(n > 1_100);
     let fx = Fixture::start();
-    assert_eq!(fx.hook("w9:p1", &start("sess-1")).code, Some(0));
-    assert_eq!(fx.hook("w9:p2", &start("peer-sess")).code, Some(0));
+    fx.register("w9:p1", "sess-1");
+    fx.register("w9:p2", "peer-sess");
     let written = fx.pending_axis_history(PendingAxis::ProgrammaticNotices, n);
     let projected =
         || fx.count("SELECT count(*) FROM digest_programmatic_warnings WHERE seat_id='seat'");
@@ -2241,10 +2391,7 @@ fn programmatic_backlog_is_offered_page_by_page(n: u64) {
     }
     // A new occupant: its frontier is its own, so its lifecycle offer
     // carries (and settles) the oldest page again.
-    let cleared = fx.hook(
-        "w9:p1",
-        br#"{"session_id":"sess-2","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"clear"}"#,
-    );
+    let cleared = fx.hook("w9:p1", &Payload::session_start("sess-2", "clear").bytes());
     assert_eq!(cleared.code, Some(0), "{}", cleared.stderr);
     assert!(cleared.stderr.is_empty(), "{}", cleared.stderr);
     assert!(cleared.elapsed < LIFECYCLE_BUDGET, "{:?}", cleared.elapsed);
@@ -2286,8 +2433,7 @@ fn agent_path(fx: &Fixture) -> String {
 /// Run one emitted command line exactly as an agent's shell tool would, in
 /// the agent's pane environment (no state dir env, no seat flags).
 fn run_in_pane(fx: &Fixture, pane: &str, command: &str) -> std::process::Output {
-    std::process::Command::new("/bin/sh")
-        .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
+    scrubbed_command("/bin/sh")
         .arg("-c")
         .arg(command)
         .env("HERDR_ENV", "1")
@@ -2344,7 +2490,7 @@ fn peer_data(context: &str) -> String {
 #[test]
 fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
     let fx = Fixture::start();
-    assert_eq!(fx.hook("w9:p2", &start("peer-sess")).code, Some(0));
+    fx.register("w9:p2", "peer-sess");
     let thread = data(fx.cooperative("peer", "w9:p2", &["thread", "create", "--topic", "demo"]));
     let invitation = data(fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]));
     let message = data(fx.cooperative(
@@ -2462,7 +2608,7 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
         "w9:p2",
         &["send", &thread, "--body", "second", "--require-ack", "seat"],
     ));
-    let offered = fx.hook("w9:p1", &tool("sess-1", ""));
+    let offered = fx.hook("w9:p1", &tool("sess-1"));
     assert_eq!(offered.code, Some(0), "{}", offered.stderr);
     let context = context_of(&offered);
     let ack = ready_command_ending(&context, "- ACK after reading: ", &format!(" ack {second}"));
@@ -2519,7 +2665,7 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
 #[test]
 fn three_thread_startup_keeps_the_overview_and_every_command() {
     let fx = Fixture::start();
-    assert_eq!(fx.hook("w9:p2", &start("peer-sess")).code, Some(0));
+    fx.register("w9:p2", "peer-sess");
     let mut threads = Vec::new();
     for n in 0..3 {
         let topic = format!("demo topic {n}");
@@ -2610,6 +2756,77 @@ fn three_thread_startup_keeps_the_overview_and_every_command() {
             1
         );
     }
+}
+
+// W6-D5, built binary end to end: S15 failed with a long run root. A state
+// directory of 330+ bytes (deep, as under a native-run root) with six threads,
+// each invited and sent a require-ACK handoff, still yields a SessionStart
+// context that fits MAX_CONTEXT, shows the main thread's row and its exact
+// command (which runs verbatim in the pane), and says the overview was trimmed.
+// Kills: overflowing the budget with a long state dir, dropping the main
+// thread's row or its command, and a path altered inside a command.
+#[test]
+fn deep_state_dir_startup_context_fits_and_names_the_main_thread() {
+    let deep = format!("{0}/{0}/deeper/state", "d".repeat(150));
+    let fx = Fixture::start_at(&deep);
+    // SQLite's default 512-byte pathname limit bounds how deep a state dir
+    // can go (the database lives under it).
+    assert!(fx.state.as_os_str().len() >= 330, "{:?}", fx.state);
+    assert_eq!(fx.hook("w9:p2", &start("peer-sess")).code, Some(0));
+    for n in 0..6 {
+        let topic = format!("deep topic {n}");
+        let thread =
+            data(fx.cooperative("peer", "w9:p2", &["thread", "create", "--topic", &topic]));
+        data(fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]));
+        data(fx.cooperative(
+            "peer",
+            "w9:p2",
+            &[
+                "send",
+                &thread,
+                "--body",
+                "handoff",
+                "--require-ack",
+                "seat",
+            ],
+        ));
+    }
+    let started = fx.hook("w9:p1", &start("sess-1"));
+    assert_eq!(started.code, Some(0), "{}", started.stderr);
+    let context = context_of(&started);
+    assert!(
+        context.len() <= herdr_threads::cli::hook::MAX_CONTEXT,
+        "{}",
+        context.len()
+    );
+    let state = fx.state.to_str().unwrap();
+    // The first ready read command names the main thread.
+    let read = ready_command(&context, "- read: ");
+    assert!(
+        read.contains(state),
+        "exact state dir in the command: {read}"
+    );
+    let main = read
+        .split_once(" read ")
+        .unwrap()
+        .1
+        .split(' ')
+        .next()
+        .unwrap();
+    let peer = peer_data(&context);
+    assert!(
+        peer.contains(&format!("\"thread\":\"{main}\"")),
+        "main thread row: {peer}"
+    );
+    assert!(peer.contains("overview has_more:"), "{peer}");
+    assert!(!peer.contains(state), "{peer}");
+    let out = run_in_pane(&fx, "w9:p1", &read);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{read}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// Manual, read-only against the real installed Codex (never run by default):
@@ -2715,9 +2932,9 @@ fn real_installed_codex_hook_emits_context_with_a_warm_fingerprint_cache() {
 // Kills: classifying argv as a hook before the `hook` word is seen.
 #[test]
 fn conflicting_globals_fail_the_cli_but_fail_open_only_for_hook() {
+    let _serial = serialized();
     let run = |args: &[&str]| {
-        let out = std::process::Command::new(BIN)
-            .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
+        let out = scrubbed_command(BIN)
             .args(args)
             .env_remove("HERDR_ENV")
             .env_remove("HERDR_PANE_ID")
@@ -2754,12 +2971,24 @@ fn conflicting_globals_fail_the_cli_but_fail_open_only_for_hook() {
     let (code, stderr) = run(&["--state-dir", "/x", "--state-dir", "/y", "bogus"]);
     assert_ne!(code, Some(0), "{stderr}");
     assert!(!stderr.contains("herdr-threads hook:"), "{stderr}");
+    // Inside a Herdr pane the fail-open hook reports the conflict; outside one it is quiet
+    // (ht-p03.15: the quiet gate also covers parse errors).
     for args in [
         &["--state-dir", "/x", "--state-dir", "/y", "hook", "claude"][..],
         &["--state-dir=/x", "--state-dir=/y", "hook", "codex"],
     ] {
         let (code, stderr) = run(args);
         assert_eq!(code, Some(0), "{args:?}: {stderr}");
+        assert_eq!(stderr, "", "{args:?}: outside Herdr the hook is quiet");
+        let out = scrubbed_command(BIN)
+            .args(args)
+            .env("HERDR_ENV", "1")
+            .env("HERDR_PANE_ID", "w1:p1")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {stderr}");
         assert!(
             stderr.starts_with("herdr-threads hook:") && stderr.contains("conflicting values"),
             "{args:?}: {stderr}"
@@ -2777,6 +3006,7 @@ fn conflicting_globals_fail_the_cli_but_fail_open_only_for_hook() {
 // recorded instance, or starts a daemon for a foreign Herdr server.
 #[test]
 fn user_level_hook_is_silent_outside_its_herdr_instance() {
+    let _serial = serialized();
     let root = private_root();
     let state = root.join("state");
     let bin = root.join("bin");
@@ -2804,8 +3034,7 @@ fn user_level_hook_is_silent_outside_its_herdr_instance() {
     );
     let run = |env: &[(&str, String)]| {
         let started = Instant::now();
-        let mut command = std::process::Command::new(&argv[0]);
-        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
+        let mut command = scrubbed_command(&argv[0]);
         command
             .args(&argv[1..])
             .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
@@ -2819,12 +3048,16 @@ fn user_level_hook_is_silent_outside_its_herdr_instance() {
         for (key, value) in env {
             command.env(key, value);
         }
-        let mut child = command.spawn().unwrap();
+        let mut child = command.spawn_owned().unwrap();
         child
             .stdin
             .take()
             .unwrap()
-            .write_all(br#"{"hook_event_name":"SessionStart","source":"startup"}"#)
+            .write_all(
+                &Payload::bare("SessionStart")
+                    .with("source", "startup".into())
+                    .bytes(),
+            )
             .unwrap();
         let output = child.wait_with_output().unwrap();
         (output, started.elapsed())
@@ -2873,6 +3106,137 @@ fn user_level_hook_is_silent_outside_its_herdr_instance() {
     fs::remove_dir_all(&root).unwrap();
 }
 
+/// Wave 17 (ht-p03.15), through the built binary: a hook argv that does not parse (here no
+/// harness) exits 0 and prints nothing outside a Herdr pane, and still reports inside one.
+/// Kills: the quiet gate applying only to parsed argv.
+#[test]
+fn hook_parse_error_outside_herdr_prints_nothing_but_reports_inside_a_pane() {
+    let run = |herdr: bool| {
+        let mut command = scrubbed_command(BIN);
+        command
+            .args(["hook", "bogus"])
+            .stdin(Stdio::null())
+            .env_remove("HERDR_ENV")
+            .env_remove("HERDR_PANE_ID");
+        if herdr {
+            command.env("HERDR_ENV", "1").env("HERDR_PANE_ID", "w1:p1");
+        }
+        command.output().unwrap()
+    };
+    let outside = run(false);
+    assert_eq!(outside.status.code(), Some(0));
+    assert!(outside.stdout.is_empty());
+    assert!(
+        outside.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&outside.stderr)
+    );
+    let inside = run(true);
+    assert_eq!(inside.status.code(), Some(0));
+    assert!(
+        !inside.stderr.is_empty(),
+        "a pane of the installed instance must see the parse error"
+    );
+}
+
+// Wave 18 (ht-p03.25): the hook path takes a pane back from a person. An agent
+// starting in a pane a person claimed with `me init` registers through its
+// lifecycle CheckIn as a NEW binding generation owned by the agent: the human
+// occupant is ended and its local context retired, never continued under the
+// human's context (src/cli/hook.rs, the `Harness::Human` arm).
+#[test]
+fn hook_path_takeover_replaces_a_human_occupant_with_a_new_agent_generation() {
+    let fx = Fixture::start();
+    // The seat is first claimed through the hook, so the service binding and
+    // the local context journal are real; both are then flipped to a person's
+    // (`me init`) state: harness 'human', operator provenance.
+    let first = fx.hook("w9:p1", &start("agent-1"));
+    assert_eq!(first.code, Some(0), "{}", first.stderr);
+    let bound = fx.count(
+        "SELECT generation FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND harness='claude'",
+    );
+    assert!(bound >= 1);
+    rusqlite::Connection::open(&fx.db)
+        .unwrap()
+        .execute(
+            "UPDATE occupant_bindings SET harness='human',observation_provenance='operator_human' WHERE seat_id='seat' AND ended_at IS NULL",
+            [],
+        )
+        .unwrap();
+    let journal = fx.context_dir("seat").join("context.json");
+    let mut state = fx.context_json("seat");
+    assert_eq!(state["current"]["harness"], "Claude");
+    state["current"]["harness"] = "Human".into();
+    fs::write(&journal, serde_json::to_vec(&state).unwrap()).unwrap();
+    let human_execution = state["current"]["execution"].clone();
+
+    let takeover = fx.hook("w9:p1", &start("agent-2"));
+    assert_eq!(takeover.code, Some(0), "{}", takeover.stderr);
+    assert!(
+        !context_of(&takeover).contains("unavailable"),
+        "{} / {}",
+        context_of(&takeover),
+        takeover.stderr
+    );
+    // The service: exactly one current binding, the agent's, one generation on.
+    assert_eq!(
+        fx.count(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL"
+        ),
+        1
+    );
+    assert_eq!(
+        fx.count(&format!(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND harness='claude' AND native_session='agent-2' AND generation>{bound}"
+        )),
+        1
+    );
+    assert_eq!(
+        fx.count(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND harness='human' AND ended_at IS NOT NULL"
+        ),
+        1,
+        "the person's binding is ended, not continued"
+    );
+    // The local context: the agent's, on a new execution; the person's is gone.
+    let after = fx.context_json("seat");
+    assert_eq!(after["current"]["harness"], "Claude");
+    assert_ne!(after["current"]["execution"], human_execution);
+    assert!(after["current"]["binding_generation"].as_u64().unwrap() > bound as u64);
+    // Tool calls in the agent's execution are healthy.
+    let routine = fx.hook("w9:p1", &tool("agent-2"));
+    assert!(routine.stderr.is_empty(), "{}", routine.stderr);
+}
+
+/// The identity of one process-wide stdio descriptor.
+fn fd_identity(fd: i32) -> (u32, u64, i32) {
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    assert_eq!(unsafe { libc::fstat(fd, &mut stat) }, 0, "fstat {fd}");
+    (
+        u32::from(stat.st_mode) & u32::from(libc::S_IFMT),
+        stat.st_ino,
+        stat.st_dev,
+    )
+}
+
+// ht-p03.8: the default parallel harness exited 101 with the libtest summary
+// missing. `run_elected_with_diagnostics` dup2()s the process-wide fd 1 and 2
+// onto a pipe for the daemon child's lifetime; two in-process fixtures
+// overlapping saved each other's pipe as "the original", so the last restore
+// left fd 1/2 on a closed pipe and every later write, including libtest's
+// summary, was lost. Fixtures must never touch the process descriptors.
+// Kills: building the in-process fixture on the fd-redirecting diagnostics sink.
+#[test]
+fn overlapping_in_process_daemons_leave_process_stdio_intact() {
+    let before = (fd_identity(1), fd_identity(2));
+    let _alone = serialized();
+    let first = Fixture::launch(None, "state");
+    let second = Fixture::launch(None, "state");
+    drop(first);
+    drop(second);
+    assert_eq!((fd_identity(1), fd_identity(2)), before);
+}
+
 /// TRUST-POLICY C1 (ht-rzi.2): cooperative continuity through the installed
 /// hook, the elected production composition (`run_elected`) and a scripted
 /// Herdr host that answers target reads, enumeration and `agent get`.
@@ -2882,11 +3246,10 @@ mod continuity {
         app::run_elected,
         client::local::LocalSocketClient,
         ports::{
-            EnumerationEvidence, EvidenceKind, ExecutionEvidence, HostCallContext,
-            HostLifecycleSubscription, HostObservation, HostPort, HostSnapshot, HostUiState,
-            IncarnationEvidence, NativeLaunchCapability, NativeLaunchOutcome, NativeLaunchRequest,
-            ObservationProvenance, PaneAgentObservation, PromptOutcome, SafeWakeTarget,
-            StructuralOccupancy,
+            EnumerationEvidence, EvidenceKind, ExecutionEvidence, HostCallContext, HostObservation,
+            HostPort, HostSnapshot, HostUiState, IncarnationEvidence, NativeLaunchCapability,
+            NativeLaunchOutcome, NativeLaunchRequest, ObservationProvenance, PaneAgentObservation,
+            PromptOutcome, SafeWakeTarget, StructuralOccupancy,
         },
         protocol::{
             ids::{HostBootId, HostCallId, HostTargetId, SeatId, TerminalId},
@@ -2956,12 +3319,7 @@ mod continuity {
             _: &HostCallContext,
         ) -> Result<HostObservation, ApiError> {
             if !self.panes.lock().unwrap().contains_key(target.as_str()) {
-                return Err(ApiError {
-                    code: ErrorCode::NotFound,
-                    detail: "pane not found".into(),
-                    restart_argv: None,
-                    required_minimum_bytes: None,
-                });
+                return Err(ApiError::new(ErrorCode::NotFound, "pane not found"));
             }
             let sequence = self.sequence.fetch_add(1, Ordering::SeqCst);
             Ok(self.observation(target.as_str(), sequence))
@@ -2992,17 +3350,6 @@ mod continuity {
                 targets,
             })
         }
-        fn subscribe_lifecycle(
-            &self,
-            _: &HostCallContext,
-        ) -> Result<Box<dyn HostLifecycleSubscription>, ApiError> {
-            Err(ApiError {
-                code: ErrorCode::Unsupported,
-                detail: "no lifecycle subscription in the scripted host".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            })
-        }
         fn safe_wake_target(&self, _: &SeatId, _: &HostObservation) -> Option<SafeWakeTarget> {
             None
         }
@@ -3012,6 +3359,16 @@ mod continuity {
             _: &str,
             _: &HostCallContext,
         ) -> Result<PromptOutcome, ApiError> {
+            unreachable!("no prompt in a continuity test")
+        }
+        fn pane_agent_state(
+            &self,
+            _: &SafeWakeTarget,
+            _: &HostCallContext,
+        ) -> Result<herdr_threads::ports::AgentComposerState, ApiError> {
+            unreachable!("no prompt in a continuity test")
+        }
+        fn send_submit_key(&self, _: &SafeWakeTarget, _: &HostCallContext) -> Result<(), ApiError> {
             unreachable!("no prompt in a continuity test")
         }
         fn launch_native(
@@ -3041,12 +3398,10 @@ mod continuity {
                     std::thread::sleep(std::time::Duration::from_millis(300));
                     Ok(None)
                 }
-                Some(Agent::ReadError) => Err(ApiError {
-                    code: ErrorCode::Unauthorized,
-                    detail: "scripted read error".into(),
-                    restart_argv: None,
-                    required_minimum_bytes: None,
-                }),
+                Some(Agent::ReadError) => Err(ApiError::new(
+                    ErrorCode::Unauthorized,
+                    "scripted read error",
+                )),
             }
         }
         fn resume_after_epoch(&self, persisted: u64) {
@@ -3069,6 +3424,10 @@ mod continuity {
         daemon: Option<std::thread::JoinHandle<std::io::Result<bool>>>,
         claude: String,
         codex: String,
+        /// The elected daemon's diagnostics sink dup2()s the process-wide fd
+        /// 1/2, so these fixtures run one at a time like every hook test
+        /// (ht-p03.26). Last field: released after the daemon is stopped.
+        _serial: std::sync::MutexGuard<'static, ()>,
     }
     impl Fixture {
         /// `panes`: the panes Herdr reports. `seed` writes the saved state the
@@ -3077,6 +3436,7 @@ mod continuity {
             panes: &[(&str, Agent)],
             seed: impl FnOnce(&rusqlite::Connection, &str),
         ) -> Self {
+            let serial = serialized();
             let root = private_root();
             let state = root.join("state");
             let host = root.join("host.sock");
@@ -3135,8 +3495,9 @@ mod continuity {
                 daemon: None,
                 claude,
                 codex,
+                _serial: serial,
             };
-            fixture.spawn();
+            fixture.spawn(); // leak-guard: fixture method, starts an in-process daemon thread (no child process)
             fixture
         }
 
@@ -3186,7 +3547,7 @@ mod continuity {
         /// Restart the elected daemon on the same state (a new boot).
         pub fn restart(&mut self) {
             self.stop_daemon();
-            self.spawn();
+            self.spawn(); // leak-guard: fixture method, starts an in-process daemon thread (no child process)
         }
 
         pub fn db(&self) -> rusqlite::Connection {
@@ -3315,7 +3676,7 @@ mod continuity {
     pub fn tool_event(harness: &str, session: &str) -> Vec<u8> {
         match harness {
             "codex" => format!(r#"{{"session_id":"{session}","turn_id":"t9","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{{"command":"ls"}},"tool_use_id":"call_{}"}}"#, Uuid::new_v4().simple()).into_bytes(),
-            _ => super::tool(session, ""),
+            _ => super::tool(session),
         }
     }
 

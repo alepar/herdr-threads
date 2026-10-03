@@ -188,23 +188,6 @@ pub fn latest_requirement(
     }))
 }
 
-/// Voluntary state and current required state are deliberately independent.
-pub fn membership_and_requirement(
-    db: &Connection,
-    thread: &ThreadId,
-    seat: &SeatId,
-) -> Result<(Option<String>, Option<RequiredMembership>), ApiError> {
-    let projected = effective_membership(db, thread, seat)?;
-    let voluntary = match projected.voluntary {
-        VoluntaryMembershipState::Absent => None,
-        VoluntaryMembershipState::Invited => Some("invited"),
-        VoluntaryMembershipState::Joined => Some("joined"),
-        VoluntaryMembershipState::Left => Some("left"),
-        VoluntaryMembershipState::Retired => Some("retired"),
-    };
-    Ok((voluntary.map(str::to_owned), projected.requirement))
-}
-
 /// One projection of independent voluntary state and the live requirement.
 /// Internal compatibility rows may remain `invited` after cancellation, but
 /// callers must use this view to decide what the participant actually holds.

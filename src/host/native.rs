@@ -6,9 +6,9 @@ use super::observation::{
 };
 use crate::ports::{
     self, CorrelatedStartup, EnumerationEvidence, EvidenceKind, ExecutionEvidence, HostCallContext,
-    HostLifecycleSubscription, HostObservation, HostPort, HostSnapshot, HostUiState,
-    IncarnationEvidence, NativeLaunchCapability, NativeLaunchOutcome, NativeLaunchRequest,
-    ObservationProvenance, SafeWakeTarget, StructuralOccupancy, WakeTargetBasis,
+    HostObservation, HostPort, HostSnapshot, HostUiState, IncarnationEvidence,
+    NativeLaunchCapability, NativeLaunchOutcome, NativeLaunchRequest, ObservationProvenance,
+    SafeWakeTarget, StructuralOccupancy, WakeTargetBasis,
 };
 use crate::protocol::{
     authority::Harness,
@@ -30,6 +30,12 @@ static CALL_ID: AtomicU64 = AtomicU64::new(1);
 const CONFIRMED_PRESTART_REFUSALS: [&str; 2] = ["agent_pane_busy", "agent_name_taken"];
 /// Interval between bounded readiness polls after a submitted start.
 const START_POLL_MILLIS: u64 = 250;
+/// Polling time before a started-but-undetected agent is checked for an early
+/// exit (the pane back at its shell prompt). Live Herdr 0.9.1 keeps such an
+/// agent `launch_pending` with no detected `agent` forever.
+const EARLY_EXIT_CHECK_MILLIS: u64 = 1_000;
+/// Lines of the pane read for the early-exit check and quoted in its refusal.
+const EARLY_EXIT_PANE_LINES: usize = 12;
 /// Herdr agent kinds a wake prompt may reach.
 const WAKE_AGENTS: [&str; 2] = ["claude", "codex"];
 /// Herdr agent statuses that mean the agent awaits input.
@@ -40,6 +46,12 @@ const PROMPT_RECHECK_MILLIS: u64 = 750;
 const PROMPT_SUBMIT_MILLIS: u64 = 2_000;
 /// Smallest budget a wake prompt submission is started with.
 const MIN_PROMPT_MILLIS: u64 = 250;
+/// Settle time before the composer is read back after a send, so the harness
+/// has cleared its composer when the prompt was accepted.
+const COMPOSER_SETTLE_MILLIS: u64 = 250;
+/// A sent wake prompt still sitting in the composer is among the last lines of
+/// the pane; a submitted one is pushed above the empty composer box.
+const COMPOSER_TAIL_LINES: usize = 4;
 
 pub struct NativeCli {
     socket: PathBuf,
@@ -290,9 +302,28 @@ impl NativeCli {
             {
                 return Ok(NativeLaunchOutcome::OutcomeUnknown);
             }
+            // Herdr never updates the agent record when the harness exits
+            // straight away (a usage error such as rc 2): it stays
+            // `launch_pending` with no detected `agent` (live 2026-10-01,
+            // stand-in `codex` exiting 2) while the pane is back at its shell
+            // prompt. Read the pane and report that definite failure instead
+            // of waiting out the window as outcome_unknown.
+            if current.get("agent").is_none()
+                && started.elapsed() >= Duration::from_millis(EARLY_EXIT_CHECK_MILLIS)
+                && let Some(tail) = self.early_exit_output(request, kind, &context.budget)
+            {
+                return Err(error(
+                    ErrorCode::InvalidRequest,
+                    format!(
+                        "{kind} exited right after the start (the pane is back at its shell \
+                         prompt); nothing is running. Last pane lines:\n{tail}"
+                    ),
+                ));
+            }
             std::thread::sleep(Duration::from_millis(START_POLL_MILLIS));
             let left = Duration::from_millis(remaining).saturating_sub(started.elapsed());
             let limit = left.min(Duration::from_millis(750));
+            // Stays fenced: a failure here is the launch's `OutcomeUnknown` outcome.
             let polled = match self.run(&["agent", "get", name.as_str()], &context.budget, limit) {
                 Ok(raw) => raw,
                 Err(_) => return Ok(NativeLaunchOutcome::OutcomeUnknown),
@@ -342,6 +373,28 @@ impl NativeCli {
             correlation,
             diagnostic: observed,
         })
+    }
+
+    /// The pane's last lines when the started harness has already exited: its
+    /// command line was echoed and the pane's last line is a shell prompt
+    /// again. `None` while the harness may still be running or when the pane
+    /// cannot be read. Advisory read: unfenced, never moves the epoch.
+    fn early_exit_output(
+        &self,
+        request: &NativeLaunchRequest,
+        kind: &str,
+        budget: &CallBudget,
+    ) -> Option<String> {
+        let raw = self
+            .run_unfenced(
+                &["pane", "read", request.target.as_str()],
+                budget,
+                Duration::from_millis(750),
+            )
+            .ok()?;
+        let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        let text = parsed.pointer("/result/read/text")?.as_str()?;
+        shell_prompt_returned(text, kind)
     }
 
     /// The agent record names exactly the requested start: adapter-selected
@@ -405,11 +458,12 @@ impl NativeCli {
 
     /// Pane IDs with their pane/tab labels, for resolving a name a person
     /// typed in `--pane`. Display metadata only; never identity evidence.
+    /// Advisory read: unfenced, never moves the epoch.
     pub fn pane_names(
         &self,
         budget: &CallBudget,
     ) -> Result<Vec<crate::host::observation::PaneName>, ApiError> {
-        let raw = self.run(&["api", "snapshot"], budget, Duration::from_secs(2))?;
+        let raw = self.run_unfenced(&["api", "snapshot"], budget, Duration::from_secs(2))?;
         crate::host::observation::normalize_pane_names(&raw)
     }
 
@@ -546,9 +600,20 @@ impl NativeCli {
             ["pane", "get", target] => ("pane.get", serde_json::json!({"pane_id":target})),
             ["api", "snapshot"] => ("session.snapshot", serde_json::json!({})),
             ["agent", "get", target] => ("agent.get", serde_json::json!({"target":target})),
+            ["pane", "read", target] => (
+                "pane.read",
+                serde_json::json!({
+                    "pane_id":target,"source":"recent_unwrapped",
+                    "lines":EARLY_EXIT_PANE_LINES
+                }),
+            ),
             ["agent", "prompt", target, text] => (
                 "agent.prompt",
                 serde_json::json!({"target":target,"text":text}),
+            ),
+            ["agent", "send-keys", target, key] => (
+                "agent.send_keys",
+                serde_json::json!({"target":target,"keys":[key]}),
             ),
             [
                 "agent",
@@ -774,16 +839,6 @@ impl HostPort for NativeCli {
         })
     }
 
-    fn subscribe_lifecycle(
-        &self,
-        _context: &HostCallContext,
-    ) -> Result<Box<dyn HostLifecycleSubscription>, ApiError> {
-        Err(error(
-            ErrorCode::Unsupported,
-            "installed Herdr CLI has no verified lifecycle subscription",
-        ))
-    }
-
     /// Cooperative native policy: Herdr 0.9.1 cannot prove the current
     /// native execution, so the target is structural (a fresh current-target
     /// read of the same terminal in the same verified server incarnation, no
@@ -949,6 +1004,88 @@ impl HostPort for NativeCli {
         } else {
             Ok(ports::PromptOutcome::OutcomeUnknown)
         }
+    }
+
+    /// Advisory read: unfenced, never moves the epoch. The settle wait ends
+    /// early (`Unknown`) when the call is cancelled.
+    fn pane_agent_state(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<crate::ports::AgentComposerState, ApiError> {
+        let budget = &context.budget;
+        let left = budget
+            .deadline
+            .0
+            .saturating_sub(self.clock.monotonic_now().0);
+        if budget.cancellation.is_cancelled()
+            || context.expected_boot.as_ref() != Some(&target.host_boot)
+            || context.expected_epoch != Some(target.epoch)
+            || left <= COMPOSER_SETTLE_MILLIS + MIN_PROMPT_MILLIS
+        {
+            return Ok(crate::ports::AgentComposerState::Unknown);
+        }
+        if budget
+            .cancellation
+            .wait_blocking(Duration::from_millis(COMPOSER_SETTLE_MILLIS))
+        {
+            return Ok(crate::ports::AgentComposerState::Unknown);
+        }
+        let left = budget
+            .deadline
+            .0
+            .saturating_sub(self.clock.monotonic_now().0);
+        let read = self.run_unfenced(
+            &["pane", "read", target.target.as_str()],
+            budget,
+            Duration::from_millis(left.min(PROMPT_RECHECK_MILLIS)),
+        );
+        Ok(composer_state_from_read(read.as_deref().ok()))
+    }
+
+    fn send_submit_key(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        let refuse = |detail: &str| {
+            error(
+                ErrorCode::TargetUnsafe,
+                format!("submit key refused before sending: {detail}"),
+            )
+        };
+        if target.basis != WakeTargetBasis::CooperativeAgent {
+            return Err(refuse("native execution is unverified"));
+        }
+        if context.expected_boot.as_ref() != Some(&target.host_boot)
+            || context.expected_epoch != Some(target.epoch)
+            || self.epoch() != target.epoch
+        {
+            return Err(refuse("host context changed"));
+        }
+        let budget = &context.budget;
+        if budget.cancellation.is_cancelled() {
+            return Err(error(ErrorCode::Cancelled, "submit key cancelled"));
+        }
+        let left = budget
+            .deadline
+            .0
+            .saturating_sub(self.clock.monotonic_now().0);
+        if left < MIN_PROMPT_MILLIS {
+            return Err(error(
+                ErrorCode::DeadlineExceeded,
+                "insufficient submit key budget",
+            ));
+        }
+        let (_, witness) = self.run_witnessed(
+            &["agent", "send-keys", target.target.as_str(), "enter"],
+            budget,
+            Duration::from_millis(left.min(PROMPT_SUBMIT_MILLIS)),
+        )?;
+        if !self.same_incarnation(witness.as_ref(), target) || self.epoch() != target.epoch {
+            return Err(refuse("host server incarnation or epoch changed"));
+        }
+        Ok(())
     }
 
     /// A diagnostic/advisory read: it carries no fence and never invalidates
@@ -1177,18 +1314,100 @@ impl NativeCli {
     }
 }
 
+/// Whether pane text shows `kind` echoed at a shell prompt and a shell prompt
+/// again after it (the harness ran and exited): the trailing lines then, else
+/// `None`. A prompt line ends in `%`, `$`, `#` or `❯`; the echoed command
+/// line (which names `kind`) does not.
+fn shell_prompt_returned(text: &str, kind: &str) -> Option<String> {
+    let ends_with_prompt = |line: &str| line.ends_with(['%', '$', '#', '❯']);
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let (last, before) = lines.split_last()?;
+    if !ends_with_prompt(last)
+        || !before
+            .iter()
+            .any(|line| line.contains(kind) && !ends_with_prompt(line))
+    {
+        return None;
+    }
+    let from = lines.len().saturating_sub(EARLY_EXIT_PANE_LINES);
+    Some(lines[from..].join("\n"))
+}
+
 fn unknown_boot() -> HostBootId {
     HostBootId::new("unverified-cli-host")
 }
 
 fn error(code: ErrorCode, detail: impl Into<String>) -> ApiError {
-    ApiError {
-        code,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
+    ApiError::new(code, detail)
+}
+
+/// Whether the wake marker is still in the pane's composer. `None` is a
+/// failed read; an unreadable or empty pane is `Unknown`.
+///
+/// Only the last `COMPOSER_TAIL_LINES` non-empty lines are looked at, and
+/// within them the composer is anchored on its prompt line (the last line
+/// starting with `>` or `›` once whitespace and box-drawing characters are
+/// skipped) and the lines below it. History above the composer can hold the
+/// marker (a submitted prompt stays on screen), so a marker above the prompt
+/// line does not count. Without a recognizable prompt line the whole tail is
+/// the composer. A TUI composer box wraps its own content, so the composer's
+/// lines are joined and compared to the marker with whitespace and box
+/// drawing removed.
+pub(crate) fn composer_state_from_text(text: Option<&str>) -> ports::AgentComposerState {
+    use ports::AgentComposerState::{HoldingPrompt, Submitted, Unknown};
+    let Some(text) = text.filter(|text| !text.trim().is_empty()) else {
+        return Unknown;
+    };
+    let mut tail: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .rev()
+        .take(COMPOSER_TAIL_LINES)
+        .collect();
+    tail.reverse();
+    let is_chrome = |c: char| c.is_whitespace() || ('\u{2500}'..='\u{257F}').contains(&c);
+    let after_chrome = |line: &str| line.trim_start_matches(is_chrome).to_owned();
+    let prompt_at = tail
+        .iter()
+        .rposition(|line| after_chrome(line).starts_with(['>', '›']));
+    let composer: String = match prompt_at {
+        Some(at) => {
+            let first = after_chrome(tail[at]);
+            let first = first.trim_start_matches(['>', '›']);
+            std::iter::once(first)
+                .chain(tail[at + 1..].iter().copied())
+                .collect()
+        }
+        None => tail.concat(),
+    };
+    let normalize = |raw: &str| -> String { raw.chars().filter(|c| !is_chrome(*c)).collect() };
+    if normalize(&composer).contains(&normalize(crate::notification::policy::MARKER)) {
+        HoldingPrompt
+    } else {
+        Submitted
     }
 }
+
+/// `pane.read` response body to composer state.
+fn composer_state_from_read(raw: Option<&str>) -> ports::AgentComposerState {
+    let text = raw
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|parsed| {
+            parsed
+                .pointer("/result/read/text")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        });
+    composer_state_from_text(text.as_deref())
+}
+
+#[cfg(test)]
+#[path = "../../tests/host/wake_submission.rs"]
+mod wake_submission_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1426,6 +1645,115 @@ mod tests {
                 .is_err()
         );
         assert_eq!(cli.epoch(), 4);
+    }
+    fn absent_cli() -> NativeCli {
+        let missing = std::env::temp_dir().join(format!("ht-absent-{}", uuid::Uuid::new_v4()));
+        let cli = NativeCli::new(missing, Arc::new(TestClock(Instant::now())));
+        cli.epoch.store(3, Ordering::Release);
+        cli
+    }
+    fn composer_target() -> SafeWakeTarget {
+        SafeWakeTarget {
+            seat: SeatId::new("seat_1"),
+            target: HostTargetId::new("w4:p1"),
+            host_boot: HostBootId::new("proven-boot"),
+            generation: 7,
+            terminal: TerminalId::new("term_1"),
+            incarnation: "server-1".into(),
+            basis: ports::WakeTargetBasis::CooperativeAgent,
+            epoch: 3,
+            observation_sequence: 1,
+            bound_harness: Some("claude".into()),
+        }
+    }
+    fn composer_context(clock: &TestClock) -> HostCallContext {
+        HostCallContext {
+            budget: CallBudget {
+                deadline: MonoInstant(clock.monotonic_now().0 + 700),
+                cancellation: Cancellation::default(),
+            },
+            expected_boot: Some(HostBootId::new("proven-boot")),
+            expected_epoch: Some(3),
+        }
+    }
+    #[test]
+    fn composer_read_failure_never_bumps_the_connection_epoch() {
+        let target = composer_target();
+        // Timeout: the read limit is about 450 ms and the fixture answers at 600 ms.
+        let (socket, cli, worker) = fixture(|stream, _| {
+            thread::sleep(Duration::from_millis(600));
+            let _ = stream.flush();
+        });
+        let clock = TestClock(Instant::now());
+        let state = cli
+            .pane_agent_state(&target, &composer_context(&clock))
+            .unwrap();
+        assert_eq!(state, ports::AgentComposerState::Unknown);
+        assert_epoch_untouched(&cli, 3);
+        worker.join().unwrap();
+        let _ = fs::remove_file(socket);
+        // HostUnavailable: no listener at the socket path.
+        let cli = absent_cli();
+        let state = cli
+            .pane_agent_state(&target, &composer_context(&clock))
+            .unwrap();
+        assert_eq!(state, ports::AgentComposerState::Unknown);
+        assert_epoch_untouched(&cli, 3);
+    }
+    #[test]
+    fn early_exit_read_failure_never_bumps_the_connection_epoch() {
+        let (request, context, _) = launch_fixture();
+        // Timeout: the fixture holds the read open until the test drops `release`.
+        let (release, hold) = std::sync::mpsc::channel::<()>();
+        let (socket, cli, worker) = fixture(move |_stream, _| {
+            let _ = hold.recv();
+        });
+        assert_eq!(
+            cli.early_exit_output(&request, "codex", &context.budget),
+            None
+        );
+        assert_epoch_untouched(&cli, 3);
+        drop(release);
+        worker.join().unwrap();
+        let _ = fs::remove_file(socket);
+        // HostUnavailable: no listener at the socket path.
+        let cli = absent_cli();
+        assert_eq!(
+            cli.early_exit_output(&request, "codex", &context.budget),
+            None
+        );
+        assert_epoch_untouched(&cli, 3);
+    }
+    #[test]
+    fn pane_names_failure_never_bumps_the_connection_epoch() {
+        let cli = absent_cli();
+        let failure = cli.pane_names(&pane_agent_context().budget).unwrap_err();
+        assert_eq!(failure.code, ErrorCode::HostUnavailable);
+        assert_epoch_untouched(&cli, 3);
+    }
+    #[test]
+    fn composer_settle_returns_unknown_when_cancelled() {
+        let cli = absent_cli();
+        let clock = TestClock(Instant::now());
+        let context = composer_context(&clock);
+        let cancel = context.budget.cancellation.clone();
+        let canceller = thread::spawn(move || {
+            // A wait on an unrelated, never-cancelled token is a plain 20 ms pause.
+            Cancellation::default().wait_blocking(Duration::from_millis(20));
+            cancel.cancel();
+        });
+        let started = Instant::now();
+        let state = cli.pane_agent_state(&composer_target(), &context).unwrap();
+        // No listener exists: a read after the settle would be a host error,
+        // but the cancelled settle returns before any request is made.
+        assert_eq!(state, ports::AgentComposerState::Unknown);
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "settle wait ignored cancellation: {:?}",
+            started.elapsed()
+        );
+        canceller.join().unwrap();
+        assert_epoch_untouched(&cli, 3);
     }
     #[test]
     fn guarded_start_correlates_exact_direct_request_without_claiming_execution() {
@@ -2173,46 +2501,148 @@ mod tests {
         assert_eq!(result.unwrap(), ports::PromptOutcome::OutcomeUnknown);
     }
 
+    /// The second Herdr server of
+    /// `cooperative_wake_refuses_when_incarnation_or_epoch_moves_during_recheck`.
+    /// The test binary re-executes itself with `HT_FAKE_HOST_SOCKET` set; this
+    /// then runs as a different process, so its kernel peer witness (pid and
+    /// start time) is a different server incarnation. It logs each request
+    /// method to `HT_FAKE_HOST_LOG`, answers `ping` and `agent.get` (an idle
+    /// claude agent in `term_1`), refuses anything else, and exits when its
+    /// stdin closes. Without the variable it is a no-op test.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn restarted_host_process() {
+        let Ok(socket) = std::env::var("HT_FAKE_HOST_SOCKET") else {
+            return;
+        };
+        let log = std::env::var("HT_FAKE_HOST_LOG").unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        println!("HT_FAKE_HOST_READY");
+        std::io::stdout().flush().unwrap();
+        thread::spawn(move || {
+            loop {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read(&mut stream);
+                let method = request["method"].as_str().unwrap().to_owned();
+                let mut log = fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log)
+                    .unwrap();
+                writeln!(log, "{method}").unwrap();
+                match method.as_str() {
+                    "ping" => answer(
+                        &mut stream,
+                        &request,
+                        json!({"type":"pong","version":"0.9.1","protocol":22}),
+                    ),
+                    "agent.get" => answer(
+                        &mut stream,
+                        &request,
+                        json!({"type":"agent_info","agent":wake_agent("idle", Some("claude"), "term_1")}),
+                    ),
+                    _ => writeln!(
+                        stream,
+                        "{}",
+                        json!({"id":request["id"],"error":{"code":"unexpected","message":"unexpected method"}})
+                    )
+                    .unwrap(),
+                }
+            }
+        });
+        let mut sink = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut sink).unwrap();
+    }
+
+    /// The target is derived from a real witnessed `pane.get` answered by
+    /// server incarnation A (this process). Server A then goes away and a
+    /// different process (incarnation B) listens on the same endpoint and
+    /// answers the `agent.get` recheck. Returns the submission result and the
+    /// methods server B saw.
+    #[cfg(target_os = "macos")]
+    fn cooperative_wake_after_host_restart() -> (Result<ports::PromptOutcome, ApiError>, Vec<String>)
+    {
+        let (socket, cli, worker) = serve_sequence(vec![pane_exchange()]);
+        let context = HostCallContext {
+            budget: CallBudget {
+                deadline: MonoInstant(10_000),
+                cancellation: Cancellation::default(),
+            },
+            expected_boot: None,
+            expected_epoch: None,
+        };
+        let observation = cli
+            .observe_current_target(&HostTargetId::new("w4:p1"), &context)
+            .unwrap();
+        let target = cli
+            .safe_wake_target(&SeatId::new("seat_1"), &observation)
+            .expect("fresh verified terminal is a cooperative wake target");
+        // `ServerIncarnation::from_witness` derives the process identity and the boot from the same
+        // peer witness, so a restart moves both fields `same_incarnation` compares.
+        assert_eq!(target.incarnation, observation.host_boot.as_str());
+        let context = wake_context(&observation);
+        worker.join().unwrap();
+        fs::remove_file(&socket).unwrap();
+
+        let log = std::env::temp_dir().join(format!("ht-restart-log-{}", uuid::Uuid::new_v4()));
+        let mut host = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "host::native::tests::restarted_host_process",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("HT_FAKE_HOST_SOCKET", &socket)
+            .env("HT_FAKE_HOST_LOG", &log)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut output = BufReader::new(host.stdout.take().unwrap());
+        loop {
+            let mut line = String::new();
+            assert_ne!(
+                output.read_line(&mut line).unwrap(),
+                0,
+                "server B never listened"
+            );
+            if line.contains("HT_FAKE_HOST_READY") {
+                break;
+            }
+        }
+        let result = cli.submit_prompt(&target, "wake marker", &context);
+        drop(host.stdin.take());
+        host.wait().unwrap();
+        let seen = fs::read_to_string(&log).unwrap_or_default();
+        let _ = fs::remove_file(&log);
+        let _ = fs::remove_file(&socket);
+        (result, seen.lines().map(str::to_owned).collect())
+    }
+
     /// W9-4: the TOCTOU fence right before typing into a pane. When the
-    /// `agent.get` recheck is answered by a different server incarnation
-    /// (process identity or boot) than the target was derived from, or the
-    /// connection epoch moves while the recheck is in flight, the prompt is
-    /// refused and `agent.prompt` is never sent. Kills: dropping the
-    /// post-recheck `same_incarnation`/epoch check.
+    /// `agent.get` recheck is answered by a different server incarnation than
+    /// the one the target was derived from (the Herdr server restarted
+    /// between the observation and the recheck: a different process, which is
+    /// a different process identity and boot), or the connection epoch moves
+    /// while the recheck is in flight, the prompt is refused and
+    /// `agent.prompt` is never sent. The host really changes: nothing here
+    /// edits the target. Kills: dropping the post-recheck
+    /// `same_incarnation`/epoch check.
     #[cfg(target_os = "macos")]
     #[test]
     fn cooperative_wake_refuses_when_incarnation_or_epoch_moves_during_recheck() {
-        type Tamper = Box<dyn FnOnce(&mut SafeWakeTarget, &mut HostCallContext)>;
-        let restarted: Vec<(&str, Tamper)> = vec![
-            (
-                "server process identity",
-                Box::new(|target, _| target.incarnation = "server-before-restart".into()),
-            ),
-            (
-                "server boot",
-                Box::new(|target, context| {
-                    target.host_boot = HostBootId::new("boot-before-restart");
-                    context.expected_boot = Some(target.host_boot.clone());
-                }),
-            ),
-        ];
-        for (label, tamper) in restarted {
-            let (result, methods) = cooperative_wake_with(
-                vec![recheck_exchange(wake_agent(
-                    "idle",
-                    Some("claude"),
-                    "term_1",
-                ))],
-                None,
-                tamper,
-            );
-            assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe, "{label}");
-            assert_eq!(
-                *methods.lock().unwrap(),
-                ["pane.get", "agent.get"],
-                "{label}: agent.prompt never sent"
-            );
-        }
+        let (result, seen) = cooperative_wake_after_host_restart();
+        assert_eq!(
+            result.unwrap_err().code,
+            ErrorCode::TargetUnsafe,
+            "a recheck answered by a restarted server must refuse"
+        );
+        assert_eq!(
+            seen,
+            ["ping", "agent.get"],
+            "the restarted server saw the recheck and never an agent.prompt"
+        );
 
         let slot: CliSlot = Arc::default();
         let bump = Arc::clone(&slot);
@@ -2338,5 +2768,169 @@ mod tests {
             ErrorCode::DeadlineExceeded
         );
         assert_eq!(cli.epoch(), 3, "no host call was attempted");
+    }
+    /// Serves ping+operation exchanges, answering each request through
+    /// `answer_for` until it returns `true` (the last exchange); every wire
+    /// request is recorded.
+    fn serve_until<F>(mut answer_for: F) -> (PathBuf, NativeCli, thread::JoinHandle<Vec<Value>>)
+    where
+        F: FnMut(&mut UnixStream, &Value) -> bool + Send + 'static,
+    {
+        let socket = std::env::temp_dir().join(format!("ht-start-{}", uuid::Uuid::new_v4()));
+        let listener = UnixListener::bind(&socket).unwrap();
+        let worker = thread::spawn(move || {
+            let mut wires = Vec::new();
+            loop {
+                let (mut ping, _) = listener.accept().unwrap();
+                let request = read(&mut ping);
+                answer(
+                    &mut ping,
+                    &request,
+                    json!({"type":"pong","version":"0.9.1","protocol":22}),
+                );
+                drop(ping);
+                let (mut operation, _) = listener.accept().unwrap();
+                let wire = read(&mut operation);
+                let last = answer_for(&mut operation, &wire);
+                wires.push(wire);
+                if last {
+                    return wires;
+                }
+            }
+        });
+        let cli = NativeCli::new(socket.clone(), Arc::new(TestClock(Instant::now())));
+        cli.epoch.store(3, Ordering::Release);
+        (socket, cli, worker)
+    }
+
+    /// The pending `agent.start` answer Herdr 0.9.1 gives before the agent
+    /// is detected (no `agent` field, `launch_pending`).
+    fn pending_agent(name: &str) -> Value {
+        json!({"agent_status":"unknown","launch_pending":true,"name":name,
+            "pane_id":"w4:p1","terminal_id":"term_1","focused":false,"revision":0,
+            "tab_id":"w4:t1","workspace_id":"w4"})
+    }
+
+    /// Live Herdr 0.9.1 (2026-10-01, stand-in `codex exec --no-daemon`
+    /// exiting 2): the agent record stays `launch_pending` with no detected
+    /// `agent` and the pane returns to its shell prompt. Kills: waiting out
+    /// the whole window and returning `OutcomeUnknown` (rc 5) for a harness
+    /// that already refused its arguments; and treating a pane whose last
+    /// line is not a prompt (the harness still running) as an exit.
+    #[test]
+    fn codex_early_exit_inside_the_observation_window_is_reported() {
+        let (request, context, observation) = launch_fixture();
+        let name = request.agent_name();
+        let started_at = Instant::now();
+        let get_name = name.clone();
+        let (socket, cli, worker) =
+            serve_until(move |stream, wire| match wire["method"].as_str().unwrap() {
+                "agent.start" => {
+                    let mut result = started(name.clone());
+                    result["agent"] = pending_agent(&name);
+                    answer(stream, wire, result);
+                    false
+                }
+                "agent.get" => {
+                    assert_eq!(wire["params"], json!({"target": get_name}));
+                    answer(
+                        stream,
+                        wire,
+                        json!({"type":"agent_info","agent":pending_agent(&get_name)}),
+                    );
+                    false
+                }
+                "pane.read" => {
+                    assert_eq!(wire["params"]["pane_id"], "w4:p1");
+                    answer(
+                        stream,
+                        wire,
+                        json!({"type":"pane_read","read":{"pane_id":"w4:p1","text":
+                            "me@host r % codex --no-daemon --model x\nerror: unexpected \
+                             argument '--no-daemon' found\nme@host r %\n"}}),
+                    );
+                    true
+                }
+                other => panic!("unexpected {other}"),
+            });
+        let refusal = cli
+            .guarded_start_cli(&request, &context, &observation)
+            .unwrap_err();
+        assert_eq!(refusal.code, ErrorCode::InvalidRequest);
+        assert!(
+            refusal.detail.contains("codex exited"),
+            "{}",
+            refusal.detail
+        );
+        assert!(
+            refusal
+                .detail
+                .contains("unexpected argument '--no-daemon' found"),
+            "{}",
+            refusal.detail
+        );
+        assert!(started_at.elapsed() < Duration::from_secs(10));
+        worker.join().unwrap();
+        fs::remove_file(socket).unwrap();
+
+        // A pane still showing the running harness (last line no prompt) is
+        // not an exit: the poll goes on and the agent's detection ends it.
+        assert_eq!(
+            shell_prompt_returned("me@host r % codex\nloading models...", "codex"),
+            None
+        );
+        assert_eq!(shell_prompt_returned("me@host r %", "codex"), None);
+        assert_eq!(shell_prompt_returned("", "codex"), None);
+        assert!(shell_prompt_returned("r % codex exec\nboom\nr %", "codex").is_some());
+    }
+
+    /// Live 2026-10-01 against Herdr 0.9.1 (stand-in `codex` through
+    /// idle and working): `agent.list` kept the `agent.start` name; no
+    /// launch-side call clears it. Kills: any later launch call (start
+    /// retry, status poll, pane read) naming a different agent than the
+    /// one launched.
+    #[test]
+    fn launch_name_survives_agent_state_updates() {
+        let (request, context, observation) = launch_fixture();
+        let name = request.agent_name();
+        let mut polls = 0;
+        let start_name = name.clone();
+        let (socket, cli, worker) =
+            serve_until(move |stream, wire| match wire["method"].as_str().unwrap() {
+                "agent.start" => {
+                    let mut result = started(start_name.clone());
+                    result["agent"] = pending_agent(&start_name);
+                    answer(stream, wire, result);
+                    false
+                }
+                "agent.get" => {
+                    polls += 1;
+                    let agent = if polls < 2 {
+                        pending_agent(&start_name)
+                    } else {
+                        started(start_name.clone())["agent"].clone()
+                    };
+                    answer(stream, wire, json!({"type":"agent_info","agent":agent}));
+                    polls >= 2
+                }
+                other => panic!("unexpected {other}"),
+            });
+        assert!(matches!(
+            cli.guarded_start_cli(&request, &context, &observation)
+                .unwrap(),
+            NativeLaunchOutcome::ObservedStartup { .. }
+        ));
+        let wires = worker.join().unwrap();
+        fs::remove_file(socket).unwrap();
+        assert!(wires.len() >= 3);
+        for wire in &wires {
+            let params = &wire["params"];
+            let named = params.get("name").or_else(|| params.get("target"));
+            assert_eq!(
+                named.and_then(Value::as_str).unwrap_or(&name),
+                name,
+                "{wire}"
+            );
+        }
     }
 }

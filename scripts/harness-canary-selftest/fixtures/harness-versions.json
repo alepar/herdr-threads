@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "rows": [
+    {
+      "harness": "codex",
+      "version": "0.157.0",
+      "recipe": "codex-fixture",
+      "evidence": "no_model",
+      "known_broken": []
+    },
+    {
+      "harness": "codex",
+      "version": "0.157.1",
+      "recipe": "codex-fixture",
+      "evidence": "no_model",
+      "known_broken": []
+    },
+    {
+      "harness": "claude",
+      "version": "2.1.285",
+      "recipe": "claude-fixture",
+      "evidence": "no_model",
+      "known_broken": []
+    },
+    {
+      "harness": "claude",
+      "version": "2.1.286",
+      "recipe": "claude-fixture",
+      "evidence": "no_model",
+      "known_broken": []
+    },
+    {
+      "harness": "stubkb",
+      "version": "1.0.0",
+      "recipe": "stubkb-fixture",
+      "evidence": "no_model",
+      "known_broken": [
+        {
+          "min": "1.0.2",
+          "max": "1.0.4"
+        }
+      ]
+    },
+    {
+      "harness": "stubopen",
+      "version": "1.0.0",
+      "recipe": "stubopen-fixture",
+      "evidence": "no_model",
+      "known_broken": [
+        {
+          "min": "1.0.7",
+          "max": null
+        }
+      ]
+    }
+  ]
+}

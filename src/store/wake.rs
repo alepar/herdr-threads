@@ -6,14 +6,14 @@ use super::{
 };
 use crate::{
     ports::{
-        LogicalAttentionFrontier, LogicalPublicationKey, ReservedWakeAuthority,
-        WakeAttentionWitness, WakeCandidate, WakeOutcome, WakeRecoveryOutcome, WakeRecoveryRequest,
-        WakeReservation, WarningOfferFrontier,
+        LogicalAttentionFrontier, LogicalPublicationKey, PriorLadder, RefusalCause,
+        ReservedWakeAuthority, WakeAttentionWitness, WakeCandidate, WakeOutcome,
+        WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation, WarningOfferFrontier,
     },
     protocol::{
         ids::{ExecutionId, HostBootId, HostTargetId, SeatId, TerminalId, WakeAttemptId},
         results::{ApiError, ErrorCode},
-        time::{CallBudget, MonoInstant},
+        time::{CallBudget, MonoInstant, UtcMillis},
     },
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -97,9 +97,10 @@ pub fn load_candidate(
         Option<i64>,
         Option<i64>,
         Option<i64>,
+        Option<i64>,
     );
-    let wake:Option<WakeRow>=db.query_row("SELECT reason_bits,attention_version,checkpoint_version,retry_step,reservation_id,reservation_boot,last_reservation_id,last_reservation_boot,minimum_delay_ms,effective_delay_ms,last_outcome,last_invitation_seq,last_invitation_offset,last_receipt_seq,last_receipt_offset,last_warning_seq,last_warning_offset FROM wake_work WHERE seat_id=?1",
-        [seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?,r.get(13)?,r.get(14)?,r.get(15)?,r.get(16)?))).optional().map_err(store_error)?;
+    let wake:Option<WakeRow>=db.query_row("SELECT reason_bits,attention_version,checkpoint_version,retry_step,reservation_id,reservation_boot,last_reservation_id,last_reservation_boot,minimum_delay_ms,effective_delay_ms,last_outcome,last_reserved_at_utc,last_invitation_seq,last_invitation_offset,last_receipt_seq,last_receipt_offset,last_warning_seq,last_warning_offset FROM wake_work WHERE seat_id=?1",
+        [seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?,r.get(13)?,r.get(14)?,r.get(15)?,r.get(16)?,r.get(17)?))).optional().map_err(store_error)?;
     let (
         reason_bits,
         attention_version,
@@ -112,6 +113,7 @@ pub fn load_candidate(
         minimum_delay_ms,
         effective_delay_ms,
         last_outcome,
+        last_reserved_at_utc,
         last_invitation_seq,
         last_invitation_offset,
         last_receipt_seq,
@@ -119,7 +121,7 @@ pub fn load_candidate(
         last_warning_seq,
         last_warning_offset,
     ) = wake.unwrap_or((
-        0, 0, 0, 0, None, None, None, None, 0, 0, None, None, None, None, None, None, None,
+        0, 0, 0, 0, None, None, None, None, 0, 0, None, None, None, None, None, None, None, None,
     ));
     let last_key = |seq: Option<i64>,
                     offset: Option<i64>|
@@ -196,6 +198,7 @@ pub fn load_candidate(
         minimum_delay_ms: nonnegative(minimum_delay_ms)?,
         effective_delay_ms: nonnegative(effective_delay_ms)?,
         last_outcome,
+        last_reserved_at_utc: last_reserved_at_utc.map(UtcMillis),
     })
 }
 
@@ -533,14 +536,20 @@ pub fn validate_reservation(
     Ok(current.as_ref() == Some(&reservation.authority))
 }
 
+/// Settles one reservation. For `Refused` with a `refused_restore`, the same
+/// fenced UPDATE (`reservation_id` + `reservation_boot` match) restores the
+/// pre-reservation ladder row and returns whether it matched. A path that
+/// cleared the reservation in between (host invalidation, registration loss)
+/// matches 0 rows: no error, the durable step stays advanced by one.
 pub fn complete(
     context: &StoreContext,
     db: &mut Connection,
     attempt: &WakeAttemptId,
     daemon_boot: &uuid::Uuid,
     outcome: WakeOutcome,
+    refused_restore: Option<&PriorLadder>,
     budget: &CallBudget,
-) -> Result<(), ApiError> {
+) -> Result<bool, ApiError> {
     if attempt.as_str().is_empty() || daemon_boot.is_nil() {
         return Err(api_error(
             ErrorCode::InvalidRequest,
@@ -554,16 +563,41 @@ pub fn complete(
             [attempt.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(store_error)?;
         Ok(row)
     },|tx,at,row|{
-        let Some((seat,reservation_boot,binding_generation,current_generation,state))=row else {return Ok(())};
+        let Some((seat,reservation_boot,binding_generation,current_generation,state))=row else {return Ok(false)};
         let daemon_boot=daemon_boot.to_string();
-        if reservation_boot.as_deref()!=Some(daemon_boot.as_str()) {return Ok(())}
+        if reservation_boot.as_deref()!=Some(daemon_boot.as_str()) {return Ok(false)}
         let disposition=if state!="resolved" || binding_generation.is_some_and(|generation|generation!=current_generation) {
             "unsafe"
         } else {match outcome {WakeOutcome::Submitted=>"submitted",WakeOutcome::OutcomeUnknown=>"outcome_unknown",
-            WakeOutcome::Unsafe=>"unsafe",WakeOutcome::Unavailable=>"unavailable",WakeOutcome::TimedOut=>"timed_out",WakeOutcome::Cancelled=>"cancelled"}};
-        tx.execute("UPDATE wake_work SET reservation_id=NULL,reservation_boot=NULL,completed_at_utc=?1,last_outcome=?2 WHERE seat_id=?3 AND reservation_id=?4 AND reservation_boot=?5",
-            params![at.utc.0,disposition,seat,attempt.as_str(),daemon_boot]).map_err(store_error)?;
-        Ok(())
+            WakeOutcome::Unsafe|WakeOutcome::Refused(RefusalCause::Unsafe)=>"unsafe",
+            WakeOutcome::Unavailable|WakeOutcome::Refused(RefusalCause::Unavailable)=>"unavailable",
+            WakeOutcome::TimedOut|WakeOutcome::Refused(RefusalCause::TimedOut)=>"timed_out",
+            WakeOutcome::Cancelled=>"cancelled"}};
+        let restore=match (outcome,refused_restore) {(WakeOutcome::Refused(_),Some(prior))=>Some(prior),_=>None};
+        let changed=match restore {
+            None=>tx.execute("UPDATE wake_work SET reservation_id=NULL,reservation_boot=NULL,completed_at_utc=?1,last_outcome=?2 WHERE seat_id=?3 AND reservation_id=?4 AND reservation_boot=?5",
+                params![at.utc.0,disposition,seat,attempt.as_str(),daemon_boot]).map_err(store_error)?,
+            Some(prior)=>{
+                let key=|key:Option<LogicalPublicationKey>| -> Result<(Option<i64>,Option<i64>),ApiError> {
+                    key.map(|key|Ok((Some(i64::try_from(key.decision_seq).map_err(|_|api_error(ErrorCode::StoreCorrupt,"wake frontier sequence overflow"))?),
+                        Some(i64::try_from(key.event_offset).map_err(|_|api_error(ErrorCode::StoreCorrupt,"wake frontier offset overflow"))?))))
+                        .unwrap_or(Ok((None,None)))
+                };
+                let (invitation_seq,invitation_offset)=key(prior.last_reserved_frontier.invitation)?;
+                let (receipt_seq,receipt_offset)=key(prior.last_reserved_frontier.addressed_receipt)?;
+                let (warning_seq,warning_offset)=key(prior.last_reserved_frontier.actionable_warning)?;
+                tx.execute("UPDATE wake_work SET reservation_id=NULL,reservation_boot=NULL,completed_at_utc=?1,last_outcome=?2,retry_step=?6,minimum_delay_ms=?7,effective_delay_ms=?8,last_reservation_id=?9,last_reservation_boot=?10,last_reserved_at_utc=?11,last_invitation_seq=?12,last_invitation_offset=?13,last_receipt_seq=?14,last_receipt_offset=?15,last_warning_seq=?16,last_warning_offset=?17 WHERE seat_id=?3 AND reservation_id=?4 AND reservation_boot=?5",
+                    params![at.utc.0,disposition,seat,attempt.as_str(),daemon_boot,
+                        i64::from(prior.retry_step),
+                        i64::try_from(prior.minimum_delay_ms).map_err(|_|api_error(ErrorCode::InvalidRequest,"wake minimum overflow"))?,
+                        i64::try_from(prior.effective_delay_ms).map_err(|_|api_error(ErrorCode::InvalidRequest,"wake delay overflow"))?,
+                        prior.last_reservation_id.as_ref().map(|id|id.as_str().to_owned()),
+                        prior.last_reservation_boot.as_ref().map(|boot|boot.as_str().to_owned()),
+                        prior.last_reserved_at_utc.map(|at|at.0),
+                        invitation_seq,invitation_offset,receipt_seq,receipt_offset,warning_seq,warning_offset]).map_err(store_error)?
+            }
+        };
+        Ok(restore.is_some() && changed==1)
     })
 }
 

@@ -1,0 +1,6 @@
+{
+  "finding": "p15_nested_claude_p",
+  "entry": "child_check",
+  "verdict": "UNVERIFIED",
+  "reason": "subagent/collab activity [('toolu_nested', 'nested_agent_cli', 'claude')] in root transcript; a child ACK would be stored with the same seat/provenance/execution (cooperative limit), so child ACK absence is UNVERIFIED; manifest cannot PASS"
+}

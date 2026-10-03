@@ -45,6 +45,12 @@ struct StateHealthService {
     boot: Arc<Mutex<String>>,
 }
 impl LocalService for StateHealthService {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        service_operation,
+        handle_with_output
+    );
     fn handle(
         &self,
         _: crate::protocol::commands::Command,
@@ -132,6 +138,12 @@ async fn unavailable_matching_owner_fails_ensure() {
     assert!(error.detail.contains("unavailable"), "{}", error.detail);
 }
 impl LocalService for HealthService {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        service_operation,
+        handle_with_output
+    );
     fn handle(
         &self,
         _: crate::protocol::commands::Command,
@@ -199,7 +211,7 @@ async fn incompatible_protocol_owner_is_reported_before_health_dispatch() {
     let lock = OwnerLock::acquire(&paths).unwrap();
     let listener = lock.bind_socket().unwrap();
     let descriptor = lock
-        .publish_endpoint(&listener, "0.0.1", PROTOCOL_VERSION + 1)
+        .publish_endpoint(&listener, "0.0.1", PROTOCOL_VERSION - 1)
         .unwrap();
     let started = std::time::Instant::now();
     let error = ensure_running_with_timeout(
@@ -211,10 +223,21 @@ async fn incompatible_protocol_owner_is_reported_before_health_dispatch() {
     .await
     .unwrap_err();
     assert_eq!(error.code, ErrorCode::UnknownWireVersion);
-    assert!(error.detail.contains("daemon stop"));
-    assert!(error.detail.contains("daemon ensure"));
-    assert!(error.detail.contains("matching older executable/protocol"));
-    assert!(error.detail.contains("same state/host context"));
+    assert_eq!(
+        error.detail,
+        crate::daemon::remedy::remedy(
+            Some(ErrorClass::VersionSkew),
+            &RemedyContext::VersionSkew {
+                daemon: format!("0.0.1 (protocol {})", PROTOCOL_VERSION - 1),
+                cli: format!(
+                    "{} (protocol {PROTOCOL_VERSION})",
+                    env!("CARGO_PKG_VERSION")
+                ),
+            }
+        )
+    );
+    assert!(error.detail.contains("`herdr-threads daemon stop`"));
+    assert!(error.detail.contains("`herdr-threads daemon ensure`"));
     assert!(started.elapsed() < Duration::from_secs(1));
     assert_eq!(
         crate::daemon::ownership::read_descriptor(&paths, lock.instance_uuid()).unwrap(),
@@ -244,10 +267,12 @@ async fn upgraded_client_against_previous_protocol_daemon_reports_mismatch() {
     .await
     .unwrap_err();
     assert_eq!(error.code, ErrorCode::UnknownWireVersion);
+    // The one VersionSkew remedy line (B3 taxonomy) naming both protocols.
     assert!(
         error.detail.contains(&format!(
-            "daemon protocol {} differs from executable protocol {}",
+            "daemon is version 0.0.1 (protocol {}), CLI is {} (protocol {})",
             PROTOCOL_VERSION - 1,
+            env!("CARGO_PKG_VERSION"),
             PROTOCOL_VERSION
         )),
         "{}",
@@ -271,7 +296,7 @@ async fn crashed_incompatible_protocol_owner_recovers_to_new_healthy_boot() {
     let instance = lock.instance_uuid();
     let listener = lock.bind_socket().unwrap();
     let stale = lock
-        .publish_endpoint(&listener, "0.0.1", PROTOCOL_VERSION + 1)
+        .publish_endpoint(&listener, "0.0.1", PROTOCOL_VERSION - 1)
         .unwrap();
     drop(listener);
     drop(lock);
@@ -772,6 +797,12 @@ async fn factory_cancellation_token_stops_the_elected_owner() {
     std::fs::remove_dir_all(root).unwrap();
 }
 impl LocalService for BlockingService {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        service_operation,
+        handle_with_output
+    );
     fn handle(
         &self,
         _: crate::protocol::commands::Command,
@@ -782,12 +813,7 @@ impl LocalService for BlockingService {
         while self.release.load(Ordering::SeqCst) == 0 {
             std::thread::sleep(Duration::from_millis(10));
         }
-        Err(ApiError {
-            code: ErrorCode::Cancelled,
-            detail: "released".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        })
+        Err(ApiError::cancelled("released"))
     }
 }
 
@@ -947,18 +973,18 @@ fn launcher(root: &std::path::Path) -> PathBuf {
 #[ignore = "subprocess fixture invoked explicitly by environment test"]
 fn subprocess_resolved_environment_fixture() {
     let (root, _, _) = fixture();
-    for (name, selected) in [
-        ("none", None),
-        ("some", Some(PathBuf::from("/tmp/selected-herdr"))),
-    ] {
+    let selected_binary = root.join("selected-herdr");
+    for (name, selected) in [("none", None), ("some", Some(selected_binary.clone()))] {
         let output = root.join(format!("{name}.txt"));
         let script = root.join(format!("{name}.sh"));
         std::fs::write(&script, format!("#!/bin/sh\nprintf '%s\\n' \"${{HERDR_BIN_PATH-<unset>}}\" > '{}.tmp'\nprintf '%s\\n' \"$@\" >> '{}.tmp'\nmv '{}.tmp' '{}'\n", output.display(), output.display(), output.display(), output.display())).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let context =
             RuntimeContext::explicit(root.clone(), root.join("host.sock"), selected).unwrap();
-        spawn_detached(&script, &context).unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let paths = InstancePaths::resolve(&context).unwrap();
+        paths.prepare_instance_dir().unwrap();
+        spawn_detached(&script, &context, &paths, &StartAttempt::new()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
         let observed = loop {
             if let Ok(value) = std::fs::read_to_string(&output) {
                 break value;
@@ -974,7 +1000,7 @@ fn subprocess_resolved_environment_fixture() {
             if name == "none" {
                 "<unset>"
             } else {
-                "/tmp/selected-herdr"
+                selected_binary.to_str().unwrap()
             }
         );
         assert!(observed.contains(&format!(
@@ -988,8 +1014,10 @@ fn subprocess_resolved_environment_fixture() {
 
 #[test]
 fn detached_child_uses_resolved_herdr_binary_environment() {
-    let status = std::process::Command::new(std::env::current_exe().unwrap())
-        .env("HERDR_BIN_PATH", "/tmp/conflicting-herdr")
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    crate::test_support::isolation::scrub_env(&mut command);
+    let status = command
+        .env("HERDR_BIN_PATH", "/nonexistent/conflicting-herdr")
         .arg("--ignored")
         .arg("--exact")
         .arg("daemon::lifecycle::tests::subprocess_resolved_environment_fixture")

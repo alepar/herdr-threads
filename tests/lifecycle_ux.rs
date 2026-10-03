@@ -3,6 +3,7 @@
 //! selectors, Herdr-style 0755 state roots, degraded-but-reachable ensure,
 //! and a real doctor report. Each test names the mutation it kills.
 
+use herdr_threads::test_support::spawn::SpawnOwned;
 use std::{
     fs,
     os::unix::fs::{DirBuilderExt, PermissionsExt},
@@ -11,6 +12,14 @@ use std::{
 };
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
+
+/// A spawned binary with every inherited HERDR_/CLAUDE/CODEX variable removed
+/// (ht-p03.24); a test sets the variables it needs after this call.
+fn scrubbed_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::new(program);
+    herdr_threads::test_support::isolation::scrub_env(&mut command);
+    command
+}
 
 struct Scratch(PathBuf);
 impl Scratch {
@@ -53,8 +62,7 @@ fn run_in_pane(
     args: &[&str],
     cwd: Option<&Path>,
 ) -> Output {
-    let mut command = Command::new(BIN);
-    command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
+    let mut command = scrubbed_command(BIN);
     command
         .arg("--state-dir")
         .arg(state)
@@ -78,8 +86,7 @@ fn run_in_pane(
 /// Like [`run`] with `PATH` replaced by `path` (a daemon this starts inherits
 /// it, so its harness observation sees only what `path` holds).
 fn run_with_path(state: &Path, host: &Path, args: &[&str], path: &Path) -> Output {
-    let mut command = Command::new(BIN);
-    command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
+    let mut command = scrubbed_command(BIN);
     command
         .arg("--state-dir")
         .arg(state)
@@ -139,7 +146,7 @@ fn long_host(root: &Path) -> PathBuf {
 /// Debug struct on stderr) and removing `#[command(version)]`.
 #[test]
 fn help_and_version_exit_zero_with_plain_stdout() {
-    let help = Command::new(BIN).arg("--help").output().unwrap();
+    let help = scrubbed_command(BIN).arg("--help").output().unwrap();
     assert_eq!(help.status.code(), Some(0), "{}", text(&help.stderr));
     assert!(help.stderr.is_empty(), "{}", text(&help.stderr));
     let stdout = text(&help.stdout);
@@ -147,15 +154,14 @@ fn help_and_version_exit_zero_with_plain_stdout() {
     assert!(stdout.contains("Exit status:"), "{stdout}");
     assert!(!stdout.contains("ApiError"), "{stdout}");
 
-    let sub = Command::new(BIN)
-        .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
+    let sub = scrubbed_command(BIN)
         .args(["daemon", "--help"])
         .output()
         .unwrap();
     assert_eq!(sub.status.code(), Some(0));
     assert!(text(&sub.stdout).contains("ensure"));
 
-    let version = Command::new(BIN).arg("--version").output().unwrap();
+    let version = scrubbed_command(BIN).arg("--version").output().unwrap();
     assert_eq!(version.status.code(), Some(0), "{}", text(&version.stderr));
     assert_eq!(
         text(&version.stdout),
@@ -215,8 +221,7 @@ fn errors_are_human_readable_with_stable_exit_statuses() {
 /// overrides and no `herdr` on PATH, so only Herdr's default locations under
 /// the scratch HOME can name the instance.
 fn plain_shell(root: &Path) -> Command {
-    let mut command = Command::new(BIN);
-    command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
+    let mut command = scrubbed_command(BIN);
     command
         .current_dir(root)
         .env("HOME", root.join("home"))
@@ -283,8 +288,24 @@ fn plain_shell_commands_resolve_herdr_default_instance() {
         text(&health.stderr)
     );
 
-    // A second state root makes the default ambiguous: refused, not picked.
-    fs::create_dir_all(scratch.0.join("xdg/herdr/plugins/herdr-threads")).unwrap();
+    // A second state root without a store is a stale leftover: XDG wins, nothing is ambiguous.
+    let xdg_state = scratch.0.join("xdg/herdr/plugins/herdr-threads");
+    fs::create_dir_all(&xdg_state).unwrap();
+    let stale = plain_shell(&scratch.0)
+        .env("XDG_STATE_HOME", scratch.0.join("xdg"))
+        .args(["--json", "doctor"])
+        .output()
+        .unwrap();
+    let stale: serde_json::Value = serde_json::from_slice(&stale.stdout).unwrap();
+    assert_eq!(
+        stale["doctor"]["context"]["source"]["state_dir"], "default (XDG_STATE_HOME)",
+        "{stale}"
+    );
+    // Both holding a store makes the default ambiguous: refused, not picked.
+    for root in [&state, &xdg_state] {
+        fs::create_dir_all(root.join("instances/abc")).unwrap();
+        fs::write(root.join("instances/abc/threads.sqlite3"), "").unwrap();
+    }
     let ambiguous = plain_shell(&scratch.0)
         .env("XDG_STATE_HOME", scratch.0.join("xdg"))
         .args(["daemon", "health"])
@@ -354,6 +375,83 @@ fn ensure_accepts_herdr_0755_state_root_and_degraded_daemon() {
     assert!(text(&stop.stdout).contains("stop_accepted"));
 }
 
+/// Kills: a shutdown join that waits out the hung `--version` runs, so stop
+/// answers DeadlineExceeded (final review S6), and a hung harness child left
+/// running after the daemon exits.
+#[test]
+fn daemon_stop_completes_with_a_hung_harness_binary() {
+    let scratch = Scratch::new();
+    let state = scratch.0.join("plugin-state");
+    fs::create_dir(&state).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o755)).unwrap();
+    let host = long_host(&scratch.0);
+    let bin = scratch.0.join("bin-hung");
+    fs::DirBuilder::new().mode(0o700).create(&bin).unwrap();
+    let marker = |name: &str| scratch.0.join(format!("{name}.pid"));
+    for name in ["claude", "codex"] {
+        let path = bin.join(name);
+        fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho $$ > '{0}.tmp'\n/bin/mv '{0}.tmp' '{0}'\nexec /bin/sleep 60\n",
+                marker(name).display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let _guard = DaemonGuard {
+        state: state.clone(),
+        host: host.clone(),
+    };
+
+    let ensure = run_with_path(&state, &host, &["daemon", "ensure"], &bin);
+    assert_eq!(
+        ensure.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        text(&ensure.stdout),
+        text(&ensure.stderr)
+    );
+    let started = std::time::Instant::now();
+    while !marker("claude").exists() {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "the admission observer never started claude --version"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let stop = run(&state, &host, &["daemon", "stop"], None);
+    assert_eq!(
+        stop.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        text(&stop.stdout),
+        text(&stop.stderr)
+    );
+    assert!(text(&stop.stdout).contains("stop_accepted"));
+
+    let alive = |pid: &str| {
+        Command::new("kill")
+            .args(["-0", pid])
+            .status()
+            .unwrap()
+            .success()
+    };
+    for name in ["claude", "codex"] {
+        let Ok(pid) = fs::read_to_string(marker(name)) else {
+            continue;
+        };
+        let pid = pid.trim().to_owned();
+        let started = std::time::Instant::now();
+        while alive(&pid) && started.elapsed() < std::time::Duration::from_secs(2) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(!alive(&pid), "hung {name} child {pid} outlived the daemon");
+    }
+}
+
 /// Kills: accepting any state root mode (dropping the group/other write check).
 #[test]
 fn ensure_rejects_group_writable_state_root() {
@@ -401,7 +499,10 @@ fn doctor_reports_context_daemon_and_owned_hook_installation() {
         "{report}"
     );
     assert!(report.contains("daemon: not_running"), "{report}");
-    assert!(report.contains("hooks.claude.installed: no"), "{report}");
+    assert!(
+        report.contains("hooks.claude.setup_installed: no"),
+        "{report}"
+    );
     assert!(
         report.contains(&format!(
             "hooks.claude.settings: {}\n",
@@ -414,11 +515,11 @@ fn doctor_reports_context_daemon_and_owned_hook_installation() {
         "{report}"
     );
     assert!(
-        report.contains("hooks.claude.recipes: claude-hooks-2.1.283 [2.1.283, 2.1.286]\n"),
+        report.contains("hooks.claude.recipes: claude-hooks-2.1.283 [2.1.283, 2.1.287]\n"),
         "{report}"
     );
     assert!(
-        report.contains("hooks.codex.recipes: codex-hooks-v1 {0.157.1, 0.158.0}\n"),
+        report.contains("hooks.codex.recipes: codex-hooks-v1 {0.157.1, 0.158.0, 0.159.3}\n"),
         "{report}"
     );
     assert!(report.contains("result: unavailable"), "{report}");
@@ -473,11 +574,14 @@ fn doctor_reports_context_daemon_and_owned_hook_installation() {
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
-    assert_eq!(value["doctor"]["hooks"]["claude"]["installed"], true);
+    assert_eq!(
+        value["doctor"]["hooks"]["claude"]["setup"]["installed"],
+        true
+    );
     assert_eq!(value["doctor"]["hooks"]["claude"]["scope"], "user");
     assert_eq!(
         value["doctor"]["hooks"]["codex"]["recipes"],
-        "codex-hooks-v1 {0.157.1, 0.158.0}"
+        "codex-hooks-v1 {0.157.1, 0.158.0, 0.159.3}"
     );
     // Cooperative is the designed mode, distinct from unsupported (absent).
     assert_eq!(value["doctor"]["daemon"]["harness_claude"], "cooperative");
@@ -488,7 +592,7 @@ fn doctor_reports_context_daemon_and_owned_hook_installation() {
     let notes = value["doctor"]["daemon"]["notes"].as_array().unwrap();
     assert!(
         notes.contains(&serde_json::json!(
-            herdr_threads::daemon::health::COOPERATIVE_RECEIPT_LINE
+            herdr_threads::daemon::health::cooperative_receipt_line()
         )),
         "{value}"
     );
@@ -512,11 +616,14 @@ fn doctor_reports_context_daemon_and_owned_hook_installation() {
     assert!(
         report.contains(&format!(
             "daemon.note: {}\n",
-            herdr_threads::daemon::health::COOPERATIVE_RECEIPT_LINE
+            herdr_threads::daemon::health::cooperative_receipt_line()
         )),
         "{report}"
     );
-    assert!(report.contains("hooks.claude.installed: yes"), "{report}");
+    assert!(
+        report.contains("hooks.claude.setup_installed: yes"),
+        "{report}"
+    );
     assert!(
         report.contains(&format!(
             "hooks.claude.observed: {}\n",
@@ -529,7 +636,7 @@ fn doctor_reports_context_daemon_and_owned_hook_installation() {
 
     herdr_threads::harness::setup::remove_user_settings(kind, &settings, &manifest).unwrap();
     let removed = run(&state, &host, &["doctor"], None);
-    assert!(text(&removed.stdout).contains("hooks.claude.installed: no"));
+    assert!(text(&removed.stdout).contains("hooks.claude.setup_installed: no"));
 }
 
 /// A scratch `PATH` directory holding a synthetic `codex`: a shell script
@@ -601,13 +708,13 @@ fn doctor_reports_codex_schema_matched_admission() {
             "unmatched",
             "0.160.0",
             &changed[..],
-            "refused",
-            "codex 0.160.0: refused: embedded hook schemas sha256:",
+            "optimistic",
+            "codex 0.160.0: optimistic (newer-than-verified): assumed recipe codex-hooks-v1; \
+             schema drift sha256:",
         ),
     ] {
         let bin = codex_on_path(&scratch.0, label, version, tail);
-        let output = Command::new(BIN)
-            .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
+        let output = scrubbed_command(BIN)
             .arg("--state-dir")
             .arg(&state)
             .arg("--host-endpoint")
@@ -636,21 +743,13 @@ fn doctor_reports_codex_schema_matched_admission() {
         assert_eq!(installed["binary"], bin.join("codex").display().to_string());
         let line = installed["evidence"].as_str().unwrap();
         assert!(line.starts_with(evidence), "{label}: {line}");
-        if label == "unmatched" {
-            let error = installed["error"].as_str().unwrap();
-            assert!(
-                error.contains("match no recipe's captured schemas")
-                    && error.contains("supported recipes: codex-hooks-v1 {0.157.1, 0.158.0}"),
-                "{error}"
-            );
-        } else {
-            assert!(installed["error"].is_null(), "{label}: {installed}");
-            assert_eq!(installed["recipe"], "codex-hooks-v1");
-        }
+        // Schema-matched and optimistic admissions both name their recipe
+        // and carry no error: the drifted binary is admitted, not refused.
+        assert!(installed["error"].is_null(), "{label}: {installed}");
+        assert_eq!(installed["recipe"], "codex-hooks-v1");
     }
     let bin = codex_on_path(&scratch.0, "text", "0.160.0", &schemas);
-    let output = Command::new(BIN)
-        .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
+    let output = scrubbed_command(BIN)
         .arg("--state-dir")
         .arg(&state)
         .arg("--host-endpoint")
@@ -786,8 +885,7 @@ fn unsafe_state_root_is_invalid_local_context_for_ensure_and_doctor() {
 #[test]
 fn bare_invocation_prints_usage_with_status_two() {
     let scratch = Scratch::new();
-    let output = Command::new(BIN)
-        .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
+    let output = scrubbed_command(BIN)
         .current_dir(&scratch.0)
         .env_remove("HERDR_PLUGIN_STATE_DIR")
         .env_remove("HERDR_SOCKET_PATH")
@@ -1037,8 +1135,7 @@ fn setup_codex_sandbox_allowance_names_the_stable_daemon_socket() {
     // Codex config is written only to a scratch CODEX_HOME, never the user's.
     let codex_home = scratch.0.join("codex-home");
     let setup = || {
-        let mut command = Command::new(BIN);
-        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
+        let mut command = scrubbed_command(BIN);
         command
             .arg("--state-dir")
             .arg(&state)
@@ -1142,8 +1239,7 @@ fn setup_codex_sandbox_allowance_names_the_stable_daemon_socket() {
     assert!(herdr_threads::harness::codex_config::remove(&config_path, &manifest).unwrap());
     herdr_threads::harness::codex_config::install(&config_path, &manifest, &socket, &[]).unwrap();
     let status = |verb: &str| {
-        let mut command = Command::new(BIN);
-        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
+        let mut command = scrubbed_command(BIN);
         command
             .arg("--state-dir")
             .arg(&state)
@@ -1165,8 +1261,7 @@ fn setup_codex_sandbox_allowance_names_the_stable_daemon_socket() {
         warnings.contains("Operation not") && warnings.contains("herdr-threads setup codex"),
         "{old}"
     );
-    let mut command = Command::new(BIN);
-    command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
+    let mut command = scrubbed_command(BIN);
     command
         .arg("--state-dir")
         .arg(&state)
@@ -1205,8 +1300,7 @@ fn setup_codex_sandbox_allowance_names_the_stable_daemon_socket() {
 
     // Without a known (or detectable) host endpoint nothing is guessed:
     // setup refuses (status 2) and writes nothing more.
-    let mut command = Command::new(BIN);
-    command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
+    let mut command = scrubbed_command(BIN);
     command
         .arg("--state-dir")
         .arg(&state)
@@ -1245,8 +1339,7 @@ fn setup_codex_withholds_sandbox_allowance_on_unmeasured_versions() {
         let bin = codex_on_path(&scratch.0, label, version, tail);
         let codex = bin.join("codex").display().to_string();
         let setup = |verb: &str| {
-            let mut command = Command::new(BIN);
-            command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
+            let mut command = scrubbed_command(BIN);
             command
                 .arg("--state-dir")
                 .arg(&state)
@@ -1319,8 +1412,7 @@ fn codex_allowance_on_an_unmeasured_version_warns_in_setup_status_and_doctor() {
     let measured = codex_on_path(&scratch.0, "measured", "0.159.2", &schemas);
     let upgraded = codex_on_path(&scratch.0, "upgraded", "0.160.0", &schemas);
     let invoke = |bin: &Path, args: &[&str]| {
-        let mut command = Command::new(BIN);
-        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
+        let mut command = scrubbed_command(BIN);
         command
             .arg("--state-dir")
             .arg(&state)
@@ -1455,6 +1547,110 @@ fn codex_allowance_on_an_unmeasured_version_warns_in_setup_status_and_doctor() {
     );
 }
 
+/// The instance paths a `--state-dir`/`--host-endpoint` pair resolves to, with
+/// the instance directory prepared (so a test can plant files in it).
+fn prepared_instance(state: &Path, host: &Path) -> herdr_threads::daemon::paths::InstancePaths {
+    let context = herdr_threads::daemon::paths::RuntimeContext::explicit(
+        state.to_path_buf(),
+        host.to_path_buf(),
+        None,
+    )
+    .unwrap();
+    let paths = herdr_threads::daemon::paths::InstancePaths::resolve(&context).unwrap();
+    paths.prepare_instance_dir().unwrap();
+    paths
+}
+
+/// ht-p03.11. Kills: a detached child whose pre-election failure goes to a
+/// null stderr (the operator sees only a timeout), and a tail that does not
+/// name the attempt's own startup file.
+#[test]
+fn ensure_prints_the_startup_log_tail_when_the_daemon_fails_before_election() {
+    let scratch = Scratch::new();
+    let state = scratch.0.join("state");
+    let host = scratch.0.join("host.sock");
+    let paths = prepared_instance(&state, &host);
+    fs::write(
+        &paths.database_path,
+        b"this is not a sqlite database at all",
+    )
+    .unwrap();
+
+    let ensure = run(&state, &host, &["daemon", "ensure"], None);
+    let stderr = text(&ensure.stderr);
+    assert_eq!(ensure.status.code(), Some(3), "{stderr}");
+    let logs = paths.instance_dir.join("logs");
+    let files: Vec<_> = fs::read_dir(&logs).unwrap().flatten().collect();
+    assert_eq!(files.len(), 1, "{files:?}");
+    let file = files[0].path();
+    assert!(stderr.contains(&file.display().to_string()), "{stderr}");
+    assert!(stderr.contains("store startup"), "{stderr}");
+    assert!(
+        fs::read_to_string(&file).unwrap().contains("store startup"),
+        "the child's error is in its own attempt file"
+    );
+}
+
+/// ht-p03.11. Kills: no fallback when `<instance>/logs` cannot be created
+/// (the child's error is lost), and a fallback with a different exit status.
+#[test]
+fn ensure_falls_back_to_piped_stderr_when_the_logs_dir_is_unusable() {
+    let scratch = Scratch::new();
+    let state = scratch.0.join("state");
+    let host = scratch.0.join("host.sock");
+    let paths = prepared_instance(&state, &host);
+    fs::write(
+        &paths.database_path,
+        b"this is not a sqlite database at all",
+    )
+    .unwrap();
+    fs::write(paths.instance_dir.join("logs"), b"in the way").unwrap();
+
+    let ensure = run(&state, &host, &["daemon", "ensure"], None);
+    let stderr = text(&ensure.stderr);
+    assert_eq!(ensure.status.code(), Some(3), "{stderr}");
+    assert!(stderr.contains("startup log unavailable"), "{stderr}");
+    assert!(stderr.contains("showing the child's stderr"), "{stderr}");
+    assert!(stderr.contains("store startup"), "{stderr}");
+}
+
+/// ht-p03.11 (fallback survival). Kills: a daemon started with a piped stderr
+/// that keeps writing to the pipe after its starter exits (EPIPE panic or
+/// death): after `ensure` returns the daemon must still answer Health, and
+/// its later stderr lines must reach daemon.log.
+#[test]
+fn fallback_daemon_survives_starter_exit() {
+    let scratch = Scratch::new();
+    let state = scratch.0.join("state");
+    let host = scratch.0.join("host.sock");
+    let paths = prepared_instance(&state, &host);
+    fs::write(paths.instance_dir.join("logs"), b"in the way").unwrap();
+    let _guard = DaemonGuard {
+        state: state.clone(),
+        host: host.clone(),
+    };
+
+    let ensure = run(&state, &host, &["daemon", "ensure"], None);
+    assert_eq!(ensure.status.code(), Some(0), "{}", text(&ensure.stderr));
+    // The starter has exited. The host endpoint does not exist, so the
+    // observation lane fails and logs through the daemon's stderr.
+    let log = paths.instance_dir.join("daemon.log");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let logged = fs::read_to_string(&log).unwrap_or_default();
+        if logged.contains("lane observation:") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no lane line in daemon.log: {logged}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let health = run(&state, &host, &["daemon", "health"], None);
+    assert_eq!(health.status.code(), Some(0), "{}", text(&health.stderr));
+}
+
 /// Pids of `daemon run` processes serving `state`.
 fn daemon_pids(state: &Path) -> Vec<u32> {
     let needle = format!("daemon run --state-dir {} ", state.display());
@@ -1501,7 +1697,8 @@ fn daemon_exits_when_its_killed_test_owner_is_gone() {
         state: state.clone(),
         host: host.clone(),
     };
-    let mut owner = Command::new("/bin/sleep").arg("600").spawn().unwrap();
+    let mut owner = Command::new("/bin/sleep").arg("600").spawn_owned().unwrap();
+    // leak-guard: sets a fake owner pid on purpose (the daemon must exit when that owner dies)
     let mut command = Command::new(BIN);
     command
         .arg("--state-dir")

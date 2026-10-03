@@ -168,7 +168,6 @@ fn check_in_as(
     let result = store.register_available(
         RegisterAvailableRequest {
             command,
-            registration: None,
             read: ReadContext {
                 instance: "i".into(),
                 output: Default::default(),
@@ -415,60 +414,6 @@ fn cooperative_send_uses_claim_context_and_keeps_exact_replay() {
     assert!(observation.contains("cooperative_top_level"));
 }
 #[test]
-fn availability_revocation_restores_same_occupant_generation_and_keeps_prior_anchor() {
-    use crate::ports::{RegistrationLossReason, RegistrationRevocation};
-    let (store, conn, clock) = fixture();
-    obligations(&conn);
-    let result = check_in(&store, lifecycle(claim(), "initial")).unwrap();
-    conn.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('i','p','b',1,'outage')",[]).unwrap();
-    let loss = RegistrationRevocation::from_trusted_loss(
-        SeatId::new("s"),
-        1,
-        result.context.execution.clone(),
-        RegistrationLossReason::RecoveryHold {
-            target: HostTargetId::new("p"),
-            baseline_boot: HostBootId::new("b"),
-            baseline_epoch: 1,
-        },
-    );
-    assert!(store.revoke_registration(loss, &budget()).unwrap());
-    conn.execute("UPDATE recovery_holds SET released_at=150", [])
-        .unwrap();
-    clock.0.store(200, Ordering::SeqCst);
-    let current = CheckIn {
-        mode: CheckInMode::Current,
-        claim: result.context.clone(),
-        operation: OperationId::new("restored"),
-    };
-    let restored = check_in(&store, current).unwrap();
-    assert_eq!(restored.context, result.context);
-    assert_eq!(
-        conn.query_row("SELECT count(*) FROM occupant_bindings", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        conn.query_row("SELECT count(*) FROM seat_availability", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        2
-    );
-    assert_eq!(
-        conn.query_row("SELECT MIN(decision_at) FROM seat_availability", [], |r| {
-            r.get::<_, i64>(0)
-        })
-        .unwrap(),
-        100
-    );
-    assert_eq!(
-        conn.query_row("SELECT deadline_at FROM receipts", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        1000
-    );
-}
-#[test]
 fn cooperative_operation_reuse_across_control_kinds_is_rejected() {
     use crate::protocol::commands::{Accept, Leave, PermitMutation};
     let (store, conn, _) = fixture();
@@ -694,7 +639,7 @@ fn legacy_v1_startup_adds_index_and_preserves_rows_for_bounded_execution_lookup(
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        10
+        11
     );
 }
 fn dispatch_check_in(
@@ -706,7 +651,6 @@ fn dispatch_check_in(
     store.register_available(
         RegisterAvailableRequest {
             command,
-            registration: None,
             read: ReadContext {
                 instance: "i".into(),
                 output: Default::default(),
@@ -866,10 +810,8 @@ fn cooperative_offer_failure_rolls_back_binding_anchor_frontier_and_operation() 
         &mut writer,
         &command,
         None,
-        None,
-        &budget(),
         permit,
-        |_, _| panic!("cooperative CheckIn never asks for a native fence"),
+        &budget(),
         |_, _, _| {
             Err(super::connection::api_error(
                 ErrorCode::InvalidBudget,
@@ -982,72 +924,6 @@ fn replay_metadata_preserves_stored_domain_result_and_selected_output_bounds() {
         conn.query_row("SELECT state FROM receipts", [], |r| r.get::<_, String>(0))
             .unwrap(),
         "pending"
-    );
-}
-#[test]
-fn native_missing_evidence_and_cooperative_supplied_native_evidence_are_rejected() {
-    use crate::protocol::authority::{MutationPermit, ReceiptRegistration, VerifiedCaller};
-    let (store, conn, _) = fixture();
-    let command = lifecycle(claim(), "initial");
-    let permit = MutationPermit::new(
-        VerifiedCaller {
-            seat: SeatId::new("s"),
-            harness: Harness::Codex,
-            native_session: command.claim.native_session.clone(),
-            execution: command.claim.execution.clone(),
-            host_boot: HostBootId::new("b"),
-            target_generation: 0,
-            binding_generation: 0,
-            observed_at_utc: UtcMillis(100),
-        },
-        command.operation.clone(),
-        ObligationRef::CheckIn(SeatId::new("s")),
-        request(&command).payload_hash,
-        MonoInstant(100),
-        1,
-    );
-    assert_eq!(
-        dispatch_check_in(&store, command.clone(), permit, &budget())
-            .unwrap_err()
-            .code,
-        ErrorCode::CallerUnverified
-    );
-    let permit = store
-        .issue_cooperative_permit(request(&command), &budget())
-        .unwrap();
-    let evidence = ReceiptRegistration {
-        seat: SeatId::new("s"),
-        host_boot: HostBootId::new("b"),
-        target_generation: 0,
-        binding_generation: 0,
-        native_session: command.claim.native_session.clone(),
-        execution: command.claim.execution.clone(),
-    };
-    assert_eq!(
-        store
-            .register_available(
-                RegisterAvailableRequest {
-                    command,
-                    registration: Some(evidence),
-                    read: ReadContext {
-                        instance: "i".into(),
-                        output: Default::default(),
-                        operation_scope: None
-                    },
-                    operator: None,
-                },
-                permit,
-                &budget()
-            )
-            .unwrap_err()
-            .code,
-        ErrorCode::CallerUnverified
-    );
-    assert_eq!(
-        conn.query_row("SELECT count(*) FROM operations", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        0
     );
 }
 #[test]
@@ -1196,101 +1072,6 @@ fn cooperative_ack_budget_remains_live_during_sqlite_writer_wait() {
         )
         .unwrap(),
         0
-    );
-}
-#[test]
-fn legacy_native_check_in_digest_and_result_are_retained_with_explicit_diagnostic() {
-    use crate::protocol::authority::{MutationPermit, ReceiptRegistration, VerifiedCaller};
-    let (store, conn, _) = fixture();
-    obligations(&conn);
-    let first = check_in(&store, lifecycle(claim(), "initial")).unwrap();
-    let mut legacy_result = serde_json::to_value(CommandResult::CheckedIn(first)).unwrap();
-    legacy_result["data"]
-        .as_object_mut()
-        .unwrap()
-        .remove("context");
-    legacy_result["data"]
-        .as_object_mut()
-        .unwrap()
-        .remove("context_disposition");
-    let legacy_json = serde_json::to_string(&legacy_result).unwrap();
-    // Literal payload from pre-amendment CallerClaim, which had exactly these
-    // four fields. New cooperative context fields must not change native replay.
-    let digest=schema::canonical_digest(&serde_json::json!(["check_in",{"harness":"codex","native_session":"plugin_context:n","execution":"00000000-0000-4000-8000-000000000001","target":"p"}])).unwrap();
-    conn.execute("INSERT INTO operations(actor_scope,operation_key,digest,result_json,decided_at) VALUES ('seat:s','legacy-native',?1,?2,100)",rusqlite::params![digest.as_slice(),legacy_json]).unwrap();
-    let command = CheckIn {
-        mode: CheckInMode::Current,
-        claim: claim(),
-        operation: OperationId::new("legacy-native"),
-    };
-    let permit = MutationPermit::new(
-        VerifiedCaller {
-            seat: SeatId::new("s"),
-            harness: Harness::Codex,
-            native_session: command.claim.native_session.clone(),
-            execution: command.claim.execution.clone(),
-            host_boot: HostBootId::new("b"),
-            target_generation: 1,
-            binding_generation: 0,
-            observed_at_utc: UtcMillis(100),
-        },
-        command.operation.clone(),
-        ObligationRef::CheckIn(SeatId::new("s")),
-        digest,
-        MonoInstant(100),
-        1,
-    );
-    let registration = ReceiptRegistration {
-        seat: SeatId::new("s"),
-        host_boot: HostBootId::new("b"),
-        target_generation: 1,
-        binding_generation: 0,
-        native_session: command.claim.native_session.clone(),
-        execution: command.claim.execution.clone(),
-    };
-    let error = store
-        .register_available(
-            RegisterAvailableRequest {
-                command,
-                registration: Some(registration),
-                read: ReadContext {
-                    instance: "i".into(),
-                    output: Default::default(),
-                    operation_scope: None,
-                },
-                operator: None,
-            },
-            permit,
-            &budget(),
-        )
-        .unwrap_err();
-    assert_eq!(error.code, ErrorCode::Unsupported);
-    assert!(error.detail.contains("lifecycle"));
-    assert_eq!(
-        conn.query_row(
-            "SELECT result_json FROM operations WHERE operation_key='legacy-native'",
-            [],
-            |r| r.get::<_, String>(0)
-        )
-        .unwrap(),
-        legacy_json
-    );
-    assert_eq!(
-        conn.query_row("SELECT generation FROM seats", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        conn.query_row("SELECT count(*) FROM seat_availability", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        conn.query_row("SELECT deadline_at FROM receipts", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        1000
     );
 }
 #[test]

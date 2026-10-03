@@ -1,28 +1,50 @@
 use super::*;
 use crate::daemon::paths::{InstancePaths, RuntimeContext};
+use crate::test_support::spawn::SpawnOwned;
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-fn fixture() -> PathBuf {
-    let root = std::env::temp_dir().join(format!("herdr-owner-test-{}", uuid::Uuid::new_v4()));
-    fs::create_dir(&root).unwrap();
-    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-    root
+/// A private 0700 state root plus a short private socket base, both removed
+/// on drop (ht-p03.24: no fixed endpoints).
+struct Fixture(crate::test_support::isolation::TestIsolation);
+
+impl Fixture {
+    fn sock(&self, name: &str) -> PathBuf {
+        self.0.socket_path(name)
+    }
 }
 
-fn paths(root: &std::path::Path, endpoint: &str) -> InstancePaths {
+impl std::ops::Deref for Fixture {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        self.0.state_root()
+    }
+}
+
+impl AsRef<std::path::Path> for Fixture {
+    fn as_ref(&self) -> &std::path::Path {
+        self.0.state_root()
+    }
+}
+
+fn fixture() -> Fixture {
+    Fixture(crate::test_support::isolation::TestIsolation::new("owner"))
+}
+
+fn paths(root: &std::path::Path, endpoint: impl AsRef<std::path::Path>) -> InstancePaths {
     let context =
-        RuntimeContext::explicit(root.to_path_buf(), PathBuf::from(endpoint), None).unwrap();
+        RuntimeContext::explicit(root.to_path_buf(), endpoint.as_ref().to_path_buf(), None)
+            .unwrap();
     InstancePaths::resolve(&context).unwrap()
 }
 
 #[test]
 fn existing_namespace_read_is_bounded_and_private() {
     let root = fixture();
-    let paths = paths(&root, "/tmp/herdr-test-namespace.sock");
+    let paths = paths(&root, root.sock("namespace.sock"));
     assert_eq!(read_existing_namespace(&paths).unwrap(), None);
     let owner = OwnerLock::acquire(&paths).unwrap();
     assert_eq!(
@@ -57,7 +79,7 @@ fn existing_namespace_read_is_bounded_and_private() {
 #[test]
 fn existing_lock_probe_requires_same_validated_inode() {
     let root = fixture();
-    let paths = paths(&root, "/tmp/herdr-test-probe.sock");
+    let paths = paths(&root, root.sock("probe.sock"));
     assert_eq!(
         owner_lock_identity(&paths).unwrap_err().kind(),
         io::ErrorKind::NotFound
@@ -88,7 +110,7 @@ fn existing_lock_probe_requires_same_validated_inode() {
 #[test]
 fn existing_lock_probe_observes_release_without_modifying_state() {
     let root = fixture();
-    let paths = paths(&root, "/tmp/herdr-test-release.sock");
+    let paths = paths(&root, root.sock("release.sock"));
     let owner = OwnerLock::acquire(&paths).unwrap();
     let identity = owner_lock_identity(&paths).unwrap();
     let namespace = fs::read(&paths.namespace_path).unwrap();
@@ -101,7 +123,7 @@ fn existing_lock_probe_observes_release_without_modifying_state() {
 #[test]
 fn elected_owner_removes_only_its_exact_unpublished_bound_socket() {
     let root = fixture();
-    let paths = paths(&root, "/tmp/herdr-test-unpublished-cleanup.sock");
+    let paths = paths(&root, root.sock("unpublished-cleanup.sock"));
     let owner = OwnerLock::acquire(&paths).unwrap();
     let listener = owner.bind_socket().unwrap();
     let socket = listener.path().to_path_buf();
@@ -122,7 +144,7 @@ fn elected_owner_removes_only_its_exact_unpublished_bound_socket() {
 #[test]
 fn unpublished_cleanup_preserves_substituted_path() {
     let root = fixture();
-    let paths = paths(&root, "/tmp/herdr-test-unpublished-substitute.sock");
+    let paths = paths(&root, root.sock("unpublished-substitute.sock"));
     let owner = OwnerLock::acquire(&paths).unwrap();
     let listener = owner.bind_socket().unwrap();
     let socket = listener.path().to_path_buf();
@@ -141,7 +163,7 @@ fn unpublished_cleanup_preserves_substituted_path() {
 #[test]
 fn failed_publication_cleanup_removes_only_matching_bound_descriptor() {
     let root = fixture();
-    let paths = paths(&root, "/tmp/herdr-test-failed-publication.sock");
+    let paths = paths(&root, root.sock("failed-publication.sock"));
     let owner = OwnerLock::acquire(&paths).unwrap();
     let listener = owner.bind_socket().unwrap();
     let socket = listener.path().to_path_buf();
@@ -159,9 +181,9 @@ fn failed_publication_cleanup_removes_only_matching_bound_descriptor() {
 #[test]
 fn host_locator_isolates_instances_and_converges_across_worktrees() {
     let root = fixture();
-    let first = paths(&root, "/tmp/herdr-test-host-a.sock");
-    let again = paths(&root, "/tmp/herdr-test-host-a.sock");
-    let second = paths(&root, "/tmp/herdr-test-host-b.sock");
+    let first = paths(&root, root.sock("host-a.sock"));
+    let again = paths(&root, root.sock("host-a.sock"));
+    let second = paths(&root, root.sock("host-b.sock"));
     assert_eq!(first.instance_dir, again.instance_dir);
     assert_ne!(first.instance_dir, second.instance_dir);
     let owner = OwnerLock::acquire(&first).unwrap();
@@ -175,7 +197,7 @@ fn host_locator_isolates_instances_and_converges_across_worktrees() {
 fn absent_explicit_state_directory_is_created_privately() {
     let root = fixture();
     let state = root.join("new-state");
-    let instance = paths(&state, "/tmp/herdr-test-new-state.sock");
+    let instance = paths(&state, root.sock("new-state.sock"));
     let owner = OwnerLock::acquire(&instance).unwrap();
     assert_eq!(
         fs::metadata(&state).unwrap().permissions().mode() & 0o777,
@@ -190,8 +212,8 @@ fn detached_runtime_rejects_relative_host_binary() {
     let root = fixture();
     assert!(
         RuntimeContext::explicit(
-            root.clone(),
-            PathBuf::from("/tmp/herdr-test-bin.sock"),
+            root.to_path_buf(),
+            root.sock("bin.sock"),
             Some(PathBuf::from("bin/herdr")),
         )
         .is_err()
@@ -202,7 +224,7 @@ fn detached_runtime_rejects_relative_host_binary() {
 #[test]
 fn corrupt_locator_and_symlink_are_rejected() {
     let root = fixture();
-    let instance = paths(&root, "/tmp/herdr-test-host-c.sock");
+    let instance = paths(&root, root.sock("host-c.sock"));
     fs::create_dir_all(instance.instance_dir.parent().unwrap()).unwrap();
     fs::create_dir(&instance.instance_dir).unwrap();
     fs::set_permissions(&instance.instance_dir, fs::Permissions::from_mode(0o700)).unwrap();
@@ -217,7 +239,7 @@ fn corrupt_locator_and_symlink_are_rejected() {
 #[test]
 fn permissive_instance_directory_is_rejected() {
     let root = fixture();
-    let instance = paths(&root, "/tmp/herdr-test-permissions.sock");
+    let instance = paths(&root, root.sock("permissions.sock"));
     fs::create_dir_all(&instance.instance_dir).unwrap();
     fs::set_permissions(&instance.instance_dir, fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(
@@ -233,7 +255,7 @@ fn long_state_path_uses_private_short_socket_path() {
     let long = root.join("x".repeat(80)).join("y".repeat(80));
     fs::create_dir_all(&long).unwrap();
     fs::set_permissions(&long, fs::Permissions::from_mode(0o700)).unwrap();
-    let instance = paths(&long, "/tmp/herdr-test-host-long.sock");
+    let instance = paths(&long, root.sock("host-long.sock"));
     assert!(instance.socket_path.as_os_str().len() < 100);
     assert!(!instance.socket_path.starts_with(&long));
     let parent = instance.socket_path.parent().unwrap();
@@ -253,8 +275,8 @@ fn isolated_long_state_roots_do_not_share_fallback_socket() {
     fs::create_dir(&second).unwrap();
     fs::set_permissions(&first, fs::Permissions::from_mode(0o700)).unwrap();
     fs::set_permissions(&second, fs::Permissions::from_mode(0o700)).unwrap();
-    let left = paths(&first, "/tmp/herdr-test-same-host.sock");
-    let right = paths(&second, "/tmp/herdr-test-same-host.sock");
+    let left = paths(&first, root.sock("same-host.sock"));
+    let right = paths(&second, root.sock("same-host.sock"));
     assert_ne!(left.socket_path, right.socket_path);
     fs::remove_dir_all(root).unwrap();
 }
@@ -262,7 +284,7 @@ fn isolated_long_state_roots_do_not_share_fallback_socket() {
 #[test]
 fn held_lock_elects_one_owner_and_releases_after_exit() {
     let root = fixture();
-    let instance = paths(&root, "/tmp/herdr-test-lock.sock");
+    let instance = paths(&root, root.sock("lock.sock"));
     let owner = OwnerLock::acquire(&instance).unwrap();
     let error = OwnerLock::acquire(&instance).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
@@ -274,7 +296,7 @@ fn held_lock_elects_one_owner_and_releases_after_exit() {
 #[test]
 fn bound_listener_keeps_owner_lock_until_listener_drops() {
     let root = fixture();
-    let instance = paths(&root, "/tmp/herdr-test-listener-lock.sock");
+    let instance = paths(&root, root.sock("listener-lock.sock"));
     let owner = OwnerLock::acquire(&instance).unwrap();
     let bound = owner.bind_socket().unwrap();
     drop(owner);
@@ -292,7 +314,7 @@ fn bound_listener_keeps_owner_lock_until_listener_drops() {
 #[test]
 fn async_accept_listener_keeps_owner_lock_until_server_stops() {
     let root = fixture();
-    let instance = paths(&root, "/tmp/herdr-test-clone-lock.sock");
+    let instance = paths(&root, root.sock("clone-lock.sock"));
     let owner = OwnerLock::acquire(&instance).unwrap();
     let bound = owner.bind_socket().unwrap();
     let socket = bound.path().to_owned();
@@ -330,11 +352,16 @@ fn async_accept_listener_keeps_owner_lock_until_server_stops() {
 #[test]
 fn stale_descriptor_pid_does_not_authorize_unlink_or_signal() {
     let root = fixture();
-    let instance = paths(&root, "/tmp/herdr-test-stale.sock");
+    let instance = paths(&root, root.sock("stale.sock"));
     let owner = OwnerLock::acquire(&instance).unwrap();
     let bound = owner.bind_socket().unwrap();
     let published = owner.publish_endpoint(&bound, "0.1.0", 1).unwrap();
-    let mut unrelated = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let mut unrelated = root
+        .0
+        .command("/bin/sleep")
+        .arg("30")
+        .spawn_owned()
+        .unwrap();
     let descriptor = EndpointDescriptor {
         software_version: "0.1.0".into(),
         protocol_version: 1,
@@ -371,14 +398,12 @@ fn stale_descriptor_pid_does_not_authorize_unlink_or_signal() {
 
 #[test]
 fn child_binds_for_crash_case() {
-    let Ok(root) = std::env::var("HERDR_OWNER_CRASH_ROOT") else {
+    let Ok(root) = std::env::var("HT_OWNER_CRASH_ROOT") else {
         return;
     };
-    let mode = std::env::var("HERDR_OWNER_CRASH_MODE").unwrap();
-    let instance = paths(
-        std::path::Path::new(&root),
-        "/tmp/herdr-test-crash-socket.sock",
-    );
+    let mode = std::env::var("HT_OWNER_CRASH_MODE").unwrap();
+    let endpoint = std::env::var("HT_OWNER_CRASH_SOCKET").unwrap();
+    let instance = paths(std::path::Path::new(&root), endpoint);
     let owner = OwnerLock::acquire(&instance).unwrap();
     let bound = owner.bind_socket().unwrap();
     if mode == "published" {
@@ -403,7 +428,7 @@ fn marker_creation_can_precede_marker_contents() {
             created_tx.send(()).unwrap();
             finish_rx.recv().unwrap();
             use std::io::Write;
-            file.write_all(b"/tmp/complete.sock").unwrap();
+            file.write_all(b"complete-socket-path").unwrap();
         }
     });
     created_rx.recv().unwrap();
@@ -411,25 +436,28 @@ fn marker_creation_can_precede_marker_contents() {
     assert!(fs::read(&marker).unwrap().is_empty());
     finish_tx.send(()).unwrap();
     writer.join().unwrap();
-    assert_eq!(fs::read(&marker).unwrap(), b"/tmp/complete.sock");
+    assert_eq!(fs::read(&marker).unwrap(), b"complete-socket-path");
     fs::remove_dir_all(root).unwrap();
 }
 
 fn crashed_owner_recovers(mode: &str) {
     let root = fixture();
-    let instance = paths(&root, "/tmp/herdr-test-crash-socket.sock");
-    let mut child = Command::new(std::env::current_exe().unwrap())
+    let instance = paths(&root, root.sock("crash-socket.sock"));
+    let mut child = root
+        .0
+        .command(std::env::current_exe().unwrap())
         .args([
             "--exact",
             "daemon::ownership::tests::child_binds_for_crash_case",
             "--nocapture",
         ])
-        .env("HERDR_OWNER_CRASH_ROOT", &root)
-        .env("HERDR_OWNER_CRASH_MODE", mode)
+        .env("HT_OWNER_CRASH_ROOT", &*root)
+        .env("HT_OWNER_CRASH_SOCKET", root.sock("crash-socket.sock"))
+        .env("HT_OWNER_CRASH_MODE", mode)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
+        .spawn_owned()
         .unwrap();
     let marker = root.join("socket-path");
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -482,8 +510,7 @@ fn crash_after_publication_cleans_verified_stale_socket() {
 #[test]
 fn stale_cleanup_preserves_unknown_socket_without_descriptor() {
     let root = fixture();
-    let endpoint = format!("/tmp/herdr-test-symlink-{}.sock", uuid::Uuid::new_v4());
-    let instance = paths(&root, &endpoint);
+    let instance = paths(&root, root.sock("symlink.sock"));
     let owner = OwnerLock::acquire(&instance).unwrap();
     let protected = root.join("protected");
     fs::write(&protected, b"must survive").unwrap();
@@ -508,13 +535,11 @@ fn stale_cleanup_preserves_unknown_socket_without_descriptor() {
 
 #[test]
 fn child_holds_lock() {
-    let Ok(root) = std::env::var("HERDR_OWNER_TEST_ROOT") else {
+    let Ok(root) = std::env::var("HT_OWNER_TEST_ROOT") else {
         return;
     };
-    let instance = paths(
-        std::path::Path::new(&root),
-        "/tmp/herdr-test-child-lock.sock",
-    );
+    let endpoint = std::env::var("HT_OWNER_TEST_SOCKET").unwrap();
+    let instance = paths(std::path::Path::new(&root), endpoint);
     let _owner = OwnerLock::acquire(&instance).unwrap();
     fs::write(std::path::Path::new(&root).join("ready"), b"held").unwrap();
     std::thread::sleep(Duration::from_secs(30));
@@ -523,18 +548,21 @@ fn child_holds_lock() {
 #[test]
 fn crashed_child_releases_kernel_lock() {
     let root = fixture();
-    let instance = paths(&root, "/tmp/herdr-test-child-lock.sock");
-    let mut child = Command::new(std::env::current_exe().unwrap())
+    let instance = paths(&root, root.sock("child-lock.sock"));
+    let mut child = root
+        .0
+        .command(std::env::current_exe().unwrap())
         .args([
             "--exact",
             "daemon::ownership::tests::child_holds_lock",
             "--nocapture",
         ])
-        .env("HERDR_OWNER_TEST_ROOT", &root)
+        .env("HT_OWNER_TEST_ROOT", &*root)
+        .env("HT_OWNER_TEST_SOCKET", root.sock("child-lock.sock"))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
+        .spawn_owned()
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
     while !root.join("ready").exists() && Instant::now() < deadline {
@@ -554,7 +582,7 @@ fn crashed_child_releases_kernel_lock() {
 #[test]
 fn corrupt_and_wrong_instance_descriptors_are_rejected() {
     let root = fixture();
-    let instance = paths(&root, "/tmp/herdr-test-descriptor.sock");
+    let instance = paths(&root, root.sock("descriptor.sock"));
     let owner = OwnerLock::acquire(&instance).unwrap();
     fs::write(&instance.descriptor_path, b"{corrupt").unwrap();
     fs::set_permissions(&instance.descriptor_path, fs::Permissions::from_mode(0o600)).unwrap();
@@ -584,8 +612,7 @@ fn corrupt_and_wrong_instance_descriptors_are_rejected() {
 #[test]
 fn descriptor_is_published_only_for_private_bound_socket() {
     let root = fixture();
-    let endpoint = format!("/tmp/herdr-test-publish-{}.sock", uuid::Uuid::new_v4());
-    let instance = paths(&root, &endpoint);
+    let instance = paths(&root, root.sock("publish.sock"));
     let owner = OwnerLock::acquire(&instance).unwrap();
     let bound = owner.bind_socket().unwrap();
     let descriptor = owner.publish_endpoint(&bound, "0.1.0", 1).unwrap();
@@ -611,7 +638,7 @@ fn descriptor_is_published_only_for_private_bound_socket() {
 #[test]
 fn substituted_listener_cannot_be_published_or_removed() {
     let root = fixture();
-    let instance = paths(&root, "/tmp/herdr-test-substitution.sock");
+    let instance = paths(&root, root.sock("substitution.sock"));
     let owner = OwnerLock::acquire(&instance).unwrap();
     let bound = owner.bind_socket().unwrap();
     let descriptor = owner.publish_endpoint(&bound, "0.1.0", 1).unwrap();
@@ -628,7 +655,7 @@ fn substituted_listener_cannot_be_published_or_removed() {
 #[test]
 fn foreign_listener_cannot_be_advertised() {
     let root = fixture();
-    let instance = paths(&root, "/tmp/herdr-test-foreign.sock");
+    let instance = paths(&root, root.sock("foreign.sock"));
     let owner = OwnerLock::acquire(&instance).unwrap();
     let bound = owner.bind_socket().unwrap();
     fs::remove_file(bound.path()).unwrap();
@@ -647,8 +674,8 @@ fn foreign_listener_cannot_be_advertised() {
 #[test]
 fn socket_pathname_is_stable_across_boots_with_distinct_boot_ids() {
     let root = fixture();
-    let instance = paths(&root, "/tmp/herdr-test-stable.sock");
-    let again = paths(&root, "/tmp/herdr-test-stable.sock");
+    let instance = paths(&root, root.sock("stable.sock"));
+    let again = paths(&root, root.sock("stable.sock"));
     assert_eq!(instance.socket_path, again.socket_path);
     assert_eq!(
         instance.socket_path,
@@ -673,7 +700,7 @@ fn socket_pathname_is_stable_across_boots_with_distinct_boot_ids() {
 #[test]
 fn descriptor_endpoint_must_be_the_stable_pathname() {
     let root = fixture();
-    let instance = paths(&root, "/tmp/herdr-test-endpoint-name.sock");
+    let instance = paths(&root, root.sock("endpoint-name.sock"));
     let owner = OwnerLock::acquire(&instance).unwrap();
     let bound = owner.bind_socket().unwrap();
     let mut descriptor = owner.publish_endpoint(&bound, "0.1.0", 1).unwrap();
@@ -701,7 +728,7 @@ fn descriptor_endpoint_must_be_the_stable_pathname() {
 #[test]
 fn stable_pathname_reclaims_only_dead_owned_sockets() {
     let root = fixture();
-    let instance = paths(&root, "/tmp/herdr-test-reclaim.sock");
+    let instance = paths(&root, root.sock("reclaim.sock"));
     let owner = OwnerLock::acquire(&instance).unwrap();
     // A live foreign listener at the pathname: refused, not unlinked.
     let live = std::os::unix::net::UnixListener::bind(&instance.socket_path).unwrap();
@@ -734,7 +761,7 @@ fn stable_pathname_reclaims_only_dead_owned_sockets() {
 #[test]
 fn legacy_per_boot_descriptor_is_read_and_cleaned_up() {
     let root = fixture();
-    let instance = paths(&root, "/tmp/herdr-test-legacy.sock");
+    let instance = paths(&root, root.sock("legacy.sock"));
     let owner = OwnerLock::acquire(&instance).unwrap();
     let boot = uuid::Uuid::new_v4();
     let legacy = instance.legacy_boot_socket_path(boot).unwrap();

@@ -1,0 +1,14 @@
+{
+  "harness": "claude",
+  "scenario": "child",
+  "steps": [
+    [
+      "S17",
+      "PASS"
+    ],
+    [
+      "SC1",
+      "NOT_EXERCISED"
+    ]
+  ]
+}

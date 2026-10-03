@@ -85,9 +85,10 @@ where
 
 /// A first submission of a fresh operation key whose daemon answer is a
 /// definitive correlated rejection discards its intent. For cooperative
-/// mutations only a deterministic code (see `is_deterministic_rejection`)
-/// counts: the request itself is invalid or refused and would be refused
-/// identically on retry, while transient codes (`StoreBusy`,
+/// mutations only a deterministic code (see `is_deterministic_rejection`,
+/// which records the decision for every request-shaped code) counts: the
+/// request itself is invalid or refused and would be refused identically on
+/// retry, while transient codes (`StoreBusy`,
 /// `DeadlineExceeded`, `Cancelled`), `StoreCorrupt` and any unlisted code keep
 /// the intent — a rejection does not prove nothing was committed under the key
 /// (send preparation commits quanta before a later rejection). Seat resolution
@@ -156,9 +157,23 @@ where
     }
 }
 
-/// Codes meaning the request itself is invalid or refused by durable state, so
-/// an identical retry is refused identically. Anything not listed (transient,
-/// store, host, or uncertain codes) must keep the intent pending.
+/// Codes a cooperative mutation answers from the frozen request plus committed
+/// durable state, inside the mutation's own transaction and before anything is
+/// committed under the operation key, so an identical retry with the same key
+/// is refused identically unless another operation changes durable state
+/// first. A transient, host, timing, budget or daemon-build condition does not
+/// qualify, and a code no cooperative mutation can reach stays unlisted.
+///
+/// Request-shaped codes left out:
+/// - `Unsupported` is not answered to a cooperative mutation by this daemon
+///   build; an older build lacking the route answers it, and `retry` succeeds
+///   after an upgrade.
+/// - `UnsupportedHarness` is emitted only by the scheduler and client-side
+///   setup/launch.
+/// - `ThreadNotOrphaned` is operator orphan invite only.
+/// - `RequiredInvitationNeedsManagedThread` is service-operation invite only.
+///
+/// Every other unlisted code keeps the intent (keep-on-doubt).
 fn is_deterministic_rejection(code: &ErrorCode) -> bool {
     matches!(
         code,
@@ -168,6 +183,8 @@ fn is_deterministic_rejection(code: &ErrorCode) -> bool {
             | ErrorCode::Conflict
             | ErrorCode::OperationPayloadMismatch
             | ErrorCode::MembershipRequired
+            | ErrorCode::NotFound
+            | ErrorCode::StaleRequirementAcceptance
     )
 }
 

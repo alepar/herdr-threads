@@ -6,7 +6,7 @@ use crate::{
         RetirementPhase, RetirementProgress, TimeBasis, WorkAdmission,
     },
     protocol::{
-        authority::{DecisionFence, MutationPermit, ObligationRef, OperatorActor, VerifiedCaller},
+        authority::{MutationPermit, ObligationRef, OperatorActor},
         commands::{
             Accept, AcceptRequired, CreateThread, Invite, Leave, OperatorOrphanInvite, SetTopic,
             ThreadMutation,
@@ -384,17 +384,12 @@ pub fn accept(
     budget: &CallBudget,
     command: &Accept,
     mut permit: MutationPermit,
-    decision_fence: impl FnOnce(&Transaction<'_>, DecisionInstant) -> Result<DecisionFence, ApiError>,
 ) -> Result<CommandResult, ApiError> {
     let target = command.claim.target.as_str();
     let caller = permit.seat_for_replay_scope().clone();
     let scope = format!("seat:{}", caller.as_str());
     let cooperative = permit.cooperative_metadata();
-    let digest = if cooperative.is_some() {
-        cooperative_payload_hash("accept", command)?
-    } else {
-        schema::canonical_digest(&("accept", &command.thread))?
-    };
+    let digest = cooperative_payload_hash("accept", command)?;
     let invitation: String = conn.query_row("SELECT i.id FROM invitations i WHERE i.thread_id=?1 AND i.seat_id=?2 AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) ORDER BY i.episode DESC LIMIT 1",
         params![command.thread.as_str(),caller.as_str()], |r| r.get(0)).optional().map_err(store_error)?
         .ok_or_else(|| api_error(ErrorCode::NotFound,format!("current invitation missing: seat {} has no invitation in thread {}; pass a thread ID listed by herdr-threads inbox",caller.as_str(),command.thread.as_str())))?;
@@ -450,7 +445,6 @@ pub fn accept(
                 &command.operation,
                 &obligation,
                 &digest,
-                || decision_fence(tx, decision),
             )?;
             let (thread, state): (String, String) = tx
                 .query_row(
@@ -543,7 +537,6 @@ pub fn accept_required(
     budget: &CallBudget,
     command: &AcceptRequired,
     mut permit: MutationPermit,
-    decision_fence: impl FnOnce(&Transaction<'_>, DecisionInstant) -> Result<DecisionFence, ApiError>,
 ) -> Result<CommandResult, ApiError> {
     let caller = permit.seat_for_replay_scope().clone();
     let scope = format!("seat:{}", caller.as_str());
@@ -604,7 +597,6 @@ pub fn accept_required(
                 &command.operation,
                 &obligation,
                 &digest,
-                || decision_fence(tx, decision),
             )?;
             let generation: i64 = tx
                 .query_row(
@@ -683,17 +675,12 @@ pub fn leave(
     budget: &CallBudget,
     command: &Leave,
     mut permit: MutationPermit,
-    decision_fence: impl FnOnce(&Transaction<'_>, DecisionInstant) -> Result<DecisionFence, ApiError>,
 ) -> Result<CommandResult, ApiError> {
     let target = command.claim.target.as_str();
     let caller = permit.seat_for_replay_scope().clone();
     let scope = format!("seat:{}", caller.as_str());
     let cooperative = permit.cooperative_metadata();
-    let digest = if cooperative.is_some() {
-        cooperative_payload_hash("leave", command)?
-    } else {
-        schema::canonical_digest(&("leave", &command.thread))?
-    };
+    let digest = cooperative_payload_hash("leave", command)?;
     let obligation = ObligationRef::Control(command.thread.clone());
     schema::execute_accountable_transaction(
         context,
@@ -742,7 +729,6 @@ pub fn leave(
                 &command.operation,
                 &obligation,
                 &digest,
-                || decision_fence(tx, decision),
             )?;
             let changed = tx.execute("UPDATE memberships SET state='left',voluntary_state='left',left_at=?1 WHERE thread_id=?2 AND seat_id=?3 AND state='joined'", params![decision.utc.0, command.thread.as_str(), caller.as_str()]).map_err(store_error)?;
             if changed != 0 {
@@ -787,7 +773,6 @@ fn set_archived(
     budget: &CallBudget,
     command: &ThreadMutation,
     mut permit: MutationPermit,
-    decision_fence: impl FnOnce(&Transaction<'_>, DecisionInstant) -> Result<DecisionFence, ApiError>,
     archived: bool,
 ) -> Result<CommandResult, ApiError> {
     let target = command.claim.target.as_str();
@@ -795,11 +780,7 @@ fn set_archived(
     let scope = format!("seat:{}", caller.as_str());
     let action = if archived { "archive" } else { "reopen" };
     let cooperative = permit.cooperative_metadata();
-    let digest = if cooperative.is_some() {
-        cooperative_payload_hash(action, command)?
-    } else {
-        schema::canonical_digest(&(action, &command.thread))?
-    };
+    let digest = cooperative_payload_hash(action, command)?;
     let obligation = ObligationRef::Control(command.thread.clone());
     schema::execute_accountable_transaction(
         context,
@@ -832,7 +813,6 @@ fn set_archived(
                 &command.operation,
                 &obligation,
                 &digest,
-                || decision_fence(tx, decision),
             )?;
             let changed = tx.execute("UPDATE threads SET archived=?1,updated_at=?2,directory_revision=directory_revision+1 WHERE id=?3 AND archived!=?1",
                 params![archived, decision.utc.0, command.thread.as_str()]).map_err(store_error)?;
@@ -875,9 +855,8 @@ pub fn archive(
     budget: &CallBudget,
     command: &ThreadMutation,
     permit: MutationPermit,
-    decision_fence: impl FnOnce(&Transaction<'_>, DecisionInstant) -> Result<DecisionFence, ApiError>,
 ) -> Result<CommandResult, ApiError> {
-    set_archived(context, conn, budget, command, permit, decision_fence, true)
+    set_archived(context, conn, budget, command, permit, true)
 }
 
 pub fn reopen(
@@ -886,17 +865,8 @@ pub fn reopen(
     budget: &CallBudget,
     command: &ThreadMutation,
     permit: MutationPermit,
-    decision_fence: impl FnOnce(&Transaction<'_>, DecisionInstant) -> Result<DecisionFence, ApiError>,
 ) -> Result<CommandResult, ApiError> {
-    set_archived(
-        context,
-        conn,
-        budget,
-        command,
-        permit,
-        decision_fence,
-        false,
-    )
+    set_archived(context, conn, budget, command, permit, false)
 }
 
 pub fn set_topic(
@@ -905,7 +875,6 @@ pub fn set_topic(
     budget: &CallBudget,
     command: &SetTopic,
     mut permit: MutationPermit,
-    decision_fence: impl FnOnce(&Transaction<'_>, DecisionInstant) -> Result<DecisionFence, ApiError>,
 ) -> Result<CommandResult, ApiError> {
     if command.topic.is_empty() || command.topic.len() > 1024 {
         return Err(api_error(ErrorCode::InvalidRequest, "invalid thread topic"));
@@ -914,11 +883,7 @@ pub fn set_topic(
     let caller = permit.seat_for_replay_scope().clone();
     let scope = format!("seat:{}", caller.as_str());
     let cooperative = permit.cooperative_metadata();
-    let digest = if cooperative.is_some() {
-        cooperative_payload_hash("set_topic", command)?
-    } else {
-        schema::canonical_digest(&("set_topic", &command.thread, &command.topic))?
-    };
+    let digest = cooperative_payload_hash("set_topic", command)?;
     let obligation = ObligationRef::Control(command.thread.clone());
     schema::execute_accountable_transaction(
         context,
@@ -951,7 +916,6 @@ pub fn set_topic(
                 &command.operation,
                 &obligation,
                 &digest,
-                || decision_fence(tx, at),
             )?;
             let old: String = tx
                 .query_row(
@@ -992,66 +956,6 @@ pub fn set_topic(
     )
 }
 
-// Allowed: one deciding mutation: transaction, fence, permit and the obligation it proves.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn decide_native(
-    tx: &Transaction<'_>,
-    decision: DecisionInstant,
-    mut fence: DecisionFence,
-    permit: &mut MutationPermit,
-    seat: &SeatId,
-    target: &str,
-    operation: &crate::protocol::ids::OperationId,
-    obligation: &ObligationRef,
-    digest: &[u8; 32],
-) -> Result<VerifiedCaller, ApiError> {
-    let instance = validate_actor(tx, seat, target)?;
-    let current: (Option<String>, i64, i64, i64) = tx.query_row(
-        "SELECT h.host_boot,h.host_epoch,s.generation,s.target_generation FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
-        params![seat.as_str(), instance],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-    ).map_err(store_error)?;
-    let observed = effective::effective_observation(tx, &instance, target)?;
-    let fence_epoch = i64::try_from(fence.host_epoch).map_err(|_| {
-        api_error(
-            ErrorCode::InvalidRequest,
-            "host epoch exceeds SQLite integer range",
-        )
-    })?;
-    let fence_target_generation = i64::try_from(fence.target_generation).map_err(|_| {
-        api_error(
-            ErrorCode::InvalidRequest,
-            "target generation exceeds SQLite integer range",
-        )
-    })?;
-    let fence_binding_generation = i64::try_from(fence.binding_generation).map_err(|_| {
-        api_error(
-            ErrorCode::InvalidRequest,
-            "binding generation exceeds SQLite integer range",
-        )
-    })?;
-    fence.now = decision.monotonic;
-    fence.known_invalidated |= observed.as_ref().is_none_or(|observation| {
-        observation.source != EffectiveObservationSource::NewerCurrentTarget
-            || current.0.as_deref() != Some(observation.host_boot.as_str())
-            || current.1 != observation.epoch
-            || current.3 != observation.structural_generation
-    }) || current.0.as_deref() != Some(fence.host_boot.as_str())
-        || fence_epoch != current.1
-        || fence_target_generation != current.3
-        || fence_binding_generation != current.2;
-    let actor = permit
-        .consume(&fence, operation, obligation, digest)
-        .map_err(|reason| api_error(ErrorCode::CallerUnverified, reason))?;
-    if actor.seat != *seat {
-        return Err(api_error(
-            ErrorCode::CallerUnverified,
-            "permit seat differs from caller seat",
-        ));
-    }
-    Ok(actor.clone())
-}
-
 /// A new thread is born with exactly one joined member and a creation audit.
 /// The caller-supplied claim only locates the durable seat; the permit is
 /// consumed against a decision-time fence before any write.
@@ -1061,7 +965,6 @@ pub fn create_thread(
     budget: &CallBudget,
     command: &CreateThread,
     mut permit: MutationPermit,
-    decision_fence: impl FnOnce(&Transaction<'_>, DecisionInstant) -> Result<DecisionFence, ApiError>,
 ) -> Result<CommandResult, ApiError> {
     if command.topic.is_empty() || command.topic.len() > 1024 || command.goal.len() > 1024 {
         return Err(api_error(
@@ -1073,11 +976,7 @@ pub fn create_thread(
     let seat = permit.seat_for_replay_scope().clone();
     let scope = format!("seat:{}", seat.as_str());
     let cooperative = permit.cooperative_metadata();
-    let digest = if cooperative.is_some() {
-        cooperative_payload_hash("create_thread", command)?
-    } else {
-        schema::canonical_digest(&("create_thread", &command.topic, &command.goal))?
-    };
+    let digest = cooperative_payload_hash("create_thread", command)?;
     let obligation = ObligationRef::CheckIn(seat.clone());
     schema::execute_accountable_transaction(
         context,
@@ -1101,7 +1000,6 @@ pub fn create_thread(
                 &command.operation,
                 &obligation,
                 &digest,
-                || decision_fence(tx, decision),
             )?;
             let instance: String = tx
                 .query_row(
@@ -1155,7 +1053,6 @@ pub fn invite(
     budget: &CallBudget,
     command: &Invite,
     mut permit: MutationPermit,
-    decision_fence: impl FnOnce(&Transaction<'_>, DecisionInstant) -> Result<DecisionFence, ApiError>,
     installation_default_ms: Option<u64>,
 ) -> Result<CommandResult, ApiError> {
     let duration = command
@@ -1174,16 +1071,7 @@ pub fn invite(
     let caller = permit.seat_for_replay_scope().clone();
     let scope = format!("seat:{}", caller.as_str());
     let cooperative = permit.cooperative_metadata();
-    let digest = if cooperative.is_some() {
-        cooperative_payload_hash("invite", command)?
-    } else {
-        schema::canonical_digest(&(
-            "invite",
-            &command.thread,
-            &command.seat,
-            command.deadline_millis,
-        ))?
-    };
+    let digest = cooperative_payload_hash("invite", command)?;
     let obligation = ObligationRef::Control(command.thread.clone());
     schema::execute_accountable_transaction(
         context,
@@ -1229,7 +1117,6 @@ pub fn invite(
                 &command.operation,
                 &obligation,
                 &digest,
-                || decision_fence(tx, decision),
             )?;
             let prior: Option<(i64, String)> = tx
                 .query_row(
@@ -1500,7 +1387,7 @@ pub fn canonical_observation(raw: &str) -> String {
     }
 }
 
-/// Audit actor for either accepted fence mode. Cooperative fields describe
+/// Audit actor of an accepted cooperative decision. Its fields describe
 /// claims and durable local mapping; this type never represents native proof.
 pub(crate) struct AccountableActor {
     pub harness: crate::protocol::authority::Harness,
@@ -1524,18 +1411,6 @@ impl AccountableActor {
             "provenance":self.provenance,"observed_at":self.observed_at_utc.0,"decided_at":decided_at})
         .to_string()
     }
-    pub(crate) fn native(actor: &VerifiedCaller) -> Self {
-        Self {
-            harness: actor.harness,
-            native_session: actor.native_session.clone(),
-            execution: actor.execution.clone(),
-            host_boot: actor.host_boot.clone(),
-            target_generation: actor.target_generation,
-            binding_generation: actor.binding_generation,
-            observed_at_utc: actor.observed_at_utc,
-            provenance: "verified_current_target",
-        }
-    }
 }
 
 // Allowed: one deciding mutation: transaction, permit, claim and the obligation it proves.
@@ -1549,52 +1424,37 @@ pub(crate) fn decide_accountable(
     operation: &crate::protocol::ids::OperationId,
     obligation: &ObligationRef,
     digest: &[u8; 32],
-    native_fence: impl FnOnce() -> Result<DecisionFence, ApiError>,
 ) -> Result<AccountableActor, ApiError> {
-    if permit.cooperative_claim().is_some() {
-        if claim.seat != *seat {
-            return Err(api_error(
-                ErrorCode::CallerUnverified,
-                "cooperative actor seat mismatch",
-            ));
-        }
-        let mapping = super::seats::decide_cooperative(
-            tx,
-            at,
-            &claim.instance,
-            permit,
-            claim,
-            None,
-            operation,
-            obligation,
-            digest,
-        )?;
-        return Ok(AccountableActor {
-            harness: claim.harness,
-            native_session: claim.native_session.clone(),
-            execution: claim.execution.clone(),
-            host_boot: crate::protocol::ids::HostBootId::new(mapping.boot),
-            target_generation: mapping.revision,
-            binding_generation: mapping.generation,
-            observed_at_utc: at.utc,
-            provenance: claim.harness.cooperative_provenance(),
-        });
+    if claim.seat != *seat {
+        return Err(api_error(
+            ErrorCode::CallerUnverified,
+            "cooperative actor seat mismatch",
+        ));
     }
-    let actor = decide_native(
+    let mapping = super::seats::decide_cooperative(
         tx,
         at,
-        native_fence()?,
+        &claim.instance,
         permit,
-        seat,
-        claim.target.as_str(),
+        claim,
+        None,
         operation,
         obligation,
         digest,
     )?;
-    Ok(AccountableActor::native(&actor))
+    Ok(AccountableActor {
+        harness: claim.harness,
+        native_session: claim.native_session.clone(),
+        execution: claim.execution.clone(),
+        host_boot: crate::protocol::ids::HostBootId::new(mapping.boot),
+        target_generation: mapping.revision,
+        binding_generation: mapping.generation,
+        observed_at_utc: at.utc,
+        provenance: claim.harness.cooperative_provenance(),
+    })
 }
 
-/// Complete cooperative control digest. Native permits retain existing digests.
+/// Complete cooperative control digest.
 pub fn cooperative_payload_hash<T: serde::Serialize>(
     kind: &str,
     command: &T,

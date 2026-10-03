@@ -14,7 +14,7 @@ use crate::{
         service::{ServiceOperation, ServiceResult},
         time::{CallBudget, Clock},
     },
-    service::workers::{BoundedLane, FairWriter},
+    service::{fair_writer::FairWriter, workers::BoundedLane},
 };
 use std::sync::Arc;
 
@@ -123,7 +123,6 @@ impl DomainService {
             PermitMutation::CheckIn(command) => self.store.register_available(
                 RegisterAvailableRequest {
                     command,
-                    registration: None,
                     read,
                     operator,
                 },
@@ -164,6 +163,21 @@ impl DomainService {
 }
 
 impl LocalService for DomainService {
+    fn service_control(
+        &self,
+        _command: Command,
+        _peer: PeerIdentity,
+        _instance: &str,
+        _boot: &str,
+        _gate: &crate::service::live_gate::LiveServiceGate,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(error(
+            ErrorCode::Unsupported,
+            "service recovery control is unavailable",
+        ))
+    }
+
     fn audit_service_disconnect(
         &self,
         boot: &str,
@@ -182,13 +196,12 @@ impl LocalService for DomainService {
         gate: &dyn ServiceAuthorityGate,
         budget: &CallBudget,
     ) -> Result<ServiceResult, ApiError> {
-        if let Some((_, writer)) = &self.cooperative_runtime {
-            self.store
-                .service_operation_admitted(operation, connection, gate, budget, writer)
-        } else {
-            self.store
-                .service_operation(operation, connection, gate, budget)
-        }
+        let admission = self
+            .cooperative_runtime
+            .as_ref()
+            .map(|(_, writer)| &**writer);
+        self.store
+            .service_operation(operation, connection, gate, budget, admission)
     }
     fn handle(
         &self,
@@ -341,6 +354,8 @@ impl LocalService for DomainService {
                 "local intents are client-owned",
             )),
             Command::Health
+            | Command::Capabilities
+            | Command::HookParseFailure(_)
             | Command::Stop(_)
             | Command::ServiceInspect
             | Command::ServiceDisconnect(_)
@@ -353,12 +368,7 @@ impl LocalService for DomainService {
 }
 
 fn error(code: ErrorCode, detail: &str) -> ApiError {
-    ApiError {
-        code,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::new(code, detail)
 }
 
 #[cfg(test)]

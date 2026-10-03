@@ -1,0 +1,6 @@
+{
+  "finding": "w10_e8_other_not_exercised_keeps_its_label",
+  "entry": "manifest",
+  "verdict": "UNSUPPORTED",
+  "reason": "scenario_not_exercised"
+}

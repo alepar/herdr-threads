@@ -34,7 +34,20 @@ real ones: setup runs with HOME, CLAUDE_CONFIG_DIR and CODEX_HOME pointed at the
   launch runs with CODEX_HOME at that scratch home, seeded only with a symlink to the source profile's `auth.json`
   (`--codex-profile`, else $CODEX_HOME or ~/.codex; the driver never reads it). Codex may refresh tokens through
   it. `--ignore-user-config` is no longer passed, since the scratch config is the run's own; hook trust is still
-  bypassed (`--dangerously-bypass-hook-trust`, scratch only).
+  bypassed (`--dangerously-bypass-hook-trust`, scratch only). Interactive (TUI) Codex has no `--ignore-user-config`, so it
+  loads the scratch `CODEX_HOME/config.toml` and bypasses hook trust (still `/private/tmp` scratch only). Its folder-trust
+  screen is answered ("Trust and continue") only with `--tui-accept-trust`, only for a project inside the run root under
+  /private/tmp (nothing is typed otherwise); a TUI run records the config load, the hook bypass and every folder-trust
+  acceptance under `codex_tui` in the facts and the evidence summary (W10-E5). `--codex-bin` (default $HT_CODEX_BIN)
+  pins the Codex binary the matrix runs (0.159.3), for preflight, setup, doctor, the daemon, the pane launch and hook.
+
+A call counts as model-issued only when it is a top-level tool call of the root session whose command, after peeling
+wrappers (`env`, `sudo`, `exec`, `command`, `nohup`, `timeout`, `xargs`, `sh -c`, `eval`, backticks, `$(...)`), is a direct
+`herdr-threads` invocation and not inside a nested `claude -p` / `codex exec`; a quoted literal such as
+`echo "herdr-threads" ack` is no call, and a nested model CLI is subagent activity (`model_issued_herdr_calls`,
+`peel_wrappers`). Children and readers are counted by stable agent/thread id, never by spawn events or per-read lines.
+The negative corpus `python3 -m unittest discover -s scripts/tests/validator_corpus` pins one fixture per known false
+PASS/FAIL path.
 
 Hook-context delivery (S<n>H) is read READ-ONLY from the Claude session transcript or the Codex session rollout
 (`$CODEX_HOME/sessions/**/rollout-*<thread_id>.jsonl`, developer messages); a missing rollout is UNVERIFIED and the
@@ -102,15 +115,18 @@ CHILDREN_PROMPT = ("Check your herdr-threads mail by starting exactly two subage
 BLOCKEDUI_PROMPT = ("Run exactly this shell command now, and if it needs approval or escalated permissions, request "
                     "them and wait for the answer: `mkdir {path}`")
 # Opt-in scenarios (ht-4is.11.3 / 11.4 / 32.3 / ht-910 / 11.12), each with its own verdict steps and manifest suffix.
+# Pseudo-phases (ht-p03.38): cycle the daemon while the TUI agent stays in its pane (ht-910 restart, P40 crash).
+DAEMON_PHASES = ("daemon-restart", "daemon-crash")
 SCENARIOS = ("child", "midturn", "warning", "burst", "required", "lostprompt", "blockedui", "children")
 # Herdr 0.9.1 reports a TUI that finished its turn as `done`; for an idle wake target `done` is idle (ht-4is.5.6).
 IDLE_STATES = ("idle", "done")
 # The approval / question UIs the blockedui scenario recognizes on screen (Claude permission dialog, Codex approval).
 APPROVAL_UI = re.compile(r"Do you want to (proceed|make this edit|create)|Would you like to run|Allow command|"
                          r"requires approval|Yes, proceed|approve this|Yes, and don't ask again", re.I)
-# Codex interactive: its own folder-trust / hook-trust screens persist trust into CODEX_HOME (config.toml), which is
-# NOT approved (the aisw profile is used read-only). The driver passes -s/-a so Codex skips the folder-trust screen and
-# --dangerously-bypass-hook-trust (scratch only) for hook trust; any such screen on display is a FAIL, never an Enter.
+# Codex interactive: its folder-trust screen (Codex 0.159.3+ shows it even with -s/-a) persists trust into the scratch
+# CODEX_HOME config.toml. The driver answers it only with --tui-accept-trust, only when the project is inside the run's
+# own /private/tmp root (scratch_trust_refusal), and records every acceptance (W10-E5). Hook trust is bypassed with
+# --dangerously-bypass-hook-trust (scratch only); any other trust screen on display is a FAIL, never an Enter.
 CODEX_TRUST_UI = re.compile(r"trust (the files in )?this (folder|directory)|Do you trust|trust (these|the) hooks?|"
                             r"hooks? (are|is) not trusted|Review hooks", re.I)
 CODEX_FOLDER_TRUST = re.compile(r"Trust this folder\?")
@@ -130,6 +146,19 @@ MAX_BURST_THREADS = 40
 # User approval (run.md, 2026-09-30): the Claude TUI trust dialog may be accepted for /private/tmp scratch projects
 # only; ~/.claude.json is recorded (hash + this project's entry, never copied whole) before and after.
 TUI_TRUST_ROOTS = ("/private/tmp/",)
+
+
+def scratch_trust_refusal(project, run_root):
+    """Why a folder-trust answer for `project` is NOT approved, else None. Approved (user, 2026-09-30) only for a
+    project inside this run's own root, with that root under TUI_TRUST_ROOTS (/private/tmp scratch). Both paths
+    are resolved first, so a symlink or `..` cannot step outside."""
+    project, root = Path(project).resolve(), Path(run_root).resolve()
+    if not any(str(root).rstrip("/") + "/" == r or str(root).startswith(r) for r in TUI_TRUST_ROOTS):
+        return f"run root {root} is outside {TUI_TRUST_ROOTS}"
+    if project != root and root not in project.parents:
+        return f"project {project} is outside the run root {root}"
+    return None
+
 CLAUDE_JSON = Path.home() / ".claude.json"
 # Verbs that read without mutating (child reads are allowed; a child ACK/accept/check-in is not).
 READ_VERBS = re.compile(r"\b(pending-receipts|inbox|read|body|search|thread\s+list|warnings|overdue)\b")
@@ -230,48 +259,330 @@ def ready_commands(context):
     return commands
 
 
+# ----- model-issued call rule (P15, P31, FIX-NOW quoted literal) -----
+# Words a shell keyword or grouping puts before the real command word.
+SHELL_KEYWORDS = frozenset({"{", "}", "!", "if", "then", "else", "elif", "do", "while", "until", "time"})
+SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
+SUDO_VALUE_OPTIONS = frozenset({"-C", "-D", "-R", "-T", "-U", "-g", "-h", "-p", "-r", "-t", "-u", "--user", "--group", "--host",
+                                "--prompt", "--chdir", "--chroot", "--role", "--type", "--close-from", "--command-timeout",
+                                "--other-user"})
+XARGS_VALUE_OPTIONS = frozenset({"-I", "-n", "-P", "-L", "-s", "-d", "-E", "-a", "--max-args", "--max-procs", "--delimiter",
+                                 "--arg-file", "--max-lines", "--max-chars", "--eof"})
+SUBSTITUTED_LOOKUP = re.compile(r"\s*(?:which|command\s+-v|type\s+-p|command\s+-V?)\s+(\S*herdr-threads)\s*\Z")
+
+
+def _closing(text, start, opener, closer):
+    """Index of the `closer` matching the `opener` already consumed before `start` (quote- and escape-aware); len(text)
+    when unbalanced."""
+    depth, i = 1, start
+    while i < len(text):
+        c = text[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "'" and opener == "(":
+            j = text.find("'", i + 1)
+            i = len(text) if j < 0 else j + 1
+            continue
+        if c == '"' and opener == "(":
+            i = _closing_quote(text, i + 1)
+            continue
+        if opener == "(" and c == "(":
+            depth += 1
+        elif c == closer:
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return len(text)
+
+
+def _closing_quote(text, start):
+    i = start
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2
+        elif text[i] == '"':
+            return i + 1
+        else:
+            i += 1
+    return len(text)
+
+
+def _shell_words(text):
+    """[(words, substitution_scripts)] for every simple command of a shell line, quotes removed. Single quotes are
+    literal; command substitutions (`$(...)` and backticks) are live unquoted and inside double quotes, and their
+    scripts are returned apart instead of being spliced into a word."""
+    commands, words, subs, cur = [], [], [], []
+    state = {"in_word": False}
+
+    def end_word():
+        if state["in_word"]:
+            words.append("".join(cur))
+            cur.clear()
+            state["in_word"] = False
+
+    def end_command():
+        end_word()
+        if words or subs:
+            commands.append((list(words), list(subs)))
+        words.clear()
+        subs.clear()
+
+    def substitute(script):
+        match = SUBSTITUTED_LOOKUP.fullmatch(script)
+        if match:  # `$(which herdr-threads)` names the binary it looks up (W6-D2)
+            cur.append(match.group(1))
+        else:
+            subs.append(script)
+        state["in_word"] = True
+
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\":
+            if i + 1 < n and text[i + 1] != "\n":
+                cur.append(text[i + 1])
+                state["in_word"] = True
+            i += 2
+        elif c == "'":
+            j = text.find("'", i + 1)
+            j = n if j < 0 else j
+            cur.append(text[i + 1:j])
+            state["in_word"] = True
+            i = j + 1
+        elif c == '"':
+            state["in_word"] = True
+            i += 1
+            while i < n and text[i] != '"':
+                if text[i] == "\\" and i + 1 < n:
+                    cur.append(text[i + 1] if text[i + 1] in '"\\$`' else text[i:i + 2])
+                    i += 2
+                elif text.startswith("$(", i):
+                    j = _closing(text, i + 2, "(", ")")
+                    substitute(text[i + 2:j])
+                    i = j + 1
+                elif text[i] == "`":
+                    j = text.find("`", i + 1)
+                    j = n if j < 0 else j
+                    substitute(text[i + 1:j])
+                    i = j + 1
+                else:
+                    cur.append(text[i])
+                    i += 1
+            i += 1
+        elif text.startswith("$(", i):
+            j = _closing(text, i + 2, "(", ")")
+            substitute(text[i + 2:j])
+            i = j + 1
+        elif c == "`":
+            j = text.find("`", i + 1)
+            j = n if j < 0 else j
+            substitute(text[i + 1:j])
+            i = j + 1
+        elif c in ";&|\n()":
+            end_command()
+            i += 1
+        elif c in " \t":
+            end_word()
+            i += 1
+        elif c == "#" and not state["in_word"]:
+            while i < n and text[i] != "\n":
+                i += 1
+        else:
+            cur.append(c)
+            state["in_word"] = True
+            i += 1
+    end_command()
+    return commands
+
+
+def is_nested_agent_cli(argv):
+    """True for a nested model CLI invocation: `claude -p|--print ...` or `codex [opts] exec ...`."""
+    if not argv:
+        return False
+    name = os.path.basename(argv[0])
+    rest = argv[1:]
+    if "--" in rest:
+        rest = rest[:rest.index("--")]
+    return (name == "claude" and any(w in ("-p", "--print") for w in rest)) or (name == "codex" and "exec" in rest)
+
+
+def _peel_one(words, nested):
+    """Peel wrappers off one simple command. Returns [(argv, nested)] (the command itself, plus the commands an
+    `sh -c`/`eval`/`env -S` script runs); [] when the line only looks a command up (`command -v`)."""
+    out = []
+    while True:
+        while words and (words[0] in SHELL_KEYWORDS or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0], re.S)
+                         or re.fullmatch(r"\d*(>>?|<)&?\d*", words[0])):
+            skip_target = bool(re.fullmatch(r"\d*(>>?|<)", words[0]))
+            words = words[2:] if skip_target else words[1:]
+        while words and re.match(r"\d*(>>?|<)\S", words[0]):  # attached redirection target (`2>/dev/null`)
+            words = words[1:]
+        if not words:
+            return out
+        name = os.path.basename(words[0])
+        rest = words[1:]
+        if name == "env":
+            i = 0
+            while i < len(rest):
+                w = rest[i]
+                if w == "--":
+                    i += 1
+                    break
+                if w in ("-S", "--split-string") and i + 1 < len(rest):
+                    out += _peeled(rest[i + 1] + " " + " ".join(shlex.quote(x) for x in rest[i + 2:]), nested)
+                    return out
+                if w.startswith("-S") and len(w) > 2:
+                    out += _peeled(w[2:] + " " + " ".join(shlex.quote(x) for x in rest[i + 1:]), nested)
+                    return out
+                if w in ("-u", "--unset", "-C", "--chdir") and "=" not in w:
+                    i += 2
+                elif w.startswith("-") or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", w, re.S):
+                    i += 1
+                else:
+                    break
+            words = rest[i:]
+        elif name == "sudo":
+            i = 0
+            while i < len(rest):
+                w = rest[i]
+                if w == "--":
+                    i += 1
+                    break
+                if w in SUDO_VALUE_OPTIONS:
+                    i += 2
+                elif w.startswith("-") or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", w, re.S):
+                    i += 1
+                else:
+                    break
+            words = rest[i:]
+        elif name == "exec":
+            i = 0
+            while i < len(rest) and rest[i].startswith("-") and rest[i] != "--":
+                i += 2 if rest[i] == "-a" else 1
+            words = rest[i + 1:] if i < len(rest) and rest[i] == "--" else rest[i:]
+        elif name == "command":
+            i = 0
+            while i < len(rest) and rest[i].startswith("-") and rest[i] != "--":
+                if rest[i] in ("-v", "-V"):
+                    return out  # a lookup, not a call
+                i += 1
+            words = rest[i + 1:] if i < len(rest) and rest[i] == "--" else rest[i:]
+        elif name == "nohup":
+            words = rest[1:] if rest[:1] == ["--"] else rest
+        elif name == "timeout":
+            i = 0
+            while i < len(rest) and rest[i].startswith("-") and rest[i] != "--":
+                i += 2 if rest[i] in ("-s", "--signal", "-k", "--kill-after") else 1
+            if i < len(rest) and rest[i] == "--":
+                i += 1
+            words = rest[i + 1:]  # skip the duration
+        elif name == "xargs":
+            i = 0
+            while i < len(rest) and rest[i].startswith("-") and rest[i] != "--":
+                i += 2 if rest[i] in XARGS_VALUE_OPTIONS else 1
+            words = rest[i + 1:] if i < len(rest) and rest[i] == "--" else rest[i:]
+        elif name in SHELLS:
+            i = 0
+            while i < len(rest) and rest[i][:1] in "-+" and rest[i] not in ("--", "-", "+"):
+                if rest[i][:1] == "-" and not rest[i].startswith("--") and "c" in rest[i][1:]:
+                    if i + 1 < len(rest):
+                        out += _peeled(rest[i + 1], nested)
+                    return out
+                i += 2 if rest[i] in ("-o", "+o", "-O", "+O") else 1
+            break  # `sh script.sh` runs a file: the shell itself is the command
+        elif name == "eval":
+            out += _peeled(" ".join(rest), nested)
+            return out
+        else:
+            break
+    out.append((words, nested))
+    return out
+
+
+def pin_claude_autoupdate_off(target):
+    """ht-p03.20: the run-root (scratch) Claude settings carry env DISABLE_AUTOUPDATER=1, so the agent in the pane
+    never updates itself mid-cell. Only the scratch copy under the run root is written."""
+    try:
+        settings = json.loads(target.read_text())
+    except (OSError, ValueError):
+        return
+    if not isinstance(settings, dict):
+        return
+    env = settings.setdefault("env", {})
+    if isinstance(env, dict) and env.get("DISABLE_AUTOUPDATER") != "1":
+        env["DISABLE_AUTOUPDATER"] = "1"
+        target.write_text(json.dumps(settings, indent=2) + "\n")
+
+
+def _peeled(line, nested=False):
+    """[(argv, nested)] of every command a shell line runs after peeling wrappers; `nested` marks commands that sit
+    inside the arguments of a nested `claude -p` / `codex exec` invocation."""
+    result = []
+    for words, subs in _shell_words(str(line or "")):
+        peeled = _peel_one(words, nested)
+        result += peeled
+        inner_nested = nested or any(is_nested_agent_cli(argv) for argv, _ in peeled)
+        for script in subs:
+            result += _peeled(script, inner_nested)
+    return result
+
+
+def peel_wrappers(line):
+    """Every command a shell line runs, as an argv, after removing `NAME=value` assignments and the wrappers `env`,
+    `sudo`, `exec`, `command`, `nohup`, `timeout DUR`, `xargs`, `sh -c`/`bash -c`/`eval` (recursing into the script) and
+    backtick or `$(...)` substitutions. A line given as a word list is joined first."""
+    if isinstance(line, (list, tuple)):
+        line = shlex.join(str(w) for w in line)
+    return [argv for argv, _ in _peeled(line)]
+
+
+def _is_ht_word(word):
+    return word == "herdr-threads" or word.endswith("/herdr-threads")
+
+
+def model_issued_herdr_calls(tool_call, *, root_session):
+    """The `herdr-threads` argvs the root model issued in one tool call. `tool_call` is `{"command": str, "session":
+    id|None, "sidechain": bool}`: it counts only when it is a top-level call of the root session (not a subagent's),
+    some peeled command's word 0 is `herdr-threads` (or a path ending in it), and that command is not inside a nested
+    `claude -p` / `codex exec` invocation of the same line. A quoted literal (`echo "herdr-threads" ack`) is no call."""
+    if tool_call.get("sidechain"):
+        return []
+    session = tool_call.get("session")
+    if root_session is not None and session not in (None, root_session):
+        return []
+    return [argv for argv, nested in _peeled(tool_call.get("command")) if argv and _is_ht_word(argv[0]) and not nested]
+
+
 def invokes_herdr_threads(command):
-    """D7 (Claude demo 3): True when some simple command of `command` runs `herdr-threads` as its command word
-    (after any `NAME=value` assignments; a path ending in `/herdr-threads` counts). A word elsewhere, such as
-    `type herdr-threads` or `alias herdr-threads`, is not a herdr-threads command."""
-    for segment in re.split(r"[;&|()\n]+", str(command or "")):
-        try:
-            words = shlex.split(segment, comments=True)
-        except ValueError:
-            words = segment.split()
-        while words and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0], re.S):
-            words.pop(0)
-        if words and (words[0] == "herdr-threads" or words[0].endswith("/herdr-threads")):
-            return True
-    return False
+    """D7 (Claude demo 3) + P31: True when a model-issued shell line runs `herdr-threads` as the command word of some
+    command, after peeling wrappers (`env`, `sudo`, `exec`, `command`, `nohup`, `timeout`, `sh -c`, substitutions). A word
+    elsewhere, such as `type herdr-threads`, is not a herdr-threads command."""
+    return bool(model_issued_herdr_calls({"command": command}, root_session=None))
+
+
+def _herdr_threads_verb(argv):
+    """The subcommand words of one `herdr-threads` argv (`ack`, `thread create`), global options skipped; None if bare."""
+    found, skip = [], False
+    for word in argv[1:]:
+        if skip:
+            skip = False
+            continue
+        if word.startswith("-"):
+            skip = word in HT_VALUE_OPTIONS
+            continue
+        found.append(word)
+        if found[0] not in HT_GROUPS or len(found) == 2:
+            break
+    return " ".join(found) or None
 
 
 def herdr_threads_verbs(command):
-    """The subcommand of every `herdr-threads` invocation in a shell command (`ack`, `thread create`, ...), skipping
-    global options; nested `sh -c '...'` quoting is tolerated because each occurrence is scanned on its own."""
-    verbs = []
-    text = str(command or "")
-    # W6-D2: the name may end a command substitution or a quoted path (`"$(which herdr-threads)" ack X`); the
-    # subcommand then follows those closing characters.
-    for match in re.finditer(r"(?:^|(?<=[\s;&|(`'\"/]))herdr-threads(?=[\s)\"'`])", text):
-        rest = re.split(r"[;&|)\n]", text[match.end():].lstrip(")\"'`"), maxsplit=1)[0]
-        words = [w.strip("'\"`{}(),;\\") for w in rest.split()]
-        found, skip = [], False
-        for word in words:
-            if skip:
-                skip = False
-                continue
-            if word.startswith("-"):
-                skip = word in HT_VALUE_OPTIONS
-                continue
-            if not word:
-                continue
-            found.append(word)
-            if found[0] not in HT_GROUPS or len(found) == 2:
-                break
-        if found:
-            verbs.append(" ".join(found))
-    return verbs
+    """The subcommand of every model-issued `herdr-threads` invocation in a shell command (`ack`, `thread create`, ...),
+    skipping global options."""
+    verbs = [_herdr_threads_verb(argv) for argv in model_issued_herdr_calls({"command": command}, root_session=None)]
+    return [verb for verb in verbs if verb]
 
 
 def mutating_call(command):
@@ -371,6 +682,9 @@ NOT_EXERCISED = "NOT_EXERCISED"
 # manifest is UNSUPPORTED with the step's recorded reason.
 UNSUPPORTED_STEP = "UNSUPPORTED"
 # Manifest reasons for UNVERIFIED evidence, most serious first (the manifest carries the first that applies).
+# Steps of a --scenario lostprompt run that judge the wake; the manifest excuses the handoff's missing ACK for them only.
+LOSTPROMPT_STEPS = frozenset({"S17H", "S18", "S18C", "SL1", "SL2"})
+WAKE_STEP = re.compile(r"SL\d+|SW\d+|SU\d+|SH\d+")
 UNVERIFIED_REASONS = ("child_ack_unverified", "warning_wake_unverified", "hook_context_unverified", "evidence_unverified")
 
 
@@ -523,6 +837,15 @@ class Driver:
         self.project = self.root / "project"
         self.bindir = self.root / "bin"
         self.bin = str(Path(args.bin).resolve())
+        self.codex_bin = str(Path(args.codex_bin)) if getattr(args, "codex_bin", None) else None
+        if self.codex_bin:  # setup, doctor, the daemon and preflight resolve `codex` through this PATH
+            os.environ["PATH"] = str(Path(self.codex_bin).parent) + os.pathsep + os.environ.get("PATH", "")
+        # ht-p03.20: the pinned Claude binary (a file named `claude`, e.g. the cell runner's run-root shim). The pane's
+        # login shell may put ~/.local/bin (the shared, auto-updating launcher) back in front of an inherited PATH, so
+        # the launch line and the run-root bin dir name this binary explicitly.
+        self.claude_bin = str(Path(args.claude_bin)) if getattr(args, "claude_bin", None) else None
+        if self.claude_bin:
+            os.environ["PATH"] = str(Path(self.claude_bin).parent) + os.pathsep + os.environ.get("PATH", "")
         self.endpoint = args.host_endpoint or os.environ.get("HERDR_SOCKET_PATH", "")
         self.steps = []
         self.facts = {"run_id": self.run_id, "harness": self.harness, "dry_run": self.dry,
@@ -617,16 +940,18 @@ class Driver:
             problems.append("no host endpoint (HERDR_SOCKET_PATH unset)")
         if not os.access(self.bin, os.X_OK):
             problems.append(f"herdr-threads binary not executable: {self.bin}")
-        for tool in ("herdr", "git", self.harness):
+        pinned = self.codex_bin if self.harness == "codex" else self.claude_bin
+        for tool in ("herdr", "git", *(() if pinned else (self.harness,))):
             if not shutil.which(tool):
                 problems.append(f"{tool} not on PATH")
         versions = {}
-        for label, argv in (("herdr", ["herdr", "--version"]), (self.harness, [self.harness, "--version"]),
+        for label, argv in (("herdr", ["herdr", "--version"]), (self.harness, [pinned or self.harness, "--version"]),
                             ("herdr_threads", [self.bin, "--version"])):
             rc, out, err = self.run(argv, tag=f"version:{label}", timeout=15)
             versions[label] = {"rc": rc, "out": (out or err).strip()[:200]}
         versions["herdr_threads_sha256"] = sha256(self.bin)
-        harness_path = shutil.which(self.harness)
+        harness_path = pinned or shutil.which(self.harness)
+        versions[f"{self.harness}_bin_pinned"] = pinned
         versions[f"{self.harness}_path"] = str(Path(harness_path).resolve()) if harness_path else None
         versions[f"{self.harness}_sha256"] = sha256(Path(harness_path).resolve()) if harness_path else None
         rc, out, _ = self.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], tag="version:driver_repo")
@@ -741,6 +1066,10 @@ class Driver:
             rc, _, err = self.run(argv, tag="scratch:git")
             if rc != 0:
                 return FAIL, f"{argv[1:4]} rc={rc} {err.strip()}", None
+        if self.codex_bin:  # the hook and anything else resolving `codex` via the env-prefixed PATH sees the pinned binary
+            (self.bindir / "codex").symlink_to(self.codex_bin)
+        if self.claude_bin:  # likewise for `claude`: the pane's PATH prefix and managed launch resolve the pinned binary
+            (self.bindir / "claude").symlink_to(self.claude_bin)
         wrapper = self.bindir / "herdr-threads"
         wrapper.write_text(agent_shim(self.bin, self.state, self.endpoint))
         wrapper.chmod(0o700)
@@ -881,16 +1210,24 @@ class Driver:
 
     def instruction_seen(self, scenario, phase="initial"):
         """(seen, how): whether the model can have seen `scenario`'s handoff instruction: a root `body` read of the
-        phase's handoff, or the instruction's marker phrase anywhere in the phase transcript (a tool result showing the
-        preview, a hook context, or the model's own text). Unseen -> the scenario judge is NOT_EXERCISED, never FAIL."""
+        phase's handoff, the instruction's marker phrase anywhere in the phase transcript (a tool result showing the
+        preview, a hook context, or the model's own text), or (midturn) a PreToolUse additionalContext SM2 observed
+        delivering it (W6-D3). Unseen -> the scenario judge is NOT_EXERCISED, never FAIL. `seen` is None, not False,
+        when there is no readable transcript at all (a TUI run without one): whether the model saw it is unknown
+        (W6-D4)."""
+        if scenario == "midturn" and (self.facts.get("midturn") or {}).get("delivery") == "additional_context" \
+                and self.status_of("SM2") == PASS:
+            return True, "PreToolUse additionalContext delivered the mid-turn message (SM2 PASS)"
         transcript = self.phase_transcript(phase) or self.live_transcript(phase)
         message = self.facts.get("messages", {}).get(phase) or "\0"
+        if not transcript or not Path(transcript).exists():
+            return None, "no readable transcript for this phase"
         for _, command in self.root_tool_calls(transcript):
             if "body" in herdr_threads_verbs(command) and message in command:
                 return True, f"root `body {message}` call"
         marker = SCENARIO_MARKERS.get(scenario)
         try:
-            text = Path(transcript).read_text(errors="replace") if transcript else ""
+            text = Path(transcript).read_text(errors="replace")
         except OSError:
             text = ""
         if marker and marker.lower() in text.lower():
@@ -899,12 +1236,17 @@ class Driver:
 
     def gate_on_instruction(self, scenario, result):
         """A FAIL or NOT_EXERCISED scenario verdict whose instruction the model never saw is NOT_EXERCISED (the claim was
-        not tested); a PASS stands (the model did it anyway)."""
+        not tested); a PASS stands (the model did it anyway). A FAIL whose visibility cannot be established (no
+        transcript) is UNVERIFIED: neither a product FAIL nor a claim known untested."""
         status, detail, value = result
         if status not in (FAIL, NOT_EXERCISED):
             return result
         seen, how = self.instruction_seen(scenario)
         if seen:
+            return result
+        if seen is None:
+            if status == FAIL:
+                return UNVERIFIED, f"cannot tell whether the model saw the {scenario} instruction ({how}); unverified: {detail}", value
             return result
         return NOT_EXERCISED, f"the model never saw the {scenario} instruction ({how}); not exercised: {detail}", value
 
@@ -1029,6 +1371,7 @@ class Driver:
                 except (OSError, ValueError):
                     allow = []
                 if target.exists():
+                    pin_claude_autoupdate_off(target)
                     shutil.copy(target, self.ev / "claude-settings.json")
                     self.facts["claude_settings"] = str(target)
                 if HERDR_THREADS_ALLOW not in allow:
@@ -1055,6 +1398,7 @@ class Driver:
         command = shlex.join(self.hook_argv())
         if self.harness == "claude":
             settings = {
+                "env": {"DISABLE_AUTOUPDATER": "1"},
                 "permissions": {"allow": [HERDR_THREADS_ALLOW]},
                 "hooks": {
                     "SessionStart": [{"hooks": [{"type": "command", "command": command, "timeout": 10}]}],
@@ -1255,7 +1599,7 @@ class Driver:
         unset = "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CODEX_HOME_OVERRIDE; "
         if self.harness == "claude":
             session = self.facts.get("claude_session")
-            argv = ["command", "claude", "--model", self.args.claude_model, "--setting-sources", "project,local",
+            argv = ["command", self.claude_bin or "claude", "--model", self.args.claude_model, "--setting-sources", "project,local",
                     "--permission-mode", self.args.claude_permission_mode]
             if self.facts.get("claude_settings"):  # the scratch user-level installation, as a flag settings layer
                 argv += ["--settings", self.facts["claude_settings"]]
@@ -1288,7 +1632,7 @@ class Driver:
         common = ["--dangerously-bypass-hook-trust", "--json", "--skip-git-repo-check",
                   "-m", self.args.codex_model, "-c", f'model_reasoning_effort="{self.args.codex_effort}"',
                   *self.facts.get("codex_hook_args", []), *sum((["-c", c] for c in self.args.codex_config), [])]
-        argv = ["command", "codex", "--no-daemon", "exec", "-s", self.args.codex_sandbox, "-C", str(self.project)]
+        argv = ["command", self.codex_bin or "codex", "--no-daemon", "exec", "-s", self.args.codex_sandbox, "-C", str(self.project)]
         if phase == "resume":
             argv += ["resume", *common, self.facts.get("codex_session", "<thread_id-from-initial-run>"), self.prompt()]
         else:
@@ -1300,8 +1644,10 @@ class Driver:
 
     def codex_tui_command(self, phase, unset, env_prefix, rcfile):
         """Interactive Codex (ht-4is.11.12 a): the same model and scratch CODEX_HOME (setup's hooks and socket allowance),
-        with no prompt argument (the driver submits prompts through Herdr, as for the Claude TUI). Explicit -s and
-        -a make Codex skip its folder-trust screen (which would persist trust into CODEX_HOME); the hook-trust bypass
+        with no prompt argument (the driver submits prompts through Herdr, as for the Claude TUI). Codex 0.159.3+ shows
+        its folder-trust screen even with explicit -s/-a; launch_tui answers it only under --tui-accept-trust and only for
+        a project inside the /private/tmp run root, and records each acceptance (it persists trust into the scratch
+        CODEX_HOME config.toml). The hook-trust bypass
         is limited to the /private/tmp scratch project (validate_args); no approval or sandbox bypass. The update check
         is off so no "Update available" screen (Enter = update the aisw-managed install) is ever shown. Interactive
         Codex has no --ignore-user-config / --skip-git-repo-check / --json (exec-only flags)."""
@@ -1309,12 +1655,23 @@ class Driver:
                   "--dangerously-bypass-hook-trust", "-c", "check_for_update_on_startup=false", "-m", self.args.codex_model,
                   "-c", f'model_reasoning_effort="{self.args.codex_effort}"',
                   *self.facts.get("codex_hook_args", []), *sum((["-c", c] for c in self.args.codex_config), [])]
-        argv = ["command", "codex", "--no-daemon"]
+        argv = ["command", self.codex_bin or "codex", "--no-daemon"]
         if phase == "resume":
             argv += ["resume", *common, self.facts.get("codex_session", "<thread_id-from-initial-run>")]
         else:
             argv += common
         self.facts.setdefault("native_argv", {})[phase] = argv[2:]
+        # W10-E5: what an interactive Codex run loads and bypasses, recorded in the evidence summary (never silent).
+        self.facts["codex_tui"] = {
+            "user_config": "loaded: interactive Codex has no --ignore-user-config; it reads config.toml of the scratch CODEX_HOME "
+                           "(setup's hooks and socket allowance), never the real ~/.codex",
+            "user_config_path": str(Path(self.facts.get("codex_home") or "") / "config.toml"),
+            "hook_trust_bypass": "--dangerously-bypass-hook-trust" in argv,
+            "hook_trust_scope": "/private/tmp scratch project only (validate_args)",
+            "folder_trust": ("accepted on screen for the /private/tmp scratch run root only (--tui-accept-trust; persisted into "
+                             "the scratch CODEX_HOME config.toml)" if self.args.tui_accept_trust else
+                             "not approved for this run: a folder-trust screen FAILs with nothing typed"),
+            "folder_trust_acceptances": self.facts.setdefault("codex_folder_trust", [])}
         # /new starts a new conversation whose thread id the driver does not choose: discovered from the rollouts.
         if phase in ("clear", "restart"):
             self.facts.setdefault("sessions", {})[phase] = None
@@ -1322,6 +1679,40 @@ class Driver:
             self.facts.setdefault("sessions", {})[phase] = self.facts.get("codex_session")
         shell = f"{unset}command aisw workspace check --tool codex && {env_prefix} {shlex.join(argv)}; echo $? >{shlex.quote(str(rcfile))}"
         return shell, rcfile, None
+
+    def s_daemon_cycle(self, phase):
+        """daemon-restart: `daemon stop` then `daemon ensure`; daemon-crash: SIGKILL the process listening on the daemon
+        socket, then `daemon ensure`. The agent pane is read before and after and must still hold the same agent."""
+        pane = self.facts["agent_pane"]
+        before = self.herdr("pane", "get", pane, tag=f"daemon-cycle:pane-before:{phase}")[1]
+        endpoint = self.daemon_endpoint()
+        if phase == "daemon-crash":
+            if not endpoint:
+                return FAIL, "no daemon endpoint descriptor to find the daemon process", None
+            rc, out, _ = self.run(["lsof", "-t", endpoint], tag="daemon-cycle:lsof", timeout=15)
+            pids = [int(x) for x in out.split() if x.isdigit() and int(x) != os.getpid()]
+            if not pids:
+                return FAIL, f"no process holds the daemon socket {endpoint}", None
+            for pid in pids:
+                os.kill(pid, signal.SIGKILL)
+            time.sleep(1)
+        else:
+            rc, _, err = self.ht("daemon", "stop", tag="daemon-cycle:stop", timeout=30)
+            if rc != 0:
+                return FAIL, f"daemon stop rc={rc}: {err.strip()[:200]}", None
+        down_rc, _, _ = self.ht("daemon", "health", tag="daemon-cycle:health-down", timeout=20)
+        rc, _, err = self.ht("daemon", "ensure", tag="daemon-cycle:ensure", timeout=60)
+        up_rc, _, herr = self.ht("daemon", "health", tag="daemon-cycle:health-up", timeout=20)
+        after = self.herdr("pane", "get", pane, tag=f"daemon-cycle:pane-after:{phase}")[1]
+        self.facts.setdefault("daemon_cycle", {})[phase] = {"down_health_rc": down_rc, "ensure_rc": rc, "up_health_rc": up_rc,
+                                                           "pane_before": before, "pane_after": after}
+        if down_rc == 0:
+            return FAIL, f"daemon still healthy after the {phase} (health rc=0)", None
+        if rc != 0 or up_rc != 0:
+            return FAIL, f"daemon not back: ensure rc={rc}, health rc={up_rc} ({(err or herr).strip()[:200]})", None
+        if not after:
+            return FAIL, "agent pane no longer readable after the daemon cycle", None
+        return PASS, f"daemon down (health rc={down_rc}) then ensured (health rc=0); pane {pane} still present", None
 
     def s_tui_clear(self):
         """Start the new conversation (Claude /clear, Codex /new) before the clear-phase handoff is sent."""
@@ -1514,7 +1905,7 @@ class Driver:
 
     def launch_tui(self, phase, shell, rcfile):
         """Interactive agent in the owned pane (Claude TUI, or Codex TUI: ht-4is.11.12 a). Nothing is ever typed into
-        a dialog except the user-approved Claude folder-trust dialog of a /private/tmp scratch project; any other
+        a dialog except the user-approved folder-trust dialogs (Claude, Codex) of a project inside a /private/tmp run root; any other
         blocking screen (Codex trust or hook trust, approval, theme, ...) is a FAIL with nothing typed."""
         pane = self.facts["agent_pane"]
         codex = self.harness == "codex"
@@ -1544,20 +1935,28 @@ class Driver:
             screen = self.capture_pane(phase + "-ready")
             if codex and CODEX_FOLDER_TRUST.search(screen) and self.args.tui_accept_trust:
                 # User-approved (2026-09-30): Codex's folder-trust screen may be accepted for /private/tmp scratch
-                # projects only (parse() refuses --tui-accept-trust elsewhere). It saves a trust_level entry into the
+                # projects only (scratch_trust_refusal checks the live project path). It saves a trust_level entry into the
                 # profile's config.toml, as exec runs already do. Hook-trust screens stay a FAIL.
                 if not CODEX_TRUST_CONTINUE_SELECTED.search(screen):
                     return FAIL, f"Codex folder-trust screen without 'Trust and continue' selected; nothing typed (pane-{phase}-ready.txt)", None
+                refusal = scratch_trust_refusal(self.project, self.root)
+                if refusal:
+                    return FAIL, (f"Codex folder-trust screen: {refusal}; the approval covers /private/tmp scratch run roots "
+                                  f"only; nothing typed (pane-{phase}-ready.txt)"), None
                 self.herdr("agent", "send-keys", pane, "enter", tag=f"tui:accept-codex-trust:{phase}")
                 time.sleep(1)
                 screen = self.capture_pane(phase + "-codex-trusted")
                 if CODEX_FOLDER_TRUST.search(screen):
                     return FAIL, "Codex folder-trust screen still up after Enter; nothing else typed", None
+                self.facts.setdefault("codex_folder_trust", []).append({
+                    "phase": phase, "utc": utc(), "project": str(self.project.resolve()), "run_root": str(self.root.resolve()),
+                    "codex_config": str(Path(self.facts.get("codex_home") or self.codex_launch_home()) / "config.toml"),
+                    "answer": "1. Trust and continue (Enter)"})
                 blocked = False
             if codex:
                 if CODEX_TRUST_UI.search(screen) or TRUST_DIALOG.search(screen):
                     return FAIL, ("Codex TUI shows a trust screen; answering it would persist trust into CODEX_HOME "
-                                  f"(not approved; the driver passes -s/-a and --dangerously-bypass-hook-trust to avoid it). "
+                                  f"(not approved; the driver passes --dangerously-bypass-hook-trust for hook trust). "
                                   f"Nothing typed (see pane-{phase}-ready.txt)"), None
                 if blocked:
                     return FAIL, f"Codex TUI blocked at a dialog (see pane-{phase}-ready.txt); nothing typed", None
@@ -1624,19 +2023,27 @@ class Driver:
             return "folder-trust dialog still on screen after Enter; prompt not sent"
         return None
 
-    def judge_codex_tui(self, phase, result, screen):
-        """Codex TUI: fold the session rollout (thread id, per-phase token usage) and any account failure the pane
-        shows into S17 through judge_launch, as for exec (an account failure is ENVIRONMENT, never a product FAIL)."""
+    def screen_failures(self, screen):
+        """Harness account/credential failure lines on a pane capture (usage limit, auth): the model was never reached."""
+        return [f"pane: {line.strip()[:300]}" for line in (screen or "").splitlines()
+                if re.search(r"error|limit|log ?in|unauthori", line, re.I) and classify_environment(line)]
+
+    def judge_tui_screen(self, phase, result, screen, *, codex):
+        """Fold the pane an interactive agent shows (and, for Codex, its session rollout: thread id, per-phase token usage)
+        into S17 through judge_launch, as for print mode: an account failure is ENVIRONMENT, never a product FAIL."""
         status, detail, transcript = result
         outcome = self.transcript_outcome(None)
-        outcome["thread_id"] = self.facts.get("sessions", {}).get(phase)
-        outcome["usage"], outcome["usage_basis"] = self.phase_usage(transcript) if transcript else ({}, None)
-        outcome["usage"] = outcome["usage"] or {}
-        for line in (screen or "").splitlines():
-            if re.search(r"error|limit|log ?in|unauthori", line, re.I) and classify_environment(line):
-                outcome["failures"].append(f"pane: {line.strip()[:300]}")
+        if codex:
+            outcome["thread_id"] = self.facts.get("sessions", {}).get(phase)
+            outcome["usage"], outcome["usage_basis"] = self.phase_usage(transcript) if transcript else ({}, None)
+            outcome["usage"] = outcome["usage"] or {}
+        outcome["failures"] += self.screen_failures(screen)
         outcome["environment"] = next((k for k in map(classify_environment, outcome["failures"]) if k), None)
         return self.judge_launch(phase, status, detail, transcript, outcome=outcome)
+
+    def judge_codex_tui(self, phase, result, screen):
+        """Codex TUI: see judge_tui_screen."""
+        return self.judge_tui_screen(phase, result, screen, codex=True)
 
     def lostprompt_wait(self, phase):
         """(b) --scenario lostprompt: the agent starts with NO initial prompt (the startup check-in is its only contact).
@@ -1663,13 +2070,19 @@ class Driver:
         record.update({"wake_after": self.wake_row(), "waited_s": round(time.monotonic() - started, 1), "bound_s": bound,
                        "acked": acked_at is not None, "ended_utc": utc()})
         self.capture_pane("lostprompt")
-        self.capture_pane(phase)
+        screen = self.capture_pane(phase)
         transcript = self.tui_transcript(phase)
         (self.ev / "lostprompt.json").write_text(json.dumps(record, indent=2, default=str))
         where = f"; session transcript {transcript}" if transcript else "; session transcript not found"
-        return PASS, (f"agent started with no initial prompt (startup check-in only); waited {record['waited_s']}s of {bound}s "
-                      f"for the idle recovery wake (health safe_prompt {health}); handoff ACK "
-                      f"{'observed' if acked_at else 'not observed'}{where}"), transcript
+        status = PASS
+        # W10-E3: the same screen judge as every other launch. A harness account failure on screen (usage limit, auth) with
+        # nothing ACKed means the model never ran: ENVIRONMENT, not the product's lost-prompt FAIL later in SL1/S18.
+        if acked_at is None and any(classify_environment(f) for f in self.screen_failures(screen)):
+            status = FAIL
+        result = status, (f"agent started with no initial prompt (startup check-in only); waited {record['waited_s']}s of {bound}s "
+                          f"for the idle recovery wake (health safe_prompt {health}); handoff ACK "
+                          f"{'observed' if acked_at else 'not observed'}{where}"), transcript
+        return self.judge_tui_screen(phase, result, screen, codex=self.harness == "codex")
 
     def tui_transcript(self, phase):
         """The Claude session transcript of a TUI phase, read-only: the chosen --session-id for initial/restart/resume,
@@ -1740,6 +2153,14 @@ class Driver:
         rows += [r for r in self.query("SELECT message_id, seat_id, state, ack_actor_seat_id, ack_generation, ack_observation, acked_at, 'receipts' AS src "
                                        "FROM receipts WHERE seat_id=?", (seat,)) if r["message_id"] not in seen]
         return rows
+
+    @staticmethod
+    def is_root_ack(call, message):
+        """True for a (call_id, command, is_child) transcript call that is the root model's own `herdr-threads ack` of
+        `message`: the model-issued call rule, so an `echo "herdr-threads ack m"` or a nested `claude -p` is no ACK."""
+        _, command, child = call
+        return any(_herdr_threads_verb(argv) == "ack" and message in argv[1:]
+                   for argv in model_issued_herdr_calls({"command": command, "sidechain": child}, root_session=None))
 
     def transcript_calls(self, transcript):
         """(call_id, command, is_child) for every herdr-threads shell call in a native transcript."""
@@ -1962,6 +2383,14 @@ class Driver:
             for entry in found:
                 if entry not in items:
                     items.append(entry)
+        # P15: a root shell call that starts another model CLI (`claude -p`, `codex exec`, through any wrapper) delegates
+        # work the transcript cannot show, exactly like a subagent: it is subagent activity.
+        for call_id, command in self.root_tool_calls(transcript):
+            for argv, _ in _peeled(command):
+                if is_nested_agent_cli(argv):
+                    entry = (call_id, "nested_agent_cli", os.path.basename(argv[0]))
+                    if entry not in items:
+                        items.append(entry)
         return items
 
     def root_execution(self, phase, bindings):
@@ -2031,7 +2460,7 @@ class Driver:
         # Model issuance: the transcript must contain the root agent's own ack call for this ID; the driver ledger none.
         calls = self.transcript_calls(transcript)
         (self.ev / f"transcript-calls-{phase}.json").write_text(json.dumps(calls, indent=2))
-        root_acks = [c for c in calls if re.search(r"\back\b", c[1]) and message in c[1] and not c[2]]
+        root_acks = [c for c in calls if self.is_root_ack(c, message)]
         child_mut = [c for c in calls if c[2] and mutating_call(c[1])]
         if self.delegates():  # a child attempt the product refused is the designed outcome, not a failure
             outcomes = self.transcript_results(transcript)
@@ -2245,6 +2674,12 @@ class Driver:
                 commands.append(literal[1:-1])
         if opaque:
             commands.append(script)
+            # A variable `cmd:` may hold any string literal of the script: each is a candidate command line, since the
+            # model-issued call rule reads shell words, not raw script text.
+            for literal in re.findall(r'"((?:[^"\\]|\\.)*)"|\'((?:[^\'\\]|\\.)*)\'|`([^`]*)`', script):
+                text = next((part for part in literal if part), "")
+                if "herdr-threads" in text:
+                    commands.append(text)
         return commands
 
     def root_tool_calls(self, transcript):
@@ -2360,6 +2795,11 @@ class Driver:
                         by_parent[parent] += 1
                         if "herdr-threads" in command:
                             record["calls"].append({"id": block.get("id"), "command": command, "source": "stream", "parent": parent})
+            # W10-E7: a child is one stable identity (its agent id), however many places record its calls.
+            agents = self.claude_agent_ids(events, record["spawns"])
+            record["agents"] = agents
+            for call in record["calls"]:
+                call["agent"] = agents.get(call["parent"]) or call["parent"]
             files = self.claude_subagent_files(self.facts.get("sessions", {}).get(phase))
             for path in files:
                 record["files"].append(str(path))
@@ -2370,7 +2810,9 @@ class Driver:
                         if isinstance(block, dict) and block.get("type") == "tool_use" and isinstance(block.get("input"), dict):
                             command = str(block["input"].get("command", ""))
                             if "herdr-threads" in command and block.get("id") not in [c["id"] for c in record["calls"]]:
-                                record["calls"].append({"id": block.get("id"), "command": command, "source": str(path.name), "parent": None})
+                                agent = event.get("agentId") or event.get("agent_id") or re.sub(r"^agent-", "", path.stem)
+                                record["calls"].append({"id": block.get("id"), "command": command, "source": str(path.name),
+                                                        "parent": None, "agent": agent})
             results = self.transcript_results(transcript)
             for path in files:
                 results.update(self.transcript_results(path))
@@ -2378,20 +2820,31 @@ class Driver:
             record["complete"] = bool(record["spawns"]) and not record["missing"]
         else:
             threads = []
+            unresolved, other = [], []  # collab calls naming no child: spawn calls / any other collab call
             for event in events:
                 item = event.get("item") if isinstance(event.get("item"), dict) else {}
                 if event.get("type") in ("item.started", "item.completed") and CODEX_CHILD_ITEMS.search(str(item.get("type") or "")):
-                    if item.get("id") not in record["spawns"]:
-                        record["spawns"].append(item.get("id"))
+                    named = []
                     for key, value in item.items():
                         values = value if isinstance(value, list) else [value]
                         if ("thread" in key and "sender" not in key) or key in ("agent_id", "receiver_id"):
-                            threads += [v for v in values if isinstance(v, str) and v and v != self.facts.get("sessions", {}).get(phase)]
-            for event in events:  # interactive Codex (rollout transcript): collab tool calls of the root thread
-                found = self.rollout_child_call(event)
-                if found and found[0] not in record["spawns"]:
-                    record["spawns"].append(found[0])
+                            named += [v for v in values if isinstance(v, str) and v and v != self.facts.get("sessions", {}).get(phase)]
+                    threads += named
+                    if not named:
+                        bucket = unresolved if "spawn" in str(item.get("tool") or "").lower() else other
+                        if item.get("id") not in bucket:
+                            bucket.append(item.get("id"))
+            # Interactive Codex (rollout transcript): the root thread's collab calls, each resolved to the child ids its
+            # arguments or output name (W10-E6: a wait/close/send call on a known child is not another child).
+            rollout_named, rollout_calls = self.rollout_child_identities(events)
+            threads += [t for t in rollout_named if t != self.facts.get("sessions", {}).get(phase)]
+            for call_id, name, ids in rollout_calls:
+                if not ids:
+                    bucket = unresolved if "spawn" in name.lower() else other
+                    if call_id not in bucket:
+                        bucket.append(call_id)
             threads = list(dict.fromkeys(threads))
+            called = list(threads)  # the children the root's own calls name
             # D1 (Codex matrix 1): 0.159 shows a spawn only as a `wait` collab call with no receiver thread ID, but the
             # child's rollout names the root in its session_meta (parent_thread_id / forked_from_id).
             children = self.codex_child_rollouts(self.facts.get("sessions", {}).get(phase),
@@ -2408,6 +2861,13 @@ class Driver:
                 paths.setdefault(str(path), (thread, path))
             threads = list(dict.fromkeys(threads + [t for t, _ in children]))
             record["children"] = threads
+            # W10-E6: children are counted by stable identity, never by spawn/wait events: the ids calls name, the child
+            # rollouts found beside them, and a spawn call that named no child stands for one only when no rollout
+            # accounts for it. A collab call of any other kind with no identity at all still shows that something ran.
+            unnamed = [t for t in threads if t not in called]
+            record["spawns"] = list(dict.fromkeys(called + unnamed + unresolved[len(unnamed):]))
+            if not record["spawns"] and (other or unresolved):
+                record["spawns"] = [(other + unresolved)[0]]
             results = {}
             for thread, path in paths.values():
                 record["files"].append(str(path))
@@ -2423,6 +2883,71 @@ class Driver:
             call["result_excerpt"] = None if outcome is None else outcome["text"][:300]
         (self.ev / f"child-sidechain-{phase}.json").write_text(json.dumps(record, indent=2))
         return record
+
+    CHILD_ID_KEYS = ("id", "agent_id", "thread_id", "receiver_thread_id", "new_thread_id", "target")
+    CHILD_ID_LIST_KEYS = ("ids", "agent_ids", "thread_ids", "receiver_thread_ids", "targets")
+
+    @staticmethod
+    def child_ids_in(value, own_id=True):
+        """Child ids a collab call's arguments or output name (JSON text or object): an id key, or an id list key."""
+        if isinstance(value, list):
+            value = value[0].get("text") if value and isinstance(value[0], dict) else value
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                return []
+        found = []
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in Driver.CHILD_ID_KEYS and (own_id or key != "id") and isinstance(item, str) and item:
+                    found.append(item)
+                elif key in Driver.CHILD_ID_LIST_KEYS and isinstance(item, list):
+                    found += [v for v in item if isinstance(v, str) and v]
+                elif key in ("output", "metadata", "result") and isinstance(item, (dict, str)):
+                    found += Driver.child_ids_in(item, own_id)
+        return found
+
+    @staticmethod
+    def rollout_child_identities(events):
+        """(child ids, [(call_id, tool name, ids named)]) for the collab/subagent tool calls of a Codex rollout: an id is
+        named by a call's arguments or by its output (the spawn's `agent_id`), found through the shared call_id."""
+        calls, outputs = {}, {}
+        for event in events:
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            found = Driver.rollout_child_call(event)
+            if found:
+                calls[found[0]] = (str(found[1]), Driver.child_ids_in(payload.get("arguments") or payload.get("input")))
+            elif payload.get("type") in ("function_call_output", "custom_tool_call_output"):
+                outputs.setdefault(payload.get("call_id"), []).extend(Driver.child_ids_in(payload.get("output"), own_id=False))
+        named, resolved = [], []
+        for call_id, (name, ids) in calls.items():
+            ids = list(dict.fromkeys(ids + outputs.get(call_id, [])))
+            named += ids
+            resolved.append((call_id, name, ids))
+        return list(dict.fromkeys(named)), resolved
+
+    @staticmethod
+    def claude_agent_ids(events, spawns):
+        """{spawn tool_use id: agent id} from the root transcript's Task/Agent results (`tool_use_result.agentId`, or an
+        `agentId: X` line in the result text): the stable identity of a child, whichever file records its calls."""
+        agents = {}
+        for event in events:
+            message = event.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            for block in content if isinstance(content, list) else []:
+                if not (isinstance(block, dict) and block.get("type") == "tool_result" and block.get("tool_use_id") in spawns):
+                    continue
+                result = event.get("tool_use_result") or event.get("toolUseResult")
+                agent = find_value(result, "agentId") or find_value(result, "agent_id") if isinstance(result, (dict, list)) else None
+                if not agent:
+                    body = block.get("content")
+                    text = "\n".join(str(b.get("text", "")) for b in body if isinstance(b, dict)) if isinstance(body, list) else str(body or "")
+                    match = re.search(r"agentId:\s*([\w-]+)", text)
+                    agent = match.group(1) if match else None
+                if agent:
+                    agents[block["tool_use_id"]] = str(agent)
+        return agents
 
     @staticmethod
     def rollout_child_call(event):
@@ -2647,8 +3172,7 @@ class Driver:
         if deliveries:
             return PASS, (f"PreToolUse additionalContext delivered {len(deliveries)}x after the send (digest form; "
                           f"{message} not named verbatim); evidence midturn-delivery.json"), None
-        acked = [c for c in self.transcript_calls(transcript or self.live_transcript("initial"))
-                 if not c[2] and re.search(r"\back\b", c[1]) and message in c[1]]
+        acked = [c for c in self.transcript_calls(transcript or self.live_transcript("initial")) if self.is_root_ack(c, message)]
         if acked:
             self.facts["midturn"]["delivery"] = "behaviour_inferred"
             return PASS, (f"no PreToolUse additionalContext recorded after the send (Claude 2.1.285 may not record PreToolUse), "
@@ -2671,7 +3195,7 @@ class Driver:
             if (receipt or {}).get("state") == "acked" or time.monotonic() >= deadline:
                 break
             time.sleep(2)
-        root_acks = [c for c in self.transcript_calls(transcript) if not c[2] and re.search(r"\back\b", c[1]) and message in c[1]]
+        root_acks = [c for c in self.transcript_calls(transcript) if self.is_root_ack(c, message)]
         obs = json.loads((receipt or {}).get("ack_observation") or "{}")
         self.phase_results.append({"phase": "midturn", "message": message, "root_ack_calls": root_acks, "receipt": receipt,
                                    "provenance": {"ack": obs.get("provenance"), "accept": None, "ack_execution": obs.get("execution")},
@@ -2718,6 +3242,10 @@ class Driver:
         state = find_key(data, ["agent_status", "status", "state"]) if data else None
         if rc != 0 or (state and state not in IDLE_STATES):
             return NOT_EXERCISED, f"the TUI agent never reported idle (rc={rc}, state {state!r}); no idle wake could be owed", None
+        # ht-p03.20: the warning capture reads the pane's recent scrollback, which still shows any earlier wake (e.g. the
+        # initial handoff's idle recovery wake). SW2 judges only the markers that appear after this baseline.
+        baseline = self.capture_pane("warning-baseline")
+        self.facts["warning_marker_baseline"] = (baseline or "").count(WAKE_MARKER)
         status, detail, message = self.send_warning_message()
         if status != PASS:
             return FAIL, f"warning message send failed: {detail}", None
@@ -2768,9 +3296,17 @@ class Driver:
                           "FROM wake_work WHERE seat_id=?", (self.facts["agent_seat"],))
         offer = self.query("SELECT offered_through_seq FROM warning_offer WHERE seat_id=?", (self.facts["agent_seat"],))
         markers = {p.name: p.read_text(errors="replace").count(WAKE_MARKER) for p in sorted(self.ev.glob("pane-*.txt"))}
-        record = {"warning_seq": seq, "wake_work": rows, "warning_offer": offer, "marker_counts": markers}
+        baseline = self.facts.get("warning_marker_baseline")
+        record = {"warning_seq": seq, "wake_work": rows, "warning_offer": offer, "marker_counts": markers,
+                  "warning_marker_baseline": baseline}
         (self.ev / "warning-wake.json").write_text(json.dumps(record, indent=2, default=str))
-        storm = {name: n for name, n in markers.items() if n > 1}
+        # The warning capture counts only what appeared after the pre-send baseline capture (same pane, same scrollback);
+        # the baseline capture itself is earlier-phase history.
+        new = dict(markers)
+        new.pop("pane-warning-baseline.txt", None)
+        if baseline is not None and "pane-warning.txt" in new:
+            new["pane-warning.txt"] = max(0, new["pane-warning.txt"] - baseline)
+        storm = {name: n for name, n in new.items() if n > 1}
         if storm:
             return FAIL, f"wake marker repeated in one pane capture (not coalesced): {storm}", None
         row = rows[0] if rows else {}
@@ -2845,8 +3381,51 @@ class Driver:
             return True
         return False
 
+    def expected_wake_seqs(self):
+        """[(kind, seq, id)] the idle recovery wake must cover for the un-prompted agent: the decision sequence of every
+        handoff message sent to the seat (the wake's addressed-receipt frontier) and of each of its pending invitations
+        (the invitation frontier), read from SQLite. [] when none can be read."""
+        expected = []
+        for message in dict.fromkeys(self.facts.get("messages", {}).values()):
+            rows = self.query("SELECT decision_seq FROM send_manifests WHERE message_id=?", (message,)) \
+                or self.query("SELECT decision_seq FROM messages WHERE id=?", (message,))
+            if rows and rows[0].get("decision_seq"):
+                expected.append(("receipt", rows[0]["decision_seq"], message))
+        for row in self.query("SELECT id, created_decision_seq FROM invitations WHERE seat_id=? AND state='pending'",
+                              (self.facts["agent_seat"],)):
+            if row.get("created_decision_seq"):
+                expected.append(("invitation", row["created_decision_seq"], row["id"]))
+        return expected
+
+    def offered_at_checkin(self):
+        """W10-E2: True when the agent's own startup check-in already offered it the pending handoff, so nothing was lost
+        for a recovery wake to recover: the handoff's message id in a SessionStart additionalContext (Claude hook
+        attachment, Codex rollout developer message before any user turn) of the phase transcript."""
+        transcript = self.phase_transcript("initial") or self.live_transcript("initial")
+        message = (self.facts.get("messages") or {}).get("initial")
+        if not message:
+            return False
+        seen_user = False
+        for entry in self.transcript_events(transcript):
+            if self.harness == "claude":
+                attachment = entry.get("attachment")
+                if entry.get("type") == "attachment" and isinstance(attachment, dict) and attachment.get("type") == "hook_additional_context" \
+                        and attachment.get("hookEvent") == "SessionStart":
+                    content = attachment.get("content")
+                    if message in ("\n".join(map(str, content)) if isinstance(content, list) else str(content or "")):
+                        return True
+            else:
+                found = self.rollout_message(entry)
+                if found:
+                    role, text = found
+                    seen_user |= role == "user"
+                    if role == "developer" and not seen_user and HOOK_PREAMBLE in text and message in text:
+                        return True
+        return False
+
     def s_lostprompt_wake(self):
-        """SL1: the product reserved an idle recovery wake for the un-prompted agent, covering its pending handoff."""
+        """SL1: the product reserved an idle recovery wake for the un-prompted agent, covering its pending handoff: every
+        expected handoff sequence number (W10-E1), not merely some non-null one."""
         lp = self.facts.get("lostprompt")
         if not lp:
             return FAIL, "the lostprompt launch recorded no observation", None
@@ -2855,10 +3434,26 @@ class Driver:
                                                                  indent=2, default=str))
         if self.new_wake(before, after):
             covered = [k[5:-4] for k in ("last_receipt_seq", "last_invitation_seq") if after.get(k) is not None]
+            try:
+                expected = self.expected_wake_seqs()
+            except (RuntimeError, sqlite3.Error):  # no readable database: the expected sequences are unknown
+                expected = []
+            missing = [f"{kind} seq {seq} ({ident})" for kind, seq, ident in expected
+                       if after.get(f"last_{kind}_seq") is None or after[f"last_{kind}_seq"] < seq]
+            if missing:
+                return FAIL, (f"wake reservation {after['last_reservation_id']} does not cover every expected handoff sequence: "
+                              f"missing {', '.join(missing)} (wake_work last_receipt_seq={after.get('last_receipt_seq')}, "
+                              f"last_invitation_seq={after.get('last_invitation_seq')})"), None
             if covered:
                 return PASS, (f"idle recovery wake reservation {after['last_reservation_id']} for the un-prompted agent covered its "
-                              f"pending {' + '.join(covered)} (outcome {after.get('last_outcome')!r}, reason bits {after.get('reason_bits')})"), None
+                              f"pending {' + '.join(covered)} (outcome {after.get('last_outcome')!r}, reason bits {after.get('reason_bits')})"
+                              + ("" if expected else "; expected handoff sequences unreadable from SQLite, so only that one was reserved")), None
             return FAIL, f"a wake reservation {after['last_reservation_id']} covered no pending receipt or invitation: {after}", None
+        if self.offered_at_checkin():
+            lp["offered_at_checkin"] = True
+            return NOT_EXERCISED, (f"the agent's startup check-in already offered it the pending handoff (SessionStart context names "
+                                   f"{self.facts['messages']['initial']}), so nothing was lost and no recovery wake was owed in "
+                                   f"{lp.get('waited_s')}s; lost-prompt recovery not exercised"), None
         if self.wake_unsupported(lp):
             return NOT_EXERCISED, (f"health reports host safe_prompt unsupported and no wake reservation was observed in "
                                    f"{lp.get('waited_s')}s: the idle recovery wake is unavailable in this build (ht-4is.5.6); "
@@ -2886,6 +3481,9 @@ class Driver:
         """S18 under lostprompt: an ACK missing because nothing could prompt the agent (safe prompt unsupported, no
         delivered wake observed) is NOT_EXERCISED; with a delivered wake, or a claimed capability, it stays a FAIL."""
         status, detail, value = self.s_wait_and_verify("initial", transcript)
+        if status == FAIL and not self.lostprompt_delivered() and self.offered_at_checkin():
+            return NOT_EXERCISED, (f"the startup check-in already offered the un-prompted agent its handoff and no wake was delivered; "
+                                   f"the ACK after recovery was not exercised: {detail}"), value
         if status == FAIL and not self.lostprompt_delivered() and self.wake_unsupported(self.facts.get("lostprompt")):
             return NOT_EXERCISED, (f"nothing prompted the un-prompted agent (health safe_prompt unsupported, no delivered wake); "
                                    f"the ACK after recovery was not exercised: {detail}"), value
@@ -2987,20 +3585,10 @@ class Driver:
         """(overlap, how): whether at least two subagents ran at the same time. Claude: a spawn issued before another
         spawn's result came back (root transcript order). Codex: child rollouts whose timestamp spans intersect."""
         if self.harness == "claude":
-            events = self.transcript_events(self.phase_transcript(phase))
-            start, end = {}, {}
-            for index, event in enumerate(events):
-                message = event.get("message")
-                content = message.get("content") if isinstance(message, dict) else None
-                for block in content if isinstance(content, list) else []:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get("type") == "tool_use" and block.get("id") in sidechain["spawns"]:
-                        start.setdefault(block["id"], index)
-                    elif block.get("type") == "tool_result" and block.get("tool_use_id") in sidechain["spawns"]:
-                        end.setdefault(block["tool_use_id"], index)
-            spans = [(start[s], end.get(s, len(events))) for s in sidechain["spawns"] if s in start]
-            how = "root transcript spawn/result order"
+            # Per agent id: the [first, last] timestamp of each child's own transcript, when at least two have one.
+            spans, how = self.claude_agent_spans(sidechain.get("files", [])), "subagent transcript timestamp spans"
+            if len(spans) < 2:
+                spans, how = self.claude_spawn_spans(phase, sidechain), "root transcript spawn/result order"
         else:
             spans = []
             for path in sidechain.get("files", []):
@@ -3023,6 +3611,45 @@ class Driver:
             reach = max(reach, finish)
         return False, how
 
+    def claude_agent_spans(self, files):
+        """[(first, last)] timestamps per child agent id across the subagent transcripts (a child may span several files)."""
+        stamps = {}
+        for path in files:
+            for event in self.transcript_events(path):
+                agent = event.get("agentId") or event.get("agent_id") or re.sub(r"^agent-", "", Path(path).stem)
+                try:
+                    stamps.setdefault(agent, []).append(datetime.datetime.fromisoformat(str(event.get("timestamp", "")).replace("Z", "+00:00")))
+                except ValueError:
+                    continue
+        return [(min(v), max(v)) for v in stamps.values() if v]
+
+    def claude_spawn_spans(self, phase, sidechain):
+        """[(start, end)] event-index spans of each spawn in the root transcript. A spawn's span ends at its tool_result,
+        except a background one (`run_in_background`, its result is only the launch ack): that runs until a later
+        task-notification names it, else to the end of the transcript (W10-E7)."""
+        events = self.transcript_events(self.phase_transcript(phase))
+        start, end, background = {}, {}, set()
+        for index, event in enumerate(events):
+            message = event.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            for block in content if isinstance(content, list) else []:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use" and block.get("id") in sidechain["spawns"]:
+                    start.setdefault(block["id"], index)
+                    if isinstance(block.get("input"), dict) and block["input"].get("run_in_background"):
+                        background.add(block["id"])
+                elif block.get("type") == "tool_result" and block.get("tool_use_id") in sidechain["spawns"] and block["tool_use_id"] not in background:
+                    end.setdefault(block["tool_use_id"], index)
+        agents = sidechain.get("agents") or {}
+        for spawn in background:
+            names = [spawn, agents.get(spawn)]
+            for index, event in enumerate(events):
+                if index > start[spawn] and "task-notification" in json.dumps(event) and any(n and n in json.dumps(event) for n in names):
+                    end.setdefault(spawn, index)
+                    break
+        return [(start[s], end.get(s, len(events))) for s in sidechain["spawns"] if s in start]
+
     def s_children_concurrent(self, phase="initial"):
         """SK1 (d): at least two subagents ran concurrently and at least two of them read mail."""
         result = self.phase_result(phase)
@@ -3038,7 +3665,8 @@ class Driver:
         if overlap is None:
             return UNVERIFIED, f"concurrency of {len(children)} subagents could not be established ({how})", None
         reads = [c for c in sidechain["calls"] if READ_VERBS.search(c["command"]) and not mutating_call(c["command"])]
-        readers = {c.get("parent") or c.get("source") for c in reads if c.get("result_error") is False}
+        # W10-E7: readers are distinct child identities, not distinct places a read was recorded (stream parent id, file).
+        readers = {c.get("agent") or c.get("parent") or c.get("source") for c in reads if c.get("result_error") is False}
         if len(readers) >= 2:
             return PASS, f"{len(children)} concurrent subagents ({how}); {len(readers)} of them read mail successfully", None
         if not sidechain["complete"]:
@@ -3575,6 +4203,13 @@ class Driver:
         not_exercised = [s["step"] for s in self.steps if s["status"] == NOT_EXERCISED]
         self.facts["not_exercised"] = not_exercised
         unsupported = [s["step"] for s in self.steps if s["status"] == UNSUPPORTED_STEP]
+        receipt_ids = {r["message_id"] for r in receipts}
+        missing = [p["message_id"] for p in pairs if p["message_id"] not in receipt_ids]
+        excused = set()
+        if "lostprompt" in self.scenarios and LOSTPROMPT_STEPS & set(not_exercised):
+            excused.add(messages.get("initial"))
+        if "midturn" in self.scenarios and {"SM2", "SM3"} & set(not_exercised):
+            excused.add(messages.get("midturn"))
         if self.dry:
             status, reason = "UNSUPPORTED", "dry_run_no_model"
         elif self.args.cli_hint:  # a hinted prompt is a diagnostic, never acceptance evidence
@@ -3590,9 +4225,11 @@ class Driver:
         elif unsupported and not hard_failed:
             # A configuration this build does not offer (e.g. --launch managed without `launch`): nothing ran.
             status, reason = "UNSUPPORTED", self.unsupported_reasons.get(unsupported[0], "configuration_unsupported")
-        elif not failed and not_exercised and len(receipts) < len(pairs):
-            # lostprompt: the handoff ACK was not exercised (nothing could prompt the agent); never PASS, never FAIL.
-            status, reason = "UNSUPPORTED", "safe_wake_unsupported" if self.facts.get("safe_wake_unsupported") else "scenario_not_exercised"
+        elif not failed and not_exercised and missing and all(m in excused for m in missing):
+            # W10-E8: a missing ACK is excused only by the not-exercised scenario that owns that message (the lostprompt
+            # handoff, the midturn message): its claim was untested, never PASS, never FAIL. A missing ACK nothing excuses
+            # is a failure.
+            status, reason = "UNSUPPORTED", self.not_exercised_reason(not_exercised)
         elif not failed and receipts and len(receipts) == len(pairs):
             # B1: PASS only when no subagent activity occurred; otherwise everything else held but child ACK
             # absence is UNVERIFIED, which the schema (PASS carries no reason) can only express as UNSUPPORTED.
@@ -3600,8 +4237,7 @@ class Driver:
             if not unverified and not not_exercised:
                 status, reason = "PASS", ""
             elif not_exercised:  # an opt-in scenario's trigger never happened: its claim is untested, not wrong
-                status, reason = "UNSUPPORTED", ("safe_wake_unsupported" if self.facts.get("safe_wake_unsupported")
-                                                 else "scenario_not_exercised")
+                status, reason = "UNSUPPORTED", self.not_exercised_reason(not_exercised)
             else:  # codex D2: the reason names what is unverified, most serious first
                 reasons = {u: self.unverified_reason(u) for u in unverified}
                 self.facts["unverified_reasons"] = reasons
@@ -3622,6 +4258,12 @@ class Driver:
         except ValueError as error:
             (self.ev / "manifest.invalid.json").write_text(json.dumps({"error": str(error), "record": record}, indent=2))
         return status
+
+    def not_exercised_reason(self, steps):
+        """The manifest reason for NOT_EXERCISED steps: `safe_wake_unsupported` only when health said the safe prompt is
+        unsupported and every such step is a wake step; any other not-exercised step is `scenario_not_exercised`."""
+        wake = all(step in LOSTPROMPT_STEPS or WAKE_STEP.fullmatch(step) for step in steps)
+        return "safe_wake_unsupported" if self.facts.get("safe_wake_unsupported") and wake else "scenario_not_exercised"
 
     @staticmethod
     def unverified_reason(item):
@@ -3733,6 +4375,16 @@ class Driver:
                 self.facts.setdefault("skipped_phases", []).append(phase)
                 continue
             send_needs = ("S13",)
+            if phase in DAEMON_PHASES:
+                # ht-910 / P40: the daemon stops (or is SIGKILLed) and is re-ensured while the TUI agent stays in its
+                # pane; no relaunch. The handoff sent afterwards must still reach the same agent and be ACKed by it.
+                self.step(f"S{n}D", f"{phase}: daemon {'SIGKILLed' if phase == 'daemon-crash' else 'stopped'} and re-ensured, agent stays in its pane",
+                          lambda p=phase: self.s_daemon_cycle(p), needs=("S18",))
+                self.step(f"S{n}", f"send require-ACK handoff ({phase})", lambda p=phase: self.send(p), needs=("S13", f"S{n}D"))
+                self.step(f"S{n+2}", f"verify model ACK ({phase}); earlier receipts unchanged",
+                          lambda p=phase, t=transcript: self.s_wait_and_verify(p, t), needs=(f"S{n}",))
+                self.step(f"S{n+2}C", f"child/subagent ACK absence ({phase})", lambda p=phase: self.s_child_check(p), needs=(f"S{n+2}",))
+                continue
             if phase == "clear" and not self.dry:
                 # Clear first, then send: with the production idle wake, a handoff sent to the idle pre-clear session is
                 # woken and ACKed there before /clear or /new runs (native Codex w12), so it never tests the new session.
@@ -3804,7 +4456,8 @@ class Driver:
                    "interrupted": self.interrupted, "diagnostic_cli_hint": bool(self.args.cli_hint),
                    "skipped_phases": self.facts.get("skipped_phases", []), "unverified": self.facts.get("unverified", []),
                    "scenarios": list(self.scenarios), "launch": self.launch_mode, "not_exercised": self.facts.get("not_exercised", []),
-                   "usage": self.facts.get("usage", {}), "codex_profile_attempts": self.facts.get("codex_profile_attempts", [])}
+                   "usage": self.facts.get("usage", {}), "codex_profile_attempts": self.facts.get("codex_profile_attempts", []),
+                   "codex_tui": self.facts.get("codex_tui")}
         (self.ev / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True, default=str))
         first_fail = next((s for s in self.steps if s["status"] == FAIL), None)
         counts = {k: sum(1 for s in self.steps if s["status"] == k)
@@ -3830,7 +4483,7 @@ def parse(argv=None):
     p.add_argument("--state-dir", help="use this (e.g. installed plugin) state dir instead of an isolated one")
     p.add_argument("--host-endpoint", help="default $HERDR_SOCKET_PATH")
     p.add_argument("--run-root", help="parent of the private run directory (default $TMPDIR/ht-native-demo)")
-    p.add_argument("--phases", default="initial,restart,resume", help="comma list of initial,restart,resume,clear")
+    p.add_argument("--phases", default="initial,restart,resume", help="comma list of initial,restart,resume,clear,daemon-restart,daemon-crash (the last two: tui only)")
     p.add_argument("--timeout", type=int, default=240, help="seconds per agent launch")
     p.add_argument("--verify-wait", type=int, default=30, help="seconds to poll SQLite for the ACK after the agent exits")
     p.add_argument("--deadline", type=int, default=900, help="invitation/receipt deadline seconds")
@@ -3843,7 +4496,15 @@ def parse(argv=None):
     p.add_argument("--claude-budget-usd", type=float, default=0.20, help="per launch; print mode only")
     p.add_argument("--claude-permission-mode", default="default")
     p.add_argument("--tui-accept-trust", action="store_true",
-                   help="required for --mode tui: answer the Claude folder-trust dialog, only when it is on screen (writes ~/.claude.json)")
+                   help="answer the Claude or Codex folder-trust screen, only when it is on screen and the project is inside a "
+                        "/private/tmp run root (Claude: writes ~/.claude.json; Codex: the scratch CODEX_HOME); required for "
+                        "Claude --mode tui")
+    p.add_argument("--codex-bin", default=None,
+                   help="absolute path of the Codex binary to run (default $HT_CODEX_BIN, else codex on PATH); the native "
+                        "matrix pins Codex 0.159.3 this way")
+    p.add_argument("--claude-bin", default=None,
+                   help="absolute path of the Claude binary to run (default $HT_CLAUDE_BIN_PINNED, else claude on PATH); "
+                        "the native matrix pins its run-root shim of ~/.local/share/claude/versions/<v> this way")
     p.add_argument("--allow-uncapped-spend", action="store_true",
                    help="required for live Codex and Claude --mode tui runs, which have no dollar cap (bounded only by --timeout x phases)")
     p.add_argument("--claude-projects-dir", default=str(Path.home() / ".claude" / "projects"),
@@ -3899,6 +4560,8 @@ def validate_args(p, args):
         p.error("--scenario child and children ask for different delegation prompts; choose one")
     if args.harness == "claude" and args.mode == "tui" and not args.tui_accept_trust:  # S1
         p.error("--mode tui needs --tui-accept-trust: the new scratch project always shows the folder-trust dialog")
+    if set(args.phases.split(",")) & set(DAEMON_PHASES) and args.mode != "tui":
+        p.error("--phases daemon-restart/daemon-crash need an agent that stays in its pane: use --mode tui")
     launches = 1 + len([x for x in args.phases.split(",") if x and x != "initial"])  # initial always launches
     profile = getattr(args, "codex_profile", None)
     if profile is not None:
@@ -3929,6 +4592,23 @@ def validate_args(p, args):
             str(Path(args.run_root).resolve()).rstrip("/") + "/" == root or str(Path(args.run_root).resolve()).startswith(root)
             for root in TUI_TRUST_ROOTS):
         p.error(f"--tui-accept-trust is approved only for scratch projects under {TUI_TRUST_ROOTS}; --run-root {args.run_root} is outside")
+    codex_bin = getattr(args, "codex_bin", None)
+    if codex_bin and args.harness != "codex":  # only an explicit CLI flag reaches here: the env default is codex-only
+        p.error("--codex-bin applies to --harness codex only")
+    claude_bin = getattr(args, "claude_bin", None)
+    if claude_bin and args.harness != "claude":
+        p.error("--claude-bin applies to --harness claude only")
+    if args.harness == "claude" and not claude_bin:
+        claude_bin = args.claude_bin = os.environ.get("HT_CLAUDE_BIN_PINNED") or None
+    if claude_bin and not (os.path.isabs(claude_bin) and os.path.isfile(claude_bin) and os.access(claude_bin, os.X_OK)):
+        p.error(f"--claude-bin {claude_bin} must be an absolute path to an executable file")
+    if args.harness == "codex" and not codex_bin:
+        codex_bin = args.codex_bin = os.environ.get("HT_CODEX_BIN") or None
+    if codex_bin:
+        if not os.path.isabs(codex_bin):
+            p.error("--codex-bin must be an absolute path")
+        if not (os.path.isfile(codex_bin) and os.access(codex_bin, os.X_OK)):
+            p.error(f"--codex-bin {codex_bin} is not an executable file")
     uncapped = args.harness == "codex" or args.mode == "tui"
     if uncapped and not args.dry_run and not args.allow_uncapped_spend:
         p.error("live Codex / Claude TUI runs have no dollar cap; pass --allow-uncapped-spend to accept spend bounded "

@@ -1,0 +1,47 @@
+{
+  "harness": "claude",
+  "db": {
+    "messages": [
+      {
+        "id": "msg-1",
+        "seq": 5,
+        "acked": true
+      }
+    ],
+    "invitations": [
+      {
+        "id": "inv-1",
+        "seq": 3,
+        "state": "accepted"
+      }
+    ]
+  },
+  "facts": {
+    "launch_outcome": {
+      "initial": {
+        "permission_denials": [
+          {
+            "tool_name": "Bash",
+            "command": "sudo -u root herdr-threads ack msg-1"
+          },
+          {
+            "tool_name": "Bash",
+            "command": "exec herdr-threads ack msg-1"
+          },
+          {
+            "tool_name": "Bash",
+            "command": "command herdr-threads ack msg-1"
+          },
+          {
+            "tool_name": "Bash",
+            "command": "nohup herdr-threads ack msg-1"
+          },
+          {
+            "tool_name": "Bash",
+            "command": "timeout 5 herdr-threads ack msg-1"
+          }
+        ]
+      }
+    }
+  }
+}

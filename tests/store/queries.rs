@@ -8,6 +8,7 @@ use crate::protocol::{
         SeatInspectQuery, SeatsQuery, ThreadQuery, WarningsQuery,
     },
     ids::{MessageId, OperationId, SeatId, ThreadId},
+    output::{OutputFormat, OutputSpec},
     pagination::{Cursor, PageRequest},
     results::{CommandResult, ErrorCode, MessageContent, SearchHit},
     time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis},
@@ -118,6 +119,7 @@ fn history_pages_205_rows_and_refresh_finds_append() {
             thread: ThreadId::new("t"),
             page: page(cursor),
             initial: None,
+            full_bodies: false,
         });
         let CommandResult::History(result) = query(&store, "i", &q, &budget()).unwrap() else {
             panic!("wrong result")
@@ -148,6 +150,7 @@ fn history_pages_205_rows_and_refresh_finds_append() {
         thread: ThreadId::new("t"),
         page: page(None),
         initial: None,
+        full_bodies: false,
     });
     let CommandResult::History(refresh) = query(&store, "i", &q, &budget()).unwrap() else {
         panic!("wrong result")
@@ -167,6 +170,7 @@ fn history_shows_published_warning_before_projection() {
         thread: ThreadId::new("t"),
         page: page(None),
         initial: None,
+        full_bodies: false,
     });
     let CommandResult::History(result) = query(&store, "i", &q, &budget()).unwrap() else {
         panic!()
@@ -1111,6 +1115,7 @@ fn history_ranges_keep_direction_and_high_water_across_append() {
         thread: ThreadId::new("t"),
         page: p.clone(),
         initial: Some(HistoryRange::After { sequence: 1 }),
+        full_bodies: false,
     });
     let CommandResult::History(first) = query(&store, "i", &q, &budget()).unwrap() else {
         panic!()
@@ -1127,6 +1132,7 @@ fn history_ranges_keep_direction_and_high_water_across_append() {
         thread: ThreadId::new("t"),
         page: p,
         initial: None,
+        full_bodies: false,
     });
     let CommandResult::History(second) = query(&store, "i", &q, &budget()).unwrap() else {
         panic!()
@@ -1140,6 +1146,7 @@ fn history_ranges_keep_direction_and_high_water_across_append() {
         thread: ThreadId::new("t"),
         page: page(None),
         initial: Some(HistoryRange::Before { sequence: 4 }),
+        full_bodies: false,
     });
     let CommandResult::History(before) = query(&store, "i", &q, &budget()).unwrap() else {
         panic!()
@@ -1167,6 +1174,7 @@ fn history_rejects_cursor_with_changed_filter_digest() {
             thread: ThreadId::new("t"),
             page: p.clone(),
             initial: None,
+            full_bodies: false,
         }),
         &budget(),
     )
@@ -1188,6 +1196,7 @@ fn history_rejects_cursor_with_changed_filter_digest() {
             thread: ThreadId::new("t"),
             page: p,
             initial: None,
+            full_bodies: false,
         }),
         &budget(),
     )
@@ -1766,6 +1775,7 @@ fn short_preview_detail_argv_preserves_output_context() {
             thread: ThreadId::new("t"),
             page: page(None),
             initial: None,
+            full_bodies: false,
         }),
         &output,
         &budget(),
@@ -2834,6 +2844,162 @@ fn participants_and_thread_show_mark_the_caller_seat() {
         .map(|p| p.seat.as_str())
         .collect();
     assert_eq!(selves, ["s-agent"]);
+}
+
+// ---- History full_bodies (ht-p03.12.8, spec D6 Wave 27 Bodies) ----
+
+fn seed_bodies(db: &rusqlite::Connection, bodies: &[String]) {
+    for (i, body) in bodies.iter().enumerate() {
+        let n = i as i64 + 1;
+        db.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('i',coalesce((SELECT MAX(decision_seq)+1 FROM messages WHERE instance_id='i'),1),?1,'t',?2,'ordinary','s',?3,0)", params![format!("m{n}"), n, body]).unwrap();
+    }
+    db.execute(
+        "UPDATE threads SET next_sequence=?1 WHERE id='t'",
+        [bodies.len() as i64 + 1],
+    )
+    .unwrap();
+}
+
+fn json_output() -> OutputSpec {
+    OutputSpec {
+        format: OutputFormat::Json,
+        context: Default::default(),
+    }
+}
+
+fn read_history(
+    store: &super::super::connection::StoreContext,
+    cursor: Option<String>,
+    limit: u16,
+    max_bytes: u32,
+    full_bodies: bool,
+) -> Result<crate::protocol::pagination::Page<crate::protocol::results::MessageSummary>, ErrorCode>
+{
+    let command = Command::History(HistoryQuery {
+        thread: ThreadId::new("t"),
+        page: PageRequest {
+            cursor,
+            limit,
+            max_bytes,
+        },
+        initial: None,
+        full_bodies,
+    });
+    match query_with_output(store, "i", &command, &json_output(), &budget()) {
+        Ok(CommandResult::History(page)) => Ok(page),
+        Ok(_) => panic!("wrong result"),
+        Err(error) => Err(error.code),
+    }
+}
+
+fn body_of(len: usize, tag: char) -> String {
+    std::iter::repeat_n(tag, len).collect()
+}
+
+// Kills: ignoring `full_bodies` (previews stay clipped), inlining without
+// clearing `preview_omitted` (the CLI would still fetch), inlining a body
+// past the fetch bound (the human read would print what a fetch never would).
+#[test]
+fn full_bodies_inlines_complete_bodies_under_the_budget() {
+    let (store, db) = fixture();
+    let bodies = vec![
+        "hello".to_owned(),
+        body_of(1_000, 'a'),
+        body_of(6_000, 'b'),
+        body_of(FULL_BODY_FETCH_BYTES as usize + 1, 'c'),
+    ];
+    seed_bodies(&db, &bodies);
+    let plain = read_history(&store, None, 10, 65_536, false).unwrap();
+    // Newest first: items[0] is the over-bound body.
+    assert!(
+        plain
+            .items
+            .iter()
+            .skip(1)
+            .take(2)
+            .all(|m| m.preview_omitted)
+    );
+    let full = read_history(&store, None, 10, 65_536, true).unwrap();
+    assert_eq!(full.items.len(), 4);
+    let by_sequence = |s: u64| full.items.iter().find(|m| m.sequence == s).unwrap();
+    for (sequence, body) in [(1, &bodies[0]), (2, &bodies[1]), (3, &bodies[2])] {
+        let item = by_sequence(sequence);
+        assert_eq!(&item.preview_data, body);
+        assert!(!item.preview_omitted, "sequence {sequence}");
+    }
+    let over = by_sequence(4);
+    assert!(over.preview_omitted);
+    assert_eq!(over.preview_data.chars().count(), 256);
+    assert!(over.preview_detail_argv.is_some());
+}
+
+// Kills: erroring `InvalidBudget` when the first body alone exceeds the page,
+// dropping the clipped preview or body cursor, and clipping a later body that
+// would have fit a page of its own.
+#[test]
+fn oversize_body_keeps_clipped_preview_and_cursor() {
+    let (store, db) = fixture();
+    let big = body_of(3_000, 'z');
+    seed_bodies(&db, &["first".into(), big.clone(), "last".into()]);
+    // Newest first: "last", then the big body, then "first". 1_500 bytes holds
+    // a clipped summary but not the 3_000 byte body.
+    let page_one = read_history(&store, None, 10, 1_500, true).unwrap();
+    assert_eq!(
+        page_one
+            .items
+            .iter()
+            .map(|m| m.sequence)
+            .collect::<Vec<_>>(),
+        vec![3]
+    );
+    assert_eq!(page_one.items[0].preview_data, "last");
+    assert!(page_one.has_more);
+    let page_two = read_history(&store, page_one.next_cursor.clone(), 10, 1_500, true).unwrap();
+    let head = &page_two.items[0];
+    assert_eq!(head.sequence, 2);
+    assert!(head.preview_omitted);
+    assert_eq!(head.preview_data, big.chars().take(256).collect::<String>());
+    let argv = head.preview_detail_argv.clone().expect("body cursor");
+    assert!(
+        matches!(parse_argv(argv).unwrap().action, CliAction::Wire(Command::Message(ref q)) if q.message.as_str() == "m2")
+    );
+    assert_eq!(page_two.items.last().unwrap().sequence, 1);
+}
+
+// The pre-D5 greedy loop as oracle: the largest k whose page of the first k
+// items encodes within `max`. `limit = k` with an unbounded budget is exactly
+// that page (same cursor, same stop reason), so its encoded length is the
+// oracle's measure.
+// Kills: a fit that sizes by clipped previews while emitting full bodies
+// (pages over budget), or one that cuts a page before the budget is spent.
+#[test]
+fn full_bodies_page_boundaries_match_pagefit_oracle() {
+    let (store, db) = fixture();
+    let bodies: Vec<String> = (1..=10).map(|n| body_of(300 * n, 'q')).collect();
+    seed_bodies(&db, &bodies);
+    let output = json_output();
+    let len_of_first = |k: u16| {
+        let page = read_history(&store, None, k, 65_536, true).unwrap();
+        assert_eq!(page.items.len(), k as usize);
+        encode_selected(&CommandResult::History(page), &output)
+            .unwrap()
+            .len()
+    };
+    const SLACK: usize = 48;
+    let lens: Vec<usize> = (1..=9).map(len_of_first).collect();
+    assert!(lens[1] - lens[0] > 2 * SLACK, "fixture gap too small");
+    assert!(lens.windows(2).all(|w| w[0] < w[1]));
+    for k in 1..=8usize {
+        // The cursor argv in the real page spells `--limit 100` and the
+        // byte bound where the oracle page spells `k`: a few bytes of slack.
+        for max in [lens[k - 1] + SLACK, lens[k] - SLACK] {
+            let page = read_history(&store, None, 100, max as u32, true).unwrap();
+            assert_eq!(page.items.len(), k, "max {max}");
+            assert!(page.has_more);
+            let wire = encode_selected(&CommandResult::History(page), &output).unwrap();
+            assert!(wire.len() <= max, "page of {} over max {max}", wire.len());
+        }
+    }
 }
 
 #[test]

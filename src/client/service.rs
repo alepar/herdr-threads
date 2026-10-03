@@ -33,12 +33,7 @@ use tokio::{
 use uuid::Uuid;
 
 fn error(code: ErrorCode, detail: &str) -> ApiError {
-    ApiError {
-        code,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::new(code, detail)
 }
 
 #[derive(Debug)]
@@ -458,11 +453,6 @@ impl PersistentServiceClient {
             service,
         }
     }
-    async fn cancelled(budget: &CallBudget) {
-        while !budget.cancellation.is_cancelled() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    }
     async fn admit(
         &self,
         budget: &CallBudget,
@@ -470,7 +460,7 @@ impl PersistentServiceClient {
         let deadline = tokio::time::Instant::now() + self.remaining(budget)?;
         let held = tokio::select! {
             biased;
-            _ = Self::cancelled(budget) => return Err(error(ErrorCode::Cancelled, "request cancelled while waiting for session")),
+            _ = budget.cancellation.cancelled() => return Err(error(ErrorCode::Cancelled, "request cancelled while waiting for session")),
             _ = tokio::time::sleep_until(deadline) => return Err(error(ErrorCode::DeadlineExceeded, "request deadline elapsed while waiting for session")),
             held = self.session.lock() => held,
         };
@@ -495,7 +485,7 @@ impl PersistentServiceClient {
             while !part.is_empty() {
                 let written = tokio::select! {
                     result = tokio::time::timeout_at(deadline, stream.write(part)) => result.map_err(|_| error(ErrorCode::HostUnavailable, "incomplete request frame"))?.map_err(|_| error(ErrorCode::HostUnavailable, "incomplete request frame"))?,
-                    _ = Self::cancelled(budget) => return Err(error(ErrorCode::HostUnavailable, "incomplete request frame")),
+                    _ = budget.cancellation.cancelled() => return Err(error(ErrorCode::HostUnavailable, "incomplete request frame")),
                 };
                 if written == 0 {
                     return Err(error(
@@ -530,7 +520,7 @@ impl PersistentServiceClient {
         let bytes = tokio::select! {
             result = read_frame(stream) => result.map_err(|_| error(ErrorCode::UnknownOutcome, "unknown outcome after request submission"))?,
             _ = tokio::time::sleep_until(deadline) => return Err(error(ErrorCode::UnknownOutcome, "unknown outcome after request submission")),
-            _ = Self::cancelled(budget) => return Err(error(ErrorCode::UnknownOutcome, "unknown outcome after request submission")),
+            _ = budget.cancellation.cancelled() => return Err(error(ErrorCode::UnknownOutcome, "unknown outcome after request submission")),
         };
         let response: ServiceWireResponse = serde_json::from_slice(&bytes)
             .map_err(|_| error(ErrorCode::UnknownOutcome, "invalid service response"))?;
@@ -556,7 +546,7 @@ impl PersistentServiceClient {
         let remaining = self.remaining(budget)?.min(Duration::from_secs(2));
         let mut stream = tokio::select! {
             result = tokio::time::timeout(remaining, UnixStream::connect(&self.path)) => result.map_err(|_| error(ErrorCode::HostUnavailable, "daemon connect timed out"))?.map_err(|connect| super::connect_error(&connect, &self.path))?,
-            _ = Self::cancelled(budget) => return Err(error(ErrorCode::Cancelled, "request cancelled before connect")),
+            _ = budget.cancellation.cancelled() => return Err(error(ErrorCode::Cancelled, "request cancelled before connect")),
         };
         let request = self.request(ServiceRequest::Register(ServiceRegister {
             capability: SERVICE_SESSION_CAPABILITY.into(),

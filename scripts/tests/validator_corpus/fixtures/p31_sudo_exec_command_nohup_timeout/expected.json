@@ -1,0 +1,6 @@
+{
+  "finding": "p31_sudo_exec_command_nohup_timeout",
+  "entry": "verify",
+  "verdict": "FAIL",
+  "reason": "harness denied 5 herdr-threads command(s) (permission_denials): sudo -u root herdr-threads ack msg-1; exec herdr-threads ack msg-1; command herdr-threads ack msg-1"
+}

@@ -14,7 +14,7 @@ use crate::protocol::ids::ServiceAuthorId;
 use crate::protocol::{
     authority::{
         CallerClaim, DecisionFence, Harness, MAX_PERMIT_MILLIS, MutationPermit, ObligationRef,
-        OperatorActor, ReceiptRegistration,
+        OperatorActor,
     },
     commands::{
         CheckIn, Command, ContinuityCheckIn, OperatorCommand, OperatorFreshSeat,
@@ -337,7 +337,6 @@ impl ReadContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegisterAvailableRequest {
     pub command: CheckIn,
-    pub registration: Option<ReceiptRegistration>,
     /// Trusted instance and selected-output bounds for the transaction-local offer.
     pub read: ReadContext,
     /// Set only when the local account explicitly overrides the agent-to-human
@@ -354,62 +353,6 @@ pub struct CooperativePermitRequest {
     pub obligation: ObligationRef,
     pub payload_hash: [u8; 32],
     pub check_in_mode: Option<crate::protocol::commands::CheckInMode>,
-}
-
-/// Trusted host/recovery loss evidence for revoking a current registration.
-/// This is internal service input, not a wire command or a caller assertion.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RegistrationLossReason {
-    /// The current host fence must match these values at decision, and at
-    /// least one structural value must differ from the registered binding.
-    HostStructuralChange {
-        current_boot: HostBootId,
-        current_epoch: u64,
-        current_target_generation: u64,
-        current_observation_sequence: u64,
-    },
-    /// The matching durable recovery hold must still be active at decision.
-    RecoveryHold {
-        target: HostTargetId,
-        baseline_boot: HostBootId,
-        baseline_epoch: u64,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RegistrationRevocation {
-    seat: SeatId,
-    binding_generation: u64,
-    execution: ExecutionId,
-    reason: RegistrationLossReason,
-}
-impl RegistrationRevocation {
-    #[allow(dead_code)] // Task 14 constructs this after trusted host/recovery evidence.
-    pub(crate) fn from_trusted_loss(
-        seat: SeatId,
-        binding_generation: u64,
-        execution: ExecutionId,
-        reason: RegistrationLossReason,
-    ) -> Self {
-        Self {
-            seat,
-            binding_generation,
-            execution,
-            reason,
-        }
-    }
-    pub fn seat(&self) -> &SeatId {
-        &self.seat
-    }
-    pub fn binding_generation(&self) -> u64 {
-        self.binding_generation
-    }
-    pub fn execution(&self) -> &ExecutionId {
-        &self.execution
-    }
-    pub fn reason(&self) -> &RegistrationLossReason {
-        &self.reason
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -535,9 +478,6 @@ impl SendPreparationProgress {
             Self::Committed(_) => 0,
             Self::More { visited, .. } | Self::Ready { visited, .. } => *visited,
         }
-    }
-    pub fn is_ready(&self) -> bool {
-        matches!(self, Self::Ready { .. })
     }
     /// Captured hidden preparation generation for request-exit abandonment.
     /// Re-looking up by operation key could discard a successor rebuild.
@@ -1057,6 +997,18 @@ pub struct SnapshotCleanupProgress {
     pub visited: u8,
     pub complete: bool,
 }
+/// What one retention pass deleted (`store::retention::prune_once`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PruneProgress {
+    /// Snapshot generations deleted.
+    pub generations: u32,
+    /// Snapshot target rows deleted.
+    pub targets: u32,
+    /// Completed work jobs deleted.
+    pub jobs: u32,
+    /// A transaction stopped on its row or time budget with work left.
+    pub has_more: bool,
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublishedSnapshot {
     pub id: SnapshotGenerationId,
@@ -1194,25 +1146,6 @@ pub struct GuardedSeatTransition {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReconciliationAction {
-    /// A coherent publication preserves structural continuity but affirmatively
-    /// cannot sustain this exact current occupant proof. Keep the seat resolved,
-    /// revoke availability and offer, retain wake attempt identity/history and
-    /// spacing for safe late completion, and do not invent a replacement.
-    MarkOccupantUnavailable {
-        target: HostTargetId,
-        terminal: TerminalId,
-        expected_execution: ExecutionId,
-    },
-    /// Recover a seat made unresolved by a trusted host invalidation only
-    /// after a new coherent publication proves the same incarnation and live
-    /// terminal bridge. `None` execution is valid solely for a proven empty
-    /// shell with no prior registered occupant. This action never restores a
-    /// revoked receipt registration or releases a recovery hold.
-    Reconfirm {
-        target: HostTargetId,
-        terminal: TerminalId,
-        verified_execution: Option<ExecutionId>,
-    },
     /// Structural reconfirmation of a host-invalidated seat (seat-identity
     /// rule 1: an exact live terminal match in verified unchanged host
     /// context retains the seat). The new coherent publication shows the same
@@ -1221,8 +1154,10 @@ pub enum ReconciliationAction {
     /// resolved but never had any binding, as the seat's own verified
     /// structural proof. No occupancy or
     /// execution evidence is required: Herdr 0.9.1 reports both as Unknown.
-    /// Like `Reconfirm`, it restores only the seat, never a revoked
-    /// registration; the pane's agent registers by its next lifecycle
+    /// It restores only the seat, never a revoked registration (an open
+    /// cooperative binding is carried forward per C4, and the instance-wide
+    /// baseline hold lifts once no unresolved seat remains, TRUST-POLICY
+    /// C1-C3); otherwise the pane's agent registers by its next lifecycle
     /// check-in at the new generation.
     ReconfirmStructure {
         target: HostTargetId,
@@ -1239,11 +1174,6 @@ pub enum ReconciliationAction {
     Move {
         target: HostTargetId,
         terminal: TerminalId,
-    },
-    Replace {
-        target: HostTargetId,
-        terminal: TerminalId,
-        execution: ExecutionId,
     },
     MarkUnresolved,
     BeginRetirement {
@@ -1267,99 +1197,6 @@ pub enum RecoveryDisposition {
     AlreadyOwned,
     Unknown,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecoveryBaseline {
-    host_boot: HostBootId,
-    epoch: u64,
-    target: HostTargetId,
-    disposition: RecoveryDisposition,
-}
-impl RecoveryBaseline {
-    #[allow(dead_code)] // Identity reconciliation constructs this in its runtime task.
-    pub(crate) fn new(
-        host_boot: HostBootId,
-        epoch: u64,
-        target: HostTargetId,
-        disposition: RecoveryDisposition,
-    ) -> Self {
-        Self {
-            host_boot,
-            epoch,
-            target,
-            disposition,
-        }
-    }
-}
-
-/// Ordinary target allocation requires a fresh observation and a clear persisted
-/// recovery baseline. It may precede launch or occur for a running occupant. It
-/// confers neither native caller nor receipt authority.
-#[derive(Debug)]
-pub struct OrdinaryAllocationGuard {
-    target: HostTargetId,
-    host_boot: HostBootId,
-    observation_epoch: u64,
-    baseline_epoch: u64,
-    disposition: RecoveryDisposition,
-    generation: u64,
-    structural_proof: DurableStructuralProof,
-}
-impl OrdinaryAllocationGuard {
-    #[allow(dead_code)] // Service allocation constructs this in the runtime task.
-    pub(crate) fn try_new(
-        request: &ResolveSeat,
-        observation: HostObservation,
-        baseline: RecoveryBaseline,
-    ) -> Result<Self, &'static str> {
-        if request.target != observation.target
-            || request.target != baseline.target
-            || observation.host_boot != baseline.host_boot
-            || observation.epoch < baseline.epoch
-        {
-            return Err("allocation observation does not match recovery baseline");
-        }
-        let structural_proof = observation
-            .verified_structural_proof()
-            .ok_or("target lacks fresh verified structural proof")?;
-        if !matches!(
-            baseline.disposition,
-            RecoveryDisposition::UnambiguousUnclaimed | RecoveryDisposition::CreatedAfterBaseline
-        ) {
-            return Err("target is held, owned or unresolved");
-        }
-        Ok(Self {
-            target: observation.target,
-            host_boot: observation.host_boot,
-            observation_epoch: observation.epoch,
-            baseline_epoch: baseline.epoch,
-            disposition: baseline.disposition,
-            generation: observation.generation,
-            structural_proof,
-        })
-    }
-    pub fn target(&self) -> &HostTargetId {
-        &self.target
-    }
-    pub fn host_boot(&self) -> &HostBootId {
-        &self.host_boot
-    }
-    pub fn observation_epoch(&self) -> u64 {
-        self.observation_epoch
-    }
-    pub fn baseline_epoch(&self) -> u64 {
-        self.baseline_epoch
-    }
-    pub fn disposition(&self) -> RecoveryDisposition {
-        self.disposition
-    }
-    pub fn generation(&self) -> u64 {
-        self.generation
-    }
-    pub fn structural_proof(&self) -> &DurableStructuralProof {
-        &self.structural_proof
-    }
-}
-
 /// One explicit ordinary target read and its store-issued observation admission.
 /// This guard carries structural continuity only, with no native caller authority.
 #[derive(Debug)]
@@ -1657,7 +1494,7 @@ pub struct PaneAgentObservation {
 }
 
 /// A recognized idle native occupant may receive a recovery hint before check-in.
-/// This is separate from `ReceiptRegistration`, which starts receipt availability.
+/// This is separate from a cooperative check-in, which starts receipt availability.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SafeWakeTarget {
     pub seat: SeatId,
@@ -1699,17 +1536,6 @@ pub enum WakeTargetBasis {
 pub enum PromptOutcome {
     Submitted,
     OutcomeUnknown,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LifecycleHint {
-    pub target: Option<HostTargetId>,
-    pub invalidated_epoch: Option<u64>,
-    pub dirty: bool,
-}
-pub trait HostLifecycleSubscription: Send {
-    fn next_hint(&mut self, budget: &CallBudget) -> Result<LifecycleHint, ApiError>;
-    fn cancel(&mut self, budget: &CallBudget) -> Result<(), ApiError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1928,7 +1754,6 @@ pub enum NativeLaunchOutcome {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeLaunchCapability {
-    ProvenEmptyShell,
     HostGuardedStart,
     Unsupported,
 }
@@ -2092,6 +1917,9 @@ pub struct WakeCandidate {
     pub minimum_delay_ms: u64,
     pub effective_delay_ms: u64,
     pub last_outcome: Option<String>,
+    /// UTC of the last reservation, retained so a Refused completion can
+    /// restore the pre-reservation ladder row exactly (ht-p03.9.3).
+    pub last_reserved_at_utc: Option<UtcMillis>,
 }
 /// Opaque internal proof that one store read completed the canonical effective
 /// attention scan at a captured instance decision revision. No wire decoder.
@@ -2265,20 +2093,57 @@ impl WakeCandidate {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WakeOutcome {
+    /// The prompt was delivered and verified submitted.
     Submitted,
+    /// The prompt may or may not have been delivered. Also the outcome of a
+    /// prompt delivered to the pane but still unsent after the single
+    /// submit-key retry (ht-p03.41): it keeps the advanced ladder step, is
+    /// never re-sent in a loop, and stores this same last_outcome string.
     OutcomeUnknown,
     Unsafe,
     Unavailable,
     TimedOut,
     Cancelled,
+    /// The wake was refused before `submit_prompt` was called: nothing was
+    /// sent, so the reminder ladder does not climb (pacer spec D5). The seat
+    /// retries on a per-seat refusal backoff instead.
+    Refused(RefusalCause),
 }
 
-/// Process-local spacing guard. The durable reservation history remains in `StorePort`.
+/// Why a pre-send wake refusal happened. Stored with the existing
+/// `unsafe` / `unavailable` / `timed_out` last_outcome strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefusalCause {
+    Unsafe,
+    Unavailable,
+    TimedOut,
+}
+
+/// The pre-reservation ladder row, carried from the reserved candidate so a
+/// `Refused` completion can restore it in the same fenced UPDATE.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MonotonicWakeGuard {
-    pub seat: SeatId,
-    pub earliest_next: MonoInstant,
-    pub in_flight: Option<WakeAttemptId>,
+pub struct PriorLadder {
+    pub retry_step: u32,
+    pub minimum_delay_ms: u64,
+    pub effective_delay_ms: u64,
+    pub last_reservation_id: Option<WakeAttemptId>,
+    pub last_reservation_boot: Option<HostBootId>,
+    pub last_reserved_at_utc: Option<UtcMillis>,
+    pub last_reserved_frontier: LogicalAttentionFrontier,
+}
+
+impl PriorLadder {
+    pub fn from_candidate(candidate: &WakeCandidate) -> Self {
+        Self {
+            retry_step: candidate.retry_step,
+            minimum_delay_ms: candidate.minimum_delay_ms,
+            effective_delay_ms: candidate.effective_delay_ms,
+            last_reservation_id: candidate.last_reservation_id.clone(),
+            last_reservation_boot: candidate.last_reservation_boot.clone(),
+            last_reserved_at_utc: candidate.last_reserved_at_utc,
+            last_reserved_frontier: candidate.last_reserved_frontier,
+        }
+    }
 }
 
 /// Store implementations inject a clock at construction and sample UTC inside each
@@ -2289,47 +2154,25 @@ pub trait StorePort: Send + Sync {
     /// Called after the live authority slot is revoked; never holds its guard.
     fn audit_service_disconnect(
         &self,
-        _boot: &str,
-        _generation: u64,
-        _peer: crate::protocol::authority::PeerIdentity,
-        _budget: &CallBudget,
-    ) -> Result<(), ApiError> {
-        Err(ApiError {
-            code: crate::protocol::results::ErrorCode::Unsupported,
-            detail: "service recovery audit is unavailable".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        })
-    }
+        boot: &str,
+        generation: u64,
+        peer: crate::protocol::authority::PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError>;
     /// The registered transport supplies the server-private connection. The
     /// store takes its DB write lock before `gate.decision_guard` and retains
-    /// that guard through commit/rollback, including exact-key replay.
+    /// that guard through commit/rollback, including exact-key replay. The
+    /// elected service passes its writer so each notification preparation and
+    /// publication quantum is admitted separately and native writes can make
+    /// progress between them; `None` takes the store's own writer lock only.
     fn service_operation(
-        &self,
-        _operation: ServiceOperation,
-        _connection: &ServiceConnectionAuthority,
-        _gate: &dyn ServiceAuthorityGate,
-        _budget: &CallBudget,
-    ) -> Result<ServiceResult, ApiError> {
-        Err(ApiError {
-            code: crate::protocol::results::ErrorCode::Unsupported,
-            detail: "service operation store route is unavailable".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        })
-    }
-    /// The elected service admits each notification preparation and publication
-    /// quantum separately so native writes can make progress between them.
-    fn service_operation_admitted(
         &self,
         operation: ServiceOperation,
         connection: &ServiceConnectionAuthority,
         gate: &dyn ServiceAuthorityGate,
         budget: &CallBudget,
-        _writer: &crate::service::workers::FairWriter,
-    ) -> Result<ServiceResult, ApiError> {
-        self.service_operation(operation, connection, gate, budget)
-    }
+        admission: Option<&crate::service::fair_writer::FairWriter>,
+    ) -> Result<ServiceResult, ApiError>;
     fn query(
         &self,
         command: &Command,
@@ -2357,55 +2200,27 @@ pub trait StorePort: Send + Sync {
         expected_preparation_id: &str,
         budget: &CallBudget,
     ) -> Result<(), ApiError>;
-    /// The store rechecks target ownership/recovery holds at its deciding write.
-    fn allocate_seat(
-        &self,
-        request: ResolveSeat,
-        guard: OrdinaryAllocationGuard,
-        budget: &CallBudget,
-    ) -> Result<SeatId, ApiError>;
     /// Resolve under the ordinary allocation operation scope, replaying before
     /// present-state validation. A resolved result alone grants no launch authority.
     fn resolve_seat(
         &self,
-        _request: ResolveSeat,
-        _attempt: OrdinaryResolutionAttempt,
-        _budget: &CallBudget,
-    ) -> Result<OrdinaryResolutionOutcome, ApiError> {
-        Err(ApiError {
-            code: crate::protocol::results::ErrorCode::Unsupported,
-            detail: "ordinary resolution route is unavailable".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        })
-    }
+        request: ResolveSeat,
+        attempt: OrdinaryResolutionAttempt,
+        budget: &CallBudget,
+    ) -> Result<OrdinaryResolutionOutcome, ApiError>;
     /// Never replays, allocates or replaces the expected seat.
     fn check_resolved_target(
         &self,
-        _check: ResolvedTargetCheck,
-        _budget: &CallBudget,
-    ) -> Result<(), ApiError> {
-        Err(ApiError {
-            code: crate::protocol::results::ErrorCode::Unsupported,
-            detail: "resolved target check is unavailable".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        })
-    }
+        check: ResolvedTargetCheck,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError>;
     /// Payload-bound historical operator result; a miss has no durable effects.
     fn replay_operator(
         &self,
-        _command: OperatorCommand,
-        _actor: OperatorActor,
-        _budget: &CallBudget,
-    ) -> Result<Option<CommandResult>, ApiError> {
-        Err(ApiError {
-            code: crate::protocol::results::ErrorCode::Unsupported,
-            detail: "operator replay is unavailable".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        })
-    }
+        command: OperatorCommand,
+        actor: OperatorActor,
+        budget: &CallBudget,
+    ) -> Result<Option<CommandResult>, ApiError>;
     fn mutate_operator(
         &self,
         command: OperatorRequest,
@@ -2415,43 +2230,22 @@ pub trait StorePort: Send + Sync {
     /// Payload-bound historical continuity result; a miss has no durable effects.
     fn replay_continuity(
         &self,
-        _command: ContinuityCheckIn,
-        _budget: &CallBudget,
-    ) -> Result<Option<CommandResult>, ApiError> {
-        Err(ApiError {
-            code: crate::protocol::results::ErrorCode::Unsupported,
-            detail: "continuity replay is unavailable".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        })
-    }
+        command: ContinuityCheckIn,
+        budget: &CallBudget,
+    ) -> Result<Option<CommandResult>, ApiError>;
     /// TRUST-POLICY C1: reattach the unique unresolved seat whose last binding
     /// carries the resumed session id.
     fn decide_continuity(
         &self,
-        _request: ContinuityRequest,
-        _budget: &CallBudget,
-    ) -> Result<CommandResult, ApiError> {
-        Err(ApiError {
-            code: crate::protocol::results::ErrorCode::Unsupported,
-            detail: "continuity reattachment is unavailable".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        })
-    }
+        request: ContinuityRequest,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError>;
     /// Local durable validation only; implementations must not invent native proof.
     fn issue_cooperative_permit(
         &self,
-        _request: CooperativePermitRequest,
-        _budget: &CallBudget,
-    ) -> Result<MutationPermit, ApiError> {
-        Err(ApiError {
-            code: crate::protocol::results::ErrorCode::CallerUnverified,
-            detail: "cooperative permit issuer unavailable".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        })
-    }
+        request: CooperativePermitRequest,
+        budget: &CallBudget,
+    ) -> Result<MutationPermit, ApiError>;
 
     fn register_available(
         &self,
@@ -2459,19 +2253,10 @@ pub trait StorePort: Send + Sync {
         permit: MutationPermit,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError>;
-    /// A stale expected binding or execution is a no-op, never a revocation of
-    /// a successor occupant. The store owns its deciding sequence and UTC.
-    fn revoke_registration(
-        &self,
-        evidence: RegistrationRevocation,
-        budget: &CallBudget,
-    ) -> Result<bool, ApiError>;
     /// Read-only: the host epoch persisted by the last accepted publication
     /// for this instance (0 when none). Used only to start a new epoch above
     /// it at daemon boot; it grants no observation authority.
-    fn persisted_host_epoch(&self, _instance: &str, _budget: &CallBudget) -> Result<u64, ApiError> {
-        Ok(0)
-    }
+    fn persisted_host_epoch(&self, _instance: &str, _budget: &CallBudget) -> Result<u64, ApiError>;
     /// Reserve durable ordering before a host capture. This sequence fences
     /// late failed reads; it does not certify coherent enumeration.
     fn begin_host_observation(
@@ -2546,6 +2331,10 @@ pub trait StorePort: Send + Sync {
         admission: DurableWorkAdmission,
         budget: &CallBudget,
     ) -> Result<SnapshotCleanupProgress, ApiError>;
+    /// One retention pass: one bounded snapshot transaction, then one bounded
+    /// work-job transaction (spec D3). Opens no write transaction when no row
+    /// qualifies.
+    fn prune_retention(&self, budget: &CallBudget) -> Result<PruneProgress, ApiError>;
     /// A changed active snapshot returns CursorStale before any old row is read.
     fn saved_seats_page(
         &self,
@@ -2566,11 +2355,9 @@ pub trait StorePort: Send + Sync {
     /// Returns whether the marker was written (false for a stale publication).
     fn record_reconciliation_pass(
         &self,
-        _published: &PublishedSnapshot,
-        _budget: &CallBudget,
-    ) -> Result<bool, ApiError> {
-        Ok(false)
-    }
+        published: &PublishedSnapshot,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError>;
     fn due_obligations(
         &self,
         request: DueScanRequest,
@@ -2595,38 +2382,20 @@ pub trait StorePort: Send + Sync {
     ) -> Result<Page<RetirementStatus>, ApiError>;
     /// The startup binding-evidence verification result of this store's
     /// writer. None when the implementation has no durable writer.
-    fn binding_evidence_startup(&self) -> Option<BindingEvidenceStartup> {
-        None
-    }
+    fn binding_evidence_startup(&self) -> Option<BindingEvidenceStartup>;
     /// The startup result with `still_lacking` rechecked against the store
     /// now (wave-2 fix2 (b)): a seat whose agent re-registered with evidence,
     /// or that was retired, no longer counts. Only the seats found lacking at
     /// startup are rechecked, each by one indexed lookup.
     fn binding_evidence_current(
         &self,
-        _budget: &CallBudget,
-    ) -> Result<Option<BindingEvidenceStartup>, ApiError> {
-        Ok(self.binding_evidence_startup())
-    }
+        budget: &CallBudget,
+    ) -> Result<Option<BindingEvidenceStartup>, ApiError>;
     fn unresolved_seat_summary(
         &self,
-        _budget: &CallBudget,
-    ) -> Result<UnresolvedSeatSummary, ApiError> {
-        Err(ApiError {
-            code: crate::protocol::results::ErrorCode::Unsupported,
-            detail: "unresolved seat summary is unavailable".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        })
-    }
-    fn retirement_summary(&self, _budget: &CallBudget) -> Result<RetirementSummary, ApiError> {
-        Err(ApiError {
-            code: crate::protocol::results::ErrorCode::Unsupported,
-            detail: "retirement summary is unavailable".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        })
-    }
+        budget: &CallBudget,
+    ) -> Result<UnresolvedSeatSummary, ApiError>;
+    fn retirement_summary(&self, _budget: &CallBudget) -> Result<RetirementSummary, ApiError>;
     fn wake_candidates(
         &self,
         page: PageRequest,
@@ -2671,16 +2440,32 @@ pub trait StorePort: Send + Sync {
         reservation: &WakeReservation,
         budget: &CallBudget,
     ) -> Result<bool, ApiError>;
+    /// Returns whether the fenced `refused_restore` matched. It is `false`
+    /// for every non-Refused outcome and when a path cleared the reservation
+    /// between reserve and completion (pacer D5 fence miss: accepted, the
+    /// durable step stays advanced by one).
     fn complete_wake(
         &self,
         attempt: WakeAttemptId,
         outcome: WakeOutcome,
+        refused_restore: Option<&PriorLadder>,
         budget: &CallBudget,
-    ) -> Result<(), ApiError>;
+    ) -> Result<bool, ApiError>;
 }
 
 /// Every call has an absolute monotonic deadline and cancellation token. Host calls
 /// run outside the domain writer. Observation results carry their actual provenance.
+/// What the pane's agent composer shows after a wake prompt was sent (Wave 28).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentComposerState {
+    /// The composer is empty / the agent is working: the prompt was submitted.
+    Submitted,
+    /// The composer still holds the sent prompt text (not submitted).
+    HoldingPrompt,
+    /// The adapter cannot tell (no screen read, unsupported harness).
+    Unknown,
+}
+
 pub trait HostPort: Send + Sync {
     /// Adapter-owned, verified support; callers cannot assert a launch capability.
     fn native_launch_capability(&self) -> NativeLaunchCapability;
@@ -2690,10 +2475,6 @@ pub trait HostPort: Send + Sync {
         context: &HostCallContext,
     ) -> Result<HostObservation, ApiError>;
     fn enumerate_targets(&self, context: &HostCallContext) -> Result<HostSnapshot, ApiError>;
-    fn subscribe_lifecycle(
-        &self,
-        context: &HostCallContext,
-    ) -> Result<Box<dyn HostLifecycleSubscription>, ApiError>;
     fn safe_wake_target(
         &self,
         seat: &SeatId,
@@ -2710,6 +2491,19 @@ pub trait HostPort: Send + Sync {
         request: NativeLaunchRequest,
         context: &HostCallContext,
     ) -> Result<NativeLaunchOutcome, ApiError>;
+    /// Read the pane's agent composer state after a wake send (Wave 28 verification).
+    fn pane_agent_state(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<AgentComposerState, ApiError>;
+    /// Send exactly one submit key (Enter) to the wake target's composer. Used
+    /// once per wake drive when the prompt was left unsent (Wave 28).
+    fn send_submit_key(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<(), ApiError>;
     /// Herdr's agent record for one pane. `Ok(None)`: Herdr answered and
     /// reports no agent; `Err`: the read failed. Adapters without the route
     /// report "no agent".
@@ -2747,26 +2541,20 @@ pub struct HostCallContext {
     pub expected_epoch: Option<u64>,
 }
 
-/// A verifier checks actual top-level root/execution evidence against a fresh host
-/// observation. The returned permit is bound to one obligation and payload digest.
-pub trait CallerVerifier: Send + Sync {
-    fn verify(
-        &self,
-        claim: &CallerClaim,
-        observation: &HostObservation,
-        seat: SeatId,
-        request: OperationId,
-        obligation: ObligationRef,
-        payload_hash: [u8; 32],
-    ) -> Result<MutationPermit, ApiError>;
-}
-
 pub trait NotificationPort: Send + Sync {
     fn attempt_wake(
         &self,
         reservation: WakeReservation,
         context: &HostCallContext,
     ) -> Result<WakeOutcome, ApiError>;
+    /// The post-send verification of the last wake attempt for `seat`, taken
+    /// once (ht-p03.30). Notifiers that do not verify report nothing.
+    fn take_verification(
+        &self,
+        _seat: &SeatId,
+    ) -> Option<crate::scheduler::SubmissionVerification> {
+        None
+    }
 }
 
 /// Local client and service share the same typed command/result envelope.
@@ -2779,17 +2567,7 @@ pub trait LocalClient: Send + Sync {
         command: Command,
         output: &crate::protocol::output::OutputSpec,
         budget: &CallBudget,
-    ) -> Result<CommandResult, ApiError> {
-        if *output != crate::protocol::output::OutputSpec::default() {
-            return Err(ApiError {
-                code: crate::protocol::results::ErrorCode::InvalidRequest,
-                detail: "selected output unsupported by this client".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
-        }
-        self.call(command, budget)
-    }
+    ) -> Result<CommandResult, ApiError>;
     /// Outer error: not sent or outcome unknown (the durable intent stays
     /// pending). Inner `Err`: the daemon's correlated, definitive rejection.
     /// The default cannot tell them apart, so every error is treated as
@@ -2806,50 +2584,29 @@ pub trait LocalService: Send + Sync {
     /// Operator recovery routes through the ordinary same-UID transport path.
     fn service_control(
         &self,
-        _command: Command,
-        _peer: crate::protocol::authority::PeerIdentity,
-        _instance: &str,
-        _boot: &str,
-        _gate: &crate::daemon::transport::LiveServiceGate,
-        _budget: &CallBudget,
-    ) -> Result<CommandResult, ApiError> {
-        Err(ApiError {
-            code: crate::protocol::results::ErrorCode::Unsupported,
-            detail: "service recovery control is unavailable".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        })
-    }
+        command: Command,
+        peer: crate::protocol::authority::PeerIdentity,
+        instance: &str,
+        boot: &str,
+        gate: &crate::service::live_gate::LiveServiceGate,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError>;
 
     fn audit_service_disconnect(
         &self,
-        _boot: &str,
-        _generation: u64,
-        _peer: crate::protocol::authority::PeerIdentity,
-        _budget: &CallBudget,
-    ) -> Result<(), ApiError> {
-        Err(ApiError {
-            code: crate::protocol::results::ErrorCode::Unsupported,
-            detail: "service recovery audit is unavailable".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        })
-    }
+        boot: &str,
+        generation: u64,
+        peer: crate::protocol::authority::PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError>;
     /// The connection and gate are supplied only by the registered UDS transport.
     fn service_operation(
         &self,
-        _operation: ServiceOperation,
-        _connection: &ServiceConnectionAuthority,
-        _gate: &dyn ServiceAuthorityGate,
-        _budget: &CallBudget,
-    ) -> Result<ServiceResult, ApiError> {
-        Err(ApiError {
-            code: crate::protocol::results::ErrorCode::Unsupported,
-            detail: "service operation route is unavailable".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        })
-    }
+        operation: ServiceOperation,
+        connection: &ServiceConnectionAuthority,
+        gate: &dyn ServiceAuthorityGate,
+        budget: &CallBudget,
+    ) -> Result<ServiceResult, ApiError>;
     fn handle(
         &self,
         command: Command,
@@ -2864,23 +2621,58 @@ pub trait LocalService: Send + Sync {
         peer: crate::protocol::authority::PeerIdentity,
         budget: &CallBudget,
         output: &crate::protocol::output::OutputSpec,
-    ) -> Result<CommandResult, ApiError> {
-        if *output != crate::protocol::output::OutputSpec::default() {
-            return Err(ApiError {
-                code: crate::protocol::results::ErrorCode::Unsupported,
-                detail: "selected output is unavailable in this service".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
-        }
-        self.handle(command, peer, budget)
-    }
+    ) -> Result<CommandResult, ApiError>;
 }
 
 #[cfg(test)]
 mod allocation_tests {
     use super::*;
     use crate::protocol::commands::ResolveSeat;
+
+    /// ht-p03.3: no port method may fall back to `Unsupported`, and no
+    /// `_admitted` duplicate entry point remains.
+    #[test]
+    fn ports_have_no_unsupported_defaults_or_admitted_duplicates() {
+        let src = include_str!("ports.rs");
+        // Production text only: drop every top-level `#[cfg(test)] mod ... { }` block.
+        let mut production = String::new();
+        let mut in_test_mod = false;
+        let mut pending_cfg = false;
+        for line in src.lines() {
+            if in_test_mod {
+                if line == "}" {
+                    in_test_mod = false;
+                }
+                continue;
+            }
+            if line == "#[cfg(test)]" {
+                pending_cfg = true;
+                continue;
+            }
+            if pending_cfg {
+                pending_cfg = false;
+                if line.starts_with("mod ") {
+                    in_test_mod = true;
+                    continue;
+                }
+            }
+            production.push_str(line);
+            production.push('\n');
+        }
+        assert!(
+            !production.contains("_admitted"),
+            "fold _admitted entry points"
+        );
+        for (at, _) in production.match_indices("ErrorCode::Unsupported") {
+            let preceding = &production[..at];
+            let trait_open = preceding.rfind("\npub trait ");
+            let impl_open = preceding.rfind("\nimpl");
+            assert!(
+                impl_open > trait_open,
+                "trait default returns Unsupported near byte {at}"
+            );
+        }
+    }
 
     #[test]
     fn operator_operation_scope_is_instance_qualified() {
@@ -3034,6 +2826,7 @@ mod allocation_tests {
             minimum_delay_ms: 0,
             effective_delay_ms: 0,
             last_outcome: None,
+            last_reserved_at_utc: None,
         };
         let witness = WakeAttentionWitness::from_complete(
             "i".into(),
@@ -3366,7 +3159,7 @@ mod allocation_tests {
     }
 
     #[test]
-    fn ordinary_allocation_needs_fresh_target_and_clear_recovery_baseline() {
+    fn structural_proof_needs_fresh_ordered_verified_evidence() {
         let request = ResolveSeat {
             target: HostTargetId::new("p1"),
             operation: OperationId::new("op1"),
@@ -3394,77 +3187,19 @@ mod allocation_tests {
             started_at_mono: MonoInstant(1),
             completed_at_mono: MonoInstant(1),
         };
-        let baseline = RecoveryBaseline::new(
-            HostBootId::new("b1"),
-            4,
-            HostTargetId::new("p1"),
-            RecoveryDisposition::UnambiguousUnclaimed,
-        );
-        let guard =
-            OrdinaryAllocationGuard::try_new(&request, observation.clone(), baseline).unwrap();
-        assert_eq!(guard.target(), &request.target);
-        assert_eq!(guard.observation_epoch(), 4);
-        assert_eq!(guard.structural_proof().terminal().as_str(), "term-p1");
-        assert_eq!(guard.baseline_epoch(), 4);
-        assert_eq!(
-            guard.disposition(),
-            RecoveryDisposition::UnambiguousUnclaimed
-        );
-        let wrong_boot = RecoveryBaseline::new(
-            HostBootId::new("b2"),
-            4,
-            request.target.clone(),
-            RecoveryDisposition::UnambiguousUnclaimed,
-        );
-        assert!(
-            OrdinaryAllocationGuard::try_new(&request, observation.clone(), wrong_boot).is_err()
-        );
-        let future_baseline = RecoveryBaseline::new(
-            HostBootId::new("b1"),
-            5,
-            request.target.clone(),
-            RecoveryDisposition::UnambiguousUnclaimed,
-        );
-        assert!(
-            OrdinaryAllocationGuard::try_new(&request, observation.clone(), future_baseline)
-                .is_err()
-        );
-        let held = RecoveryBaseline::new(
-            HostBootId::new("b1"),
-            4,
-            HostTargetId::new("p1"),
-            RecoveryDisposition::HeldForRepair,
-        );
-        assert!(OrdinaryAllocationGuard::try_new(&request, observation.clone(), held).is_err());
-        let owned = RecoveryBaseline::new(
-            HostBootId::new("b1"),
-            4,
-            request.target.clone(),
-            RecoveryDisposition::AlreadyOwned,
-        );
-        assert!(OrdinaryAllocationGuard::try_new(&request, observation.clone(), owned).is_err());
+        let proof = observation.verified_structural_proof().unwrap();
+        assert_eq!(proof.terminal().as_str(), "term-p1");
+        assert_eq!(proof.incarnation(), "inc-1");
         let stale = HostObservation {
             provenance: ObservationProvenance::UncharacterizedCache,
             ..observation.clone()
         };
-        let clear = RecoveryBaseline::new(
-            HostBootId::new("b1"),
-            4,
-            HostTargetId::new("p1"),
-            RecoveryDisposition::UnambiguousUnclaimed,
-        );
-        assert!(OrdinaryAllocationGuard::try_new(&request, stale, clear).is_err());
+        assert!(stale.verified_structural_proof().is_none());
         let unproven = HostObservation {
             incarnation: IncarnationEvidence::Unknown,
             ..observation.clone()
         };
-        let clear = RecoveryBaseline::new(
-            HostBootId::new("b1"),
-            4,
-            request.target.clone(),
-            RecoveryDisposition::UnambiguousUnclaimed,
-        );
-        assert!(OrdinaryAllocationGuard::try_new(&request, unproven, clear).is_err());
+        assert!(unproven.verified_structural_proof().is_none());
         let invocation_only = HostObservation {
             incarnation: IncarnationEvidence::Verified {
                 identity: "inc-1".into(),
@@ -3506,13 +3241,7 @@ mod allocation_tests {
             }),
             ..observation
         };
-        let clear = RecoveryBaseline::new(
-            HostBootId::new("b1"),
-            4,
-            HostTargetId::new("p1"),
-            RecoveryDisposition::UnambiguousUnclaimed,
-        );
-        assert!(OrdinaryAllocationGuard::try_new(&request, occupied, clear).is_ok());
+        assert!(occupied.verified_structural_proof().is_some());
     }
 }
 
@@ -3520,10 +3249,7 @@ mod allocation_tests {
 mod contract_adapter_tests {
     use super::*;
     use crate::protocol::{
-        authority::{DecisionFence, PeerIdentity, VerifiedCaller},
-        commands::ResolveSeat,
-        results::{ErrorCode, Health},
-        time::Cancellation,
+        authority::PeerIdentity, commands::ResolveSeat, results::Health, time::Cancellation,
     };
 
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -3542,12 +3268,7 @@ mod contract_adapter_tests {
         observations: AtomicUsize,
     }
     fn unsupported() -> ApiError {
-        ApiError {
-            code: ErrorCode::Unsupported,
-            detail: "inert contract adapter".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        }
+        ApiError::unsupported("inert contract adapter")
     }
     fn health() -> CommandResult {
         let mut health = Health::unknown(
@@ -3559,263 +3280,13 @@ mod contract_adapter_tests {
         health.limitations.push("inert".into());
         CommandResult::Health(health)
     }
-    impl StorePort for Adapter {
-        fn clock(&self) -> &dyn Clock {
-            &self.clock
-        }
-        fn query(
-            &self,
-            command: &Command,
-            _read: &ReadContext,
-            _budget: &CallBudget,
-        ) -> Result<CommandResult, ApiError> {
+    impl Adapter {
+        fn query(&self, command: &Command) -> Result<CommandResult, ApiError> {
             if matches!(command, Command::Health) {
                 Ok(health())
             } else {
                 Err(unsupported())
             }
-        }
-        fn mutate(
-            &self,
-            _command: PermitMutation,
-            _permit: MutationPermit,
-            _budget: &CallBudget,
-        ) -> Result<CommandResult, ApiError> {
-            Err(unsupported())
-        }
-        fn prepare_send_step(
-            &self,
-            _request: &SendMessage,
-            _admission: DurableWorkAdmission,
-            _budget: &CallBudget,
-        ) -> Result<SendPreparationProgress, ApiError> {
-            Err(unsupported())
-        }
-        fn abandon_send_preparation(
-            &self,
-            _expected_preparation_id: &str,
-            _budget: &CallBudget,
-        ) -> Result<(), ApiError> {
-            Err(unsupported())
-        }
-        fn allocate_seat(
-            &self,
-            request: ResolveSeat,
-            guard: OrdinaryAllocationGuard,
-            _budget: &CallBudget,
-        ) -> Result<SeatId, ApiError> {
-            if guard.target() == &request.target {
-                Ok(SeatId::new("s1"))
-            } else {
-                Err(unsupported())
-            }
-        }
-        fn mutate_operator(
-            &self,
-            _command: OperatorRequest,
-            _actor: OperatorActor,
-            _budget: &CallBudget,
-        ) -> Result<CommandResult, ApiError> {
-            Err(unsupported())
-        }
-        fn register_available(
-            &self,
-            _request: RegisterAvailableRequest,
-            _permit: MutationPermit,
-            _budget: &CallBudget,
-        ) -> Result<CommandResult, ApiError> {
-            Err(unsupported())
-        }
-        fn revoke_registration(
-            &self,
-            _evidence: RegistrationRevocation,
-            _budget: &CallBudget,
-        ) -> Result<bool, ApiError> {
-            Err(unsupported())
-        }
-        fn begin_host_observation(
-            &self,
-            _instance: &str,
-            _budget: &CallBudget,
-        ) -> Result<HostObservationAdmission, ApiError> {
-            Err(unsupported())
-        }
-        fn publish_current_target_observation(
-            &self,
-            _admission: &HostObservationAdmission,
-            _observation: &HostObservation,
-            _budget: &CallBudget,
-        ) -> Result<bool, ApiError> {
-            Err(unsupported())
-        }
-        fn invalidate_host_observation(
-            &self,
-            _admission: &HostObservationAdmission,
-            _reason: HostInvalidationReason,
-            _budget: &CallBudget,
-        ) -> Result<Option<HostInvalidationFence>, ApiError> {
-            Err(unsupported())
-        }
-        fn mark_unresolved_from_invalidation(
-            &self,
-            _transition: GuardedInvalidationTransition,
-            _budget: &CallBudget,
-        ) -> Result<ReconciliationOutcome, ApiError> {
-            Err(unsupported())
-        }
-        fn saved_seats_page_for_invalidation(
-            &self,
-            _fence: &HostInvalidationFence,
-            _after_ordinal: u64,
-            _high_water_ordinal: Option<u64>,
-            _limit: u8,
-            _budget: &CallBudget,
-        ) -> Result<InvalidationSeatPage, ApiError> {
-            Err(unsupported())
-        }
-        fn begin_snapshot_stage(
-            &self,
-            _header: SnapshotHeader,
-            _budget: &CallBudget,
-        ) -> Result<SnapshotStage, ApiError> {
-            Err(unsupported())
-        }
-        fn stage_snapshot_targets(
-            &self,
-            _stage: &SnapshotGenerationId,
-            _offset: u64,
-            _targets: &[HostObservation],
-            _admission: DurableWorkAdmission,
-            _budget: &CallBudget,
-        ) -> Result<SnapshotStageProgress, ApiError> {
-            Err(unsupported())
-        }
-        fn seal_snapshot_stage(
-            &self,
-            _stage: &SnapshotGenerationId,
-            _budget: &CallBudget,
-        ) -> Result<SnapshotStage, ApiError> {
-            Err(unsupported())
-        }
-        fn publish_snapshot_stage(
-            &self,
-            _stage: &SnapshotGenerationId,
-            _budget: &CallBudget,
-        ) -> Result<PublishedSnapshot, ApiError> {
-            Err(unsupported())
-        }
-        fn discard_snapshot_stage(
-            &self,
-            _stage: &SnapshotGenerationId,
-            _admission: DurableWorkAdmission,
-            _budget: &CallBudget,
-        ) -> Result<SnapshotCleanupProgress, ApiError> {
-            Err(unsupported())
-        }
-        fn saved_seats_page(
-            &self,
-            _published: &SnapshotGenerationId,
-            _after_ordinal: u64,
-            _high_water_ordinal: Option<u64>,
-            _limit: u8,
-            _budget: &CallBudget,
-        ) -> Result<SnapshotSeatPage, ApiError> {
-            Err(unsupported())
-        }
-        fn apply_reconciliation_transition(
-            &self,
-            _transition: GuardedSeatTransition,
-            _budget: &CallBudget,
-        ) -> Result<ReconciliationOutcome, ApiError> {
-            Err(unsupported())
-        }
-        fn due_obligations(
-            &self,
-            _request: DueScanRequest,
-            _budget: &CallBudget,
-        ) -> Result<DueScanProgress, ApiError> {
-            Err(unsupported())
-        }
-        fn begin_retirement(
-            &self,
-            _seat: SeatId,
-            _proof: ClosureEvidence,
-            _budget: &CallBudget,
-        ) -> Result<RetirementJob, ApiError> {
-            Err(unsupported())
-        }
-        fn advance_retirement(
-            &self,
-            _job: RetirementJobId,
-            _admission: WorkAdmission,
-            _budget: &CallBudget,
-        ) -> Result<RetirementProgress, ApiError> {
-            Err(unsupported())
-        }
-        fn pending_retirement_jobs(
-            &self,
-            _page: PageRequest,
-            _budget: &CallBudget,
-        ) -> Result<Page<RetirementStatus>, ApiError> {
-            Err(unsupported())
-        }
-        fn wake_candidates(
-            &self,
-            _page: PageRequest,
-            _budget: &CallBudget,
-        ) -> Result<Page<WakeCandidate>, ApiError> {
-            Err(unsupported())
-        }
-        fn pending_work(
-            &self,
-            _page: PageRequest,
-            _budget: &CallBudget,
-        ) -> Result<Page<WorkCandidate>, ApiError> {
-            Err(unsupported())
-        }
-        fn advance_work(
-            &self,
-            _job: &str,
-            _admission: DurableWorkAdmission,
-            _budget: &CallBudget,
-        ) -> Result<WorkProgress, ApiError> {
-            Err(unsupported())
-        }
-        fn reserve_wake(
-            &self,
-            _candidate: &WakeCandidate,
-            _budget: &CallBudget,
-        ) -> Result<Option<WakeReservation>, ApiError> {
-            Err(unsupported())
-        }
-        fn wake_recovery_candidates(
-            &self,
-            _page: PageRequest,
-            _budget: &CallBudget,
-        ) -> Result<Page<WakeRecoveryCandidate>, ApiError> {
-            Err(unsupported())
-        }
-        fn recover_wake_reservation(
-            &self,
-            _request: WakeRecoveryRequest,
-            _budget: &CallBudget,
-        ) -> Result<WakeRecoveryOutcome, ApiError> {
-            Err(unsupported())
-        }
-        fn validate_wake_reservation(
-            &self,
-            _reservation: &WakeReservation,
-            _budget: &CallBudget,
-        ) -> Result<bool, ApiError> {
-            Err(unsupported())
-        }
-        fn complete_wake(
-            &self,
-            _attempt: WakeAttemptId,
-            _outcome: WakeOutcome,
-            _budget: &CallBudget,
-        ) -> Result<(), ApiError> {
-            Err(unsupported())
         }
     }
     impl HostPort for Adapter {
@@ -3860,12 +3331,6 @@ mod contract_adapter_tests {
         fn enumerate_targets(&self, _context: &HostCallContext) -> Result<HostSnapshot, ApiError> {
             Err(unsupported())
         }
-        fn subscribe_lifecycle(
-            &self,
-            _context: &HostCallContext,
-        ) -> Result<Box<dyn HostLifecycleSubscription>, ApiError> {
-            Err(unsupported())
-        }
         fn safe_wake_target(
             &self,
             _seat: &SeatId,
@@ -3881,52 +3346,27 @@ mod contract_adapter_tests {
         ) -> Result<PromptOutcome, ApiError> {
             Err(unsupported())
         }
+        fn pane_agent_state(
+            &self,
+            _target: &SafeWakeTarget,
+            _context: &HostCallContext,
+        ) -> Result<crate::ports::AgentComposerState, ApiError> {
+            Ok(crate::ports::AgentComposerState::Submitted)
+        }
+        fn send_submit_key(
+            &self,
+            _target: &SafeWakeTarget,
+            _context: &HostCallContext,
+        ) -> Result<(), ApiError> {
+            Err(unsupported())
+        }
+
         fn launch_native(
             &self,
             _request: NativeLaunchRequest,
             _context: &HostCallContext,
         ) -> Result<NativeLaunchOutcome, ApiError> {
             Err(unsupported())
-        }
-    }
-    impl CallerVerifier for Adapter {
-        fn verify(
-            &self,
-            claim: &CallerClaim,
-            observation: &HostObservation,
-            seat: SeatId,
-            request: OperationId,
-            obligation: ObligationRef,
-            payload_hash: [u8; 32],
-        ) -> Result<MutationPermit, ApiError> {
-            let occupant = observation.occupant.as_ref().ok_or_else(unsupported)?;
-            if observation.provenance != ObservationProvenance::FreshCurrentTarget
-                || observation.target != claim.target
-                || occupant.harness != claim.harness
-                || occupant.session != claim.native_session
-                || occupant.execution != claim.execution
-                || !occupant.is_top_level
-            {
-                return Err(unsupported());
-            }
-            let actor = VerifiedCaller {
-                seat,
-                harness: claim.harness,
-                native_session: claim.native_session.clone(),
-                execution: claim.execution.clone(),
-                host_boot: observation.host_boot.clone(),
-                target_generation: observation.generation,
-                binding_generation: 1, // Injected fixture binding; not inferred from host target.
-                observed_at_utc: observation.observed_at_utc,
-            };
-            Ok(MutationPermit::new(
-                actor,
-                request,
-                obligation,
-                payload_hash,
-                observation.observed_at_mono,
-                observation.epoch,
-            ))
         }
     }
     impl NotificationPort for Adapter {
@@ -3943,37 +3383,28 @@ mod contract_adapter_tests {
         }
     }
     impl LocalClient for Adapter {
-        fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
-            self.query(
-                &command,
-                &ReadContext {
-                    instance: "i1".into(),
-                    output: OutputSpec::default(),
-                    operation_scope: None,
-                },
-                budget,
-            )
+        crate::default_output_local_client!();
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            self.query(&command)
         }
     }
     impl LocalService for Adapter {
+        crate::unserved_local_service_routes!(
+            service_control,
+            audit_service_disconnect,
+            service_operation,
+            handle_with_output
+        );
         fn handle(
             &self,
             command: Command,
             peer: PeerIdentity,
-            budget: &CallBudget,
+            _: &CallBudget,
         ) -> Result<CommandResult, ApiError> {
             if peer.effective_uid() != 501 {
                 return Err(unsupported());
             }
-            self.query(
-                &command,
-                &ReadContext {
-                    instance: "i1".into(),
-                    output: OutputSpec::default(),
-                    operation_scope: None,
-                },
-                budget,
-            )
+            self.query(&command)
         }
     }
 
@@ -4000,57 +3431,8 @@ mod contract_adapter_tests {
             .observe_current_target(&request.target, &context)
             .unwrap();
         assert_eq!(observation.target, request.target);
-        let baseline = RecoveryBaseline::new(
-            HostBootId::new("b1"),
-            4,
-            request.target.clone(),
-            RecoveryDisposition::UnambiguousUnclaimed,
-        );
-        let guard =
-            OrdinaryAllocationGuard::try_new(&request, observation.clone(), baseline).unwrap();
-        let seat = adapter.allocate_seat(request, guard, &budget).unwrap();
-        assert_eq!(seat.as_str(), "s1");
-        assert_eq!(adapter.clock().utc_now(), UtcMillis(500));
-        let claim = CallerClaim {
-            instance: String::new(),
-            seat: SeatId::new("legacy-fixture"),
-            binding_generation: 0,
-            role: crate::protocol::authority::CallerRole::TopLevel,
-            harness: Harness::Codex,
-            native_session: NativeSessionId::new("n1"),
-            execution: ExecutionId::new("e1"),
-            target: HostTargetId::new("p1"),
-        };
-        let receipt_observation = adapter
-            .observe_current_target(&claim.target, &context)
-            .unwrap();
-        let operation = OperationId::new("o1");
-        let obligation = ObligationRef::CheckIn(seat.clone());
-        let mut permit = adapter
-            .verify(
-                &claim,
-                &receipt_observation,
-                seat.clone(),
-                operation.clone(),
-                obligation.clone(),
-                [1; 32],
-            )
-            .unwrap();
-        let fence = DecisionFence {
-            now: MonoInstant(102),
-            host_boot: receipt_observation.host_boot.clone(),
-            host_epoch: 4,
-            target_generation: 7,
-            binding_generation: 1,
-            known_invalidated: false,
-        };
-        assert_eq!(
-            permit
-                .consume(&fence, &operation, &obligation, &[1; 32])
-                .unwrap()
-                .seat,
-            seat
-        );
+        let seat = SeatId::new("s1");
+        assert_eq!(adapter.clock.utc_now(), UtcMillis(500));
         let reservation = WakeReservation {
             attempt: WakeAttemptId::new("w1"),
             daemon_boot: uuid::Uuid::parse_str("00000000-0000-4000-8000-000000000001").unwrap(),

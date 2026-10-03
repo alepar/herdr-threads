@@ -10,20 +10,33 @@
 #   2. downloads herdr-threads-OS-ARCH.tar.gz and SHA256SUMS from the release
 #      (latest, or --version) and verifies the checksum;
 #   3. on an upgrade, stops the running daemon with the still-installed old
-#      executable (Herdr's stop action) and warns with its pid if it cannot;
+#      executable before replacing anything (Herdr's stop action, else
+#      `herdr-threads daemon stop`, retried per live instance with its state
+#      directory and host endpoint named) and, if it cannot, warns with its
+#      pid and ends with exit 3;
 #      installs the package into ~/.local/share/herdr-threads (replaced
-#      atomically; an identical install is left alone) and links
-#      ~/.local/bin/herdr-threads to its executable;
+#      crash-safe: the old tree is renamed aside, the new one renamed in, and
+#      the old one restored if that fails; an identical install is left
+#      alone) and links ~/.local/bin/herdr-threads to its executable;
 #   4. registers the package with Herdr (`herdr plugin link`; Herdr does not
 #      build a linked plugin, and the package's build command keeps the
 #      prebuilt binary), and ensures the daemon if Herdr runs;
 #   5. optionally runs `herdr-threads setup` (every detected harness)
 #      (claude, codex): asks on a terminal, or --setup / --no-setup;
-#   6. prints next steps.
+#   6. prints the next steps and ONE final status line.
 #
-# --uninstall stops the daemon, removes the harness setup this tool owns,
-# unlinks the plugin from Herdr and removes the files above. The daemon's
-# state (threads, receipts) in Herdr's plugin state directory is kept.
+# The final status line and the exit status (docs/install.md has the table):
+#   0  installed and linked / upgraded / uninstalled
+#   3  done, but not everything: installed, not linked; setup incomplete;
+#      uninstalled, not unregistered; the old daemon could not be stopped and
+#      is still running (the line names the reason or the pids, and the
+#      exact command to finish)
+#   1  bad arguments, download or verification failure, any refusal
+#
+# --uninstall stops the daemon, removes the harness setup this tool owns
+# (asks first on a terminal; without one it needs --yes), unlinks the plugin
+# from Herdr and removes the files above. The daemon's state (threads,
+# receipts) in Herdr's plugin state directory is kept.
 #
 # Environment overrides (flags win): HERDR_THREADS_VERSION,
 # HERDR_THREADS_RELEASE_URL (a mirror or file:// tree laid out like GitHub
@@ -48,6 +61,7 @@ mode=install
 setup=ask
 register=1
 force=0
+yes=0
 
 say() { printf '%s\n' "herdr-threads: $*"; }
 warn() { printf '%s\n' "herdr-threads: warning: $*" >&2; }
@@ -64,6 +78,8 @@ usage: install.sh [options]
   --prefix DIR       install directory (default ~/.local/share/herdr-threads)
   --bin-dir DIR      symlink directory (default ~/.local/bin)
   --release-url URL  release base URL (default https://github.com/alepar/herdr-threads/releases)
+  --yes              uninstall: remove the harness hooks without asking
+                     (needed when there is no terminal)
   --force            replace an unmanaged file at the symlink path; uninstall
                      even when Herdr cannot unlink the plugin
   --uninstall        remove the installation (keeps daemon state)
@@ -81,6 +97,7 @@ while [ $# -gt 0 ]; do
         --prefix) [ $# -ge 2 ] || die "--prefix needs a value"; install_dir=$2; shift 2 ;;
         --bin-dir) [ $# -ge 2 ] || die "--bin-dir needs a value"; bin_dir=$2; shift 2 ;;
         --release-url) [ $# -ge 2 ] || die "--release-url needs a value"; release_url=$2; shift 2 ;;
+        --yes|-y) yes=1; shift ;;
         --force) force=1; shift ;;
         --uninstall) mode=uninstall; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -102,33 +119,50 @@ fi
 # --- Herdr helpers ----------------------------------------------------------
 
 # The plugin root Herdr has registered for herdr-threads ("" when none).
-# `herdr plugin list` prints "- herdr-threads (Threads) enabled [local:/path]".
+# `herdr plugin list` prints "- herdr-threads (Threads) enabled [local:/path]"
+# (with "; N warning(s)" inside the brackets when the root's manifest is gone).
 registered_root() {
     [ -n "$herdr" ] || return 0
     "$herdr" plugin list 2>/dev/null |
-        sed -n "s/^- $PLUGIN_ID ([^)]*) [a-z]* \[\(.*\)\]\$/\1/p" | head -n 1
+        sed -n "s/^- $PLUGIN_ID ([^)]*) [a-z]* \[\(.*\)\]\$/\1/p" | sed 's/; [0-9]* warning(s)$//' | head -n 1
 }
 
+# Value at a dotted path of the JSON on stdin (exit 1 when absent), read by
+# the installed executable's hidden helper: JSON is never split with shell tools.
+json_field() { "$installed_binary" internal json-field "$1"; }
+
 # Invoke a plugin action and wait for it to finish. Needs a running Herdr
-# server. Prints the action's stdout/stderr summary; returns its exit status
-# (or 1 when the action could not be started or did not finish in time).
+# server. Success is Herdr's exit status plus the documented field (the
+# started action's log id), then that log entry's own status and exit code,
+# all read with json_field. Returns the action's exit status (or 1 when the
+# action could not be started or did not finish in time).
 herdr_action() {
-    local action=$1 invoked log_id entry deadline
+    local action=$1 invoked log_id deadline logs i found status code
+    [ -x "$installed_binary" ] || return 1
     invoked=$("$herdr" plugin action invoke "$action" --plugin "$PLUGIN_ID" 2>&1) || return 1
-    log_id=$(printf '%s' "$invoked" | sed -n 's/.*"log_id":"\([^"]*\)".*/\1/p' | head -n 1)
+    case $invoked in *'"log_id"'*) ;; *) return 1 ;; esac   # fixed-string match, no pipe (pipefail + early exit)
+    log_id=$(printf '%s' "$invoked" | json_field result.log.log_id) || return 1
     [ -n "$log_id" ] || return 1
     deadline=$((SECONDS + 30))
     while [ "$SECONDS" -lt "$deadline" ]; do
-        # Log entries contain no nested objects, so splitting on "{" puts each
-        # entry on one line.
-        entry=$("$herdr" plugin log list --plugin "$PLUGIN_ID" --limit 50 2>/dev/null |
-            tr '{' '\n' | grep -F "\"log_id\":\"$log_id\"" | head -n 1 || true)
-        if [ -n "$entry" ] && ! printf '%s' "$entry" | grep -qF '"status":"running"'; then
-            local code
-            code=$(printf '%s' "$entry" | sed -n 's/.*"exit_code":\([0-9-]*\).*/\1/p')
-            [ "${code:-1}" = 0 ]
-            return
-        fi
+        logs=$("$herdr" plugin log list --plugin "$PLUGIN_ID" --limit 50 2>/dev/null) || logs=''
+        case $logs in
+            *"\"log_id\":\"$log_id\""*)
+            i=0
+            while found=$(printf '%s' "$logs" | json_field "result.logs.$i.log_id"); do
+                if [ "$found" = "$log_id" ]; then
+                    status=$(printf '%s' "$logs" | json_field "result.logs.$i.status") || status=''
+                    if [ -n "$status" ] && [ "$status" != running ]; then
+                        code=$(printf '%s' "$logs" | json_field "result.logs.$i.exit_code") || code=1
+                        [ "$code" = 0 ]
+                        return
+                    fi
+                    break
+                fi
+                i=$((i + 1))
+            done
+            ;;
+        esac
         sleep 0.3
     done
     return 1
@@ -170,22 +204,86 @@ bare_setup() {
     "$installed_binary" setup --help 2>/dev/null | grep -qi 'sets up every detected harness'
 }
 
-# PIDs of live herdr-threads daemons published under Herdr's default plugin
-# state directory (the `pid` in each instance's endpoint.json), one per line.
-# Best effort: a daemon run with another --state-dir is not found.
-daemon_pids() {
-    local state descriptor pid
+# The pid in an instance directory's endpoint.json, when that process is a
+# live herdr-threads one.
+instance_pid() {
+    local pid
+    pid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$1/endpoint.json" 2>/dev/null | head -n 1)
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    ps -p "$pid" -o command= 2>/dev/null | grep -qF herdr-threads || return 1
+    printf '%s\n' "$pid"
+}
+
+# Instance directories of live herdr-threads daemons under Herdr's default
+# plugin state roots, one per line ("$state/instances/<digest>"). Best effort:
+# a daemon run with another --state-dir is not found.
+live_instances() {
+    local state instance
     for state in "${XDG_STATE_HOME:-$HOME/.local/state}/herdr/plugins/$PLUGIN_ID" \
         "$HOME/.local/state/herdr/plugins/$PLUGIN_ID"; do
-        for descriptor in "$state"/instances/*/endpoint.json; do
-            [ -f "$descriptor" ] || continue
-            pid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$descriptor" 2>/dev/null | head -n 1)
-            [ -n "$pid" ] || continue
-            kill -0 "$pid" 2>/dev/null || continue
-            ps -p "$pid" -o command= 2>/dev/null | grep -qF herdr-threads || continue
-            printf '%s\n' "$pid"
+        for instance in "$state"/instances/*; do
+            [ -f "$instance/endpoint.json" ] || continue
+            instance_pid "$instance" > /dev/null || continue
+            printf '%s\n' "$instance"
         done
     done | sort -u
+}
+
+# PIDs of live herdr-threads daemons published under Herdr's default plugin
+# state directory (the `pid` in each instance's endpoint.json), one per line.
+daemon_pids() {
+    local instance
+    live_instances | while IFS= read -r instance; do
+        instance_pid "$instance" || true
+    done | sort -u
+}
+
+# Stop the running daemon with the still-installed executable: first with its
+# own context resolution, then once per live instance with that instance's
+# state dir and host endpoint (its `locator`) named explicitly, so a
+# Herdr-less, HERDR_CONFIG_PATH environment still reaches it. Returns 0 only
+# when a stop succeeded and no daemon found by the scan is left running; the
+# last stop error line is left in $stop_err.
+stop_with_installed() {
+    local ok=0 err instance locator _
+    stop_err=''
+    if err=$("$installed_binary" daemon stop 2>&1 > /dev/null); then
+        ok=1
+    else
+        stop_err=$(printf '%s\n' "$err" | tail -n 1)
+    fi
+    if [ "$ok" = 0 ] || [ -n "$(live_instances)" ]; then
+        while IFS= read -r instance; do
+            [ -n "$instance" ] || continue
+            locator=$(cat "$instance/locator" 2>/dev/null) || continue
+            [ -n "$locator" ] || continue
+            if err=$("$installed_binary" --state-dir "${instance%/instances/*}" \
+                --host-endpoint "$locator" daemon stop 2>&1 > /dev/null); then
+                ok=1
+            else
+                stop_err=$(printf '%s\n' "$err" | tail -n 1)
+            fi
+        done < <(live_instances)
+    fi
+    # A stop may return just before the process is gone.
+    for _ in 1 2 3 4 5; do
+        [ -n "$(daemon_pids)" ] || break
+        sleep 0.2
+    done
+    [ "$ok" = 1 ] && [ -z "$(daemon_pids)" ]
+}
+
+# Of the recorded old-daemon pids, the ones still alive (space-separated): a
+# later Herdr stop or ensure may have stopped them.
+old_daemon_alive() {
+    local pid alive=''
+    for pid in $OUT_OLD_DAEMON; do
+        kill -0 "$pid" 2>/dev/null || continue
+        ps -p "$pid" -o command= 2>/dev/null | grep -qF herdr-threads || continue
+        alive="${alive:+$alive }$pid"
+    done
+    printf '%s' "$alive"
 }
 
 can_prompt() {
@@ -194,35 +292,82 @@ can_prompt() {
     [ -t 1 ] && { : < /dev/tty; } 2>/dev/null
 }
 
+# --- final status -----------------------------------------------------------
+# Every outcome is recorded where it happens; nothing prints hints mid-run.
+# next_steps() and finish() read the record, so the hints and the one final
+# status line always agree with what actually happened.
+OUT_LINKED=0          # Herdr has the plugin linked from $install_dir
+OUT_NOT_LINKED=''     # why not (install), or why not unregistered (uninstall)
+OUT_REGISTER_CMD=''   # the command that finishes registering / unregistering
+OUT_UPGRADED=0
+OUT_DAEMON_UP=0
+OUT_SETUP=none        # none_found|skipped|per_project|not_registered|suggested|declined|complete|failed
+OUT_SETUP_FAILED=''   # harnesses whose setup failed
+OUT_CODEX_SET_UP=0
+OUT_HOOKS_KEPT=0      # uninstall: hooks left in place (no --yes, no terminal)
+OUT_OLD_DAEMON=''     # pids of a daemon the stop could not stop (re-checked at the end)
+
 # --- uninstall --------------------------------------------------------------
 
+# A stop that left a daemon running: warn with its pid and record it.
+uninstall_stop_failed() {
+    local pids
+    pids=$(daemon_pids | tr '\n' ' ')
+    pids=${pids% }
+    [ -n "$pids" ] || return 0
+    OUT_OLD_DAEMON=$pids
+    warn "could not stop the running daemon (pid $pids, from its endpoint.json)${stop_err:+: $stop_err}"
+    warn "stop it by hand: kill $pids"
+}
+
 uninstall() {
-    local root
+    local root herdr_ok=0 h still
     if [ -e "$install_dir" ] && [ ! -f "$install_dir/$MARKER" ]; then
         die "$install_dir was not created by this installer (no $MARKER); not removing it"
     fi
-    root=$(registered_root)
+    # --no-herdr leaves Herdr alone, as it does for an install.
+    if [ "$register" = 1 ] && [ -n "$herdr" ]; then herdr_ok=1; fi
+    root=''
+    if [ "$herdr_ok" = 1 ]; then root=$(registered_root); fi
     if [ -x "$installed_binary" ]; then
-        if [ "$root" = "local:$install_dir" ] && server_running; then
-            if herdr_action stop; then say "stopped the daemon"; else warn "could not stop the daemon (it may not be running)"; fi
-        fi
-        if [ "$setup" != no ] && user_level_setup && bare_setup; then
-            # Bare unsetup removes every recorded installation, whether or
-            # not the harness is still on PATH.
-            if "$installed_binary" unsetup; then
-                say "removed the harness hooks this tool owns"
+        if [ "$herdr_ok" = 1 ] && [ "$root" = "local:$install_dir" ] && server_running; then
+            if herdr_action stop || stop_with_installed; then
+                say "stopped the daemon"
             else
-                warn "\`herdr-threads unsetup\` failed; run it again by hand if a harness was set up"
+                uninstall_stop_failed
+                [ -n "$OUT_OLD_DAEMON" ] || warn "could not stop the daemon (it may not be running)"
             fi
-        elif [ "$setup" != no ] && user_level_setup; then
-            local h
-            for h in $(detected_harnesses); do
-                if "$installed_binary" unsetup "$h"; then
-                    say "removed the $h hooks this tool owns"
+        elif stop_with_installed; then
+            say "stopped the daemon"
+        else
+            uninstall_stop_failed
+        fi
+        if [ "$setup" = no ]; then
+            :
+        elif ! user_level_setup; then
+            :
+        elif [ "$yes" = 1 ] || { [ "$setup" != no ] && can_prompt &&
+            confirm "Remove the herdr-threads hooks from the detected harnesses (herdr-threads unsetup)?"; }; then
+            if bare_setup; then
+                # Bare unsetup removes every recorded installation, whether or
+                # not the harness is still on PATH.
+                if "$installed_binary" unsetup; then
+                    say "removed the harness hooks this tool owns"
                 else
-                    warn "\`herdr-threads unsetup $h\` failed; run it again by hand if $h was set up"
+                    warn "\`herdr-threads unsetup\` failed; run it again by hand if a harness was set up"
                 fi
-            done
+            else
+                for h in $(detected_harnesses); do
+                    if "$installed_binary" unsetup "$h"; then
+                        say "removed the $h hooks this tool owns"
+                    else
+                        warn "\`herdr-threads unsetup $h\` failed; run it again by hand if $h was set up"
+                    fi
+                done
+            fi
+        else
+            OUT_HOOKS_KEPT=1
+            say "kept the harness hooks (no terminal to ask on and no --yes)"
         fi
     fi
     if [ "$root" = "local:$install_dir" ]; then
@@ -230,12 +375,20 @@ uninstall() {
             say "unlinked the plugin from Herdr"
         elif [ "$force" = 1 ]; then
             warn "Herdr could not unlink the plugin (is the server running?); removing files anyway (--force)"
-            warn "run \`herdr plugin unlink $PLUGIN_ID\` once Herdr is running"
+            OUT_NOT_LINKED="Herdr could not unlink the plugin"
+            OUT_REGISTER_CMD="herdr plugin unlink $PLUGIN_ID"
         else
             die "Herdr could not unlink the plugin (is the Herdr server running?). Start Herdr and re-run, or pass --force"
         fi
     elif [ -n "$root" ]; then
         say "Herdr has $PLUGIN_ID registered from $root, not from this installer; leaving it"
+    elif [ "$herdr_ok" = 0 ]; then
+        if [ "$register" = 0 ]; then
+            OUT_NOT_LINKED="--no-herdr: Herdr was not asked to unregister the plugin"
+        else
+            OUT_NOT_LINKED="herdr is not on PATH, so the plugin registration was not checked"
+        fi
+        OUT_REGISTER_CMD="herdr plugin unlink $PLUGIN_ID"
     fi
     if [ -L "$link_path" ] && [ "$(readlink "$link_path")" = "$installed_binary" ]; then
         rm -f "$link_path"
@@ -246,12 +399,27 @@ uninstall() {
         say "removed $install_dir"
     fi
     rm -rf "$install_dir.new" "$install_dir.old"
-    say "uninstalled. Daemon state in Herdr's plugin state directory was kept."
+    say "Daemon state in Herdr's plugin state directory was kept."
+    if [ "$OUT_HOOKS_KEPT" = 1 ]; then
+        say "harness hooks were left in place: re-run with --yes to remove them (they do nothing without herdr-threads)"
+    fi
+    still=$(old_daemon_alive)
+    if [ -n "$still" ]; then
+        printf '%s\n' "uninstalled; daemon still running: pid $still"
+        printf '  stop it with: kill %s\n' "$still"
+        exit 3
+    fi
+    if [ -n "$OUT_NOT_LINKED" ]; then
+        printf '%s\n' "uninstalled, not unregistered: $OUT_NOT_LINKED"
+        printf '  unregister it with: %s\n' "$OUT_REGISTER_CMD"
+        exit 3
+    fi
+    printf '%s\n' "uninstalled"
+    exit 0
 }
 
 if [ "$mode" = uninstall ]; then
     uninstall
-    exit 0
 fi
 
 # --- platform ---------------------------------------------------------------
@@ -333,6 +501,7 @@ fi
 # daemon cannot decode its request). Herdr runs the `stop` action from the
 # registered plugin root, which still holds the old package here.
 old_stopped=0
+stop_err=''
 if [ "$changed" = 1 ] && [ -n "$previous_version" ] && [ -x "$installed_binary" ]; then
     if [ "$register" = 1 ] && [ "$(registered_root)" = "local:$install_dir" ] && server_running; then
         if herdr_action stop; then
@@ -340,11 +509,20 @@ if [ "$changed" = 1 ] && [ -n "$previous_version" ] && [ -x "$installed_binary" 
             say "stopped the running daemon with the installed $previous_version executable"
         fi
     fi
+    if [ "$old_stopped" = 0 ] && stop_with_installed; then
+        # Herdr is down, absent, not being used (--no-herdr), or its stop
+        # action failed (an older installed executable may lack the helper
+        # herdr_action reads its result with): stop the daemon directly with
+        # the old executable, which speaks the running daemon's protocol.
+        old_stopped=1
+        say "stopped the old daemon (herdr-threads daemon stop) before replacing it"
+    fi
     if [ "$old_stopped" = 0 ]; then
         old_pids=$(daemon_pids | tr '\n' ' ')
         old_pids=${old_pids% }
         if [ -n "$old_pids" ]; then
-            warn "could not stop the running daemon (pid $old_pids, from its endpoint.json) with the installed $previous_version executable"
+            OUT_OLD_DAEMON=$old_pids
+            warn "could not stop the running daemon (pid $old_pids, from its endpoint.json) with the installed $previous_version executable${stop_err:+: $stop_err}"
             warn "if the new version cannot take it over (\`herdr-threads doctor\` reports a version or protocol mismatch),"
             warn "stop it by hand: kill $old_pids, then herdr plugin action invoke ensure --plugin $PLUGIN_ID"
         fi
@@ -358,9 +536,13 @@ if [ "$changed" = 1 ]; then
     if [ -e "$install_dir" ]; then
         # Same path, so Herdr's registration (plugin_root) stays valid.
         mv "$install_dir" "$install_dir.old"
-        mv "$install_dir.new" "$install_dir"
+        if ! mv "$install_dir.new" "$install_dir"; then
+            mv "$install_dir.old" "$install_dir" || true
+            die "could not move the new package into $install_dir; the previous install was restored"
+        fi
         rm -rf "$install_dir.old"
-        say "upgraded $install_dir ($previous_version -> $new_version)"
+        OUT_UPGRADED=1
+        say "replaced $install_dir ($previous_version -> $new_version)"
     else
         mv "$install_dir.new" "$install_dir"
         say "installed $new_version into $install_dir"
@@ -389,34 +571,36 @@ else
 fi
 on_path=0
 case ":$PATH:" in *":$bin_dir:"*) on_path=1 ;; esac
-if [ "$on_path" = 0 ]; then
-    warn "$bin_dir is not on PATH; add it, e.g.: export PATH=\"$bin_dir:\$PATH\""
-fi
 "$installed_binary" --version >/dev/null || die "the installed executable does not run on this machine"
 
 # --- Herdr registration -----------------------------------------------------
 
 registered=0
-daemon_up=0
+herdr_cmd=${herdr:-herdr}
+link_cmd="$herdr_cmd plugin link $install_dir"
 if [ "$register" = 0 ]; then
+    OUT_NOT_LINKED="--no-herdr"
+    OUT_REGISTER_CMD=$link_cmd
     say "skipping Herdr registration (--no-herdr)"
 elif [ -z "$herdr" ]; then
-    warn "herdr is not on PATH; register later with: herdr plugin link $install_dir"
+    OUT_NOT_LINKED="herdr is not on PATH"
+    OUT_REGISTER_CMD=$link_cmd
 else
     root=$(registered_root)
     if [ "$root" = "local:$install_dir" ]; then
         registered=1
         say "Herdr already has the plugin linked from $install_dir"
     elif [ -n "$root" ]; then
-        warn "Herdr already has $PLUGIN_ID registered from $root; leaving that registration alone"
-        warn "to use this install instead: herdr plugin uninstall/unlink $PLUGIN_ID, then herdr plugin link $install_dir"
+        OUT_NOT_LINKED="Herdr already has $PLUGIN_ID registered from $root; left alone"
+        OUT_REGISTER_CMD="$herdr_cmd plugin unlink $PLUGIN_ID && $link_cmd"
     elif link_output=$("$herdr" plugin link "$install_dir" 2>&1); then
         registered=1
         say "linked the plugin into Herdr (herdr plugin link $install_dir)"
     else
-        warn "herdr plugin link failed: $link_output"
+        OUT_NOT_LINKED="Herdr refused the link: $link_output"
+        OUT_REGISTER_CMD=$link_cmd
         if [ "$os" = linux ]; then
-            warn "the manifest declares platforms = [\"macos\"]; Herdr may refuse it on Linux"
+            warn "the manifest declares Linux, but Linux is unverified for this release; see Herdr's error above"
         fi
     fi
     if [ "$registered" = 1 ] && server_running; then
@@ -428,7 +612,7 @@ else
             herdr_action stop || true
         fi
         if herdr_action ensure; then
-            daemon_up=1
+            OUT_DAEMON_UP=1
             say "daemon is running (Herdr action ensure)"
         else
             warn "the ensure action failed; run \`herdr plugin action invoke doctor --plugin $PLUGIN_ID\`"
@@ -440,93 +624,141 @@ else
             fi
         fi
     elif [ "$registered" = 1 ]; then
-        say "Herdr server is not running; the daemon starts with the next Herdr server start"
+        say "Herdr server is not running: no daemon was started; it starts with the next Herdr server start"
     fi
 fi
+OUT_LINKED=$registered
 
 # --- harness setup ----------------------------------------------------------
 
 harnesses=$(detected_harnesses | tr '\n' ' ')
 harnesses=${harnesses% }
-# What setup did, for the next steps: setup_done when every harness setup
-# that ran succeeded (and at least one ran); codex_set_up when Codex's hooks
-# were installed and so still need their one-time trust review.
-setup_done=0
-setup_failed=0
-codex_set_up=0
 if [ -z "$harnesses" ]; then
+    OUT_SETUP=none_found
     say "no supported harness (claude, codex) found on PATH; skipping hook setup"
 elif [ "$setup" = no ]; then
+    OUT_SETUP=skipped
     say "skipping hook setup (--no-setup)"
 elif [ "$registered" = 0 ]; then
+    OUT_SETUP=not_registered
     say "skipping hook setup: the plugin is not registered with Herdr"
 elif ! user_level_setup; then
-    say "this build's setup is per project; set up hooks inside each project: herdr-threads setup claude|codex"
+    OUT_SETUP=per_project
+    say "this build's setup is per project; the installer does not run it"
 elif bare_setup; then
     if [ "$setup" = ask ] && ! can_prompt; then
-        say "detected $harnesses; set up their hooks with: herdr-threads setup (or re-run with --setup)"
+        OUT_SETUP=suggested
+        say "detected $harnesses; hook setup not run (no terminal and no --setup)"
     elif [ "$setup" = ask ] && ! confirm "Install herdr-threads hooks for every detected harness ($harnesses) (herdr-threads setup)?"; then
-        say "skipping hook setup; run it later with: herdr-threads setup"
+        OUT_SETUP=declined
+        say "skipping hook setup"
     elif "$installed_binary" setup; then
-        setup_done=1
-        case " $harnesses " in *" codex "*) codex_set_up=1 ;; esac
+        OUT_SETUP=complete
+        case " $harnesses " in *" codex "*) OUT_CODEX_SET_UP=1 ;; esac
         say "set up hooks for the detected harnesses (summary above)"
     else
-        setup_failed=1
+        OUT_SETUP=failed
+        OUT_SETUP_FAILED=$harnesses
         warn "\`herdr-threads setup\` failed for a harness; see its output above"
     fi
 else
+    OUT_SETUP=suggested
     for h in $harnesses; do
         if [ "$setup" = ask ]; then
             if ! can_prompt; then
-                say "detected $h; set up its hooks with: herdr-threads setup $h (or re-run with --setup)"
+                say "detected $h; its hook setup not run (no terminal and no --setup)"
                 continue
             fi
-            confirm "Install herdr-threads hooks for $h (herdr-threads setup $h)?" || continue
+            if ! confirm "Install herdr-threads hooks for $h (herdr-threads setup $h)?"; then
+                OUT_SETUP=declined
+                continue
+            fi
         fi
         if "$installed_binary" setup "$h"; then
-            setup_done=1
-            [ "$h" != codex ] || codex_set_up=1
+            [ "$OUT_SETUP" = failed ] || OUT_SETUP=complete
+            [ "$h" != codex ] || OUT_CODEX_SET_UP=1
             say "set up $h hooks"
         else
-            setup_failed=1
+            OUT_SETUP=failed
+            OUT_SETUP_FAILED="${OUT_SETUP_FAILED:+$OUT_SETUP_FAILED }$h"
             warn "\`herdr-threads setup $h\` failed; see its output above"
         fi
     done
 fi
 
-# --- next steps -------------------------------------------------------------
+# --- next steps and final status -------------------------------------------
 
-cat <<EOF
-
-herdr-threads $new_version ($os-$arch) is installed.
-  executable: $link_path -> $installed_binary
-  package:    $install_dir
-Next steps:
-EOF
 step() { printf '  - %s\n' "$1"; }
-if [ "$daemon_up" = 1 ]; then
-    step "Check it: herdr-threads doctor"
-elif [ "$registered" = 1 ]; then
-    step "Start Herdr (or restart its server) so the plugin's startup entry starts the daemon,"
-    printf '    %s\n' "then check it: herdr-threads doctor"
-else
-    step "Register the plugin with Herdr: herdr plugin link $install_dir, then start Herdr"
-    printf '    %s\n' "and check it: herdr-threads doctor"
-fi
-if [ "$setup_failed" = 1 ]; then
-    step "Fix agent hook setup (see above): herdr-threads setup; check: herdr-threads setup-status"
-elif [ "$setup_done" = 0 ]; then
-    step "Set up agent hooks: herdr-threads setup (every detected harness; check: herdr-threads setup-status)"
-fi
-if [ "$codex_set_up" = 1 ]; then
-    step "Trust the Codex hooks once: start codex interactively and trust the herdr-threads hooks it lists for review (or open /hooks)"
-fi
-step "Try it: in a Herdr shell pane run herdr-threads me init, then follow https://github.com/$REPO#try-it-yourself"
-step "Upgrade: re-run this installer. Remove: re-run it with --uninstall."
-if [ "$os" = linux ]; then
-    printf '%s\n' "  - Linux is EXPERIMENTAL and unvalidated; please report problems."
-fi
 
-exit 0
+next_steps() {
+    printf '\n%s\n' "herdr-threads $new_version ($os-$arch)"
+    printf '  executable: %s -> %s\n' "$link_path" "$installed_binary"
+    printf '  package:    %s\n' "$install_dir"
+    printf '%s\n' "Next steps:"
+    if [ "$on_path" = 0 ]; then
+        step "$bin_dir is not on PATH; add it, e.g.: export PATH=\"$bin_dir:\$PATH\""
+    fi
+    if [ "$OUT_DAEMON_UP" = 1 ]; then
+        step "Check it: herdr-threads doctor"
+    elif [ "$OUT_LINKED" = 1 ]; then
+        step "Start Herdr (or restart its server) so the plugin's startup entry starts the daemon,"
+        printf '    %s\n' "then check it: herdr-threads doctor"
+    else
+        step "Register the plugin with Herdr: $OUT_REGISTER_CMD, then start Herdr"
+        printf '    %s\n' "and check it: herdr-threads doctor"
+    fi
+    case "$OUT_SETUP" in
+        failed) step "Fix agent hook setup (see above): herdr-threads setup; check: herdr-threads setup-status" ;;
+        none_found) step "No supported harness (claude, codex) found on PATH; after installing one, run: herdr-threads setup" ;;
+        not_registered) step "After the plugin is registered, set up agent hooks: herdr-threads setup (every detected harness; check: herdr-threads setup-status)" ;;
+        per_project) step "Set up agent hooks inside each project: herdr-threads setup claude|codex" ;;
+        complete) ;;
+        *) step "Set up agent hooks: herdr-threads setup (every detected harness; check: herdr-threads setup-status)" ;;
+    esac
+    if [ "$OUT_CODEX_SET_UP" = 1 ]; then
+        step "Trust the Codex hooks once: start codex interactively and trust the herdr-threads hooks it lists for review (or open /hooks)"
+    fi
+    step "Try it: in a Herdr shell pane run herdr-threads me init, then follow https://github.com/$REPO#try-it-yourself"
+    step "Upgrade: re-run this installer. Remove: re-run it with --uninstall."
+    if [ "$os" = linux ]; then
+        printf '%s\n' "  - Linux is EXPERIMENTAL and unvalidated; please report problems."
+    fi
+}
+
+# The one final status line, and the exit status that goes with it.
+finish() {
+    local verb='installed' still ensure
+    [ "$OUT_UPGRADED" = 0 ] || verb='upgraded'
+    still=$(old_daemon_alive)
+    if [ -n "$still" ]; then
+        if [ "$OUT_LINKED" = 1 ]; then
+            printf '%s\n' "$verb and linked; old daemon still running: pid $still"
+            ensure="herdr plugin action invoke ensure --plugin $PLUGIN_ID"
+        else
+            printf '%s\n' "$verb, not linked; old daemon still running: pid $still"
+            ensure="herdr-threads daemon ensure"
+        fi
+        printf '  stop it with: kill %s, then %s\n' "$still" "$ensure"
+        exit 3
+    fi
+    if [ "$OUT_LINKED" = 0 ]; then
+        printf '%s\n' "$verb, not linked: $OUT_NOT_LINKED"
+        printf '  register it with: %s\n' "$OUT_REGISTER_CMD"
+        exit 3
+    fi
+    if [ "$OUT_SETUP" = failed ]; then
+        printf '%s\n' "installed and linked; setup incomplete: $OUT_SETUP_FAILED"
+        printf '  finish it with: herdr-threads setup\n'
+        exit 3
+    fi
+    if [ "$OUT_UPGRADED" = 1 ]; then
+        printf '%s\n' "upgraded: herdr-threads $previous_version -> $new_version (linked)"
+    else
+        printf '%s\n' "installed and linked: herdr-threads $new_version"
+    fi
+    exit 0
+}
+
+next_steps
+finish
 }

@@ -24,7 +24,7 @@ use crate::{
         time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis},
     },
     scheduler::Scheduler,
-    service::{dispatch::DomainService, workers::FairWriter},
+    service::{dispatch::DomainService, fair_writer::FairWriter, workers::ScheduledStore},
     store::{SqliteStore, StoreSettings, connection::StoreContext},
     test_support::failpoints::Failpoint,
 };
@@ -76,6 +76,8 @@ struct Matrix {
     instance: String,
     db_path: PathBuf,
     store: Arc<SqliteStore>,
+    /// The production lane seam over the same store, as the workers use it.
+    ports: ScheduledStore,
     service: DomainService,
     boot: uuid::Uuid,
     executions: AtomicU64,
@@ -122,6 +124,7 @@ impl Matrix {
             clock,
             instance,
             db_path,
+            ports: ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32))),
             store,
             service,
             boot,
@@ -161,6 +164,7 @@ impl Matrix {
         self.boot = uuid::Uuid::new_v4();
         let (store, service) = Self::compose(&self.clock, &self.instance, &self.db_path, self.boot);
         self.service = service;
+        self.ports = ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32)));
         self.store = store;
     }
 
@@ -430,8 +434,8 @@ impl Matrix {
         let notifier = PromptLog::default();
         let scheduler = Scheduler::new(
             self.instance.clone(),
-            self.store.as_ref(),
-            self.store.as_ref(),
+            &self.ports,
+            &self.ports,
             &notifier,
             RetryConfig::default(),
             self.boot,
@@ -646,11 +650,11 @@ impl Matrix {
     fn scheduler<'a>(
         &'a self,
         notifier: &'a PromptLog,
-    ) -> Scheduler<'a, SqliteStore, SqliteStore, PromptLog> {
+    ) -> Scheduler<'a, ScheduledStore, ScheduledStore, PromptLog> {
         Scheduler::new(
             self.instance.clone(),
-            self.store.as_ref(),
-            self.store.as_ref(),
+            &self.ports,
+            &self.ports,
             notifier,
             RetryConfig::default(),
             self.boot,
@@ -1203,6 +1207,7 @@ fn paged_reads_output_failure_and_partial_utf8_body_keep_every_obligation() {
                 thread: thread.clone(),
                 page: page.clone(),
                 initial: None,
+                full_bodies: false,
             }))
             .unwrap()
         else {
@@ -1349,6 +1354,7 @@ fn corrupt_or_unknown_schema_fails_explicitly_and_never_rewrites_history() {
     let Matrix {
         store,
         service,
+        ports,
         db_path,
         clock,
         instance,
@@ -1356,6 +1362,7 @@ fn corrupt_or_unknown_schema_fails_explicitly_and_never_rewrites_history() {
         ..
     } = m;
     drop(service);
+    drop(ports);
     drop(store);
     {
         let db = Connection::open(&db_path).unwrap();
@@ -1565,12 +1572,6 @@ impl crate::ports::HostPort for FlakyHost {
                 .collect(),
         })
     }
-    fn subscribe_lifecycle(
-        &self,
-        _: &HostCallContext,
-    ) -> Result<Box<dyn crate::ports::HostLifecycleSubscription>, ApiError> {
-        Err(host_denied())
-    }
     fn safe_wake_target(
         &self,
         _: &SeatId,
@@ -1586,6 +1587,14 @@ impl crate::ports::HostPort for FlakyHost {
     ) -> Result<crate::ports::PromptOutcome, ApiError> {
         Err(host_denied())
     }
+    fn pane_agent_state(
+        &self,
+        _target: &crate::ports::SafeWakeTarget,
+        _context: &crate::ports::HostCallContext,
+    ) -> Result<crate::ports::AgentComposerState, ApiError> {
+        Ok(crate::ports::AgentComposerState::Submitted)
+    }
+
     fn launch_native(
         &self,
         _: crate::ports::NativeLaunchRequest,
@@ -1593,14 +1602,16 @@ impl crate::ports::HostPort for FlakyHost {
     ) -> Result<crate::ports::NativeLaunchOutcome, ApiError> {
         Err(host_denied())
     }
+    fn send_submit_key(
+        &self,
+        _: &crate::ports::SafeWakeTarget,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<(), crate::protocol::results::ApiError> {
+        Ok(())
+    }
 }
 fn host_denied() -> ApiError {
-    ApiError {
-        code: ErrorCode::HostUnavailable,
-        detail: "socket denied".into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::host_unavailable("socket denied")
 }
 
 impl Matrix {
@@ -1617,18 +1628,12 @@ impl Matrix {
         Option<ApiError>,
     ) {
         let outcome = identity
-            .capture_if_due(self.store.as_ref(), &self.budget(), &self.budget())
+            .capture_if_due(&self.ports, &self.budget(), &self.budget())
             .unwrap()
             .expect("capture due");
         let (mut after, mut high, mut retirements) = (0, None, 0u32);
         loop {
-            match identity.reconcile_page(
-                self.store.as_ref(),
-                &outcome,
-                after,
-                high,
-                &self.budget(),
-            ) {
+            match identity.reconcile_page(&self.ports, &outcome, after, high, &self.budget()) {
                 Ok(progress) => {
                     retirements += u32::from(progress.retirements_started);
                     high = Some(progress.high_water_ordinal);
@@ -1764,9 +1769,8 @@ impl Matrix {
             .unwrap()
     }
 
-    /// Lifecycle subscription denied (every event lost) and the socket
-    /// denied at the next periodic capture: fail-closed invalidation that
-    /// never retires or settles anything.
+    /// Socket denied at the next periodic capture (every event lost):
+    /// fail-closed invalidation that never retires or settles anything.
     fn deny_host(&self, pair: &FlakyPair) {
         self.deny_host_expecting(
             pair,
@@ -1776,17 +1780,6 @@ impl Matrix {
 
     fn deny_host_expecting(&self, pair: &FlakyPair, states: &str) {
         use crate::identity::reconcile::ObservationOutcome;
-        assert!(
-            crate::ports::HostPort::subscribe_lifecycle(
-                pair.host.as_ref(),
-                &HostCallContext {
-                    budget: self.budget(),
-                    expected_boot: None,
-                    expected_epoch: None,
-                }
-            )
-            .is_err()
-        );
         pair.host.connected.store(false, Ordering::SeqCst);
         self.clock.mono.fetch_add(5_000, Ordering::SeqCst);
         let (denied, retirements, error) = self.capture_and_reconcile(&pair.identity);

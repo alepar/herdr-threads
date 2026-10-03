@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fixture stand-in for the listed Claude version: prints only its version.
+echo "2.1.286 (Claude Code)"

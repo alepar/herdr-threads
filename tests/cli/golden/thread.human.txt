@@ -1,0 +1,10 @@
+Thread t-1  [open]
+Topic:    Plan the release…
+Goal:     Ship the release by Friday
+Created:  2026-09-28 08:45Z
+Messages: 7 (5 ordinary, 2 system)
+Participants (2):
+  - seat-a joined since 2026-09-28 08:45Z (you)
+  - seat-b invited (required)
+  more: herdr-threads participants t-1 --cursor cursor-1
+Pending receipts: 2  (list: herdr-threads pending-receipts --thread t-1)

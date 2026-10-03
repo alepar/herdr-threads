@@ -1,0 +1,4 @@
+{"type": "assistant", "parent_tool_use_id": null, "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Task", "input": {"prompt": "read the mail", "run_in_background": true}}]}}
+{"type": "user", "parent_tool_use_id": null, "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "Async agent launched. agentId: A", "is_error": false}]}, "tool_use_result": {"agentId": "A"}}
+{"type": "assistant", "parent_tool_use_id": null, "message": {"content": [{"type": "tool_use", "id": "t2", "name": "Task", "input": {"prompt": "read the mail", "run_in_background": true}}]}}
+{"type": "user", "parent_tool_use_id": null, "message": {"content": [{"type": "tool_result", "tool_use_id": "t2", "content": "Async agent launched. agentId: B", "is_error": false}]}, "tool_use_result": {"agentId": "B"}}

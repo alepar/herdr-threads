@@ -23,14 +23,14 @@ const MAX_AUDIENCE_RESTARTS: u8 = 8;
 
 // Allowed: a transient, module-private step result; boxing buys nothing.
 #[allow(clippy::large_enum_variant)]
-enum PrepareProgress {
+pub(crate) enum PrepareProgress {
     Step(PreparationStep),
     AudienceDrift,
 }
 
 // Allowed: a transient, module-private step result; boxing buys nothing.
 #[allow(clippy::large_enum_variant)]
-enum PublishProgress {
+pub(crate) enum PublishProgress {
     Committed(ServiceResult),
     AudienceDrift,
 }
@@ -48,24 +48,6 @@ impl super::SqliteStore {
         self.service_notify_with_admission(request, connection, gate, budget, None, |_, _| {})
     }
 
-    pub fn service_notify_admitted(
-        &self,
-        request: &ServiceNotify,
-        connection: &ServiceConnectionAuthority,
-        gate: &dyn ServiceAuthorityGate,
-        budget: &CallBudget,
-        admission: &crate::service::workers::FairWriter,
-    ) -> Result<ServiceResult, ApiError> {
-        self.service_notify_with_admission(
-            request,
-            connection,
-            gate,
-            budget,
-            Some(admission),
-            |_, _| {},
-        )
-    }
-
     #[cfg(test)]
     fn service_notify_with_observer(
         &self,
@@ -78,13 +60,13 @@ impl super::SqliteStore {
         self.service_notify_with_admission(request, connection, gate, budget, None, observe)
     }
 
-    fn service_notify_with_admission(
+    pub(super) fn service_notify_with_admission(
         &self,
         request: &ServiceNotify,
         connection: &ServiceConnectionAuthority,
         gate: &dyn ServiceAuthorityGate,
         budget: &CallBudget,
-        admission: Option<&crate::service::workers::FairWriter>,
+        admission: Option<&crate::service::fair_writer::FairWriter>,
         mut observe: impl FnMut(&PreparationStep, &StoreContext),
     ) -> Result<ServiceResult, ApiError> {
         if connection.instance() != self.instance {
@@ -234,27 +216,9 @@ pub enum PreparationStep {
 }
 
 /// Stages at most sixteen indexed audience candidates. A later revision change
-/// discards this generation. The service call internally rebuilds it within
-/// its original budget; callers of this step can observe the conflict.
-pub fn prepare_notify_step(
-    context: &StoreContext,
-    db: &mut Connection,
-    connection: &ServiceConnectionAuthority,
-    gate: &dyn ServiceAuthorityGate,
-    request: &ServiceNotify,
-    budget: &CallBudget,
-    max_units: u8,
-) -> Result<PreparationStep, ApiError> {
-    match prepare_notify_step_internal(context, db, connection, gate, request, budget, max_units)? {
-        PrepareProgress::Step(step) => Ok(step),
-        PrepareProgress::AudienceDrift => Err(api_error(
-            ErrorCode::Conflict,
-            "notification audience changed; retry preparation",
-        )),
-    }
-}
-
-fn prepare_notify_step_internal(
+/// discards this generation; the service call internally rebuilds it within
+/// its original budget.
+pub(crate) fn prepare_notify_step_internal(
     context: &StoreContext,
     db: &mut Connection,
     connection: &ServiceConnectionAuthority,
@@ -479,24 +443,7 @@ fn stage(tx: &rusqlite::Transaction<'_>, id: &str, seat: &str) -> Result<bool, A
 
 /// The authority guard is held from after BEGIN IMMEDIATE through commit.
 /// The event is visible immediately with its immutable staged audience.
-pub fn publish_notify(
-    context: &StoreContext,
-    db: &mut Connection,
-    connection: &ServiceConnectionAuthority,
-    gate: &dyn ServiceAuthorityGate,
-    request: &ServiceNotify,
-    budget: &CallBudget,
-) -> Result<ServiceResult, ApiError> {
-    match publish_notify_internal(context, db, connection, gate, request, budget)? {
-        PublishProgress::Committed(result) => Ok(result),
-        PublishProgress::AudienceDrift => Err(api_error(
-            ErrorCode::Conflict,
-            "notification audience changed",
-        )),
-    }
-}
-
-fn publish_notify_internal(
+pub(crate) fn publish_notify_internal(
     context: &StoreContext,
     db: &mut Connection,
     connection: &ServiceConnectionAuthority,
@@ -779,6 +726,43 @@ mod tests {
         CallBudget {
             deadline: MonoInstant(10_000),
             cancellation: Cancellation::default(),
+        }
+    }
+    /// One preparation quantum, surfacing an audience change as a conflict.
+    fn prepare_notify_step(
+        context: &StoreContext,
+        db: &mut Connection,
+        connection: &ServiceConnectionAuthority,
+        gate: &dyn ServiceAuthorityGate,
+        request: &ServiceNotify,
+        budget: &CallBudget,
+        max_units: u8,
+    ) -> Result<PreparationStep, ApiError> {
+        match prepare_notify_step_internal(
+            context, db, connection, gate, request, budget, max_units,
+        )? {
+            PrepareProgress::Step(step) => Ok(step),
+            PrepareProgress::AudienceDrift => Err(api_error(
+                ErrorCode::Conflict,
+                "notification audience changed; retry preparation",
+            )),
+        }
+    }
+    /// One publication, surfacing an audience change as a conflict.
+    fn publish_notify(
+        context: &StoreContext,
+        db: &mut Connection,
+        connection: &ServiceConnectionAuthority,
+        gate: &dyn ServiceAuthorityGate,
+        request: &ServiceNotify,
+        budget: &CallBudget,
+    ) -> Result<ServiceResult, ApiError> {
+        match publish_notify_internal(context, db, connection, gate, request, budget)? {
+            PublishProgress::Committed(result) => Ok(result),
+            PublishProgress::AudienceDrift => Err(api_error(
+                ErrorCode::Conflict,
+                "notification audience changed",
+            )),
         }
     }
     fn request(key: &str, severity: NotificationSeverity) -> ServiceNotify {
@@ -1313,7 +1297,10 @@ mod tests {
             .unwrap()
         );
         let before_projection =
-            effective::scan_effective_seat_attention(&db, "pending", None, 100).unwrap();
+            crate::test_support::attention_oracle::scan_effective_seat_attention(
+                &db, "pending", None, 100,
+            )
+            .unwrap();
         assert!(!before_projection.has_more);
         assert_eq!(
             before_projection.attention.unwrap().latest_warning_seq,
@@ -1381,7 +1368,10 @@ mod tests {
         .unwrap();
         db.execute_batch("COMMIT").unwrap();
         let canonical = {
-            let slice = effective::scan_effective_seat_attention(db, seat, None, 100).unwrap();
+            let slice = crate::test_support::attention_oracle::scan_effective_seat_attention(
+                db, seat, None, 100,
+            )
+            .unwrap();
             assert!(!slice.has_more);
             slice.attention.unwrap().frontier
         };
@@ -1869,6 +1859,7 @@ mod tests {
                 thread: ThreadId::new("t"),
                 page: page.clone(),
                 initial: None,
+                full_bodies: false,
             }),
             &budget(),
         )

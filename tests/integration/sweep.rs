@@ -10,7 +10,6 @@ use std::{
     io::{BufRead, BufReader, Write},
     os::unix::{fs::DirBuilderExt, net::UnixListener},
     path::{Path, PathBuf},
-    process::Command,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -169,8 +168,7 @@ struct Plugin {
 }
 impl Plugin {
     fn command(&self, caller: Option<Caller>, args: &[&str]) -> (i32, Value, String) {
-        let mut command = Command::new(BIN);
-        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
+        let mut command = crate::scrubbed_command(BIN);
         command
             .arg("--json")
             .arg("--state-dir")
@@ -294,7 +292,7 @@ fn membership(plugin: &Plugin, caller: Caller, thread: &str, seat: &str) -> Stri
 /// R5/R8/R9/R10/R11/R14/R16/R17 through the installed executable: a prelaunch
 /// invitation plus required-ACK assignment survive a daemon restart before
 /// the recipient exists, are discovered at its first check-in, read without
-/// settling anything, rejected from a child context, explicitly ACKed and
+/// settling anything, refused (exit 4) from a child context, explicitly ACKed and
 /// separately accepted by the top-level context, with a started deadline
 /// preserved across a second restart. Then a missed deadline yields exactly
 /// one durable warning while a timely ACK stays quiet, leave keeps earlier
@@ -327,7 +325,7 @@ fn installed_flow_prelaunch_handoff_to_explicit_receipt_survives_daemon_restart(
     for harness in ["claude", "codex"] {
         assert_ne!(first["harness"][harness], "supported", "{first}");
     }
-    let receipt_line = serde_json::json!(herdr_threads::daemon::health::COOPERATIVE_RECEIPT_LINE);
+    let receipt_line = serde_json::json!(herdr_threads::daemon::health::cooperative_receipt_line());
     assert!(
         !first["limitations"]
             .as_array()
@@ -521,18 +519,26 @@ fn installed_flow_prelaunch_handoff_to_explicit_receipt_survives_daemon_restart(
         "only the missed deadline is overdue; the timely ACK stays quiet"
     );
     assert!(plugin.pending_for(&b, &late).unwrap()["overdue"] == true);
+    let acked_at = utc_ms();
     let settled = plugin.ok(Some(top), &["ack", &late]);
     assert_eq!(
         settled["acknowledged"],
         json!([late]),
-        "a late ACK stays valid"
+        "a late ACK is recorded after its deadline"
     );
-    std::thread::sleep(Duration::from_secs(2));
-    assert_eq!(
-        plugin.warnings(&b),
-        warnings,
-        "late settlement adds no warning"
+    // Nothing-happened barrier: the late ACK's commit kicks the scheduler, so
+    // once Health reports a scheduler tick completed after the ACK, any
+    // warning the ACK could have caused would already be durable.
+    wait_until(
+        "a scheduler tick completed after the late ACK",
+        Duration::from_secs(30),
+        || {
+            plugin.ok(None, &["daemon", "health"])["last_scheduler_tick_at"]
+                .as_u64()
+                .is_some_and(|tick| tick > acked_at)
+        },
     );
+    assert_eq!(plugin.warnings(&b), warnings, "a late ACK adds no warning");
 
     // Leave keeps earlier obligations and stops future fanout.
     let kept = plugin.ok(
@@ -596,6 +602,91 @@ fn installed_flow_prelaunch_handoff_to_explicit_receipt_survives_daemon_restart(
         1,
         "no warning beyond the missed deadline"
     );
+}
+
+/// Wave 26 (ht-p03.25): the cooperative setup sweep pins `healthy`. With both
+/// harnesses on the daemon's PATH at versions their recipes admit (pinned
+/// version reporters in a private bin directory, so the host's real `claude`
+/// and `codex` cannot change the verdict) and a coherent private Herdr
+/// endpoint, `daemon ensure`, `daemon health` and `doctor` all report the
+/// designed cooperative mode as `healthy`/`ok`, never `degraded`, once
+/// `setup` has installed both harnesses' hooks (into the isolated HOME).
+#[cfg(feature = "test-support")]
+#[test]
+fn cooperative_setup_sweep_reports_healthy() {
+    use herdr_threads::test_support::isolation::TestIsolation;
+    use std::os::unix::fs::PermissionsExt;
+
+    let iso = TestIsolation::new("cooperative-setup-sweep-healthy");
+    let bin = iso.path("bin");
+    fs::create_dir_all(&bin).unwrap();
+    for (name, line) in [
+        ("claude", "2.1.283 (Claude Code)"),
+        ("codex", "codex-cli 0.157.1"),
+    ] {
+        let path = bin.join(name);
+        fs::write(&path, format!("#!/bin/sh\necho '{line}'\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let socket = iso.socket_path("herdr.sock");
+    let _host = FakeHost::start(&socket, vec![pane("w1:p1", "term-a")]);
+    let state = iso.path("state");
+    let run = |args: &[&str]| -> (i32, Value, String) {
+        let output = iso
+            .command(BIN)
+            .arg("--json")
+            .arg("--state-dir")
+            .arg(&state)
+            .arg("--host-endpoint")
+            .arg(&socket)
+            .args(args)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let value = serde_json::from_str(&stdout).unwrap_or(Value::Null);
+        (
+            output.status.code().unwrap_or(-1),
+            value,
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    type Run<'a> = &'a dyn Fn(&[&str]) -> (i32, Value, String);
+    struct StopDaemon<'a>(Run<'a>);
+    impl Drop for StopDaemon<'_> {
+        fn drop(&mut self) {
+            let _ = (self.0)(&["daemon", "stop"]);
+        }
+    }
+    let _stop = StopDaemon(&run);
+
+    // Setup installs both harnesses' hooks into the isolated HOME only.
+    for harness in ["claude", "codex"] {
+        let (code, report, stderr) = run(&["setup", harness]);
+        assert_eq!(code, 0, "setup {harness}: {stderr}{report}");
+    }
+    let (code, ensured, stderr) = run(&["daemon", "ensure"]);
+    assert_eq!(code, 0, "daemon ensure: {stderr}{ensured}");
+    // The first observation pass and harness version probe land after ensure
+    // returns; the sweep settles on the designed mode, never `degraded`.
+    let mut reported = Value::Null;
+    wait_until(
+        "healthy cooperative health",
+        Duration::from_secs(30),
+        || {
+            let (code, value, _) = run(&["daemon", "health"]);
+            reported = value;
+            code == 0 && reported["result"]["data"]["state"] == "healthy"
+        },
+    );
+    let health = &reported["result"]["data"];
+    assert_eq!(health["state"], "healthy", "{reported}");
+    for harness in ["claude", "codex"] {
+        assert_eq!(health["harness"][harness], "cooperative", "{reported}");
+    }
+    let (code, doctor, stderr) = run(&["doctor"]);
+    assert_eq!(code, 0, "doctor: {stderr}{doctor}");
+    assert_eq!(doctor["doctor"]["result"], "ok", "{doctor}");
 }
 
 #[test]

@@ -1,0 +1,6 @@
+{
+  "finding": "p31_env_wrapper",
+  "entry": "verify",
+  "verdict": "FAIL",
+  "reason": "harness denied 1 herdr-threads command(s) (permission_denials): env herdr-threads ack msg-1"
+}

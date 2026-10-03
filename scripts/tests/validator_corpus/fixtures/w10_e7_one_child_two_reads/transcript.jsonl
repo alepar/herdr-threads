@@ -1,0 +1,6 @@
+{"type": "assistant", "parent_tool_use_id": null, "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Task", "input": {"prompt": "read the mail"}}]}}
+{"type": "assistant", "parent_tool_use_id": null, "message": {"content": [{"type": "tool_use", "id": "t2", "name": "Task", "input": {"prompt": "read the mail"}}]}}
+{"type": "assistant", "parent_tool_use_id": "t1", "message": {"content": [{"type": "tool_use", "id": "c1", "name": "Bash", "input": {"command": "herdr-threads inbox"}}]}, "isSidechain": true}
+{"type": "user", "parent_tool_use_id": "t1", "message": {"content": [{"type": "tool_result", "tool_use_id": "c1", "content": "{}", "is_error": false}]}}
+{"type": "user", "parent_tool_use_id": null, "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "done", "is_error": false}]}, "tool_use_result": {"agentId": "A"}}
+{"type": "user", "parent_tool_use_id": null, "message": {"content": [{"type": "tool_result", "tool_use_id": "t2", "content": "done", "is_error": false}]}, "tool_use_result": {"agentId": "B"}}

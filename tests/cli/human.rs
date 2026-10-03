@@ -45,7 +45,10 @@ fn summary(seq: u64, preview: &str) -> MessageSummary {
 }
 
 fn human(result: &CommandResult) -> String {
-    render(result, &text()).expect("human form")
+    // 2026-09-30 13:00:00Z: the day of the fixture timestamps.
+    crate::protocol::output::with_render_now(UtcMillis(1_790_773_200_000), || {
+        render(result, &text()).expect("human form")
+    })
 }
 
 #[test]
@@ -232,4 +235,20 @@ fn presentation_flags_parse_and_conflict_with_json() {
     assert!(parsed(&["herdr-threads", "--json", "--human", "inbox"]).is_err());
     assert!(parsed(&["herdr-threads", "--json", "--machine", "inbox"]).is_err());
     assert!(parsed(&["herdr-threads", "--human", "--machine", "inbox"]).is_err());
+}
+
+#[test]
+fn table_columns_align_by_display_width() {
+    let rows = vec![
+        vec!["漢字漢字".to_owned(), "x".to_owned()],
+        vec!["ab".to_owned(), "y".to_owned()],
+    ];
+    let mut out = String::new();
+    table(&["NAME", "V"], &rows, &mut out);
+    let lines: Vec<&str> = out.lines().collect();
+    let second = |line: &str, mark: char| {
+        crate::view::escape::display_width(&line[..line.find(mark).unwrap()])
+    };
+    assert_eq!(second(lines[1], 'x'), second(lines[2], 'y'), "{out}");
+    assert_eq!(second(lines[1], 'x'), second(lines[0], 'V'), "{out}");
 }

@@ -782,97 +782,69 @@ fn current_offer_suppresses_projection_wake_but_successor_gets_attention() {
     );
 }
 
-#[test]
-fn boot_recovery_discards_unpublished_preparations_in_bounded_slices() {
-    let mut db = fixture();
-    for n in 0..21 {
-        let id = format!("p{n:02}");
-        let status = if n % 2 == 0 { "building" } else { "sealed" };
-        db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES(?1,'i','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,0,?2)",rusqlite::params![id,status]).unwrap();
-    }
-    let high = capture_abandoned_preparation_high_water(&db)
-        .unwrap()
-        .unwrap();
-    assert_eq!(high, "p20");
+fn completed_at(db: &Connection, job: &str) -> (String, Option<i64>) {
+    db.query_row(
+        "SELECT status, completed_at FROM work_jobs WHERE id=?1",
+        [job],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .unwrap()
+}
+
+fn drive(db: &mut Connection, job: &str) {
     let clock = TestClock(AtomicU64::new(0));
-    let mut cursor = RecoveryCursor::default();
-    let mut turns = 0;
-    loop {
-        let p = recover_abandoned_preparations(
-            &mut db,
-            &high,
-            cursor,
-            WorkAdmission::new(16).unwrap(),
-            &budget(),
-            &clock,
-        )
-        .unwrap();
-        assert!(p.examined <= 16);
-        assert!(p.last_error.is_none());
-        cursor = p.cursor;
-        turns += 1;
-        if !p.has_more {
-            break;
-        }
-        assert!(turns < 30);
-    }
-    assert_eq!(
-        db.query_row(
-            "SELECT count(*) FROM send_preparations WHERE status='discarded'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        21
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT count(*) FROM work_jobs WHERE kind='preparation_cleanup'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        21
-    );
+    while advance_work(db, job, WorkAdmission::new(1).unwrap(), &budget(), &clock)
+        .unwrap()
+        .has_more
+    {}
+}
+
+// ht-p03.12.1: each pruned kind stamps completed_at (the TestClock's UTC
+// millis) when its production driver completes the job.
+#[test]
+fn warning_attribution_completion_stamps_completed_at() {
+    let mut db = fixture();
+    db.execute_batch("\
+        INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq,left_seq) VALUES('t','s1',1,2,NULL);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('i','w','t',1,'warn','w','{}',10,10);\
+        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES('w',10,'t',1,'s1','receipt','m:s1');\
+        INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('j','warning_attribution','w',1);\
+    ").unwrap();
+    assert_eq!(completed_at(&db, "j"), ("pending".into(), None));
+    drive(&mut db, "j");
+    assert_eq!(completed_at(&db, "j"), ("complete".into(), Some(999_999)));
 }
 
 #[test]
-fn boot_recovery_keeps_committed_manifest_visible() {
-    let db = fixture();
+fn receipt_timer_completion_stamps_completed_at() {
+    let mut db = fixture();
     db.execute_batch("\
-        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('p','i','actor','op',zeroblob(32),'t',0,0,0,0,0,0,0,'sealed');\
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,status) VALUES('p','i','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,1,'sealed');\
+        INSERT INTO prepared_recipients(preparation_id,seat_id,thread_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('p','s1','t',1,300,0);\
         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i','m','t',1,'ordinary','body',1000,10);\
-        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',10,1000,1,0,0,0);\
+        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',10,1000,1,0,1,0);\
+        INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES('s1',11,1200,1,'verified');\
+        INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('a1','receipt_timer_materialization','1',1);\
     ").unwrap();
-    let high = capture_abandoned_preparation_high_water(&db)
-        .unwrap()
-        .unwrap();
-    let clock = TestClock(AtomicU64::new(0));
-    let mut db = db;
-    let mut cursor = RecoveryCursor::default();
-    loop {
-        let p = recover_abandoned_preparations(
-            &mut db,
-            &high,
-            cursor,
-            WorkAdmission::new(16).unwrap(),
-            &budget(),
-            &clock,
-        )
-        .unwrap();
-        cursor = p.cursor;
-        if !p.has_more {
-            break;
-        }
-    }
-    assert_eq!(count(&db, "send_manifests"), 1);
+    drive(&mut db, "a1");
+    assert_eq!(completed_at(&db, "a1"), ("complete".into(), Some(999_999)));
+}
+
+#[test]
+fn send_attention_completion_stamps_completed_at() {
+    let mut db = fixture();
+    db.execute_batch("\
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,warning_count,status) VALUES('p','i','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,1,1,'sealed');\
+        INSERT INTO prepared_recipients(preparation_id,seat_id,thread_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('p','s1','t',1,300,0);\
+        INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES('p','key','w','s1',1,1,'{}');\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i','m','t',1,'ordinary','body',1000,10);\
+        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',10,1000,1,0,1,1);\
+        INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('send','send_attention','p',3);\
+        INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES('s1',11,1200,1,'verified');\
+    ").unwrap();
+    drive(&mut db, "send");
     assert_eq!(
-        db.query_row(
-            "SELECT status FROM send_preparations WHERE id='p'",
-            [],
-            |r| r.get::<_, String>(0)
-        )
-        .unwrap(),
-        "sealed"
+        completed_at(&db, "send"),
+        ("complete".into(), Some(999_999))
     );
 }

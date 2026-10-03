@@ -52,7 +52,6 @@ Ready commands (run exactly as written, in this pane):
 - ACK after reading: herdr-threads ack MESSAGE_ID
 - accept (optional, only if you intend to join): herdr-threads accept THREAD_ID
 - all pending: herdr-threads inbox; receipts: herdr-threads pending-receipts
-attention digest: invitations=1 [INV@THREAD]; receipts=2 [MSG@THREAD, ...]; warnings=0
 ```
 
 - In a Herdr pane, plain `herdr-threads <command>` works: the CLI finds this
@@ -63,8 +62,10 @@ attention digest: invitations=1 [INV@THREAD]; receipts=2 [MSG@THREAD, ...]; warn
 - Run ready commands **exactly as written**, as a single command: no `cd`,
   `export` or chaining in front (Claude's allow rule covers only a bare
   `herdr-threads ...` command).
-- `ITEM@THREAD` in the digest is a display reference. Pass the bare ID, never
-  the `@` form.
+- The hook also adds one digest line, for example
+  `attention digest: invitations=1 [INV@THREAD]; receipts=2 [MSG@THREAD, ...]; warnings=0`.
+  `ITEM@THREAD` in it is a display reference. Pass the bare ID, never the `@`
+  form.
 - Optional accepts are a choice. Join only threads you intend to work in.
 - No output on a tool call means nothing new; it does not mean "no mail".
 
@@ -138,4 +139,5 @@ Errors print `herdr-threads: DETAIL (error_code)` on stderr. Exit status:
 
 Never resend a message just because a send's outcome was unknown: use
 `pending-ops` and `retry`. `herdr-threads doctor` is a read-only diagnosis.
-Add `--json` to any command for structured output.
+`--json` selects JSON output for commands that return a result; `skill` always
+prints this guide. It cannot be combined with `--human` or `--machine`.

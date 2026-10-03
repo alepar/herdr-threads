@@ -1,0 +1,1 @@
+{"type": "attachment", "timestamp": "2026-09-30T00:00:01Z", "attachment": {"type": "hook_additional_context", "hookEvent": "SessionStart", "content": ["The top-level agent reads pending mail: thread thread-1, message msg-1 is waiting for your ACK."]}}

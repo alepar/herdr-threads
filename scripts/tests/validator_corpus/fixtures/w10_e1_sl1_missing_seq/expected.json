@@ -1,0 +1,6 @@
+{
+  "finding": "w10_e1_sl1_missing_seq",
+  "entry": "lostprompt_wake",
+  "verdict": "FAIL",
+  "reason": "wake reservation r1 does not cover every expected handoff sequence: missing invitation seq 3 (inv-1) (wake_work last_receipt_seq=5, last_invitation_seq=None)"
+}

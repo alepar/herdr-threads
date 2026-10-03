@@ -1,3 +1,15 @@
+/// The built binary or a helper process with every inherited HERDR_/CLAUDE/CODEX
+/// variable removed (ht-p03.24); a test sets the variables it needs after this
+/// call. The scrub is part of the `test-support` build; without the feature the
+/// suite still compiles and the process is spawned as before.
+pub(crate) fn scrubbed_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    #[cfg_attr(not(feature = "test-support"), allow(unused_mut))]
+    let mut command = std::process::Command::new(program);
+    #[cfg(feature = "test-support")]
+    herdr_threads::test_support::isolation::scrub_env(&mut command);
+    command
+}
+
 static IN_PROCESS_DAEMON: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// SQLite busy timeout for a fake host's "host I/O is not called under the

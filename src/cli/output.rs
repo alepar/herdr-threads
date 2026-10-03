@@ -2,17 +2,21 @@
 
 use crate::protocol::{
     output::{OutputFormat, OutputSpec, encode_selected},
-    results::{ApiError, CommandResult, ErrorCode},
+    results::{ApiError, CommandResult},
 };
+use crate::view::escape::{Context, escape_for_terminal};
 use std::{
+    borrow::Cow,
     cell::Cell,
+    ffi::OsString,
     io::{self, Write},
 };
 
 /// How a text-format result is presented. `--json` always wins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Presentation {
-    /// Human form when stdout is a terminal, machine form otherwise.
+    /// Human form when stdout is a terminal and no agent-harness marker is
+    /// present ([`HARNESS_MARKERS`]), machine form otherwise.
     #[default]
     Auto,
     /// `--human`: the human form even when stdout is not a terminal.
@@ -23,7 +27,39 @@ pub enum Presentation {
 
 thread_local! {
     static STDOUT_IS_TERMINAL: Cell<bool> = const { Cell::new(false) };
+    static HARNESS_MARKED: Cell<bool> = const { Cell::new(false) };
     static HUMAN: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Environment variables an agent harness sets for the subprocesses of its
+/// shell tool, so a harness that runs commands in a PTY (Codex unified exec
+/// with `tty: true`) is still recognized as an agent, not a person.
+/// Verified: `CLAUDECODE` (Claude Code, every captured hook env under
+/// `docs/evidence/claude-28*-hook-capture/payloads/*.env-names.txt`);
+/// `CODEX_THREAD_ID` (in the shell-subprocess environment allow-list of the
+/// installed Codex 0.159.3 binary) and `CODEX_SANDBOX` /
+/// `CODEX_SANDBOX_NETWORK_DISABLED` (set by Codex's exec policy for sandboxed
+/// commands; both names are in the same binary). `CODEX_MANAGED_BY_NPM` is
+/// not listed: only an npm-launched Codex sets it, and no capture shows it in
+/// tool subprocesses.
+pub const HARNESS_MARKERS: [&str; 4] = [
+    "CLAUDECODE",
+    "CODEX_THREAD_ID",
+    "CODEX_SANDBOX",
+    "CODEX_SANDBOX_NETWORK_DISABLED",
+];
+
+/// Whether `env` carries a non-empty agent-harness marker.
+pub fn harness_marked(env: impl Fn(&str) -> Option<OsString>) -> bool {
+    HARNESS_MARKERS
+        .iter()
+        .any(|name| env(name).is_some_and(|value| !value.is_empty()))
+}
+
+/// Record whether this process runs under an agent harness. Only the process
+/// entrypoint sets it; library and test callers default to unmarked.
+pub fn set_harness_marked(marked: bool) {
+    HARNESS_MARKED.with(|cell| cell.set(marked));
 }
 
 /// Record whether this thread's CLI writer is an interactive terminal. Only
@@ -47,7 +83,10 @@ impl PresentationGuard {
             && match presentation {
                 Presentation::Human => true,
                 Presentation::Machine => false,
-                Presentation::Auto => STDOUT_IS_TERMINAL.with(Cell::get),
+                // A harness marker beats the terminal check: a PTY harness is an agent.
+                Presentation::Auto => {
+                    STDOUT_IS_TERMINAL.with(Cell::get) && !HARNESS_MARKED.with(Cell::get)
+                }
             };
         Self(HUMAN.with(|cell| cell.replace(human)))
     }
@@ -71,6 +110,15 @@ pub fn emitted_bytes(result: &CommandResult, spec: &OutputSpec) -> Result<Vec<u8
         && spec.format == OutputFormat::Text
         && let Some(text) = super::human::render(result, spec)
     {
+        // Every human renderer escapes peer text; this catches one that does
+        // not (debug builds and tests).
+        debug_assert!(
+            matches!(
+                escape_for_terminal(&text, Context::MultiLine),
+                Cow::Borrowed(_)
+            ),
+            "human output holds text that escape_for_terminal would escape"
+        );
         return Ok(text.into_bytes());
     }
     encode_selected(result, spec)
@@ -88,10 +136,13 @@ impl From<ApiError> for OutputError {
     }
 }
 
-/// Emit precisely the bytes measured by the shared encoder (or, for a person at
-/// a terminal, its human rendering; the budget is still enforced on the
-/// machine bytes). The caller keeps any durable intent pending until this
-/// returns successfully.
+/// Write the selected encoding of `result` and return the number of bytes
+/// written. For a machine consumer those are exactly the bytes the shared
+/// encoder measured. For a person at a terminal they are the human rendering
+/// instead, which is not measured: `max_bytes` is enforced on the machine
+/// encoding only, so the human text may be longer or shorter than the budget.
+/// The caller keeps any durable intent pending until this returns
+/// successfully.
 pub fn write_selected<W: Write>(
     result: &CommandResult,
     spec: &OutputSpec,
@@ -100,12 +151,10 @@ pub fn write_selected<W: Write>(
 ) -> Result<usize, OutputError> {
     let bytes = encode_selected(result, spec)?;
     if bytes.len() > max_bytes as usize {
-        return Err(OutputError::Api(ApiError {
-            code: ErrorCode::InvalidBudget,
-            detail: "selected output exceeds byte budget".into(),
-            restart_argv: None,
-            required_minimum_bytes: Some(bytes.len().try_into().unwrap_or(u32::MAX)),
-        }));
+        return Err(OutputError::Api(
+            ApiError::invalid_budget("selected output exceeds byte budget")
+                .with_required_minimum_bytes(bytes.len().try_into().unwrap_or(u32::MAX)),
+        ));
     }
     let bytes = if HUMAN.with(Cell::get) {
         emitted_bytes(result, spec)?

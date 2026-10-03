@@ -9,18 +9,20 @@ use crate::{
     app::SystemClock,
     client::local::LocalSocketClient,
     daemon::{
+        logs::daemon_log_path,
         ownership::{read_descriptor, read_existing_namespace},
         paths::{InstancePaths, check_owned_state_root, check_private_dir, is_unsafe_local_state},
     },
-    harness::{context::Harness, setup::NativeObservation},
+    harness::context::Harness,
     ports::LocalClient,
     protocol::{
         commands::Command,
         output::OutputFormat,
-        results::{CommandResult, HarnessState, Health, HealthState},
+        results::{CommandResult, ErrorCode, HarnessState, Health, HealthState},
         time::{CallBudget, Cancellation, Clock, MonoInstant},
         wire::PROTOCOL_VERSION,
     },
+    view::escape::{Context, escape_for_terminal},
 };
 use serde_json::{Value, json};
 use std::{
@@ -30,6 +32,182 @@ use std::{
 };
 
 const HEALTH_BUDGET_MS: u64 = 2_000;
+
+/// The closed set of doctor admission strings (ht-p03.47).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum AdmissionState {
+    #[serde(rename = "listed")]
+    Listed,
+    /// Emitted for Codex only.
+    #[serde(rename = "schema-matched, live-unverified")]
+    SchemaMatched,
+    #[serde(rename = "optimistic")]
+    Optimistic,
+    #[serde(rename = "refused")]
+    Refused,
+    /// No such harness on PATH.
+    #[serde(rename = "not_found")]
+    NotFound,
+}
+
+impl AdmissionState {
+    pub const ALL: [AdmissionState; 5] = [
+        AdmissionState::Listed,
+        AdmissionState::SchemaMatched,
+        AdmissionState::Optimistic,
+        AdmissionState::Refused,
+        AdmissionState::NotFound,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AdmissionState::Listed => "listed",
+            AdmissionState::SchemaMatched => crate::harness::codex::SCHEMA_MATCHED_LABEL,
+            AdmissionState::Optimistic => crate::harness::codex::OPTIMISTIC_LABEL,
+            AdmissionState::Refused => "refused",
+            AdmissionState::NotFound => "not_found",
+        }
+    }
+}
+
+/// The `hooks.<harness>.installed` object: the harness binary on PATH and how
+/// it was admitted.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct InstalledHarnessJson {
+    pub binary: Option<String>,
+    pub version: Option<String>,
+    pub admission: AdmissionState,
+    pub recipe: Option<String>,
+}
+
+/// No `claude` on PATH: `not_found` with nulls.
+pub fn claude_installed_stub() -> InstalledHarnessJson {
+    InstalledHarnessJson {
+        binary: None,
+        version: None,
+        admission: AdmissionState::NotFound,
+        recipe: None,
+    }
+}
+
+/// The `claude` a hook would resolve on `path`, run with `--version` (bounded
+/// by the version deadline) and classified through the admission ladder.
+/// `lookup` is the environment the test-only recipe override is read from.
+/// A binary that cannot be run or reports no recognizable version is refused
+/// with a null version; a version the ladder refuses keeps the observed
+/// version and has no recipe.
+#[cfg(test)]
+fn claude_installed_on(
+    path: Option<&std::ffi::OsStr>,
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> InstalledHarnessJson {
+    claude_installed_with_warning(path, lookup).0
+}
+
+/// [`claude_installed_on`] plus the doctor warning its admission earns: the
+/// optimistic label (with where to report problems) for an unlisted version
+/// the ladder admits, or the known-broken refusal text naming the broken
+/// range and the newest working version. `None` for listed, other refusals
+/// and an absent `claude`.
+fn claude_installed_with_warning(
+    path: Option<&std::ffi::OsStr>,
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> (InstalledHarnessJson, Option<String>) {
+    use crate::harness::{admission, claude};
+    let Some(binary) = super::hook::resolve_on_path("claude", path) else {
+        return (claude_installed_stub(), None);
+    };
+    let version =
+        crate::harness::codex::version_output(&binary, crate::harness::codex::VERSION_TIMEOUT)
+            .ok()
+            .and_then(|stdout| claude::version_from_output(&stdout));
+    let table = claude::admission_table_with(lookup);
+    let mut warning = None;
+    let (admission, recipe) = match version
+        .as_deref()
+        .map(|observed| claude::admit_in(table, observed))
+    {
+        Some(Ok(admitted)) => (
+            match &admitted.admission {
+                claude::ClaudeAdmission::Listed => AdmissionState::Listed,
+                claude::ClaudeAdmission::Optimistic(optimistic) => {
+                    warning = Some(format!(
+                        "claude {}: {}",
+                        version.as_deref().unwrap_or_default(),
+                        crate::harness::optimistic_label(optimistic, true)
+                    ));
+                    AdmissionState::Optimistic
+                }
+            },
+            Some(admitted.recipe.id.to_owned()),
+        ),
+        Some(Err(_)) | None => {
+            if let Some(observed) = version.as_deref()
+                && let admission::Row::Refused(admission::Refusal::KnownBroken {
+                    range,
+                    newest_working,
+                }) = admission::classify(table, observed, || None)
+            {
+                warning = Some(crate::harness::known_broken_label(
+                    "claude",
+                    observed,
+                    &range,
+                    newest_working,
+                ));
+            }
+            (AdmissionState::Refused, None)
+        }
+    };
+    (
+        InstalledHarnessJson {
+            binary: Some(binary.display().to_string()),
+            version,
+            admission,
+            recipe,
+        },
+        warning,
+    )
+}
+
+/// The one text line for the Claude PATH check.
+fn claude_path_line(installed: &Value) -> String {
+    match installed["binary"].as_str() {
+        None => "claude on PATH: not found".to_owned(),
+        Some(binary) => {
+            let version = installed["version"]
+                .as_str()
+                .map_or(String::new(), |version| format!(" {version}"));
+            format!(
+                "claude on PATH: {}{version} ({})",
+                clean(binary),
+                scalar(&installed["admission"])
+            )
+        }
+    }
+}
+
+fn codex_installed_json(codex: &crate::harness::codex::InstalledAdmission) -> InstalledHarnessJson {
+    use crate::harness::codex::{Admission, InstalledRefusal};
+    let (admission, version, recipe) = match &codex.result {
+        Ok(version) => (
+            match version.admission() {
+                Admission::Listed => AdmissionState::Listed,
+                Admission::SchemaMatched { .. } => AdmissionState::SchemaMatched,
+                Admission::Optimistic { .. } => AdmissionState::Optimistic,
+            },
+            Some(version.as_str().to_owned()),
+            Some(version.recipe().id.to_owned()),
+        ),
+        Err(InstalledRefusal::NotFound) => (AdmissionState::NotFound, None, None),
+        Err(InstalledRefusal::Refused(_)) => (AdmissionState::Refused, None, None),
+    };
+    InstalledHarnessJson {
+        binary: codex.binary.as_ref().map(|path| path.display().to_string()),
+        version,
+        admission,
+        recipe,
+    }
+}
 
 fn harness_state(state: HarnessState) -> &'static str {
     match state {
@@ -45,11 +223,29 @@ fn harness_state(state: HarnessState) -> &'static str {
 pub const CLAUDE_NOT_OBSERVABLE: &str =
     "not observable: Claude hook runs are not recorded (cooperative mode)";
 
-fn observation(state: NativeObservation) -> &'static str {
+/// What `hooks.claude.observed` says for the daemon's view of `claude`. Only a
+/// cooperative harness carries the "(cooperative mode)" label; an unsupported
+/// one (refused or not installed) prints the daemon's own reason.
+pub fn claude_observed_text(
+    state: HarnessState,
+    limitations: &[String],
+    notes: &[String],
+) -> String {
     match state {
-        NativeObservation::Unknown => "unknown",
-        NativeObservation::Observed => "observed",
-        NativeObservation::Unsupported => CLAUDE_NOT_OBSERVABLE,
+        HarnessState::Unknown => "unknown".into(),
+        HarnessState::Supported => "observed".into(),
+        HarnessState::Cooperative => CLAUDE_NOT_OBSERVABLE.into(),
+        HarnessState::Unsupported => {
+            let reason = limitations
+                .iter()
+                .chain(notes)
+                .find_map(|line| {
+                    line.strip_prefix("harness claude unsupported: ")
+                        .or_else(|| line.strip_prefix("harness claude not installed: "))
+                })
+                .unwrap_or("the daemon did not admit claude");
+            format!("not observable: {reason}")
+        }
     }
 }
 
@@ -71,10 +267,14 @@ fn probe_daemon(paths: &InstancePaths) -> Result<Daemon, String> {
         Err(error) => return Err(format!("endpoint descriptor: {error}")),
     };
     if descriptor.protocol_version != PROTOCOL_VERSION {
-        return Ok(Daemon::Unreachable(format!(
-            "daemon protocol {} differs from executable protocol {PROTOCOL_VERSION}; run `daemon stop` with the older executable (if it is gone, stop the daemon process, pid {}, by hand), then `daemon ensure`",
-            descriptor.protocol_version, descriptor.pid
-        )));
+        return Ok(Daemon::Unreachable(
+            crate::daemon::lifecycle::skew_error(
+                ErrorCode::UnknownWireVersion,
+                &descriptor.software_version,
+                descriptor.protocol_version,
+            )
+            .detail,
+        ));
     }
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let budget = CallBudget {
@@ -170,7 +370,7 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
         code = exit::EXIT_USAGE;
         result = "unsafe_state_dir";
     }
-    let mut observed_claude = NativeObservation::Unknown;
+    let mut observed_claude = String::from("unknown");
     match resolved {
         Err(error) => {
             report["daemon"] = json!({"state": "unavailable", "error": error.to_string()});
@@ -179,6 +379,7 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
         }
         Ok(paths) => {
             report["instance_dir"] = json!(paths.instance_dir.display().to_string());
+            report["daemon_log"] = json!(daemon_log_path(&paths).display().to_string());
             match probe_daemon(&paths) {
                 Ok(Daemon::NotRunning) => {
                     report["daemon"] = if state_error.is_some() {
@@ -187,7 +388,10 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
                     } else {
                         json!({
                             "state": "not_running",
-                            "hint": "run `herdr-threads daemon ensure`",
+                            "hint": crate::daemon::remedy::remedy(
+                                None,
+                                &crate::daemon::remedy::RemedyContext::Exit3,
+                            ),
                         })
                     };
                     if code == exit::EXIT_OK {
@@ -204,13 +408,11 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
                 }
                 Ok(Daemon::Reachable(health)) => {
                     let version_matches = health.software_version == env!("CARGO_PKG_VERSION");
-                    observed_claude = match health.harness.claude {
-                        HarnessState::Supported => NativeObservation::Observed,
-                        HarnessState::Cooperative | HarnessState::Unsupported => {
-                            NativeObservation::Unsupported
-                        }
-                        HarnessState::Unknown => NativeObservation::Unknown,
-                    };
+                    observed_claude = claude_observed_text(
+                        health.harness.claude,
+                        &health.limitations,
+                        &health.notes,
+                    );
                     report["daemon"] = json!({
                         "state": match health.state {
                             HealthState::Healthy => "healthy",
@@ -245,12 +447,15 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
     let mut claude = json!({
         "scope": "user",
         "recipes": crate::harness::recipe::describe(crate::harness::claude::RECIPES),
-        "observed": observation(observed_claude),
+        "observed": observed_claude,
     });
     // Problems found in this environment (the one the harnesses run in):
     // an installed harness whose hooks are missing, a refused codex, or a
     // Codex sandbox warning. Each makes the result `degraded`.
     let mut limitations: Vec<String> = Vec::new();
+    if let Some(leftover) = source["state_dir_leftover"].as_str() {
+        limitations.push(format!("state directory: {leftover}"));
+    }
     let path = std::env::var_os("PATH");
     let claude_binary = super::hook::resolve_on_path("claude", path.as_deref());
     match super::setup::user_inspection(Harness::Claude, &env) {
@@ -265,21 +470,28 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
                     settings.display()
                 ));
             }
-            claude["settings"] = json!(settings.display().to_string());
-            claude["installed"] = json!(inspection.installed);
-            if let Some(adoption) = &inspection.adopted {
-                claude["adopted"] = json!({"owner": adoption.owner, "recorded": adoption.recorded});
-            }
+            claude["setup"] = json!({
+                "settings": settings.display().to_string(),
+                "installed": inspection.installed,
+                "adopted": inspection.adopted.as_ref().map(|adoption| json!({
+                    "owner": adoption.owner,
+                    "recorded": adoption.recorded,
+                })),
+            });
             claude["allow_rule"] = super::setup::allow_rule_json(inspection.allow_rule.as_ref());
         }
         Err(error) => {
             if claude_binary.is_some() {
                 limitations.push(format!("claude hooks cannot be inspected: {error}"));
             }
-            claude["installed"] = json!(false);
+            claude["setup"] = json!({"installed": false});
             claude["error"] = json!(error);
         }
     }
+    let (claude_installed, claude_warning) =
+        claude_installed_with_warning(path.as_deref(), |key| std::env::var_os(key));
+    claude["installed"] = json!(claude_installed);
+    claude["admission_warning"] = json!(claude_warning);
     let codex_inspection = super::setup::user_inspection(Harness::Codex, &env);
     let codex_setup = match &codex_inspection {
         Ok((file, inspection)) => json!({
@@ -317,21 +529,23 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
             crate::harness::codex::VERSION_TIMEOUT,
         ),
     };
-    let mut installed = json!({
-        "binary": codex.binary.as_ref().map(|path| path.display().to_string()),
-        "admission": codex.state(),
-        "evidence": codex.line(),
-    });
+    let mut installed = json!(codex_installed_json(&codex));
+    installed["evidence"] = json!(codex.line());
+    if let Some(source) = codex
+        .result
+        .as_ref()
+        .ok()
+        .and_then(|version| version.fingerprinted())
+    {
+        installed["fingerprint_source"] = json!(source.display().to_string());
+    }
     let last_hook = private.as_deref().and_then(|private| {
         crate::harness::codex_evidence::read(&crate::harness::codex_evidence::admission_path(
             private,
         ))
     });
     match &codex.result {
-        Ok(version) => {
-            installed["version"] = json!(version.as_str());
-            installed["recipe"] = json!(version.recipe().id);
-        }
+        Ok(_) => (),
         Err(refusal) => installed["error"] = json!(refusal.to_string()),
     }
     let sandbox_warning = super::setup::codex_unmeasured_allowance_warning(
@@ -367,6 +581,10 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
     if let Some(warning) = &roots_warning {
         limitations.push(format!("codex sandbox: {warning}"));
     }
+    let proxy_warnings = super::setup::codex_foreign_proxy_warnings(&env);
+    for warning in &proxy_warnings {
+        limitations.push(format!("codex sandbox: {warning}"));
+    }
     if !limitations.is_empty() && result == "ok" {
         result = "degraded";
     }
@@ -381,6 +599,7 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
             "installed": installed,
             "sandbox_warning": sandbox_warning,
             "sandbox_roots_warning": roots_warning,
+            "sandbox_proxy_warnings": proxy_warnings,
             "last_hook": last_hook.map(|record| json!({
                 "binary": record.binary,
                 "admission": record.admission,
@@ -394,16 +613,7 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
 }
 
 fn clean(value: &str) -> String {
-    value
-        .chars()
-        .flat_map(|c| {
-            if c.is_control() {
-                c.escape_default().collect::<Vec<_>>()
-            } else {
-                vec![c]
-            }
-        })
-        .collect()
+    escape_for_terminal(value, Context::SingleLine).into_owned()
 }
 
 fn scalar(value: &Value) -> String {
@@ -464,6 +674,9 @@ pub fn render_text(report: &Value) -> String {
                 scalar(&report["instance_dir"])
             ));
         }
+        if !report["daemon_log"].is_null() {
+            out.push_str(&format!("daemon_log: {}\n", scalar(&report["daemon_log"])));
+        }
         let daemon = &report["daemon"];
         out.push_str(&format!("daemon: {}\n", scalar(&daemon["state"])));
         for key in [
@@ -493,16 +706,31 @@ pub fn render_text(report: &Value) -> String {
         let claude = &report["hooks"]["claude"];
         out.push_str(&format!(
             "hooks.claude.settings: {}\n",
-            scalar(&claude["settings"])
+            scalar(&claude["setup"]["settings"])
         ));
         out.push_str(&format!(
-            "hooks.claude.installed: {}\n",
-            if claude["installed"] == json!(true) {
+            "hooks.claude.setup_installed: {}\n",
+            if claude["setup"]["installed"] == json!(true) {
                 "yes"
             } else {
                 "no"
             }
         ));
+        let claude_installed = &claude["installed"];
+        out.push_str(&claude_path_line(claude_installed));
+        out.push('\n');
+        for key in ["binary", "version", "admission", "recipe"] {
+            out.push_str(&format!(
+                "hooks.claude.installed.{key}: {}\n",
+                scalar(&claude_installed[key])
+            ));
+        }
+        if claude["admission_warning"].is_string() {
+            out.push_str(&format!(
+                "hooks.claude.warning: {}\n",
+                scalar(&claude["admission_warning"])
+            ));
+        }
         let allow_rule = &claude["allow_rule"];
         if allow_rule.is_object() {
             out.push_str(&format!(
@@ -568,6 +796,12 @@ pub fn render_text(report: &Value) -> String {
             "hooks.codex.installed: {}\n",
             scalar(&installed["evidence"])
         ));
+        if !installed["fingerprint_source"].is_null() {
+            out.push_str(&format!(
+                "codex fingerprint source: {}\n",
+                scalar(&installed["fingerprint_source"])
+            ));
+        }
         if !installed["error"].is_null() {
             out.push_str(&format!(
                 "hooks.codex.error: {}\n",
@@ -620,3 +854,11 @@ pub(crate) fn run<W: Write>(parsed: &ParsedCli, writer: &mut W) -> Result<(), Ru
         Err(RunError::Exit(code))
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/cli/doctor_json.rs"]
+mod doctor_json;
+
+#[cfg(test)]
+#[path = "../../tests/cli/doctor_labels.rs"]
+mod doctor_labels;

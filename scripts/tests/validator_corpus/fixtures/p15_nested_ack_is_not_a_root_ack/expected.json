@@ -1,0 +1,6 @@
+{
+  "finding": "p15_nested_ack_is_not_a_root_ack",
+  "entry": "verify",
+  "verdict": "FAIL",
+  "reason": "transcript has no root `herdr-threads ack msg-1` call"
+}

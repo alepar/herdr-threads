@@ -9,20 +9,23 @@ use super::{
         scan_effective_receipts, scan_effective_timeline, scan_effective_warning_recipients,
         scan_effective_warnings_for_seat, scan_global_logical_candidates, validate_inbox_token,
     },
+    page_fit::{FitStop, PageFit},
 };
 use crate::ports::{OperationReadScope, RetirementSummary};
 use crate::protocol::{
     commands::{
         Command, DeliveryInspectQuery, DiagnosticsQuery, DirectoryMembership, DirectoryQuery,
-        HistoryRange, InboxQuery, MessageQuery, OperationStatusQuery, ParticipantsQuery,
-        RecipientsQuery, RetirementJobsQuery, SearchQuery, SeatInspectQuery, SeatsQuery,
-        ThreadQuery, WarningsQuery,
+        FULL_BODY_FETCH_BYTES, HistoryRange, InboxQuery, MessageQuery, OperationStatusQuery,
+        ParticipantsQuery, RecipientsQuery, RetirementJobsQuery, SearchQuery, SeatInspectQuery,
+        SeatsQuery, ThreadQuery, WarningsQuery,
     },
     ids::{
         ExecutionId, HostBootId, HostTargetId, MessageId, NativeSessionId, RetirementJobId, SeatId,
         TerminalId, ThreadId,
     },
-    output::{OutputFormat, OutputSpec, encode_selected},
+    output::{
+        OutputFormat, OutputSpec, PREVIEW_SNIPPET_CHARS, encode_selected, is_inlined_full_body,
+    },
     pagination::{
         Consistency, Cursor, CursorDirection, CursorScope, Page, PageRequest, SearchCursorState,
         SearchPhase, StopReason,
@@ -438,34 +441,26 @@ fn retirement_jobs(
             )
             .encode()
             .map_err(|e| api_error(ErrorCode::InvalidCursor, e))?;
-            let mut proposed = items.clone();
-            proposed.push(item.clone());
-            let required = encode_selected(
-                &CommandResult::RetirementJobs(page(
-                    proposed,
-                    Some((raw.clone(), retirement_jobs_argv(&raw, &q.page))),
-                    high,
-                    StopReason::Rows,
-                    output,
-                )),
-                output,
-            )?
-            .len();
-            if required > q.page.max_bytes as usize {
-                if items.is_empty() {
-                    return Err(ApiError {
-                        code: ErrorCode::InvalidBudget,
-                        detail: "retirement job cannot fit".into(),
-                        restart_argv: None,
-                        required_minimum_bytes: Some(required as u32),
-                    });
-                }
-                stop = StopReason::Bytes;
-                break;
-            }
-            items.push(item);
+            items.push(Cand {
+                item,
+                argv: retirement_jobs_argv(&raw, &q.page),
+                raw,
+                before: last,
+            });
         }
         last = ordinal as u64;
+    }
+    let (items, cut) = fit_candidates(
+        items,
+        high,
+        output,
+        q.page.max_bytes,
+        "retirement job cannot fit",
+        |page, _| CommandResult::RetirementJobs(page),
+    )?;
+    if let Some(before) = cut {
+        last = before;
+        stop = StopReason::Bytes;
     }
     if examined == CANDIDATE_LIMIT && stop == StopReason::Complete {
         stop = StopReason::Work;
@@ -534,8 +529,7 @@ fn thread_details(
         page: q.page.clone(),
         caller: q.caller.clone(),
     };
-    let CommandResult::Participants(mut participants) = participants(db, instance, &pq, output)?
-    else {
+    let CommandResult::Participants(participants) = participants(db, instance, &pq, output)? else {
         unreachable!()
     };
     let followup = contextual_argv(
@@ -547,9 +541,20 @@ fn thread_details(
         ],
         output,
     );
-    loop {
-        if let Some(raw) = participants.next_cursor.as_deref() {
-            participants.next_argv = Some(contextual_argv(
+    let details = |participants: Page<Participant>| {
+        CommandResult::Thread(ThreadDetails {
+            summary: summary.clone(),
+            goal_data: goal.clone(),
+            created_at: UtcMillis(created_at),
+            participant_count: participant_count as u64,
+            participants,
+            pending_receipt_count,
+            pending_receipts_argv: followup.clone(),
+        })
+    };
+    let with_argv = |mut page: Page<Participant>| {
+        if let Some(raw) = page.next_cursor.as_deref() {
+            page.next_argv = Some(contextual_argv(
                 vec![
                     "herdr-threads".into(),
                     "thread".into(),
@@ -565,49 +570,45 @@ fn thread_details(
                 output,
             ));
         }
-        let result = CommandResult::Thread(ThreadDetails {
-            summary: summary.clone(),
-            goal_data: goal.clone(),
-            created_at: UtcMillis(created_at),
-            participant_count: participant_count as u64,
-            participants: participants.clone(),
-            pending_receipt_count,
-            pending_receipts_argv: followup.clone(),
-        });
-        let required = encode_selected(&result, output)?.len();
-        if required <= q.page.max_bytes as usize {
-            return Ok(result);
-        }
-        if participants.items.is_empty() {
-            return Err(ApiError {
-                code: ErrorCode::InvalidBudget,
-                detail: "thread detail cannot fit".into(),
-                restart_argv: None,
-                required_minimum_bytes: Some(required as u32),
-            });
-        }
-        participants.items.pop();
-        let after = if let Some(last) = participants.items.last() {
+        page
+    };
+    let max = q.page.max_bytes as usize;
+    let whole = details(with_argv(participants.clone()));
+    let required = encode_selected(&whole, output)?.len();
+    if required <= max {
+        return Ok(whole);
+    }
+    if participants.items.is_empty() {
+        return Err(ApiError::invalid_budget("thread detail cannot fit")
+            .with_required_minimum_bytes(required as u32));
+    }
+    // The embedded participants page overflows the details envelope: cut it
+    // back through the page fit, each cut page continuing from its last item.
+    let filter = digest(&q.thread.as_str())?;
+    let (member_rev,lifecycle_rev):(i64,i64)=db.query_row("SELECT t.membership_revision,h.lifecycle_revision FROM threads t JOIN host_instances h ON h.id=t.instance_id WHERE t.id=?1",[q.thread.as_str()],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|db.map_error(e))?;
+    let start_after = q
+        .page
+        .cursor
+        .as_ref()
+        .map(|raw| {
+            Cursor::decode(raw)
+                .map(|c| c.after_ordinal)
+                .map_err(|e| api_error(ErrorCode::InvalidCursor, e))
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let mut ordinals = Vec::with_capacity(participants.items.len());
+    for item in &participants.items {
+        ordinals.push(
             db.query_row(
                 "SELECT ordinal FROM memberships WHERE thread_id=?1 AND seat_id=?2",
-                params![q.thread.as_str(), last.seat.as_str()],
+                params![q.thread.as_str(), item.seat.as_str()],
                 |r| r.get::<_, i64>(0),
             )
-            .map_err(|e| db.map_error(e))? as u64
-        } else {
-            q.page
-                .cursor
-                .as_ref()
-                .map(|raw| {
-                    Cursor::decode(raw)
-                        .map(|c| c.after_ordinal)
-                        .map_err(|e| api_error(ErrorCode::InvalidCursor, e))
-                })
-                .transpose()?
-                .unwrap_or(0)
-        };
-        let filter = digest(&q.thread.as_str())?;
-        let (member_rev,lifecycle_rev):(i64,i64)=db.query_row("SELECT t.membership_revision,h.lifecycle_revision FROM threads t JOIN host_instances h ON h.id=t.instance_id WHERE t.id=?1",[q.thread.as_str()],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|db.map_error(e))?;
+            .map_err(|e| db.map_error(e))? as u64,
+        );
+    }
+    let cut_page = |items: &[Participant], after: u64| -> Result<Page<Participant>, ApiError> {
         let mut cursor = cursor_for(
             instance,
             CursorScope::Participants,
@@ -619,14 +620,44 @@ fn thread_details(
         );
         cursor.scope_revision = Some(member_rev as u64);
         cursor.filter_revision = Some(lifecycle_rev as u64);
-        participants.next_cursor = Some(
+        let mut page = participants.clone();
+        page.items = items.to_vec();
+        page.next_cursor = Some(
             cursor
                 .encode()
                 .map_err(|e| api_error(ErrorCode::InvalidCursor, e))?,
         );
-        participants.has_more = true;
-        participants.stop_reason = StopReason::Bytes;
+        page.has_more = true;
+        page.stop_reason = StopReason::Bytes;
+        Ok(with_argv(page))
+    };
+    let items = &participants.items;
+    let page_of = |k: usize| -> Result<Page<Participant>, ApiError> {
+        if k == items.len() {
+            Ok(with_argv(participants.clone()))
+        } else {
+            cut_page(
+                &items[..k],
+                if k == 0 { start_after } else { ordinals[k - 1] },
+            )
+        }
+    };
+    let fit = PageFit::for_command(output, max).fit_with(
+        items,
+        |k| Ok(details(page_of(k)?)),
+        |i| Ok(details(cut_page(&items[i..=i], ordinals[i])?)),
+    )?;
+    let result = details(page_of(fit.accepted)?);
+    if fit.accepted == 0 {
+        // No participant fits beside the envelope; the empty continuation page
+        // must itself fit.
+        let required = encode_selected(&result, output)?.len();
+        if required > max {
+            return Err(ApiError::invalid_budget("thread detail cannot fit")
+                .with_required_minimum_bytes(required as u32));
+        }
     }
+    Ok(result)
 }
 
 fn seat_inspect_cursor(
@@ -914,38 +945,36 @@ fn seat_inspect(
             binding_high,
             repair_high,
         )?;
-        let mut proposed = items.clone();
-        proposed.push(item.clone());
-        let result = CommandResult::SeatInspect(SeatInspection {
-            summary: summary.clone(),
-            mapping: mapping.clone(),
-            hold: hold.clone(),
-            retirement: retirement.clone(),
-            open_binding: open_binding.clone(),
-            history: page(
-                proposed,
-                Some((raw.clone(), seat_inspect_argv(q, &raw))),
-                high,
-                StopReason::Rows,
-                output,
-            ),
+        items.push(Cand {
+            item,
+            argv: seat_inspect_argv(q, &raw),
+            raw,
+            before: (last, last_kind),
         });
-        let required = encode_selected(&result, output)?.len();
-        if required > q.page.max_bytes as usize {
-            if items.is_empty() {
-                return Err(ApiError {
-                    code: ErrorCode::InvalidBudget,
-                    detail: "seat history item cannot fit".into(),
-                    restart_argv: None,
-                    required_minimum_bytes: Some(required as u32),
-                });
-            }
-            stop = StopReason::Bytes;
-            break;
-        }
-        items.push(item);
         last = ordinal;
         last_kind = kind;
+    }
+    let (items, cut) = fit_candidates(
+        items,
+        high,
+        output,
+        q.page.max_bytes,
+        "seat history item cannot fit",
+        |history, _| {
+            CommandResult::SeatInspect(SeatInspection {
+                summary: summary.clone(),
+                mapping: mapping.clone(),
+                hold: hold.clone(),
+                retirement: retirement.clone(),
+                open_binding: open_binding.clone(),
+                history,
+            })
+        },
+    )?;
+    if let Some((before_last, before_kind)) = cut {
+        last = before_last;
+        last_kind = before_kind;
+        stop = StopReason::Bytes;
     }
     if items.len() == CANDIDATE_LIMIT && stop == StopReason::Complete {
         stop = StopReason::Work;
@@ -1069,33 +1098,25 @@ fn seats(
         )
         .encode()
         .map_err(|e| api_error(ErrorCode::InvalidCursor, e))?;
-        let mut proposed = items.clone();
-        proposed.push(item.clone());
-        let required = encode_selected(
-            &CommandResult::Seats(page(
-                proposed,
-                Some((raw.clone(), seats_argv(&raw, &q.page))),
-                high,
-                StopReason::Rows,
-                output,
-            )),
-            output,
-        )?
-        .len();
-        if required > q.page.max_bytes as usize {
-            if items.is_empty() {
-                return Err(ApiError {
-                    code: ErrorCode::InvalidBudget,
-                    detail: "seat cannot fit".into(),
-                    restart_argv: None,
-                    required_minimum_bytes: Some(required as u32),
-                });
-            }
-            stop = StopReason::Bytes;
-            break;
-        }
-        items.push(item);
+        items.push(Cand {
+            item,
+            argv: seats_argv(&raw, &q.page),
+            raw,
+            before: last,
+        });
         last = ordinal as u64;
+    }
+    let (items, cut) = fit_candidates(
+        items,
+        high,
+        output,
+        q.page.max_bytes,
+        "seat cannot fit",
+        |page, _| CommandResult::Seats(page),
+    )?;
+    if let Some(before) = cut {
+        last = before;
+        stop = StopReason::Bytes;
     }
     if items.len() == CANDIDATE_LIMIT && stop == StopReason::Complete {
         stop = StopReason::Work;
@@ -1170,24 +1191,23 @@ fn participants(
     if cursor.as_ref().is_some_and(|c| {
         c.scope_revision != Some(scope.0 as u64) || c.filter_revision != Some(scope.1 as u64)
     }) {
-        return Err(ApiError {
-            code: ErrorCode::CursorStale,
-            detail: "participant status changed".into(),
-            restart_argv: Some(contextual_argv(
-                vec![
-                    "herdr-threads".into(),
-                    "thread".into(),
-                    "participants".into(),
-                    q.thread.as_str().into(),
-                    "--limit".into(),
-                    q.page.limit.to_string(),
-                    "--max-bytes".into(),
-                    q.page.max_bytes.to_string(),
-                ],
-                output,
-            )),
-            required_minimum_bytes: None,
-        });
+        return Err(
+            ApiError::cursor_stale("participant status changed").with_restart_argv(
+                contextual_argv(
+                    vec![
+                        "herdr-threads".into(),
+                        "thread".into(),
+                        "participants".into(),
+                        q.thread.as_str().into(),
+                        "--limit".into(),
+                        q.page.limit.to_string(),
+                        "--max-bytes".into(),
+                        q.page.max_bytes.to_string(),
+                    ],
+                    output,
+                ),
+            ),
+        );
     }
     let high = cursor.as_ref().map_or_else(
         || {
@@ -1239,6 +1259,7 @@ fn participants(
         examined += 1;
         let projection =
             super::service_substrate::effective_membership(db, &q.thread, &SeatId::new(&seat))?;
+        let before_last = last;
         last = ordinal as u64;
         let Some(native_state) = projection.native_state else {
             continue;
@@ -1329,36 +1350,24 @@ fn participants(
         let raw = next_cursor
             .encode()
             .map_err(|e| api_error(ErrorCode::InvalidCursor, e))?;
-        let mut proposed = items.clone();
-        proposed.push(item.clone());
-        let required = encode_selected(
-            &CommandResult::Participants(page(
-                proposed,
-                Some((
-                    raw.clone(),
-                    thread_participants_argv(q.thread.as_str(), &raw, &q.page),
-                )),
-                high,
-                StopReason::Rows,
-                output,
-            )),
-            output,
-        )?
-        .len();
-        if required > q.page.max_bytes as usize {
-            if items.is_empty() {
-                return Err(ApiError {
-                    code: ErrorCode::InvalidBudget,
-                    detail: "participant cannot fit".into(),
-                    restart_argv: None,
-                    required_minimum_bytes: Some(required as u32),
-                });
-            }
-            stop = StopReason::Bytes;
-            break;
-        }
-        items.push(item);
-        last = ordinal as u64;
+        items.push(Cand {
+            item,
+            argv: thread_participants_argv(q.thread.as_str(), &raw, &q.page),
+            raw,
+            before: before_last,
+        });
+    }
+    let (items, cut) = fit_candidates(
+        items,
+        high,
+        output,
+        q.page.max_bytes,
+        "participant cannot fit",
+        |page, _| CommandResult::Participants(page),
+    )?;
+    if let Some(before) = cut {
+        last = before;
+        stop = StopReason::Bytes;
     }
     if examined == CANDIDATE_LIMIT && stop == StopReason::Complete {
         stop = StopReason::Work;
@@ -1455,12 +1464,8 @@ fn directory(
             || c.filter_revision != Some(topic_revision as u64)
             || c.last_examined_key.as_deref() != Some(&*lifecycle_revision.to_string())
     }) {
-        return Err(ApiError {
-            code: ErrorCode::CursorStale,
-            detail: "directory filter changed".into(),
-            restart_argv: Some(contextual_argv(directory_argv(q, None), output)),
-            required_minimum_bytes: None,
-        });
+        return Err(ApiError::cursor_stale("directory filter changed")
+            .with_restart_argv(contextual_argv(directory_argv(q, None), output)));
     }
     let high = cursor.as_ref().map_or_else(
         || {
@@ -1523,32 +1528,26 @@ fn directory(
             let next = next_cursor
                 .encode()
                 .map_err(|e| api_error(ErrorCode::InvalidCursor, e))?;
-            let argv = directory_argv(q, Some(&next));
-            let mut proposed = items.clone();
-            proposed.push(item.clone());
-            let candidate = CommandResult::Directory(page(
-                proposed,
-                Some((next.clone(), argv.clone())),
-                high,
-                StopReason::Rows,
-                output,
-            ));
-            let required = encode_selected(&candidate, output)?.len();
-            if required > q.page.max_bytes as usize {
-                if items.is_empty() {
-                    return Err(ApiError {
-                        code: ErrorCode::InvalidBudget,
-                        detail: "directory item cannot fit".into(),
-                        restart_argv: None,
-                        required_minimum_bytes: Some(required as u32),
-                    });
-                }
-                stop = StopReason::Bytes;
-                break;
-            }
-            items.push(item);
+            items.push(Cand {
+                item,
+                argv: directory_argv(q, Some(&next)),
+                raw: next,
+                before: last,
+            });
         }
         last = ordinal as u64;
+    }
+    let (items, cut) = fit_candidates(
+        items,
+        high,
+        output,
+        q.page.max_bytes,
+        "directory item cannot fit",
+        |page, _| CommandResult::Directory(page),
+    )?;
+    if let Some(before) = cut {
+        last = before;
+        stop = StopReason::Bytes;
     }
     if examined == CANDIDATE_LIMIT && stop == StopReason::Complete {
         stop = StopReason::Work;
@@ -1638,12 +1637,8 @@ fn search(
         if c.search.as_ref().is_some_and(|s| {
             s.phase == SearchPhase::Topic && s.topic_revision != topic_revision as u64
         }) {
-            return Err(ApiError {
-                code: ErrorCode::CursorStale,
-                detail: "search topic filter changed".into(),
-                restart_argv: Some(contextual_argv(search_request_argv(q, None), output)),
-                required_minimum_bytes: None,
-            });
+            return Err(ApiError::cursor_stale("search topic filter changed")
+                .with_restart_argv(contextual_argv(search_request_argv(q, None), output)));
         }
         c
     } else {
@@ -1723,29 +1718,21 @@ fn search(
                         thread_summary(db, &id, &topic, archived, created_at, next_sequence)?;
                     let mut trial = cursor.clone();
                     trial.after_ordinal = ordinal as u64;
-                    let required = search_hit_size(
-                        &items,
-                        SearchHit::Topic(summary.clone()),
-                        &trial,
-                        q,
-                        examined + 1,
-                        examined_bytes + cost,
-                        output,
-                    )?;
+                    let raw = trial
+                        .encode()
+                        .map_err(|e| api_error(ErrorCode::InvalidCursor, e))?;
                     search_budget_check(budget, store.clock())?;
-                    if required > q.page.max_bytes as usize {
-                        if items.is_empty() {
-                            return Err(ApiError {
-                                code: ErrorCode::InvalidBudget,
-                                detail: "search match cannot fit".into(),
-                                restart_argv: None,
-                                required_minimum_bytes: Some(required as u32),
-                            });
-                        }
-                        stop = StopReason::Bytes;
-                        break;
-                    }
-                    items.push(SearchHit::Topic(summary));
+                    items.push(Cand {
+                        item: SearchHit::Topic(summary),
+                        argv: search_argv(q, &raw),
+                        raw,
+                        before: SearchWalk {
+                            cursor: cursor.clone(),
+                            examined,
+                            bytes: examined_bytes,
+                            cost,
+                        },
+                    });
                 }
                 cursor.after_ordinal = ordinal as u64;
                 examined += 1;
@@ -1814,29 +1801,21 @@ fn search(
                         Some(candidate.decision_seq as u64);
                     trial.search.as_mut().unwrap().last_event_offset =
                         Some(candidate.event_offset as u64);
-                    let required = search_hit_size(
-                        &items,
-                        SearchHit::Body(summary.clone()),
-                        &trial,
-                        q,
-                        examined + 1,
-                        examined_bytes + cost,
-                        output,
-                    )?;
+                    let raw = trial
+                        .encode()
+                        .map_err(|e| api_error(ErrorCode::InvalidCursor, e))?;
                     search_budget_check(budget, store.clock())?;
-                    if required > q.page.max_bytes as usize {
-                        if items.is_empty() {
-                            return Err(ApiError {
-                                code: ErrorCode::InvalidBudget,
-                                detail: "search match cannot fit".into(),
-                                restart_argv: None,
-                                required_minimum_bytes: Some(required as u32),
-                            });
-                        }
-                        stop = StopReason::Bytes;
-                        break;
-                    }
-                    items.push(SearchHit::Body(summary));
+                    items.push(Cand {
+                        item: SearchHit::Body(summary),
+                        argv: search_argv(q, &raw),
+                        raw,
+                        before: SearchWalk {
+                            cursor: cursor.clone(),
+                            examined,
+                            bytes: examined_bytes,
+                            cost,
+                        },
+                    });
                 }
                 cursor.search.as_mut().unwrap().last_decision_seq =
                     Some(candidate.decision_seq as u64);
@@ -1846,6 +1825,26 @@ fn search(
                 examined_bytes += cost;
             }
         }
+    }
+    let (items, cut) = fit_candidates(
+        items,
+        cursor.high_water_ordinal,
+        output,
+        q.page.max_bytes,
+        "search match cannot fit",
+        |matches, at| {
+            CommandResult::Search(SearchPage {
+                matches,
+                examined_candidates: at.before.examined + 1,
+                examined_utf8_bytes: at.before.bytes + at.before.cost,
+            })
+        },
+    )?;
+    if let Some(before) = cut {
+        cursor = before.cursor;
+        examined = before.examined;
+        examined_bytes = before.bytes;
+        stop = StopReason::Bytes;
     }
     let next = if stop == StopReason::Complete {
         None
@@ -1963,34 +1962,6 @@ fn thread_summary(
         system_count: (total - ordinary) as u64,
         joined_count: joined as u64,
     })
-}
-
-fn search_hit_size(
-    items: &[SearchHit],
-    hit: SearchHit,
-    position: &Cursor,
-    q: &SearchQuery,
-    examined: u16,
-    bytes: u64,
-    output: &OutputSpec,
-) -> Result<usize, ApiError> {
-    let raw = position
-        .encode()
-        .map_err(|e| api_error(ErrorCode::InvalidCursor, e))?;
-    let mut proposed = items.to_vec();
-    proposed.push(hit);
-    let result = CommandResult::Search(SearchPage {
-        matches: page(
-            proposed,
-            Some((raw.clone(), search_argv(q, &raw))),
-            position.high_water_ordinal,
-            StopReason::Rows,
-            output,
-        ),
-        examined_candidates: examined,
-        examined_utf8_bytes: bytes,
-    });
-    Ok(encode_selected(&result, output)?.len())
 }
 
 fn published_warning_detail(
@@ -2219,12 +2190,8 @@ fn message(
     // Binary-search partial boundaries only (all but the final body.len()).
     let partial = &boundaries[..boundaries.len() - 1];
     if partial.is_empty() {
-        return Err(ApiError {
-            code: ErrorCode::InvalidBudget,
-            detail: "body continuation cannot fit".into(),
-            restart_argv: None,
-            required_minimum_bytes: Some(encode_selected(&full, output)?.len() as u32),
-        });
+        return Err(ApiError::invalid_budget("body continuation cannot fit")
+            .with_required_minimum_bytes(encode_selected(&full, output)?.len() as u32));
     }
     let mut low = 0usize;
     let mut upper = partial.len();
@@ -2239,12 +2206,10 @@ fn message(
     let result = make(partial[low])?;
     if !fits(&result)? || low == 0 {
         let minimum = make(partial.get(1).copied().unwrap_or(body.len()))?;
-        return Err(ApiError {
-            code: ErrorCode::InvalidBudget,
-            detail: "body continuation cannot fit one character".into(),
-            restart_argv: None,
-            required_minimum_bytes: Some(encode_selected(&minimum, output)?.len() as u32),
-        });
+        return Err(
+            ApiError::invalid_budget("body continuation cannot fit one character")
+                .with_required_minimum_bytes(encode_selected(&minimum, output)?.len() as u32),
+        );
     }
     Ok(result)
 }
@@ -2252,12 +2217,8 @@ fn message(
 fn ensure_fit(result: &CommandResult, output: &OutputSpec, max: u32) -> Result<(), ApiError> {
     let bytes = encode_selected(result, output)?;
     if bytes.len() > max as usize {
-        return Err(ApiError {
-            code: ErrorCode::InvalidBudget,
-            detail: "selected response cannot fit".into(),
-            restart_argv: None,
-            required_minimum_bytes: Some(bytes.len() as u32),
-        });
+        return Err(ApiError::invalid_budget("selected response cannot fit")
+            .with_required_minimum_bytes(bytes.len() as u32));
     }
     Ok(())
 }
@@ -2491,14 +2452,79 @@ fn sized<R: Fn(Page<T>) -> CommandResult, T: Clone>(
     let candidate = page(items, next, high, reason, output);
     let bytes = encode_selected(&wrap(candidate.clone()), output)?;
     if bytes.len() > max as usize {
-        return Err(ApiError {
-            code: ErrorCode::InvalidBudget,
-            detail: "selected response cannot fit".into(),
-            restart_argv: None,
-            required_minimum_bytes: Some(bytes.len().min(u32::MAX as usize) as u32),
-        });
+        return Err(ApiError::invalid_budget("selected response cannot fit")
+            .with_required_minimum_bytes(bytes.len().min(u32::MAX as usize) as u32));
     }
     Ok(candidate)
+}
+
+/// One walked item awaiting the page fit: the item, the continuation cursor
+/// that would follow it, and the walk state before it (restored when the fit
+/// cuts the page short there).
+#[derive(Clone)]
+struct Cand<T, P = u64> {
+    item: T,
+    raw: String,
+    argv: Vec<String>,
+    before: P,
+}
+
+/// Search walk state before a candidate hit; `cost` is that candidate's UTF-8
+/// byte cost, counted into the page's `examined_utf8_bytes` once it is in.
+#[derive(Clone)]
+struct SearchWalk {
+    cursor: Cursor,
+    examined: u16,
+    bytes: u64,
+    cost: u64,
+}
+
+/// Fit the walked items into `max` bytes through `PageFit`. Returns the
+/// accepted items and, when the byte budget cut the page short, the walk state
+/// before the first rejected item. A first item that cannot fit alone is
+/// `InvalidBudget` with `detail`.
+fn fit_candidates<T: Clone, P: Clone>(
+    cands: Vec<Cand<T, P>>,
+    high: u64,
+    output: &OutputSpec,
+    max: u32,
+    detail: &'static str,
+    wrap: impl Fn(Page<T>, &Cand<T, P>) -> CommandResult,
+) -> Result<(Vec<T>, Option<P>), ApiError> {
+    if cands.is_empty() {
+        return Ok((Vec::new(), None));
+    }
+    let render_items = |items: Vec<T>, cursor: &Cand<T, P>| {
+        Ok(wrap(
+            page(
+                items,
+                Some((cursor.raw.clone(), cursor.argv.clone())),
+                high,
+                StopReason::Rows,
+                output,
+            ),
+            cursor,
+        ))
+    };
+    let fit = PageFit::for_command(output, max as usize).fit_with(
+        &cands,
+        |k| {
+            render_items(
+                cands[..k].iter().map(|c| c.item.clone()).collect(),
+                &cands[k.max(1) - 1],
+            )
+        },
+        |i| render_items(vec![cands[i].item.clone()], &cands[i]),
+    )?;
+    if fit.accepted == 0 {
+        let mut error = ApiError::invalid_budget(detail);
+        error.required_minimum_bytes = fit.required_minimum;
+        return Err(error);
+    }
+    let cut = (fit.stop == FitStop::Bytes).then(|| cands[fit.accepted].before.clone());
+    let mut items: Vec<T> = cands.into_iter().map(|c| c.item).collect();
+    items.truncate(fit.accepted);
+    Ok((items, cut))
 }
 
 fn history(
@@ -2593,7 +2619,7 @@ fn history(
             .into_iter()
             .next()
             .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "timeline position missing"))?;
-        let summary = timeline_summary(db, &q.thread, entry, output)?;
+        let summary = timeline_summary(db, &q.thread, entry, output, q.full_bodies)?;
         let raw = cursor_for(
             instance,
             CursorScope::History,
@@ -2605,39 +2631,51 @@ fn history(
         )
         .encode()
         .map_err(|e| api_error(ErrorCode::InvalidCursor, e))?;
-        let argv = continuation("read", Some(q.thread.as_str()), &raw, &q.page);
-        let mut proposed = items.clone();
-        proposed.push(summary.clone());
-        let required = encode_selected(
-            &CommandResult::History(page(
-                proposed,
-                Some((raw.clone(), argv)),
-                high,
-                StopReason::Rows,
-                output,
-            )),
-            output,
-        )?
-        .len();
-        if required > q.page.max_bytes as usize {
-            if items.is_empty() {
-                return Err(ApiError {
-                    code: ErrorCode::InvalidBudget,
-                    detail: "history item cannot fit".into(),
-                    restart_argv: None,
-                    required_minimum_bytes: Some(required as u32),
-                });
-            }
-            stop = StopReason::Bytes;
-            break;
-        }
-        items.push(summary);
+        items.push(Cand {
+            item: summary,
+            argv: continuation("read", Some(q.thread.as_str()), &raw, &q.page),
+            raw,
+            before: (last, next_sequence),
+        });
         last = next_sequence;
         next_sequence = if descending {
             next_sequence.saturating_sub(1)
         } else {
             next_sequence.saturating_add(1)
         };
+    }
+    let fit = |cands: Vec<Cand<MessageSummary, (u64, u64)>>| {
+        fit_candidates(
+            cands,
+            high,
+            output,
+            q.page.max_bytes,
+            "history item cannot fit",
+            |page, _| CommandResult::History(page),
+        )
+    };
+    // A first body that cannot fit the page even alone keeps today's clipped
+    // preview and body cursor; later bodies that do not fit end the page and
+    // lead the next one, where they are first.
+    let first_inlined = items.first().is_some_and(|c| is_inlined_full_body(&c.item));
+    let clipped_retry = first_inlined.then(|| items.clone());
+    let (items, cut) = match (fit(items), clipped_retry) {
+        (Err(e), Some(mut retry)) if e.code == ErrorCode::InvalidBudget => {
+            let first = &mut retry[0].item;
+            first.preview_data = first
+                .preview_data
+                .chars()
+                .take(PREVIEW_SNIPPET_CHARS)
+                .collect();
+            first.preview_omitted = true;
+            fit(retry)?
+        }
+        (fitted, _) => fitted?,
+    };
+    if let Some((before_last, before_next)) = cut {
+        last = before_last;
+        next_sequence = before_next;
+        stop = StopReason::Bytes;
     }
     if stop == StopReason::Complete && next_sequence >= 1 && next_sequence <= high {
         stop = StopReason::Rows;
@@ -2677,6 +2715,7 @@ fn timeline_summary(
     thread: &ThreadId,
     entry: EffectiveTimelineEntry,
     output: &OutputSpec,
+    full_bodies: bool,
 ) -> Result<MessageSummary, ApiError> {
     match entry {
         EffectiveTimelineEntry::Physical { id, sequence, kind } => {
@@ -2688,7 +2727,7 @@ fn timeline_summary(
                 i64,
             );
             let row:Row=db.query_row("SELECT actor_seat_id,actor_label,body,event_json,decision_at FROM messages WHERE id=?1",[&id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(|e|db.map_error(e))?;
-            message_summary(
+            let summary = message_summary(
                 db,
                 &id,
                 thread,
@@ -2700,7 +2739,13 @@ fn timeline_summary(
                 row.3.as_deref(),
                 row.4,
                 output,
-            )
+            )?;
+            match row.2.as_deref() {
+                Some(body) if full_bodies && kind == "ordinary" => {
+                    inline_full_body(summary, body, output)
+                }
+                _ => Ok(summary),
+            }
         }
         EffectiveTimelineEntry::PublishedWarning(warning) => {
             let source = warning.source_message_id.as_deref().ok_or_else(|| {
@@ -2728,6 +2773,44 @@ fn timeline_summary(
             )
         }
     }
+}
+
+/// `full_bodies`: replace a clipped preview with the complete body when a
+/// `Message` fetch of it (bounded by `FULL_BODY_FETCH_BYTES`, text output, as
+/// the human `read` issues it) would return the body whole. A longer body keeps
+/// its clipped preview and body cursor: the CLI fetches it as before. Whether
+/// the page budget holds the inlined body is the page fit's decision.
+fn inline_full_body(
+    mut summary: MessageSummary,
+    body: &str,
+    output: &OutputSpec,
+) -> Result<MessageSummary, ApiError> {
+    if !summary.preview_omitted
+        || body.chars().nth(PREVIEW_SNIPPET_CHARS).is_none()
+        || body.len() > FULL_BODY_FETCH_BYTES as usize
+    {
+        return Ok(summary);
+    }
+    let fetch = CommandResult::Message(MessageDetails {
+        summary: summary.clone(),
+        content: MessageContent::Ordinary {
+            body_data: body.into(),
+            body_offset: 0,
+            body_total_bytes: body.len() as u64,
+            body_complete: true,
+            body_next_cursor: None,
+            body_next_argv: None,
+        },
+    });
+    let text = OutputSpec {
+        format: OutputFormat::Text,
+        context: output.context.clone(),
+    };
+    if encode_selected(&fetch, &text)?.len() <= FULL_BODY_FETCH_BYTES as usize {
+        summary.preview_data = body.into();
+        summary.preview_omitted = false;
+    }
+    Ok(summary)
 }
 
 // Allowed: one argument per selected message column plus output shaping.
@@ -2767,7 +2850,7 @@ fn message_summary(
         _ => return Err(api_error(ErrorCode::StoreCorrupt, "invalid message kind")),
     };
     let source = body.or(event).unwrap_or("");
-    let snippet: String = source.chars().take(256).collect();
+    let snippet: String = source.chars().take(PREVIEW_SNIPPET_CHARS).collect();
     Ok(MessageSummary {
         message: MessageId::new(id),
         thread: thread.clone(),
@@ -2923,45 +3006,36 @@ where
         for receipt in &slice.items {
             let item = recipient_item(db, receipt)?;
             let raw = receipt_cursor(instance, scope, message.as_str(), &filter, &slice.position)?;
-            let mut proposed = items.clone();
-            proposed.push(item.clone());
             let high = slice
                 .position
                 .physical_high_water
                 .max(slice.position.manifest_high_water) as u64;
-            let required = encode_selected(
-                &wrap(page(
-                    proposed,
-                    Some((raw.clone(), argv(&raw))),
-                    high,
-                    StopReason::Rows,
-                    output,
-                )),
-                output,
-            )?
-            .len();
-            if required > request.max_bytes as usize {
-                if items.is_empty() {
-                    return Err(ApiError {
-                        code: ErrorCode::InvalidBudget,
-                        detail: "recipient cannot fit".into(),
-                        restart_argv: None,
-                        required_minimum_bytes: Some(required as u32),
-                    });
-                }
-                position = before;
-                stop = StopReason::Bytes;
-                break;
-            }
-            items.push(item);
-        }
-        if stop == StopReason::Bytes {
-            break;
+            items.push(Cand {
+                item,
+                argv: argv(&raw),
+                raw,
+                before: (before.clone(), high),
+            });
         }
         position = Some(slice.position);
         if !slice.has_more {
             break;
         }
+    }
+    let (items, cut) = fit_candidates(
+        items,
+        0,
+        output,
+        request.max_bytes,
+        "recipient cannot fit",
+        |mut recipients, at| {
+            recipients.high_water_ordinal = at.before.1;
+            wrap(recipients)
+        },
+    )?;
+    if let Some((before, _)) = cut {
+        position = before;
+        stop = StopReason::Bytes;
     }
     let position = position
         .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "recipient scan did not initialize"))?;
@@ -3075,43 +3149,37 @@ fn warning_recipients(
                 seat: SeatId::new(seat),
             };
             let raw = warning_recipient_cursor(instance, q, &slice.position, &filter)?;
-            let mut proposed = items.clone();
-            proposed.push(item.clone());
-            let required = encode_selected(
-                &CommandResult::WarningRecipients(page(
-                    proposed,
-                    Some((
-                        raw.clone(),
-                        delivery_recipients_argv(q.message.as_str(), &raw, &q.page),
-                    )),
+            items.push(Cand {
+                item,
+                argv: delivery_recipients_argv(q.message.as_str(), &raw, &q.page),
+                raw,
+                before: (
+                    before.clone(),
                     slice
                         .position
                         .interval_high_water
                         .max(slice.position.ledger_high_water) as u64,
-                    StopReason::Rows,
-                    output,
-                )),
-                output,
-            )?
-            .len();
-            if required > q.page.max_bytes as usize {
-                if items.is_empty() {
-                    return Err(ApiError {
-                        code: ErrorCode::InvalidBudget,
-                        detail: "warning recipient cannot fit".into(),
-                        restart_argv: None,
-                        required_minimum_bytes: Some(required as u32),
-                    });
-                }
-                position = before;
-                stop = StopReason::Bytes;
-                break;
-            }
-            items.push(item);
+                ),
+            });
         }
-        if stop == StopReason::Bytes || !slice.has_more {
+        if !slice.has_more {
             break;
         }
+    }
+    let (items, cut) = fit_candidates(
+        items,
+        0,
+        output,
+        q.page.max_bytes,
+        "warning recipient cannot fit",
+        |mut recipients, at| {
+            recipients.high_water_ordinal = at.before.1;
+            CommandResult::WarningRecipients(recipients)
+        },
+    )?;
+    if let Some((before, _)) = cut {
+        position = before;
+        stop = StopReason::Bytes;
     }
     let position = position
         .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "warning scan did not initialize"))?;
@@ -3329,6 +3397,15 @@ fn diagnostics_cursor(
         .map_err(|e| api_error(ErrorCode::InvalidCursor, e))
 }
 
+/// Diagnostics walk state before a candidate, and the page high water at it.
+#[derive(Clone)]
+struct DiagnosticsWalk {
+    phase: SearchPhase,
+    invitation_after: u64,
+    receipts: ReceiptScanPosition,
+    high: u64,
+}
+
 fn diagnostics(
     db: &QueryConnection,
     instance: &str,
@@ -3454,37 +3531,22 @@ fn diagnostics(
                             invitation_high,
                             &receipts,
                         )?;
-                        let mut proposed = items.clone();
-                        proposed.push(item.clone());
-                        let required = encode_selected(
-                            &CommandResult::Diagnostics(page(
-                                proposed,
-                                Some((raw.clone(), diagnostics_argv(q, &raw))),
-                                invitation_high.max(
+                        items.push(Cand {
+                            item,
+                            argv: diagnostics_argv(q, &raw),
+                            raw,
+                            before: DiagnosticsWalk {
+                                phase,
+                                invitation_after,
+                                receipts: receipts.clone(),
+                                high: invitation_high.max(
                                     receipts
                                         .physical_high_water
                                         .max(receipts.manifest_high_water)
                                         as u64,
                                 ),
-                                StopReason::Rows,
-                                output,
-                            )),
-                            output,
-                        )?
-                        .len();
-                        if required > q.page.max_bytes as usize {
-                            if items.is_empty() {
-                                return Err(ApiError {
-                                    code: ErrorCode::InvalidBudget,
-                                    detail: "diagnostic cannot fit".into(),
-                                    restart_argv: None,
-                                    required_minimum_bytes: Some(required as u32),
-                                });
-                            }
-                            stop = StopReason::Bytes;
-                            break;
-                        }
-                        items.push(item);
+                            },
+                        });
                     }
                 }
                 invitation_after = ordinal as u64;
@@ -3534,42 +3596,23 @@ fn diagnostics(
                         invitation_high,
                         &slice.position,
                     )?;
-                    let mut proposed = items.clone();
-                    proposed.push(item.clone());
-                    let required = encode_selected(
-                        &CommandResult::Diagnostics(page(
-                            proposed,
-                            Some((raw.clone(), diagnostics_argv(q, &raw))),
-                            invitation_high.max(
+                    items.push(Cand {
+                        item,
+                        argv: diagnostics_argv(q, &raw),
+                        raw,
+                        before: DiagnosticsWalk {
+                            phase,
+                            invitation_after,
+                            receipts: before.clone(),
+                            high: invitation_high.max(
                                 slice
                                     .position
                                     .physical_high_water
                                     .max(slice.position.manifest_high_water)
                                     as u64,
                             ),
-                            StopReason::Rows,
-                            output,
-                        )),
-                        output,
-                    )?
-                    .len();
-                    if required > q.page.max_bytes as usize {
-                        if items.is_empty() {
-                            return Err(ApiError {
-                                code: ErrorCode::InvalidBudget,
-                                detail: "diagnostic cannot fit".into(),
-                                restart_argv: None,
-                                required_minimum_bytes: Some(required as u32),
-                            });
-                        }
-                        receipts = before;
-                        stop = StopReason::Bytes;
-                        break;
-                    }
-                    items.push(item);
-                }
-                if stop == StopReason::Bytes {
-                    break;
+                        },
+                    });
                 }
                 receipts = slice.position;
                 if !slice.has_more {
@@ -3577,6 +3620,23 @@ fn diagnostics(
                 }
             }
         }
+    }
+    let (items, cut) = fit_candidates(
+        items,
+        0,
+        output,
+        q.page.max_bytes,
+        "diagnostic cannot fit",
+        |mut diagnostics, at| {
+            diagnostics.high_water_ordinal = at.before.high;
+            CommandResult::Diagnostics(diagnostics)
+        },
+    )?;
+    if let Some(before) = cut {
+        phase = before.phase;
+        invitation_after = before.invitation_after;
+        receipts = before.receipts;
+        stop = StopReason::Bytes;
     }
     if examined == CANDIDATE_LIMIT && stop == StopReason::Complete {
         stop = StopReason::Work;
@@ -3816,40 +3876,29 @@ pub fn warnings_in_transaction(
                 event_seq: warning.event_seq as u64,
             };
             let raw = warning_cursor(instance, q, thread_after, high, timeline.as_ref(), &filter)?;
-            let mut proposed = items.clone();
-            proposed.push(item.clone());
-            let required = encode_selected(
-                &CommandResult::Warnings(page(
-                    proposed,
-                    Some((raw.clone(), warning_argv(q, &raw))),
-                    high,
-                    StopReason::Rows,
-                    output,
-                )),
-                output,
-            )?
-            .len();
-            if required > q.page.max_bytes as usize {
-                if items.is_empty() {
-                    return Err(ApiError {
-                        code: ErrorCode::InvalidBudget,
-                        detail: "warning cannot fit".into(),
-                        restart_argv: None,
-                        required_minimum_bytes: Some(required as u32),
-                    });
-                }
-                timeline = before;
-                stop = StopReason::Bytes;
-                break;
-            }
-            items.push(item);
-        }
-        if stop == StopReason::Bytes {
-            break;
+            items.push(Cand {
+                item,
+                argv: warning_argv(q, &raw),
+                raw,
+                before: (thread_after, before.clone()),
+            });
         }
         if !slice.has_more {
             timeline = None;
         }
+    }
+    let (items, cut) = fit_candidates(
+        items,
+        high,
+        output,
+        q.page.max_bytes,
+        "warning cannot fit",
+        |page, _| CommandResult::Warnings(page),
+    )?;
+    if let Some((before_after, before_timeline)) = cut {
+        thread_after = before_after;
+        timeline = before_timeline;
+        stop = StopReason::Bytes;
     }
     if stop == StopReason::Complete && visited == CANDIDATE_LIMIT {
         stop = StopReason::Work;
@@ -4053,15 +4102,11 @@ pub fn inbox_in_transaction(
             clock,
         )? {
             InboxValidation::Changed => {
-                return Err(ApiError {
-                    code: ErrorCode::CursorStale,
-                    detail: "inbox inclusion changed".into(),
-                    restart_argv: Some(contextual_argv(
-                        inbox_request_argv(seat, None, request),
-                        output,
-                    )),
-                    required_minimum_bytes: None,
-                });
+                return Err(
+                    ApiError::cursor_stale("inbox inclusion changed").with_restart_argv(
+                        contextual_argv(inbox_request_argv(seat, None, request), output),
+                    ),
+                );
             }
             InboxValidation::More { token: next, .. } => {
                 let high = current.high_water_ordinal;
@@ -4172,34 +4217,26 @@ pub fn inbox_in_transaction(
             let raw = trial_cursor
                 .encode()
                 .map_err(|e| api_error(ErrorCode::InvalidCursor, e))?;
-            let mut proposed = items.clone();
-            proposed.push(item.clone());
-            let required = encode_selected(
-                &CommandResult::Inbox(page(
-                    proposed,
-                    Some((raw.clone(), inbox_argv(seat, &raw, request))),
-                    high,
-                    StopReason::Rows,
-                    output,
-                )),
-                output,
-            )?
-            .len();
-            if required > request.max_bytes as usize {
-                if items.is_empty() {
-                    return Err(ApiError {
-                        code: ErrorCode::InvalidBudget,
-                        detail: "inbox item cannot fit".into(),
-                        restart_argv: None,
-                        required_minimum_bytes: Some(required as u32),
-                    });
-                }
-                stop = StopReason::Bytes;
-                break;
-            }
-            items.push(item);
+            items.push(Cand {
+                item,
+                argv: inbox_argv(seat, &raw, request),
+                raw,
+                before: last,
+            });
         }
         last = ordinal as u64;
+    }
+    let (items, cut) = fit_candidates(
+        items,
+        high,
+        output,
+        request.max_bytes,
+        "inbox item cannot fit",
+        |page, _| CommandResult::Inbox(page),
+    )?;
+    if let Some(before) = cut {
+        last = before;
+        stop = StopReason::Bytes;
     }
     if stop == StopReason::Complete && visited == CANDIDATE_LIMIT {
         stop = StopReason::Work;
@@ -4390,44 +4427,38 @@ fn pending_receipts(
                 &filter,
                 &slice.position,
             )?;
-            let mut proposed = items.clone();
-            proposed.push(item.clone());
-            let required = encode_selected(
-                &CommandResult::PendingReceipts(page(
-                    proposed,
-                    Some((raw.clone(), pending_receipts_argv(q, &raw))),
+            items.push(Cand {
+                item,
+                argv: pending_receipts_argv(q, &raw),
+                raw,
+                before: (
+                    before.clone(),
                     slice
                         .position
                         .physical_high_water
                         .max(slice.position.manifest_high_water) as u64,
-                    StopReason::Rows,
-                    output,
-                )),
-                output,
-            )?
-            .len();
-            if required > q.page.max_bytes as usize {
-                if items.is_empty() {
-                    return Err(ApiError {
-                        code: ErrorCode::InvalidBudget,
-                        detail: "pending receipt cannot fit".into(),
-                        restart_argv: None,
-                        required_minimum_bytes: Some(required as u32),
-                    });
-                }
-                position = before;
-                stop = StopReason::Bytes;
-                break;
-            }
-            items.push(item);
-        }
-        if stop == StopReason::Bytes {
-            break;
+                ),
+            });
         }
         position = Some(slice.position);
         if !has_more {
             break;
         }
+    }
+    let (items, cut) = fit_candidates(
+        items,
+        0,
+        output,
+        q.page.max_bytes,
+        "pending receipt cannot fit",
+        |mut receipts, at| {
+            receipts.high_water_ordinal = at.before.1;
+            CommandResult::PendingReceipts(receipts)
+        },
+    )?;
+    if let Some((before, _)) = cut {
+        position = before;
+        stop = StopReason::Bytes;
     }
     let position = position
         .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "receipt scan did not initialize"))?;

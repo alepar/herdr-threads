@@ -1,0 +1,6 @@
+{
+  "finding": "w10_e5_tui_user_config_recorded",
+  "entry": "codex_tui_evidence",
+  "verdict": "PASS",
+  "reason": "user_config_path=config.toml hook_trust_bypass=True"
+}

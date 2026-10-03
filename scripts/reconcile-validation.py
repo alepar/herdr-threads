@@ -20,7 +20,8 @@ Rules (validation design, "Reporting and completion criteria"):
 
 Usage:
   scripts/reconcile-validation.py [--evidence-root DIR] [--output FILE]
-                                  [--json] [--base REV] [--no-git]
+                                  [--json] [--base REV] [--no-git] [--native-rerun JSON]
+  scripts/reconcile-validation.py --collect-native-rerun MATRIX_LOG --write JSON
 
 Evidence root: the full run evidence tree is not in the released tree; it is
 archived in git tag `archive/herdr-threads-run-2026-09-26` at
@@ -554,6 +555,11 @@ def render(result):
     w("- Model receipts are `cooperative_top_level` provenance throughout: a cooperative claim "
       "joined to a transcript root call, not kernel-verified native proof.")
     w("")
+    if result.get("rerun"):
+        out.extend(render_rerun(result["rerun"]))
+        w("The sections below are the archived 2026-09-26 evidence. Where a rerun cell above covers the "
+          "same scenario, the rerun cell is the current evidence and settles the matching open gap.")
+        w("")
     w("## Evidence kinds")
     w("")
     w("| Kind | What it is | Sources |")
@@ -781,6 +787,216 @@ def render(result):
     return "\n".join(out) + "\n"
 
 
+# ---------------------------------------------------------------- native rerun (ht-p03.20)
+
+# The native matrix rerun of root spec section B8 Decision 3: `validate-native-demo.sh --matrix` writes
+# ATTEMPT/MATRIX lines to $HT_MATRIX_LOG; `--collect-native-rerun LOG --write JSON` turns them (plus each
+# final attempt's run-root manifest, summary and hook-context evidence) into a committed results file;
+# `--native-rerun JSON` renders it into the report and lets its cells settle the matching gap rows.
+RERUN_CELL_HARNESS = {
+    "codex-manual": "codex", "codex-managed": "codex", "claude-manual": "claude", "claude-managed": "claude",
+    "codex-no-initial-prompt": "codex", "claude-no-initial-prompt": "claude", "children-claude": "claude",
+    "children-codex": "codex", "sw2-claude": "claude", "sw2-codex": "codex",
+    "codex-tui-children-write-absence": "codex", "ht910-claude": "claude", "ht910-codex": "codex",
+    "p40-crash-fix3": "codex", "codex-sandbox-xdg-state": "codex", "wave28-claude-wake-submission": "claude",
+}
+# Closures that depend on the rerun and their backing cells (root spec B8 Decision 3; findings-closure.md).
+RERUN_CLOSURES = [
+    ("R20 MET (W9-1)", ["sw2-claude", "sw2-codex", "wave28-claude-wake-submission"]),
+    ("Wave 28 (wake left typed but unsent)", ["wave28-claude-wake-submission"]),
+    ("B6 current-version evidence, Claude Code Listed row", ["claude-manual", "claude-managed"]),
+    ("B6 current-version evidence, Codex Listed row", ["codex-manual", "codex-managed"]),
+    ("B6 sandbox writes (non-tmp state dir)", ["codex-sandbox-xdg-state"]),
+    ("ht-910 daemon restart, agent stays in its pane", ["ht910-claude", "ht910-codex"]),
+    ("P40 crash-fix3 real-host acceptance", ["p40-crash-fix3"]),
+    ("B3 concurrent children", ["children-claude", "children-codex"]),
+    ("B3 SW2 coalesced warning wake", ["sw2-claude", "sw2-codex"]),
+    ("B3 Codex TUI children write-absence", ["codex-tui-children-write-absence"]),
+    ("R23 sweep status (crash/restart cells)", ["p40-crash-fix3", "ht910-claude", "ht910-codex"]),
+    ("G0/B2 (every cell)", list(RERUN_CELL_HARNESS)),
+]
+# Archive gap rows (ROWS) a rerun cell settles: (row id, harness) -> cell.
+RERUN_GAP_CELLS = {
+    ("coalesced-warning-wake", "claude"): "sw2-claude", ("coalesced-warning-wake", "codex"): "sw2-codex",
+    ("concurrent-children", "claude"): "children-claude", ("concurrent-children", "codex"): "children-codex",
+    ("children-write-absence", "codex"): "codex-tui-children-write-absence",
+}
+_KV = re.compile(r"(\w+)=(\[[^\]]*\]|\S+)")
+
+
+def _cell_fields(text):
+    return {k: v.strip("[]") for k, v in _KV.findall(text)}
+
+
+def rerun_passes(outcome):
+    return outcome in ("PASS", "PASS (flaky)")
+
+
+def _context_bytes(evidence):
+    """Injected additionalContext bytes of the first turn (`initial` phase): SessionStart plus PreToolUse."""
+    path = pathlib.Path(evidence) / "hook-context-initial.json"
+    if not path.is_file():
+        return None
+    deliveries = load_json(path).get("deliveries", [])
+    root = [d for d in deliveries if not d.get("sidechain")]
+    return {"turn_bytes": sum(d.get("bytes", 0) for d in root), "deliveries": len(root),
+            "session_start_bytes": sum(d.get("bytes", 0) for d in root if d.get("hook_event") == "SessionStart"),
+            "pre_tool_use_bytes": sum(d.get("bytes", 0) for d in root if d.get("hook_event") == "PreToolUse")}
+
+
+def collect_native_rerun(log_text, read_evidence=True):
+    """Matrix log (ATTEMPT/MATRIX lines of one full-matrix run) -> results document."""
+    attempts, cells = {}, []
+    for line in log_text.splitlines():
+        m = re.match(r"ATTEMPT (\d+) CELL (\S+) (.*)$", line)
+        if m:
+            fields = _cell_fields(m.group(3))
+            attempts.setdefault(m.group(2), []).append({
+                "attempt": int(m.group(1)), "sha": fields.get("sha"), "manifest_status": fields.get("manifest_status"),
+                "harness_before": fields.get("harness_before"), "harness_after": fields.get("harness_after"),
+                "harness_ran": fields.get("harness_ran"), "evidence": fields.get("evidence")})
+            continue
+        m = re.match(r"MATRIX cell=(\S+) attempts=(\d+) outcome=(.*?) :: ?(.*)$", line)
+        if not m:
+            continue
+        name, outcome, tail = m.group(1), m.group(3).strip(), m.group(4)
+        fields = _cell_fields(tail.split(" ", 2)[2] if tail.startswith("CELL ") else tail)
+        verdict = outcome.split(" (")[0]
+        if verdict.startswith("INVALID"):
+            verdict = "NOT_EXERCISED"  # a version-moved attempt is never evidence
+        if outcome == "PASS (flaky)":
+            verdict = outcome
+        cell = {"cell": name, "harness": RERUN_CELL_HARNESS.get(name, "?"), "attempts": int(m.group(2)),
+                "outcome": verdict, "outcome_detail": outcome, "sha": fields.get("sha"),
+                "harness_before": fields.get("harness_before"), "harness_after": fields.get("harness_after"),
+                "harness_ran": fields.get("harness_ran"), "manifest_status": fields.get("manifest_status"), "reason": "", "steps": {},
+                "evidence": fields.get("evidence"), "attempt_history": attempts.get(name, [])}
+        evidence = fields.get("evidence")
+        if read_evidence and evidence and evidence != "none" and pathlib.Path(evidence).is_dir():
+            ev = pathlib.Path(evidence)
+            if (ev / "manifest.json").is_file():
+                cell["reason"] = load_json(ev / "manifest.json").get("reason", "")
+            if (ev / "summary.json").is_file():
+                summary = load_json(ev / "summary.json")
+                cell["steps"] = {s["step"]: s["status"] for s in summary.get("steps", [])
+                                 if s.get("status") not in ("INFO",)}
+                bad = [f"{s['step']} {s['status']}: {s.get('detail', '')[:160]}" for s in summary.get("steps", [])
+                       if s.get("status") in ("FAIL", "BLOCKED", "NOT_EXERCISED", "UNVERIFIED")]
+                cell["non_pass_steps"] = bad
+            cell["context"] = _context_bytes(ev)
+            cell["evidence"] = ev.parent.name
+        elif evidence and evidence != "none":
+            cell["evidence"] = pathlib.Path(evidence).parent.name
+        cells.append(cell)
+    shas = sorted({c["sha"] for c in cells if c["sha"]})
+    return {"cells": cells, "shas": shas, "evidence_sha": shas[0] if len(shas) == 1 else None}
+
+
+def rerun_closures(rerun):
+    by = {c["cell"]: c for c in rerun["cells"]}
+    sha = rerun.get("evidence_sha")
+    out = []
+    for name, backing in RERUN_CLOSURES:
+        missing = [c for c in backing if c not in by]
+        bad = [f"{c}: {by[c]['outcome']}" for c in backing if c in by and not rerun_passes(by[c]["outcome"])]
+        stale = [c for c in backing if c in by and by[c]["sha"] != sha]
+        open_ = missing or bad or stale or not sha
+        why = "; ".join(bad + [f"{c}: not run" for c in missing] + [f"{c}: stale" for c in stale])
+        out.append({"closure": name, "backing": backing, "closed": not open_, "why": why})
+    return out
+
+
+def apply_rerun(result, rerun):
+    """Rerun cells settle the archive gap rows they back; a non-PASS rerun cell keeps the gap open."""
+    status, failures, gaps = result["overall"]
+    by = {c["cell"]: c for c in rerun["cells"]}
+    kept = []
+    for label in gaps:
+        row_id, rest = label.split(" / ", 1)
+        cell = by.get(RERUN_GAP_CELLS.get((row_id, rest.split(":")[0])))
+        if cell is None:
+            kept.append(label)
+        elif not rerun_passes(cell["outcome"]):
+            kept.append(f"{row_id} / {rest.split(':')[0]}: {cell['outcome']} in the ht-p03.20 rerun ({cell['cell']})")
+    failures = list(failures) + [f"rerun {c['cell']}: FAIL" for c in rerun["cells"] if c["outcome"] == "FAIL"]
+    if not rerun.get("evidence_sha"):
+        failures.append(f"rerun cells span {len(rerun['shas'])} SHAs; no single evidence SHA")
+    result["overall"] = ("FAIL" if failures else "PASS_WITH_GAPS" if kept else "PASS"), failures, kept
+    result["rerun"] = rerun
+
+
+def render_rerun(rerun):
+    out = []
+    w = out.append
+    sha = rerun.get("evidence_sha")
+    w("## Native matrix rerun on the evidence SHA (ht-p03.20)")
+    w("")
+    w(f"Evidence SHA: `{sha or 'none (cells span several SHAs)'}`. Every cell below ran on it (root spec B8 "
+      "Decision 3: one final SHA; later commits touch only evidence paths, checked with "
+      f"`git diff --name-only {short(sha) if sha else '<sha>'}..HEAD`). Results file: "
+      f"`{rerun.get('source', 'native-rerun.json')}`. Each cell ran once per attempt in its own isolated named "
+      "Herdr session (`scripts/validate-native-demo.sh --matrix`), with the default Codex profile, setup into "
+      "run-root copies of HOME, CLAUDE_CONFIG_DIR and CODEX_HOME, Claude from the fixed versioned binary "
+      "`~/.local/share/claude/versions/<v>` on a run-root PATH entry and Codex from its fixed install path; "
+      "`--version` was taken immediately before and after every cell, and the version the agent itself reported (Claude's transcript `claude_code_version` or TUI banner, Codex's rollout `cli_version` or TUI banner) had to equal it. Up to three attempts per cell on the "
+      "same SHA; a PASS after a failed attempt is `PASS (flaky)`. NOT_EXERCISED is never PASS.")
+    if rerun.get("full_matrix_runs"):
+        w("")
+        w(f"Full-matrix runs: {rerun['full_matrix_runs']}.")
+    w("")
+    w("| Cell | Harness | SHA | Version before | Version after | Version the agent reported | Attempts | Outcome | "
+      "Reason / non-pass steps | Run |")
+    w("|---|---|---|---|---|---|---|---|---|---|")
+    for c in rerun["cells"]:
+        notes = c.get("reason") or ""
+        if not rerun_passes(c["outcome"]) and c.get("non_pass_steps"):
+            notes = "; ".join(filter(None, [notes] + c["non_pass_steps"][:2]))
+        if c.get("outcome_detail") and c["outcome_detail"] != c["outcome"]:
+            notes = "; ".join(filter(None, [c["outcome_detail"], notes]))
+        notes = notes.replace("|", "/").replace("\n", " ")
+        w(f"| {c['cell']} | {c['harness']} | `{short(c['sha']) if c['sha'] else '-'}` | {c['harness_before'] or '-'} | "
+          f"{c['harness_after'] or '-'} | {c.get('harness_ran') or '-'} | {c['attempts']} | **{c['outcome']}** | {notes or '-'} | "
+          f"`{c.get('evidence') or '-'}` |")
+    w("")
+    versions = {}
+    for c in rerun["cells"]:
+        if c.get("harness_before"):
+            versions.setdefault(c["harness"], set()).add(c["harness_before"])
+    w("Harness versions across the matrix: " + "; ".join(
+        f"{h}: {', '.join(sorted(v))}" for h, v in sorted(versions.items())) + " (one per harness required).")
+    w("")
+    w("### Per-turn injected context (measured, not a benchmark)")
+    w("")
+    w("Hook `additionalContext` bytes the harness recorded for the first turn of the manual core-flow cell "
+      "(root session, SessionStart plus PreToolUse; Claude from the session transcript attachments, Codex from "
+      "the rollout's herdr-threads developer messages). One measured number per harness; the token-overhead "
+      "benchmark stays deferred.")
+    w("")
+    w("| Harness | Cell | Bytes injected in the turn | Deliveries | SessionStart bytes | PreToolUse bytes |")
+    w("|---|---|---|---|---|---|")
+    for name in ("claude-manual", "codex-manual"):
+        c = next((x for x in rerun["cells"] if x["cell"] == name), None)
+        ctx = c and c.get("context")
+        if ctx:
+            w(f"| {c['harness']} | {name} | {ctx['turn_bytes']} | {ctx['deliveries']} | "
+              f"{ctx['session_start_bytes']} | {ctx['pre_tool_use_bytes']} |")
+        else:
+            w(f"| {RERUN_CELL_HARNESS[name]} | {name} | NOT_EXERCISED (no hook-context evidence) | - | - | - |")
+    w("")
+    w("### Rerun-dependent closures")
+    w("")
+    w("Each holds only if every backing cell PASSes on the evidence SHA; a FAIL, NOT_EXERCISED or stale "
+      "backing cell leaves it open (root spec B8 Decision 3).")
+    w("")
+    w("| Closure | Backing cells | Status |")
+    w("|---|---|---|")
+    for item in rerun_closures(rerun):
+        backing = ", ".join(item["backing"]) if len(item["backing"]) < 6 else "every cell above"
+        status = "**closed**" if item["closed"] else f"**open**: {item['why']}"
+        w(f"| {item['closure']} | {backing} | {status} |")
+    w("")
+    return out
+
 def reconcile_all(root, base=None, repo=None, use_git=True):
     runs = discover_native(root, NATIVE_FOLDERS)
     matrix = build_matrix(runs)
@@ -813,6 +1029,7 @@ def to_json(result):
                     "cells": {h: cell(c) for h, c in e["cells"].items()}} for e in result["matrix"]],
         "runs": [{k: v for k, v in r.items() if k != "steps"} for r in result["runs"]],
         "host": result["host"], "package": result["package"], "captures": result["captures"],
+        "rerun_closures": rerun_closures(result["rerun"]) if result.get("rerun") else None,
     }
 
 
@@ -825,12 +1042,30 @@ def main(argv=None):
     parser.add_argument("--json", action="store_true", help="print the reconciliation as JSON instead")
     parser.add_argument("--base", default="99ea74c", help="code revision the stamp is measured against")
     parser.add_argument("--no-git", action="store_true", help="skip code-drift measurement")
+    parser.add_argument("--native-rerun", metavar="JSON",
+                        help="ht-p03.20 rerun results (from --collect-native-rerun): render them and let their "
+                             "cells settle the matching gap rows")
+    parser.add_argument("--collect-native-rerun", metavar="LOG",
+                        help="read a `validate-native-demo.sh --matrix` log ($HT_MATRIX_LOG) and its run-root "
+                             "evidence, write the results JSON to --write, and exit")
+    parser.add_argument("--write", metavar="JSON", help="output path for --collect-native-rerun")
     args = parser.parse_args(argv)
+    if args.collect_native_rerun:
+        if not args.write:
+            parser.error("--collect-native-rerun needs --write JSON")
+        rerun = collect_native_rerun(pathlib.Path(args.collect_native_rerun).read_text(encoding="utf-8"))
+        pathlib.Path(args.write).write_text(redact(json.dumps(rerun, indent=2, sort_keys=True)) + "\n", encoding="utf-8")
+        print(f"collected {len(rerun['cells'])} cells, evidence SHA {rerun['evidence_sha']}: wrote {args.write}")
+        return 0
     root = pathlib.Path(args.evidence_root).resolve()
     if not root.is_dir():
         parser.error(f"evidence root {root} not found; the run evidence is archived in git tag "
                      f"{ARCHIVE_TAG} (see usage: extract it and pass --evidence-root or set {EVIDENCE_ENV})")
     result = reconcile_all(root, base=args.base, repo=REPO, use_git=not args.no_git)
+    if args.native_rerun:
+        rerun = load_json(args.native_rerun)
+        rerun.setdefault("source", os.path.relpath(pathlib.Path(args.native_rerun).resolve(), REPO))
+        apply_rerun(result, rerun)
     if args.json:
         print(redact(json.dumps(to_json(result), indent=2, sort_keys=True, default=list)))
         return 0

@@ -1,6 +1,8 @@
 name: CI
 
-# Deterministic checks on the only supported platform (macOS arm64, Herdr 0.9.1).
+# Deterministic checks on macOS arm64 (Herdr 0.9.1), plus release-target build
+# checks (macOS and Linux musl) and workflow lint. herdr-plugin.toml declares
+# platforms ["macos", "linux"].
 # Native Codex/Claude model-receipt validation needs an authenticated, isolated
 # Herdr environment and is NOT run here; a green run says nothing about it.
 # The setup CLI, managed launch and Codex fingerprint admission are covered
@@ -25,11 +27,15 @@ jobs:
   deterministic:
     name: Build, format, test (macOS arm64)
     runs-on: macos-15
+    env:
+      # ht-p03.131: every process a step starts carries this id, so the final
+      # leak check can tell this run's leftovers from anyone else's.
+      HT_LEAK_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Python for TOML and fixture tests
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.11.9'
           architecture: arm64
@@ -84,7 +90,7 @@ jobs:
           with open("herdr-plugin.toml", "rb") as f:
               manifest = tomllib.load(f)
           assert manifest["id"] == "herdr-threads", manifest["id"]
-          assert manifest["platforms"] == ["macos"], manifest["platforms"]
+          assert manifest["platforms"] == ["macos", "linux"], manifest["platforms"]
           entries = [e for key in ("build", "startup", "actions", "panes") for e in manifest.get(key, [])]
           assert entries, "manifest declares no commands"
           for entry in entries:
@@ -97,24 +103,66 @@ jobs:
         # Packages bin/herdr-threads as fake v0.1.0/v0.1.1 releases served from
         # file:// and drives scripts/install.sh in a scratch HOME: install,
         # idempotent re-run, upgrade, refusals, harness setup and uninstall.
-        run: tests/release/install_test.sh bin/herdr-threads
+        # Herdr policy: the pinned Herdr provisioned above is on PATH, so the
+        # isolated-Herdr matrix runs; HT_SKIP_HERDR_TESTS is deliberately unset
+        # (a missing herdr fails the step instead of skipping). Any case that
+        # still reports "skipped: no herdr" is listed in the job summary.
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests/release/install_test.sh bin/herdr-threads 2>&1 | tee install_test.log
 
       - name: Tests (serial)
-        # One test thread per test binary; cargo already runs binaries one at a time.
-        # --all-features enables `test-support`, which tests/hook_entrypoint.rs
-        # requires. The package suite runs tests/service/check_failpoints_absent.sh
-        # (two extra release builds). #[ignore] tests (package lifecycle gate,
-        # 10^5..10^6 scale tests) do not run here.
-        run: cargo test --locked --all-targets --all-features -- --test-threads=1
+        # The suite runs with --test-threads=1; dropping the pin is release
+        # follow-on 6 (docs/release.md). --all-features enables `test-support`,
+        # which tests/hook_entrypoint.rs requires. The package suite runs
+        # tests/service/check_failpoints_absent.sh (two extra release builds).
+        # #[ignore] tests (package lifecycle gate, 10^5..10^6 scale tests) do
+        # not run here. Herdr policy as above: provisioned, not skipped.
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-targets --all-features -- --test-threads=1 2>&1 | tee test.log
 
-      - name: Python fixture tests
+      - name: Python demo, validator and canary suites
         shell: bash
         run: |
           set -euo pipefail
           for dir in tests/native/support tests/native/cooperative/claude_lifecycle \
-                     tests/native/provenance/claude tests/native/provenance/codex; do
+                     tests/native/provenance/claude tests/native/provenance/codex \
+                     tests/native/demo tests/native/recovery \
+                     scripts/tests/validator_corpus; do
             python3 -m unittest discover -s "$dir" -p 'test_*.py'
           done
+          # scripts/canary/bisect.py shadows the stdlib `bisect` once the
+          # directory leads sys.path, which breaks a whole-directory discover;
+          # run each test module on its own.
+          for f in scripts/canary/test_*.py; do
+            python3 -m unittest discover -s scripts/canary -p "$(basename "$f")"
+          done
+          python3 -m unittest discover -s scripts/tests -p 'test_check_no_leaked_processes.py'
+
+      - name: Skipped Herdr tests (job summary)
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '### Isolated-Herdr tests'
+            echo "Pinned Herdr $HERDR_VERSION provisioned; HT_SKIP_HERDR_TESTS=${HT_SKIP_HERDR_TESTS:-unset}."
+            echo 'Skipped by name (empty means none skipped):'
+            echo '```'
+            grep -h 'skipped: no herdr' test.log install_test.log 2>/dev/null | sort -u || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: No leaked test processes
+        # ht-p03.131: every daemon, private Herdr server and helper a test or the
+        # installer test started is gone once its run ends (owner tag, process
+        # groups, reaper). Runs even when an earlier step failed.
+        if: always()
+        shell: bash
+        run: scripts/check-no-leaked-processes --run-id "$HT_LEAK_RUN_ID" --grace 15
 
   package-lifecycle:
     name: Package lifecycle gate (private Herdr server; manual)
@@ -127,14 +175,14 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # The validator pushes HEAD to a private bare repository; a shallow
           # clone cannot be pushed.
           fetch-depth: 0
 
       - name: Python for the validator
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.11.9'
           architecture: arm64
@@ -159,8 +207,10 @@ jobs:
           printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
 
       - name: Package lifecycle gate
+        # The `package` target requires the `test-support` feature (its tests
+        # spawn children through `test_support::spawn`).
         run: >-
-          cargo test --locked --test package
+          cargo test --locked --features test-support --test package
           install::clean_package_install_lifecycle
           -- --ignored --exact --nocapture
 
@@ -168,10 +218,80 @@ jobs:
     name: Clippy -D warnings
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Rust toolchain
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy
           rustup default "$RUST_TOOLCHAIN"
-      - name: Clippy
+      - name: Clippy (default features)
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Clippy (all features)
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  build-targets:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, runner: macos-15 }
+          - { target: x86_64-apple-darwin, runner: macos-15 }
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: musl toolchain
+        if: contains(matrix.target, 'linux-musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: Rust toolchain
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "$TARGET"
+          rustup default "$RUST_TOOLCHAIN"
+
+      - name: Locked release build
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          case "$TARGET" in
+            *linux-musl)
+              # The cc crate builds the bundled SQLite; point it at musl-gcc.
+              cc_var="CC_$(printf '%s' "$TARGET" | tr '-' '_')"
+              export "$cc_var=musl-gcc"
+              ;;
+          esac
+          cargo build --locked --release --target "$TARGET"
+
+  actionlint:
+    name: actionlint and workflow assertions
+    runs-on: ubuntu-24.04
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install pinned actionlint
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 --max-time 120 \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}" \
+            -o "$RUNNER_TEMP/$archive"
+          printf '%s  %s\n' "$ACTIONLINT_SHA256" "$RUNNER_TEMP/$archive" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
+
+      - name: actionlint
+        run: '"$RUNNER_TEMP/actionlint" -color'
+
+      - name: Workflow assertions
+        run: bash tests/release/workflows_test.sh

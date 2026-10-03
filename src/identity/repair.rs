@@ -13,7 +13,7 @@ use crate::{
         results::{ApiError, CommandResult, ErrorCode},
         time::{CallBudget, Cancellation, Clock, MonoInstant},
     },
-    service::workers::{BoundedLane, FairWriter},
+    service::{fair_writer::FairWriter, pacer::Pacer, workers::BoundedLane},
 };
 use std::sync::Arc;
 
@@ -36,6 +36,9 @@ pub struct OrdinaryIdentity {
     /// Service-lifetime cancellation owned by the elected daemon. It bounds
     /// detached compensation at shutdown; it is never a request token.
     service: Cancellation,
+    /// The observation lane's Pacer: its backoff gates retries after a failed
+    /// capture. Unset (tests, in-process services) means no gate.
+    observation_pacer: Option<Arc<Pacer>>,
 }
 impl OrdinaryIdentity {
     pub fn new(
@@ -54,7 +57,14 @@ impl OrdinaryIdentity {
             reads: BoundedLane::new(1, 8),
             lane: std::sync::Mutex::new(crate::identity::reconcile::ObservationLane::default()),
             service: Cancellation::default(),
+            observation_pacer: None,
         }
+    }
+
+    /// Gate background retries on the observation lane's Pacer backoff.
+    pub fn with_observation_pacer(mut self, pacer: Arc<Pacer>) -> Self {
+        self.observation_pacer = Some(pacer);
+        self
     }
 
     /// Bind detached compensation to the owner's shutdown token. Without it
@@ -79,7 +89,11 @@ impl OrdinaryIdentity {
                 "identity observation lane poisoned",
             )
         })?;
-        if !lane.snapshot_due(self.clock.monotonic_now()) {
+        let retry_at = self
+            .observation_pacer
+            .as_ref()
+            .and_then(|pacer| pacer.next_retry_at());
+        if !lane.snapshot_due_gated(self.clock.monotonic_now(), retry_at) {
             return Ok(None);
         }
         let context = HostCallContext {
@@ -98,6 +112,26 @@ impl OrdinaryIdentity {
         .map(Some)
     }
 
+    /// Record that `published`'s saved-seat pass ended with no refused
+    /// transition (TRUST-POLICY C2). Taken under the observation lane lock, like
+    /// a reconciliation page: the marker write can lift the baseline hold and
+    /// bump the lifecycle revision, which would otherwise supersede an explicit
+    /// target observation (operator repair, resolve) admitted concurrently.
+    pub fn record_reconciliation_pass(
+        &self,
+        store: &(impl crate::identity::reconcile::observation_store::ObservationStore + ?Sized),
+        published: &crate::ports::PublishedSnapshot,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        let _lane = self.lane.lock().map_err(|_| {
+            error(
+                ErrorCode::StoreCorrupt,
+                "identity observation lane poisoned",
+            )
+        })?;
+        store.record_reconciliation_pass(published, budget)
+    }
+
     pub fn reconcile_page(
         &self,
         store: &(impl crate::identity::reconcile::observation_store::ObservationStore + ?Sized),
@@ -107,7 +141,7 @@ impl OrdinaryIdentity {
         budget: &CallBudget,
     ) -> Result<crate::identity::reconcile::ReconcilePageProgress, ApiError> {
         let _read = self.reads.enter(budget, self.clock.as_ref())?;
-        let _lane = self.lane.lock().map_err(|_| {
+        let mut lane = self.lane.lock().map_err(|_| {
             error(
                 ErrorCode::StoreCorrupt,
                 "identity observation lane poisoned",
@@ -123,14 +157,21 @@ impl OrdinaryIdentity {
                     budget,
                 )
             }
-            crate::identity::reconcile::ObservationOutcome::Invalidated { fence, .. } => {
-                crate::identity::reconcile::reconcile_invalidated_page(
+            crate::identity::reconcile::ObservationOutcome::Invalidated {
+                fence, reason, ..
+            } => {
+                let page = crate::identity::reconcile::reconcile_invalidated_page(
                     store, fence, after, high, budget,
-                )
+                );
+                lane.note_invalidation_page(*reason, &page);
+                page
             }
             crate::identity::reconcile::ObservationOutcome::Superseded => {
                 Err(error(ErrorCode::CursorStale, "capture superseded"))
             }
+            crate::identity::reconcile::ObservationOutcome::InvalidationRepeated { .. } => Err(
+                error(ErrorCode::CursorStale, "repeated invalidation has no pages"),
+            ),
         }
     }
 
@@ -329,8 +370,16 @@ impl OrdinaryIdentity {
             lane.mark_unavailable();
         }
         // An explicit target capture does not establish complete enumeration;
-        // leave that lane dirty for its separate snapshot/reconciliation driver.
+        // leave that lane due for its separate snapshot/reconciliation driver
+        // and wake it (a kick never shortens an outstanding backoff).
         lane.discard(ticket)?;
+        // Ask the lane for its own snapshot now, even inside a backoff wait
+        // (ht-p03.104): after a host restart this is the first contact, and
+        // the published boot only moves once the lane captures.
+        lane.request_explicit_capture();
+        if let Some(pacer) = &self.observation_pacer {
+            pacer.kick_explicit();
+        }
         result
     }
 
@@ -443,10 +492,5 @@ impl OrdinaryIdentity {
     }
 }
 fn error(code: ErrorCode, detail: &str) -> ApiError {
-    ApiError {
-        code,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::new(code, detail)
 }

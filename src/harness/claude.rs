@@ -6,9 +6,10 @@
 //! `updatedInput` and delivered both `additionalContext` markers; 2.1.286
 //! repeated both results with unchanged input shapes. Model receipt and
 //! durable receipts remain separate, unqualified gates.
+use super::admission::{self, OptimisticAdmission, Refusal, Row};
 use super::context::{ContextError, EventKind, Harness, Role};
 pub use super::recipe::NativeSupport;
-use super::recipe::{self, LookupError, Recipe, Version, VersionSet};
+use super::recipe::{self, Evidence, LookupError, Recipe, Version, VersionSet};
 use super::{
     CHILD_RESTRICTION, Capability, LifecycleEvent, REQUIRED_INVITATION_INSTRUCTION,
     TOP_LEVEL_INSTRUCTION, field, input,
@@ -36,14 +37,13 @@ pub struct ClaudeProfile {
 
 pub type ClaudeRecipe = Recipe<ClaudeProfile>;
 
-/// Evidence-backed Claude Code recipes. The interval is closed and, being four
-/// consecutive patch releases, admits exactly 2.1.283, 2.1.284, 2.1.285 and
-/// 2.1.286.
+/// Evidence-backed Claude Code recipes. The interval is closed and, being five
+/// consecutive patch releases, admits exactly 2.1.283 through 2.1.287.
 pub const RECIPES: &[ClaudeRecipe] = &[Recipe {
     id: "claude-hooks-2.1.283",
     versions: VersionSet::Interval {
-        min: Version::new(2, 1, 283),
-        max: Version::new(2, 1, 286),
+        min: Some(Version::new(2, 1, 283)),
+        max: Some(Version::new(2, 1, 287)),
     },
     evidence: &[
         "docs/compatibility/claude-probe.md",
@@ -51,6 +51,7 @@ pub const RECIPES: &[ClaudeRecipe] = &[Recipe {
         "docs/evidence/claude-284-hook-capture/report.md",
         "docs/evidence/claude-285-hook-capture/report.md",
         "docs/evidence/claude-286-hook-capture/report.md",
+        "docs/validation/report.md",
     ],
     scope: "2.1.283: Bash PreToolUse input and updatedInput rewrite observed, SessionStart \
             startup/clear/resume input observed; 2.1.284: SessionStart startup/resume and \
@@ -58,8 +59,17 @@ pub const RECIPES: &[ClaudeRecipe] = &[Recipe {
             application unverified; 2.1.285: same input captured and parsed unchanged, and in \
             print mode root Bash updatedInput applied and SessionStart/PreToolUse \
             additionalContext delivered; 2.1.286: same input captured and parsed unchanged, \
-            and the same print-mode output application observed. Model receipt unqualified \
-            for all four",
+            and the same print-mode output application observed; 2.1.287: the ht-p03.20 native \
+            matrix manual and managed core-flow cells, run from the fixed versioned binary on \
+            the evidence SHA in docs/validation/report.md. Model receipt unqualified for all five",
+    evidence_levels: &[
+        (Version::new(2, 1, 283), Evidence::Live),
+        (Version::new(2, 1, 284), Evidence::NoModel),
+        (Version::new(2, 1, 285), Evidence::Live),
+        (Version::new(2, 1, 286), Evidence::Live),
+        (Version::new(2, 1, 287), Evidence::Live),
+    ],
+    known_broken: &[],
     profile: ClaudeProfile {
         input_schema: InputSchema::Hooks2_1_283,
         model_receipt: NativeSupport::Unsupported,
@@ -71,15 +81,65 @@ pub fn recipe_for(installed_version: &str) -> Result<&'static ClaudeRecipe, Look
     recipe::lookup(RECIPES, installed_version)
 }
 
-/// True only for a version some recipe covers.
+/// True only for a version some recipe LISTS. An optimistically admitted
+/// version (see [`admit`]) is not supported in this sense: use [`admit`] to
+/// decide whether a version may be parsed.
 pub fn is_supported_version(installed_version: &str) -> bool {
     recipe_for(installed_version).is_ok()
 }
 
-/// The covering recipe, or an actionable refusal naming the supported recipes.
-/// An empty string means the caller observed no version from the installed
-/// executable; it is refused as unavailable, still naming the recipes.
-pub fn check_version(installed_version: &str) -> Result<&'static ClaudeRecipe, String> {
+/// The table every admission entry point classifies against: [`RECIPES`],
+/// except that test builds honor `HT_TEST_RECIPES_JSON` (see
+/// [`admission::override_table`]).
+pub fn admission_table() -> &'static [ClaudeRecipe] {
+    admission_table_with(|key| std::env::var_os(key))
+}
+
+/// [`admission_table`] with the environment lookup injected, so a caller that
+/// carries its own environment (doctor) does not read the process one.
+pub fn admission_table_with(
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> &'static [ClaudeRecipe] {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(table) = admission::override_table("claude", RECIPES, lookup) {
+        return table;
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    let _ = lookup;
+    RECIPES
+}
+
+/// How an admitted Claude version reached its recipe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaudeAdmission {
+    /// A recipe lists the version.
+    Listed,
+    /// Unlisted but admitted by the ladder's optimistic rows: parsed under the
+    /// assumed recipe, live-unverified.
+    Optimistic(OptimisticAdmission),
+}
+
+/// An admitted version with its recipe (the listed or the assumed one).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaudeAdmitted {
+    pub recipe: &'static ClaudeRecipe,
+    pub admission: ClaudeAdmission,
+}
+
+/// Run the admission ladder for an installed Claude Code version string.
+/// Claude has no schema fingerprint, so row 4 never matches. An empty string
+/// means the caller observed no version from the installed executable; it is
+/// refused as unavailable, still naming the recipes. Refusals are actionable
+/// messages.
+pub fn admit(installed_version: &str) -> Result<ClaudeAdmitted, String> {
+    admit_in(admission_table(), installed_version)
+}
+
+/// [`admit`] against an explicit table (see [`admission_table_with`]).
+pub fn admit_in(
+    table: &'static [ClaudeRecipe],
+    installed_version: &str,
+) -> Result<ClaudeAdmitted, String> {
     if installed_version.is_empty() {
         return Err(recipe::unavailable_message(
             "claude",
@@ -88,11 +148,45 @@ pub fn check_version(installed_version: &str) -> Result<&'static ClaudeRecipe, S
             // hook setting names a Claude path: the remedy is the version.
             "Install a supported Claude Code version and supply the version \
              its `claude --version` reports",
-            RECIPES,
+            table,
         ));
     }
-    recipe_for(installed_version)
-        .map_err(|error| recipe::refusal_message("claude", installed_version, RECIPES, &error))
+    match admission::classify(table, installed_version, || None) {
+        Row::Listed(recipe) | Row::SchemaMatched(recipe) => Ok(ClaudeAdmitted {
+            recipe,
+            admission: ClaudeAdmission::Listed,
+        }),
+        Row::Optimistic { recipe, admission } => Ok(ClaudeAdmitted {
+            recipe,
+            admission: ClaudeAdmission::Optimistic(admission),
+        }),
+        Row::Refused(Refusal::Unparsable) => Err(recipe::refusal_message(
+            "claude",
+            installed_version,
+            table,
+            &LookupError::Unrecognized,
+        )),
+        Row::Refused(Refusal::OlderThanSupported(version)) => Err(recipe::refusal_message(
+            "claude",
+            installed_version,
+            table,
+            &LookupError::Unsupported(version),
+        )),
+        Row::Refused(Refusal::KnownBroken {
+            range,
+            newest_working,
+        }) => Err(admission::known_broken_message(
+            "claude",
+            installed_version,
+            &range,
+            newest_working,
+        )),
+    }
+}
+
+/// The listed or assumed recipe, or an actionable refusal. See [`admit`].
+pub fn check_version(installed_version: &str) -> Result<&'static ClaudeRecipe, String> {
+    admit(installed_version).map(|admitted| admitted.recipe)
 }
 
 /// Health cannot know which installed version a future session runs, so
@@ -110,7 +204,7 @@ pub fn health_capability() -> CapabilityState {
 }
 
 /// The version comes from the installed Claude executable, never peer hook JSON.
-/// A version no recipe covers is refused with
+/// A version the ladder refuses is refused with
 /// [`ContextError::UnsupportedVersion`] carrying [`check_version`]'s
 /// actionable message, never a bare `Invalid`.
 pub fn parse_versioned_event(
@@ -118,10 +212,14 @@ pub fn parse_versioned_event(
     installed_version: &str,
     event_id: &str,
 ) -> Result<LifecycleEvent, ContextError> {
-    let recipe = check_version(installed_version).map_err(ContextError::UnsupportedVersion)?;
-    match recipe.profile.input_schema {
-        InputSchema::Hooks2_1_283 => parse_hooks_2_1_283(bytes, event_id),
+    let admitted = admit(installed_version).map_err(ContextError::UnsupportedVersion)?;
+    let mut event = match admitted.recipe.profile.input_schema {
+        InputSchema::Hooks2_1_283 => parse_hooks_2_1_283(bytes, event_id)?,
+    };
+    if matches!(admitted.admission, ClaudeAdmission::Optimistic(_)) {
+        event.capability = Capability::OptimisticInput;
     }
+    Ok(event)
 }
 
 fn parse_hooks_2_1_283(bytes: &[u8], event_id: &str) -> Result<LifecycleEvent, ContextError> {
@@ -176,19 +274,41 @@ fn parse_hooks_2_1_283(bytes: &[u8], event_id: &str) -> Result<LifecycleEvent, C
 
 /// Run the installed `<absolute claude> --version` and return the version only
 /// when it reports exactly one `<major.minor.patch> (Claude Code)` line that a
-/// [`RECIPES`] entry covers. The result is what `parse_event` requires; it
+/// recipe admits (listed or optimistic, see [`admit`]). The result is what `parse_event` requires; it
 /// never comes from hook JSON.
 pub fn observe_installed_version(
     binary: &std::path::Path,
     timeout: std::time::Duration,
 ) -> Result<String, super::codex::VersionError> {
+    observe_installed_version_cancellable(
+        binary,
+        timeout,
+        &crate::protocol::time::Cancellation::default(),
+    )
+}
+
+/// [`observe_installed_version`] whose `--version` run is killed (process
+/// group included) once `cancel` fires.
+pub(crate) fn observe_installed_version_cancellable(
+    binary: &std::path::Path,
+    timeout: std::time::Duration,
+    cancel: &crate::protocol::time::Cancellation,
+) -> Result<String, super::codex::VersionError> {
     use super::codex::VersionError;
-    let stdout = super::codex::version_output(binary, timeout)?;
+    let stdout = super::codex::version_output_cancellable(binary, timeout, cancel)?;
     let version = version_from_output(&stdout).ok_or(VersionError::Unrecognized)?;
-    if !is_supported_version(&version) {
-        return Err(VersionError::Unsupported(version));
+    match admission::classify(admission_table(), &version, || None) {
+        Row::Refused(Refusal::KnownBroken {
+            range,
+            newest_working,
+        }) => Err(VersionError::KnownBroken {
+            version,
+            range,
+            newest_working,
+        }),
+        Row::Refused(_) => Err(VersionError::Unsupported(version)),
+        _ => Ok(version),
     }
-    Ok(version)
 }
 
 pub(crate) fn version_from_output(stdout: &[u8]) -> Option<String> {

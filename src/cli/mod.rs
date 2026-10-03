@@ -7,6 +7,7 @@ pub mod hook;
 pub mod human;
 pub mod input;
 pub mod instance;
+pub mod internal;
 pub mod irc;
 pub mod journal;
 pub mod launch;
@@ -30,7 +31,7 @@ use crate::{
     protocol::{
         commands::Command,
         output::{OutputFormat, OutputSpec},
-        results::{ApiError, CommandResult, ErrorCode, StopAccepted},
+        results::{ApiError, CommandResult, StopAccepted},
         time::{CallBudget, Cancellation, Clock, MonoInstant},
     },
     view::{ViewReader, render_view},
@@ -74,24 +75,18 @@ impl From<output::OutputError> for RunError {
 }
 
 fn unsupported(detail: &str) -> RunError {
-    RunError::Api(ApiError {
-        code: ErrorCode::Unsupported,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    })
+    RunError::Api(ApiError::unsupported(detail))
 }
 
 /// The one-shot CLI never starts the daemon implicitly for reads; say how to.
 pub(crate) fn daemon_unavailable() -> RunError {
-    RunError::Api(ApiError {
-        code: ErrorCode::HostUnavailable,
-        detail:
-            "daemon is not running for this state/host context; run `herdr-threads daemon ensure`"
-                .into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    })
+    RunError::Api(ApiError::host_unavailable(format!(
+        "daemon is not running for this state/host context; {}",
+        crate::daemon::remedy::remedy(
+            Some(crate::protocol::results::ErrorClass::Unavailable),
+            &crate::daemon::remedy::RemedyContext::Exit3,
+        )
+    )))
 }
 
 /// Read the published daemon endpoint. Every CLI path that needs the daemon
@@ -109,6 +104,24 @@ fn published_endpoint(
     }
 }
 
+/// Report version skew from the descriptor before any wire decode: a live
+/// daemon of another protocol is the VersionSkew error; a descriptor whose
+/// owner is gone is just an unavailable daemon. `daemon stop` skips this
+/// guard (it is skew-tolerant) and so is not routed through [`connect`].
+fn skew_guard(
+    paths: &InstancePaths,
+    instance: uuid::Uuid,
+    descriptor: &crate::daemon::ownership::EndpointDescriptor,
+) -> Result<(), RunError> {
+    if descriptor.protocol_version == crate::protocol::wire::PROTOCOL_VERSION {
+        return Ok(());
+    }
+    match crate::daemon::lifecycle::live_skew(paths, instance, descriptor)? {
+        Some(error) => Err(error.into()),
+        None => Err(daemon_unavailable()),
+    }
+}
+
 /// Connect to the published daemon endpoint (see [`published_endpoint`]).
 fn connect(
     paths: &InstancePaths,
@@ -123,8 +136,8 @@ fn connect(
 > {
     let (instance, descriptor) = published_endpoint(paths)?;
     // An older daemon drops a newer request at decode with no reply, so refuse
-    // here with the definite mismatch instead of sending it.
-    crate::daemon::lifecycle::check_protocol(&descriptor).map_err(RunError::Api)?;
+    // here (live skew) instead of sending it; a stale descriptor is unavailable.
+    skew_guard(paths, instance, &descriptor)?;
     let client = LocalSocketClient::new(
         descriptor.endpoint.clone(),
         Arc::clone(clock),
@@ -135,12 +148,7 @@ fn connect(
 }
 
 fn mapping_error(detail: &str) -> RunError {
-    RunError::Api(ApiError {
-        code: ErrorCode::TargetUnresolved,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    })
+    RunError::Api(ApiError::target_unresolved(detail))
 }
 
 /// The refusal for a mutation whose selected seat is unresolved: one line,
@@ -212,7 +220,9 @@ where
 
 /// Process entrypoint: like [`run`], recording whether stdout is a terminal so
 /// text output defaults to the human form for a person and stays in the
-/// machine form for pipes, hooks, and models running the CLI through a tool.
+/// machine form for pipes, hooks, and models running the CLI through a tool
+/// (including a harness that gives its shell tool a PTY: see
+/// [`output::HARNESS_MARKERS`]).
 pub fn run_terminal<I, T, W>(
     argv: I,
     writer: &mut W,
@@ -224,6 +234,7 @@ where
     W: Write,
 {
     output::set_stdout_is_terminal(stdout_is_terminal);
+    output::set_harness_marked(output::harness_marked(|name| std::env::var_os(name)));
     run(argv, writer)
 }
 
@@ -332,6 +343,11 @@ where
         writer.flush()?;
         return Ok(());
     }
+    if let CliAction::InternalJsonField { path } = &parsed.action {
+        let mut input = String::new();
+        io::Read::read_to_string(&mut io::stdin().lock(), &mut input)?;
+        return internal::json_field(&input, path, writer);
+    }
     if let CliAction::Doctor = &parsed.action {
         return doctor::run(&parsed, writer);
     }
@@ -396,19 +412,24 @@ where
         }
         return run_operator(semantic, &parsed, &paths, &clock, writer);
     }
-    let selection = derive_caller(&mut parsed, caller_pane, &context, &paths, &clock)?;
-    if let Some(selection) = selection {
-        let (instance, _, client) = connect(&paths, &clock)?;
-        return run_selected(
-            parsed,
-            &selection,
-            &paths,
-            instance,
-            &client,
-            clock.as_ref(),
-            writer,
-        );
-    }
+    // One lazily opened connection serves the caller's seat lookup and the
+    // read or mutation itself.
+    let connection = LazyConnection::new(|| {
+        connect(&paths, &clock).map(|(instance, _, client)| (instance, client))
+    });
+    let Some(parsed) = run_caller_scoped(
+        parsed,
+        caller_pane,
+        &context,
+        &paths,
+        &connection,
+        &clock,
+        &budget,
+        writer,
+    )?
+    else {
+        return Ok(());
+    };
     let max_bytes = match &parsed.action {
         CliAction::Wire(command) => command
             .page()
@@ -419,10 +440,7 @@ where
         _ => crate::protocol::pagination::MAX_PAGE_BYTES,
     };
     let result = match parsed.action {
-        CliAction::Wire(command) => {
-            let (_, _, client) = connect(&paths, &clock)?;
-            client.call_with_output(command, &parsed.output, &budget())?
-        }
+        CliAction::Wire(_) => unreachable!("wire reads run in run_caller_scoped"),
         CliAction::Daemon(DaemonAction::Health) => {
             let (_, _, client) = connect(&paths, &clock)?;
             client.call(Command::Health, &budget())?
@@ -445,7 +463,13 @@ where
             client.call(Command::Health, &budget())?
         }
         CliAction::Daemon(DaemonAction::Stop) => {
-            let (_, descriptor, client) = connect(&paths, &clock)?;
+            let (instance, descriptor) = published_endpoint(&paths)?;
+            let client = LocalSocketClient::new(
+                descriptor.endpoint.clone(),
+                Arc::clone(&clock),
+                instance,
+                Some(descriptor.boot_id),
+            );
             stop_and_wait(&client, &paths, &descriptor, clock.as_ref(), &budget())?;
             CommandResult::StopAccepted(StopAccepted {
                 boot_id: descriptor.boot_id.to_string(),
@@ -548,6 +572,9 @@ where
             unreachable!("setup is handled before context resolution")
         }
         CliAction::Skill => unreachable!("skill is handled before context resolution"),
+        CliAction::InternalJsonField { .. } => {
+            unreachable!("internal json-field is handled before context resolution")
+        }
         CliAction::Launch(_) => unreachable!("launch is handled after context resolution"),
         CliAction::MeInit { .. } => unreachable!("me init is handled after context resolution"),
         CliAction::Follow(_) => unreachable!("follow is handled after context resolution"),
@@ -577,6 +604,156 @@ where
     };
     output::write_selected(&result, &parsed.output, max_bytes, writer)?;
     Ok(())
+}
+
+/// A daemon connection opened on first use and then shared, so one CLI
+/// invocation never connects twice.
+struct LazyConnection<C, F> {
+    open: F,
+    slot: std::cell::OnceCell<(uuid::Uuid, C)>,
+}
+
+impl<C, F: Fn() -> Result<(uuid::Uuid, C), RunError>> LazyConnection<C, F> {
+    fn new(open: F) -> Self {
+        Self {
+            open,
+            slot: std::cell::OnceCell::new(),
+        }
+    }
+
+    fn get(&self) -> Result<&(uuid::Uuid, C), RunError> {
+        if self.slot.get().is_none() {
+            let opened = (self.open)()?;
+            let _ = self.slot.set(opened);
+        }
+        self.slot.get().ok_or_else(daemon_unavailable)
+    }
+}
+
+/// Derive the caller, then run the seat-acting action or the wire read on the
+/// one shared connection. Returns the action back, unrun, when it is neither.
+// Allowed: the parsed action and caller plus the runtime context (B5 agent
+// evidence), paths, shared connection, clock, budget and writer.
+#[allow(clippy::too_many_arguments)]
+fn run_caller_scoped<C, F, W>(
+    mut parsed: commands::ParsedCli,
+    caller_pane: Option<&str>,
+    context: &RuntimeContext,
+    paths: &InstancePaths,
+    connection: &LazyConnection<C, F>,
+    clock: &Arc<dyn Clock>,
+    budget: &dyn Fn() -> CallBudget,
+    writer: &mut W,
+) -> Result<Option<commands::ParsedCli>, RunError>
+where
+    C: LocalClient,
+    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+    W: Write,
+{
+    if let Some(selection) =
+        derive_caller(&mut parsed, caller_pane, context, paths, connection, clock)?
+    {
+        let (instance, client) = connection.get()?;
+        run_selected(
+            parsed,
+            &selection,
+            paths,
+            *instance,
+            client,
+            clock.as_ref(),
+            writer,
+        )?;
+        return Ok(None);
+    }
+    match parsed.action {
+        CliAction::Wire(command) => {
+            let (_, client) = connection.get()?;
+            run_wire(command, &parsed.output, client, budget, writer)?;
+            Ok(None)
+        }
+        action => {
+            parsed.action = action;
+            Ok(Some(parsed))
+        }
+    }
+}
+
+/// Run one wire read and write its result. The selected output travels with
+/// the read, so the daemon fits the page to the bytes this caller sees and its
+/// continuation commands keep this caller's format and selectors (a text read
+/// must not hand back a `--json` continuation).
+///
+/// For a person at a terminal an inbox read makes one extra directory read
+/// (the seat's threads, any membership) so the table can show each thread's
+/// topic, which the wire inbox does not carry. Machine and JSON runs make no
+/// extra call, and a failed directory read just leaves the topics out.
+pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
+    command: Command,
+    output_spec: &OutputSpec,
+    client: &C,
+    budget: &dyn Fn() -> CallBudget,
+    writer: &mut W,
+) -> Result<(), RunError> {
+    let max_bytes = command
+        .page()
+        .map_or(crate::protocol::pagination::MAX_PAGE_BYTES, |page| {
+            page.max_bytes
+        });
+    let inbox_seat = match &command {
+        Command::Inbox(query) => query.seat.clone(),
+        _ => None,
+    };
+    let result = client.call_with_output(command, output_spec, &budget())?;
+    let topics = match (&result, inbox_seat) {
+        (CommandResult::Inbox(page), Some(seat))
+            if output::human_active()
+                && output_spec.format == OutputFormat::Text
+                && !page.items.is_empty() =>
+        {
+            inbox_topics(seat, output_spec, client, budget)
+        }
+        _ => None,
+    };
+    match topics {
+        Some(topics) => human::with_inbox_topics(topics, || {
+            output::write_selected(&result, output_spec, max_bytes, writer)
+        })?,
+        None => output::write_selected(&result, output_spec, max_bytes, writer)?,
+    };
+    Ok(())
+}
+
+/// `thread -> (topic, clipped)` for the seat's first directory page, or
+/// `None` when the read fails.
+fn inbox_topics<C: LocalClient + ?Sized>(
+    seat: crate::protocol::ids::SeatId,
+    output_spec: &OutputSpec,
+    client: &C,
+    budget: &dyn Fn() -> CallBudget,
+) -> Option<std::collections::HashMap<crate::protocol::ids::ThreadId, (String, bool)>> {
+    use crate::protocol::{
+        commands::{DirectoryMembership, DirectoryQuery},
+        pagination::{MAX_PAGE_BYTES, PageRequest},
+    };
+    let command = Command::Directory(DirectoryQuery {
+        membership: Some(seat),
+        membership_filter: DirectoryMembership::All,
+        topic_contains: None,
+        page: PageRequest {
+            cursor: None,
+            limit: 50,
+            max_bytes: MAX_PAGE_BYTES,
+        },
+    });
+    match client.call_with_output(command, output_spec, &budget()) {
+        Ok(CommandResult::Directory(page)) => Some(
+            page.items
+                .into_iter()
+                .map(|summary| (summary.thread, (summary.topic_data, summary.topic_omitted)))
+                .collect(),
+        ),
+        _ => None,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -829,21 +1006,13 @@ fn exact_check_in_replay(
 }
 
 fn invalid_request(detail: &str) -> RunError {
-    RunError::Api(ApiError {
-        code: ErrorCode::InvalidRequest,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    })
+    RunError::Api(ApiError::invalid_request(detail))
 }
 
 fn context_error(error: io::Error) -> RunError {
-    RunError::Api(ApiError {
-        code: ErrorCode::InvalidRequest,
-        detail: format!("invalid state/host context: {error}"),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    })
+    RunError::Api(ApiError::invalid_request(format!(
+        "invalid state/host context: {error}"
+    )))
 }
 
 /// The three documented administrative forms. Their authority is the kernel
@@ -1012,13 +1181,18 @@ fn default_seat(action: &mut CliAction, seat: crate::protocol::ids::SeatId) {
 /// same seat. It never allocates, accepts or ACKs; `run_selected` re-verifies
 /// the mapping and context before a seat-acting action, and `run_cooperative`
 /// rejects a retry whose intent belongs to another seat.
-fn derive_caller(
+fn derive_caller<C, F>(
     parsed: &mut commands::ParsedCli,
     caller_pane: Option<&str>,
     context: &RuntimeContext,
     paths: &InstancePaths,
+    connection: &LazyConnection<C, F>,
     clock: &Arc<dyn Clock>,
-) -> Result<Option<CooperativeSelection>, RunError> {
+) -> Result<Option<CooperativeSelection>, RunError>
+where
+    C: LocalClient,
+    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+{
     match caller_need(&parsed.action, paths)? {
         CallerNeed::None => Ok(parsed.cooperative.clone()),
         CallerNeed::SelfMarker => {
@@ -1026,9 +1200,12 @@ fn derive_caller(
             // rows unmarked, and the read itself reports daemon trouble.
             let seat = match (&parsed.cooperative, caller_pane.filter(|p| !p.is_empty())) {
                 (Some(selection), _) => Some(selection.seat.clone()),
-                (None, Some(pane)) => parse_pane(pane)
-                    .ok()
-                    .and_then(|pane| pane_seat(parsed, &pane, paths, clock).ok().flatten()),
+                (None, Some(pane)) => parse_pane(pane).ok().and_then(|pane| {
+                    let (_, client) = connection.get().ok()?;
+                    pane_seat(client, &parsed.output, &pane, clock.as_ref())
+                        .ok()
+                        .flatten()
+                }),
                 (None, None) => None,
             };
             if let Some(seat) = seat {
@@ -1038,14 +1215,17 @@ fn derive_caller(
         }
         CallerNeed::Selection => match parsed.cooperative.clone() {
             Some(selection) => Ok(Some(selection)),
-            None => derive_selection(parsed, caller_pane, context, paths, clock).map(Some),
+            None => {
+                derive_selection(parsed, caller_pane, context, paths, connection, clock).map(Some)
+            }
         },
         CallerNeed::SeatDefault { required } => {
             let seat = match (&parsed.cooperative, caller_pane.filter(|p| !p.is_empty())) {
                 (Some(selection), _) => Some(selection.seat.clone()),
                 (None, Some(pane)) => {
                     let pane = parse_pane(pane)?;
-                    match pane_seat(parsed, &pane, paths, clock)? {
+                    let (_, client) = connection.get()?;
+                    match pane_seat(client, &parsed.output, &pane, clock.as_ref())? {
                         Some(seat) => Some(seat),
                         None if required => return Err(no_seat_for_pane(&pane)),
                         None => None,
@@ -1078,7 +1258,7 @@ fn parse_pane(pane: &str) -> Result<crate::protocol::ids::HostTargetId, RunError
 /// check-in context. Each is fixed by an argument or environment change
 /// (`--cooperative-*`, `--seat`, the agent's own pane, or its check-in), so it
 /// is `invalid_request`: exit 2, "invalid arguments or invalid local context"
-/// in `commands::EXIT_STATUS_HELP`. It is never `unsupported` (exit 4, which
+/// in `commands::exit_status_help`. It is never `unsupported` (exit 4, which
 /// callers read as "give up") nor a failed request (exit 1).
 fn caller_not_located(detail: &str) -> RunError {
     invalid_request(detail)
@@ -1108,6 +1288,9 @@ pub(crate) enum PaneSeatsError {
     Unexpected,
 }
 
+/// Page size `collect_pane_seats` requests.
+pub(crate) const PANE_SEAT_PAGE_LIMIT: u16 = 8;
+
 /// Pages through the target-filtered seat query. The query orders by ordinal
 /// (the cursor key), so an old unresolved seat can precede the resolved one and
 /// there may be several of them; every page is read so none can truncate the
@@ -1119,7 +1302,6 @@ pub(crate) fn collect_pane_seats(
     use crate::protocol::{
         commands::SeatsQuery, pagination::PageRequest, results::ContinuityStatus,
     };
-    const PAGE_LIMIT: u16 = 8;
     const MAX_PAGES: usize = 64;
     let mut seats = PaneSeats::default();
     let mut cursor = None;
@@ -1127,7 +1309,7 @@ pub(crate) fn collect_pane_seats(
         let result = call(Command::Seats(SeatsQuery {
             page: PageRequest {
                 cursor: cursor.take(),
-                limit: PAGE_LIMIT,
+                limit: PANE_SEAT_PAGE_LIMIT,
                 max_bytes: crate::protocol::pagination::MAX_PAGE_BYTES,
             },
             target: Some(pane.clone()),
@@ -1155,19 +1337,21 @@ pub(crate) fn collect_pane_seats(
 }
 
 /// The service's current resolved, nonretired mapping for `pane`: `None` when
-/// no seat is mapped, an error when more than one is.
-fn pane_seat(
-    parsed: &commands::ParsedCli,
+/// no seat is mapped, an error when more than one is. Pages through every
+/// target-filtered seat page (`collect_pane_seats`, the selection rule the hook
+/// shares), so an older unresolved seat never truncates the resolved one and
+/// two resolved seats are always seen.
+fn pane_seat<C: LocalClient + ?Sized>(
+    client: &C,
+    output: &OutputSpec,
     pane: &crate::protocol::ids::HostTargetId,
-    paths: &InstancePaths,
-    clock: &Arc<dyn Clock>,
+    clock: &dyn Clock,
 ) -> Result<Option<crate::protocol::ids::SeatId>, RunError> {
-    let (_, _, client) = connect(paths, clock)?;
     let seats = collect_pane_seats(pane, |command| {
-        client.call_with_output(command, &parsed.output, &cooperative_budget(clock.as_ref()))
+        client.call_with_output(command, output, &cooperative_budget(clock))
     })
-    .map_err(|e| match e {
-        PaneSeatsError::Api(e) => RunError::Api(e),
+    .map_err(|error| match error {
+        PaneSeatsError::Api(error) => RunError::from(error),
         PaneSeatsError::Unexpected => mapping_error("service returned no seat page"),
     })?;
     match seats.resolved.as_slice() {
@@ -1185,18 +1369,25 @@ fn pane_seat(
 /// the seat and that seat's private lifecycle context supplies the recorded
 /// harness and role. Nothing is inferred from the focused pane and no seat is
 /// allocated.
-fn derive_selection(
+fn derive_selection<C, F>(
     parsed: &commands::ParsedCli,
     caller_pane: Option<&str>,
     runtime: &RuntimeContext,
     paths: &InstancePaths,
+    connection: &LazyConnection<C, F>,
     clock: &Arc<dyn Clock>,
-) -> Result<CooperativeSelection, RunError> {
+) -> Result<CooperativeSelection, RunError>
+where
+    C: LocalClient,
+    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+{
     let pane = caller_pane.filter(|pane| !pane.is_empty()).ok_or_else(|| {
         caller_not_located(&format!("this command acts as a seat: {CALLER_HELP}"))
     })?;
     let pane = parse_pane(pane)?;
-    let seat = pane_seat(parsed, &pane, paths, clock)?.ok_or_else(|| no_seat_for_pane(&pane))?;
+    let (_, client) = connection.get()?;
+    let seat = pane_seat(client, &parsed.output, &pane, clock.as_ref())?
+        .ok_or_else(|| no_seat_for_pane(&pane))?;
     let instance = read_existing_namespace(paths)?.ok_or_else(daemon_unavailable)?;
     let contexts = seat_contexts(paths, instance, &seat)?;
     let context = match contexts.current().map_err(context_run_error)? {
@@ -1337,6 +1528,9 @@ fn retry_failure(failure: retry::RetryFailure<ApiError>) -> RunError {
 #[cfg(test)]
 #[path = "../../tests/cli/cooperative.rs"]
 mod cooperative_tests;
+#[cfg(test)]
+#[path = "../../tests/cli/read_cost.rs"]
+mod read_cost_tests;
 
 /// Runtime composition seam for an already service-resolved durable seat and
 /// private context directory. The provider declares honest role and harness;
@@ -1358,19 +1552,13 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
         context::{EventKind, Role},
     };
     if let CliAction::Wire(command) = parsed.action {
-        let max_bytes = command
-            .page()
-            .map_or(crate::protocol::pagination::MAX_PAGE_BYTES, |page| {
-                page.max_bytes
-            });
-        // The selected output travels with the read, so the daemon fits the
-        // page to the bytes this caller sees and its continuation commands
-        // keep this caller's format and selectors (a text read must not hand
-        // back a `--json` continuation).
-        let result =
-            client.call_with_output(command, &parsed.output, &cooperative_budget(clock))?;
-        output::write_selected(&result, &parsed.output, max_bytes, writer)?;
-        return Ok(());
+        return run_wire(
+            command,
+            &parsed.output,
+            client,
+            &|| cooperative_budget(clock),
+            writer,
+        );
     }
     if let CliAction::CachedCheckIn(request) = parsed.action {
         let saved = contexts
@@ -1650,12 +1838,7 @@ impl LocalClient for SelectedSocketClient<'_> {
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError> {
         if output != self.output {
-            return Err(ApiError {
-                code: ErrorCode::InvalidRequest,
-                detail: "selected output mismatch".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
+            return Err(ApiError::invalid_request("selected output mismatch"));
         }
         self.client.call_with_output(command, output, budget)
     }

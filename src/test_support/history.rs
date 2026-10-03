@@ -4,106 +4,133 @@
 //! the real store writers (`prepare_send_step`, `publish_send`,
 //! `advance_work`, `scan_due`, `ack`), so the v8 projection triggers and
 //! receipt-state rows are exactly what production leaves behind. Only the
-//! actors' permits are minted here, from the seats' persisted target,
-//! generations and host boot/epoch. Load-sensitive outcomes that roll back
+//! actors' cooperative permits are minted here, through the store's own
+//! `issue_cooperative_permit`, from the seats' persisted target and
+//! generation. Load-sensitive outcomes that roll back
 //! without writing are retried a bounded number of times (`retryable`); every
 //! other error is returned.
 
-use crate::ports::{DurableWorkAdmission, SendPreparationProgress};
+use crate::ports::{CooperativePermitRequest, DurableWorkAdmission, SendPreparationProgress};
 use crate::protocol::{
-    authority::{
-        CallerClaim, CallerRole, DecisionFence, Harness, MutationPermit, ObligationRef,
-        VerifiedCaller,
-    },
+    authority::{CallerClaim, CallerRole, Harness, MutationPermit, ObligationRef},
     commands::{Ack, SendMessage},
-    ids::{
-        ExecutionId, HostBootId, HostTargetId, MessageId, NativeSessionId, OperationId, SeatId,
-        ThreadId,
-    },
+    ids::{ExecutionId, HostTargetId, MessageId, NativeSessionId, OperationId, SeatId, ThreadId},
     results::{ApiError, CommandResult, ErrorCode},
-    time::{CallBudget, Clock, MonoInstant},
+    time::{CallBudget, MonoInstant},
 };
 use crate::store::{
     connection::{StoreContext, api_error, store_error},
-    materialization, messages, receipts, schema,
+    materialization, messages, receipts, schema, seats,
 };
 use rusqlite::{Connection, OptionalExtension};
 
 struct Actor {
+    instance: String,
     seat: SeatId,
     target: HostTargetId,
-    target_generation: u64,
     binding_generation: u64,
-    host_boot: HostBootId,
-    host_epoch: u64,
+    harness: Harness,
+    native_session: NativeSessionId,
+    execution: ExecutionId,
 }
 
+/// A canonical UUID derived from the seat id: the execution of the live
+/// cooperative binding this module gives a seat that has none.
+pub fn fixture_execution(seat: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(seat, &mut hasher);
+    let high = std::hash::Hasher::finish(&hasher);
+    std::hash::Hash::hash(&high, &mut hasher);
+    let low = std::hash::Hasher::finish(&hasher);
+    uuid::Uuid::from_u128((u128::from(high) << 64) | u128::from(low))
+        .hyphenated()
+        .to_string()
+}
+
+/// The acting seat's cooperative context. A seat that already holds a live
+/// binding acts as that occupant (its execution must be a canonical UUID); a
+/// seat without one gets a live, not-yet-registered cooperative binding and
+/// a current-target observation matching its persisted mapping, exactly the
+/// durable context a cooperative permit is issued against.
 fn actor(conn: &Connection, seat: &str) -> Result<Actor, ApiError> {
-    let row: (String, i64, i64, String, i64) = conn
+    let row: (String, String, i64) = conn
         .query_row(
-            "SELECT s.target_id,s.target_generation,s.generation,h.host_boot,h.host_epoch FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.state='resolved'",
+            "SELECT s.instance_id,s.target_id,s.generation FROM seats s WHERE s.id=?1 AND s.state='resolved'",
             [seat],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(store_error)?;
+    conn.execute(
+        "INSERT OR IGNORE INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) \
+         SELECT s.instance_id,s.target_id,h.host_boot,h.host_epoch,s.target_generation,0,'fresh','term-'||s.target_id,'inc','coherent_enumeration',1 \
+         FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1",
+        [seat],
+    )
+    .map_err(store_error)?;
+    conn.execute(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) \
+         SELECT s.id,s.generation,s.target_generation,s.target_id,h.host_boot,h.host_epoch,'codex','hist-'||s.id,?2,'cooperative_top_level',0,'term-'||s.target_id,'inc' \
+         FROM seats s JOIN host_instances h ON h.id=s.instance_id \
+         WHERE s.id=?1 AND NOT EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=s.id AND b.ended_at IS NULL)",
+        rusqlite::params![seat, fixture_execution(seat)],
+    )
+    .map_err(store_error)?;
+    let (harness, native_session, execution): (String, String, String) = conn
+        .query_row(
+            "SELECT harness,native_session,execution_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
+            [seat],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(store_error)?;
     Ok(Actor {
+        instance: row.0,
         seat: SeatId::new(seat),
-        target: HostTargetId::new(row.0),
-        target_generation: row.1 as u64,
+        target: HostTargetId::new(row.1),
         binding_generation: row.2 as u64,
-        host_boot: HostBootId::new(row.3),
-        host_epoch: row.4 as u64,
+        harness: match harness.as_str() {
+            "claude" => Harness::Claude,
+            "human" => Harness::Human,
+            _ => Harness::Codex,
+        },
+        native_session: NativeSessionId::new(native_session),
+        execution: ExecutionId::new(execution),
     })
 }
 
 impl Actor {
     fn claim(&self) -> CallerClaim {
         CallerClaim {
-            instance: String::new(),
-            seat: SeatId::new("history-fixture"),
-            binding_generation: 0,
+            instance: self.instance.clone(),
+            seat: self.seat.clone(),
+            binding_generation: self.binding_generation,
             role: CallerRole::TopLevel,
-            harness: Harness::Codex,
-            native_session: NativeSessionId::new(format!("hist-{}", self.seat.as_str())),
-            execution: ExecutionId::new(format!("hist-{}", self.seat.as_str())),
+            harness: self.harness,
+            native_session: self.native_session.clone(),
+            execution: self.execution.clone(),
             target: self.target.clone(),
         }
     }
     fn permit(
         &self,
-        clock: &dyn Clock,
+        context: &StoreContext,
+        conn: &Connection,
         operation: &OperationId,
         obligation: ObligationRef,
         digest: [u8; 32],
-    ) -> MutationPermit {
-        let claim = self.claim();
-        MutationPermit::new(
-            VerifiedCaller {
-                seat: self.seat.clone(),
-                harness: claim.harness,
-                native_session: claim.native_session,
-                execution: claim.execution,
-                host_boot: self.host_boot.clone(),
-                target_generation: self.target_generation,
-                binding_generation: self.binding_generation,
-                observed_at_utc: clock.utc_now(),
+    ) -> Result<MutationPermit, ApiError> {
+        seats::issue_cooperative_permit(
+            context,
+            conn,
+            &self.instance,
+            CooperativePermitRequest {
+                claim: self.claim(),
+                operation: operation.clone(),
+                obligation,
+                payload_hash: digest,
+                check_in_mode: None,
             },
-            operation.clone(),
-            obligation,
-            digest,
-            clock.monotonic_now(),
-            self.host_epoch,
+            &unbounded(),
         )
-    }
-    fn fence(&self) -> DecisionFence {
-        DecisionFence {
-            now: MonoInstant(0),
-            host_boot: self.host_boot.clone(),
-            host_epoch: self.host_epoch,
-            target_generation: self.target_generation,
-            binding_generation: self.binding_generation,
-            known_invalidated: false,
-        }
     }
 }
 
@@ -191,7 +218,6 @@ fn send_one(
     operation: &str,
     deadline_millis: Option<u64>,
 ) -> Result<MessageId, ApiError> {
-    let clock = context.clock();
     let request = SendMessage {
         thread: ThreadId::new(thread),
         body: format!("history {operation}"),
@@ -223,20 +249,15 @@ fn send_one(
     // A fresh permit per attempt: an expired one is rolled back unconsumed.
     let result = with_retries(|| {
         let mut permit = from.permit(
-            clock,
+            context,
+            conn,
             &request.operation,
             ObligationRef::Control(request.thread.clone()),
             digest,
-        );
-        messages::publish_send(
-            context,
-            conn,
-            &request,
-            &mut permit,
-            &unbounded(),
-            |_, _| Ok(from.fence()),
-            || messages::MAX_BODY_BYTES,
-        )
+        )?;
+        messages::publish_send(context, conn, &request, &mut permit, &unbounded(), || {
+            messages::MAX_BODY_BYTES
+        })
     })?;
     let id = match result {
         CommandResult::MessageSent(id) => id,
@@ -263,7 +284,6 @@ fn ack_all(
     messages: &[MessageId],
     operation: &str,
 ) -> Result<(), ApiError> {
-    let clock = context.clock();
     let request = Ack {
         messages: messages.to_vec(),
         operation: OperationId::new(operation),
@@ -272,19 +292,13 @@ fn ack_all(
     let digest = schema::canonical_digest(&receipts::ack_payload(&request))?;
     let result = with_retries(|| {
         let mut permit = to.permit(
-            clock,
+            context,
+            conn,
             &request.operation,
             ObligationRef::CheckIn(to.seat.clone()),
             digest,
-        );
-        receipts::ack(
-            context,
-            conn,
-            &unbounded(),
-            &request,
-            &mut permit,
-            |_, _| Ok(to.fence()),
-        )
+        )?;
+        receipts::ack(context, conn, &unbounded(), &request, &mut permit)
     })?;
     match result {
         CommandResult::Acknowledged(result) if result.acknowledged.len() == messages.len() => {
@@ -529,7 +543,6 @@ pub fn write_pending_invitations(
     use crate::protocol::commands::{CreateThread, Invite};
     use crate::store::control;
     let from = actor(conn, inviter)?;
-    let clock = context.clock();
     let mut invitations = Vec::with_capacity(count as usize);
     for n in 0..count {
         let create = CreateThread {
@@ -538,17 +551,16 @@ pub fn write_pending_invitations(
             operation: OperationId::new(format!("{tag}-thread-{n}")),
             claim: from.claim(),
         };
-        let digest = schema::canonical_digest(&("create_thread", &create.topic, &create.goal))?;
+        let digest = control::cooperative_payload_hash("create_thread", &create)?;
         let thread = match with_retries(|| {
             let permit = from.permit(
-                clock,
+                context,
+                conn,
                 &create.operation,
                 ObligationRef::CheckIn(from.seat.clone()),
                 digest,
-            );
-            control::create_thread(context, conn, &unbounded(), &create, permit, |_, _| {
-                Ok(from.fence())
-            })
+            )?;
+            control::create_thread(context, conn, &unbounded(), &create, permit)
         })? {
             CommandResult::ThreadCreated(thread) => thread,
             other => {
@@ -565,28 +577,16 @@ pub fn write_pending_invitations(
             operation: OperationId::new(format!("{tag}-invite-{n}")),
             claim: from.claim(),
         };
-        let digest = schema::canonical_digest(&(
-            "invite",
-            &invite.thread,
-            &invite.seat,
-            invite.deadline_millis,
-        ))?;
+        let digest = control::cooperative_payload_hash("invite", &invite)?;
         match with_retries(|| {
             let permit = from.permit(
-                clock,
+                context,
+                conn,
                 &invite.operation,
                 ObligationRef::Control(invite.thread.clone()),
                 digest,
-            );
-            control::invite(
-                context,
-                conn,
-                &unbounded(),
-                &invite,
-                permit,
-                |_, _| Ok(from.fence()),
-                None,
-            )
+            )?;
+            control::invite(context, conn, &unbounded(), &invite, permit, None)
         })? {
             CommandResult::Invitation(id) => invitations.push(id.as_str().to_owned()),
             other => {
@@ -639,8 +639,8 @@ impl crate::ports::ServiceAuthorityGate for FixtureGate {
 }
 
 /// `count` programmatic service `warn` notices in `thread`, each staged
-/// (`service_events::prepare_notify_step`), published
-/// (`service_events::publish_notify`) and projected to its recipients by the
+/// (`prepare_notify_step_internal`), published
+/// (`publish_notify_internal`) and projected to its recipients by the
 /// send-attention worker (`advance_work`), all through the production
 /// writers, from the instance's reserved service author. Every joined member
 /// of `thread` receives each notice. Returns the notice message IDs.
@@ -703,7 +703,7 @@ fn publish_programmatic_warnings(
         };
         loop {
             match with_retries(|| {
-                service_events::prepare_notify_step(
+                match service_events::prepare_notify_step_internal(
                     context,
                     conn,
                     &connection,
@@ -711,7 +711,13 @@ fn publish_programmatic_warnings(
                     &request,
                     &unbounded(),
                     16,
-                )
+                )? {
+                    service_events::PrepareProgress::Step(step) => Ok(step),
+                    service_events::PrepareProgress::AudienceDrift => Err(api_error(
+                        ErrorCode::Conflict,
+                        "notification audience changed; retry preparation",
+                    )),
+                }
             })? {
                 service_events::PreparationStep::More { .. } => {}
                 service_events::PreparationStep::Ready { .. } => break,
@@ -724,14 +730,20 @@ fn publish_programmatic_warnings(
             }
         }
         let message = match with_retries(|| {
-            service_events::publish_notify(
+            match service_events::publish_notify_internal(
                 context,
                 conn,
                 &connection,
                 &gate,
                 &request,
                 &unbounded(),
-            )
+            )? {
+                service_events::PublishProgress::Committed(result) => Ok(result),
+                service_events::PublishProgress::AudienceDrift => Err(api_error(
+                    ErrorCode::Conflict,
+                    "notification audience changed",
+                )),
+            }
         })? {
             ServiceResult::Notification(notice) => notice.summary.message,
             other => {

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-package_root=$(CDPATH= cd "$(dirname "$0")/.." && pwd -P)
+package_root=$(CDPATH='' cd "$(dirname "$0")/.." && pwd -P)
 cd "$package_root"
 # A release archive (scripts/package-release.sh) ships a prebuilt executable
 # and no sources. It carries a PREBUILT marker: keep the shipped binary instead

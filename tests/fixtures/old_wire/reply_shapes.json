@@ -1,0 +1,7 @@
+{
+  "_source": "Field lists copied from the deny_unknown_fields types at cf8c83d7 (the commit before this run): src/protocol/wire.rs WireResponse, src/protocol/results.rs Health and MessageSummary, src/protocol/pagination.rs Page. An old CLI rejects any reply key outside these sets. The History request frame omits `full_bodies`, exactly as that CLI's HistoryQuery serialized.",
+  "response": ["version", "request_id", "instance", "daemon_boot", "result"],
+  "health": ["software_version", "protocol_version", "instance_id", "boot_id", "state", "database", "schema", "host", "last_reconciliation_at", "last_scheduler_tick_at", "harness", "unresolved_seats", "held_targets", "retirement_pending", "retirement_degraded", "host_timeouts", "queue_rejections", "queue_depth", "settings", "limitations", "notes"],
+  "page": ["items", "next_cursor", "next_argv", "high_water_ordinal", "scope_revision", "has_more", "stop_reason", "consistency"],
+  "summary": ["message", "thread", "author", "event_author", "kind", "sequence", "created_at", "actor_label", "preview_data", "preview_omitted", "preview_detail_argv"]
+}

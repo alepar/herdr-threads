@@ -322,20 +322,14 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
                         panic!("expected lifecycle")
                     };
                     if self.fail_before_commit.swap(false, Ordering::SeqCst) {
-                        return Err(crate::protocol::results::ApiError {
-                            code: crate::protocol::results::ErrorCode::HostUnavailable,
-                            detail: "request lost before commit".into(),
-                            restart_argv: None,
-                            required_minimum_bytes: None,
-                        });
+                        return Err(crate::protocol::results::ApiError::host_unavailable(
+                            "request lost before commit",
+                        ));
                     }
                     if expected_binding_generation != self.generation.load(Ordering::SeqCst) {
-                        return Err(crate::protocol::results::ApiError {
-                            code: crate::protocol::results::ErrorCode::CallerUnverified,
-                            detail: "stale generation".into(),
-                            restart_argv: None,
-                            required_minimum_bytes: None,
-                        });
+                        return Err(crate::protocol::results::ApiError::caller_unverified(
+                            "stale generation",
+                        ));
                     }
                     self.check_ins.fetch_add(1, Ordering::SeqCst);
                     let mut context = c.claim;
@@ -353,12 +347,9 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
                     });
                     *self.saved.lock().unwrap() = Some((c.operation, result.clone()));
                     if self.lose_response.swap(false, Ordering::SeqCst) {
-                        return Err(crate::protocol::results::ApiError {
-                            code: crate::protocol::results::ErrorCode::HostUnavailable,
-                            detail: "committed response lost".into(),
-                            restart_argv: None,
-                            required_minimum_bytes: None,
-                        });
+                        return Err(crate::protocol::results::ApiError::host_unavailable(
+                            "committed response lost",
+                        ));
                     }
                     Ok(result)
                 }
@@ -903,6 +894,7 @@ fn model_ack_runner_requires_current_context_and_child_cannot_mutate() {
     .unwrap();
     struct Never;
     impl crate::ports::LocalClient for Never {
+        crate::default_output_local_client!();
         fn call(
             &self,
             _: Command,
@@ -946,6 +938,7 @@ fn model_ack_runner_requires_current_context_and_child_cannot_mutate() {
 fn cooperative_reader_enforces_selected_page_budget_before_writing() {
     struct Big;
     impl crate::ports::LocalClient for Big {
+        crate::default_output_local_client!();
         fn call(
             &self,
             _: Command,
@@ -1038,6 +1031,7 @@ fn cooperative_retry_without_any_context_is_invalid_request() {
     assert!(contexts.pending().unwrap().is_none());
     struct Never;
     impl crate::ports::LocalClient for Never {
+        crate::default_output_local_client!();
         fn call(
             &self,
             _: Command,
@@ -1124,7 +1118,15 @@ fn thread_reads_carry_the_located_caller_for_the_self_marker() {
     ] {
         let mut parsed =
             crate::cli::commands::parse_argv(selected.iter().chain(tail).copied()).unwrap();
-        crate::cli::derive_caller(&mut parsed, None, &runtime, &paths, &clock).unwrap();
+        crate::cli::derive_caller(
+            &mut parsed,
+            None,
+            &runtime,
+            &paths,
+            &no_connection(),
+            &clock,
+        )
+        .unwrap();
         let caller = match &parsed.action {
             crate::cli::commands::CliAction::Wire(Command::Participants(q)) => q.caller.clone(),
             crate::cli::commands::CliAction::Wire(Command::Thread(q)) => q.caller.clone(),
@@ -1135,7 +1137,7 @@ fn thread_reads_carry_the_located_caller_for_the_self_marker() {
             crate::cli::commands::parse_argv(["herdr-threads"].iter().chain(tail).copied())
                 .unwrap();
         assert!(
-            crate::cli::derive_caller(&mut bare, None, &runtime, &paths, &clock)
+            crate::cli::derive_caller(&mut bare, None, &runtime, &paths, &no_connection(), &clock)
                 .unwrap()
                 .is_none()
         );
@@ -1146,6 +1148,14 @@ fn thread_reads_carry_the_located_caller_for_the_self_marker() {
         };
         assert_eq!(caller, None, "{tail:?}");
     }
+}
+
+/// A connection these pane-less cases must never open.
+fn no_connection() -> crate::cli::LazyConnection<
+    crate::client::local::LocalSocketClient,
+    impl Fn() -> Result<(uuid::Uuid, crate::client::local::LocalSocketClient), crate::cli::RunError>,
+> {
+    crate::cli::LazyConnection::new(|| panic!("a pane-less caller must not connect"))
 }
 
 #[test]
@@ -1183,12 +1193,7 @@ fn codex_sandbox_marker_is_agent_evidence() {
 
 #[test]
 fn herdr_read_error_is_not_agent_evidence() {
-    let failed = crate::protocol::results::ApiError {
-        code: crate::protocol::results::ErrorCode::Unsupported,
-        detail: "herdr down".into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    };
+    let failed = crate::protocol::results::ApiError::unsupported("herdr down");
     assert_eq!(
         crate::cli::agent_evidence::<&str, &str>([], || Err(failed)),
         None
@@ -1285,12 +1290,7 @@ fn derive_selection_refuses_human_context_when_herdr_reports_agent() {
     // No agent, an unrelated detection, or a failed read never refuses.
     assert!(select(&[], Ok(Some(observed(None))), false).is_ok());
     assert!(select(&[], Ok(Some(observed(Some("shell")))), false).is_ok());
-    let failed = crate::protocol::results::ApiError {
-        code: crate::protocol::results::ErrorCode::Unsupported,
-        detail: "herdr down".into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    };
+    let failed = crate::protocol::results::ApiError::unsupported("herdr down");
     assert!(select(&[], Err(failed), false).is_ok());
 }
 
@@ -1335,10 +1335,12 @@ fn cli_command_against_previous_protocol_descriptor_is_refused_before_send() {
         Ok(_) => panic!("a previous-protocol descriptor must refuse before any client exists"),
     };
     assert_eq!(error.code, ErrorCode::UnknownWireVersion);
+    // One VersionSkew remedy line (B3), naming both protocols.
     assert!(
         error.detail.contains(&format!(
-            "daemon protocol {} differs from executable protocol {}",
+            "daemon is version 0.0.1 (protocol {}), CLI is {} (protocol {})",
             PROTOCOL_VERSION - 1,
+            env!("CARGO_PKG_VERSION"),
             PROTOCOL_VERSION
         )),
         "{}",

@@ -195,12 +195,9 @@ fn typed_unknown_outcome_keeps_key_until_explicit_retry() {
                 panic!("wrong command")
             };
             assert_eq!(send.operation, reference.operation);
-            Err(crate::protocol::results::ApiError {
-                code: crate::protocol::results::ErrorCode::UnknownOutcome,
-                detail: "response lost".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            })
+            Err(crate::protocol::results::ApiError::unknown_outcome(
+                "response lost",
+            ))
         },
         &OutputSpec::default(),
         &mut output,
@@ -251,12 +248,9 @@ fn typed_pre_submission_error_preserves_its_code_and_pending_key() {
         &scope(),
         || Ok(claim()),
         |_| {
-            Err(crate::protocol::results::ApiError {
-                code: crate::protocol::results::ErrorCode::HostUnavailable,
-                detail: "connect refused".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            })
+            Err(crate::protocol::results::ApiError::host_unavailable(
+                "connect refused",
+            ))
         },
         &OutputSpec::default(),
         &mut output,
@@ -620,18 +614,40 @@ fn reserved_crash_gap_is_never_reused() {
 fn concurrent_publishers_receive_distinct_ordered_keys() {
     let dir = temp();
     let journal = Arc::new(Journal::open(&dir).unwrap());
+    // A barrier releases every publisher together, so the ordinals contend
+    // for the journal lock regardless of thread start-up timing; the
+    // assertion is on the committed keys only, never on arrival order.
+    let start = Arc::new(std::sync::Barrier::new(12));
     let handles: Vec<_> = (0..12)
         .map(|n| {
             let journal = journal.clone();
-            std::thread::spawn(move || journal.record(scope(), send(), n).unwrap())
+            let start = start.clone();
+            std::thread::spawn(move || {
+                start.wait();
+                // The allocator's own 1 s lock wait is a product bound that
+                // a loaded disk (twelve fsync-ing writers) can exceed; a
+                // timed-out publisher consumed no ordinal and retries, as a
+                // CLI caller does. Any other error fails the test at once.
+                let give_up = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                loop {
+                    match journal.record(scope(), send(), n) {
+                        Ok(reference) => return reference,
+                        Err(error)
+                            if error.kind() == std::io::ErrorKind::TimedOut
+                                && std::time::Instant::now() < give_up => {}
+                        Err(error) => panic!("publisher {n}: {error}"),
+                    }
+                }
+            })
         })
         .collect();
-    let mut ordinals: Vec<_> = handles
-        .into_iter()
-        .map(|h| h.join().unwrap().ordinal)
-        .collect();
+    let references: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    let mut ordinals: Vec<_> = references.iter().map(|r| r.ordinal).collect();
     ordinals.sort_unstable();
     assert_eq!(ordinals, (1..=12).collect::<Vec<_>>());
+    let committed = journal.page(&Default::default()).unwrap();
+    assert_eq!(committed.items.len(), 12);
+    assert_eq!(committed.high_water_ordinal, 12);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -898,12 +914,7 @@ fn invalid_pending_page_bounds_stay_invalid_request_without_publishing_intent() 
 fn new_resolution_discards_only_definitively_rejected_first_submission() {
     use crate::protocol::results::{ApiError, ErrorCode};
     fn api(code: ErrorCode) -> ApiError {
-        ApiError {
-            code,
-            detail: "fixture".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        }
+        ApiError::new(code, "fixture")
     }
     let resolve = || SemanticMutation::ResolveSeat {
         target: HostTargetId::new("w4:p1"),

@@ -1,5 +1,12 @@
 //! Native harness boundary: versioned Claude/Codex recipes, hook parsing,
 //! context rendering, setup and managed launch.
+pub mod admission;
+#[cfg(test)]
+#[path = "../../tests/harness/admission_ladder.rs"]
+mod admission_ladder;
+#[cfg(test)]
+#[path = "../../tests/harness/canary_payloads.rs"]
+mod canary_payloads;
 pub mod claude;
 #[cfg(test)]
 #[path = "../../tests/harness/claude.rs"]
@@ -22,14 +29,65 @@ mod context_tests;
 #[path = "../../tests/harness/cooperative.rs"]
 mod cooperative;
 pub mod launch;
+#[cfg(test)]
+#[path = "../../tests/harness/optimistic_render.rs"]
+mod optimistic_render;
 pub mod recipe;
 #[cfg(test)]
 #[path = "../../tests/harness/recipe.rs"]
 mod recipe_tests;
 pub mod setup;
+#[cfg(test)]
+#[path = "../../tests/harness/stub_binaries.rs"]
+pub(crate) mod stub_binaries;
+#[cfg(test)]
+#[path = "../../tests/harness/versions_json_guard.rs"]
+mod versions_json_guard;
 
 use context::{ContextError, EventKind, Harness, Role};
 use serde_json::Value;
+
+/// Identity of a resolved harness binary (canonical path, inode, size, mtime):
+/// the admission observer re-runs admission when it changes.
+pub use codex_schema::BinaryIdentity;
+
+/// The operator-facing label of an optimistic admission, the same wording in
+/// Health and doctor (root spec B6 D2): `newer than verified <max>` or
+/// `unlisted within the supported span`, then the assumed recipe, then
+/// `; major version change` when flagged. `doctor` form appends where to
+/// report a problem; Health keeps it short.
+pub fn optimistic_label(admission: &admission::OptimisticAdmission, doctor: bool) -> String {
+    let placement = match admission.placement {
+        admission::Placement::NewerThanVerified => {
+            format!("newer than verified {}", admission.verified_max)
+        }
+        admission::Placement::WithinSpan => "unlisted within the supported span".to_owned(),
+    };
+    let mut label = format!(
+        "optimistic \u{2014} {placement}, assumed compatible with recipe {}",
+        admission.assumed_recipe
+    );
+    if admission.major_version_change {
+        label.push_str("; major version change");
+    }
+    if doctor {
+        label.push_str(&format!(" (report issues: {})", admission.issues_url));
+    }
+    label
+}
+
+/// The refusal text for a version inside a recipe's known-broken range, in
+/// Health and doctor: `<harness> <version>: refused: known broken in <range>;
+/// newest working: <version>`.
+pub fn known_broken_label(
+    harness: &str,
+    version: &str,
+    range: &recipe::VersionSet,
+    newest_working: Option<recipe::Version>,
+) -> String {
+    let working = newest_working.map_or_else(|| "none listed".to_owned(), |v| v.to_string());
+    format!("{harness} {version}: refused: known broken in {range}; newest working: {working}")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Capability {
@@ -39,6 +97,10 @@ pub enum Capability {
     /// was admitted because its embedded hook schemas hash-match the recipe's
     /// captured schemas: schema-matched, live-unverified.
     SchemaMatchedInput,
+    /// Parsed under an assumed recipe for a version no recipe lists and no
+    /// schema fingerprint vouches for (the optimistic admission rows):
+    /// live-unverified.
+    OptimisticInput,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LifecycleEvent {
@@ -221,7 +283,8 @@ pub const MAX_OPTIONAL_ACCEPTS: usize = 2;
 ///
 /// The header names the caller's seat (native codex matrix P2) and carries
 /// [`REQUIRED_INVITATION_INSTRUCTION`] only when a required invitation is
-/// pending (P3).
+/// pending (P3), or when there is no digest at all (W6-R3: unknown, so the
+/// procedure is kept).
 pub fn next_actions(
     prefix: &[String],
     digest: Option<&crate::protocol::attention::AttentionDigest>,
@@ -371,6 +434,14 @@ pub fn next_actions(
         more_invitations |= digest.invitations.has_more
             || digest.invitations.count_has_more
             || digest.invitations.count > digest.invitations.items.len() as u64;
+    }
+    // W6-R3: without a digest (the best-effort query failed) nothing says no
+    // required invitation is pending, and the commands that would name it are
+    // gone; the D2 procedure stays so the agent can still act on one it finds
+    // through the continuation.
+    if digest.is_none() {
+        header.push_str(REQUIRED_INVITATION_INSTRUCTION);
+        header.push('\n');
     }
     header.push_str(READY_HEADER);
     NextActions {

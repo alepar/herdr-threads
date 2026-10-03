@@ -1,0 +1,2 @@
+{"type": "assistant", "parent_tool_use_id": null, "message": {"content": [{"type": "tool_use", "id": "c3", "name": "Bash", "input": {"command": "ls"}}]}, "isSidechain": true, "timestamp": "2026-09-30T00:00:02Z", "agentId": "B"}
+{"type": "user", "parent_tool_use_id": null, "message": {"content": [{"type": "tool_result", "tool_use_id": "c3", "content": "x", "is_error": false}]}, "timestamp": "2026-09-30T00:00:08Z"}

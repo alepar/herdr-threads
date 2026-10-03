@@ -1,5 +1,7 @@
 //! Read-only compact operator snapshot.
 
+pub mod escape;
+
 use crate::protocol::{
     commands::{Command, DiagnosticsQuery, DirectoryMembership, DirectoryQuery},
     output::{OutputFormat, OutputSpec, encode_selected, format_command_argv},
@@ -160,18 +162,8 @@ pub fn render_view<R: ViewReader>(
     budget: &CallBudget,
     clock: &dyn Clock,
 ) -> Result<Vec<u8>, ApiError> {
-    page.validate().map_err(|detail| ApiError {
-        code: ErrorCode::InvalidBudget,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    })?;
-    spec.validate().map_err(|detail| ApiError {
-        code: ErrorCode::InvalidRequest,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    })?;
+    page.validate().map_err(ApiError::invalid_budget)?;
+    spec.validate().map_err(ApiError::invalid_request)?;
     let mut limit = page.limit;
     if budget.is_exhausted(clock) {
         return Err(exhausted(budget));
@@ -269,25 +261,18 @@ pub fn render_view<R: ViewReader>(
 }
 
 fn exhausted(budget: &CallBudget) -> ApiError {
-    ApiError {
-        code: if budget.cancellation.is_cancelled() {
+    ApiError::new(
+        if budget.cancellation.is_cancelled() {
             ErrorCode::Cancelled
         } else {
             ErrorCode::DeadlineExceeded
         },
-        detail: "view read budget exhausted".into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+        "view read budget exhausted",
+    )
 }
 
 fn wrong_result() -> ApiError {
-    ApiError {
-        code: ErrorCode::InvalidRequest,
-        detail: "unexpected view read result".into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::invalid_request("unexpected view read result")
 }
 
 fn command_argv(spec: &OutputSpec, tail: &[String]) -> Vec<String> {
@@ -424,12 +409,8 @@ pub fn render_snapshot(
         }
     }
     if bytes.len() > page.max_bytes as usize {
-        return Err(ApiError {
-            code: ErrorCode::InvalidBudget,
-            detail: "view exceeds byte budget".into(),
-            restart_argv: None,
-            required_minimum_bytes: Some(bytes.len().try_into().unwrap_or(u32::MAX)),
-        });
+        return Err(ApiError::invalid_budget("view exceeds byte budget")
+            .with_required_minimum_bytes(bytes.len().try_into().unwrap_or(u32::MAX)));
     }
     Ok(bytes)
 }

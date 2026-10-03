@@ -3,6 +3,7 @@ use herdr_threads::host::continuity::KernelProcessInfo;
 use herdr_threads::host::continuity::{
     CaptureError, ProcessInfo, ProcessInfoProvider, capture_peer_witness, capture_peer_witness_with,
 };
+use herdr_threads::test_support::spawn::SpawnOwned;
 use std::{os::unix::net::UnixListener, path::PathBuf};
 
 struct Endpoint(PathBuf);
@@ -255,7 +256,7 @@ fn witnessed_transport_preserves_body_and_rejects_same_process_path_rebind() {
 }
 
 struct PrivateProcess {
-    child: std::process::Child,
+    child: herdr_threads::test_support::spawn::OwnedChild,
     reaped: bool,
     output: Vec<u8>,
     request: Option<
@@ -274,7 +275,7 @@ enum WaitFailure {
     RequestFinished,
 }
 impl PrivateProcess {
-    fn new(child: std::process::Child) -> Self {
+    fn new(child: herdr_threads::test_support::spawn::OwnedChild) -> Self {
         use std::os::fd::AsRawFd;
         let owned = Self {
             child,
@@ -299,7 +300,7 @@ impl PrivateProcess {
             .arg(path)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .spawn()
+            .spawn_owned()
             .unwrap();
         Self::new(child)
     }
@@ -432,7 +433,7 @@ fn actual_new_process_replacement_during_ping_cannot_publish_old_witness() {
         .arg(&endpoint.0)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .spawn()
+        .spawn_owned()
         .unwrap();
     let mut old = PrivateProcess::new(child);
     old.wait_line("ready", Instant::now() + Duration::from_secs(2))
@@ -461,7 +462,7 @@ fn fix1_withheld_readiness_returns_finite_timeout_and_cleans_child() {
         .args(["-u", "-c", code])
         .arg(&endpoint.0)
         .stdout(std::process::Stdio::piped())
-        .spawn()
+        .spawn_owned()
         .unwrap();
     let mut owned = PrivateProcess::new(child);
     let started = Instant::now();
@@ -485,7 +486,7 @@ fn fix1_unwind_stops_child_before_dependent_request_join() {
             .arg(&endpoint.0)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .spawn()
+            .spawn_owned()
             .unwrap();
         let mut old = PrivateProcess::new(child);
         pid = old.child.id();

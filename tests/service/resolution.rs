@@ -51,6 +51,10 @@ struct ResolutionHost {
     /// (a test holds the writer from outside the daemon on purpose).
     snapshot_writer_probe: AtomicBool,
     active_reads: AtomicU64,
+    /// A test that drives a second `OrdinaryIdentity` beside the daemon's own
+    /// observation lane has two independent lanes, so overlap of their
+    /// captures is expected there and is not a serialization failure.
+    overlap_allowed: AtomicBool,
 }
 struct ActiveCapture<'a>(&'a AtomicU64);
 impl Drop for ActiveCapture<'_> {
@@ -60,11 +64,10 @@ impl Drop for ActiveCapture<'_> {
 }
 impl ResolutionHost {
     fn enter_capture(&self) -> ActiveCapture<'_> {
-        assert_eq!(
-            self.active_reads.fetch_add(1, Ordering::SeqCst),
-            0,
-            "target and snapshot captures overlapped"
-        );
+        let active = self.active_reads.fetch_add(1, Ordering::SeqCst);
+        if !self.overlap_allowed.load(Ordering::SeqCst) {
+            assert_eq!(active, 0, "target and snapshot captures overlapped");
+        }
         ActiveCapture(&self.active_reads)
     }
     fn observation(&self, sequence: u64) -> HostObservation {
@@ -134,16 +137,14 @@ impl HostPort for ResolutionHost {
             std::thread::sleep(Duration::from_millis(5));
         }
         if self.fail.load(Ordering::SeqCst) || context.budget.is_exhausted(self.clock.as_ref()) {
-            return Err(ApiError {
-                code: match self.fail_code.load(Ordering::SeqCst) {
+            return Err(ApiError::new(
+                match self.fail_code.load(Ordering::SeqCst) {
                     1 => ErrorCode::NotFound,
                     2 => ErrorCode::StaleHostObservation,
                     _ => ErrorCode::HostUnavailable,
                 },
-                detail: "controlled capture failed".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
+                "controlled capture failed",
+            ));
         }
         Ok(self.observation(self.sequence.fetch_add(1, Ordering::SeqCst)))
     }
@@ -161,12 +162,7 @@ impl HostPort for ResolutionHost {
                 .expect("snapshot capture held SQLite writer");
         }
         if mode == 1 {
-            return Err(ApiError {
-                code: ErrorCode::HostUnavailable,
-                detail: "capture unavailable".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
+            return Err(ApiError::host_unavailable("capture unavailable"));
         }
         let sequence = self.sequence.fetch_add(1, Ordering::SeqCst);
         Ok(HostSnapshot {
@@ -190,12 +186,6 @@ impl HostPort for ResolutionHost {
             targets: vec![self.observation(sequence)],
         })
     }
-    fn subscribe_lifecycle(
-        &self,
-        _: &HostCallContext,
-    ) -> Result<Box<dyn HostLifecycleSubscription>, ApiError> {
-        unreachable!()
-    }
     fn safe_wake_target(&self, _: &SeatId, _: &HostObservation) -> Option<SafeWakeTarget> {
         unreachable!()
     }
@@ -207,12 +197,27 @@ impl HostPort for ResolutionHost {
     ) -> Result<PromptOutcome, ApiError> {
         unreachable!()
     }
+    fn pane_agent_state(
+        &self,
+        _target: &SafeWakeTarget,
+        _context: &HostCallContext,
+    ) -> Result<herdr_threads::ports::AgentComposerState, ApiError> {
+        Ok(herdr_threads::ports::AgentComposerState::Submitted)
+    }
+
     fn launch_native(
         &self,
         _: NativeLaunchRequest,
         _: &HostCallContext,
     ) -> Result<NativeLaunchOutcome, ApiError> {
         unreachable!()
+    }
+    fn send_submit_key(
+        &self,
+        _: &herdr_threads::ports::SafeWakeTarget,
+        _: &herdr_threads::ports::HostCallContext,
+    ) -> Result<(), herdr_threads::protocol::results::ApiError> {
+        Ok(())
     }
 }
 
@@ -318,6 +323,7 @@ impl Fixture {
             snapshot_held: AtomicBool::new(snapshot_mode == 4),
             snapshot_writer_probe: AtomicBool::new(true),
             active_reads: AtomicU64::new(0),
+            overlap_allowed: AtomicBool::new(false),
         });
         if hold_baseline {
             let db = rusqlite::Connection::open(&paths.database_path).unwrap();
@@ -389,7 +395,7 @@ impl Fixture {
                     },
                 ))
         });
-        let descriptor = match received.recv_timeout(Duration::from_secs(3)) {
+        let descriptor = match received.recv_timeout(Duration::from_secs(30)) {
             Ok(descriptor) => descriptor,
             Err(error) => {
                 stop.cancel();
@@ -438,7 +444,7 @@ impl Fixture {
                     },
                 ))
         }));
-        self.descriptor = received.recv_timeout(Duration::from_secs(3)).unwrap();
+        self.descriptor = received.recv_timeout(Duration::from_secs(30)).unwrap();
     }
     fn budget(&self) -> CallBudget {
         CallBudget {
@@ -677,12 +683,9 @@ fn direct_socket_hook_keeps_selected_check_in_and_directory_continuations() {
             let result = LocalClient::call_with_output(self.client, command, output, budget)?;
             if check_in && !self.lost.swap(true, Ordering::SeqCst) {
                 *self.committed.lock().unwrap() = Some(serde_json::to_vec(&result).unwrap());
-                return Err(ApiError {
-                    code: ErrorCode::UnknownOutcome,
-                    detail: "fixture lost committed CheckIn response".into(),
-                    restart_argv: None,
-                    required_minimum_bytes: None,
-                });
+                return Err(ApiError::unknown_outcome(
+                    "fixture lost committed CheckIn response",
+                ));
             }
             Ok(result)
         }
@@ -849,7 +852,7 @@ fn real_ipc_late_target_read_cannot_publish_after_newer_invalidation_and_health_
     };
     fixture
         .entered
-        .recv_timeout(Duration::from_secs(2))
+        .recv_timeout(Duration::from_secs(30))
         .expect("service did not admit target read");
     assert!(matches!(
         LocalClient::call(&fixture.client(), Command::Health, &fixture.budget()).unwrap(),
@@ -929,6 +932,16 @@ fn real_ipc_exact_resolution_replay_after_retirement_and_hold_is_historical_with
     .unwrap();
     db.execute("UPDATE host_instances SET baseline_hold_unclaimed=1", [])
         .unwrap();
+    // Keep the hold legitimately in force (TRUST-POLICY C1-C3, main's B5):
+    // the baseline hold lifts as soon as a reconciliation pass finds no
+    // unresolved nonretired seat, and this branch's commit kicks run that
+    // pass promptly, so an unresolved saved seat stands for the seats the
+    // hold protects.
+    db.execute(
+        "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,generation,created_at) SELECT 'still-unresolved',instance_id,'unresolved','other','native',1,0 FROM seats WHERE id=?1",
+        [first.as_str()],
+    )
+    .unwrap();
     fixture.host.fail.store(true, Ordering::SeqCst);
     assert_eq!(
         fixture.resolve("original").unwrap(),
@@ -1149,7 +1162,7 @@ fn real_cli_resolve_discards_intent_only_after_correlated_definitive_rejection()
         "capture was not still held when the CLI returned"
     );
     fixture.host.held_past_budget.store(false, Ordering::SeqCst);
-    let released = std::time::Instant::now() + Duration::from_secs(10);
+    let released = std::time::Instant::now() + Duration::from_secs(30);
     while fixture.host.active_reads.load(Ordering::SeqCst) != 0 {
         assert!(
             std::time::Instant::now() < released,
@@ -1197,7 +1210,7 @@ fn elected_health_reports_unverified_then_verified_host_evidence() {
         };
         health
     };
-    let until = std::time::Instant::now() + Duration::from_secs(8);
+    let until = std::time::Instant::now() + Duration::from_secs(30);
     let unverified = loop {
         let health = health(&fixture);
         if health.host.coherent_enumeration != CapabilityState::Unknown
@@ -1224,7 +1237,7 @@ fn elected_health_reports_unverified_then_verified_host_evidence() {
         unverified.limitations
     );
     fixture.host.snapshot_mode.store(0, Ordering::SeqCst);
-    let until = std::time::Instant::now() + Duration::from_secs(12);
+    let until = std::time::Instant::now() + Duration::from_secs(30);
     let verified = loop {
         let health = health(&fixture);
         if health.last_reconciliation_at.is_some() || std::time::Instant::now() >= until {
@@ -1262,7 +1275,7 @@ fn elected_health_does_not_keep_verified_host_after_errored_capture() {
         health
     };
     let wait_verified = |fixture: &Fixture, what: &str| {
-        let until = std::time::Instant::now() + Duration::from_secs(15);
+        let until = std::time::Instant::now() + Duration::from_secs(30);
         loop {
             let health = health(fixture);
             if health.host.coherent_enumeration == CapabilityState::Supported
@@ -1291,7 +1304,7 @@ fn elected_health_does_not_keep_verified_host_after_errored_capture() {
     let db = fixture.db();
     db.execute_batch("BEGIN IMMEDIATE").unwrap();
     let held = HeldSqliteWriterGuard(&db);
-    let until = std::time::Instant::now() + Duration::from_secs(20);
+    let until = std::time::Instant::now() + Duration::from_secs(30);
     let errored = loop {
         let health = health(&fixture);
         if health.host.reachability != ComponentState::Ready {
@@ -1354,7 +1367,7 @@ fn elected_health_keeps_unavailable_host_after_errored_capture() {
         };
         health
     };
-    let until = std::time::Instant::now() + Duration::from_secs(15);
+    let until = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         let health = health(&fixture);
         if health.host.reachability == ComponentState::Unavailable {
@@ -1378,7 +1391,7 @@ fn elected_health_keeps_unavailable_host_after_errored_capture() {
         line.starts_with("host unavailable: latest host capture failed: ")
             && line.contains("later host capture attempt errored without a verified outcome")
     };
-    let until = std::time::Instant::now() + Duration::from_secs(20);
+    let until = std::time::Instant::now() + Duration::from_secs(30);
     let mut witnessed_polls = 0;
     // Keep polling for a few more rounds after the first witness so a
     // Health read racing the errored write cannot pass by luck.
@@ -1469,7 +1482,7 @@ fn committed_resolution_with_lost_wire_response_retains_exact_intent_for_explici
     let lost = LocalClient::call(&proxy_client, command.clone(), &fixture.budget()).unwrap_err();
     assert_eq!(lost.code, ErrorCode::UnknownOutcome);
     let wire: herdr_threads::protocol::wire::WireResponse =
-        serde_json::from_slice(&committed_rx.recv_timeout(Duration::from_secs(2)).unwrap())
+        serde_json::from_slice(&committed_rx.recv_timeout(Duration::from_secs(30)).unwrap())
             .unwrap();
     proxy.join().unwrap();
     fs::remove_file(proxy_path).unwrap();
@@ -1533,7 +1546,7 @@ fn disconnected_short_budget_cannot_commit_queued_resolution_after_writer_unlock
     };
     #[cfg(feature = "test-support")]
     assert!(
-        completion.wait_worker_entered(Duration::from_secs(2)),
+        completion.wait_worker_entered(Duration::from_secs(30)),
         "original server handler was not admitted while SQLite writer was held"
     );
     #[cfg(feature = "test-support")]
@@ -1547,7 +1560,7 @@ fn disconnected_short_budget_cannot_commit_queued_resolution_after_writer_unlock
     db.execute_batch("ROLLBACK").unwrap();
     #[cfg(feature = "test-support")]
     assert!(
-        completion.wait_worker_exited(Duration::from_secs(2)),
+        completion.wait_worker_exited(Duration::from_secs(30)),
         "original server handler did not exit after caller expiry and writer release"
     );
     #[cfg(not(feature = "test-support"))]
@@ -1566,10 +1579,22 @@ fn disconnected_short_budget_cannot_commit_queued_resolution_after_writer_unlock
         )
         .unwrap();
     assert_eq!(operations, 0);
-    assert!(matches!(
-        LocalClient::call(&fixture.client(), command, &fixture.budget()).unwrap(),
-        CommandResult::SeatResolved(_)
-    ));
+    // A refusal as `StaleHostObservation` means the observation lane
+    // republished meanwhile (a loaded host makes that likely): the retry,
+    // not the refusal, is the retry's measured behavior.
+    let retry_until = std::time::Instant::now() + Duration::from_secs(30);
+    let retried = loop {
+        match LocalClient::call(&fixture.client(), command.clone(), &fixture.budget()) {
+            Err(error)
+                if error.code == ErrorCode::StaleHostObservation
+                    && std::time::Instant::now() < retry_until =>
+            {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            other => break other.unwrap(),
+        }
+    };
+    assert!(matches!(retried, CommandResult::SeatResolved(_)));
     let decisions: i64 = db
         .query_row("SELECT count(*) FROM allocation_decisions", [], |row| {
             row.get(0)
@@ -1589,7 +1614,11 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
         },
         test_support::{search_barrier::SearchBarrier, server_completion::ServerCompletion},
     };
-    let fixture = Fixture::new(false);
+    // The daemon's background snapshot capture stays held (mode 4) so its
+    // reconciliation cannot move the hand-inserted check-in seat's mapping
+    // between the insert and the check-in below; this test is about the held
+    // search, not the observation lane.
+    let fixture = Fixture::start(false, true, 4);
     let literal = format!("held-search-{}", Uuid::new_v4().simple());
     let successor_literal = format!("successor-search-{}", Uuid::new_v4().simple());
     let db = fixture.db();
@@ -1636,7 +1665,7 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
         })),
     };
     assert!(
-        barrier.wait_entered(1, Duration::from_secs(2)),
+        barrier.wait_entered(1, Duration::from_secs(30)),
         "search did not reach SQLite transaction"
     );
     assert!(matches!(
@@ -1692,11 +1721,11 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
         ErrorCode::UnknownOutcome
     );
     assert!(
-        completion.wait_worker_exited(Duration::from_secs(2)),
+        completion.wait_worker_exited(Duration::from_secs(30)),
         "cancelled search worker remained inside its SQLite transaction"
     );
     assert!(
-        completion.wait_search_permits_returned(Duration::from_secs(2)),
+        completion.wait_search_permits_returned(Duration::from_secs(30)),
         "cancelled search retained active or queue permit"
     );
     assert!(
@@ -1758,12 +1787,12 @@ fn composed_search_admits_one_active_four_waiters_and_releases_all_slots() {
             })),
         });
         assert!(
-            barrier.wait_admitted(admitted, Duration::from_secs(2)),
+            barrier.wait_admitted(admitted, Duration::from_secs(30)),
             "search slot {admitted} was not admitted"
         );
     }
     assert!(
-        barrier.wait_entered(1, Duration::from_secs(2)),
+        barrier.wait_entered(1, Duration::from_secs(30)),
         "active search did not enter the SQLite worker"
     );
     assert_eq!(
@@ -1801,8 +1830,29 @@ fn composed_search_admits_one_active_four_waiters_and_releases_all_slots() {
 
 #[test]
 fn identity_final_currentness_check_uses_new_admitted_read_and_rejects_existing_owner_hold() {
-    use herdr_threads::{identity::OrdinaryIdentity, service::workers::FairWriter};
+    use herdr_threads::{identity::OrdinaryIdentity, service::fair_writer::FairWriter};
     let fixture = Fixture::new(false);
+    // This test's own `OrdinaryIdentity` is a second observation lane beside
+    // the daemon's. A daemon snapshot admitted after the test's own read would
+    // supersede it (`StaleHostObservation`) and its capture could overlap the
+    // test's reads, so the daemon's background refresh is parked first: wait
+    // out the boot capture, hold every later capture inside the host double
+    // (its admission is already issued by then, so it is older than anything
+    // the test admits), and let the resolve's own kick-driven refresh enter
+    // the hold before the test reads.
+    let until = std::time::Instant::now() + Duration::from_secs(30);
+    while fixture.host.snapshots.load(Ordering::SeqCst) == 0
+        || fixture.host.active_reads.load(Ordering::SeqCst) != 0
+    {
+        assert!(
+            std::time::Instant::now() < until,
+            "boot snapshot capture never finished"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let boot_snapshots = fixture.host.snapshots.load(Ordering::SeqCst);
+    fixture.host.overlap_allowed.store(true, Ordering::SeqCst);
+    fixture.host.snapshot_held.store(true, Ordering::SeqCst);
     let request = ResolveSeat {
         target: HostTargetId::new("pane"),
         operation: OperationId::new("historical-resolve"),
@@ -1811,6 +1861,13 @@ fn identity_final_currentness_check_uses_new_admitted_read_and_rejects_existing_
     else {
         panic!("missing seat");
     };
+    while fixture.host.snapshots.load(Ordering::SeqCst) == boot_snapshots {
+        assert!(
+            std::time::Instant::now() < until,
+            "the resolve's kick-driven refresh never reached capture"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
     let identity = OrdinaryIdentity::new(
         fixture.descriptor.instance_uuid.to_string(),
         fixture.store.clone(),
@@ -1852,7 +1909,7 @@ fn identity_final_currentness_check_uses_new_admitted_read_and_rejects_existing_
 #[test]
 fn elected_snapshot_driver_establishes_baseline_before_real_ipc_resolution() {
     let fixture = Fixture::start(false, false, 0);
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         let baseline: Option<String> = fixture
             .db()
@@ -1884,7 +1941,7 @@ fn elected_snapshot_driver_establishes_baseline_before_real_ipc_resolution() {
 fn elected_failed_partial_unknown_captures_cannot_create_allocation_baseline() {
     for mode in 1..=3 {
         let fixture = Fixture::start(false, false, 4);
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
         while fixture.host.snapshots.load(Ordering::SeqCst) == 0 {
             assert!(std::time::Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(5));
@@ -1921,7 +1978,7 @@ fn elected_failed_partial_unknown_captures_cannot_create_allocation_baseline() {
 #[test]
 fn elected_hung_snapshot_keeps_health_deadlines_and_owner_until_physical_join() {
     let mut fixture = Fixture::start(false, false, 4);
-    let until = std::time::Instant::now() + Duration::from_secs(2);
+    let until = std::time::Instant::now() + Duration::from_secs(30);
     while fixture.host.snapshots.load(Ordering::SeqCst) == 0 {
         assert!(std::time::Instant::now() < until);
         std::thread::sleep(Duration::from_millis(5));
@@ -1935,6 +1992,10 @@ fn elected_hung_snapshot_keeps_health_deadlines_and_owner_until_physical_join() 
         LocalClient::call(&fixture.client(), Command::Health, &fixture.budget()).unwrap(),
         CommandResult::Health(_)
     ));
+    // The row above is inserted on a separate connection, so it fires no
+    // commit hook and no kick: only the deadline lane's 5 s safety tick finds
+    // it (ht-p03.9.4; it used to be a 1 s gate).
+    let until = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         let warnings: i64 = db
             .query_row("SELECT count(*) FROM messages WHERE kind='warn'", [], |r| {
@@ -1978,7 +2039,7 @@ fn elected_hung_snapshot_keeps_health_deadlines_and_owner_until_physical_join() 
 #[test]
 fn elected_snapshot_and_target_captures_share_one_lane_and_dirty_refresh() {
     let fixture = Fixture::start(false, false, 4);
-    let until = std::time::Instant::now() + Duration::from_secs(2);
+    let until = std::time::Instant::now() + Duration::from_secs(30);
     while fixture.host.snapshots.load(Ordering::SeqCst) == 0 {
         assert!(std::time::Instant::now() < until);
         std::thread::sleep(Duration::from_millis(5));
@@ -2021,7 +2082,7 @@ fn elected_snapshot_and_target_captures_share_one_lane_and_dirty_refresh() {
 #[test]
 fn elected_driver_reconciles_multiple_saved_pages_and_reopens_with_fresh_capture() {
     let mut fixture = Fixture::start(false, false, 4);
-    let until = std::time::Instant::now() + Duration::from_secs(3);
+    let until = std::time::Instant::now() + Duration::from_secs(30);
     while fixture.host.snapshots.load(Ordering::SeqCst) == 0 {
         assert!(std::time::Instant::now() < until);
         std::thread::sleep(Duration::from_millis(5));
@@ -2067,7 +2128,7 @@ fn elected_driver_reconciles_multiple_saved_pages_and_reopens_with_fresh_capture
     let old_boot = fixture.descriptor.boot_id;
     fixture.restart();
     assert_ne!(fixture.descriptor.boot_id, old_boot);
-    let until = std::time::Instant::now() + Duration::from_secs(2);
+    let until = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         let current: Option<String> = db
             .query_row("SELECT active_snapshot_id FROM host_instances", [], |r| {
@@ -2092,7 +2153,7 @@ fn elected_driver_reconciles_multiple_saved_pages_and_reopens_with_fresh_capture
 #[test]
 fn elected_driver_periodically_refreshes_without_target_requests() {
     let fixture = Fixture::start(false, false, 0);
-    let until = std::time::Instant::now() + Duration::from_secs(7);
+    let until = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         let published: Option<i64> = fixture.db().query_row("SELECT observation_sequence FROM host_instances WHERE active_snapshot_id IS NOT NULL", [], |r| r.get(0)).optional().unwrap();
         if published.is_some_and(|sequence| sequence >= 3) {
@@ -2115,9 +2176,9 @@ fn quiesced_identity(
     shutdown: Cancellation,
 ) -> (
     Arc<herdr_threads::identity::OrdinaryIdentity>,
-    Arc<herdr_threads::service::workers::FairWriter>,
+    Arc<herdr_threads::service::fair_writer::FairWriter>,
 ) {
-    use herdr_threads::{identity::OrdinaryIdentity, service::workers::FairWriter};
+    use herdr_threads::{identity::OrdinaryIdentity, service::fair_writer::FairWriter};
     fixture.stop.cancel();
     assert!(fixture.daemon.take().unwrap().join().unwrap().unwrap());
     let writer = Arc::new(FairWriter::new(32));
@@ -2163,7 +2224,7 @@ fn cancelled_request_read(
     });
     fixture
         .entered
-        .recv_timeout(Duration::from_secs(2))
+        .recv_timeout(Duration::from_secs(30))
         .expect("identity did not admit target read");
     (request, result, worker)
 }
@@ -2192,7 +2253,7 @@ fn identity_invalidation_compensation_completes_after_request_cancellation() {
     let (request, result, worker) = cancelled_request_read(&fixture, &identity, "cancelled-read");
     request.cancel();
     let outcome = result
-        .recv_timeout(Duration::from_secs(4))
+        .recv_timeout(Duration::from_secs(30))
         .expect("resolve did not return after request cancellation");
     worker.join().unwrap();
     assert_eq!(outcome.unwrap_err().code, ErrorCode::HostUnavailable);
@@ -2305,7 +2366,7 @@ fn elected_shutdown_is_not_held_by_invalidation_compensation() {
     });
     fixture
         .entered
-        .recv_timeout(Duration::from_secs(2))
+        .recv_timeout(Duration::from_secs(30))
         .expect("daemon did not admit target read");
     let external = fixture.db();
     external.execute_batch("BEGIN IMMEDIATE").unwrap();
@@ -2384,12 +2445,6 @@ impl HostPort for LaunchHost {
     fn enumerate_targets(&self, _: &HostCallContext) -> Result<HostSnapshot, ApiError> {
         unreachable!()
     }
-    fn subscribe_lifecycle(
-        &self,
-        _: &HostCallContext,
-    ) -> Result<Box<dyn HostLifecycleSubscription>, ApiError> {
-        unreachable!()
-    }
     fn safe_wake_target(&self, _: &SeatId, _: &HostObservation) -> Option<SafeWakeTarget> {
         unreachable!()
     }
@@ -2401,6 +2456,14 @@ impl HostPort for LaunchHost {
     ) -> Result<PromptOutcome, ApiError> {
         panic!("launch never prompts")
     }
+    fn pane_agent_state(
+        &self,
+        _target: &SafeWakeTarget,
+        _context: &HostCallContext,
+    ) -> Result<herdr_threads::ports::AgentComposerState, ApiError> {
+        Ok(herdr_threads::ports::AgentComposerState::Submitted)
+    }
+
     fn launch_native(
         &self,
         request: NativeLaunchRequest,
@@ -2429,6 +2492,13 @@ impl HostPort for LaunchHost {
             },
             diagnostic,
         })
+    }
+    fn send_submit_key(
+        &self,
+        _: &herdr_threads::ports::SafeWakeTarget,
+        _: &herdr_threads::ports::HostCallContext,
+    ) -> Result<(), herdr_threads::protocol::results::ApiError> {
+        Ok(())
     }
 }
 

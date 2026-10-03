@@ -1,0 +1,1016 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-02T10:47:52Z (claude), 2026-10-02T10:49:29Z (codex)",
+  "canary_commit": "b52eb7dbc7c1b6adbcaffda54de4c7fa8603041c",
+  "herdr_threads": "0.1.0",
+  "runner": {
+    "os": "darwin",
+    "arch": "arm64"
+  },
+  "inputs": {
+    "harness": "claude,codex (two runs)",
+    "versions": {
+      "claude": "2.1.283,2.1.284,2.1.285,2.1.286,2.1.287",
+      "codex": "0.157.1,0.158.0,0.159.2,0.159.3,0.160.0"
+    },
+    "bisect": false,
+    "model_tier": "off"
+  },
+  "harnesses": [
+    {
+      "harness": "claude",
+      "package": "@anthropic-ai/claude-code",
+      "verified_max": "2.1.286",
+      "candidates": [
+        "2.1.283",
+        "2.1.284",
+        "2.1.285",
+        "2.1.286",
+        "2.1.287"
+      ],
+      "status": "all_pass",
+      "first_bad": null,
+      "last_good": null,
+      "failing_checks": [],
+      "signals": [],
+      "suggested_action": null,
+      "excluded": [],
+      "probes": [
+        {
+          "version": "2.1.287",
+          "role": "newest",
+          "attempts": [
+            {
+              "result": "pass",
+              "tier1": false,
+              "duration_ms": 57880,
+              "checks": [
+                {
+                  "id": "t0.version",
+                  "status": "pass",
+                  "detail": "2.1.287 (Claude Code)"
+                },
+                {
+                  "id": "t0.setup",
+                  "status": "pass",
+                  "detail": "installed; owned SessionStart and PreToolUse(Bash) groups present"
+                },
+                {
+                  "id": "t0.config-load",
+                  "status": "skip",
+                  "detail": "covered by t0.hook-fires (settings.json is only read by a session)"
+                },
+                {
+                  "id": "t0.hook-fires",
+                  "status": "pass",
+                  "detail": "SessionStart startup captured within 1s (no network key; local 401 stub)"
+                },
+                {
+                  "id": "t0.payload-parse",
+                  "status": "pass",
+                  "detail": "canary_payloads parsed 1 tier-0 payload(s) (1 hook capture(s))"
+                },
+                {
+                  "id": "t0.schema",
+                  "status": "skip",
+                  "detail": "claude has no embedded-schema fingerprint"
+                },
+                {
+                  "id": "t0.admission",
+                  "status": "pass",
+                  "detail": "admission optimistic"
+                },
+                {
+                  "id": "t0.launch-flags",
+                  "status": "pass",
+                  "detail": "all 3 launch flag(s) present in the help output"
+                },
+                {
+                  "id": "t0.npm-shim-admission",
+                  "status": "skip",
+                  "detail": "codex only (the npm codex.js shim)"
+                },
+                {
+                  "id": "t0.launch-tables",
+                  "status": "skip",
+                  "detail": "codex only"
+                },
+                {
+                  "id": "t0.unsetup",
+                  "status": "pass",
+                  "detail": "removed; settings.json absent again"
+                },
+                {
+                  "id": "t1.session-start",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.pre-tool-use",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.context-delivery",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.payload-parse",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t0.isolation",
+                  "status": "pass",
+                  "detail": "real harness config untouched"
+                }
+              ]
+            }
+          ],
+          "result": "pass",
+          "flaky": false
+        },
+        {
+          "version": "2.1.286",
+          "role": "search",
+          "attempts": [
+            {
+              "result": "pass",
+              "tier1": false,
+              "duration_ms": 9307,
+              "checks": [
+                {
+                  "id": "t0.version",
+                  "status": "pass",
+                  "detail": "2.1.286 (Claude Code)"
+                },
+                {
+                  "id": "t0.setup",
+                  "status": "pass",
+                  "detail": "installed; owned SessionStart and PreToolUse(Bash) groups present"
+                },
+                {
+                  "id": "t0.config-load",
+                  "status": "skip",
+                  "detail": "covered by t0.hook-fires (settings.json is only read by a session)"
+                },
+                {
+                  "id": "t0.hook-fires",
+                  "status": "pass",
+                  "detail": "SessionStart startup captured within 1s (no network key; local 401 stub)"
+                },
+                {
+                  "id": "t0.payload-parse",
+                  "status": "pass",
+                  "detail": "canary_payloads parsed 1 tier-0 payload(s) (1 hook capture(s))"
+                },
+                {
+                  "id": "t0.schema",
+                  "status": "skip",
+                  "detail": "claude has no embedded-schema fingerprint"
+                },
+                {
+                  "id": "t0.admission",
+                  "status": "pass",
+                  "detail": "admission listed"
+                },
+                {
+                  "id": "t0.launch-flags",
+                  "status": "pass",
+                  "detail": "all 3 launch flag(s) present in the help output"
+                },
+                {
+                  "id": "t0.npm-shim-admission",
+                  "status": "skip",
+                  "detail": "codex only (the npm codex.js shim)"
+                },
+                {
+                  "id": "t0.launch-tables",
+                  "status": "skip",
+                  "detail": "codex only"
+                },
+                {
+                  "id": "t0.unsetup",
+                  "status": "pass",
+                  "detail": "removed; settings.json absent again"
+                },
+                {
+                  "id": "t1.session-start",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.pre-tool-use",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.context-delivery",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.payload-parse",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t0.isolation",
+                  "status": "pass",
+                  "detail": "real harness config untouched"
+                }
+              ]
+            }
+          ],
+          "result": "pass",
+          "flaky": false
+        },
+        {
+          "version": "2.1.285",
+          "role": "search",
+          "attempts": [
+            {
+              "result": "pass",
+              "tier1": false,
+              "duration_ms": 9210,
+              "checks": [
+                {
+                  "id": "t0.version",
+                  "status": "pass",
+                  "detail": "2.1.285 (Claude Code)"
+                },
+                {
+                  "id": "t0.setup",
+                  "status": "pass",
+                  "detail": "installed; owned SessionStart and PreToolUse(Bash) groups present"
+                },
+                {
+                  "id": "t0.config-load",
+                  "status": "skip",
+                  "detail": "covered by t0.hook-fires (settings.json is only read by a session)"
+                },
+                {
+                  "id": "t0.hook-fires",
+                  "status": "pass",
+                  "detail": "SessionStart startup captured within 0s (no network key; local 401 stub)"
+                },
+                {
+                  "id": "t0.payload-parse",
+                  "status": "pass",
+                  "detail": "canary_payloads parsed 1 tier-0 payload(s) (1 hook capture(s))"
+                },
+                {
+                  "id": "t0.schema",
+                  "status": "skip",
+                  "detail": "claude has no embedded-schema fingerprint"
+                },
+                {
+                  "id": "t0.admission",
+                  "status": "pass",
+                  "detail": "admission listed"
+                },
+                {
+                  "id": "t0.launch-flags",
+                  "status": "pass",
+                  "detail": "all 3 launch flag(s) present in the help output"
+                },
+                {
+                  "id": "t0.npm-shim-admission",
+                  "status": "skip",
+                  "detail": "codex only (the npm codex.js shim)"
+                },
+                {
+                  "id": "t0.launch-tables",
+                  "status": "skip",
+                  "detail": "codex only"
+                },
+                {
+                  "id": "t0.unsetup",
+                  "status": "pass",
+                  "detail": "removed; settings.json absent again"
+                },
+                {
+                  "id": "t1.session-start",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.pre-tool-use",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.context-delivery",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.payload-parse",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t0.isolation",
+                  "status": "pass",
+                  "detail": "real harness config untouched"
+                }
+              ]
+            }
+          ],
+          "result": "pass",
+          "flaky": false
+        },
+        {
+          "version": "2.1.284",
+          "role": "search",
+          "attempts": [
+            {
+              "result": "pass",
+              "tier1": false,
+              "duration_ms": 9430,
+              "checks": [
+                {
+                  "id": "t0.version",
+                  "status": "pass",
+                  "detail": "2.1.284 (Claude Code)"
+                },
+                {
+                  "id": "t0.setup",
+                  "status": "pass",
+                  "detail": "installed; owned SessionStart and PreToolUse(Bash) groups present"
+                },
+                {
+                  "id": "t0.config-load",
+                  "status": "skip",
+                  "detail": "covered by t0.hook-fires (settings.json is only read by a session)"
+                },
+                {
+                  "id": "t0.hook-fires",
+                  "status": "pass",
+                  "detail": "SessionStart startup captured within 1s (no network key; local 401 stub)"
+                },
+                {
+                  "id": "t0.payload-parse",
+                  "status": "pass",
+                  "detail": "canary_payloads parsed 1 tier-0 payload(s) (1 hook capture(s))"
+                },
+                {
+                  "id": "t0.schema",
+                  "status": "skip",
+                  "detail": "claude has no embedded-schema fingerprint"
+                },
+                {
+                  "id": "t0.admission",
+                  "status": "pass",
+                  "detail": "admission listed"
+                },
+                {
+                  "id": "t0.launch-flags",
+                  "status": "pass",
+                  "detail": "all 3 launch flag(s) present in the help output"
+                },
+                {
+                  "id": "t0.npm-shim-admission",
+                  "status": "skip",
+                  "detail": "codex only (the npm codex.js shim)"
+                },
+                {
+                  "id": "t0.launch-tables",
+                  "status": "skip",
+                  "detail": "codex only"
+                },
+                {
+                  "id": "t0.unsetup",
+                  "status": "pass",
+                  "detail": "removed; settings.json absent again"
+                },
+                {
+                  "id": "t1.session-start",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.pre-tool-use",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.context-delivery",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.payload-parse",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t0.isolation",
+                  "status": "pass",
+                  "detail": "real harness config untouched"
+                }
+              ]
+            }
+          ],
+          "result": "pass",
+          "flaky": false
+        },
+        {
+          "version": "2.1.283",
+          "role": "search",
+          "attempts": [
+            {
+              "result": "pass",
+              "tier1": false,
+              "duration_ms": 9867,
+              "checks": [
+                {
+                  "id": "t0.version",
+                  "status": "pass",
+                  "detail": "2.1.283 (Claude Code)"
+                },
+                {
+                  "id": "t0.setup",
+                  "status": "pass",
+                  "detail": "installed; owned SessionStart and PreToolUse(Bash) groups present"
+                },
+                {
+                  "id": "t0.config-load",
+                  "status": "skip",
+                  "detail": "covered by t0.hook-fires (settings.json is only read by a session)"
+                },
+                {
+                  "id": "t0.hook-fires",
+                  "status": "pass",
+                  "detail": "SessionStart startup captured within 1s (no network key; local 401 stub)"
+                },
+                {
+                  "id": "t0.payload-parse",
+                  "status": "pass",
+                  "detail": "canary_payloads parsed 1 tier-0 payload(s) (1 hook capture(s))"
+                },
+                {
+                  "id": "t0.schema",
+                  "status": "skip",
+                  "detail": "claude has no embedded-schema fingerprint"
+                },
+                {
+                  "id": "t0.admission",
+                  "status": "pass",
+                  "detail": "admission listed"
+                },
+                {
+                  "id": "t0.launch-flags",
+                  "status": "pass",
+                  "detail": "all 3 launch flag(s) present in the help output"
+                },
+                {
+                  "id": "t0.npm-shim-admission",
+                  "status": "skip",
+                  "detail": "codex only (the npm codex.js shim)"
+                },
+                {
+                  "id": "t0.launch-tables",
+                  "status": "skip",
+                  "detail": "codex only"
+                },
+                {
+                  "id": "t0.unsetup",
+                  "status": "pass",
+                  "detail": "removed; settings.json absent again"
+                },
+                {
+                  "id": "t1.session-start",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.pre-tool-use",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.context-delivery",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.payload-parse",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t0.isolation",
+                  "status": "pass",
+                  "detail": "real harness config untouched"
+                }
+              ]
+            }
+          ],
+          "result": "pass",
+          "flaky": false
+        }
+      ],
+      "assumes_monotone": true
+    },
+    {
+      "harness": "codex",
+      "package": "@openai/codex",
+      "verified_max": "0.158.0",
+      "candidates": [
+        "0.157.1",
+        "0.158.0",
+        "0.159.2",
+        "0.159.3",
+        "0.160.0"
+      ],
+      "status": "all_pass",
+      "first_bad": null,
+      "last_good": null,
+      "failing_checks": [],
+      "signals": [],
+      "suggested_action": null,
+      "excluded": [],
+      "probes": [
+        {
+          "version": "0.160.0",
+          "role": "newest",
+          "attempts": [
+            {
+              "result": "pass",
+              "tier1": false,
+              "duration_ms": 32477,
+              "checks": [
+                {
+                  "id": "t0.version",
+                  "status": "pass",
+                  "detail": "codex-cli 0.160.0"
+                },
+                {
+                  "id": "t0.setup",
+                  "status": "pass",
+                  "detail": "installed; owned SessionStart, SubagentStart and PreToolUse groups present"
+                },
+                {
+                  "id": "t0.config-load",
+                  "status": "pass",
+                  "detail": "codex features list exited 0"
+                },
+                {
+                  "id": "t0.hook-fires",
+                  "status": "pass",
+                  "detail": "SessionStart startup captured within 2s (no network key; local 401 stub)"
+                },
+                {
+                  "id": "t0.payload-parse",
+                  "status": "pass",
+                  "detail": "canary_payloads parsed 1 tier-0 payload(s) (1 hook capture(s))"
+                },
+                {
+                  "id": "t0.schema",
+                  "status": "pass",
+                  "detail": "fingerprint equals a recipe's: fingerprint=sha256:86858f2456c999030224a92d8dfb535183fe0edf8601690d8941978fadbb066d recipe=codex-hooks-v1"
+                },
+                {
+                  "id": "t0.admission",
+                  "status": "pass",
+                  "detail": "admission schema-matched, live-unverified (schema match)"
+                },
+                {
+                  "id": "t0.launch-flags",
+                  "status": "pass",
+                  "detail": "all 8 launch flag(s) present in the help output"
+                },
+                {
+                  "id": "t0.npm-shim-admission",
+                  "status": "warn",
+                  "detail": "with the npm shim first on PATH admission is 'optimistic', with the native binary 'schema-matched, live-unverified' (E4)"
+                },
+                {
+                  "id": "t0.launch-tables",
+                  "status": "pass",
+                  "detail": "every subcommand/alias and value option in the help is known to launch.rs"
+                },
+                {
+                  "id": "t0.unsetup",
+                  "status": "pass",
+                  "detail": "removed; hooks.json clean and config.toml equals its pre-setup bytes"
+                },
+                {
+                  "id": "t1.session-start",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.pre-tool-use",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.context-delivery",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.payload-parse",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t0.isolation",
+                  "status": "pass",
+                  "detail": "real harness config untouched"
+                }
+              ]
+            }
+          ],
+          "result": "pass",
+          "flaky": false
+        },
+        {
+          "version": "0.159.3",
+          "role": "search",
+          "attempts": [
+            {
+              "result": "pass",
+              "tier1": false,
+              "duration_ms": 16675,
+              "checks": [
+                {
+                  "id": "t0.version",
+                  "status": "pass",
+                  "detail": "codex-cli 0.159.3"
+                },
+                {
+                  "id": "t0.setup",
+                  "status": "pass",
+                  "detail": "installed; owned SessionStart, SubagentStart and PreToolUse groups present"
+                },
+                {
+                  "id": "t0.config-load",
+                  "status": "pass",
+                  "detail": "codex features list exited 0"
+                },
+                {
+                  "id": "t0.hook-fires",
+                  "status": "pass",
+                  "detail": "SessionStart startup captured within 1s (no network key; local 401 stub)"
+                },
+                {
+                  "id": "t0.payload-parse",
+                  "status": "pass",
+                  "detail": "canary_payloads parsed 1 tier-0 payload(s) (1 hook capture(s))"
+                },
+                {
+                  "id": "t0.schema",
+                  "status": "pass",
+                  "detail": "fingerprint equals a recipe's: fingerprint=sha256:86858f2456c999030224a92d8dfb535183fe0edf8601690d8941978fadbb066d recipe=codex-hooks-v1"
+                },
+                {
+                  "id": "t0.admission",
+                  "status": "pass",
+                  "detail": "admission schema-matched, live-unverified (schema match)"
+                },
+                {
+                  "id": "t0.launch-flags",
+                  "status": "pass",
+                  "detail": "all 8 launch flag(s) present in the help output"
+                },
+                {
+                  "id": "t0.npm-shim-admission",
+                  "status": "warn",
+                  "detail": "with the npm shim first on PATH admission is 'optimistic', with the native binary 'schema-matched, live-unverified' (E4)"
+                },
+                {
+                  "id": "t0.launch-tables",
+                  "status": "pass",
+                  "detail": "every subcommand/alias and value option in the help is known to launch.rs"
+                },
+                {
+                  "id": "t0.unsetup",
+                  "status": "pass",
+                  "detail": "removed; hooks.json clean and config.toml equals its pre-setup bytes"
+                },
+                {
+                  "id": "t1.session-start",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.pre-tool-use",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.context-delivery",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.payload-parse",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t0.isolation",
+                  "status": "pass",
+                  "detail": "real harness config untouched"
+                }
+              ]
+            }
+          ],
+          "result": "pass",
+          "flaky": false
+        },
+        {
+          "version": "0.159.2",
+          "role": "search",
+          "attempts": [
+            {
+              "result": "pass",
+              "tier1": false,
+              "duration_ms": 16073,
+              "checks": [
+                {
+                  "id": "t0.version",
+                  "status": "pass",
+                  "detail": "codex-cli 0.159.2"
+                },
+                {
+                  "id": "t0.setup",
+                  "status": "pass",
+                  "detail": "installed; owned SessionStart, SubagentStart and PreToolUse groups present"
+                },
+                {
+                  "id": "t0.config-load",
+                  "status": "pass",
+                  "detail": "codex features list exited 0"
+                },
+                {
+                  "id": "t0.hook-fires",
+                  "status": "pass",
+                  "detail": "SessionStart startup captured within 1s (no network key; local 401 stub)"
+                },
+                {
+                  "id": "t0.payload-parse",
+                  "status": "pass",
+                  "detail": "canary_payloads parsed 1 tier-0 payload(s) (1 hook capture(s))"
+                },
+                {
+                  "id": "t0.schema",
+                  "status": "pass",
+                  "detail": "fingerprint equals a recipe's: fingerprint=sha256:86858f2456c999030224a92d8dfb535183fe0edf8601690d8941978fadbb066d recipe=codex-hooks-v1"
+                },
+                {
+                  "id": "t0.admission",
+                  "status": "pass",
+                  "detail": "admission schema-matched, live-unverified (schema match)"
+                },
+                {
+                  "id": "t0.launch-flags",
+                  "status": "pass",
+                  "detail": "all 8 launch flag(s) present in the help output"
+                },
+                {
+                  "id": "t0.npm-shim-admission",
+                  "status": "warn",
+                  "detail": "with the npm shim first on PATH admission is 'optimistic', with the native binary 'schema-matched, live-unverified' (E4)"
+                },
+                {
+                  "id": "t0.launch-tables",
+                  "status": "pass",
+                  "detail": "every subcommand/alias and value option in the help is known to launch.rs"
+                },
+                {
+                  "id": "t0.unsetup",
+                  "status": "pass",
+                  "detail": "removed; hooks.json clean and config.toml equals its pre-setup bytes"
+                },
+                {
+                  "id": "t1.session-start",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.pre-tool-use",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.context-delivery",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.payload-parse",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t0.isolation",
+                  "status": "pass",
+                  "detail": "real harness config untouched"
+                }
+              ]
+            }
+          ],
+          "result": "pass",
+          "flaky": false
+        },
+        {
+          "version": "0.158.0",
+          "role": "search",
+          "attempts": [
+            {
+              "result": "pass",
+              "tier1": false,
+              "duration_ms": 13222,
+              "checks": [
+                {
+                  "id": "t0.version",
+                  "status": "pass",
+                  "detail": "codex-cli 0.158.0"
+                },
+                {
+                  "id": "t0.setup",
+                  "status": "pass",
+                  "detail": "installed; owned SessionStart, SubagentStart and PreToolUse groups present"
+                },
+                {
+                  "id": "t0.config-load",
+                  "status": "pass",
+                  "detail": "codex features list exited 0"
+                },
+                {
+                  "id": "t0.hook-fires",
+                  "status": "pass",
+                  "detail": "SessionStart startup captured within 1s (no network key; local 401 stub)"
+                },
+                {
+                  "id": "t0.payload-parse",
+                  "status": "pass",
+                  "detail": "canary_payloads parsed 1 tier-0 payload(s) (1 hook capture(s))"
+                },
+                {
+                  "id": "t0.schema",
+                  "status": "pass",
+                  "detail": "fingerprint equals a recipe's: fingerprint=sha256:86858f2456c999030224a92d8dfb535183fe0edf8601690d8941978fadbb066d recipe=codex-hooks-v1"
+                },
+                {
+                  "id": "t0.admission",
+                  "status": "pass",
+                  "detail": "admission listed"
+                },
+                {
+                  "id": "t0.launch-flags",
+                  "status": "pass",
+                  "detail": "all 8 launch flag(s) present in the help output"
+                },
+                {
+                  "id": "t0.npm-shim-admission",
+                  "status": "pass",
+                  "detail": "admission 'listed' either way"
+                },
+                {
+                  "id": "t0.launch-tables",
+                  "status": "pass",
+                  "detail": "every subcommand/alias and value option in the help is known to launch.rs"
+                },
+                {
+                  "id": "t0.unsetup",
+                  "status": "pass",
+                  "detail": "removed; hooks.json clean and config.toml equals its pre-setup bytes"
+                },
+                {
+                  "id": "t1.session-start",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.pre-tool-use",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.context-delivery",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.payload-parse",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t0.isolation",
+                  "status": "pass",
+                  "detail": "real harness config untouched"
+                }
+              ]
+            }
+          ],
+          "result": "pass",
+          "flaky": false
+        },
+        {
+          "version": "0.157.1",
+          "role": "search",
+          "attempts": [
+            {
+              "result": "pass",
+              "tier1": false,
+              "duration_ms": 12850,
+              "checks": [
+                {
+                  "id": "t0.version",
+                  "status": "pass",
+                  "detail": "codex-cli 0.157.1"
+                },
+                {
+                  "id": "t0.setup",
+                  "status": "pass",
+                  "detail": "installed; owned SessionStart, SubagentStart and PreToolUse groups present"
+                },
+                {
+                  "id": "t0.config-load",
+                  "status": "pass",
+                  "detail": "codex features list exited 0"
+                },
+                {
+                  "id": "t0.hook-fires",
+                  "status": "pass",
+                  "detail": "SessionStart startup captured within 0s (no network key; local 401 stub)"
+                },
+                {
+                  "id": "t0.payload-parse",
+                  "status": "pass",
+                  "detail": "canary_payloads parsed 1 tier-0 payload(s) (1 hook capture(s))"
+                },
+                {
+                  "id": "t0.schema",
+                  "status": "pass",
+                  "detail": "fingerprint equals a recipe's: fingerprint=sha256:86858f2456c999030224a92d8dfb535183fe0edf8601690d8941978fadbb066d recipe=codex-hooks-v1"
+                },
+                {
+                  "id": "t0.admission",
+                  "status": "pass",
+                  "detail": "admission listed"
+                },
+                {
+                  "id": "t0.launch-flags",
+                  "status": "pass",
+                  "detail": "all 8 launch flag(s) present in the help output"
+                },
+                {
+                  "id": "t0.npm-shim-admission",
+                  "status": "pass",
+                  "detail": "admission 'listed' either way"
+                },
+                {
+                  "id": "t0.launch-tables",
+                  "status": "pass",
+                  "detail": "every subcommand/alias and value option in the help is known to launch.rs"
+                },
+                {
+                  "id": "t0.unsetup",
+                  "status": "pass",
+                  "detail": "removed; hooks.json clean and config.toml equals its pre-setup bytes"
+                },
+                {
+                  "id": "t1.session-start",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.pre-tool-use",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.context-delivery",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t1.payload-parse",
+                  "status": "skip",
+                  "detail": "--model-tier off"
+                },
+                {
+                  "id": "t0.isolation",
+                  "status": "pass",
+                  "detail": "real harness config untouched"
+                }
+              ]
+            }
+          ],
+          "result": "pass",
+          "flaky": false
+        }
+      ],
+      "assumes_monotone": true
+    }
+  ],
+  "exit_code": 0
+}

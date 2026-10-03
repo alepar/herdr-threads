@@ -4,7 +4,10 @@ The CLI owner found that ResolveSeat carried only target even though ordinary re
 
 ## Ruling
 
+> **Superseded (2026-10, ht-p03.2 / B4):** the adversarial verification layer described here was removed; see "Cooperative reality (2026-10)".
+
 Add `operation: OperationId` to ResolveSeat and typed `ResolveSeat` local intent kind. The CLI routes ordinary seat resolution through durable intent publication, preserving explicit instance and target in the semantic request. Use a narrow service-allocation intent scope with instance and target; do not fabricate a native seat before allocation, a native caller claim, or an operator actor. The daemon continues to establish allocation provenance internally and consume OrdinaryAllocationGuard for a new allocation. Existing kernel/local instance routing remains unchanged. The new journal scope authorizes no other command.
+<!-- end superseded -->
 
 The store binds the operation record to instance plus the ordinary-allocation route and canonical target payload. Exact-key replay returns the immutable original seat result, including after mapping changes or retirement; it neither revives nor reallocates the old seat. Reusing the key with a different target/payload fails. An uncommitted retry obtains a fresh allocation guard and rechecks ownership/recovery holds. A new intentional resolution uses a new key and may return the currently existing seat under the existing resolve policy. Replayed historical seat IDs do not establish current ownership or native authority.
 

@@ -206,6 +206,45 @@ The [Herdr marketplace](https://herdr.dev/plugins/) discovers public repositorie
 
 2026-09-27: Reconciled this canonical spec with the adopted revision-4 shared contract. Detailed normative algorithms/types and preserved revision responses are in the [adopted shared-contract amendment, revision 4](shared-contract-amendment-adopted.md). This is specification work before the next formal design review; no source implementation or native-support completion is asserted.
 
+## Cooperative reality (2026-10)
+
+What ships is a cooperative system with conservative continuity, not the adversarial one this design first described.
+
+- **Check-in creates and binds.** A top-level agent's lifecycle CheckIn (`register_available`) creates or reuses the seat's binding for the pane, records the availability anchor and builds the bounded offer inside one SQLite transaction. There is no second, native-verified registration path.
+- **Attribution is a recorded claim.** A model-issued accept or ACK is recorded with provenance `cooperative_top_level`; a person's pane (`me init`) records `operator_human`; the local-account repair commands record the operator. Permits come only from `StorePort::issue_cooperative_permit`.
+- **Continuity is structural.** A host-invalidated seat is restored only by `ReconfirmStructure` (same terminal, same verified host boot and incarnation). Occupant-loss, empty-shell and verified-execution reconfirm/replace branches (P10) were removed; uncertain continuity holds the seat and asks the operator.
+- **No native permits.** The native caller verifier, its verified-caller and native-actor types, native permit construction and the store's per-decision fence parameters (W5-1) are gone. A decision fence remains only inside the operator repair guards.
+- **Ports are the production surface.** `StorePort` no longer carries the guarded seat-allocation or registration-revocation methods, or `Unsupported` default bodies, and the host port has no lifecycle subscription (periodic complete snapshots recover).
+- **Schema v11** (`migrations/0011_cooperative_only.sql`; v10 is the B5 trust guards migration `0010_b5_trust_guards.sql`) drops no table: every table is still named by a kept statement (see `docs/history/remaining-findings-run/b4-removed-symbols.txt`).
+
+Decision record: [root spec §B4](remaining-findings/2026-10-01-remaining-herdr-threads-findings-design.md#b4-remove-the-pre-cooperative-verification-layer) (ht-p03.2 deleted the code, ht-p03.5 rewrote these docs). Normative trust rules: `TRUST-POLICY.md` (branch `trust-model-invariants`), which supersedes any text above that requires adversarial proof of who is calling. Text above that describes the removed layer stays for history and is marked superseded where it names a removed symbol.
+
+## Pacer, lane kicks and diagnostics (2026-10)
+
+Every daemon loop runs on one wakeup-and-backoff primitive, `Pacer` (`src/service/pacer.rs`), instead of sleep-polling. A lane blocks in one place and wakes on a kick, on cancellation, when a failure backoff comes due, or at its safety tick. Backoff is 100 ms doubling to a 30 s cap with +-20 % jitter, reset by the first success; the attempt count and the next retry time reach Health as `; retrying (attempt N, next ≤ Xs)`.
+
+**Commit-change lane kicks.** The single writer connection captures which tables a commit changed; the writer turn takes that sealed set while it still holds the writer guard and kicks after releasing it, never from the commit hook and never to the lane that made the commit. `service::kicks::lanes_for_table` is the one table-to-lane map, and an exhaustive test over a freshly migrated store fails until a new table is classified.
+
+| Lane | Kicked by changes to | Safety tick | Re-runs at once when |
+|---|---|---|---|
+| Deadlines | `work_jobs`, `warning_jobs`, `retirements`, `invitations`, `invitation_cancellations`, `receipts`, `receipt_state` | 5 s | a due scan or a work or retirement batch has more |
+| Wakes | `wake_work`, `seats`, `occupant_bindings`, `seat_availability`, `warning_recipients`, `warning_offer` | 5 s, or earlier at the next due wake | the pass has more |
+| Observation | none (host driven) | the 5 s snapshot cadence | a reconciliation continuation page is pending |
+| Retention | none (explicitly empty) | 60 s | the pass has more |
+| Admission observer | none | 60 s (never below 5 s) | no |
+
+`host_instances`, `snapshot_generations` and `snapshot_targets` are classified as kicking no lane: one observation publish is several commits on them, and kicking would wake the wake lane every idle cycle.
+
+**Idle bounds.** On an idle daemon the deadline and wake lanes and the request paths make no durable commit. The retention lane makes none absent a publication and at most one per 60 s tick while observation publishes at idle. The observation lane makes at most one cycle's commits per 5 s. With Herdr down the observation lane makes at most one durable commit per backoff step, because a repeated identical invalidation after a completed first pass is skipped and counted as a backoff failure. The wake lane's refused-wake cost while Herdr is down (a reservation plus a restoring completion per seat per refusal-backoff step) is recorded as specified, not accepted; whether it needs its own bound is an open escalation. Time-driven deadlines can therefore fire up to 5 s late; commits that create work kick the lane at once.
+
+**Diagnostics contract.** Lane failures go to `daemon.log`, rate limited, and Health says `degraded: see <path>` while any lane is failing. A starting `ensure` redirects its detached child's stderr to a per-attempt `logs/startup-<pid>-<nonce>.log` (newest 8 kept, 24 h) and prints only that file's tail, falling back to piped stderr when the logs directory cannot be created. Operator wording is in [docs/operations.md](../../operations.md#logs-degraded-lanes-and-failure-remedies).
+
+**Error taxonomy and skew.** Failures fall into four classes: `Transient`, `Unavailable`, `Corrupt` (only SQLITE_CORRUPT, SQLITE_NOTADB and failed integrity checks; an unlisted SQLite error is `Transient` with its detail) and `VersionSkew`. `daemon::remedy::remedy(class, context)` is the only place a remedy string is spelled. Skew is read from the endpoint descriptor's protocol version before any wire decode, so a mismatched daemon yields "daemon is version X, CLI is Y: run `herdr-threads daemon stop` then `herdr-threads daemon ensure`" instead of a timeout or a `deny_unknown_fields` error; `daemon stop` is skew-tolerant (it confirms the owner lock and descriptor, then signals the daemon) so the printed remedy works from the CLI that printed it. Exit 3 names `ensure` for an unavailable daemon and `stop` then `ensure` for skew.
+
+**Capability discovery.** Optional wire additions are gated by a named capability, not a protocol-version bump. `Command::Capabilities` is a separate request (the Health hello is `deny_unknown_fields` in shipped CLIs); any refusal, including from an older daemon, reads as no capabilities. `capabilities::ADVERTISED` lists a name only once its handler exists: `history.full_bodies` (a `HistoryQuery` with `full_bodies: true` lets the daemon inline bodies up to `FULL_BODY_FETCH_BYTES`; the field is omitted from the wire when false so existing request bytes are unchanged) and `hook.parse_failure_report`.
+
+Decision records: [root spec §B2 and §B3](remaining-findings/2026-10-01-remaining-herdr-threads-findings-design.md#b2-shared-wakeup-and-backoff-primitive) and the nested [Pacer adoption spec](remaining-findings/2026-10-01-remaining-herdr-threads-findings--pacer-adoption-design.md) (D1 kick map, D2 lane parameters, D4 Herdr-down observation, D5 wake ladder).
+
 ## Post-Implementation Notes
 
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*

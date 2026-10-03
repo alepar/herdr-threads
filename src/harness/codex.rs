@@ -10,12 +10,14 @@
 //! setup declaration installs context hooks only: lifecycle, child start, and
 //! a Bash `PreToolUse` group whose output is `additionalContext` and never a
 //! permission decision or `updatedInput`.
+use super::admission::{self, OptimisticAdmission, Refusal, Row};
 use super::codex_schema::{self, Unextractable};
 use super::context::{ContextError, EventKind, Harness, Role};
 pub use super::recipe::NativeSupport;
-use super::recipe::{self, LookupError, Recipe, Version, VersionSet};
+use super::recipe::{self, Evidence, LookupError, Recipe, Version, VersionSet};
 use super::{Capability, LifecycleEvent, declared_role, field, input};
 use crate::protocol::results::CapabilityState;
+use crate::protocol::time::Cancellation;
 use serde_json::{Value, json};
 use std::{
     fmt,
@@ -66,12 +68,23 @@ pub const HOOKS_V1_SCHEMA_FINGERPRINT: &str =
 /// captured evidence of its hook payloads.
 pub const RECIPES: &[CodexRecipe] = &[Recipe {
     id: "codex-hooks-v1",
-    versions: VersionSet::Exact(&[Version::new(0, 157, 1), Version::new(0, 158, 0)]),
+    versions: VersionSet::Exact(&[
+        Version::new(0, 157, 1),
+        Version::new(0, 158, 0),
+        Version::new(0, 159, 3),
+    ]),
     evidence: &[
         "docs/compatibility/codex-probe.md",
         "docs/evidence/codex-158-hook-capture/report.md",
         "docs/evidence/codex-158-live-hook-capture/report.md",
+        "docs/validation/report.md",
     ],
+    evidence_levels: &[
+        (Version::new(0, 157, 1), Evidence::NoModel),
+        (Version::new(0, 158, 0), Evidence::Live),
+        (Version::new(0, 159, 3), Evidence::Live),
+    ],
+    known_broken: &[],
     scope: "0.157.1: native root/child PreToolUse input captured and source-read hook contract; \
             0.158.0: embedded hook input/output schemas byte-identical to 0.157.1, live \
             SessionStart startup/resume, SubagentStart and root/child Bash PreToolUse input \
@@ -79,7 +92,8 @@ pub const RECIPES: &[CodexRecipe] = &[Recipe {
             SessionStart and PreToolUse (not SubagentStart). permission_mode is always \
             bypassPermissions under exec and is not a sandbox signal. SessionStart fork is \
             known-unsupported (never captured). Transport and receipt are not qualified for \
-            either",
+            either; 0.159.3: the ht-p03.20 native matrix manual and managed core-flow cells, run \
+            from the fixed install path on the evidence SHA in docs/validation/report.md",
     profile: CodexProfile {
         input_schema: InputSchema::HooksV1,
         schema_fingerprint: HOOKS_V1_SCHEMA_FINGERPRINT,
@@ -89,7 +103,18 @@ pub const RECIPES: &[CodexRecipe] = &[Recipe {
     },
 }];
 
-/// The recipe covering an installed version string, if any.
+/// The table every admission entry point classifies against: [`RECIPES`],
+/// except that test builds honor `HT_TEST_RECIPES_JSON` (see
+/// [`admission::override_table`]).
+pub fn admission_table() -> &'static [CodexRecipe] {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(table) = admission::override_table("codex", RECIPES, |key| std::env::var_os(key)) {
+        return table;
+    }
+    RECIPES
+}
+
+/// The recipe LISTING an installed version string, if any.
 pub fn recipe_for(installed: &str) -> Result<&'static CodexRecipe, LookupError> {
     recipe::lookup(RECIPES, installed)
 }
@@ -185,22 +210,14 @@ pub enum VersionError {
     /// A well-formed version no recipe covers, refused without consulting a
     /// binary's embedded schemas (no binary was observed).
     Unsupported(String),
-    /// A well-formed version no recipe lists whose binary's embedded hook
-    /// schemas were fingerprinted and match no recipe's captured schemas.
-    SchemaUnmatched {
+    /// A version inside a recipe's `known_broken` range (ladder row 2),
+    /// refused even when a recipe lists it or it is newer than every max.
+    KnownBroken {
         version: String,
-        fingerprint: String,
-    },
-    /// A well-formed version no recipe lists whose binary's embedded hook
-    /// schemas could not be fingerprinted within the observation deadline.
-    SchemaUnextractable {
-        version: String,
-        reason: Unextractable,
+        range: VersionSet,
+        newest_working: Option<Version>,
     },
 }
-
-const UNLISTED_REMEDY: &str = "Install a supported version, or capture this version's hook \
-                               payloads and add a recipe backed by that evidence";
 
 impl fmt::Display for VersionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -219,22 +236,16 @@ impl fmt::Display for VersionError {
             Self::Unsupported(version) => {
                 f.write_str(&recipe::unsupported_message("codex", version, RECIPES))
             }
-            Self::SchemaUnmatched {
+            Self::KnownBroken {
                 version,
-                fingerprint,
-            } => write!(
-                f,
-                "codex {version} has no adapter recipe and its embedded hook schemas \
-                 ({fingerprint}) match no recipe's captured schemas; supported recipes: {}. \
-                 {UNLISTED_REMEDY}",
-                recipe::describe(RECIPES)
-            ),
-            Self::SchemaUnextractable { version, reason } => write!(
-                f,
-                "codex {version} has no adapter recipe and its embedded hook schemas could \
-                 not be fingerprinted ({reason}); supported recipes: {}. {UNLISTED_REMEDY}",
-                recipe::describe(RECIPES)
-            ),
+                range,
+                newest_working,
+            } => f.write_str(&admission::known_broken_message(
+                "codex",
+                version,
+                range,
+                *newest_working,
+            )),
         }
     }
 }
@@ -265,6 +276,24 @@ pub enum Admission {
         /// Hex SHA-256 of the fingerprinted binary.
         binary_sha256: String,
     },
+    /// No recipe lists the version and no recipe's captured schemas match the
+    /// binary's, but the version is not older than every recipe: admitted
+    /// under an assumed recipe, live-unverified (ladder row 6).
+    Optimistic {
+        admission: OptimisticAdmission,
+        /// What the binary's embedded hook schemas showed.
+        schema: SchemaObservation,
+    },
+}
+
+/// What fingerprinting an optimistically admitted binary's embedded hook
+/// schemas showed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchemaObservation {
+    /// The schemas were read and match no recipe's captured schemas.
+    Drift { fingerprint: String },
+    /// The schemas could not be fingerprinted.
+    Unreadable { reason: Unextractable },
 }
 
 /// Witness that a specific installed Codex binary reported a version some
@@ -277,19 +306,28 @@ pub struct InstalledVersion {
     version: String,
     recipe: &'static CodexRecipe,
     admission: Admission,
+    /// The file whose embedded schemas were fingerprinted: the native vendor
+    /// binary when the observed `codex` is the npm JS wrapper. `None` when no
+    /// fingerprint was taken (a listed version never reads the binary).
+    fingerprinted: Option<std::path::PathBuf>,
 }
 
 /// The fixed evidence label for a schema-matched admission.
 pub const SCHEMA_MATCHED_LABEL: &str = "schema-matched, live-unverified";
 
+/// The fixed state label for an optimistic admission. The operator-facing
+/// wording rendered from [`OptimisticAdmission`] is the doctor's.
+pub const OPTIMISTIC_LABEL: &str = "optimistic";
+
+/// Codex versions on which setup's sandbox allowance (default-deny of the
+/// network proxy) was measured: measurement data about versions, not an
+/// admission claim, so it lives beside the recipe tables rather than in
+/// `cli::setup`. See `cli::setup::codex_unmeasured_allowance_warning` for why
+/// setup writes the allowance only for these.
+pub const SANDBOX_MEASURED_VERSIONS: &[&str] = &["0.159.2", "0.159.3"];
+
 pub const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 const VERSION_OUTPUT_LIMIT: u64 = 256;
-
-/// The version line parsed, with its listed recipe if one lists it.
-enum Reported {
-    Listed(String, &'static CodexRecipe),
-    Unlisted(String),
-}
 
 impl InstalledVersion {
     /// Run `<absolute binary> --version` and accept a version a recipe lists,
@@ -332,63 +370,120 @@ impl InstalledVersion {
         timeout: Duration,
         cache: codex_schema::FingerprintCache<'_>,
     ) -> Result<Self, VersionError> {
+        Self::observe_with_cancel(binary, timeout, cache, None)
+    }
+
+    /// [`Self::observe_with`] whose `--version` run is killed (process group
+    /// included) once `cancel` fires. The schema fingerprint stays
+    /// deadline-bounded only: it runs after a version was reported, so a hung
+    /// binary never reaches it.
+    pub(crate) fn observe_with_cancel(
+        binary: &Path,
+        timeout: Duration,
+        cache: codex_schema::FingerprintCache<'_>,
+        cancel: Option<&Cancellation>,
+    ) -> Result<Self, VersionError> {
         let deadline = Instant::now() + timeout.min(VERSION_TIMEOUT);
         // Taken before the run, so an unlisted version is only admitted when
         // the binary fingerprinted is the binary that reported it.
-        let ran = codex_schema::BinaryIdentity::observe(binary);
-        let stdout = version_output_by(binary, deadline)?;
-        match Self::reported(&stdout)? {
-            Reported::Listed(version, recipe) => Ok(Self {
+        let target = codex_schema::fingerprint_target(binary);
+        let ran = target
+            .as_deref()
+            .ok()
+            .and_then(codex_schema::BinaryIdentity::observe);
+        let stdout = version_output_by(binary, deadline, cancel)?;
+        let version = Self::reported(&stdout)?;
+        let table = admission_table();
+        // Row 4's lazy closure: fingerprint the binary only for a version
+        // that is not listed, not known broken and not older than every min.
+        let mut matched: Option<(String, String)> = None;
+        let mut observation: Option<SchemaObservation> = None;
+        let mut fingerprinted: Option<std::path::PathBuf> = None;
+        let row = admission::classify(table, &version, || {
+            let target = match &target {
+                Ok(target) => target,
+                Err(reason) => {
+                    observation = Some(SchemaObservation::Unreadable {
+                        reason: reason.clone(),
+                    });
+                    return None;
+                }
+            };
+            fingerprinted = Some(target.clone());
+            let measured = match codex_schema::fingerprint_binary_with(target, deadline, cache) {
+                Ok(measured) if ran.as_ref() == Some(&measured.identity) => measured,
+                Ok(_) => {
+                    observation = Some(SchemaObservation::Unreadable {
+                        reason: Unextractable::Changed,
+                    });
+                    return None;
+                }
+                Err(reason) => {
+                    observation = Some(SchemaObservation::Unreadable { reason });
+                    return None;
+                }
+            };
+            let recipe = table
+                .iter()
+                .find(|recipe| recipe.profile.schema_fingerprint == measured.fingerprint);
+            match recipe {
+                Some(_) => {
+                    matched = Some((measured.fingerprint, measured.binary_sha256));
+                }
+                None => {
+                    observation = Some(SchemaObservation::Drift {
+                        fingerprint: measured.fingerprint,
+                    });
+                }
+            }
+            recipe
+        });
+        match row {
+            Row::Listed(recipe) => Ok(Self {
                 version,
                 recipe,
                 admission: Admission::Listed,
+                fingerprinted,
             }),
-            Reported::Unlisted(version) => {
-                Self::admit_by_schema(binary, ran, version, deadline, cache)
+            Row::SchemaMatched(recipe) => {
+                let (fingerprint, binary_sha256) =
+                    matched.expect("a schema match records its fingerprint");
+                Ok(Self {
+                    version,
+                    recipe,
+                    admission: Admission::SchemaMatched {
+                        fingerprint,
+                        binary_sha256,
+                    },
+                    fingerprinted,
+                })
             }
-        }
-    }
-
-    fn admit_by_schema(
-        binary: &Path,
-        ran: Option<codex_schema::BinaryIdentity>,
-        version: String,
-        deadline: Instant,
-        cache: codex_schema::FingerprintCache<'_>,
-    ) -> Result<Self, VersionError> {
-        let measured =
-            codex_schema::fingerprint_binary_with(binary, deadline, cache).map_err(|reason| {
-                VersionError::SchemaUnextractable {
-                    version: version.clone(),
-                    reason,
-                }
-            })?;
-        if ran.as_ref() != Some(&measured.identity) {
-            return Err(VersionError::SchemaUnextractable {
-                version,
-                reason: Unextractable::Changed,
-            });
-        }
-        match RECIPES
-            .iter()
-            .find(|recipe| recipe.profile.schema_fingerprint == measured.fingerprint)
-        {
-            Some(recipe) => Ok(Self {
+            Row::Optimistic { recipe, admission } => Ok(Self {
                 version,
                 recipe,
-                admission: Admission::SchemaMatched {
-                    fingerprint: measured.fingerprint,
-                    binary_sha256: measured.binary_sha256,
+                admission: Admission::Optimistic {
+                    admission,
+                    schema: observation.unwrap_or(SchemaObservation::Unreadable {
+                        reason: Unextractable::NoSchemas,
+                    }),
                 },
+                fingerprinted,
             }),
-            None => Err(VersionError::SchemaUnmatched {
+            Row::Refused(Refusal::Unparsable) => Err(VersionError::Unrecognized),
+            Row::Refused(Refusal::OlderThanSupported(_)) => Err(VersionError::Unsupported(version)),
+            Row::Refused(Refusal::KnownBroken {
+                range,
+                newest_working,
+            }) => Err(VersionError::KnownBroken {
                 version,
-                fingerprint: measured.fingerprint,
+                range,
+                newest_working,
             }),
         }
     }
 
-    fn reported(stdout: &[u8]) -> Result<Reported, VersionError> {
+    /// The version text of one `codex-cli <version>` line (not yet parsed).
+    fn reported(stdout: &[u8]) -> Result<String, VersionError> {
         if stdout.len() as u64 > VERSION_OUTPUT_LIMIT {
             return Err(VersionError::Unrecognized);
         }
@@ -397,25 +492,29 @@ impl InstalledVersion {
         let version = line
             .strip_prefix("codex-cli ")
             .ok_or(VersionError::Unrecognized)?;
-        match recipe_for(version) {
-            Ok(recipe) => Ok(Reported::Listed(version.to_owned(), recipe)),
-            Err(LookupError::Unrecognized) => Err(VersionError::Unrecognized),
-            Err(LookupError::Unsupported(_)) => Ok(Reported::Unlisted(version.to_owned())),
-        }
+        Ok(version.to_owned())
     }
 
     /// Listed-recipe parse of `--version` output with no binary to
     /// fingerprint: an unlisted version is `Unsupported`.
     #[cfg(test)]
     fn from_output(stdout: &[u8]) -> Result<Self, VersionError> {
-        match Self::reported(stdout)? {
-            Reported::Listed(version, recipe) => Ok(Self {
+        let version = Self::reported(stdout)?;
+        match recipe_for(&version) {
+            Ok(recipe) => Ok(Self {
                 version,
                 recipe,
                 admission: Admission::Listed,
+                fingerprinted: None,
             }),
-            Reported::Unlisted(version) => Err(VersionError::Unsupported(version)),
+            Err(LookupError::Unrecognized) => Err(VersionError::Unrecognized),
+            Err(LookupError::Unsupported(_)) => Err(VersionError::Unsupported(version)),
         }
+    }
+
+    /// The file whose embedded schemas were fingerprinted, if any.
+    pub fn fingerprinted(&self) -> Option<&Path> {
+        self.fingerprinted.as_deref()
     }
 
     pub fn as_str(&self) -> &str {
@@ -434,7 +533,9 @@ impl InstalledVersion {
 
     /// One bounded line (at most 256 bytes) of admission evidence for
     /// doctor, Health and the hook's stored evidence, e.g.
-    /// `codex 0.158.0: listed recipe codex-hooks-v1` or
+    /// `codex 0.158.0: listed recipe codex-hooks-v1`,
+    /// `codex 0.159.3: optimistic (newer-than-verified): assumed recipe
+    /// codex-hooks-v1; schema drift sha256:…` or
     /// `codex 0.159.2: schema-matched, live-unverified: recipe
     /// codex-hooks-v1 hook schemas sha256:…; binary sha256 <16 hex>` (the
     /// full binary digest stays in [`Admission::SchemaMatched`]).
@@ -453,6 +554,20 @@ impl InstalledVersion {
                 self.recipe.id,
                 &binary_sha256[..binary_sha256.len().min(16)]
             ),
+            Admission::Optimistic { admission, schema } => {
+                let schema = match schema {
+                    SchemaObservation::Drift { fingerprint } => format!("drift {fingerprint}"),
+                    SchemaObservation::Unreadable { reason } => {
+                        format!("unreadable ({reason})")
+                    }
+                };
+                format!(
+                    "codex {}: {OPTIMISTIC_LABEL} ({}): assumed recipe {}; schema {schema}",
+                    self.version,
+                    admission.placement.label(),
+                    admission.assumed_recipe
+                )
+            }
         };
         line.chars().take(256).collect()
     }
@@ -474,14 +589,33 @@ impl InstalledVersion {
 /// and reading stdout to EOF; the process group is killed on expiry. Shared by
 /// every adapter that gates on an observed installed version.
 pub(crate) fn version_output(binary: &Path, timeout: Duration) -> Result<Vec<u8>, VersionError> {
-    version_output_by(binary, Instant::now() + timeout)
+    version_output_by(binary, Instant::now() + timeout, None)
+}
+
+/// [`version_output`] that also kills the process group once `cancel` fires.
+pub(crate) fn version_output_cancellable(
+    binary: &Path,
+    timeout: Duration,
+    cancel: &Cancellation,
+) -> Result<Vec<u8>, VersionError> {
+    version_output_by(binary, Instant::now() + timeout, Some(cancel))
 }
 
 /// Run `<absolute binary> --version` and return its stdout before
 /// `deadline`. A process that exits but leaves a descendant holding stdout is
 /// `Unavailable`; its process group is killed.
-fn version_output_by(binary: &Path, deadline: Instant) -> Result<Vec<u8>, VersionError> {
-    bounded_output_by(binary, &["--version"], VERSION_OUTPUT_LIMIT, deadline)
+fn version_output_by(
+    binary: &Path,
+    deadline: Instant,
+    cancel: Option<&Cancellation>,
+) -> Result<Vec<u8>, VersionError> {
+    bounded_output_by(
+        binary,
+        &["--version"],
+        VERSION_OUTPUT_LIMIT,
+        deadline,
+        cancel,
+    )
 }
 
 /// Run `<absolute binary> ARGS...` with no stdin and return at most `limit`
@@ -493,7 +627,7 @@ pub(crate) fn bounded_output(
     limit: u64,
     timeout: Duration,
 ) -> Result<Vec<u8>, VersionError> {
-    bounded_output_by(binary, args, limit, Instant::now() + timeout)
+    bounded_output_by(binary, args, limit, Instant::now() + timeout, None)
 }
 
 fn bounded_output_by(
@@ -501,7 +635,9 @@ fn bounded_output_by(
     args: &[&str],
     limit: u64,
     deadline: Instant,
+    cancel: Option<&Cancellation>,
 ) -> Result<Vec<u8>, VersionError> {
+    let cancelled = || cancel.is_some_and(Cancellation::is_cancelled);
     if !binary.is_absolute() {
         return Err(VersionError::Unavailable);
     }
@@ -536,7 +672,9 @@ fn bounded_output_by(
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
+            Ok(None) if Instant::now() < deadline && !cancelled() => {
+                std::thread::sleep(Duration::from_millis(5))
+            }
             _ => {
                 kill_group();
                 let _ = child.kill();
@@ -609,15 +747,11 @@ impl VersionError {
             Self::Unavailable => "codex: --version could not be observed; refused".into(),
             Self::Unrecognized => "codex: --version output unrecognized; refused".into(),
             Self::Unsupported(version) => format!("codex {version}: no adapter recipe; refused"),
-            Self::SchemaUnmatched {
+            Self::KnownBroken {
                 version,
-                fingerprint,
-            } => format!(
-                "codex {version}: refused: embedded hook schemas {fingerprint} match no recipe"
-            ),
-            Self::SchemaUnextractable { version, reason } => format!(
-                "codex {version}: refused: embedded hook schemas not fingerprinted ({reason})"
-            ),
+                range,
+                newest_working,
+            } => crate::harness::known_broken_label("codex", version, range, *newest_working),
         }
     }
 }
@@ -634,13 +768,41 @@ impl InstalledAdmission {
     /// Observe the `codex` found on `path` (a `PATH` value) within
     /// `timeout`. Read-only: no persistent cache is written.
     pub fn observe_on_path(path: Option<&std::ffi::OsStr>, timeout: Duration) -> Self {
+        Self::observe_on_path_with(path, timeout, None)
+    }
+
+    /// [`Self::observe_on_path`] whose `--version` run is killed once
+    /// `cancel` fires.
+    pub(crate) fn observe_on_path_cancellable(
+        path: Option<&std::ffi::OsStr>,
+        timeout: Duration,
+        cancel: &Cancellation,
+    ) -> Self {
+        Self::observe_on_path_with(path, timeout, Some(cancel))
+    }
+
+    fn observe_on_path_with(
+        path: Option<&std::ffi::OsStr>,
+        timeout: Duration,
+        cancel: Option<&Cancellation>,
+    ) -> Self {
         let Some(binary) = resolve_on_path(path) else {
             return Self {
                 binary: None,
                 result: Err(InstalledRefusal::NotFound),
             };
         };
-        Self::observe_binary(binary, timeout, codex_schema::FingerprintCache::Memory)
+        let result = InstalledVersion::observe_with_cancel(
+            &binary,
+            timeout,
+            codex_schema::FingerprintCache::Memory,
+            cancel,
+        )
+        .map_err(InstalledRefusal::Refused);
+        Self {
+            binary: Some(binary),
+            result,
+        }
     }
 
     /// Observe the resolved absolute `binary` within `timeout`, using `cache`
@@ -667,12 +829,14 @@ impl InstalledAdmission {
         }
     }
 
-    /// `listed`, `schema-matched, live-unverified`, `refused` or `not_found`.
+    /// `listed`, `schema-matched, live-unverified`, `optimistic`, `refused` or
+    /// `not_found`.
     pub fn state(&self) -> &'static str {
         match &self.result {
             Ok(version) => match version.admission() {
                 Admission::Listed => "listed",
                 Admission::SchemaMatched { .. } => SCHEMA_MATCHED_LABEL,
+                Admission::Optimistic { .. } => OPTIMISTIC_LABEL,
             },
             Err(InstalledRefusal::NotFound) => "not_found",
             Err(InstalledRefusal::Refused(_)) => "refused",
@@ -817,6 +981,7 @@ pub fn parse_event_for_version(
         // The stored evidence of a schema-matched parse never claims the
         // recipe's live-observed input mapping.
         Admission::SchemaMatched { .. } => Capability::SchemaMatchedInput,
+        Admission::Optimistic { .. } => Capability::OptimisticInput,
     };
     Ok(event)
 }

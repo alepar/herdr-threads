@@ -1,0 +1,41 @@
+{
+  "harness": "claude",
+  "scenario": "midturn,warning",
+  "facts": {
+    "safe_wake_unsupported": true
+  },
+  "steps": [
+    [
+      "S17",
+      "PASS"
+    ],
+    [
+      "S18",
+      "PASS"
+    ],
+    [
+      "SM3",
+      "NOT_EXERCISED"
+    ]
+  ],
+  "phase_results": [
+    {
+      "phase": "initial",
+      "message": "msg-1",
+      "root_ack_calls": [
+        [
+          "toolu_ack",
+          "herdr-threads ack msg-1",
+          false
+        ]
+      ],
+      "receipt": {
+        "state": "acked"
+      },
+      "provenance": {
+        "ack": "cooperative_top_level",
+        "accept": "cooperative_top_level"
+      }
+    }
+  ]
+}

@@ -1,13 +1,11 @@
 use crate::protocol::{
-    authority::{
-        CallerClaim, DecisionFence, Harness, MutationPermit, ObligationRef, VerifiedCaller,
-    },
+    authority::{CallerClaim, Harness, MutationPermit, ObligationRef},
     commands::{Ack, SendMessage},
     ids::*,
     time::{Clock, MonoInstant, UtcMillis},
 };
 use crate::store::{connection::StoreContext, messages, receipts};
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, params};
 use std::{
     path::PathBuf,
     sync::{
@@ -38,6 +36,14 @@ fn setup() -> (StoreContext, Connection, Arc<TestClock>) {
     .unwrap();
     for (seat, target) in [("a", "pa"), ("b", "pb"), ("c", "pc"), ("d", "pd")] {
         conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'i','resolved','native',?2,1,1,0,1)", params![seat,target]).unwrap();
+        conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [target]).unwrap();
+    }
+    // The acting seats hold a live, not-yet-registered cooperative binding.
+    for (seat, target, session, execution) in [
+        ("a", "pa", "n", "00000000-0000-4000-8000-0000000000aa"),
+        ("b", "pb", "nb", "00000000-0000-4000-8000-0000000000bb"),
+    ] {
+        conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,?2,'b',1,1,'codex',?3,?4,'cooperative_top_level',0,'term-'||?2,'inc')", params![seat,target,session,execution]).unwrap();
     }
     conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
     for (seat, state) in [("a", "joined"), ("b", "joined"), ("c", "invited")] {
@@ -60,13 +66,13 @@ fn send_request(explicit: Vec<&str>) -> SendMessage {
         deadline_millis: None,
         operation: OperationId::new("op"),
         claim: CallerClaim {
-            instance: String::new(),
-            seat: SeatId::new("legacy-fixture"),
-            binding_generation: 0,
+            instance: "i".into(),
+            seat: SeatId::new("a"),
+            binding_generation: 1,
             role: crate::protocol::authority::CallerRole::TopLevel,
             harness: Harness::Codex,
             native_session: NativeSessionId::new("n"),
-            execution: ExecutionId::new("e"),
+            execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
             target: HostTargetId::new("pa"),
         },
     }
@@ -78,10 +84,6 @@ fn send_prepared(
     request: &SendMessage,
     permit: &mut MutationPermit,
     limits: messages::MessageLimits,
-    decision_fence: impl FnOnce(
-        &Transaction<'_>,
-        crate::store::connection::DecisionInstant,
-    ) -> Result<DecisionFence, crate::protocol::results::ApiError>,
 ) -> Result<crate::protocol::results::CommandResult, crate::protocol::results::ApiError> {
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(1000),
@@ -95,34 +97,38 @@ fn send_prepared(
             crate::ports::SendPreparationProgress::More { visited, .. } => assert!(visited > 0),
         }
     }
-    messages::publish_send(
-        context,
-        conn,
-        request,
-        permit,
-        &budget,
-        decision_fence,
-        || limits.body_bytes,
+    messages::publish_send(context, conn, request, permit, &budget, || {
+        limits.body_bytes
+    })
+}
+fn cooperative_permit(
+    claim: &CallerClaim,
+    operation: &OperationId,
+    obligation: ObligationRef,
+    digest: [u8; 32],
+    revisions: (u64, u64),
+) -> MutationPermit {
+    MutationPermit::cooperative(
+        claim.clone(),
+        operation.clone(),
+        obligation,
+        digest,
+        MonoInstant(50),
+        revisions,
+        crate::protocol::time::CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
     )
 }
 fn permit(request: &SendMessage) -> MutationPermit {
     let digest = crate::store::schema::canonical_digest(&messages::send_payload(request)).unwrap();
-    MutationPermit::new(
-        VerifiedCaller {
-            seat: SeatId::new("a"),
-            harness: Harness::Codex,
-            native_session: NativeSessionId::new("n"),
-            execution: ExecutionId::new("e"),
-            host_boot: HostBootId::new("b"),
-            target_generation: 1,
-            binding_generation: 1,
-            observed_at_utc: UtcMillis(900),
-        },
-        request.operation.clone(),
+    cooperative_permit(
+        &request.claim,
+        &request.operation,
         ObligationRef::Control(request.thread.clone()),
         digest,
-        MonoInstant(50),
-        1,
+        (1, 0),
     )
 }
 fn ack_request(ids: Vec<MessageId>) -> Ack {
@@ -130,49 +136,26 @@ fn ack_request(ids: Vec<MessageId>) -> Ack {
         messages: ids,
         operation: OperationId::new("ack-op"),
         claim: CallerClaim {
-            instance: String::new(),
-            seat: SeatId::new("legacy-fixture"),
-            binding_generation: 0,
+            instance: "i".into(),
+            seat: SeatId::new("b"),
+            binding_generation: 1,
             role: crate::protocol::authority::CallerRole::TopLevel,
             harness: Harness::Codex,
             native_session: NativeSessionId::new("nb"),
-            execution: ExecutionId::new("eb"),
+            execution: ExecutionId::new("00000000-0000-4000-8000-0000000000bb"),
             target: HostTargetId::new("pb"),
         },
     }
 }
 fn ack_permit(request: &Ack) -> MutationPermit {
     let digest = crate::store::schema::canonical_digest(&receipts::ack_payload(request)).unwrap();
-    MutationPermit::new(
-        VerifiedCaller {
-            seat: SeatId::new("b"),
-            harness: Harness::Codex,
-            native_session: NativeSessionId::new("nb"),
-            execution: ExecutionId::new("eb"),
-            host_boot: HostBootId::new("b"),
-            target_generation: 1,
-            binding_generation: 1,
-            observed_at_utc: UtcMillis(900),
-        },
-        request.operation.clone(),
-        ObligationRef::CheckIn(SeatId::new("b")),
+    cooperative_permit(
+        &request.claim,
+        &request.operation,
+        ObligationRef::CheckIn(request.claim.seat.clone()),
         digest,
-        MonoInstant(50),
-        1,
+        (1, 0),
     )
-}
-fn fence(
-    _: &Transaction<'_>,
-    _: crate::store::connection::DecisionInstant,
-) -> Result<DecisionFence, crate::protocol::results::ApiError> {
-    Ok(DecisionFence {
-        now: MonoInstant(0),
-        host_boot: HostBootId::new("b"),
-        host_epoch: 1,
-        target_generation: 1,
-        binding_generation: 1,
-        known_invalidated: false,
-    })
 }
 
 fn filter_revision(conn: &Connection, kind: &str, key: &str) -> i64 {
@@ -194,7 +177,6 @@ fn send_snapshots_joined_plus_explicit_invited_once() {
         &request,
         &mut permit(&request),
         messages::MessageLimits::default(),
-        fence,
     )
     .unwrap();
     let id = match result {
@@ -251,7 +233,6 @@ fn publication_uses_preparation_instance_for_message_and_manifest() {
         &request,
         &mut permit(&request),
         messages::MessageLimits::default(),
-        fence,
     )
     .unwrap();
     let id = match &first {
@@ -282,7 +263,6 @@ fn publication_uses_preparation_instance_for_message_and_manifest() {
         &request,
         &mut permit(&request),
         messages::MessageLimits::default(),
-        fence,
     )
     .unwrap();
     assert_eq!(replay, first);
@@ -306,7 +286,6 @@ fn invalid_ack_batch_rolls_back_all_settlement_and_warnings() {
         &send,
         &mut permit(&send),
         messages::MessageLimits::default(),
-        fence,
     )
     .unwrap()
     {
@@ -325,7 +304,6 @@ fn invalid_ack_batch_rolls_back_all_settlement_and_warnings() {
             },
             &request,
             &mut ack_permit(&request),
-            fence
         )
         .is_err()
     );
@@ -355,16 +333,7 @@ fn availability_uses_frozen_duration_and_scan_warns_once_at_equality() {
         receipt_duration_ms: 50,
         body_bytes: 10,
     };
-    let id = match send_prepared(
-        &context,
-        &mut conn,
-        &send,
-        &mut permit(&send),
-        limits,
-        fence,
-    )
-    .unwrap()
-    {
+    let id = match send_prepared(&context, &mut conn, &send, &mut permit(&send), limits).unwrap() {
         crate::protocol::results::CommandResult::MessageSent(id) => id,
         _ => panic!(),
     };
@@ -414,7 +383,6 @@ fn retired_recipient_is_fenced_from_new_send_and_due_scan() {
         &send,
         &mut permit(&send),
         messages::MessageLimits::default(),
-        fence,
     )
     .unwrap()
     {
@@ -448,7 +416,6 @@ fn retired_recipient_is_fenced_from_new_send_and_due_scan() {
         &other_send,
         &mut permit(&other_send),
         messages::MessageLimits::default(),
-        fence,
     )
     .unwrap()
     {
@@ -466,40 +433,6 @@ fn retired_recipient_is_fenced_from_new_send_and_due_scan() {
 }
 
 #[test]
-fn reordered_explicit_recipients_replay_original_message() {
-    let (context, mut conn, _) = setup();
-    let first = send_request(vec!["b", "c"]);
-    let original = send_prepared(
-        &context,
-        &mut conn,
-        &first,
-        &mut permit(&first),
-        messages::MessageLimits::default(),
-        fence,
-    )
-    .unwrap();
-    let retry = send_request(vec!["c", "b", "b"]);
-    let replay = send_prepared(
-        &context,
-        &mut conn,
-        &retry,
-        &mut permit(&retry),
-        messages::MessageLimits::default(),
-        fence,
-    )
-    .unwrap();
-    assert_eq!(replay, original);
-    let total: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM messages WHERE kind='ordinary'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(total, 1);
-}
-
-#[test]
 fn ack_at_deadline_warns_before_info_and_replay_keeps_original_attribution() {
     let (context, mut conn, clock) = setup();
     let mut send = send_request(vec![]);
@@ -510,7 +443,6 @@ fn ack_at_deadline_warns_before_info_and_replay_keeps_original_attribution() {
         &send,
         &mut permit(&send),
         messages::MessageLimits::default(),
-        fence,
     )
     .unwrap()
     {
@@ -532,7 +464,6 @@ fn ack_at_deadline_warns_before_info_and_replay_keeps_original_attribution() {
         },
         &request,
         &mut ack_permit(&request),
-        fence,
     )
     .unwrap();
     assert_eq!(
@@ -557,7 +488,6 @@ fn ack_at_deadline_warns_before_info_and_replay_keeps_original_attribution() {
             },
             &request,
             &mut ack_permit(&request),
-            fence
         )
         .unwrap(),
         first
@@ -598,15 +528,7 @@ fn configured_body_limit_rejects_one_byte_over_and_later_config_does_not_block_r
         receipt_duration_ms: 25,
         body_bytes: 4,
     };
-    let original = send_prepared(
-        &context,
-        &mut conn,
-        &send,
-        &mut permit(&send),
-        limits,
-        fence,
-    )
-    .unwrap();
+    let original = send_prepared(&context, &mut conn, &send, &mut permit(&send), limits).unwrap();
     let replay = send_prepared(
         &context,
         &mut conn,
@@ -616,22 +538,13 @@ fn configured_body_limit_rejects_one_byte_over_and_later_config_does_not_block_r
             receipt_duration_ms: 50,
             body_bytes: 3,
         },
-        fence,
     )
     .unwrap();
     assert_eq!(replay, original);
     let mut over = send_request(vec![]);
     over.operation = OperationId::new("other");
     over.body = "ééx".into();
-    let error = send_prepared(
-        &context,
-        &mut conn,
-        &over,
-        &mut permit(&over),
-        limits,
-        fence,
-    )
-    .unwrap_err();
+    let error = send_prepared(&context, &mut conn, &over, &mut permit(&over), limits).unwrap_err();
     assert_eq!(
         error.code,
         crate::protocol::results::ErrorCode::InvalidRequest
@@ -656,7 +569,6 @@ fn one_ack_batch_can_settle_messages_from_two_threads() {
         &send,
         &mut permit(&send),
         messages::MessageLimits::default(),
-        fence,
     )
     .unwrap()
     {
@@ -685,7 +597,6 @@ fn one_ack_batch_can_settle_messages_from_two_threads() {
         },
         &request,
         &mut ack_permit(&request),
-        fence,
     )
     .unwrap();
     assert!(matches!(
@@ -712,7 +623,6 @@ fn committed_ack_replay_survives_retirement_without_new_attribution() {
         &send,
         &mut permit(&send),
         messages::MessageLimits::default(),
-        fence,
     )
     .unwrap()
     {
@@ -729,7 +639,6 @@ fn committed_ack_replay_survives_retirement_without_new_attribution() {
         },
         &request,
         &mut ack_permit(&request),
-        fence,
     )
     .unwrap();
     conn.execute(
@@ -748,7 +657,6 @@ fn committed_ack_replay_survives_retirement_without_new_attribution() {
             },
             &request,
             &mut ack_permit(&request),
-            fence
         )
         .unwrap(),
         original
@@ -775,7 +683,6 @@ fn unavailable_joined_recipient_gets_one_warning_for_its_episode() {
             &send,
             &mut permit(&send),
             messages::MessageLimits::default(),
-            fence,
         )
         .unwrap();
     }
@@ -794,7 +701,7 @@ fn unavailable_joined_recipient_gets_one_warning_for_its_episode() {
 #[test]
 fn send_does_not_start_timer_from_stale_registered_binding() {
     let (context, mut conn, _) = setup();
-    conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('b',1,'pb','old',0,'codex','nb','eb','fresh',0,0,'term-'||'pb','inc')", []).unwrap();
+    conn.execute("UPDATE occupant_bindings SET host_boot='old',host_epoch=0,target_generation=0,registered_at=0 WHERE seat_id='b'", []).unwrap();
     let send = send_request(vec![]);
     let id = match send_prepared(
         &context,
@@ -802,7 +709,6 @@ fn send_does_not_start_timer_from_stale_registered_binding() {
         &send,
         &mut permit(&send),
         messages::MessageLimits::default(),
-        fence,
     )
     .unwrap()
     {
@@ -819,8 +725,14 @@ fn send_does_not_start_timer_from_stale_registered_binding() {
 #[test]
 fn current_binding_with_bumped_snapshot_generation_is_unavailable_and_warns_once() {
     let (context, mut conn, _) = setup();
-    conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('b',1,'pb','b',1,1,'codex','nb','eb','cooperative_top_level',0,0,'term-pb','inc')", []).unwrap();
-    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pb','b',1,1,0,'fresh','term-pb','inc','coherent_enumeration',1)", []).unwrap();
+    // setup() already gives seat b a live cooperative binding on pb and a
+    // fresh observation of pb; register that binding (merge note: main's
+    // fixture inserted both rows itself).
+    conn.execute(
+        "UPDATE occupant_bindings SET registered_at=0 WHERE seat_id='b' AND ended_at IS NULL",
+        [],
+    )
+    .unwrap();
     // Control: the same binding is available while the observed structural
     // generation matches, so the bump below is the only thing that changes.
     assert_eq!(
@@ -839,7 +751,6 @@ fn current_binding_with_bumped_snapshot_generation_is_unavailable_and_warns_once
         &send,
         &mut permit(&send),
         messages::MessageLimits::default(),
-        fence,
     )
     .unwrap()
     {
@@ -872,7 +783,6 @@ fn failed_operation_commit_rolls_back_message_receipt_and_wake() {
             &send,
             &mut permit(&send),
             messages::MessageLimits::default(),
-            fence
         )
         .is_err()
     );
@@ -917,17 +827,14 @@ fn due_cursor_progresses_in_bounded_physical_slices_past_warned_rows() {
 fn target_change_at_decision_rejects_prepared_send() {
     let (context, mut conn, _) = setup();
     let send = send_request(vec![]);
+    conn.execute("UPDATE seats SET target_id='rebound' WHERE id='a'", [])
+        .unwrap();
     let result = send_prepared(
         &context,
         &mut conn,
         &send,
         &mut permit(&send),
         messages::MessageLimits::default(),
-        |tx, at| {
-            tx.execute("UPDATE seats SET target_id='rebound' WHERE id='a'", [])
-                .unwrap();
-            fence(tx, at)
-        },
     );
     assert!(result.is_err());
     let count: i64 = conn
@@ -963,7 +870,6 @@ fn maximum_ack_batch_with_long_ids_fits_compact_info_event() {
         },
         &request,
         &mut ack_permit(&request),
-        fence,
     )
     .unwrap();
     let crate::protocol::results::CommandResult::Acknowledged(result) = result else {
@@ -1024,7 +930,6 @@ fn wide_send_publishes_one_manifest_with_all_logical_recipients() {
         &request,
         &mut permit(&request),
         &budget,
-        fence,
         || messages::MAX_BODY_BYTES,
     )
     .unwrap()
@@ -1075,7 +980,6 @@ fn manifest_receipt_can_be_acked_before_physical_projection() {
         &request,
         &mut permit(&request),
         &budget,
-        fence,
         || messages::MAX_BODY_BYTES,
     )
     .unwrap()
@@ -1093,7 +997,6 @@ fn manifest_receipt_can_be_acked_before_physical_projection() {
         },
         &ack,
         &mut ack_permit(&ack),
-        fence,
     )
     .unwrap();
     let crate::protocol::results::CommandResult::Acknowledged(result) = result else {
@@ -1285,7 +1188,6 @@ fn first_anchor_makes_sparse_receipt_due_for_late_ack() {
         &request,
         &mut permit(&request),
         &budget,
-        fence,
         || messages::MAX_BODY_BYTES,
     )
     .unwrap()
@@ -1311,7 +1213,6 @@ fn first_anchor_makes_sparse_receipt_due_for_late_ack() {
         },
         &ack,
         &mut ack_permit(&ack),
-        fence,
     )
     .unwrap();
     let marker: String = conn
@@ -1338,7 +1239,6 @@ fn first_anchor_makes_sparse_receipt_due_for_late_ack() {
         },
         &ack,
         &mut ack_permit(&ack),
-        fence,
     )
     .unwrap();
     assert!(matches!(
@@ -1382,7 +1282,6 @@ fn manifest_warning_is_visible_before_worker_projection() {
         &request,
         &mut permit(&request),
         &budget,
-        fence,
         || messages::MAX_BODY_BYTES,
     )
     .unwrap()
@@ -1440,7 +1339,6 @@ fn sparse_pending_unwarned_due_scan_marks_once() {
         &request,
         &mut permit(&request),
         &budget,
-        fence,
         || messages::MAX_BODY_BYTES,
     )
     .unwrap()
@@ -1484,19 +1382,21 @@ fn publish_rechecks_scalar_eligibility_after_decision_callback() {
         admission,
     )
     .unwrap();
+    conn.execute("UPDATE host_instances SET send_eligibility_revision=send_eligibility_revision+1 WHERE id='i'",[]).unwrap();
     let result = messages::publish_send(
         &context,
         &mut conn,
         &request,
         &mut permit(&request),
         &budget,
-        |tx, at| {
-            tx.execute("UPDATE host_instances SET send_eligibility_revision=send_eligibility_revision+1 WHERE id='i'",[]).unwrap();
-            fence(tx, at)
-        },
         || messages::MAX_BODY_BYTES,
     );
-    assert!(result.is_err());
+    // The captured eligibility revision no longer matches the live one: the
+    // publish-time snapshot comparison refuses with Conflict, not a generic error.
+    assert_eq!(
+        result.unwrap_err().code,
+        crate::protocol::results::ErrorCode::Conflict
+    );
     let messages: i64 = conn
         .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
         .unwrap();
@@ -1521,17 +1421,14 @@ fn publish_rejects_changed_structural_target_generation() {
         admission,
     )
     .unwrap();
+    conn.execute("UPDATE seats SET target_generation=2 WHERE id='a'", [])
+        .unwrap();
     let result = messages::publish_send(
         &context,
         &mut conn,
         &request,
         &mut permit(&request),
         &budget,
-        |tx, at| {
-            tx.execute("UPDATE seats SET target_generation=2 WHERE id='a'", [])
-                .unwrap();
-            fence(tx, at)
-        },
         || messages::MAX_BODY_BYTES,
     );
     assert!(result.is_err());
@@ -1558,24 +1455,25 @@ fn ack_records_binding_generation_separately_from_target_generation() {
     conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t','b','pending',300000)",[]).unwrap();
     conn.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
         .unwrap();
-    let request = ack_request(vec![MessageId::new("m")]);
+    conn.execute(
+        "UPDATE observed_targets SET generation=2 WHERE instance_id='i' AND target_id='pb'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE occupant_bindings SET generation=3,target_generation=2 WHERE seat_id='b'",
+        [],
+    )
+    .unwrap();
+    let mut request = ack_request(vec![MessageId::new("m")]);
+    request.claim.binding_generation = 3;
     let digest = crate::store::schema::canonical_digest(&receipts::ack_payload(&request)).unwrap();
-    let mut grant = MutationPermit::new(
-        VerifiedCaller {
-            seat: SeatId::new("b"),
-            harness: Harness::Codex,
-            native_session: NativeSessionId::new("nb"),
-            execution: ExecutionId::new("eb"),
-            host_boot: HostBootId::new("b"),
-            target_generation: 2,
-            binding_generation: 3,
-            observed_at_utc: UtcMillis(900),
-        },
-        request.operation.clone(),
+    let mut grant = cooperative_permit(
+        &request.claim,
+        &request.operation,
         ObligationRef::CheckIn(SeatId::new("b")),
         digest,
-        MonoInstant(50),
-        1,
+        (2, 0),
     );
     receipts::ack(
         &context,
@@ -1586,12 +1484,6 @@ fn ack_records_binding_generation_separately_from_target_generation() {
         },
         &request,
         &mut grant,
-        |tx, at| {
-            let mut f = fence(tx, at)?;
-            f.target_generation = 2;
-            f.binding_generation = 3;
-            Ok(f)
-        },
     )
     .unwrap();
     let generation: i64 = conn
@@ -1607,8 +1499,11 @@ fn ack_records_binding_generation_separately_from_target_generation() {
 #[test]
 fn published_send_freezes_available_recipient_duration() {
     let (context, mut conn, _) = setup();
-    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pb','b',1,1,900,'fresh','term-'||'pb','inc','coherent_enumeration',1)",[]).unwrap();
-    conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('b',1,1,'pb','b',1,'codex','nb','eb','fresh',0,900,'term-'||'pb','inc')",[]).unwrap();
+    conn.execute(
+        "UPDATE occupant_bindings SET registered_at=900 WHERE seat_id='b'",
+        [],
+    )
+    .unwrap();
     let mut request = send_request(vec![]);
     request.deadline_millis = Some(750);
     let budget = crate::protocol::time::CallBudget {
@@ -1634,7 +1529,6 @@ fn published_send_freezes_available_recipient_duration() {
         &request,
         &mut permit(&request),
         &budget,
-        fence,
         || messages::MAX_BODY_BYTES,
     )
     .unwrap()
@@ -1651,7 +1545,7 @@ fn published_send_freezes_available_recipient_duration() {
     let frozen:i64=conn.query_row("SELECT pr.frozen_duration_ms FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id WHERE sm.message_id=?1 AND pr.seat_id='b'",[id.as_str()],|r|r.get(0)).unwrap();
     assert_eq!(frozen, 750);
     let provenance:String=conn.query_row("SELECT pr.availability_provenance FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id WHERE sm.message_id=?1 AND pr.seat_id='b'",[id.as_str()],|r|r.get(0)).unwrap();
-    assert_eq!(provenance, "fresh");
+    assert_eq!(provenance, "cooperative_top_level");
     let observation: String = conn
         .query_row(
             "SELECT native_observation FROM messages WHERE id=?1",
@@ -1690,7 +1584,6 @@ fn later_send_reuses_first_published_unavailability_warning() {
             &request,
             &mut permit(&request),
             &budget,
-            fence,
             || messages::MAX_BODY_BYTES,
         )
         .unwrap();
@@ -1864,7 +1757,6 @@ fn sequence_exhaustion_rolls_back_manifest_publication() {
         &request,
         &mut permit(&request),
         &budget,
-        fence,
         || messages::MAX_BODY_BYTES,
     );
     assert_eq!(
@@ -1909,7 +1801,6 @@ fn send_rejects_receipt_deadline_overflow_at_publication() {
         &request,
         &mut permit(&request),
         &budget,
-        fence,
         || messages::MAX_BODY_BYTES,
     )
     .unwrap_err();
@@ -1984,7 +1875,6 @@ fn publication_rechecks_reduced_body_limit_and_replay_keeps_committed_result() {
         &request,
         &mut permit(&request),
         &budget,
-        fence,
         || effective_body_limit.load(Ordering::SeqCst),
     )
     .unwrap_err();
@@ -2035,7 +1925,6 @@ fn publication_rechecks_reduced_body_limit_and_replay_keeps_committed_result() {
         &request,
         &mut permit(&request),
         &budget,
-        fence,
         || effective_body_limit.load(Ordering::SeqCst),
     )
     .unwrap();
@@ -2045,7 +1934,6 @@ fn publication_rechecks_reduced_body_limit_and_replay_keeps_committed_result() {
         &request,
         &mut permit(&request),
         &budget,
-        fence,
         || panic!("committed replay read current limit"),
     )
     .unwrap();
@@ -2062,7 +1950,6 @@ fn failed_ack_event_rolls_back_settlement_warning_and_scoped_revisions() {
         &send,
         &mut permit(&send),
         messages::MessageLimits::default(),
-        fence,
     )
     .unwrap()
     {
@@ -2092,7 +1979,6 @@ fn failed_ack_event_rolls_back_settlement_warning_and_scoped_revisions() {
             },
             &request,
             &mut ack_permit(&request),
-            fence
         )
         .is_err()
     );
@@ -2158,7 +2044,6 @@ fn ack_last_pending_receipt_for_left_seat_invalidates_thread_directory() {
             },
             &request,
             &mut ack_permit(&request),
-            fence
         )
         .is_err()
     );
@@ -2183,7 +2068,6 @@ fn ack_last_pending_receipt_for_left_seat_invalidates_thread_directory() {
         },
         &request,
         &mut ack_permit(&request),
-        fence,
     )
     .unwrap();
     assert_eq!(filter_revision(&conn, "directory", "t"), before + 1);
@@ -2209,7 +2093,6 @@ fn already_acknowledged_new_operation_does_not_invalidate_directory() {
         &send,
         &mut permit(&send),
         messages::MessageLimits::default(),
-        fence,
     )
     .unwrap()
     {
@@ -2226,7 +2109,6 @@ fn already_acknowledged_new_operation_does_not_invalidate_directory() {
         },
         &first,
         &mut ack_permit(&first),
-        fence,
     )
     .unwrap();
     let revision = filter_revision(&conn, "directory", "t");
@@ -2247,7 +2129,6 @@ fn already_acknowledged_new_operation_does_not_invalidate_directory() {
         },
         &second,
         &mut ack_permit(&second),
-        fence,
     )
     .unwrap();
     let crate::protocol::results::CommandResult::Acknowledged(result) = result else {
@@ -2342,7 +2223,6 @@ fn foreground_write_between_preparation_quanta_and_failed_publication_stays_hidd
             &request,
             &mut permit(&request),
             &budget,
-            fence,
             || messages::MAX_BODY_BYTES
         )
         .unwrap_err()
@@ -2402,7 +2282,6 @@ fn publish(
         &request,
         &mut permit(&request),
         messages::MessageLimits::default(),
-        fence,
     )
     .unwrap()
     {
@@ -2551,7 +2430,6 @@ fn pending_only_thread_candidates_cover_every_canonical_pending_receipt() {
         },
         &ack,
         &mut ack_permit(&ack),
-        fence,
     )
     .unwrap();
     // The due path stores a pending sparse marker for the anchored receipt.

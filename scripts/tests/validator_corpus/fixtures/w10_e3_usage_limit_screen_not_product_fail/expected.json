@@ -1,0 +1,6 @@
+{
+  "finding": "w10_e3_usage_limit_screen_not_product_fail",
+  "entry": "lostprompt_launch_manifest",
+  "verdict": "UNSUPPORTED",
+  "reason": "environment_usage_limit"
+}

@@ -3,8 +3,8 @@
 //! (`harness::launch::launch_managed`).
 //!
 //! Preflight, in order:
-//! 1. installed-version recipe gate: `<harness> --version` must be covered by
-//!    an adapter recipe (the same observation `setup` and the hook use);
+//! 1. installed-version recipe gate: `<harness> --version` must be admitted by
+//!    the admission ladder (the same observation `setup` and the hook use);
 //! 2. inside the policy: a fresh explicit-target read that must be an
 //!    available shell, the pane's seat resolved through the daemon's ordinary
 //!    guarded `seat resolve` path (a recovery hold refuses), the owned
@@ -70,6 +70,14 @@ pub trait CodexShellProbe {
     /// The shell's description of `codex` (stdout only), or why it could
     /// not be obtained.
     fn resolve_codex(&self) -> Result<String, String>;
+
+    /// The value the pane's interactive shell itself gives `var` (an `export`
+    /// in its startup files), without the launcher's own value; `None` when
+    /// the shell sets none or cannot be asked. Herdr's `agent.start` carries
+    /// no environment, so the agent inherits whatever the pane shell has.
+    fn pane_shell_env(&self, _var: &str) -> Option<String> {
+        None
+    }
 }
 
 /// The bound on the shell probe; on timeout launch keeps adding `--no-daemon`.
@@ -95,21 +103,16 @@ impl SystemShellProbe {
     }
 }
 
-impl CodexShellProbe for SystemShellProbe {
-    fn resolve_codex(&self) -> Result<String, String> {
-        let is_zsh = self
-            .shell
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.contains("zsh"));
-        let script = if is_zsh {
-            "whence -f codex 2>/dev/null || type codex"
-        } else {
-            "type codex"
-        };
-        let mut child = Process::new(&self.shell)
-            .arg("-ic")
-            .arg(script)
+impl SystemShellProbe {
+    /// Runs `script` in the interactive shell (`-ic`), stdout only, bounded by
+    /// the probe timeout. `unset` removes one inherited variable first.
+    fn run_script(&self, script: &str, unset: Option<&str>) -> Result<String, String> {
+        let mut command = Process::new(&self.shell);
+        command.arg("-ic").arg(script);
+        if let Some(var) = unset {
+            command.env_remove(var);
+        }
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -149,6 +152,35 @@ impl CodexShellProbe for SystemShellProbe {
     }
 }
 
+impl CodexShellProbe for SystemShellProbe {
+    fn resolve_codex(&self) -> Result<String, String> {
+        let is_zsh = self
+            .shell
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.contains("zsh"));
+        let script = if is_zsh {
+            "whence -f codex 2>/dev/null || type codex"
+        } else {
+            "type codex"
+        };
+        self.run_script(script, None)
+    }
+
+    fn pane_shell_env(&self, var: &str) -> Option<String> {
+        const BEGIN: &str = "HT_PANE_ENV_BEGIN";
+        const END: &str = "HT_PANE_ENV_END";
+        // Only a plain variable name is ever interpolated into the script.
+        if var.is_empty() || !var.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
+            return None;
+        }
+        let script = format!("printf '%s' {BEGIN}\"${{{var}-}}\"{END}");
+        let output = self.run_script(&script, Some(var)).ok()?;
+        let value = output.split(BEGIN).nth(1)?.split(END).next()?;
+        (!value.is_empty()).then(|| value.to_owned())
+    }
+}
+
 /// Whether a shell's description of `codex` (a function body or alias)
 /// passes `--no-daemon` as a word of its own. Comment lines are ignored;
 /// `--no-daemon=...` is not the flag.
@@ -176,12 +208,15 @@ pub const LAUNCH_HELP: &str = "Target:
   guarded `agent start` refuses a busy pane.
 
 Preflight (nothing is started when any step refuses):
-  - `<kind> --version` must be covered by an adapter recipe (exit 4 otherwise);
+  - `<kind> --version` must not be refused by the admission ladder (unparsable, inside a
+    known-broken range, or older than every recipe: exit 4); an optimistic or schema-matched
+    version is admitted with its label;
   - the pane's seat is resolved like `seat resolve --pane`; a recovery-held target
     needs `seat rebind ... --operator` or a fresh seat first;
   - the owned user-level hooks must be set up (`herdr-threads setup claude|codex`) in the
-    Claude settings / Codex hooks.json that launch's own CLAUDE_CONFIG_DIR / CODEX_HOME
-    (or HOME) resolve, which the started agent must share; for Codex under a sandbox
+    Claude settings / Codex hooks.json of the CLAUDE_CONFIG_DIR / CODEX_HOME the agent
+    will use (an absolute one the pane's shell exports, else launch's own, else HOME;
+    the report's config_dir names it); for Codex under a sandbox
     that refuses the daemon socket, the recorded config.toml allowance for this
     instance's socket too;
   - a last fresh read of the pane just before Herdr starts the agent.
@@ -201,6 +236,11 @@ auto-approve flag is added.
 Launch is not receipt: it never checks in, accepts or ACKs. Invitations and messages
 sent before launch stay pending; the agent's SessionStart hook shows them, and
 `herdr-threads inbox --seat SEAT` lists them even when the initial prompt is lost.
+
+A harness that exits right after the start (for example Codex refusing its arguments)
+fails launch at once with invalid_request and the pane's last lines. Codex launches report
+`codex`: the effective CODEX_HOME, its config.toml and the selected profile (-p/--profile,
+else `profile` in config.toml, else default).
 
 Exit status: 0 startup observed; 5 start may have happened but was not confirmed:
 inspect the pane (`herdr agent get` / `herdr agent read`) before launching again.";
@@ -250,12 +290,7 @@ pub fn pane_label(target: &HostTargetId, panes: &[PaneName]) -> Option<String> {
 }
 
 fn api(code: ErrorCode, detail: impl Into<String>) -> ApiError {
-    ApiError {
-        code,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::new(code, detail)
 }
 
 fn policy_harness(harness: ContextHarness) -> Harness {
@@ -601,10 +636,93 @@ fn append_record(dir: &Path, record: &Value) -> io::Result<()> {
     file.write_all(&line)
 }
 
+/// The config directory the agent will use and where that came from: the
+/// pane shell's own `CODEX_HOME` / `CLAUDE_CONFIG_DIR` (an `export` in its
+/// startup files; Herdr's `agent.start` carries no environment, so the agent
+/// inherits the pane's) when it sets an absolute one, else the launcher's
+/// resolved value (the pane then inherits the Herdr server's environment,
+/// which launch cannot read). Returns the environment to inspect with.
+fn effective_env(
+    request: &LaunchRequest,
+    env: &SetupEnv,
+    probe: &dyn CodexShellProbe,
+) -> (SetupEnv, &'static str) {
+    let var = match request.harness {
+        ContextHarness::Codex => "CODEX_HOME",
+        ContextHarness::Claude => "CLAUDE_CONFIG_DIR",
+        ContextHarness::Human => return (env.clone(), "launcher"),
+    };
+    let pane_dir = probe
+        .pane_shell_env(var)
+        .map(std::path::PathBuf::from)
+        .filter(|dir| dir.is_absolute());
+    let Some(dir) = pane_dir else {
+        return (env.clone(), "launcher");
+    };
+    let mut effective = env.clone();
+    match request.harness {
+        ContextHarness::Codex => effective.codex_home = Some(dir),
+        _ => effective.claude_config_dir = Some(dir),
+    }
+    (effective, "pane_shell")
+}
+
+/// The Codex profile Codex applies: `-p/--profile` before `--` (the last one
+/// wins), else the top-level `profile` key of `config.toml`, else none.
+pub fn codex_profile(argv: &[String], config: Option<&str>) -> (String, &'static str) {
+    let options_end = argv.iter().position(|a| a == "--").unwrap_or(argv.len());
+    let options = &argv[..options_end];
+    let mut chosen = None;
+    for (index, arg) in options.iter().enumerate() {
+        let value = match arg.as_str() {
+            "-p" | "--profile" => options.get(index + 1).map(String::as_str),
+            other => other
+                .strip_prefix("--profile=")
+                .or_else(|| other.strip_prefix("-p").filter(|rest| !rest.is_empty())),
+        };
+        if let Some(value) = value {
+            chosen = Some(value.to_owned());
+        }
+    }
+    if let Some(profile) = chosen {
+        return (profile, "argv");
+    }
+    let from_config = config
+        .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok())
+        .and_then(|doc| doc.get("profile")?.as_str().map(str::to_owned));
+    match from_config {
+        Some(profile) => (profile, "config.toml"),
+        None => ("default".to_owned(), "none"),
+    }
+}
+
+/// The effective Codex home, its `config.toml` and the selected profile,
+/// which answers "why was my Codex profile not applied?".
+fn codex_report(env: &SetupEnv, argv: &[String]) -> Value {
+    let home = env.codex_home.as_deref();
+    let config_path = home.map(|home| home.join("config.toml"));
+    let config = config_path
+        .as_deref()
+        .and_then(|path| fs::read_to_string(path).ok());
+    let (profile, profile_source) = codex_profile(argv, config.as_deref());
+    json!({
+        "codex_home": home.map(|home| home.display().to_string()),
+        "config_path": config_path.as_ref().map(|path| path.display().to_string()),
+        "config_present": config.is_some(),
+        "profile": profile,
+        "profile_source": profile_source,
+    })
+}
+
 /// Run the managed launch preflight and start; errors are refusals before
 /// any start was submitted.
 pub fn execute(request: &LaunchRequest, parts: &LaunchParts<'_>) -> Result<LaunchReport, RunError> {
     let word = harness_word(request.harness);
+    let (effective, config_dir_source) = effective_env(request, parts.env, parts.shell_probe);
+    let parts = &LaunchParts {
+        env: &effective,
+        ..*parts
+    };
     // 1. Installed-version recipe gate.
     let setup_request = SetupRequest {
         verb: SetupVerb::Status,
@@ -720,6 +838,16 @@ pub fn execute(request: &LaunchRequest, parts: &LaunchParts<'_>) -> Result<Launc
             "--name `{name}` was fitted to Herdr's agent-name rule [a-z][a-z0-9_-]{{0,31}}"
         ));
     }
+    let config_dir = json!({
+        "path": match request.harness {
+            ContextHarness::Codex => parts.env.codex_home.as_deref(),
+            _ => parts.env.claude_config_dir.as_deref(),
+        }
+        .map(|dir| dir.display().to_string()),
+        "source": config_dir_source,
+    });
+    let codex =
+        (request.harness == ContextHarness::Codex).then(|| codex_report(parts.env, &request.argv));
     let record = json!({
         "at_utc_ms": parts.clock.utc_now().0,
         "pane": request.target.as_str(),
@@ -732,6 +860,8 @@ pub fn execute(request: &LaunchRequest, parts: &LaunchParts<'_>) -> Result<Launc
         "argv": argv,
         "caller_argv": request.argv,
         "codex_wrapper": codex_wrapper,
+        "config_dir": config_dir,
+        "codex": codex,
         "harness_version": observed.version,
         "recipe": observed.recipe,
     });
@@ -750,6 +880,8 @@ pub fn execute(request: &LaunchRequest, parts: &LaunchParts<'_>) -> Result<Launc
         "agent_name_source": name_source,
         "argv": argv,
         "codex_wrapper": codex_wrapper,
+        "config_dir": config_dir,
+        "codex": codex,
         "harness_version": {
             "binary": observed.binary.display().to_string(),
             "version": observed.version,

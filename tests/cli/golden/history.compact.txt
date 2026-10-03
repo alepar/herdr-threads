@@ -1,0 +1,6 @@
+history
+#1 msg-1 seat-a 09-28 08:45Z: hello there
+#2 msg-2 seat-b 09:30Z [more: herdr-threads body msg-2]: a long reply that was clipped
+#3 msg-3 seat-a 09:30Z warn: deadline missed
+#4 deadline_set seat-b msg-2 constraint=reply deadline=2026-10-03T09:30Z revision=3: please answer
+next: herdr-threads history t-1 --cursor cursor-1

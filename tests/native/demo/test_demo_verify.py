@@ -35,7 +35,7 @@ def args(root, **over):
                 codex_effort="low", codex_sandbox="workspace-write", codex_config=[], codex_transport="setup",
                 claude_model="claude-haiku-4-5-20251001", claude_permission_mode="default", claude_budget_usd=0.2,
                 scenario="base", burst_threads=22, warning_deadline=5, launch="manual", launch_argv=demo.MANAGED_LAUNCH_ARGV,
-                claude_json=str(Path(root) / "claude.json"), deadline=900)
+                claude_json=str(Path(root) / "claude.json"), deadline=900, codex_bin=None)
     base.update(over)
     return argparse.Namespace(**base)
 
@@ -481,7 +481,7 @@ class FakeHostDriver:
     """Stubs the process helpers so cleanup/TUI logic runs without Herdr or a daemon."""
 
     def __init__(self, test, **over):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = tempfile.TemporaryDirectory(dir=over.pop("tmp_dir", None))
         test.addCleanup(self.tmp.cleanup)
         self.driver = demo.Driver(args(self.tmp.name, **over))
         test.addCleanup(self.driver.cmdlog.close)
@@ -1038,6 +1038,157 @@ class VersionPinTests(unittest.TestCase):
         status, _, _ = self.run_pin("0.159.2", {"recipes": "codex-hooks-v1 {0.157.1, 0.158.0}", "installed": {
             "admission": "refused", "version": "0.159.2"}})
         self.assertEqual(status, demo.FAIL)
+
+
+class ScratchTrustGuardTests(unittest.TestCase):
+    """ht-p03.140: a folder-trust answer is approved only for a project inside the run's own /private/tmp root."""
+
+    def test_project_inside_private_tmp_run_root_is_approved(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+            root = Path(tmp) / "run"
+            (root / "project").mkdir(parents=True)
+            self.assertIsNone(demo.scratch_trust_refusal(root / "project", root))
+
+    def test_tmp_spelling_of_private_tmp_root_is_approved(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+            root = Path(tmp) / "run"
+            (root / "project").mkdir(parents=True)
+            alias = Path("/tmp") / Path(tmp).name / "run"
+            if not alias.exists():
+                self.skipTest("/tmp is not an alias of /private/tmp here")
+            self.assertIsNone(demo.scratch_trust_refusal(alias / "project", alias))
+
+    def test_root_outside_private_tmp_is_refused_naming_the_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "run"
+            (root / "project").mkdir(parents=True)
+            if str(root).startswith("/private/tmp/"):
+                self.skipTest("gettempdir is under /private/tmp here")
+            reason = demo.scratch_trust_refusal(root / "project", root)
+            self.assertIn(str(root), reason)
+            self.assertIn("outside", reason)
+
+    def test_project_outside_the_run_root_is_refused_naming_the_project(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+            root = Path(tmp) / "run"
+            other = Path(tmp) / "other"
+            root.mkdir()
+            other.mkdir()
+            reason = demo.scratch_trust_refusal(other, root)
+            self.assertIn(str(other.resolve()), reason)
+            self.assertIn("outside the run root", reason)
+
+    def test_symlink_inside_root_pointing_outside_is_refused(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+            root = Path(tmp) / "run"
+            other = Path(tmp) / "other"
+            root.mkdir()
+            other.mkdir()
+            (root / "project").symlink_to(other)
+            self.assertIn("outside the run root", demo.scratch_trust_refusal(root / "project", root))
+
+    def test_dotdot_cannot_step_outside(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+            root = Path(tmp) / "run"
+            (Path(tmp) / "other").mkdir()
+            root.mkdir()
+            self.assertIsNotNone(demo.scratch_trust_refusal(root / ".." / "other", root))
+
+    def test_private_tmp_itself_as_project_is_refused(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+            self.assertIsNotNone(demo.scratch_trust_refusal(Path("/private/tmp"), Path(tmp)))
+
+
+class CodexBinTests(unittest.TestCase):
+    """ht-p03.140: --codex-bin pins the Codex binary for preflight, children, the pane launch and the hook."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.stub = Path(self.tmp.name).resolve() / "pinned" / "codex"
+        self.stub.parent.mkdir()
+        self.stub.write_text("#!/bin/sh\necho 'codex-cli 0.159.3'\n")
+        self.stub.chmod(0o755)
+        saved = os.environ["PATH"]
+        self.addCleanup(os.environ.__setitem__, "PATH", saved)
+
+    def parse(self, *argv):
+        with contextlib.redirect_stderr(io.StringIO()):
+            return demo.parse(["--bin", "/bin/true", *argv])
+
+    def rejected(self, *argv):
+        with self.assertRaises(SystemExit):
+            self.parse(*argv)
+
+    def driver(self, **over):
+        host = FakeHostDriver(self, harness="codex", codex_bin=str(self.stub), **over)
+        return host.driver
+
+    def test_rejected_with_claude_relative_or_non_executable(self):
+        self.rejected("--harness", "claude", "--dry-run", "--codex-bin", str(self.stub))
+        self.rejected("--harness", "codex", "--dry-run", "--codex-bin", "codex")
+        plain = self.stub.parent / "plain"
+        plain.write_text("x")
+        self.rejected("--harness", "codex", "--dry-run", "--codex-bin", str(plain))
+
+    def test_absolute_executable_is_accepted(self):
+        self.assertEqual(self.parse("--harness", "codex", "--dry-run", "--codex-bin", "/bin/sh").codex_bin, "/bin/sh")
+
+    def test_env_default_is_read(self):
+        with mock.patch.dict(os.environ, {"HT_CODEX_BIN": str(self.stub)}):
+            self.assertEqual(self.parse("--harness", "codex", "--dry-run").codex_bin, str(self.stub))
+
+    def test_pinned_binary_is_named_in_print_and_tui_launch_strings(self):
+        d = self.driver()
+        shell, _, _ = d.launch_command("initial")
+        self.assertIn(f"command {self.stub} --no-daemon exec", shell)
+        self.assertNotIn("command codex ", shell)
+        d = self.driver(mode="tui")
+        shell, _, _ = d.launch_command("initial")
+        self.assertIn(f"command {self.stub} --no-daemon", shell)
+        self.assertNotIn("command codex ", shell)
+
+    def test_unpinned_launch_still_names_codex(self):
+        host = FakeHostDriver(self, harness="codex")
+        shell, _, _ = host.driver.launch_command("initial")
+        self.assertIn("command codex --no-daemon exec", shell)
+
+    def test_driver_path_resolves_pinned_binary_first(self):
+        self.driver()
+        self.assertEqual(os.environ["PATH"].split(os.pathsep)[0], str(self.stub.parent))
+
+    def test_scratch_symlinks_bindir_codex_to_the_pinned_binary(self):
+        d = self.driver()
+        d.run = lambda argv, **kw: (0, "", "")
+        d.s_scratch()
+        link = d.bindir / "codex"
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(os.readlink(link), str(self.stub))
+
+    def test_preflight_records_pinned_binary_version_path_and_pin(self):
+        d = self.driver()
+        seen = []
+
+        def run(argv, **kw):
+            seen.append(argv)
+            return 0, "codex-cli 0.159.3\n" if argv[-1] == "--version" and argv[0] == str(self.stub) else "x\n", ""
+        d.run = run
+        with mock.patch.object(demo.shutil, "which", lambda tool: f"/usr/bin/{tool}"):
+            d.s_preflight()
+        v = d.facts["versions"]
+        self.assertIn([str(self.stub), "--version"], seen)
+        self.assertEqual(v["codex"]["out"], "codex-cli 0.159.3")
+        self.assertEqual(v["codex_path"], str(self.stub.resolve()))
+        self.assertEqual(v["codex_bin_pinned"], str(self.stub))
+        self.assertEqual(v["codex_sha256"], demo.sha256(self.stub))
+
+    def test_preflight_unpinned_records_no_pin(self):
+        host = FakeHostDriver(self, harness="codex")
+        d = host.driver
+        d.run = lambda argv, **kw: (0, "codex-cli 0.160.0\n", "")
+        with mock.patch.object(demo.shutil, "which", lambda tool: f"/usr/bin/{tool}"):
+            d.s_preflight()
+        self.assertIsNone(d.facts["versions"]["codex_bin_pinned"])
 
 
 EVIDENCE = Path(__file__).resolve().parent / "evidence"
@@ -1925,6 +2076,27 @@ class WarningScenarioTests(ScenarioBase):
         (self.driver.ev / "pane-initial.txt").write_text(f"{demo.WAKE_MARKER}\n{demo.WAKE_MARKER}\n")
         self.assertEqual(self.driver.s_warning_wake()[0], demo.FAIL)
 
+    def test_earlier_wake_in_the_warning_scrollback_is_not_a_storm(self):
+        # ht-p03.20: the warning capture still shows the initial handoff's wake; one new marker is one coalesced wake.
+        self.receipt(acked_at=9000, warning="w-1")
+        self.warn("w-1", 10)
+        self.driver.s_warning_event()
+        self.wake(10, receipt_seq=5)
+        self.driver.facts["warning_marker_baseline"] = 1
+        (self.driver.ev / "pane-warning-baseline.txt").write_text(f"{demo.WAKE_MARKER}\n")
+        (self.driver.ev / "pane-warning.txt").write_text(f"{demo.WAKE_MARKER}\nmore\n{demo.WAKE_MARKER}\n")
+        status, detail, _ = self.driver.s_warning_wake()
+        self.assertEqual(status, demo.PASS, detail)
+
+    def test_two_new_markers_after_the_baseline_fail(self):
+        self.receipt(acked_at=9000, warning="w-1")
+        self.warn("w-1", 10)
+        self.driver.s_warning_event()
+        self.wake(10)
+        self.driver.facts["warning_marker_baseline"] = 1
+        (self.driver.ev / "pane-warning.txt").write_text(f"{demo.WAKE_MARKER}\n" * 3)
+        self.assertEqual(self.driver.s_warning_wake()[0], demo.FAIL)
+
     def test_short_deadline_goes_on_the_initial_handoff_only(self):
         calls = []
         self.driver.facts.update({"coordinator_seat": COORD, "coordinator_pane": "w1:p2"})
@@ -2436,6 +2608,9 @@ class InstructionGateTests(ScenarioBase):
     def test_unacked_midturn_without_instruction_is_not_exercised(self):
         self.driver.facts["midturn"] = {"message": "msg-mid"}
         self.driver.scenarios = demo.parse_scenarios("midturn")
+        # W6-D4: with no transcript at all, visibility is unknown (UNVERIFIED); NOT_EXERCISED needs a transcript that lacks it.
+        self.assertEqual(self.driver.s_midturn_ack()[0], demo.UNVERIFIED)
+        self.call("toolu_x", "herdr-threads inbox")
         self.assertEqual(self.driver.s_midturn_ack()[0], demo.NOT_EXERCISED)
         self.call("toolu_b", f"herdr-threads body {MSG}")
         self.assertEqual(self.driver.s_midturn_ack()[0], demo.FAIL)
@@ -2450,6 +2625,7 @@ class InstructionGateTests(ScenarioBase):
         for name in ("s_burst_has_more", "s_burst_continuation", "s_required_accept", "s_required_leave"):
             setattr(driver, name, lambda: (demo.FAIL, "judge failed", None))
         driver.s_required_no_receipts = lambda: (demo.PASS, "ok", None)
+        self.call("toolu_i1", "herdr-threads inbox")  # a transcript that lacks the instruction (W6-D4: none would be UNVERIFIED)
         driver.scenario_verdicts()
         status = {row["step"]: row["status"] for row in driver.steps}
         for sid in ("SB1", "SB2", "SR1", "SR2"):

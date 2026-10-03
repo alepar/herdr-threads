@@ -8,15 +8,24 @@ use crate::protocol::{
     results::{ApiError, CapabilityState, CommandResult, ComponentState, Health, HealthState},
     time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis},
 };
+use crate::test_support::spawn::SpawnOwned;
 use std::{
     fs,
     io::{Read, Write},
     os::unix::fs::PermissionsExt,
     path::PathBuf,
-    process::{Child, Command as ProcessCommand, Stdio},
+    process::{Command as ProcessCommand, Stdio},
     sync::Arc,
     time::{Duration, Instant},
 };
+
+/// A spawned process with every inherited HERDR_/CLAUDE/CODEX variable removed
+/// (ht-p03.24); a test sets the variables it needs after this call.
+fn scrubbed_process(program: impl AsRef<std::ffi::OsStr>) -> ProcessCommand {
+    let mut command = ProcessCommand::new(program);
+    crate::test_support::isolation::scrub_env(&mut command);
+    command
+}
 
 struct TestClock;
 impl Clock for TestClock {
@@ -30,6 +39,12 @@ impl Clock for TestClock {
 
 struct InertService;
 impl LocalService for InertService {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        service_operation,
+        handle_with_output
+    );
     fn handle(
         &self,
         _: Command,
@@ -42,6 +57,12 @@ impl LocalService for InertService {
 
 struct HealthService(String, String);
 impl LocalService for HealthService {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        service_operation,
+        handle_with_output
+    );
     fn handle(
         &self,
         command: Command,
@@ -82,7 +103,7 @@ fn fixture_paths(root: PathBuf) -> InstancePaths {
 
 struct ContinuousFixtureGuard {
     root: PathBuf,
-    owner: Child,
+    owner: crate::test_support::spawn::OwnedChild,
 }
 
 impl Drop for ContinuousFixtureGuard {
@@ -158,7 +179,7 @@ fn elected_child_output_rotates_without_retaining_a_terminal() {
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let started = Instant::now();
-    let status = ProcessCommand::new(std::env::current_exe().unwrap())
+    let status = scrubbed_process(std::env::current_exe().unwrap())
         .arg("--ignored")
         .arg("--exact")
         .arg("daemon::tests::elected_output_fixture")
@@ -207,7 +228,7 @@ fn startup_error_is_retained_in_elected_child_log() {
     let root = std::env::temp_dir().join(format!("herdr-task23-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-    let status = ProcessCommand::new(std::env::current_exe().unwrap())
+    let status = scrubbed_process(std::env::current_exe().unwrap())
         .arg("--ignored")
         .arg("--exact")
         .arg("daemon::tests::elected_output_fixture")
@@ -233,7 +254,7 @@ fn prepublication_factory_error_is_logged_without_a_ready_endpoint() {
     let root = std::env::temp_dir().join(format!("herdr-task23-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-    let status = ProcessCommand::new(std::env::current_exe().unwrap())
+    let status = scrubbed_process(std::env::current_exe().unwrap())
         .arg("--ignored")
         .arg("--exact")
         .arg("daemon::tests::elected_output_fixture")
@@ -267,7 +288,7 @@ fn owner_error_after_oversized_output_survives_final_drain() {
     let root = std::env::temp_dir().join(format!("herdr-task23-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-    let status = ProcessCommand::new(std::env::current_exe().unwrap())
+    let status = scrubbed_process(std::env::current_exe().unwrap())
         .arg("--ignored")
         .arg("--exact")
         .arg("daemon::tests::elected_output_fixture")
@@ -327,7 +348,7 @@ fn continuous_owner_fixture() {
         shutdown,
         |_, _, _| Ok(Arc::new(InertService)),
         move |_| {
-            let mut writer = ProcessCommand::new(std::env::current_exe().unwrap());
+            let mut writer = scrubbed_process(std::env::current_exe().unwrap());
             writer
                 .arg("--ignored")
                 .arg("--exact")
@@ -339,8 +360,10 @@ fn continuous_owner_fixture() {
             }
             // The writer is deliberately left running (and unreaped) past this
             // owner process: the fixture tests output from a detached writer.
+            // Tagged so the reaper still stops it once this fixture process is gone.
+            crate::test_support::spawn::tag(&mut writer);
             #[allow(clippy::zombie_processes)]
-            writer.spawn().unwrap();
+            writer.spawn().unwrap(); // leak-guard: deliberately outlives its owner (detached writer fixture); tagged above
             wait_until(Duration::from_secs(2), || {
                 root.join("writer-started").exists()
             });
@@ -403,7 +426,7 @@ fn run_continuous_case(slow: bool, probe_drain: bool) {
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let executable = std::env::current_exe().unwrap();
-    let mut owner_command = ProcessCommand::new(&executable);
+    let mut owner_command = scrubbed_process(&executable);
     owner_command
         .arg("--ignored")
         .arg("--exact")
@@ -420,12 +443,12 @@ fn run_continuous_case(slow: bool, probe_drain: bool) {
     }
     let mut guard = ContinuousFixtureGuard {
         root: root.clone(),
-        owner: owner_command.spawn().unwrap(),
+        owner: owner_command.spawn_owned().unwrap(),
     };
     wait_until(Duration::from_secs(5), || {
         root.join("writer-started").exists()
     });
-    let loser = ProcessCommand::new(&executable)
+    let loser = scrubbed_process(&executable)
         .arg("--ignored")
         .arg("--exact")
         .arg("daemon::tests::losing_owner_fixture")
@@ -535,7 +558,7 @@ fn run_continuous_case(slow: bool, probe_drain: bool) {
             .windows(cutoff.len())
             .any(|window| window == cutoff)
     );
-    let reacquired = ProcessCommand::new(&executable)
+    let reacquired = scrubbed_process(&executable)
         .arg("--ignored")
         .arg("--exact")
         .arg("daemon::tests::reacquired_owner_fixture")
@@ -675,7 +698,7 @@ fn detached_output_survives_ensure_parent_and_loser_does_not_touch_logs() {
     // The ensure callers have a readable stdin. The detached owner must
     // actively replace it with EOF rather than inherit this descriptor.
     let inherited_input = fs::File::open("/dev/zero").unwrap();
-    let mut ensure_one = ProcessCommand::new(&current)
+    let mut ensure_one = scrubbed_process(&current)
         .arg("--ignored")
         .arg("--exact")
         .arg("daemon::tests::ensure_parent_fixture")
@@ -684,9 +707,9 @@ fn detached_output_survives_ensure_parent_and_loser_does_not_touch_logs() {
         .stdin(Stdio::from(inherited_input.try_clone().unwrap()))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
+        .spawn_owned()
         .unwrap();
-    let mut ensure_two = ProcessCommand::new(&current)
+    let mut ensure_two = scrubbed_process(&current)
         .arg("--ignored")
         .arg("--exact")
         .arg("daemon::tests::ensure_parent_fixture")
@@ -695,7 +718,7 @@ fn detached_output_survives_ensure_parent_and_loser_does_not_touch_logs() {
         .stdin(Stdio::from(inherited_input))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
+        .spawn_owned()
         .unwrap();
     let first = ensure_one.wait().unwrap();
     let second = ensure_two.wait().unwrap();
@@ -722,7 +745,7 @@ fn detached_output_survives_ensure_parent_and_loser_does_not_touch_logs() {
             .count(),
         1
     );
-    let loser = ProcessCommand::new(&current)
+    let loser = scrubbed_process(&current)
         .arg("--ignored")
         .arg("--exact")
         .arg("daemon::tests::losing_owner_fixture")

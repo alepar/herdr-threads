@@ -6,13 +6,13 @@
 //!   one-shot hook process does not rescan an unlisted Codex binary on every
 //!   tool call;
 //! - `harness/codex-hook-admission.json`: the stored admission evidence of the
-//!   latest hook observation (listed, schema-matched live-unverified, or
-//!   refused), rewritten only when it changes.
+//!   latest hook observation (listed, schema-matched live-unverified,
+//!   optimistic, or refused), rewritten only when it changes.
 //!
 //! `harness/` is a 0700 directory the hook creates under an existing, owned
 //! state root; it never creates the state root itself. Everything here is best
 //! effort: a failure leaves the hook on its in-process cache and never blocks.
-use super::codex::{InstalledAdmission, SCHEMA_MATCHED_LABEL};
+use super::codex::{InstalledAdmission, OPTIMISTIC_LABEL, SCHEMA_MATCHED_LABEL};
 use std::{
     io::{self, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
@@ -64,7 +64,8 @@ pub struct AdmissionRecord {
     pub format_version: u32,
     /// The absolute binary observed, if one was found on PATH.
     pub binary: Option<String>,
-    /// `listed`, `schema-matched, live-unverified`, `refused` or `not_found`.
+    /// `listed`, `schema-matched, live-unverified`, `optimistic`, `refused` or
+    /// `not_found`.
     pub admission: String,
     /// [`InstalledAdmission::line`]: evidence or refusal summary.
     pub evidence: String,
@@ -89,6 +90,11 @@ impl AdmissionRecord {
     /// True for a schema-matched (live-unverified) admission.
     pub fn schema_matched(&self) -> bool {
         self.admission == SCHEMA_MATCHED_LABEL
+    }
+
+    /// True for an optimistic (assumed-recipe, live-unverified) admission.
+    pub fn optimistic(&self) -> bool {
+        self.admission == OPTIMISTIC_LABEL
     }
 
     fn same_evidence(&self, other: &Self) -> bool {

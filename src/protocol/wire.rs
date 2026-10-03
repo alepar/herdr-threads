@@ -1,7 +1,7 @@
 use super::{
     commands::Command,
     output::OutputSpec,
-    results::{ApiError, CommandResult, ErrorCode},
+    results::{ApiError, CommandResult},
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use std::io::{self, Write};
@@ -153,12 +153,7 @@ impl WireResponse {
             request_id,
             instance,
             daemon_boot,
-            result: Err(ApiError {
-                code: ErrorCode::DaemonVersionMismatch,
-                detail: daemon_version.to_owned(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            }),
+            result: Err(ApiError::daemon_version_mismatch(daemon_version.to_owned())),
         }
     }
 }
@@ -166,33 +161,21 @@ impl WireResponse {
 /// Four-byte big-endian length plus one bounded JSON response frame.
 pub fn encode_wire_response(response: &WireResponse) -> Result<Vec<u8>, ApiError> {
     if !result_identity_valid(&response.result, &response.instance, &response.daemon_boot) {
-        return Err(ApiError {
-            code: ErrorCode::InvalidRequest,
-            detail: "response result identity or bounds invalid".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        });
+        return Err(ApiError::invalid_request(
+            "response result identity or bounds invalid",
+        ));
     }
     let mut writer = BoundedJsonWriter::new(MAX_WIRE_FRAME_BYTES - 4);
-    serde_json::to_writer(&mut writer, response).map_err(|error| ApiError {
-        code: ErrorCode::InvalidRequest,
-        detail: format!("response encoding failed: {error}"),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    })?;
-    let total = writer.count.checked_add(4).ok_or_else(|| ApiError {
-        code: ErrorCode::InvalidBudget,
-        detail: "wire frame size overflow".into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    })?;
+    serde_json::to_writer(&mut writer, response)
+        .map_err(|error| ApiError::invalid_request(format!("response encoding failed: {error}")))?;
+    let total = writer
+        .count
+        .checked_add(4)
+        .ok_or_else(|| ApiError::invalid_budget("wire frame size overflow"))?;
     if total > MAX_WIRE_FRAME_BYTES {
-        return Err(ApiError {
-            code: ErrorCode::InvalidBudget,
-            detail: "wire frame exceeds 1 MiB".into(),
-            restart_argv: None,
-            required_minimum_bytes: u32::try_from(total).ok(),
-        });
+        let mut error = ApiError::invalid_budget("wire frame exceeds 1 MiB");
+        error.required_minimum_bytes = u32::try_from(total).ok();
+        return Err(error);
     }
     let mut frame = Vec::with_capacity(total);
     frame.extend_from_slice(&((total - 4) as u32).to_be_bytes());

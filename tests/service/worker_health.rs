@@ -51,12 +51,7 @@ impl Drop for ScratchDir {
 }
 
 fn api_error(code: ErrorCode, detail: &str) -> ApiError {
-    ApiError {
-        code,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::new(code, detail)
 }
 
 fn page<T>(items: Vec<T>) -> Page<T> {
@@ -127,12 +122,27 @@ impl Production {
     /// The scheduler component carries exactly `expected`, and neither it
     /// nor the serialized Health carries any private text.
     fn assert_redacted(&self, expected: &str, private: &[&str]) {
+        self.assert_redacted_with(expected, private, false);
+    }
+    /// As `assert_redacted`; `retrying` expects the lane Pacer's backoff
+    /// suffix (`; retrying (attempt N, ...)`) after `expected`.
+    fn assert_redacted_with(&self, expected: &str, private: &[&str], retrying: bool) {
         let inputs = (self.health)(&self.budget());
-        assert_eq!(
-            inputs.scheduler,
-            ComponentStatus::Degraded(expected.into()),
-            "production Health scheduler component"
-        );
+        if retrying {
+            let ComponentStatus::Degraded(text) = &inputs.scheduler else {
+                panic!("scheduler not degraded: {:?}", inputs.scheduler);
+            };
+            assert!(
+                text.starts_with(&format!("{expected}; retrying (attempt ")),
+                "{text}"
+            );
+        } else {
+            assert_eq!(
+                inputs.scheduler,
+                ComponentStatus::Degraded(expected.into()),
+                "production Health scheduler component"
+            );
+        }
         let serialized = serde_json::to_string(&inputs.assemble()).unwrap();
         assert!(
             serialized.contains(&format!("scheduler degraded: {expected}")),
@@ -501,10 +511,11 @@ impl crate::scheduler::WakePort for FailingWakes {
         &self,
         attempt: crate::protocol::ids::WakeAttemptId,
         outcome: crate::ports::WakeOutcome,
+        refused_restore: Option<&crate::ports::PriorLadder>,
         budget: &CallBudget,
-    ) -> Result<(), ApiError> {
+    ) -> Result<bool, ApiError> {
         self.result(FAIL_COMPLETE, || {
-            StorePort::complete_wake(&self.store, attempt, outcome, budget)
+            StorePort::complete_wake(&self.store, attempt, outcome, refused_restore, budget)
         })
     }
     fn wake_recovery_candidates(
@@ -794,12 +805,6 @@ impl crate::ports::HostPort for ObservedHost {
             targets: vec![self.observation(sequence)],
         })
     }
-    fn subscribe_lifecycle(
-        &self,
-        _: &crate::ports::HostCallContext,
-    ) -> Result<Box<dyn crate::ports::HostLifecycleSubscription>, ApiError> {
-        unreachable!()
-    }
     fn safe_wake_target(
         &self,
         _: &crate::protocol::ids::SeatId,
@@ -815,12 +820,27 @@ impl crate::ports::HostPort for ObservedHost {
     ) -> Result<crate::ports::PromptOutcome, ApiError> {
         unreachable!()
     }
+    fn pane_agent_state(
+        &self,
+        _target: &crate::ports::SafeWakeTarget,
+        _context: &crate::ports::HostCallContext,
+    ) -> Result<crate::ports::AgentComposerState, ApiError> {
+        Ok(crate::ports::AgentComposerState::Submitted)
+    }
+
     fn launch_native(
         &self,
         _: crate::ports::NativeLaunchRequest,
         _: &crate::ports::HostCallContext,
     ) -> Result<crate::ports::NativeLaunchOutcome, ApiError> {
         unreachable!()
+    }
+    fn send_submit_key(
+        &self,
+        _: &crate::ports::SafeWakeTarget,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<(), crate::protocol::results::ApiError> {
+        Ok(())
     }
 }
 
@@ -1063,13 +1083,22 @@ fn observation_worker_loop_feeds_production_health_at_both_call_sites() {
         snapshots: AtomicU64::new(0),
     });
     let writer = Arc::new(FairWriter::new(32));
-    let identity = Arc::new(crate::identity::repair::OrdinaryIdentity::new(
-        production.instance.to_string(),
-        production.store.clone(),
-        host.clone(),
+    let cancellation = Cancellation::default();
+    let pacer = Arc::new(Pacer::new(
+        "observation",
         clock.clone(),
-        writer.clone(),
+        cancellation.clone(),
     ));
+    let identity = Arc::new(
+        crate::identity::repair::OrdinaryIdentity::new(
+            production.instance.to_string(),
+            production.store.clone(),
+            host.clone(),
+            clock.clone(),
+            writer.clone(),
+        )
+        .with_observation_pacer(pacer.clone()),
+    );
     let port = Arc::new(FaultyObservationStore {
         inner: ScheduledStore {
             store: production.store.clone(),
@@ -1095,14 +1124,20 @@ fn observation_worker_loop_feeds_production_health_at_both_call_sites() {
     };
     let degraded =
         |expected: &str| production.scheduler() == ComponentStatus::Degraded(expected.into());
-    // A new capture is due once the 5 s snapshot cadence has elapsed.
+    // A failed capture also shows the lane Pacer's backoff suffix.
+    let retrying = |expected: &str| {
+        matches!(production.scheduler(), ComponentStatus::Degraded(text)
+            if text.starts_with(&format!("{expected}; retrying (attempt ")))
+    };
+    // A new capture is due once the 5 s snapshot cadence has elapsed; the
+    // lane blocks in its Pacer, which a fake-clock test must wake.
     let next_capture = || {
         clock.0.fetch_add(5_000, Ordering::SeqCst);
+        pacer.clock_advanced();
     };
 
     // Phase A: the capture ends in `Err` (admission fails in the store).
     port.fail_admission.store(true, Ordering::SeqCst);
-    let cancellation = Cancellation::default();
     let worker = StopWorker(
         cancellation.clone(),
         Some(
@@ -1112,14 +1147,15 @@ fn observation_worker_loop_feeds_production_health_at_both_call_sites() {
                 cancellation,
                 observation.clone(),
                 Arc::new(Default::default()),
+                pacer.clone(),
             )
             .unwrap(),
         ),
     );
     wait_for("errored capture", &|| {
-        degraded("host observation capture failed: StoreBusy")
+        retrying("host observation capture failed: StoreBusy")
     });
-    production.assert_redacted("host observation capture failed: StoreBusy", &private);
+    production.assert_redacted_with("host observation capture failed: StoreBusy", &private, true);
     assert!(
         observation
             .last_diagnostic()
@@ -1135,9 +1171,13 @@ fn observation_worker_loop_feeds_production_health_at_both_call_sites() {
     port.fail_admission.store(false, Ordering::SeqCst);
     next_capture();
     wait_for("invalidated capture", &|| {
-        degraded("host observation invalidated: HostUnavailable")
+        retrying("host observation invalidated: HostUnavailable")
     });
-    production.assert_redacted("host observation invalidated: HostUnavailable", &private);
+    production.assert_redacted_with(
+        "host observation invalidated: HostUnavailable",
+        &private,
+        true,
+    );
     assert!(host.snapshots.load(Ordering::SeqCst) >= 1);
 
     // Phase C: a verified capture publishes (clearing the capture failure),
@@ -1285,6 +1325,494 @@ fn production_health_reports_the_last_completed_scheduler_tick() {
     assert_eq!(failing.last_tick(), None);
 }
 
+/// The scheduler Health text and how many serialized Health lines mention a
+/// degraded scheduler.
+fn scheduler_text(production: &Production) -> (String, usize) {
+    let inputs = (production.health)(&production.budget());
+    let ComponentStatus::Degraded(text) = inputs.scheduler.clone() else {
+        panic!("scheduler is not degraded: {:?}", inputs.scheduler);
+    };
+    let serialized = serde_json::to_string(&inputs.assemble()).unwrap();
+    (text, serialized.matches("scheduler degraded").count())
+}
+
+fn lane_pacer(production: &Production) -> Arc<crate::service::pacer::Pacer> {
+    Arc::new(crate::service::pacer::Pacer::with_backoff(
+        "deadline",
+        production.clock.clone(),
+        Cancellation::default(),
+        crate::service::pacer::Backoff::with_seed(7),
+    ))
+}
+
+#[test]
+fn retry_suffix_while_backing_off() {
+    let deadline = Arc::new(WorkerStatus::default());
+    let production = Production::new([deadline.clone(), Default::default(), Default::default()]);
+    let pacer = lane_pacer(&production);
+    deadline.attach_pacer(pacer.clone());
+    deadline.record_failure(
+        crate::service::kicks::Lane::Deadlines,
+        &api_error(ErrorCode::StoreBusy, "private"),
+    );
+    // No attempts yet: no suffix.
+    let (plain, lines) = scheduler_text(&production);
+    assert_eq!(plain, "lane deadline failed: StoreBusy");
+    assert_eq!(deadline.retry(), None);
+    pacer.on_failure();
+    let next = pacer.on_failure();
+    assert_eq!(deadline.retry(), Some((2, next)));
+    let now = production.clock.0.load(Ordering::SeqCst);
+    let seconds = (next.0 - now).div_ceil(1000);
+    assert!(seconds >= 1, "second attempt backs off at least a second");
+    let (text, after_lines) = scheduler_text(&production);
+    assert_eq!(
+        text,
+        format!("{plain}; retrying (attempt 2, next ≤ {seconds}s)")
+    );
+    assert_eq!(after_lines, lines, "Health line count is unchanged");
+    // The countdown follows the Pacer's clock.
+    production.clock.0.store(next.0 + 5_000, Ordering::SeqCst);
+    let (late, _) = scheduler_text(&production);
+    assert_eq!(late, format!("{plain}; retrying (attempt 2, next ≤ 0s)"));
+}
+
+#[test]
+fn no_suffix_after_success() {
+    let deadline = Arc::new(WorkerStatus::default());
+    let production = Production::new([deadline.clone(), Default::default(), Default::default()]);
+    let pacer = lane_pacer(&production);
+    deadline.attach_pacer(pacer.clone());
+    deadline.record_failure(
+        crate::service::kicks::Lane::Deadlines,
+        &api_error(ErrorCode::StoreBusy, "private"),
+    );
+    pacer.on_failure();
+    assert!(
+        scheduler_text(&production)
+            .0
+            .contains("; retrying (attempt 1,")
+    );
+    pacer.on_success();
+    assert_eq!(deadline.retry(), None);
+    let (text, _) = scheduler_text(&production);
+    assert_eq!(text, "lane deadline failed: StoreBusy");
+}
+
+// ht-p03.27: status truthfulness. Each test names the mutation it kills.
+
+/// Kills: `health()` mapping a poisoned status mutex to `None` (= Ready), and
+/// a poisoned lane that Health's scheduler component does not report.
+#[test]
+fn poisoned_status_mutex_reports_degraded() {
+    let status = Arc::new(WorkerStatus::default());
+    let poisoner = status.clone();
+    let _ = std::thread::spawn(move || {
+        let _held = poisoner.state.lock().unwrap();
+        panic!("poison the status mutex while holding it");
+    })
+    .join();
+    assert!(status.state.lock().is_err(), "the mutex is poisoned");
+    let health = status.health().expect("poisoned is never Ready");
+    assert_eq!(health.failure, Some(RedactedFailure::StatusPoisoned));
+    assert_eq!(health.summary(), "status poisoned");
+    assert_eq!(status.last_error().as_deref(), Some("status poisoned"));
+    // Through the production Health builder it degrades the scheduler.
+    let production = Production::new([status, Default::default(), Default::default()]);
+    assert_eq!(
+        production.scheduler(),
+        ComponentStatus::Degraded("status poisoned".into())
+    );
+}
+
+/// Kills: `record_tick` advancing on a pass that retained a job `work_error`
+/// (Wave 26); the clean second pass proves an error-free tick still counts.
+#[test]
+fn record_tick_only_on_error_free_passes() {
+    let deadline = Arc::new(WorkerStatus::default());
+    let production = Production::new([deadline.clone(), Default::default(), Default::default()]);
+    let port = ScriptedDeadlines {
+        clock: production.clock.clone(),
+        ..Default::default()
+    };
+    // Work discovery fails inside an otherwise successful, ticked drive call.
+    *port.discovery.lock().unwrap() = vec![Err(api_error(ErrorCode::StoreBusy, "private"))];
+    let mut driver = DeadlineDriver::new(&port);
+    let failed = deadline_turn(&port, &mut driver, &deadline).unwrap();
+    assert!(failed.ticked && failed.work_error.is_some());
+    assert_eq!(deadline.last_tick(), None, "a work_error pass is no tick");
+    let clean = deadline_turn(&port, &mut driver, &deadline).unwrap();
+    assert!(clean.ticked && clean.work_error.is_none());
+    assert_eq!(deadline.last_tick(), Some(UtcMillis(100)));
+}
+
+/// Kills: a refused transition on any page of a pass still advancing
+/// `last_reconciliation_at` (W5-3), a refusal leaking into the next pass, and
+/// a pass that has not reached its last page advancing it.
+#[test]
+fn last_reconciliation_at_advances_only_on_success() {
+    use crate::service::host_evidence::HostEvidenceStatus;
+    let evidence = HostEvidenceStatus::default();
+    let at = |n| UtcMillis(n);
+    evidence.begin_reconcile_pass();
+    evidence.record_reconcile_page(0, false, at(1));
+    assert_eq!(
+        evidence
+            .health(CapabilityState::Unknown)
+            .last_reconciliation_at,
+        None,
+        "a middle page does not complete the pass"
+    );
+    evidence.record_reconcile_page(0, true, at(2));
+    assert_eq!(
+        evidence
+            .health(CapabilityState::Unknown)
+            .last_reconciliation_at,
+        Some(at(2))
+    );
+    // A pass with one refusal (on a middle page) does not advance the time.
+    evidence.begin_reconcile_pass();
+    evidence.record_reconcile_page(1, false, at(3));
+    evidence.record_reconcile_page(0, true, at(4));
+    assert_eq!(
+        evidence
+            .health(CapabilityState::Unknown)
+            .last_reconciliation_at,
+        Some(at(2)),
+        "a refused pass leaves the last good time"
+    );
+    // The next clean pass advances it again.
+    evidence.begin_reconcile_pass();
+    evidence.record_reconcile_page(0, true, at(5));
+    assert_eq!(
+        evidence
+            .health(CapabilityState::Unknown)
+            .last_reconciliation_at,
+        Some(at(5))
+    );
+}
+
+/// Kills: `transitions_refused` counted by the reconcile page but never read:
+/// the count must reach the Health inputs of the production builder and the
+/// assembled Health.
+#[test]
+fn transitions_refused_reaches_health() {
+    use crate::service::host_evidence::HostEvidenceStatus;
+    let dir = ScratchDir::new();
+    let clock = Arc::new(TestClock(AtomicU64::new(10_000)));
+    let instance = uuid::Uuid::new_v4();
+    let store: Arc<dyn StorePort> = Arc::new(
+        crate::store::SqliteStore::new(
+            crate::store::connection::StoreContext::new(dir.0.join("db"), clock.clone()),
+            instance.to_string(),
+            crate::store::StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    let evidence = Arc::new(HostEvidenceStatus::default());
+    let provider = crate::app::elected_health_provider(
+        instance,
+        uuid::Uuid::new_v4(),
+        crate::service::config::ServiceConfig::default().health_settings(),
+        clock.clone(),
+        store,
+        Vec::<Arc<WorkerStatus>>::new(),
+        crate::app::ElectedHostEvidence {
+            status: evidence.clone(),
+            incarnation_witness: CapabilityState::Unknown,
+            safe_prompt: CapabilityState::Unsupported,
+            harnesses: Default::default(),
+        },
+    );
+    let budget = CallBudget {
+        deadline: MonoInstant(11_000),
+        cancellation: Cancellation::default(),
+    };
+    assert_eq!(provider(&budget).transitions_refused, 0);
+    evidence.record_reconcile_page(2, true, UtcMillis(1));
+    evidence.record_reconcile_page(1, true, UtcMillis(2));
+    let inputs = provider(&budget);
+    assert_eq!(inputs.transitions_refused, 3);
+    assert!(
+        inputs
+            .assemble()
+            .notes
+            .iter()
+            .any(|note| note.contains("refused 3 seat transition(s)"))
+    );
+}
+
+/// The lane-error hook that records what `record_failure` reported.
+#[derive(Default)]
+struct HookLog(Mutex<Vec<(crate::service::kicks::Lane, ErrorCode)>>);
+impl crate::daemon::logs::LaneErrorLog for HookLog {
+    fn record(&self, lane: crate::service::kicks::Lane, error: &ApiError) {
+        self.0.lock().unwrap().push((lane, error.code.clone()));
+    }
+}
+
+#[derive(Default)]
+struct VerificationLog(
+    Mutex<
+        Vec<(
+            crate::protocol::ids::SeatId,
+            crate::scheduler::SubmissionVerification,
+        )>,
+    >,
+);
+impl crate::daemon::logs::LaneErrorLog for VerificationLog {
+    fn record(&self, _lane: crate::service::kicks::Lane, _error: &ApiError) {}
+    fn record_wake_verification(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        verification: crate::scheduler::SubmissionVerification,
+    ) {
+        self.0.lock().unwrap().push((seat.clone(), verification));
+    }
+}
+
+/// Kills: `observe_drive` ignoring `Ok` outcomes (the miss never reaches the
+/// log), forwarding `Verified` / `Retried` wakes, and counting a miss as a
+/// lane failure in Health.
+#[test]
+fn observe_drive_reports_unchecked_and_unsubmitted_wakes() {
+    use crate::protocol::ids::SeatId;
+    use crate::scheduler::SubmissionVerification::{NotChecked, Retried, Unsubmitted, Verified};
+    let wake = Arc::new(WorkerStatus::default());
+    let production = Production::new([Default::default(), wake.clone(), Default::default()]);
+    let fixture = wake_store(
+        &production._dir.0.join("wakes"),
+        production.clock.clone(),
+        uuid::Uuid::new_v4(),
+    );
+    let log = Arc::new(VerificationLog::default());
+    wake.set_error_log(log.clone());
+    let health_before = wake.health();
+    let observed = ObservedWakePort::new(&fixture, &wake);
+    let (a, b, c, d) = (
+        SeatId::new("a"),
+        SeatId::new("b"),
+        SeatId::new("c"),
+        SeatId::new("d"),
+    );
+    observed.observe_drive(&Ok(crate::scheduler::WakeDriveOutcome {
+        verification: vec![
+            (a, Verified),
+            (b.clone(), NotChecked),
+            (c, Retried),
+            (d.clone(), Unsubmitted),
+        ],
+        ..Default::default()
+    }));
+    assert_eq!(
+        log.0.lock().unwrap().clone(),
+        vec![(b, NotChecked), (d, Unsubmitted)]
+    );
+    assert_eq!(wake.health(), health_before);
+}
+
+/// Refuses before sending (pacer D5) and, like the real dispatcher,
+/// reports no verification for a prompt it never sent.
+struct RefusingNotifier;
+impl crate::ports::NotificationPort for RefusingNotifier {
+    fn attempt_wake(
+        &self,
+        _: crate::ports::WakeReservation,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<crate::ports::WakeOutcome, ApiError> {
+        Ok(crate::ports::WakeOutcome::Refused(
+            crate::ports::RefusalCause::Unavailable,
+        ))
+    }
+}
+
+/// Sends the prompt but could not check it: reports `NotChecked` once per
+/// attempt, like the dispatcher after a failed pane read.
+#[derive(Default)]
+struct UncheckedNotifier(AtomicBool);
+impl crate::ports::NotificationPort for UncheckedNotifier {
+    fn attempt_wake(
+        &self,
+        _: crate::ports::WakeReservation,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<crate::ports::WakeOutcome, ApiError> {
+        self.0.store(true, Ordering::SeqCst);
+        Ok(crate::ports::WakeOutcome::Submitted)
+    }
+    fn take_verification(
+        &self,
+        _: &crate::protocol::ids::SeatId,
+    ) -> Option<crate::scheduler::SubmissionVerification> {
+        self.0
+            .swap(false, Ordering::SeqCst)
+            .then_some(crate::scheduler::SubmissionVerification::NotChecked)
+    }
+}
+
+/// Drives the real wake store through `ObservedWakePort` once (up to five
+/// times until a candidate is attempted) and returns the verification log.
+fn drive_wake_log(
+    notifier: &dyn crate::ports::NotificationPort,
+) -> Vec<(
+    crate::protocol::ids::SeatId,
+    crate::scheduler::SubmissionVerification,
+)> {
+    use crate::scheduler::Scheduler;
+    let wake = Arc::new(WorkerStatus::default());
+    let production = Production::new([Default::default(), wake.clone(), Default::default()]);
+    let boot = uuid::Uuid::new_v4();
+    let fixture = wake_store(
+        &production._dir.0.join("wakes"),
+        production.clock.clone(),
+        boot,
+    );
+    let log = Arc::new(VerificationLog::default());
+    wake.set_error_log(log.clone());
+    let observed = ObservedWakePort::new(&fixture, &wake);
+    let deadlines = ScriptedDeadlines::default();
+    let scheduler = Scheduler::new(
+        "i".into(),
+        &deadlines,
+        &observed,
+        notifier,
+        crate::notification::policy::RetryConfig::default(),
+        boot,
+    );
+    let drive = || {
+        let budget = CallBudget {
+            deadline: MonoInstant(production.clock.0.load(Ordering::SeqCst) + 5_000),
+            cancellation: Cancellation::default(),
+        };
+        observed.begin_drive(&budget);
+        let result = scheduler.drive_wakes(&budget);
+        observed.observe_drive(&result);
+        result
+    };
+    let mut attempted = 0;
+    for _ in 0..5 {
+        attempted = drive().expect("drive ok").attempted;
+        if attempted > 0 {
+            break;
+        }
+    }
+    assert_eq!(attempted, 1);
+    log.0.lock().unwrap().clone()
+}
+
+/// Kills: `drive_wakes` fabricating a `NotChecked` entry for an attempt that
+/// sent nothing (a pre-send refusal), which logs a `not_checked` line per
+/// refusal (ht-p03.141).
+#[test]
+fn refused_wake_drive_logs_no_verification_line() {
+    assert!(drive_wake_log(&RefusingNotifier).is_empty());
+}
+
+/// Guards the fix against dropping every entry: a sent prompt whose check
+/// failed still logs exactly one `not_checked` line.
+#[test]
+fn sent_unchecked_wake_drive_logs_one_not_checked_line() {
+    use crate::scheduler::SubmissionVerification::NotChecked;
+    assert_eq!(
+        drive_wake_log(&UncheckedNotifier::default()),
+        vec![(crate::protocol::ids::SeatId::new(WAKE_SEAT), NotChecked)]
+    );
+}
+
+/// Kills: the admission observer's spawn `Result` discarded (Wave 26): the
+/// failure must reach the lane-error log and Health's degraded lanes, and a
+/// successful spawn must stay silent.
+#[test]
+fn admission_observer_spawn_failure_is_logged_and_surfaced() {
+    use crate::service::kicks::Lane;
+    let status = Arc::new(WorkerStatus::default());
+    let log = Arc::new(HookLog::default());
+    status.set_error_log(log.clone());
+    let ok = crate::service::workers::admission_handle(Ok(std::thread::spawn(|| {})), &status);
+    ok.expect("kept").join().unwrap();
+    assert!(log.0.lock().unwrap().is_empty() && status.health().is_none());
+    assert!(
+        crate::service::workers::admission_handle(
+            Err(std::io::Error::other("no threads")),
+            &status
+        )
+        .is_none()
+    );
+    assert_eq!(
+        *log.0.lock().unwrap(),
+        vec![(Lane::AdmissionObserver, ApiError::service_busy("").code)]
+    );
+    let summary = status.health().expect("surfaced").summary();
+    assert_eq!(summary, "lane admission-observer failed to start");
+}
+
+/// The scheduler and daemon-log lines among Health's limitations (the
+/// production builder also reports unobserved harnesses and wake).
+fn lane_lines(limitations: Vec<String>) -> Vec<String> {
+    limitations
+        .into_iter()
+        .filter(|line| line.starts_with("scheduler degraded") || line.starts_with("degraded: "))
+        .collect()
+}
+
+/// Kills: a lane that failed since its last success reading Ready, a
+/// degraded lane with no pointer at the daemon log, and a lane that stays
+/// degraded after a good pass.
+#[test]
+fn degraded_text_names_the_daemon_log() {
+    let deadline = Arc::new(WorkerStatus::default());
+    let production = Production::new([deadline.clone(), Default::default(), Default::default()]);
+    let log = std::path::PathBuf::from("/state/instances/i/logs/daemon.log");
+    let lines = |production: &Production| {
+        let mut inputs = (production.health)(&production.budget());
+        inputs.log_path = Some(log.clone());
+        lane_lines(inputs.assemble().limitations)
+    };
+    assert!(lines(&production).is_empty(), "no failure, no line");
+    deadline.record_failure(
+        crate::service::kicks::Lane::Deadlines,
+        &api_error(ErrorCode::StoreBusy, "private"),
+    );
+    assert_eq!(
+        lines(&production),
+        vec![
+            "scheduler degraded: lane deadline failed: StoreBusy".to_owned(),
+            "degraded: temporary; retry the command; see /state/instances/i/logs/daemon.log"
+                .to_owned(),
+        ]
+    );
+    deadline.record_success(UtcMillis(5));
+    assert!(lines(&production).is_empty(), "a good pass clears it");
+}
+
+/// Kills: more than two failed lanes still rendering one scheduler line each
+/// in the production Health path (the fold's input is `degraded_lanes`, in
+/// `Lane::ALL` order).
+#[test]
+fn three_failed_lanes_fold_in_production_health() {
+    use crate::service::kicks::Lane;
+    let workers: [Arc<WorkerStatus>; 3] = Default::default();
+    let production = Production::new(workers.clone());
+    for (status, lane) in workers.iter().zip(Lane::ALL) {
+        status.record_failure(lane, &api_error(ErrorCode::StoreBusy, "x"));
+    }
+    let mut inputs = (production.health)(&production.budget());
+    assert_eq!(
+        inputs
+            .degraded_lanes
+            .iter()
+            .map(|lane| lane.lane)
+            .collect::<Vec<_>>(),
+        ["deadline", "wake", "observation"]
+    );
+    inputs.log_path = Some("/l/daemon.log".into());
+    assert_eq!(
+        lane_lines(inputs.assemble().limitations),
+        vec![
+            "scheduler degraded: 3 lanes degraded (deadline, wake, observation): see /l/daemon.log"
+        ]
+    );
+}
+
 fn page_progress(
     next: Option<u64>,
     refused: u8,
@@ -1332,13 +1860,24 @@ fn refusal_free_pass_records_marker_once() {
         snapshots: AtomicU64::new(0),
     });
     let writer = Arc::new(FairWriter::new(32));
-    let identity = Arc::new(crate::identity::repair::OrdinaryIdentity::new(
-        production.instance.to_string(),
-        production.store.clone(),
-        host.clone(),
+    let cancellation = Cancellation::default();
+    // The lane blocks in its Pacer on the fake clock (B2), so a test that
+    // advances the clock wakes it.
+    let pacer = Arc::new(Pacer::new(
+        "observation",
         clock.clone(),
-        writer.clone(),
+        cancellation.clone(),
     ));
+    let identity = Arc::new(
+        crate::identity::repair::OrdinaryIdentity::new(
+            production.instance.to_string(),
+            production.store.clone(),
+            host.clone(),
+            clock.clone(),
+            writer.clone(),
+        )
+        .with_observation_pacer(pacer.clone()),
+    );
     let port = Arc::new(FaultyObservationStore {
         inner: ScheduledStore {
             store: production.store.clone(),
@@ -1350,7 +1889,6 @@ fn refusal_free_pass_records_marker_once() {
         pass_records: AtomicU64::new(0),
         refuse_transitions: Default::default(),
     });
-    let cancellation = Cancellation::default();
     let worker = StopWorker(
         cancellation.clone(),
         Some(
@@ -1360,6 +1898,7 @@ fn refusal_free_pass_records_marker_once() {
                 cancellation,
                 observation,
                 Arc::new(Default::default()),
+                pacer.clone(),
             )
             .unwrap(),
         ),
@@ -1390,13 +1929,24 @@ fn stale_refused_pass_skips_reconciliation_marker() {
         snapshots: AtomicU64::new(0),
     });
     let writer = Arc::new(FairWriter::new(32));
-    let identity = Arc::new(crate::identity::repair::OrdinaryIdentity::new(
-        production.instance.to_string(),
-        production.store.clone(),
-        host.clone(),
+    let cancellation = Cancellation::default();
+    // The lane blocks in its Pacer on the fake clock (B2), so a test that
+    // advances the clock wakes it.
+    let pacer = Arc::new(Pacer::new(
+        "observation",
         clock.clone(),
-        writer.clone(),
+        cancellation.clone(),
     ));
+    let identity = Arc::new(
+        crate::identity::repair::OrdinaryIdentity::new(
+            production.instance.to_string(),
+            production.store.clone(),
+            host.clone(),
+            clock.clone(),
+            writer.clone(),
+        )
+        .with_observation_pacer(pacer.clone()),
+    );
     let port = Arc::new(FaultyObservationStore {
         inner: ScheduledStore {
             store: production.store.clone(),
@@ -1408,7 +1958,6 @@ fn stale_refused_pass_skips_reconciliation_marker() {
         pass_records: AtomicU64::new(0),
         refuse_transitions: std::sync::atomic::AtomicBool::new(true),
     });
-    let cancellation = Cancellation::default();
     let worker = StopWorker(
         cancellation.clone(),
         Some(
@@ -1418,6 +1967,7 @@ fn stale_refused_pass_skips_reconciliation_marker() {
                 cancellation,
                 observation,
                 Arc::new(Default::default()),
+                pacer.clone(),
             )
             .unwrap(),
         ),
@@ -1437,6 +1987,7 @@ fn stale_refused_pass_skips_reconciliation_marker() {
     // A clean pass (next capture due) records it once.
     port.refuse_transitions.store(false, Ordering::SeqCst);
     clock.0.fetch_add(5_000, Ordering::SeqCst);
+    pacer.clock_advanced();
     while port.pass_records.load(Ordering::SeqCst) == 0 {
         assert!(
             std::time::Instant::now() < until,

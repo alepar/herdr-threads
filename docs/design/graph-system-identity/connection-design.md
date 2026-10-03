@@ -1,3 +1,5 @@
+> **Superseded (2026-10, ht-p03.2 / B4):** the adversarial verification layer described here was removed; see "Cooperative reality (2026-10)". Where this document says "native" acceptance, or mentions caller proof or verification evidence, read it as the cooperative claim: acceptance and ACKs are the top-level agent's cooperative claim, recorded as `cooperative_top_level`; see "Cooperative reality (2026-10)" in the [seat identity design](../herdr-threads/2026-09-27-herdr-threads--seat-identity-design.md) and [root design](../herdr-threads/2026-09-27-herdr-threads-design.md).
+
 ## Goal
 
 Maintain one connection-bound system authority per instance while preserving ordinary one-request clients, bounded request processing and truthful recovery.

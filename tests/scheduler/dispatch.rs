@@ -7,14 +7,13 @@ use crate::{
     ports::StorePort,
     ports::{DuePhaseProgress, DueScanProgress, DueScanRequest, RetirementProgress, WorkAdmission},
     ports::{
-        EvidenceKind, ExecutionEvidence, HostCallContext, HostLifecycleSubscription,
-        HostObservation, HostPort, HostSnapshot, HostUiState, IncarnationEvidence,
-        LogicalAttentionFrontier, LogicalPublicationKey, NativeLaunchCapability,
-        NativeLaunchOutcome, NativeLaunchRequest, NativeOccupant, NotificationPort,
-        ObservationProvenance, PromptOutcome, ReservedWakeAuthority, SafeWakeTarget,
-        StructuralOccupancy, WakeAttentionWitness, WakeCandidate, WakeOutcome,
-        WakeRecoveryCandidate, WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation,
-        WarningOfferFrontier,
+        EvidenceKind, ExecutionEvidence, HostCallContext, HostObservation, HostPort, HostSnapshot,
+        HostUiState, IncarnationEvidence, LogicalAttentionFrontier, LogicalPublicationKey,
+        NativeLaunchCapability, NativeLaunchOutcome, NativeLaunchRequest, NativeOccupant,
+        NotificationPort, ObservationProvenance, PriorLadder, PromptOutcome, RefusalCause,
+        ReservedWakeAuthority, SafeWakeTarget, StructuralOccupancy, WakeAttentionWitness,
+        WakeCandidate, WakeOutcome, WakeRecoveryCandidate, WakeRecoveryOutcome,
+        WakeRecoveryRequest, WakeReservation, WarningOfferFrontier,
     },
     protocol::{
         authority::Harness,
@@ -26,8 +25,14 @@ use crate::{
         results::{ApiError, ErrorCode, RetirementStatus},
         time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis},
     },
+    service::{fair_writer::FairWriter, workers::ScheduledStore},
     store::{SqliteStore, StoreSettings, connection::StoreContext},
 };
+// Child module so the contract tests reuse this file's private fixtures.
+#[path = "wake_outcome_contract.rs"]
+mod wake_outcome_contract;
+#[path = "wake_outcome_seam.rs"]
+mod wake_outcome_seam;
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
@@ -295,12 +300,7 @@ impl WakePort for FakeWakeStore {
     ) -> Result<Option<WakeReservation>, ApiError> {
         self.events.lock().unwrap().push("reserve");
         if self.fail_reservation.swap(false, Ordering::SeqCst) {
-            return Err(ApiError {
-                code: ErrorCode::StoreCorrupt,
-                detail: "injected failed commit".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
+            return Err(ApiError::store_corrupt("injected failed commit"));
         }
         let Some(witness) = candidate.attention_witness.as_ref() else {
             return Ok(None);
@@ -331,14 +331,31 @@ impl WakePort for FakeWakeStore {
         &self,
         _: WakeAttemptId,
         outcome: WakeOutcome,
+        _: Option<&PriorLadder>,
         _: &CallBudget,
-    ) -> Result<(), ApiError> {
+    ) -> Result<bool, ApiError> {
         assert!(matches!(
             outcome,
-            WakeOutcome::Submitted | WakeOutcome::OutcomeUnknown | WakeOutcome::Cancelled
+            WakeOutcome::Submitted
+                | WakeOutcome::OutcomeUnknown
+                | WakeOutcome::Cancelled
+                | WakeOutcome::Refused(_)
         ));
         self.events.lock().unwrap().push("complete");
-        Ok(())
+        Ok(false)
+    }
+}
+
+/// The store's final attempt fence, as `ScheduledStore` supplies it to the wake
+/// worker, over a store this test also wraps with a failure-injecting port.
+struct StoreFence<'a>(&'a SqliteStore);
+impl ReservationCheck for StoreFence<'_> {
+    fn is_current(
+        &self,
+        reservation: &WakeReservation,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        StorePort::validate_wake_reservation(self.0, reservation, budget)
     }
 }
 
@@ -347,6 +364,7 @@ struct FakeDeadlinePort {
     due_calls: AtomicU64,
 }
 impl crate::scheduler::deadlines::DeadlinePort for FakeDeadlinePort {
+    crate::no_durable_work!();
     fn clock(&self) -> &dyn Clock {
         self.clock.as_ref()
     }
@@ -686,6 +704,7 @@ fn due_candidate() -> WakeCandidate {
         minimum_delay_ms: 0,
         effective_delay_ms: 0,
         last_outcome: None,
+        last_reserved_at_utc: None,
     }
 }
 
@@ -844,10 +863,11 @@ impl WakePort for SpacedWakeStore {
         &self,
         _: WakeAttemptId,
         _: WakeOutcome,
+        _: Option<&PriorLadder>,
         _: &CallBudget,
-    ) -> Result<(), ApiError> {
+    ) -> Result<bool, ApiError> {
         self.completions.fetch_add(1, Ordering::SeqCst);
-        Ok(())
+        Ok(false)
     }
 }
 struct SpacedNotifier {
@@ -934,9 +954,10 @@ impl WakePort for StrandedOldBootStore {
         &self,
         _: WakeAttemptId,
         _: WakeOutcome,
+        _: Option<&PriorLadder>,
         _: &CallBudget,
-    ) -> Result<(), ApiError> {
-        Ok(())
+    ) -> Result<bool, ApiError> {
+        Ok(false)
     }
 }
 
@@ -1040,16 +1061,19 @@ fn sqlite_reopen_recovers_old_boot_before_real_fake_host_attempt() {
 
     clock.mono.store(100_000, Ordering::SeqCst);
     clock.utc.store(3_600_000, Ordering::SeqCst);
-    let reopened = SqliteStore::new(
-        StoreContext::new(path.clone(), clock.clone()),
-        "i",
-        StoreSettings {
-            daemon_boot: Some(daemon_boot()),
-            minimum_wake_delay_ms: 30_000,
-            ..StoreSettings::default()
-        },
-    )
-    .unwrap();
+    let reopened = Arc::new(
+        SqliteStore::new(
+            StoreContext::new(path.clone(), clock.clone()),
+            "i",
+            StoreSettings {
+                daemon_boot: Some(daemon_boot()),
+                minimum_wake_delay_ms: 30_000,
+                ..StoreSettings::default()
+            },
+        )
+        .unwrap(),
+    );
+    let ports = ScheduledStore::new(reopened.clone(), Arc::new(FairWriter::new(32)));
     let due = FakeDeadlinePort {
         clock: Arc::new(FakeClock(AtomicU64::new(100_000))),
         due_calls: AtomicU64::new(0),
@@ -1059,11 +1083,11 @@ fn sqlite_reopen_recovers_old_boot_before_real_fake_host_attempt() {
         clock: clock.clone(),
         calls: Mutex::new(Vec::new()),
     };
-    let notifier = NativeWakeDispatcher::new(&host, &reopened, clock.as_ref());
+    let notifier = NativeWakeDispatcher::new(&host, &ports, clock.as_ref());
     let scheduler = Scheduler::new(
         "i".into(),
         &due,
-        &reopened,
+        &ports,
         &notifier,
         RetryConfig::default(),
         daemon_boot(),
@@ -1078,7 +1102,7 @@ fn sqlite_reopen_recovers_old_boot_before_real_fake_host_attempt() {
     assert!(host.calls.lock().unwrap().is_empty());
     assert_eq!(
         StorePort::recover_wake_reservation(
-            &reopened,
+            reopened.as_ref(),
             WakeRecoveryRequest {
                 instance: "i".into(),
                 seat: SeatId::new("seat"),
@@ -1099,13 +1123,15 @@ fn sqlite_reopen_recovers_old_boot_before_real_fake_host_attempt() {
     assert_eq!(scheduler.drive_wakes(&budget).unwrap().attempted, 1);
     assert_eq!(*host.calls.lock().unwrap(), vec![MonoInstant(160_000)]);
     StorePort::complete_wake(
-        &reopened,
+        reopened.as_ref(),
         old_reservation.attempt,
         WakeOutcome::Submitted,
+        None,
         &budget,
     )
     .unwrap();
     drop(scheduler);
+    drop(ports);
     drop(reopened);
     std::fs::remove_file(path).unwrap();
 }
@@ -1163,8 +1189,9 @@ impl WakePort for FailingCompletionStore<'_> {
         &self,
         attempt: WakeAttemptId,
         outcome: WakeOutcome,
+        refused_restore: Option<&PriorLadder>,
         budget: &CallBudget,
-    ) -> Result<(), ApiError> {
+    ) -> Result<bool, ApiError> {
         self.completions
             .lock()
             .unwrap()
@@ -1179,20 +1206,16 @@ impl WakePort for FailingCompletionStore<'_> {
             }
             return Err(completion_error());
         }
-        StorePort::complete_wake(self.store, attempt, outcome, budget)?;
+        let matched =
+            StorePort::complete_wake(self.store, attempt, outcome, refused_restore, budget)?;
         if self.lose_response.swap(false, Ordering::SeqCst) {
             return Err(completion_error());
         }
-        Ok(())
+        Ok(matched)
     }
 }
 fn completion_error() -> ApiError {
-    ApiError {
-        code: ErrorCode::StoreCorrupt,
-        detail: "injected completion failure".into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::store_corrupt("injected completion failure")
 }
 
 fn completion_fixture() -> (
@@ -1249,7 +1272,8 @@ fn sqlite_same_boot_retries_joined_completion_without_another_prompt_or_ack() {
         clock: clock.clone(),
         calls: Mutex::new(vec![]),
     };
-    let notifier = NativeWakeDispatcher::new(&host, &store, clock.as_ref());
+    let fence = StoreFence(&store);
+    let notifier = NativeWakeDispatcher::new(&host, &fence, clock.as_ref());
     let due = FakeDeadlinePort {
         clock: Arc::new(FakeClock(AtomicU64::new(0))),
         due_calls: AtomicU64::new(0),
@@ -1349,7 +1373,8 @@ fn sqlite_joined_completion_survives_attention_retirement_and_response_loss() {
             clock: clock.clone(),
             calls: Mutex::new(vec![]),
         };
-        let notifier = NativeWakeDispatcher::new(&host, &store, clock.as_ref());
+        let fence = StoreFence(&store);
+        let notifier = NativeWakeDispatcher::new(&host, &fence, clock.as_ref());
         let due = FakeDeadlinePort {
             clock: Arc::new(FakeClock(AtomicU64::new(0))),
             due_calls: AtomicU64::new(0),
@@ -1420,7 +1445,8 @@ fn sqlite_late_joined_completion_cannot_clear_new_attempt_or_foreign_boot() {
             clock: clock.clone(),
             calls: Mutex::new(vec![]),
         };
-        let notifier = NativeWakeDispatcher::new(&host, &store, clock.as_ref());
+        let fence = StoreFence(&store);
+        let notifier = NativeWakeDispatcher::new(&host, &fence, clock.as_ref());
         let due = FakeDeadlinePort {
             clock: Arc::new(FakeClock(AtomicU64::new(0))),
             due_calls: AtomicU64::new(0),
@@ -1552,12 +1578,6 @@ impl HostPort for ContendedTimingHost {
     fn enumerate_targets(&self, context: &HostCallContext) -> Result<HostSnapshot, ApiError> {
         self.host.enumerate_targets(context)
     }
-    fn subscribe_lifecycle(
-        &self,
-        context: &HostCallContext,
-    ) -> Result<Box<dyn HostLifecycleSubscription>, ApiError> {
-        self.host.subscribe_lifecycle(context)
-    }
     fn safe_wake_target(
         &self,
         seat: &SeatId,
@@ -1577,12 +1597,27 @@ impl HostPort for ContendedTimingHost {
         *self.lock.lock().unwrap() = Some(db);
         Ok(result)
     }
+    fn pane_agent_state(
+        &self,
+        _target: &SafeWakeTarget,
+        _context: &HostCallContext,
+    ) -> Result<crate::ports::AgentComposerState, ApiError> {
+        Ok(crate::ports::AgentComposerState::Submitted)
+    }
+
     fn launch_native(
         &self,
         request: NativeLaunchRequest,
         context: &HostCallContext,
     ) -> Result<NativeLaunchOutcome, ApiError> {
         self.host.launch_native(request, context)
+    }
+    fn send_submit_key(
+        &self,
+        _: &crate::ports::SafeWakeTarget,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<(), crate::protocol::results::ApiError> {
+        Ok(())
     }
 }
 struct WakeWorkerCleanup {
@@ -1614,7 +1649,8 @@ fn wait_for_condition(mut ready: impl FnMut() -> bool, detail: &str) {
 fn sqlite_actual_wake_worker_retries_completion_and_yields_to_foreground() {
     // The actual ScheduledStore background lane must release its turn on a
     // bounded SQLite error, preserve Health's exact failure, and retry it.
-    use crate::service::workers::{FairWriter, WorkerStatus, start_wake_worker};
+    use crate::service::fair_writer::FairWriter;
+    use crate::service::workers::{WorkerStatus, start_wake_worker};
     let (path, clock, context, store) = completion_fixture();
     let db = context.open_writer().unwrap();
     let store = Arc::new(store);
@@ -1629,6 +1665,11 @@ fn sqlite_actual_wake_worker_retries_completion_and_yields_to_foreground() {
         lock: Mutex::new(None),
     });
     let cancellation = Cancellation::default();
+    let pacer = Arc::new(crate::service::pacer::Pacer::new(
+        "wake",
+        clock.clone(),
+        cancellation.clone(),
+    ));
     let worker = start_wake_worker(
         store.clone(),
         writer.clone(),
@@ -1636,6 +1677,7 @@ fn sqlite_actual_wake_worker_retries_completion_and_yields_to_foreground() {
         "i".into(),
         daemon_boot(),
         RetryConfig::default(),
+        pacer.clone(),
         cancellation.clone(),
         status.clone(),
     )
@@ -1694,6 +1736,10 @@ fn sqlite_actual_wake_worker_retries_completion_and_yields_to_foreground() {
         host.release();
         drop(turn);
     });
+    // The failed completion was a store-callback error, so the lane does not
+    // back off; it retries the retained completion at its next safety tick.
+    clock.mono.store(60_000, Ordering::SeqCst);
+    pacer.clock_advanced();
     wait_for_condition(
         || {
             db.query_row(
@@ -2326,12 +2372,6 @@ impl HostPort for SqliteTimingHost {
     fn enumerate_targets(&self, _: &HostCallContext) -> Result<HostSnapshot, ApiError> {
         unreachable!()
     }
-    fn subscribe_lifecycle(
-        &self,
-        _: &HostCallContext,
-    ) -> Result<Box<dyn HostLifecycleSubscription>, ApiError> {
-        unreachable!()
-    }
     fn safe_wake_target(
         &self,
         seat: &SeatId,
@@ -2340,6 +2380,8 @@ impl HostPort for SqliteTimingHost {
         FakeNativeHost {
             observation: observation.clone(),
             submitted: AtomicU64::new(0),
+            pane_states: Default::default(),
+            submit_keys: AtomicU64::new(0),
         }
         .safe_wake_target(seat, observation)
     }
@@ -2356,12 +2398,27 @@ impl HostPort for SqliteTimingHost {
         self.clock.mono.store(now.0 + 2_000, Ordering::SeqCst);
         Ok(PromptOutcome::Submitted)
     }
+    fn pane_agent_state(
+        &self,
+        _target: &SafeWakeTarget,
+        _context: &HostCallContext,
+    ) -> Result<crate::ports::AgentComposerState, ApiError> {
+        Ok(crate::ports::AgentComposerState::Submitted)
+    }
+
     fn launch_native(
         &self,
         _: NativeLaunchRequest,
         _: &HostCallContext,
     ) -> Result<NativeLaunchOutcome, ApiError> {
         unreachable!()
+    }
+    fn send_submit_key(
+        &self,
+        _: &crate::ports::SafeWakeTarget,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<(), crate::protocol::results::ApiError> {
+        Ok(())
     }
 }
 
@@ -2393,21 +2450,24 @@ fn sqlite_completed_frontier_shortens_retry_only_after_new_logical_publication()
     }
     db.execute("INSERT INTO wake_work(seat_id,reason_bits,retry_step,minimum_delay_ms,effective_delay_ms,last_reservation_id,last_reservation_boot,last_invitation_seq,last_invitation_offset,last_receipt_seq,last_receipt_offset) VALUES ('seat',3,1,30000,60000,'prior',?1,1,1,101,0)", [daemon_boot().to_string()]).unwrap();
     drop(db);
-    let store = SqliteStore::new(
-        StoreContext::new(path.clone(), clock.clone()),
-        "i",
-        StoreSettings {
-            daemon_boot: Some(daemon_boot()),
-            ..StoreSettings::default()
-        },
-    )
-    .unwrap();
+    let store = Arc::new(
+        SqliteStore::new(
+            StoreContext::new(path.clone(), clock.clone()),
+            "i",
+            StoreSettings {
+                daemon_boot: Some(daemon_boot()),
+                ..StoreSettings::default()
+            },
+        )
+        .unwrap(),
+    );
+    let ports = ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32)));
     let host = SqliteTimingHost {
         context: StoreContext::new(path.clone(), clock.clone()),
         clock: clock.clone(),
         calls: Mutex::new(Vec::new()),
     };
-    let dispatch = NativeWakeDispatcher::new(&host, &store, clock.as_ref());
+    let dispatch = NativeWakeDispatcher::new(&host, &ports, clock.as_ref());
     let due = FakeDeadlinePort {
         clock: Arc::new(FakeClock(AtomicU64::new(0))),
         due_calls: AtomicU64::new(0),
@@ -2415,7 +2475,7 @@ fn sqlite_completed_frontier_shortens_retry_only_after_new_logical_publication()
     let scheduler = Scheduler::new(
         "i".into(),
         &due,
-        &store,
+        &ports,
         &dispatch,
         RetryConfig::default(),
         daemon_boot(),
@@ -2425,10 +2485,12 @@ fn sqlite_completed_frontier_shortens_retry_only_after_new_logical_publication()
         cancellation: Cancellation::default(),
     };
     clock.mono.store(30_000, Ordering::SeqCst);
-    let partial = scheduler.drive_wakes(&budget).unwrap();
+    // The pending probe finds the one pending receipt without walking the 100
+    // settled ones: the seat is examined in the first page and held by its delay.
+    let first = scheduler.drive_wakes(&budget).unwrap();
     assert_eq!(
-        (partial.examined, partial.attempted, partial.has_more),
-        (0, 0, true)
+        (first.examined, first.attempted, first.has_more),
+        (1, 0, false)
     );
     assert_eq!(scheduler.drive_wakes(&budget).unwrap().attempted, 0);
     // A projection/version update is not a new logical obligation.
@@ -2454,13 +2516,8 @@ fn sqlite_completed_frontier_shortens_retry_only_after_new_logical_publication()
         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('p','unprojected','i','thread',102,0,102,0,1,0);\
     ").unwrap();
     drop(db);
-    let partial = scheduler.drive_wakes(&budget).unwrap();
-    assert_eq!(
-        (partial.examined, partial.attempted, partial.has_more),
-        (0, 0, true)
-    );
-    assert!(host.calls.lock().unwrap().is_empty());
-    assert_eq!(scheduler.drive_wakes(&budget).unwrap().attempted, 1);
+    let published = scheduler.drive_wakes(&budget).unwrap();
+    assert_eq!((published.examined, published.attempted), (1, 1));
     assert_eq!(*host.calls.lock().unwrap(), vec![MonoInstant(30_000)]);
     let db = context.open_writer().unwrap();
     let retained: (i64,i64,i64,i64,i64) = db.query_row("SELECT last_invitation_seq,last_receipt_seq,retry_step,effective_delay_ms,attention_version FROM wake_work WHERE seat_id='seat'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap();
@@ -2495,13 +2552,13 @@ fn sqlite_completed_frontier_shortens_retry_only_after_new_logical_publication()
     assert_eq!(scheduler.drive_wakes(&budget).unwrap().attempted, 0);
     clock.utc.store(-3_600_000, Ordering::SeqCst);
     clock.mono.store(62_000, Ordering::SeqCst);
-    assert_eq!(scheduler.drive_wakes(&budget).unwrap().attempted, 0);
     assert_eq!(scheduler.drive_wakes(&budget).unwrap().attempted, 1);
     assert_eq!(
         *host.calls.lock().unwrap(),
         vec![MonoInstant(30_000), MonoInstant(62_000)]
     );
     drop(scheduler);
+    drop(ports);
     drop(store);
     std::fs::remove_file(path).unwrap();
 }
@@ -2713,9 +2770,11 @@ impl WakePort for CancelAfterReserve<'_> {
         &self,
         attempt: WakeAttemptId,
         outcome: WakeOutcome,
+        refused_restore: Option<&PriorLadder>,
         budget: &CallBudget,
-    ) -> Result<(), ApiError> {
-        self.0.complete_wake(attempt, outcome, budget)
+    ) -> Result<bool, ApiError> {
+        self.0
+            .complete_wake(attempt, outcome, refused_restore, budget)
     }
 }
 
@@ -2797,6 +2856,28 @@ impl ReservationCheck for EpisodeReservationCheck {
 struct FakeNativeHost {
     observation: HostObservation,
     submitted: AtomicU64,
+    /// Submit-key retries sent.
+    submit_keys: AtomicU64,
+    /// Scripted composer states per target; the last entry repeats, and an
+    /// unscripted target reads `Submitted`.
+    pane_states: Mutex<
+        std::collections::HashMap<
+            HostTargetId,
+            std::collections::VecDeque<crate::ports::AgentComposerState>,
+        >,
+    >,
+}
+impl FakeNativeHost {
+    fn script_pane_states(
+        &self,
+        target: &SafeWakeTarget,
+        states: Vec<crate::ports::AgentComposerState>,
+    ) {
+        self.pane_states
+            .lock()
+            .unwrap()
+            .insert(target.target.clone(), states.into());
+    }
 }
 impl HostPort for FakeNativeHost {
     fn native_launch_capability(&self) -> NativeLaunchCapability {
@@ -2811,12 +2892,6 @@ impl HostPort for FakeNativeHost {
         Ok(self.observation.clone())
     }
     fn enumerate_targets(&self, _: &HostCallContext) -> Result<HostSnapshot, ApiError> {
-        unreachable!()
-    }
-    fn subscribe_lifecycle(
-        &self,
-        _: &HostCallContext,
-    ) -> Result<Box<dyn HostLifecycleSubscription>, ApiError> {
         unreachable!()
     }
     fn safe_wake_target(
@@ -2851,12 +2926,35 @@ impl HostPort for FakeNativeHost {
         self.submitted.fetch_add(1, Ordering::SeqCst);
         Ok(PromptOutcome::Submitted)
     }
+    fn pane_agent_state(
+        &self,
+        target: &SafeWakeTarget,
+        _context: &HostCallContext,
+    ) -> Result<crate::ports::AgentComposerState, ApiError> {
+        let mut scripted = self.pane_states.lock().unwrap();
+        let Some(queue) = scripted.get_mut(&target.target) else {
+            return Ok(crate::ports::AgentComposerState::Submitted);
+        };
+        Ok(if queue.len() > 1 {
+            queue.pop_front().unwrap()
+        } else {
+            queue
+                .front()
+                .copied()
+                .unwrap_or(crate::ports::AgentComposerState::Submitted)
+        })
+    }
+
     fn launch_native(
         &self,
         _: NativeLaunchRequest,
         _: &HostCallContext,
     ) -> Result<NativeLaunchOutcome, ApiError> {
         unreachable!()
+    }
+    fn send_submit_key(&self, _: &SafeWakeTarget, _: &HostCallContext) -> Result<(), ApiError> {
+        self.submit_keys.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 }
 fn fresh_observation() -> HostObservation {
@@ -2921,6 +3019,8 @@ fn native_dispatch_rejects_changed_target_and_retirement_before_prompt() {
     let host = FakeNativeHost {
         observation,
         submitted: AtomicU64::new(0),
+        pane_states: Default::default(),
+        submit_keys: AtomicU64::new(0),
     };
     let check = FakeReservationCheck {
         current: true,
@@ -2937,7 +3037,7 @@ fn native_dispatch_rejects_changed_target_and_retirement_before_prompt() {
     };
     assert_eq!(
         dispatch.attempt_wake(test_reservation(), &context).unwrap(),
-        WakeOutcome::Unsafe
+        WakeOutcome::Refused(RefusalCause::Unsafe)
     );
     assert_eq!(host.submitted.load(Ordering::SeqCst), 0);
     assert_eq!(check.calls.load(Ordering::SeqCst), 0);
@@ -2945,6 +3045,8 @@ fn native_dispatch_rejects_changed_target_and_retirement_before_prompt() {
     let host = FakeNativeHost {
         observation: fresh_observation(),
         submitted: AtomicU64::new(0),
+        pane_states: Default::default(),
+        submit_keys: AtomicU64::new(0),
     };
     let check = FakeReservationCheck {
         current: false,
@@ -2953,7 +3055,7 @@ fn native_dispatch_rejects_changed_target_and_retirement_before_prompt() {
     let dispatch = NativeWakeDispatcher::new(&host, &check, &clock);
     assert_eq!(
         dispatch.attempt_wake(test_reservation(), &context).unwrap(),
-        WakeOutcome::Unsafe
+        WakeOutcome::Refused(RefusalCause::Unsafe)
     );
     assert_eq!(host.submitted.load(Ordering::SeqCst), 0);
     assert_eq!(check.calls.load(Ordering::SeqCst), 1);
@@ -2965,6 +3067,8 @@ fn closed_attention_episode_rejects_prompt_at_final_fence() {
     let host = FakeNativeHost {
         observation: fresh_observation(),
         submitted: AtomicU64::new(0),
+        pane_states: Default::default(),
+        submit_keys: AtomicU64::new(0),
     };
     let check = EpisodeReservationCheck { episode: 1 };
     let dispatch = NativeWakeDispatcher::new(&host, &check, &clock);
@@ -2978,7 +3082,7 @@ fn closed_attention_episode_rejects_prompt_at_final_fence() {
     };
     assert_eq!(
         dispatch.attempt_wake(test_reservation(), &context).unwrap(),
-        WakeOutcome::Unsafe
+        WakeOutcome::Refused(RefusalCause::Unsafe)
     );
     assert_eq!(host.submitted.load(Ordering::SeqCst), 0);
 }
@@ -2989,6 +3093,8 @@ fn safe_unregistered_recovery_hint_only_submits_the_fixed_marker() {
     let host = FakeNativeHost {
         observation: fresh_observation(),
         submitted: AtomicU64::new(0),
+        pane_states: Default::default(),
+        submit_keys: AtomicU64::new(0),
     };
     let check = FakeReservationCheck {
         current: true,
@@ -3033,6 +3139,8 @@ fn blocked_or_human_input_target_is_never_prompted() {
         let host = FakeNativeHost {
             observation,
             submitted: AtomicU64::new(0),
+            pane_states: Default::default(),
+            submit_keys: AtomicU64::new(0),
         };
         let check = FakeReservationCheck {
             current: true,
@@ -3041,7 +3149,7 @@ fn blocked_or_human_input_target_is_never_prompted() {
         let dispatch = NativeWakeDispatcher::new(&host, &check, &clock);
         assert_eq!(
             dispatch.attempt_wake(test_reservation(), &context).unwrap(),
-            WakeOutcome::Unsafe
+            WakeOutcome::Refused(RefusalCause::Unsafe)
         );
         assert_eq!(host.submitted.load(Ordering::SeqCst), 0);
     }
@@ -3058,6 +3166,8 @@ fn adapter_safe_target_must_preserve_fresh_incarnation() {
     let host = FakeNativeHost {
         observation,
         submitted: AtomicU64::new(0),
+        pane_states: Default::default(),
+        submit_keys: AtomicU64::new(0),
     };
     let check = FakeReservationCheck {
         current: true,
@@ -3074,7 +3184,7 @@ fn adapter_safe_target_must_preserve_fresh_incarnation() {
     };
     assert_eq!(
         dispatch.attempt_wake(test_reservation(), &context).unwrap(),
-        WakeOutcome::Unsafe
+        WakeOutcome::Refused(RefusalCause::Unsafe)
     );
     assert_eq!(host.submitted.load(Ordering::SeqCst), 0);
 }
@@ -3099,12 +3209,6 @@ impl HostPort for LateReadHost {
     fn enumerate_targets(&self, context: &HostCallContext) -> Result<HostSnapshot, ApiError> {
         self.inner.enumerate_targets(context)
     }
-    fn subscribe_lifecycle(
-        &self,
-        context: &HostCallContext,
-    ) -> Result<Box<dyn HostLifecycleSubscription>, ApiError> {
-        self.inner.subscribe_lifecycle(context)
-    }
     fn safe_wake_target(
         &self,
         seat: &SeatId,
@@ -3120,12 +3224,27 @@ impl HostPort for LateReadHost {
     ) -> Result<PromptOutcome, ApiError> {
         self.inner.submit_prompt(target, text, context)
     }
+    fn pane_agent_state(
+        &self,
+        _target: &SafeWakeTarget,
+        _context: &HostCallContext,
+    ) -> Result<crate::ports::AgentComposerState, ApiError> {
+        Ok(crate::ports::AgentComposerState::Submitted)
+    }
+
     fn launch_native(
         &self,
         request: NativeLaunchRequest,
         context: &HostCallContext,
     ) -> Result<NativeLaunchOutcome, ApiError> {
         self.inner.launch_native(request, context)
+    }
+    fn send_submit_key(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        self.inner.send_submit_key(target, context)
     }
 }
 
@@ -3136,6 +3255,8 @@ fn target_read_must_finish_before_its_seven_hundred_fifty_millisecond_deadline()
         inner: FakeNativeHost {
             observation: fresh_observation(),
             submitted: AtomicU64::new(0),
+            pane_states: Default::default(),
+            submit_keys: AtomicU64::new(0),
         },
         clock: clock.clone(),
     };
@@ -3154,7 +3275,7 @@ fn target_read_must_finish_before_its_seven_hundred_fifty_millisecond_deadline()
     };
     assert_eq!(
         dispatch.attempt_wake(test_reservation(), &context).unwrap(),
-        WakeOutcome::TimedOut
+        WakeOutcome::Refused(RefusalCause::TimedOut)
     );
     assert_eq!(host.inner.submitted.load(Ordering::SeqCst), 0);
     assert_eq!(check.calls.load(Ordering::SeqCst), 0);
@@ -3168,6 +3289,8 @@ fn cached_current_target_response_does_not_authorize_a_prompt() {
     let host = FakeNativeHost {
         observation,
         submitted: AtomicU64::new(0),
+        pane_states: Default::default(),
+        submit_keys: AtomicU64::new(0),
     };
     let check = FakeReservationCheck {
         current: true,
@@ -3184,7 +3307,7 @@ fn cached_current_target_response_does_not_authorize_a_prompt() {
     };
     assert_eq!(
         dispatch.attempt_wake(test_reservation(), &context).unwrap(),
-        WakeOutcome::Unsafe
+        WakeOutcome::Refused(RefusalCause::Unsafe)
     );
     assert_eq!(host.submitted.load(Ordering::SeqCst), 0);
 }
@@ -3325,20 +3448,23 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
         db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','w4:p1',?1,1,1,0,'fresh','term_1',?2,'native_current_target',1)", rusqlite::params![observed.host_boot.as_str(), identity]).unwrap();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('seat',1,1,'w4:p1',?1,0,'claude','session','self-reported','cooperative_top_level',0,0,'term_1',?2)", rusqlite::params![observed.host_boot.as_str(), identity]).unwrap();
         drop(db);
-        let store = SqliteStore::new(
-            StoreContext::new(path.clone(), clock.clone()),
-            "i",
-            StoreSettings {
-                daemon_boot: Some(daemon_boot()),
-                ..StoreSettings::default()
-            },
-        )
-        .unwrap();
-        let dispatch = NativeWakeDispatcher::new(&cli, &store, clock.as_ref());
+        let store = Arc::new(
+            SqliteStore::new(
+                StoreContext::new(path.clone(), clock.clone()),
+                "i",
+                StoreSettings {
+                    daemon_boot: Some(daemon_boot()),
+                    ..StoreSettings::default()
+                },
+            )
+            .unwrap(),
+        );
+        let ports = ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32)));
+        let dispatch = NativeWakeDispatcher::new(&cli, &ports, clock.as_ref());
         let scheduler = Scheduler::new(
             "i".into(),
-            &store,
-            &store,
+            &ports,
+            &ports,
             &dispatch,
             RetryConfig::default(),
             daemon_boot(),
@@ -3394,6 +3520,7 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
         *herdr.status.lock().unwrap() = "idle";
         drop(db);
         drop(scheduler);
+        drop(ports);
         drop(store);
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_file(&herdr.socket);
@@ -3468,6 +3595,8 @@ fn cooperative_reservation_rechecks_structure_and_never_crosses_bases() {
         let host = FakeNativeHost {
             observation,
             submitted: AtomicU64::new(0),
+            pane_states: Default::default(),
+            submit_keys: AtomicU64::new(0),
         };
         let check = FakeReservationCheck {
             current: true,
@@ -3478,11 +3607,1007 @@ fn cooperative_reservation_rechecks_structure_and_never_crosses_bases() {
             dispatch
                 .attempt_wake(reservation.clone(), &context)
                 .unwrap(),
-            WakeOutcome::Unsafe,
+            WakeOutcome::Refused(RefusalCause::Unsafe),
             "{label}"
         );
         assert_eq!(host.submitted.load(Ordering::SeqCst), 0, "{label}");
         assert_eq!(check.calls.load(Ordering::SeqCst), 0, "{label}");
+    }
+}
+
+/// Drives one wake through Scheduler -> NativeWakeDispatcher -> scripted host
+/// and returns (verification, submit-key sends, prompt sends, reserve count,
+/// second-drive attempts).
+fn drive_scripted_wake(
+    states: Vec<crate::ports::AgentComposerState>,
+) -> (
+    Vec<(SeatId, crate::scheduler::SubmissionVerification)>,
+    u64,
+    u64,
+    usize,
+    u16,
+) {
+    let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let wake = FakeWakeStore {
+        clock: clock.clone(),
+        events: events.clone(),
+        fail_reservation: AtomicBool::new(false),
+    };
+    let due = FakeDeadlinePort {
+        clock: clock.clone(),
+        due_calls: AtomicU64::new(0),
+    };
+    let host = FakeNativeHost {
+        observation: fresh_observation(),
+        submitted: AtomicU64::new(0),
+        submit_keys: AtomicU64::new(0),
+        pane_states: Default::default(),
+    };
+    host.script_pane_states(
+        &host
+            .safe_wake_target(&SeatId::new("seat"), &host.observation)
+            .unwrap(),
+        states,
+    );
+    let check = FakeReservationCheck {
+        current: true,
+        calls: AtomicU64::new(0),
+    };
+    let dispatch = NativeWakeDispatcher::new(&host, &check, clock.as_ref());
+    let scheduler = Scheduler::new(
+        "i".into(),
+        &due,
+        &wake,
+        &dispatch,
+        RetryConfig::default(),
+        daemon_boot(),
+    );
+    let budget = CallBudget {
+        deadline: MonoInstant(5_000),
+        cancellation: Cancellation::default(),
+    };
+    let first = scheduler.drive_wakes(&budget).unwrap();
+    assert_eq!(first.attempted, 1);
+    let second = scheduler.drive_wakes(&budget).unwrap();
+    let reserves = events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event| **event == "reserve")
+        .count();
+    (
+        first.verification,
+        host.submit_keys.load(Ordering::SeqCst),
+        host.submitted.load(Ordering::SeqCst),
+        reserves,
+        second.attempted,
+    )
+}
+
+#[test]
+fn unsent_prompt_gets_exactly_one_submit_key_retry_then_verified() {
+    use crate::ports::AgentComposerState::{HoldingPrompt, Submitted};
+    let (verification, keys, prompts, _, _) = drive_scripted_wake(vec![HoldingPrompt, Submitted]);
+    assert_eq!(
+        verification,
+        vec![(
+            SeatId::new("seat"),
+            crate::scheduler::SubmissionVerification::Retried
+        )]
+    );
+    assert_eq!((keys, prompts), (1, 1));
+    assert_eq!(
+        crate::scheduler::outcome_for_verification(verification[0].1),
+        WakeOutcome::Submitted
+    );
+}
+
+#[test]
+fn already_submitted_prompt_gets_no_retry() {
+    use crate::ports::AgentComposerState::Submitted;
+    let (verification, keys, prompts, _, _) = drive_scripted_wake(vec![Submitted]);
+    assert_eq!(
+        verification,
+        vec![(
+            SeatId::new("seat"),
+            crate::scheduler::SubmissionVerification::Verified
+        )]
+    );
+    assert_eq!((keys, prompts), (0, 1));
+}
+
+#[test]
+fn still_unsent_after_retry_is_reported_not_looped() {
+    use crate::ports::AgentComposerState::HoldingPrompt;
+    let (verification, keys, prompts, reserves, second_attempts) =
+        drive_scripted_wake(vec![HoldingPrompt, HoldingPrompt]);
+    assert_eq!(
+        verification,
+        vec![(
+            SeatId::new("seat"),
+            crate::scheduler::SubmissionVerification::Unsubmitted
+        )]
+    );
+    // One retry only; the second drive pass neither reserves nor re-sends.
+    assert_eq!((keys, prompts, reserves, second_attempts), (1, 1, 1, 0));
+    assert_eq!(
+        crate::scheduler::outcome_for_verification(verification[0].1),
+        WakeOutcome::OutcomeUnknown
+    );
+}
+
+#[test]
+fn unsent_after_retry_completes_the_attempt_as_outcome_unknown() {
+    let clock = FakeClock(AtomicU64::new(0));
+    let host = FakeNativeHost {
+        observation: fresh_observation(),
+        submitted: AtomicU64::new(0),
+        submit_keys: AtomicU64::new(0),
+        pane_states: Default::default(),
+    };
+    host.script_pane_states(
+        &host
+            .safe_wake_target(&SeatId::new("seat"), &host.observation)
+            .unwrap(),
+        vec![crate::ports::AgentComposerState::HoldingPrompt],
+    );
+    let check = FakeReservationCheck {
+        current: true,
+        calls: AtomicU64::new(0),
+    };
+    let dispatch = NativeWakeDispatcher::new(&host, &check, &clock);
+    let context = HostCallContext {
+        budget: CallBudget {
+            deadline: MonoInstant(2_000),
+            cancellation: Cancellation::default(),
+        },
+        expected_boot: Some(HostBootId::new("boot")),
+        expected_epoch: Some(1),
+    };
+    assert_eq!(
+        dispatch.attempt_wake(test_reservation(), &context).unwrap(),
+        WakeOutcome::OutcomeUnknown
+    );
+    assert_eq!(host.submit_keys.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        dispatch.take_verification(&SeatId::new("seat")),
+        Some(crate::scheduler::SubmissionVerification::Unsubmitted)
+    );
+    assert_eq!(dispatch.take_verification(&SeatId::new("seat")), None);
+}
+
+// ---- ht-p03.9.3: pre-send refusals retry on backoff, ladder untouched ----
+
+/// Plays a fixed script of outcomes and records when each attempt ran. `hook`
+/// runs inside the attempt, after the reservation committed and before the
+/// outcome is returned.
+struct ScriptedNotifier {
+    clock: Arc<JumpClock>,
+    script: Mutex<std::collections::VecDeque<Result<WakeOutcome, ApiError>>>,
+    calls: Mutex<Vec<MonoInstant>>,
+    hook: Mutex<Option<Box<dyn Fn() + Send>>>,
+}
+impl ScriptedNotifier {
+    fn new(clock: &Arc<JumpClock>, script: Vec<Result<WakeOutcome, ApiError>>) -> Self {
+        Self {
+            clock: clock.clone(),
+            script: Mutex::new(script.into()),
+            calls: Mutex::new(Vec::new()),
+            hook: Mutex::new(None),
+        }
+    }
+    fn calls(&self) -> usize {
+        self.calls.lock().unwrap().len()
+    }
+}
+impl NotificationPort for ScriptedNotifier {
+    fn attempt_wake(
+        &self,
+        _: WakeReservation,
+        _: &HostCallContext,
+    ) -> Result<WakeOutcome, ApiError> {
+        self.calls.lock().unwrap().push(self.clock.monotonic_now());
+        if let Some(hook) = self.hook.lock().unwrap().as_ref() {
+            hook();
+        }
+        self.script
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(Ok(WakeOutcome::Submitted))
+    }
+}
+
+/// `completion_fixture` with a prior ladder row (step 1, 60 s).
+fn refusal_fixture() -> (
+    std::path::PathBuf,
+    Arc<JumpClock>,
+    StoreContext,
+    SqliteStore,
+) {
+    let (path, clock, context, store) = completion_fixture();
+    let db = context.open_writer().unwrap();
+    db.execute("INSERT INTO wake_work(seat_id,reason_bits,retry_step,minimum_delay_ms,effective_delay_ms,last_reservation_id,last_reservation_boot) VALUES ('seat',3,1,30000,60000,'prior',?1)", [daemon_boot().to_string()]).unwrap();
+    drop(db);
+    (path, clock, context, store)
+}
+/// The runner anchors its boot guard when the scheduler is built, so the
+/// clock moves past the prior step's 60 s only after that.
+fn start_due(clock: &JumpClock) {
+    clock.mono.store(60_000, Ordering::SeqCst);
+}
+type RefusalRow = (Option<String>, i64, i64, Option<String>, Option<String>);
+fn refusal_row(context: &StoreContext) -> RefusalRow {
+    let db = context.open_writer().unwrap();
+    db.query_row("SELECT reservation_id,retry_step,effective_delay_ms,last_reservation_id,last_outcome FROM wake_work WHERE seat_id='seat'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap()
+}
+fn refusal_budget() -> CallBudget {
+    CallBudget {
+        deadline: MonoInstant(10_000_000),
+        cancellation: Cancellation::default(),
+    }
+}
+fn failing_store<'a>(store: &'a SqliteStore, clock: &'a JumpClock) -> FailingCompletionStore<'a> {
+    FailingCompletionStore {
+        store,
+        clock,
+        exhaust_budget: AtomicBool::new(false),
+        failures: AtomicU64::new(0),
+        lose_response: AtomicBool::new(false),
+        completions: Mutex::new(vec![]),
+    }
+}
+fn refusal_due_port() -> FakeDeadlinePort {
+    FakeDeadlinePort {
+        clock: Arc::new(FakeClock(AtomicU64::new(0))),
+        due_calls: AtomicU64::new(0),
+    }
+}
+fn refusal_attempts(scheduler_state: &std::sync::MutexGuard<'_, super::WakeRunnerState>) -> u32 {
+    scheduler_state
+        .dispatch
+        .refusal_attempts(&SeatId::new("seat"))
+        .unwrap()
+}
+
+#[test]
+fn refusals_back_off_without_climbing_the_ladder() {
+    // Kills: refusals that climb 30 s -> 300 s (step advances), retries that
+    // ignore the 100 ms x 2^n schedule, and a Submitted that fails to advance
+    // the ladder exactly one step after the refusals.
+    let (path, clock, context, store) = refusal_fixture();
+    let failing = failing_store(&store, clock.as_ref());
+    let notifier = ScriptedNotifier::new(
+        &clock,
+        vec![Ok(WakeOutcome::Refused(RefusalCause::Unavailable)); 4],
+    );
+    let due = refusal_due_port();
+    let scheduler = Scheduler::new(
+        "i".into(),
+        &due,
+        &failing,
+        &notifier,
+        RetryConfig::default(),
+        daemon_boot(),
+    );
+    start_due(&clock);
+    let budget = refusal_budget();
+    let mut gaps = Vec::new();
+    for _ in 0..4 {
+        let attempted_at = clock.monotonic_now();
+        let drove = scheduler.drive_wakes(&budget).unwrap();
+        assert_eq!(drove.attempted, 1, "{drove:?}");
+        let due_at = drove.next_due_at.expect("a refusal reports its retry");
+        gaps.push(due_at.0 - attempted_at.0);
+        // Refused: step, delay and last reservation are the prior row's.
+        assert_eq!(
+            refusal_row(&context),
+            (
+                None,
+                1,
+                60_000,
+                Some("prior".into()),
+                Some("unavailable".into())
+            )
+        );
+        // Not retried one millisecond early, retried at the reported instant.
+        let before = notifier.calls();
+        clock.mono.store(due_at.0 - 1, Ordering::SeqCst);
+        assert_eq!(scheduler.drive_wakes(&budget).unwrap().attempted, 0);
+        assert_eq!(notifier.calls(), before);
+        clock.mono.store(due_at.0, Ordering::SeqCst);
+    }
+    for (n, gap) in gaps.iter().enumerate() {
+        let nominal = 100u64 << n;
+        assert!(
+            *gap * 5 >= nominal * 4 && *gap * 5 <= nominal * 6,
+            "refusal {n}: gap {gap} ms vs nominal {nominal} ms"
+        );
+    }
+    // The fifth attempt is accepted: exactly one ladder step.
+    let drove = scheduler.drive_wakes(&budget).unwrap();
+    assert_eq!(drove.attempted, 1);
+    let row = refusal_row(&context);
+    assert_eq!(
+        (row.0.clone(), row.1, row.2, row.4),
+        (None, 2, 120_000, Some("submitted".into()))
+    );
+    assert_ne!(row.3.as_deref(), Some("prior"), "a new reservation id");
+    assert_eq!(notifier.calls(), 5);
+    {
+        let state = scheduler.wakes.state.lock().unwrap();
+        assert_eq!(refusal_attempts(&state), 0, "Submitted resets the backoff");
+    }
+    // Ladder after Submitted: the next attempt waits the advanced 120 s step.
+    let submitted_at = clock.monotonic_now().0;
+    assert!(drove.next_due_at.unwrap().0 > submitted_at);
+    drop(scheduler);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+/// A FakeWakeStore whose fenced restore always matches when one is supplied.
+struct MatchedRestore<'a>(&'a FakeWakeStore, Mutex<Vec<bool>>);
+impl WakePort for MatchedRestore<'_> {
+    fn clock(&self) -> &dyn Clock {
+        self.0.clock()
+    }
+    fn wake_recovery_candidates(
+        &self,
+        page: PageRequest,
+        budget: &CallBudget,
+    ) -> Result<Page<WakeRecoveryCandidate>, ApiError> {
+        self.0.wake_recovery_candidates(page, budget)
+    }
+    fn recover_wake_reservation(
+        &self,
+        request: WakeRecoveryRequest,
+        budget: &CallBudget,
+    ) -> Result<WakeRecoveryOutcome, ApiError> {
+        self.0.recover_wake_reservation(request, budget)
+    }
+    fn wake_candidates(
+        &self,
+        page: PageRequest,
+        budget: &CallBudget,
+    ) -> Result<Page<WakeCandidate>, ApiError> {
+        self.0.wake_candidates(page, budget)
+    }
+    fn reserve_wake(
+        &self,
+        candidate: &WakeCandidate,
+        budget: &CallBudget,
+    ) -> Result<Option<WakeReservation>, ApiError> {
+        self.0.reserve_wake(candidate, budget)
+    }
+    fn complete_wake(
+        &self,
+        attempt: WakeAttemptId,
+        outcome: WakeOutcome,
+        refused_restore: Option<&PriorLadder>,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        self.0
+            .complete_wake(attempt, outcome, refused_restore, budget)?;
+        self.1.lock().unwrap().push(refused_restore.is_some());
+        Ok(refused_restore.is_some())
+    }
+}
+
+/// A wake port whose candidate listing can be emptied, as when the seat's
+/// attention was settled elsewhere between two passes.
+struct Unlisting<'a, P: WakePort>(&'a P, AtomicBool);
+impl<P: WakePort> WakePort for Unlisting<'_, P> {
+    fn clock(&self) -> &dyn Clock {
+        self.0.clock()
+    }
+    fn wake_candidates(
+        &self,
+        page: PageRequest,
+        budget: &CallBudget,
+    ) -> Result<Page<WakeCandidate>, ApiError> {
+        let mut listed = self.0.wake_candidates(page, budget)?;
+        if self.1.load(Ordering::SeqCst) {
+            listed.items.clear();
+        }
+        Ok(listed)
+    }
+    fn reserve_wake(
+        &self,
+        candidate: &WakeCandidate,
+        budget: &CallBudget,
+    ) -> Result<Option<WakeReservation>, ApiError> {
+        self.0.reserve_wake(candidate, budget)
+    }
+    fn wake_recovery_candidates(
+        &self,
+        page: PageRequest,
+        budget: &CallBudget,
+    ) -> Result<Page<WakeRecoveryCandidate>, ApiError> {
+        self.0.wake_recovery_candidates(page, budget)
+    }
+    fn recover_wake_reservation(
+        &self,
+        request: WakeRecoveryRequest,
+        budget: &CallBudget,
+    ) -> Result<WakeRecoveryOutcome, ApiError> {
+        self.0.recover_wake_reservation(request, budget)
+    }
+    fn complete_wake(
+        &self,
+        attempt: WakeAttemptId,
+        outcome: WakeOutcome,
+        refused_restore: Option<&PriorLadder>,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        self.0
+            .complete_wake(attempt, outcome, refused_restore, budget)
+    }
+}
+
+#[test]
+fn refusal_backoff_of_a_seat_that_left_the_listing_stops_reporting_a_due_time() {
+    // Kills: a refusal backoff that outlives the seat's wake work. Its retry
+    // time stays in the past, `next_due_at` keeps reporting it, and the wake
+    // lane re-passes at its 100 ms minimum wait for as long as the daemon runs.
+    let (path, clock, _context, store) = refusal_fixture();
+    let failing = failing_store(&store, clock.as_ref());
+    let unlisting = Unlisting(&failing, AtomicBool::new(false));
+    let notifier = ScriptedNotifier::new(
+        &clock,
+        vec![Ok(WakeOutcome::Refused(RefusalCause::Unavailable))],
+    );
+    let due = refusal_due_port();
+    let scheduler = Scheduler::new(
+        "i".into(),
+        &due,
+        &unlisting,
+        &notifier,
+        RetryConfig::default(),
+        daemon_boot(),
+    );
+    start_due(&clock);
+    let budget = refusal_budget();
+    let refused = scheduler.drive_wakes(&budget).unwrap();
+    assert_eq!(refused.attempted, 1, "{refused:?}");
+    let retry_at = refused.next_due_at.expect("a refusal reports its retry");
+    // The seat leaves the listing and its retry time passes.
+    unlisting.1.store(true, Ordering::SeqCst);
+    clock.mono.store(retry_at.0 + 1_000, Ordering::SeqCst);
+    let idle = scheduler.drive_wakes(&budget).unwrap();
+    assert_eq!(idle.attempted, 0, "{idle:?}");
+    assert_eq!(
+        idle.next_due_at, None,
+        "a seat nothing lists has no retry to wait for"
+    );
+    drop(scheduler);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn refused_warning_wake_is_retried_not_offered() {
+    // Kills: treating a refused warning wake as an offer (the work would drop
+    // out of selection and never be retried).
+    let mut candidate = due_candidate();
+    candidate.has_pending_invitation = false;
+    candidate.actionable_warning_generation = Some(1);
+    candidate.actionable_warning_seq = Some(5);
+    candidate.attention_witness = Some(WakeAttentionWitness::from_complete(
+        "i".into(),
+        SeatId::new("seat"),
+        1,
+        false,
+        false,
+        Some(5),
+        0,
+        false,
+        Default::default(),
+    ));
+    assert!(candidate.has_actionable_work());
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+    let base = FakeWakeStore {
+        clock: clock.clone(),
+        events,
+        fail_reservation: AtomicBool::new(false),
+    };
+    let store = MatchedRestore(&base, Mutex::new(vec![]));
+    let jump = Arc::new(JumpClock {
+        mono: AtomicU64::new(0),
+        utc: AtomicI64::new(0),
+    });
+    let notifier = ScriptedNotifier::new(
+        &jump,
+        vec![
+            Ok(WakeOutcome::Refused(RefusalCause::Unsafe)),
+            Ok(WakeOutcome::Submitted),
+        ],
+    );
+    let runner = WakeRunner::new(&store, &notifier, RetryConfig::default(), daemon_boot());
+    let budget = refusal_budget();
+    assert_eq!(
+        runner.try_candidate(&candidate, &budget).unwrap(),
+        Some(WakeOutcome::Refused(RefusalCause::Unsafe))
+    );
+    // A refusal is not an offer: the selection still wants this warning.
+    assert!(!candidate.warning_offered_for_current_occupant());
+    assert!(candidate.has_actionable_work());
+    // Backing off: no immediate retry, then one at the reported instant.
+    assert_eq!(runner.try_candidate(&candidate, &budget).unwrap(), None);
+    let due = runner
+        .next_due_at()
+        .unwrap()
+        .expect("refusal retry instant");
+    assert!((80..=120).contains(&due.0), "100 ms +-20 %: {due:?}");
+    clock.0.store(due.0, Ordering::SeqCst);
+    assert_eq!(
+        runner.try_candidate(&candidate, &budget).unwrap(),
+        Some(WakeOutcome::Submitted)
+    );
+    assert_eq!(notifier.calls(), 2);
+    assert_eq!(*store.1.lock().unwrap(), vec![true, false]);
+}
+
+#[test]
+fn submit_prompt_error_keeps_todays_mapping() {
+    // Kills: routing a submit_prompt error through the refusal path (the send
+    // may have happened, so the ladder must stay advanced and the refusal
+    // backoff untouched).
+    struct SubmitErrHost(SqliteTimingHost);
+    impl HostPort for SubmitErrHost {
+        fn send_submit_key(
+            &self,
+            target: &SafeWakeTarget,
+            ctx: &HostCallContext,
+        ) -> Result<(), ApiError> {
+            self.0.send_submit_key(target, ctx)
+        }
+        fn native_launch_capability(&self) -> NativeLaunchCapability {
+            self.0.native_launch_capability()
+        }
+        fn observe_current_target(
+            &self,
+            target: &HostTargetId,
+            context: &HostCallContext,
+        ) -> Result<HostObservation, ApiError> {
+            self.0.observe_current_target(target, context)
+        }
+        fn enumerate_targets(&self, c: &HostCallContext) -> Result<HostSnapshot, ApiError> {
+            self.0.enumerate_targets(c)
+        }
+        fn safe_wake_target(
+            &self,
+            seat: &SeatId,
+            observation: &HostObservation,
+        ) -> Option<SafeWakeTarget> {
+            self.0.safe_wake_target(seat, observation)
+        }
+        fn submit_prompt(
+            &self,
+            _: &SafeWakeTarget,
+            _: &str,
+            _: &HostCallContext,
+        ) -> Result<PromptOutcome, ApiError> {
+            Err(ApiError::new(ErrorCode::HostUnavailable, "pane went away"))
+        }
+        fn pane_agent_state(
+            &self,
+            target: &SafeWakeTarget,
+            context: &HostCallContext,
+        ) -> Result<crate::ports::AgentComposerState, ApiError> {
+            self.0.pane_agent_state(target, context)
+        }
+        fn launch_native(
+            &self,
+            request: NativeLaunchRequest,
+            context: &HostCallContext,
+        ) -> Result<NativeLaunchOutcome, ApiError> {
+            self.0.launch_native(request, context)
+        }
+    }
+    let (path, clock, context, store) = refusal_fixture();
+    let failing = failing_store(&store, clock.as_ref());
+    let host = SubmitErrHost(SqliteTimingHost {
+        context: StoreContext::new(path.clone(), clock.clone()),
+        clock: clock.clone(),
+        calls: Mutex::new(vec![]),
+    });
+    let fence = StoreFence(&store);
+    let notifier = NativeWakeDispatcher::new(&host, &fence, clock.as_ref());
+    let due = refusal_due_port();
+    let scheduler = Scheduler::new(
+        "i".into(),
+        &due,
+        &failing,
+        &notifier,
+        RetryConfig::default(),
+        daemon_boot(),
+    );
+    start_due(&clock);
+    assert_eq!(
+        scheduler.drive_wakes(&refusal_budget()).unwrap().attempted,
+        1
+    );
+    let row = refusal_row(&context);
+    assert_eq!(
+        (row.0, row.1, row.2, row.4),
+        (None, 2, 120_000, Some("unavailable".into())),
+        "the existing Unavailable mapping, ladder advanced"
+    );
+    assert_eq!(
+        failing.completions.lock().unwrap()[0].1,
+        WakeOutcome::Unavailable
+    );
+    {
+        let state = scheduler.wakes.state.lock().unwrap();
+        assert_eq!(refusal_attempts(&state), 0);
+    }
+    drop(scheduler);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn crash_between_reserve_and_complete_keeps_the_advanced_step() {
+    // Kills: a restore that runs at reservation or recovery time. A crash
+    // after reserve leaves the advanced step; abandoned recovery settles the
+    // attempt as outcome_unknown without moving it back.
+    let (path, clock, context, fixture_store) = refusal_fixture();
+    drop(fixture_store);
+    // Failpoints are process-global and keyed by boot: use a boot no other
+    // test shares.
+    let crash_boot = uuid::Uuid::new_v4();
+    let store = SqliteStore::new(
+        StoreContext::new(path.clone(), clock.clone()),
+        "i",
+        StoreSettings {
+            daemon_boot: Some(crash_boot),
+            ..StoreSettings::default()
+        },
+    )
+    .unwrap();
+    let failing = failing_store(&store, clock.as_ref());
+    let notifier = ScriptedNotifier::new(&clock, vec![]);
+    let due = refusal_due_port();
+    {
+        let scheduler = Scheduler::new(
+            "i".into(),
+            &due,
+            &failing,
+            &notifier,
+            RetryConfig::default(),
+            crash_boot,
+        );
+        start_due(&clock);
+        let _fp = crate::test_support::failpoints::Failpoint::error(
+            "wake.after_reservation",
+            crash_boot.to_string(),
+            ErrorCode::Cancelled,
+        );
+        assert!(scheduler.drive_wakes(&refusal_budget()).is_err());
+        assert_eq!(_fp.fired(), 1);
+    }
+    assert_eq!(notifier.calls(), 0);
+    let row = refusal_row(&context);
+    assert!(row.0.is_some(), "reservation committed before the crash");
+    assert_eq!((row.1, row.2), (2, 120_000));
+    drop(store);
+    // New daemon boot: recovery settles the abandoned attempt, step unchanged.
+    clock.mono.store(100_000, Ordering::SeqCst);
+    let recovery_boot = uuid::Uuid::new_v4();
+    let reopened = SqliteStore::new(
+        StoreContext::new(path.clone(), clock.clone()),
+        "i",
+        StoreSettings {
+            daemon_boot: Some(recovery_boot),
+            ..StoreSettings::default()
+        },
+    )
+    .unwrap();
+    let failing = failing_store(&reopened, clock.as_ref());
+    let scheduler = Scheduler::new(
+        "i".into(),
+        &due,
+        &failing,
+        &notifier,
+        RetryConfig::default(),
+        recovery_boot,
+    );
+    assert_eq!(
+        scheduler.drive_wakes(&refusal_budget()).unwrap().recovered,
+        1
+    );
+    let row = refusal_row(&context);
+    assert_eq!(
+        (row.0, row.1, row.2, row.4),
+        (None, 2, 120_000, Some("outcome_unknown".into()))
+    );
+    drop(scheduler);
+    drop(reopened);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn next_due_at_reports_the_earliest_refusal_retry() {
+    // Kills: a next_due_at that is None, ignores the refusal instant, or
+    // reports a later seat's instant.
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+    let store = FakeWakeStore {
+        clock: clock.clone(),
+        events,
+        fail_reservation: AtomicBool::new(false),
+    };
+    let store = MatchedRestore(&store, Mutex::new(vec![]));
+    let jump = Arc::new(JumpClock {
+        mono: AtomicU64::new(0),
+        utc: AtomicI64::new(0),
+    });
+    let notifier = ScriptedNotifier::new(
+        &jump,
+        vec![
+            Ok(WakeOutcome::Refused(RefusalCause::Unavailable)),
+            Ok(WakeOutcome::Refused(RefusalCause::Unavailable)),
+        ],
+    );
+    let runner = WakeRunner::new(&store, &notifier, RetryConfig::default(), daemon_boot());
+    let budget = refusal_budget();
+    assert_eq!(runner.next_due_at().unwrap(), None, "nothing tracked yet");
+    runner.try_candidate(&due_candidate(), &budget).unwrap();
+    let first = runner.next_due_at().unwrap().expect("first refusal");
+    assert!((80..=120).contains(&first.0), "{first:?}");
+    // Second refusal at the first retry instant: 200 ms +-20 % later.
+    clock.0.store(first.0, Ordering::SeqCst);
+    runner.try_candidate(&due_candidate(), &budget).unwrap();
+    let second = runner.next_due_at().unwrap().expect("second refusal");
+    let gap = second.0 - first.0;
+    assert!((160..=240).contains(&gap), "{gap}");
+}
+
+#[test]
+fn fence_miss_restores_nothing_and_keeps_memory_consistent() {
+    // Design roast r1 (ht-p03.56). A host invalidation clears reservation_id
+    // while the attempt is in flight; the Refused completion's fenced restore
+    // matches 0 rows. Kills: restoring the in-memory RetryGuard anyway (memory
+    // would be eligible while the durable step is advanced) and an error on
+    // the 0-row restore.
+    let (path, clock, context, store) = refusal_fixture();
+    let failing = failing_store(&store, clock.as_ref());
+    let notifier = ScriptedNotifier::new(
+        &clock,
+        vec![
+            Ok(WakeOutcome::Refused(RefusalCause::Unavailable)),
+            Ok(WakeOutcome::Submitted),
+        ],
+    );
+    let invalidating = StoreContext::new(path.clone(), clock.clone());
+    *notifier.hook.lock().unwrap() = Some(Box::new(move || {
+        // The mark-unresolved path's wake_work write.
+        invalidating
+            .open_writer()
+            .unwrap()
+            .execute(
+                "UPDATE wake_work SET reservation_id=NULL,reservation_boot=NULL,binding_generation=NULL WHERE seat_id='seat'",
+                [],
+            )
+            .unwrap();
+    }));
+    let due = refusal_due_port();
+    let scheduler = Scheduler::new(
+        "i".into(),
+        &due,
+        &failing,
+        &notifier,
+        RetryConfig::default(),
+        daemon_boot(),
+    );
+    start_due(&clock);
+    let budget = refusal_budget();
+    let drove = scheduler.drive_wakes(&budget).unwrap();
+    assert_eq!(drove.attempted, 1);
+    // No error, and the durable step stays advanced by exactly one.
+    let row = refusal_row(&context);
+    assert_eq!((row.0.clone(), row.1, row.2), (None, 2, 120_000));
+    assert_ne!(
+        row.3.as_deref(),
+        Some("prior"),
+        "last reservation not restored"
+    );
+    {
+        let state = scheduler.wakes.state.lock().unwrap();
+        assert_eq!(refusal_attempts(&state), 1, "the refusal backoff advanced");
+    }
+    // The refusal instant passes, but the advanced ladder (120 s from the
+    // completion at 60 s) still blocks: memory matches the durable step.
+    let refusal_due = drove.next_due_at.unwrap();
+    assert_eq!(
+        refusal_due.0, 180_000,
+        "ladder, not the 100 ms refusal, is due"
+    );
+    clock.mono.store(refusal_due.0 - 1, Ordering::SeqCst);
+    assert_eq!(scheduler.drive_wakes(&budget).unwrap().attempted, 0);
+    assert_eq!(notifier.calls(), 1);
+    clock.mono.store(refusal_due.0, Ordering::SeqCst);
+    assert_eq!(scheduler.drive_wakes(&budget).unwrap().attempted, 1);
+    assert_eq!(notifier.calls(), 2);
+    drop(scheduler);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn outcome_unknown_from_an_unsent_prompt_keeps_the_step_and_ignores_the_refusal_backoff() {
+    // ht-p03.41 contract: Unsubmitted maps to OutcomeUnknown, which stores the
+    // existing outcome_unknown string, keeps the advanced step, and neither
+    // resets nor advances the seat's refusal backoff.
+    assert_eq!(
+        crate::scheduler::outcome_for_verification(
+            crate::scheduler::SubmissionVerification::Unsubmitted
+        ),
+        WakeOutcome::OutcomeUnknown
+    );
+    let (path, clock, context, store) = refusal_fixture();
+    let failing = failing_store(&store, clock.as_ref());
+    let notifier = ScriptedNotifier::new(
+        &clock,
+        vec![
+            Ok(WakeOutcome::Refused(RefusalCause::Unavailable)),
+            Ok(WakeOutcome::OutcomeUnknown),
+        ],
+    );
+    let due = refusal_due_port();
+    let scheduler = Scheduler::new(
+        "i".into(),
+        &due,
+        &failing,
+        &notifier,
+        RetryConfig::default(),
+        daemon_boot(),
+    );
+    start_due(&clock);
+    let budget = refusal_budget();
+    let refused = scheduler.drive_wakes(&budget).unwrap();
+    assert_eq!(refusal_row(&context).1, 1);
+    clock
+        .mono
+        .store(refused.next_due_at.unwrap().0, Ordering::SeqCst);
+    assert_eq!(scheduler.drive_wakes(&budget).unwrap().attempted, 1);
+    let row = refusal_row(&context);
+    assert_eq!(
+        (row.0, row.1, row.2, row.4),
+        (None, 2, 120_000, Some("outcome_unknown".into()))
+    );
+    {
+        let state = scheduler.wakes.state.lock().unwrap();
+        assert_eq!(refusal_attempts(&state), 1, "neither reset nor advanced");
+    }
+    drop(scheduler);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+struct ErrObserveHost {
+    inner: FakeNativeHost,
+    error: ApiError,
+}
+impl HostPort for ErrObserveHost {
+    fn send_submit_key(
+        &self,
+        target: &SafeWakeTarget,
+        ctx: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        self.inner.send_submit_key(target, ctx)
+    }
+    fn native_launch_capability(&self) -> NativeLaunchCapability {
+        NativeLaunchCapability::Unsupported
+    }
+    fn observe_current_target(
+        &self,
+        _: &HostTargetId,
+        _: &HostCallContext,
+    ) -> Result<HostObservation, ApiError> {
+        Err(self.error.clone())
+    }
+    fn enumerate_targets(&self, c: &HostCallContext) -> Result<HostSnapshot, ApiError> {
+        self.inner.enumerate_targets(c)
+    }
+    fn safe_wake_target(&self, seat: &SeatId, o: &HostObservation) -> Option<SafeWakeTarget> {
+        self.inner.safe_wake_target(seat, o)
+    }
+    fn submit_prompt(
+        &self,
+        target: &SafeWakeTarget,
+        text: &str,
+        context: &HostCallContext,
+    ) -> Result<PromptOutcome, ApiError> {
+        self.inner.submit_prompt(target, text, context)
+    }
+    fn pane_agent_state(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<crate::ports::AgentComposerState, ApiError> {
+        self.inner.pane_agent_state(target, context)
+    }
+    fn launch_native(
+        &self,
+        request: NativeLaunchRequest,
+        context: &HostCallContext,
+    ) -> Result<NativeLaunchOutcome, ApiError> {
+        self.inner.launch_native(request, context)
+    }
+}
+struct ErrReservationCheck(ApiError);
+impl ReservationCheck for ErrReservationCheck {
+    fn is_current(&self, _: &WakeReservation, _: &CallBudget) -> Result<bool, ApiError> {
+        Err(self.0.clone())
+    }
+}
+
+#[test]
+fn pre_send_errors_are_refusals_by_class_and_never_reach_submit() {
+    // Kills: `?` on observe_current_target / is_current (the error would
+    // reach the scheduler as a ladder-climbing completion) and a class map
+    // that sends a deadline or unsafe error to the wrong cause.
+    let clock = FakeClock(AtomicU64::new(0));
+    let context = HostCallContext {
+        budget: CallBudget {
+            deadline: MonoInstant(5_000),
+            cancellation: Cancellation::default(),
+        },
+        expected_boot: Some(HostBootId::new("boot")),
+        expected_epoch: Some(1),
+    };
+    for (code, expected) in [
+        (ErrorCode::HostUnavailable, Some(RefusalCause::Unavailable)),
+        (ErrorCode::DeadlineExceeded, Some(RefusalCause::TimedOut)),
+        (ErrorCode::TargetUnsafe, Some(RefusalCause::Unsafe)),
+        (ErrorCode::StoreCorrupt, Some(RefusalCause::Unavailable)),
+        (ErrorCode::Cancelled, None),
+    ] {
+        let error = ApiError::new(code.clone(), "injected");
+        let host = ErrObserveHost {
+            inner: FakeNativeHost {
+                observation: fresh_observation(),
+                submitted: AtomicU64::new(0),
+                submit_keys: AtomicU64::new(0),
+                pane_states: Default::default(),
+            },
+            error: error.clone(),
+        };
+        let check = FakeReservationCheck {
+            current: true,
+            calls: AtomicU64::new(0),
+        };
+        let dispatch = NativeWakeDispatcher::new(&host, &check, &clock);
+        let observed = dispatch.attempt_wake(test_reservation(), &context);
+        let fenced_host = FakeNativeHost {
+            observation: fresh_observation(),
+            submitted: AtomicU64::new(0),
+            submit_keys: AtomicU64::new(0),
+            pane_states: Default::default(),
+        };
+        let err_check = ErrReservationCheck(error.clone());
+        let fenced = NativeWakeDispatcher::new(&fenced_host, &err_check, &clock)
+            .attempt_wake(test_reservation(), &context);
+        for (label, got) in [("observe", observed), ("is_current", fenced)] {
+            match expected {
+                Some(cause) => assert_eq!(
+                    got.unwrap_or_else(|e| panic!("{label} {code:?} propagated: {e:?}")),
+                    WakeOutcome::Refused(cause),
+                    "{label} {code:?}"
+                ),
+                None => assert_eq!(
+                    got.unwrap_err().code,
+                    code,
+                    "{label} propagates cancellation"
+                ),
+            }
+        }
+        assert_eq!(host.inner.submitted.load(Ordering::SeqCst), 0);
+        assert_eq!(fenced_host.submitted.load(Ordering::SeqCst), 0);
     }
 }
 
@@ -3503,12 +4628,6 @@ impl HostPort for CooperativeRecordingHost {
         Ok(self.observation.clone())
     }
     fn enumerate_targets(&self, _: &HostCallContext) -> Result<HostSnapshot, ApiError> {
-        unreachable!()
-    }
-    fn subscribe_lifecycle(
-        &self,
-        _: &HostCallContext,
-    ) -> Result<Box<dyn HostLifecycleSubscription>, ApiError> {
         unreachable!()
     }
     fn safe_wake_target(
@@ -3547,6 +4666,16 @@ impl HostPort for CooperativeRecordingHost {
         _: &HostCallContext,
     ) -> Result<NativeLaunchOutcome, ApiError> {
         unreachable!()
+    }
+    fn pane_agent_state(
+        &self,
+        _: &SafeWakeTarget,
+        _: &HostCallContext,
+    ) -> Result<crate::ports::AgentComposerState, ApiError> {
+        Ok(crate::ports::AgentComposerState::Submitted)
+    }
+    fn send_submit_key(&self, _: &SafeWakeTarget, _: &HostCallContext) -> Result<(), ApiError> {
+        unreachable!("a submitted prompt needs no submit key")
     }
 }
 
@@ -3634,9 +4763,10 @@ fn cooperative_reservation_without_harness_is_not_prompted() {
         calls: AtomicU64::new(0),
     };
     let dispatch = NativeWakeDispatcher::new(&host, &check, &clock);
+    // A pre-send refusal (pacer D5): the reminder ladder does not climb.
     assert_eq!(
         dispatch.attempt_wake(reservation, &context).unwrap(),
-        WakeOutcome::Unsafe
+        WakeOutcome::Refused(RefusalCause::Unsafe)
     );
     assert!(host.prompted.lock().unwrap().is_empty());
 }

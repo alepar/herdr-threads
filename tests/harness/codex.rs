@@ -1,7 +1,12 @@
 use crate::harness::setup::{EventGroups, SetupError, plan_codex_for_version};
 use crate::harness::{
-    Capability, MailSummary, check_in_event, codex,
-    codex::{HookPurpose, InstalledVersion, NativeSupport, TransportError, VersionError},
+    Capability, MailSummary,
+    admission::Placement,
+    check_in_event, codex,
+    codex::{
+        Admission, HookPurpose, InstalledVersion, NativeSupport, SchemaObservation, TransportError,
+        VersionError,
+    },
     context::*,
     render_context,
 };
@@ -78,7 +83,7 @@ fn fake_binary(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
 #[test]
 fn installed_version_witness_is_only_produced_by_observing_the_binary() {
     let dir = private_dir("version");
-    for recipe_version in ["0.157.1", "0.158.0"] {
+    for recipe_version in ["0.157.1", "0.158.0", "0.159.3"] {
         let ok = fake_binary(
             &dir,
             &format!("codex-{recipe_version}"),
@@ -88,27 +93,40 @@ fn installed_version_witness_is_only_produced_by_observing_the_binary() {
         assert_eq!(version.as_str(), recipe_version);
         assert_eq!(version.recipe().id, "codex-hooks-v1");
     }
-    for unknown in ["0.159.0", "0.155.1", "0.157.2"] {
+    // Older than every recipe: refused without fingerprinting the binary.
+    let older = fake_binary(&dir, "codex-0.155.1", "printf 'codex-cli 0.155.1\\n'");
+    let error = InstalledVersion::observe(&older).unwrap_err();
+    assert_eq!(error, VersionError::Unsupported("0.155.1".into()));
+    let message = error.to_string();
+    assert!(
+        message.contains("codex 0.155.1 has no adapter recipe")
+            && message.contains("codex-hooks-v1 {0.157.1, 0.158.0, 0.159.3}"),
+        "{message}"
+    );
+    // Unlisted but not older: admitted optimistically. This script embeds no
+    // hook schemas, so the observation is `Unreadable`.
+    for (unknown, placement) in [
+        ("0.160.0", Placement::NewerThanVerified),
+        ("0.157.2", Placement::WithinSpan),
+    ] {
         let newer = fake_binary(
             &dir,
             &format!("codex-{unknown}"),
             &format!("printf 'codex-cli {unknown}\\n'"),
         );
-        // An unlisted version is fingerprinted; this script embeds no hook
-        // schemas, so it is refused as unextractable.
-        let error = InstalledVersion::observe(&newer).unwrap_err();
+        let version = InstalledVersion::observe(&newer).unwrap();
+        assert_eq!(version.as_str(), unknown);
+        assert_eq!(version.recipe().id, "codex-hooks-v1");
+        let Admission::Optimistic { admission, schema } = version.admission() else {
+            panic!("{unknown}: {:?}", version.admission());
+        };
+        assert_eq!(admission.placement, placement, "{unknown}");
+        assert_eq!(admission.assumed_recipe, "codex-hooks-v1");
         assert_eq!(
-            error,
-            VersionError::SchemaUnextractable {
-                version: unknown.into(),
+            schema,
+            &SchemaObservation::Unreadable {
                 reason: crate::harness::codex_schema::Unextractable::NoSchemas,
             }
-        );
-        let message = error.to_string();
-        assert!(
-            message.contains(&format!("codex {unknown} has no adapter recipe"))
-                && message.contains("codex-hooks-v1 {0.157.1, 0.158.0}"),
-            "{message}"
         );
     }
     for (name, body) in [
@@ -154,20 +172,12 @@ fn installed_version_witness_is_only_produced_by_observing_the_binary() {
 fn codex_version_refusals_name_the_supported_recipes() {
     for error in [
         VersionError::Unsupported("0.159.0".into()),
-        VersionError::SchemaUnmatched {
-            version: "0.159.0".into(),
-            fingerprint: "sha256:00".into(),
-        },
-        VersionError::SchemaUnextractable {
-            version: "0.159.0".into(),
-            reason: crate::harness::codex_schema::Unextractable::Deadline,
-        },
         VersionError::Unrecognized,
         VersionError::Unavailable,
     ] {
         let message = error.to_string();
         assert!(
-            message.contains("supported recipes: codex-hooks-v1 {0.157.1, 0.158.0}"),
+            message.contains("supported recipes: codex-hooks-v1 {0.157.1, 0.158.0, 0.159.3}"),
             "{message}"
         );
         assert_eq!(
@@ -197,7 +207,7 @@ fn unobservable_codex_binary_refusal_names_the_supported_recipes() {
             "{message}"
         );
         assert!(
-            message.contains("supported recipes: codex-hooks-v1 {0.157.1, 0.158.0}"),
+            message.contains("supported recipes: codex-hooks-v1 {0.157.1, 0.158.0, 0.159.3}"),
             "{message}"
         );
         // Codex's witness is an absolute binary, so its remedy names one.
@@ -1184,6 +1194,8 @@ const SUPPORTED_RECIPES: &[codex::CodexRecipe] = &[crate::harness::recipe::Recip
     )]),
     evidence: &[],
     scope: "test only",
+    evidence_levels: &[],
+    known_broken: &[],
     profile: codex::CodexProfile {
         input_schema: codex::InputSchema::HooksV1,
         schema_fingerprint: codex::HOOKS_V1_SCHEMA_FINGERPRINT,
@@ -1271,4 +1283,48 @@ fn observes_named_installed_codex_binary() {
     ] {
         codex::parse_event_for_version(bytes, "external", &version).unwrap();
     }
+}
+
+// Kills: a --version run that waits out its whole deadline after the daemon
+// asked to stop (the admission observer then holds shutdown past the 5 s stop
+// budget, final review S6).
+#[cfg(unix)]
+#[test]
+fn cancelled_version_run_kills_the_hung_binary_promptly() {
+    use crate::protocol::time::Cancellation;
+    use std::time::Duration;
+    let dir = private_dir("cancel");
+    let marker = dir.join("pid");
+    let hung = fake_binary(
+        &dir,
+        "codex",
+        &format!("echo $$ > '{}'\nexec sleep 60", marker.display()),
+    );
+    let cancel = Cancellation::default();
+    let canceller = {
+        let cancel = cancel.clone();
+        let marker = marker.clone();
+        std::thread::spawn(move || {
+            while !std::fs::read_to_string(&marker).is_ok_and(|pid| pid.ends_with('\n')) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            cancel.cancel();
+        })
+    };
+    let result = codex::version_output_cancellable(&hung, Duration::from_secs(30), &cancel);
+    canceller.join().unwrap();
+    assert!(
+        matches!(result, Err(VersionError::Unavailable)),
+        "{result:?}"
+    );
+    let pid = std::fs::read_to_string(&marker).unwrap().trim().to_owned();
+    // the process group was killed, so the child is gone (or a reaped zombie) at once
+    assert!(
+        !std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .status()
+            .unwrap()
+            .success(),
+        "hung child {pid} still alive"
+    );
 }

@@ -1005,6 +1005,25 @@ fn local_command_table_uses_local_backend_without_wire_call() {
 }
 
 #[test]
+fn local_composition_error_names_skill() {
+    use crate::protocol::{
+        commands::Command,
+        output::OutputSpec,
+        results::{ApiError, CommandResult},
+    };
+    struct Stub;
+    impl CliBackend for Stub {
+        fn call(&mut self, _: Command, _: &OutputSpec) -> Result<CommandResult, ApiError> {
+            panic!("wire call")
+        }
+    }
+    let parsed = parse_argv(["herdr-threads", "--skill"]).unwrap();
+    let err = dispatch(parsed, &mut Stub, None, None).unwrap_err();
+    assert!(err.detail.contains("skill"), "{}", err.detail);
+    assert!(err.detail.contains("launch") && err.detail.contains("setup"), "{}", err.detail);
+}
+
+#[test]
 fn help_names_exact_ack_separate_accept_and_optional_summary() {
     use clap::CommandFactory;
     let help = Cli::command().render_long_help().to_string();
@@ -1136,6 +1155,27 @@ fn read_follow_parses_its_options_and_refuses_page_selectors() {
     ] {
         assert!(parse_argv(refused.clone()).is_err(), "{refused:?}");
     }
+}
+
+#[test]
+fn exit_status_help_names_both_exit_3_remedies() {
+    use crate::daemon::remedy::{RemedyContext, remedy};
+    use crate::protocol::results::ErrorClass;
+    let help = exit_status_help();
+    assert!(
+        help.contains(&format!(
+            "  3  daemon or host unavailable; {}",
+            remedy(Some(ErrorClass::Unavailable), &RemedyContext::Exit3)
+        )),
+        "{help}"
+    );
+    assert!(
+        help.contains(&format!(
+            "(version mismatch: {})",
+            remedy(Some(ErrorClass::VersionSkew), &RemedyContext::Exit3)
+        )),
+        "{help}"
+    );
 }
 
 #[test]

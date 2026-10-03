@@ -1,5 +1,6 @@
 pub mod attention;
 pub mod authority;
+pub mod capabilities;
 pub mod commands;
 pub mod ids;
 pub mod output;

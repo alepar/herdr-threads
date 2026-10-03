@@ -4,7 +4,10 @@ The coordinator read Task11's complete report and the report-only triage at `.su
 
 ## Availability boundary
 
+> **Superseded (2026-10, ht-p03.2 / B4):** the adversarial verification layer described here was removed; see "Cooperative reality (2026-10)".
+
 Managed launch may use either a proven EmptyShell observation followed by direct native start, or an explicitly supported host operation that checks shell ownership and prompt readiness before it starts the agent. Add a narrow adapter-owned typed launch capability distinguishing these cases from Unsupported. It is not client-asserted authority. Unknown observation remains Unknown; only the supported guarded-start path may delegate that availability check to Herdr. Known occupied/editor/agent or blocked UI rejects before launch.
+<!-- end superseded -->
 
 Both paths first resolve the durable seat and recovery holds, make a fresh ordered explicit-target structural read, compare expected terminal/generation and required incarnation/epoch fences, and reject known invalidations. The host guard does not provide expected terminal/generation/incarnation compare-and-swap. Preserve the approved optimistic observation/start race and document it. This change removes the unnecessary requirement for a separate prompt-ready field when the start operation itself checks readiness; it does not remove any incarnation or current-execution gate.
 

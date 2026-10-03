@@ -7,7 +7,7 @@
 
 use super::sweep::{FakeHost, Scratch, pane};
 use serde_json::{Value, json};
-use std::{fs, os::unix::fs::DirBuilderExt, path::PathBuf, process::Command};
+use std::{fs, os::unix::fs::DirBuilderExt, path::PathBuf, process::Command, time::Duration};
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
 
@@ -19,8 +19,7 @@ impl Plugin {
     fn command(&self, agent: Option<(&str, &str, &str)>, json: bool) -> Command {
         // The plugin environment an agent's pane provides, so continuation
         // commands carry no explicit selectors (as in a real pane).
-        let mut command = Command::new(BIN);
-        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
+        let mut command = crate::scrubbed_command(BIN);
         command
             .env("HERDR_PLUGIN_STATE_DIR", &self.state)
             .env("HERDR_SOCKET_PATH", &self.host)
@@ -46,7 +45,21 @@ impl Plugin {
         command
     }
     fn ok(&self, agent: Option<(&str, &str, &str)>, args: &[&str]) -> Value {
-        let output = self.command(agent, true).args(args).output().unwrap();
+        let mut command = self.command(agent, true);
+        command.args(args);
+        // A call that races the daemon's first observation publication may be
+        // refused `stale_host_observation`; that refusal is transient.
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        let output = loop {
+            let output = command.output().unwrap();
+            if output.status.success()
+                || !String::from_utf8_lossy(&output.stderr).contains("stale_host_observation")
+                || std::time::Instant::now() >= until
+            {
+                break output;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         assert!(
             output.status.success(),
@@ -140,7 +153,7 @@ fn agent_facing_machine_text_is_compact() {
     let again = plugin.text(Some(alice), &["invite", &thread, "--seat", &hatter_seat]);
     assert_eq!(
         again,
-        format!("already_joined\nseat: \"{hatter_seat}\"\nthread: \"{thread}\"\n")
+        format!("already_joined {thread} {hatter_seat}: no invitation sent\n")
     );
     let again = plugin.ok(Some(alice), &["invite", &thread, "--seat", &hatter_seat]);
     assert_eq!(again["kind"], "already_joined", "{again}");

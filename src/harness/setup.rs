@@ -1,6 +1,6 @@
 //! Scoped hook proposals and explicit user-settings installation (Claude `settings.json`, Codex
 //! `hooks.json`). No process launch or trust change.
-use super::codex;
+use super::{codex, launch::compose_native_argv_with};
 use crate::ports::ConfiguredHook;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -45,8 +45,32 @@ pub struct EventGroups {
 pub struct CodexSetupPlan {
     pub base_fingerprint: String,
     pub events: Vec<EventGroups>,
+    /// The launch line with no caller arguments: `--no-daemon` once, then the session `-c`
+    /// overrides ([`CodexSetupPlan::launch_argv_for`] composes it for caller arguments).
     pub launch_argv: Vec<String>,
+    /// The session `-c hooks.*=...` overrides alone (no `--no-daemon`).
+    pub session_config: Vec<String>,
     pub owned: Vec<OwnedEntry>,
+}
+
+impl CodexSetupPlan {
+    /// The launch argv for `caller` arguments, composed by the one launch rule
+    /// ([`compose_native_argv_with`]): `--no-daemon` exactly once at the top level, none when
+    /// `shell_passes_no_daemon` (the pane's `codex` function or alias supplies it; Codex
+    /// refuses the flag twice), and a caller's own single `--no-daemon` kept in place.
+    pub fn launch_argv_for(
+        &self,
+        caller: Vec<String>,
+        shell_passes_no_daemon: bool,
+    ) -> Result<Vec<String>, SetupError> {
+        compose_native_argv_with(
+            crate::protocol::authority::Harness::Codex,
+            caller,
+            self.session_config.clone(),
+            shell_passes_no_daemon,
+        )
+        .map_err(|_| SetupError::Invalid)
+    }
 }
 /// Quote only at the command-hook shell boundary; native launch remains an argv vector.
 pub fn shell_command(argv: &[String]) -> Result<String, SetupError> {
@@ -674,28 +698,31 @@ fn plan_codex(
         }
         owned_entries.push(entry);
     }
-    let mut launch_argv = vec!["--no-daemon".into()];
+    let mut session_config: Vec<String> = Vec::new();
     for entry in &owned_entries {
         let event = events
             .iter()
             .find(|e| e.event == entry.event)
             .ok_or(SetupError::Invalid)?;
-        launch_argv.push("-c".into());
-        launch_argv.push(format!(
+        session_config.push("-c".into());
+        session_config.push(format!(
             "hooks.{}={}",
             event.event,
             toml_inline(&json!(event.groups))?
         ));
     }
-    if launch_argv.iter().map(String::len).sum::<usize>() > 65536 {
+    if session_config.iter().map(String::len).sum::<usize>() > 65536 {
         return Err(SetupError::TooLarge);
     }
-    Ok(CodexSetupPlan {
+    let mut plan = CodexSetupPlan {
         base_fingerprint: groups_fingerprint(existing)?,
         events,
-        launch_argv,
+        launch_argv: Vec::new(),
+        session_config,
         owned: owned_entries,
-    })
+    };
+    plan.launch_argv = plan.launch_argv_for(Vec::new(), false)?;
+    Ok(plan)
 }
 
 /// The production setup boundary. The witness exists only after observing the

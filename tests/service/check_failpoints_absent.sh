@@ -5,7 +5,7 @@
 # Usage: tests/service/check_failpoints_absent.sh [target-dir]
 # Kills: a failpoint hook (or its registry) left reachable in release.
 set -eu
-root=$(CDPATH= cd "$(dirname "$0")/../.." && pwd -P)
+root=$(CDPATH='' cd "$(dirname "$0")/../.." && pwd -P)
 cd "$root"
 target=${1:-${CARGO_TARGET_DIR:-$root/target}}
 names=$(find src -name '*.rs' -exec cat {} + | tr '\n' ' ' \

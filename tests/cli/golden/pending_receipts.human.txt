@@ -1,0 +1,6 @@
+MESSAGE  THREAD  FROM    SENT               DEADLINE
+msg-3    t-1     seat-b  2026-09-28 08:45Z  2026-09-28 08:45Z (overdue)
+msg-4    t-1     seat-b  2026-09-28 08:45Z  2026-10-01 09:30Z
+msg-5    t-1     seat-b  2026-09-28 08:45Z  2026-10-03 09:30Z
+msg-6    t-1     seat-b  2026-09-28 08:45Z  -
+more: herdr-threads pending-receipts --cursor cursor-1

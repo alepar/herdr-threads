@@ -35,6 +35,7 @@ fn candidate() -> WakeCandidate {
         minimum_delay_ms: 0,
         effective_delay_ms: 0,
         last_outcome: None,
+        last_reserved_at_utc: None,
     }
 }
 
@@ -484,4 +485,134 @@ fn raised_and_lowered_minimums_preserve_prior_frozen_floor() {
             .eligible(MonoInstant(301_000))
     );
     assert!(RetryConfig::new(29_999).is_err());
+}
+
+mod refusal_backoff {
+    use crate::notification::dispatch::DispatchState;
+    use crate::notification::policy::{DurableRetry, RetryConfig};
+    use crate::ports::{RefusalCause, WakeOutcome};
+    use crate::protocol::{
+        ids::{SeatId, WakeAttemptId},
+        time::MonoInstant,
+    };
+
+    const REFUSED: WakeOutcome = WakeOutcome::Refused(RefusalCause::Unavailable);
+
+    fn boot() -> uuid::Uuid {
+        uuid::Uuid::parse_str("00000000-0000-4000-8000-000000000001").unwrap()
+    }
+    fn reserved_state(seat: &SeatId, at: u64) -> DispatchState {
+        let mut state =
+            DispatchState::new(RetryConfig::default(), MonoInstant(0), boot()).with_refusal_seed(7);
+        state
+            .restore(
+                seat.clone(),
+                DurableRetry {
+                    retry_step: 0,
+                    minimum_delay_ms: 0,
+                    effective_delay_ms: 0,
+                    ever_reserved: false,
+                },
+            )
+            .unwrap();
+        let attempt = WakeAttemptId::new("a");
+        state
+            .reserved(seat.clone(), attempt.clone(), boot(), MonoInstant(at))
+            .unwrap();
+        assert!(
+            state
+                .finish(seat, &attempt, &boot(), MonoInstant(at))
+                .unwrap()
+        );
+        state
+    }
+
+    #[test]
+    fn can_reserve_requires_ladder_and_refusal_eligibility() {
+        let seat = SeatId::new("seat");
+        let mut state = reserved_state(&seat, 100_000);
+        // Ladder: reserved at 100 s, so the 30 s floor ends at 130 s.
+        assert!(!state.can_reserve(&seat, MonoInstant(129_999)));
+        assert!(state.can_reserve(&seat, MonoInstant(130_000)));
+        // A refusal at 200 s adds its own wait (100 ms +-20 %) on top of an
+        // eligible ladder: only the refusal blocks.
+        state.record_outcome(&seat, REFUSED, MonoInstant(200_000));
+        let due = state
+            .next_due_at(MonoInstant(200_000))
+            .expect("refusal instant");
+        assert!(
+            (200_080..=200_120).contains(&due.0),
+            "first refusal waits 100 ms +-20 %, got {due:?}"
+        );
+        assert!(!state.can_reserve(&seat, MonoInstant(due.0 - 1)));
+        assert!(state.can_reserve(&seat, due));
+        // An elapsed refusal cannot override an unexpired ladder either.
+        let mut ladder_blocked = reserved_state(&seat, 100_000);
+        ladder_blocked.record_outcome(&seat, REFUSED, MonoInstant(100_000));
+        assert!(!ladder_blocked.can_reserve(&seat, MonoInstant(129_999)));
+        assert!(ladder_blocked.can_reserve(&seat, MonoInstant(130_000)));
+    }
+
+    #[test]
+    fn refusal_backoff_doubles_resets_on_submitted_and_ignores_unknown_outcomes() {
+        let seat = SeatId::new("seat");
+        let mut state = reserved_state(&seat, 0);
+        let mut gaps = Vec::new();
+        for _ in 0..4 {
+            state.record_outcome(&seat, REFUSED, MonoInstant(1_000_000));
+            gaps.push(state.next_due_at(MonoInstant(1_000_000)).unwrap().0 - 1_000_000);
+        }
+        for (n, gap) in gaps.iter().enumerate() {
+            let nominal = 100u64 << n;
+            assert!(
+                *gap * 5 >= nominal * 4 && *gap * 5 <= nominal * 6,
+                "refusal {n}: {gap} ms vs nominal {nominal} ms"
+            );
+        }
+        assert_eq!(state.refusal_attempts(&seat), Some(4));
+        // An unsent prompt (OutcomeUnknown) neither resets nor advances it.
+        for outcome in [
+            WakeOutcome::OutcomeUnknown,
+            WakeOutcome::TimedOut,
+            WakeOutcome::Cancelled,
+        ] {
+            state.record_outcome(&seat, outcome, MonoInstant(2_000_000));
+            assert_eq!(state.refusal_attempts(&seat), Some(4), "{outcome:?}");
+        }
+        state.record_outcome(&seat, WakeOutcome::Submitted, MonoInstant(2_000_000));
+        assert_eq!(state.refusal_attempts(&seat), Some(0));
+        assert!(state.can_reserve(&seat, MonoInstant(2_000_000)));
+    }
+
+    #[test]
+    fn restore_prior_guard_keeps_the_original_anchor() {
+        // Kills: a restore that re-anchors at the refusal instant, which would
+        // delay the retry by a fresh 30 s ladder floor per refusal.
+        let seat = SeatId::new("seat");
+        let mut state = DispatchState::new(RetryConfig::default(), MonoInstant(0), boot());
+        state
+            .restore(
+                seat.clone(),
+                DurableRetry {
+                    retry_step: 0,
+                    minimum_delay_ms: 30_000,
+                    effective_delay_ms: 30_000,
+                    ever_reserved: true,
+                },
+            )
+            .unwrap();
+        // Boot anchor 0: eligible at 30 s. Reserve at 30 s, refuse at 31 s.
+        let attempt = WakeAttemptId::new("a");
+        state
+            .reserved(seat.clone(), attempt.clone(), boot(), MonoInstant(30_000))
+            .unwrap();
+        state
+            .finish(&seat, &attempt, &boot(), MonoInstant(31_000))
+            .unwrap();
+        // Advanced guard (fence miss): next ladder instant is 31 s + 60 s.
+        assert!(!state.can_reserve(&seat, MonoInstant(60_000)));
+        state.restore_prior_guard(&seat);
+        // Restored guard: still the boot anchor, so the ladder is satisfied.
+        assert!(state.can_reserve(&seat, MonoInstant(31_000)));
+    }
 }

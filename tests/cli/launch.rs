@@ -4,9 +4,9 @@
 
 use super::*;
 use crate::ports::{
-    CorrelatedStartup, EvidenceKind, ExecutionEvidence, HostCallContext, HostLifecycleSubscription,
-    HostSnapshot, HostUiState, IncarnationEvidence, NativeLaunchCapability, NativeLaunchRequest,
-    ObservationProvenance, PromptOutcome, SafeWakeTarget, StructuralOccupancy,
+    CorrelatedStartup, EvidenceKind, ExecutionEvidence, HostCallContext, HostSnapshot, HostUiState,
+    IncarnationEvidence, NativeLaunchCapability, NativeLaunchRequest, ObservationProvenance,
+    PromptOutcome, SafeWakeTarget, StructuralOccupancy,
 };
 use crate::protocol::{
     ids::{HostBootId, HostCallId, TerminalId},
@@ -87,12 +87,6 @@ impl HostPort for FakeHost {
     fn enumerate_targets(&self, _: &HostCallContext) -> Result<HostSnapshot, ApiError> {
         unreachable!()
     }
-    fn subscribe_lifecycle(
-        &self,
-        _: &HostCallContext,
-    ) -> Result<Box<dyn HostLifecycleSubscription>, ApiError> {
-        unreachable!()
-    }
     fn safe_wake_target(&self, _: &SeatId, _: &HostObservation) -> Option<SafeWakeTarget> {
         unreachable!()
     }
@@ -104,6 +98,14 @@ impl HostPort for FakeHost {
     ) -> Result<PromptOutcome, ApiError> {
         panic!("launch must never prompt")
     }
+    fn pane_agent_state(
+        &self,
+        _target: &SafeWakeTarget,
+        _context: &HostCallContext,
+    ) -> Result<crate::ports::AgentComposerState, ApiError> {
+        Ok(crate::ports::AgentComposerState::Submitted)
+    }
+
     fn launch_native(
         &self,
         request: NativeLaunchRequest,
@@ -132,6 +134,13 @@ impl HostPort for FakeHost {
             },
             diagnostic,
         })
+    }
+    fn send_submit_key(
+        &self,
+        _: &crate::ports::SafeWakeTarget,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<(), crate::protocol::results::ApiError> {
+        Ok(())
     }
 }
 
@@ -422,7 +431,7 @@ fn claude_launch_inspects_the_resolved_config_dir_only() {
 #[test]
 fn uncovered_harness_version_refuses_before_any_host_or_seat_call() {
     let s = Scratch::new();
-    s.harness("claude", "9.9.9 (Claude Code)", b"");
+    s.harness("claude", "2.1.200 (Claude Code)", b"");
     let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
     assert_eq!(
         code(s.launch(
@@ -939,6 +948,23 @@ fn system_shell_probe_is_bounded_and_reads_stdout() {
         probe.resolve_codex().unwrap(),
         "whence -f codex 2>/dev/null || type codex\n"
     );
+    // The pane shell's own export is read back between markers (startup-file
+    // noise is ignored); a shell that exports nothing yields none, whatever
+    // the launcher's environment holds (the variable is removed first).
+    let exporting = write(
+        "exporting",
+        "#!/bin/sh\n[ \"$1\" = -ic ] || exit 9\necho banner\nexport CODEX_HOME=/pane/codex\neval \"$2\"\necho tail\n",
+    );
+    let probe = SystemShellProbe {
+        shell: exporting,
+        timeout: std::time::Duration::from_secs(3),
+    };
+    assert_eq!(
+        probe.pane_shell_env("CODEX_HOME").as_deref(),
+        Some("/pane/codex")
+    );
+    assert_eq!(probe.pane_shell_env("CLAUDE_CONFIG_DIR"), None);
+    assert_eq!(probe.pane_shell_env("not a name; rm"), None);
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -1064,12 +1090,214 @@ fn launch_name_flag_parses_and_refuses_unusable_names() {
     }
 }
 
+/// A pane shell that exports the given config directories itself.
+struct PaneExports {
+    codex_home: Option<String>,
+    claude_config_dir: Option<String>,
+}
+impl CodexShellProbe for PaneExports {
+    fn resolve_codex(&self) -> Result<String, String> {
+        Ok("codex is /usr/local/bin/codex\n".into())
+    }
+    fn pane_shell_env(&self, var: &str) -> Option<String> {
+        match var {
+            "CODEX_HOME" => self.codex_home.clone(),
+            "CLAUDE_CONFIG_DIR" => self.claude_config_dir.clone(),
+            other => panic!("unexpected variable {other}"),
+        }
+    }
+}
+
+/// Wave 17: Herdr's `agent.start` hands the agent the pane shell's
+/// environment, so launch inspects the config directory that shell exports,
+/// not only the launcher's. Kills: inspecting the launcher's directory while
+/// the agent will read another one (a launch that "passes" yet runs without
+/// hooks), and not naming the inspected directory in the refusal.
+#[test]
+fn launch_checks_the_config_dir_it_hands_the_pane() {
+    // Codex: hooks only in the launcher's CODEX_HOME (A); the pane shell
+    // exports a different one (B).
+    let s = Scratch::new();
+    s.harness("codex", "codex-cli 0.159.2", &committed_codex_schemas());
+    s.setup(ContextHarness::Codex);
+    let a = s.env.codex_home.clone().unwrap();
+    let b = s.root.join("pane codex home");
+    let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
+    let pane_b = PaneExports {
+        codex_home: Some(b.display().to_string()),
+        claude_config_dir: None,
+    };
+    match s.launch_with_probe(
+        &host,
+        &seats,
+        &handoff,
+        request(ContextHarness::Codex, &[]),
+        &pane_b,
+    ) {
+        Err(RunError::Api(error)) => {
+            assert_eq!(error.code, ErrorCode::MissingHook);
+            assert!(
+                error.detail.contains(&b.display().to_string()),
+                "{}",
+                error.detail
+            );
+            assert!(
+                !error.detail.contains(&a.display().to_string()),
+                "{}",
+                error.detail
+            );
+        }
+        other => panic!("expected a refusal naming the pane's CODEX_HOME, got {other:?}"),
+    }
+    assert!(host.submitted().is_empty());
+
+    // The pane shell exports A itself: launch inspects A and reports it.
+    let pane_a = PaneExports {
+        codex_home: Some(a.display().to_string()),
+        claude_config_dir: None,
+    };
+    let out = s
+        .launch_with_probe(
+            &host,
+            &seats,
+            &handoff,
+            request(ContextHarness::Codex, &[]),
+            &pane_a,
+        )
+        .unwrap();
+    assert_eq!(out.report["config_dir"]["path"], a.display().to_string());
+    assert_eq!(out.report["config_dir"]["source"], "pane_shell");
+
+    // A relative export is not a usable directory: the launcher's wins.
+    let relative = PaneExports {
+        codex_home: Some("relative/dir".into()),
+        claude_config_dir: None,
+    };
+    let out = s
+        .launch_with_probe(
+            &FakeHost::new(),
+            &seats,
+            &handoff,
+            request(ContextHarness::Codex, &[]),
+            &relative,
+        )
+        .unwrap();
+    assert_eq!(out.report["config_dir"]["source"], "launcher");
+
+    // Claude, same rule with CLAUDE_CONFIG_DIR.
+    let s = Scratch::new();
+    s.harness("claude", "2.1.285 (Claude Code)", b"");
+    s.setup_claude();
+    let other = s.root.join("pane claude config");
+    let host = FakeHost::new();
+    let pane_other = PaneExports {
+        codex_home: None,
+        claude_config_dir: Some(other.display().to_string()),
+    };
+    match s.launch_with_probe(
+        &host,
+        &seats,
+        &handoff,
+        request(ContextHarness::Claude, &[]),
+        &pane_other,
+    ) {
+        Err(RunError::Api(error)) => {
+            assert_eq!(error.code, ErrorCode::MissingHook);
+            assert!(error.detail.contains(&other.display().to_string()));
+        }
+        other => panic!("expected a refusal naming the pane's config dir, got {other:?}"),
+    }
+    assert!(host.submitted().is_empty());
+}
+
+/// Wave 28: the report answers "was my Codex profile applied?" with the
+/// effective CODEX_HOME, its config.toml and the profile Codex selects
+/// (`-p/--profile` beats `profile` in config.toml). Kills: reporting no
+/// profile, preferring config.toml over the command line, and reading
+/// arguments after `--` (a prompt) as the profile option.
+#[test]
+fn launch_reports_the_effective_codex_profile_and_config() {
+    let s = Scratch::new();
+    s.harness("codex", "codex-cli 0.159.2", &committed_codex_schemas());
+    s.setup(ContextHarness::Codex);
+    let home = s.env.codex_home.clone().unwrap();
+    let config = home.join("config.toml");
+    let original = fs::read_to_string(&config).unwrap();
+    fs::write(&config, format!("profile = \"work\"\n{original}")).unwrap();
+    let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
+    let run = |argv: &[&str]| {
+        s.launch(
+            &host,
+            &seats,
+            &handoff,
+            request(ContextHarness::Codex, argv),
+        )
+        .unwrap()
+        .report["codex"]
+            .clone()
+    };
+    let codex = run(&[]);
+    assert_eq!(codex["codex_home"], home.display().to_string());
+    assert_eq!(codex["config_path"], config.display().to_string());
+    assert_eq!(codex["config_present"], true);
+    assert_eq!(
+        (&codex["profile"], &codex["profile_source"]),
+        (&json!("work"), &json!("config.toml"))
+    );
+    for argv in [
+        &["-p", "ci"][..],
+        &["--profile", "ci"],
+        &["--profile=ci"],
+        &["-pci"],
+        &["--profile", "other", "--profile=ci"],
+    ] {
+        let codex = run(argv);
+        assert_eq!(
+            (&codex["profile"], &codex["profile_source"]),
+            (&json!("ci"), &json!("argv")),
+            "{argv:?}"
+        );
+    }
+    let codex = run(&["--", "-p", "ci"]);
+    assert_eq!(codex["profile"], "work", "{codex}");
+    // No profile anywhere: reported as the default.
+    fs::write(&config, original).unwrap();
+    let codex = run(&[]);
+    assert_eq!(
+        (&codex["profile"], &codex["profile_source"]),
+        (&json!("default"), &json!("none"))
+    );
+    // The launch record carries it too.
+    assert_eq!(s.records().last().unwrap()["codex"]["profile"], "default");
+    // A Claude launch reports no Codex block.
+    let c = Scratch::new();
+    c.harness("claude", "2.1.285 (Claude Code)", b"");
+    c.setup_claude();
+    let out = c
+        .launch(
+            &FakeHost::new(),
+            &seats,
+            &handoff,
+            request(ContextHarness::Claude, &[]),
+        )
+        .unwrap();
+    assert_eq!(out.report["codex"], Value::Null);
+}
+
 /// Scripted `SeatInspect` answers for the launch guard's open-binding read.
 struct HistoryClient {
     answer: crate::protocol::results::SeatInspection,
     limits: std::sync::Mutex<Vec<u16>>,
 }
 impl LocalClient for HistoryClient {
+    fn call_with_output(
+        &self,
+        command: Command,
+        _: &crate::protocol::output::OutputSpec,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.call(command, budget)
+    }
     fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
         let Command::SeatInspect(query) = command else {
             panic!("only seat inspection is expected");

@@ -6,6 +6,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum CommandResult {
     Health(Health),
+    Capabilities(CapabilityList),
+    /// The daemon counted and logged a hook parse-failure report.
+    HookParseFailureRecorded,
     StopAccepted(StopAccepted),
     ServiceInspection(ServiceConnectionInspection),
     ServiceDisconnected(ServiceDisconnectResult),
@@ -158,6 +161,17 @@ pub struct ApiError {
     pub restart_argv: Option<Vec<String>>,
     #[serde(default)]
     pub required_minimum_bytes: Option<u32>,
+    /// B3 class override; never on the wire (a decoded error carries its code's default).
+    #[serde(skip)]
+    class_override: Option<ErrorClass>,
+}
+
+/// The wire form of the daemon's advertised capability names (ht-p03.43).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityList {
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -920,3 +934,183 @@ impl<'de> Deserialize<'de> for BoundedError {
         Self::parse(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
     }
 }
+
+/// B3 failure taxonomy (root spec §B3 Decision 3). Derived from the code
+/// until ht-p03.22 lands a stored, overridable field; never on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ErrorClass {
+    Transient,
+    Unavailable,
+    Corrupt,
+    VersionSkew,
+}
+
+impl ErrorCode {
+    /// Every code, in declaration order.
+    pub const ALL: &'static [ErrorCode] = &[
+        ErrorCode::Unsupported,
+        ErrorCode::InvalidRequest,
+        ErrorCode::UnknownWireVersion,
+        ErrorCode::DaemonVersionMismatch,
+        ErrorCode::InstanceMismatch,
+        ErrorCode::DaemonBootChanged,
+        ErrorCode::CursorStale,
+        ErrorCode::InvalidCursor,
+        ErrorCode::InvalidBudget,
+        ErrorCode::ReadBudgetExhausted,
+        ErrorCode::SequenceExhausted,
+        ErrorCode::Unauthorized,
+        ErrorCode::CallerUnverified,
+        ErrorCode::PermitExpired,
+        ErrorCode::StaleHostObservation,
+        ErrorCode::TargetUnresolved,
+        ErrorCode::TargetUnsafe,
+        ErrorCode::TargetAlreadyOwned,
+        ErrorCode::ThreadNotOrphaned,
+        ErrorCode::Archived,
+        ErrorCode::NotFound,
+        ErrorCode::OperationPayloadMismatch,
+        ErrorCode::StoreBusy,
+        ErrorCode::StoreCorrupt,
+        ErrorCode::StoreFull,
+        ErrorCode::IncompatibleSchema,
+        ErrorCode::HostUnavailable,
+        ErrorCode::UnknownOutcome,
+        ErrorCode::MissingHook,
+        ErrorCode::UnsupportedHarness,
+        ErrorCode::Cancelled,
+        ErrorCode::DeadlineExceeded,
+        ErrorCode::Conflict,
+        ErrorCode::ServiceBusy,
+        ErrorCode::ServiceNotRegistered,
+        ErrorCode::StaleServiceGeneration,
+        ErrorCode::IncompatibleOwnership,
+        ErrorCode::RequiredInvitationNeedsManagedThread,
+        ErrorCode::MembershipRequired,
+        ErrorCode::StaleRequirementAcceptance,
+        ErrorCode::TransportDenied,
+    ];
+
+    /// The failure class this code defaults to, or `None` for codes that
+    /// describe a caller/request problem rather than a failure. Exhaustive: a
+    /// new code cannot compile without a class decision.
+    pub fn default_class(&self) -> Option<ErrorClass> {
+        match self {
+            ErrorCode::Unsupported => None,
+            ErrorCode::InvalidRequest => None,
+            ErrorCode::UnknownWireVersion => Some(ErrorClass::VersionSkew),
+            ErrorCode::DaemonVersionMismatch => Some(ErrorClass::VersionSkew),
+            ErrorCode::InstanceMismatch => Some(ErrorClass::Transient),
+            ErrorCode::CursorStale => Some(ErrorClass::Transient),
+            ErrorCode::InvalidCursor => None,
+            ErrorCode::InvalidBudget => None,
+            ErrorCode::ReadBudgetExhausted => Some(ErrorClass::Transient),
+            ErrorCode::SequenceExhausted => None,
+            ErrorCode::Unauthorized => None,
+            ErrorCode::CallerUnverified => None,
+            ErrorCode::PermitExpired => Some(ErrorClass::Transient),
+            ErrorCode::StaleHostObservation => Some(ErrorClass::Transient),
+            ErrorCode::TargetUnresolved => None,
+            ErrorCode::TargetUnsafe => None,
+            ErrorCode::TargetAlreadyOwned => None,
+            ErrorCode::ThreadNotOrphaned => None,
+            ErrorCode::Archived => None,
+            ErrorCode::NotFound => None,
+            ErrorCode::OperationPayloadMismatch => None,
+            ErrorCode::StoreBusy => Some(ErrorClass::Transient),
+            ErrorCode::StoreCorrupt => Some(ErrorClass::Corrupt),
+            ErrorCode::StoreFull => Some(ErrorClass::Transient),
+            ErrorCode::IncompatibleSchema => Some(ErrorClass::VersionSkew),
+            ErrorCode::HostUnavailable => Some(ErrorClass::Unavailable),
+            ErrorCode::UnknownOutcome => Some(ErrorClass::Transient),
+            ErrorCode::MissingHook => None,
+            ErrorCode::UnsupportedHarness => None,
+            ErrorCode::Cancelled => None,
+            ErrorCode::DeadlineExceeded => Some(ErrorClass::Transient),
+            ErrorCode::Conflict => None,
+            ErrorCode::ServiceBusy => Some(ErrorClass::Transient),
+            ErrorCode::ServiceNotRegistered => Some(ErrorClass::Unavailable),
+            ErrorCode::StaleServiceGeneration => Some(ErrorClass::Transient),
+            ErrorCode::IncompatibleOwnership => Some(ErrorClass::VersionSkew),
+            ErrorCode::RequiredInvitationNeedsManagedThread => None,
+            ErrorCode::MembershipRequired => None,
+            ErrorCode::StaleRequirementAcceptance => None,
+            ErrorCode::TransportDenied => Some(ErrorClass::Unavailable),
+            // The daemon restarted between the caller's view and the request
+            // (B5, protocol 2): retry against the new boot.
+            ErrorCode::DaemonBootChanged => Some(ErrorClass::Transient),
+        }
+    }
+}
+
+impl ApiError {
+    pub fn new(code: ErrorCode, detail: impl Into<String>) -> Self {
+        Self {
+            code,
+            detail: detail.into(),
+            restart_argv: None,
+            required_minimum_bytes: None,
+            class_override: None,
+        }
+    }
+
+    pub fn with_restart_argv(mut self, argv: Vec<String>) -> Self {
+        self.restart_argv = Some(argv);
+        self
+    }
+
+    pub fn with_required_minimum_bytes(mut self, bytes: u32) -> Self {
+        self.required_minimum_bytes = Some(bytes);
+        self
+    }
+
+    /// The failure class: the override when set, else the code's default.
+    pub fn class(&self) -> Option<ErrorClass> {
+        self.class_override.or_else(|| self.code.default_class())
+    }
+
+    pub fn with_class(mut self, class: ErrorClass) -> Self {
+        self.class_override = Some(class);
+        self
+    }
+}
+
+macro_rules! api_error_constructors {
+    ($($name:ident => $code:ident),* $(,)?) => {
+        impl ApiError {
+            $(
+                #[doc = concat!("An `ErrorCode::", stringify!($code), "` error with no restart argv.")]
+                pub fn $name(detail: impl Into<String>) -> Self { Self::new(ErrorCode::$code, detail) }
+            )*
+            /// The constructor for `code` (exhaustive: every code has one).
+            pub fn constructor_for(code: ErrorCode) -> fn(&str) -> ApiError {
+                match code { $(ErrorCode::$code => |d: &str| ApiError::$name(d),)* }
+            }
+        }
+    };
+}
+api_error_constructors! {
+    unsupported => Unsupported, invalid_request => InvalidRequest,
+    unknown_wire_version => UnknownWireVersion, daemon_version_mismatch => DaemonVersionMismatch,
+    instance_mismatch => InstanceMismatch, cursor_stale => CursorStale, invalid_cursor => InvalidCursor,
+    invalid_budget => InvalidBudget, read_budget_exhausted => ReadBudgetExhausted,
+    sequence_exhausted => SequenceExhausted, unauthorized => Unauthorized,
+    caller_unverified => CallerUnverified, permit_expired => PermitExpired,
+    stale_host_observation => StaleHostObservation, target_unresolved => TargetUnresolved,
+    target_unsafe => TargetUnsafe, target_already_owned => TargetAlreadyOwned,
+    thread_not_orphaned => ThreadNotOrphaned, archived => Archived, not_found => NotFound,
+    operation_payload_mismatch => OperationPayloadMismatch, store_busy => StoreBusy,
+    store_corrupt => StoreCorrupt, store_full => StoreFull, incompatible_schema => IncompatibleSchema,
+    host_unavailable => HostUnavailable, unknown_outcome => UnknownOutcome, missing_hook => MissingHook,
+    unsupported_harness => UnsupportedHarness, cancelled => Cancelled,
+    deadline_exceeded => DeadlineExceeded, conflict => Conflict, service_busy => ServiceBusy,
+    service_not_registered => ServiceNotRegistered, stale_service_generation => StaleServiceGeneration,
+    incompatible_ownership => IncompatibleOwnership,
+    required_invitation_needs_managed_thread => RequiredInvitationNeedsManagedThread,
+    membership_required => MembershipRequired, stale_requirement_acceptance => StaleRequirementAcceptance,
+    transport_denied => TransportDenied, daemon_boot_changed => DaemonBootChanged,
+}
+
+#[cfg(test)]
+#[path = "../../tests/protocol/error_class.rs"]
+mod error_class_tests;

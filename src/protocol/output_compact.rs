@@ -14,7 +14,9 @@
 //!   every body line after it is indented by two spaces, so no body line can
 //!   start at column 0 where a row or a command line would.
 
-use super::{OutputSpec, detail_argv, format_command_argv, needs_terminal_escape, text_json};
+use super::{
+    OutputSpec, detail_argv, format_command_argv, needs_terminal_escape, other_day, text_json,
+};
 use crate::protocol::{
     pagination::Page,
     results::{
@@ -24,7 +26,9 @@ use crate::protocol::{
     service::EventAuthor,
     time::UtcMillis,
 };
+use crate::view::escape::{Context, escape_for_terminal, push_u4};
 use serde_json::Value;
+use std::borrow::Cow;
 
 /// Most IDs listed for one event row (`+N` counts the rest).
 const EVENT_IDS_SHOWN: usize = 3;
@@ -57,7 +61,12 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
         }
         CommandResult::Thread(details) => thread(details, &mut out),
         CommandResult::CheckedIn(check) => checked_in(check, spec, &mut out),
-        CommandResult::Message(details) => message_body(details, spec, &mut out),
+        CommandResult::Message(details) => message_body(details, &mut out),
+        CommandResult::AlreadyJoined(joined) => out.push_str(&format!(
+            "already_joined {} {}: no invitation sent\n",
+            joined.thread.as_str(),
+            joined.seat.as_str()
+        )),
         _ => return None,
     }
     Some(out)
@@ -86,7 +95,7 @@ fn one_line(text: &str) -> String {
             '\t' => out.push_str("\\t"),
             '\\' => out.push_str("\\\\"),
             ch if ch.is_control() || needs_terminal_escape(ch) => {
-                out.push_str(&format!("\\u{:04x}", ch as u32));
+                push_u4(ch, &mut out);
             }
             ch => out.push(ch),
         }
@@ -102,10 +111,15 @@ fn token(text: &str) -> String {
         .collect()
 }
 
-/// `HH:MMZ` (UTC) of a timestamp.
+/// `HH:MMZ` (UTC) of a timestamp on the render-time date, `MM-DD HH:MMZ` on
+/// any other date (earlier or later: a bare time there is ambiguous).
 fn clock(at: UtcMillis) -> String {
     let minutes = at.0.div_euclid(60_000).rem_euclid(24 * 60);
-    format!("{:02}:{:02}Z", minutes / 60, minutes % 60)
+    let time = format!("{:02}:{:02}Z", minutes / 60, minutes % 60);
+    match other_day(at) {
+        Some((month, day)) => format!("{month:02}-{day:02} {time}"),
+        None => time,
+    }
 }
 
 /// The author column: a seat ID, a service ID or `system`, with any actor
@@ -166,8 +180,37 @@ fn id_token(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
-/// `#SEQ NAME IDS...[: text]` for a structured system event, or `None` when
-/// its preview is clipped or not a structured event (the full row is used).
+/// Most extra `key=value` fields one event row lists (`+N fields` counts the
+/// rest).
+const EVENT_FIELDS_SHOWN: usize = 4;
+
+/// A scalar event value as one token: bare when it holds only characters
+/// that cannot form a `": "` separator, else a quoted, escaped string whose
+/// every `": "` is defused.
+fn field_value(value: &Value) -> Option<String> {
+    let text = match value {
+        Value::String(text) => text.clone(),
+        Value::Number(number) => number.to_string(),
+        Value::Bool(flag) => flag.to_string(),
+        _ => return None,
+    };
+    let bare = !text.is_empty()
+        && text.len() <= 64
+        && text.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'.' | b'+' | b'/')
+        });
+    if bare {
+        return Some(text);
+    }
+    let escaped = one_line(&text)
+        .replace('"', "\\\"")
+        .replace(": ", ":\\u0020");
+    Some(format!("\"{escaped}\""))
+}
+
+/// `#SEQ NAME IDS...[ key=value...][: text]` for a structured system event,
+/// or `None` when its preview is clipped or not a structured event (the full
+/// row is used).
 fn event_row(summary: &MessageSummary) -> Option<String> {
     if summary.preview_omitted {
         return None;
@@ -175,10 +218,10 @@ fn event_row(summary: &MessageSummary) -> Option<String> {
     let event: Value = serde_json::from_str(&summary.preview_data).ok()?;
     let event = event.as_object()?;
     let field = |key: &str| event.get(key).and_then(Value::as_str);
-    let name = field("action")
-        .or_else(|| field("event"))
-        .map(str::to_owned)
-        .or_else(|| field("obligation").map(|what| format!("overdue_{what}")))?;
+    let (name_key, name) = field("action")
+        .map(|name| ("action", name.to_owned()))
+        .or_else(|| field("event").map(|name| ("event", name.to_owned())))
+        .or_else(|| field("obligation").map(|what| ("obligation", format!("overdue_{what}"))))?;
     if !id_token(&name) {
         return None;
     }
@@ -224,6 +267,40 @@ fn event_row(summary: &MessageSummary) -> Option<String> {
     }
     if extra > 0 {
         row.push_str(&format!(" +{extra}"));
+    }
+    // Every remaining scalar field (the name, the ids and the text fields are
+    // already shown), sorted by key.
+    let shown_elsewhere = [
+        name_key,
+        "actor_seat",
+        "seat",
+        "invitation",
+        "message",
+        "messages",
+        "seats",
+        "data",
+        "topic",
+        "goal",
+        "detail",
+    ];
+    let mut rest: Vec<(&String, &Value)> = event
+        .iter()
+        .filter(|(key, _)| !shown_elsewhere.contains(&key.as_str()))
+        .collect();
+    rest.sort_by(|left, right| left.0.cmp(right.0));
+    let mut listed_fields = 0usize;
+    let mut dropped_fields = 0usize;
+    for (key, value) in rest {
+        match field_value(value) {
+            Some(value) if id_token(key) && listed_fields < EVENT_FIELDS_SHOWN => {
+                row.push_str(&format!(" {key}={value}"));
+                listed_fields += 1;
+            }
+            _ => dropped_fields += 1,
+        }
+    }
+    if dropped_fields > 0 {
+        row.push_str(&format!(" +{dropped_fields} fields"));
     }
     for key in ["data", "topic", "goal", "detail"] {
         if let Some(text) = field(key) {
@@ -390,6 +467,13 @@ fn thread(details: &ThreadDetails, out: &mut String) {
         out.push('…');
     }
     out.push('\n');
+    if summary.topic_omitted
+        && let Some(argv) = &summary.topic_detail_argv
+    {
+        out.push_str("topic.more: ");
+        out.push_str(&format_command_argv(argv));
+        out.push('\n');
+    }
     if details.goal_data != summary.topic_data {
         out.push_str("goal: ");
         out.push_str(&one_line(&details.goal_data));
@@ -466,7 +550,10 @@ fn checked_in(check: &CheckInResult, spec: &OutputSpec, out: &mut String) {
 /// Whether a body character must be escaped to keep the text terminal-safe.
 /// Newlines and tabs stay as they are.
 fn body_escape(ch: char) -> bool {
-    ch != '\n' && ch != '\t' && (ch.is_control() || needs_terminal_escape(ch))
+    matches!(
+        escape_for_terminal(ch.encode_utf8(&mut [0; 4]), Context::MultiLine),
+        Cow::Owned(_)
+    )
 }
 
 /// `body`: the header `#SEQ MSG AUTHOR HH:MMZ [warn] [bytes=FROM-TO/TOTAL]
@@ -478,7 +565,7 @@ fn body_escape(ch: char) -> bool {
 /// body is marked `escaped` on the header and printed with those characters
 /// as `\uXXXX` and each backslash doubled, so the escapes stay unambiguous.
 /// A system event prints `event: JSON` (one line) and its condition.
-fn message_body(details: &MessageDetails, spec: &OutputSpec, out: &mut String) {
+fn message_body(details: &MessageDetails, out: &mut String) {
     let summary = &details.summary;
     out.push_str(&format!(
         "#{} {} {} {}",
@@ -513,7 +600,7 @@ fn message_body(details: &MessageDetails, spec: &OutputSpec, out: &mut String) {
                 for ch in body_data.chars() {
                     match ch {
                         '\\' => text.push_str("\\\\"),
-                        ch if body_escape(ch) => text.push_str(&format!("\\u{:04x}", ch as u32)),
+                        ch if body_escape(ch) => push_u4(ch, &mut text),
                         ch => text.push(ch),
                     }
                 }
@@ -528,16 +615,11 @@ fn message_body(details: &MessageDetails, spec: &OutputSpec, out: &mut String) {
                 }
                 out.push('\n');
             }
-            if !body_complete {
-                let argv = body_next_argv.clone().unwrap_or_else(|| {
-                    let offset = end.to_string();
-                    detail_argv(
-                        spec,
-                        &["body", summary.message.as_str(), "--offset", &offset],
-                    )
-                });
+            // The daemon always names the continuation of an incomplete body
+            // (`body_next_argv`); a client never invents one.
+            if !body_complete && let Some(argv) = body_next_argv {
                 out.push_str("more: ");
-                out.push_str(&format_command_argv(&argv));
+                out.push_str(&format_command_argv(argv));
                 out.push('\n');
             }
         }

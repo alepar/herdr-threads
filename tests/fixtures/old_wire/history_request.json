@@ -1,0 +1,1 @@
+{"version":1,"request_id":"old-cli-history","expected_instance":"__INSTANCE__","command":{"kind":"history","args":{"thread":"__THREAD__","page":{"cursor":null,"limit":50,"max_bytes":65536},"initial":null}}}

@@ -9,7 +9,6 @@ use std::{
     fs,
     os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
@@ -37,8 +36,7 @@ impl Plugin {
         args: &[&str],
         extra_env: &[(&str, &str)],
     ) -> (i32, Value, String) {
-        let mut command = Command::new(BIN);
-        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
+        let mut command = crate::scrubbed_command(BIN);
         command
             .arg("--json")
             .arg("--state-dir")

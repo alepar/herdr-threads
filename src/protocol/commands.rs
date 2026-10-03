@@ -9,6 +9,13 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "kind", content = "args", rename_all = "snake_case")]
 pub enum Command {
     Health,
+    /// Daemon capability discovery (ht-p03.43); a separate request because the
+    /// Health hello is `deny_unknown_fields` in shipped CLIs.
+    Capabilities,
+    /// A hook reports a payload its optimistically admitted recipe could not
+    /// parse (ht-p03.23); sent only to a daemon advertising
+    /// `hook.parse_failure_report`.
+    HookParseFailure(HookParseFailure),
     Stop(StopRequest),
     ServiceInspect,
     ServiceDisconnect(ServiceDisconnectRequest),
@@ -53,6 +60,30 @@ pub enum Command {
     OperatorOrphanInvite(OperatorOrphanInvite),
     OperatorRetire(OperatorRetire),
     OperatorReplace(OperatorReplace),
+}
+
+/// Longest detail a hook report may carry: the CLI truncates to it
+/// ([`bounded_hook_detail`]) and validation rejects a longer one.
+pub const HOOK_PARSE_DETAIL_BYTES: usize = 256;
+
+/// `text` cut to at most [`HOOK_PARSE_DETAIL_BYTES`] bytes at a character
+/// boundary, so the report always passes the byte bound (a character bound
+/// would let multi-byte text through at up to four times the limit).
+pub fn bounded_hook_detail(text: &str) -> String {
+    let mut end = text.len().min(HOOK_PARSE_DETAIL_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
+}
+
+/// One hook payload that did not parse under an optimistic admission. The
+/// detail is the hook's own bounded diagnostic, never the payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookParseFailure {
+    pub harness: String,
+    pub detail: String,
 }
 
 /// Service control only. The envelope supplies the expected instance; the
@@ -133,6 +164,19 @@ pub struct HistoryQuery {
     pub thread: ThreadId,
     pub page: PageRequest,
     pub initial: Option<HistoryRange>,
+    /// Inline each ordinary message's complete body in its summary when the
+    /// body is small enough that a `Message` fetch would return it whole
+    /// (`FULL_BODY_FETCH_BYTES`) and the page budget holds it. Sent only to a
+    /// daemon that advertises `capabilities::HISTORY_FULL_BODIES`; omitted from
+    /// the wire when false so existing request bytes are unchanged.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub full_bodies: bool,
+}
+/// Output byte bound of the `Message` fetch the human `read` issues for a
+/// clipped preview; also the measure of a body the daemon may inline.
+pub const FULL_BODY_FETCH_BYTES: u32 = 16_384;
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -489,6 +533,12 @@ impl Command {
             {
                 Err("invalid expected service boot or generation")
             }
+            Self::HookParseFailure(report)
+                if !matches!(report.harness.as_str(), "claude" | "codex")
+                    || report.detail.len() > HOOK_PARSE_DETAIL_BYTES =>
+            {
+                Err("invalid hook parse-failure report")
+            }
             Self::History(query) if query.initial.is_some() && query.page.cursor.is_some() => {
                 Err("history selector conflicts with cursor")
             }
@@ -618,3 +668,7 @@ impl TryFrom<Command> for PermitMutation {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/protocol/history_full_bodies.rs"]
+mod history_full_bodies;

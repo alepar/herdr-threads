@@ -6,6 +6,11 @@
 //! service, journals and seat mappings only ever see pane IDs. Names are a
 //! lookup aid, never identity evidence.
 //!
+//! Precedence ([`NAME_PRECEDENCE`]): an exact pane ID in the host's list, then
+//! a unique pane label, then the label of a single-pane tab. The first rule
+//! that matches wins, so a pane whose label looks like another pane's ID is
+//! still reached by its ID, never by the label.
+//!
 //! Compatibility: a value shaped like a Herdr pane ID is used as given with no
 //! host call. Any other value is first matched as an exact pane ID in the
 //! host's pane list; when that list cannot be read the value is passed on
@@ -15,15 +20,18 @@
 use super::commands::{CliAction, MutationSpec, ParsedCli};
 use crate::{
     host::observation::PaneName,
-    protocol::{
-        ids::HostTargetId,
-        results::{ApiError, ErrorCode},
-    },
+    protocol::{ids::HostTargetId, results::ApiError},
 };
 
 /// How a person finds a pane ID; part of every name-resolution error.
 pub const FIND_PANE_ID_HINT: &str =
     "run `herdr pane current` inside that pane (or `herdr pane list`) to get its pane ID";
+
+/// How a `--pane` name is matched, in order; named by the `not_found` error so
+/// a person can see why their name did not resolve. Documented in
+/// `docs/agent-usage.md`.
+pub const NAME_PRECEDENCE: &str = "names match in this order: an exact pane ID, then a unique pane \
+     label (`herdr pane rename`), then the label of a tab that holds exactly one pane";
 
 /// The Herdr 0.9.1 pane ID shape `w<workspace>:p<pane>`. Such a value is used
 /// as given, exactly as before names were accepted.
@@ -40,12 +48,7 @@ pub fn looks_like_pane_id(value: &str) -> bool {
 }
 
 fn invalid(detail: String) -> ApiError {
-    ApiError {
-        code: ErrorCode::InvalidRequest,
-        detail,
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::invalid_request(detail)
 }
 
 fn ambiguous(value: &str, kind: &str, matches: &[&HostTargetId]) -> ApiError {
@@ -92,12 +95,9 @@ pub fn resolve_pane_name(value: &str, panes: &[PaneName]) -> Result<HostTargetId
         {
             Ok((*one).clone())
         }
-        [] => Err(ApiError {
-            code: ErrorCode::NotFound,
-            ..invalid(format!(
-                "no Herdr pane has the ID or name `{value}`; {FIND_PANE_ID_HINT}"
-            ))
-        }),
+        [] => Err(ApiError::not_found(format!(
+            "no Herdr pane has the ID or name `{value}` ({NAME_PRECEDENCE}); {FIND_PANE_ID_HINT}"
+        ))),
         many => Err(ambiguous(value, "tab label", many)),
     }
 }
@@ -141,8 +141,13 @@ pub fn resolve_pane_arguments(
 }
 
 #[cfg(test)]
+#[path = "../../tests/cli/panes_hint.rs"]
+mod panes_hint;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::results::ErrorCode;
 
     fn pane(id: &str, label: Option<&str>, tab: Option<&str>, tab_panes: usize) -> PaneName {
         PaneName {
@@ -305,15 +310,7 @@ mod tests {
             "other",
         ])
         .unwrap();
-        resolve_pane_arguments(&mut parsed, || {
-            Err(ApiError {
-                code: ErrorCode::HostUnavailable,
-                detail: "down".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            })
-        })
-        .unwrap();
+        resolve_pane_arguments(&mut parsed, || Err(ApiError::host_unavailable("down"))).unwrap();
         assert_eq!(
             parsed.action,
             CliAction::Mutation(MutationSpec::Resolve(HostTargetId::new("other")))

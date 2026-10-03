@@ -79,6 +79,16 @@ impl Failpoint {
         Self::install(name, scope, Action::Error(code), 1)
     }
 
+    /// Fail the next `times` hits with a typed error.
+    pub fn error_times(
+        name: &'static str,
+        scope: impl Into<String>,
+        code: ErrorCode,
+        times: usize,
+    ) -> Self {
+        Self::install(name, scope, Action::Error(code), times)
+    }
+
     /// Pause the next hit until [`Failpoint::release`] or drop.
     pub fn pause(name: &'static str, scope: impl Into<String>) -> Self {
         Self::install(name, scope, Action::Pause, 1)
@@ -183,12 +193,10 @@ fn run(name: &'static str, scope: &str, conn: Option<&Connection>) -> Result<(),
         return Ok(());
     };
     match &gate.action {
-        Action::Error(code) => Err(ApiError {
-            code: code.clone(),
-            detail: format!("test failpoint {name}"),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        }),
+        Action::Error(code) => Err(ApiError::new(
+            code.clone(),
+            format!("test failpoint {name}"),
+        )),
         Action::Pause => {
             let mut state = gate.state.lock().unwrap();
             while !state.released {

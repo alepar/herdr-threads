@@ -12,13 +12,23 @@
 //!    `~/.local/state/herdr/plugins/herdr-threads`) when that directory
 //!    exists, and Herdr's default server socket
 //!    (`$XDG_CONFIG_HOME/herdr/herdr.sock`, else `~/.config/herdr/herdr.sock`)
-//!    when a socket exists there;
+//!    when a socket exists there. With `XDG_STATE_HOME` set, a `~/.local/state`
+//!    directory is a legacy location, chosen only when it holds a store (an
+//!    `instances/<id>/` with the database) and the XDG directory does not; the
+//!    source then says so. A named Herdr session (`HERDR_SESSION` /
+//!    `HERDR_CONFIG_PATH`) gets neither fast default: its server, not the
+//!    default one, decides, so both fields go through step 4;
 //! 4. only when the default is missing, the slower `herdr` queries
 //!    (`plugin list --json` / `status server --json`).
 //!
+//! A state directory from the fast default whose plugin Herdr's registry
+//! (`$XDG_CONFIG_HOME/herdr/plugins.json`, a file read) does not list or lists
+//! as disabled is a leftover: `setup` refuses, `doctor` warns, every other
+//! command keeps working ([`leftover_state_dir`]).
+//!
 //! Nothing is cached: every invocation re-resolves, so a moved or restarted
-//! Herdr is never answered from stale data. Two existing state roots are
-//! refused as ambiguous rather than picked.
+//! Herdr is never answered from stale data. Two state roots that both hold a
+//! store are refused as ambiguous rather than picked.
 
 use super::{
     hook,
@@ -45,7 +55,8 @@ pub struct InstanceInputs {
     pub xdg_state_home: Option<PathBuf>,
     pub xdg_config_home: Option<PathBuf>,
     /// `HERDR_SESSION` / `HERDR_CONFIG_PATH` select a non-default Herdr
-    /// server, whose socket is not the default path: skip the fast default.
+    /// server, whose socket is not the default path and which owns its own
+    /// plugin registry: skip both fast defaults (socket and state directory).
     pub non_default_server: bool,
     /// The `herdr` executable on PATH, for the slow fallback only.
     pub herdr: Option<PathBuf>,
@@ -85,24 +96,163 @@ fn absolute(dir: &Option<PathBuf>) -> Option<&Path> {
     dir.as_deref().filter(|dir| dir.is_absolute())
 }
 
-/// The fast state-directory default: `Ok(None)` when no candidate exists
-/// (fall back), `Err` when both Herdr state roots hold one (ambiguous).
-pub fn default_state_dir(inputs: &InstanceInputs) -> Result<Option<(PathBuf, String)>, String> {
-    let xdg = absolute(&inputs.xdg_state_home)
-        .map(|dir| dir.join("herdr").join("plugins").join(PLUGIN_ID))
-        .filter(|dir| dir.is_dir());
-    let home = absolute(&inputs.home)
-        .map(|dir| dir.join(".local/state/herdr/plugins").join(PLUGIN_ID))
-        .filter(|dir| dir.is_dir());
+/// Herdr's plugin state root joined with the plugin id, under `base` (`$XDG_STATE_HOME` or
+/// `~/.local/state`).
+fn plugin_state_dir(base: &Path, local: bool) -> PathBuf {
+    let base = if local {
+        base.join(".local/state")
+    } else {
+        base.to_path_buf()
+    };
+    base.join("herdr").join("plugins").join(PLUGIN_ID)
+}
+
+/// The state directory the two Herdr plugin state roots resolve to. Herdr uses
+/// `$XDG_STATE_HOME` when it is set, else `~/.local/state`; a `~/.local` directory next to a
+/// set `XDG_STATE_HOME` is a legacy location, chosen only when it holds a store and the XDG
+/// directory does not (an older install, from before XDG_STATE_HOME was set). A stale
+/// `~/.local` directory without a store is never chosen over XDG. Both holding a store is
+/// ambiguous. `Ok(None)`: no candidate directory exists (the caller falls back to Herdr);
+/// the `bool` is whether the chosen directory exists.
+pub(crate) fn choose_state_dir(
+    xdg: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Result<Option<(PathBuf, String, bool)>, String> {
+    use crate::daemon::paths::holds_store;
+    const LEGACY: &str = "legacy ~/.local/state (holds a store; XDG_STATE_HOME has none)";
+    let xdg_choice = |xdg: PathBuf| {
+        let exists = xdg.is_dir();
+        Ok(Some((xdg, "XDG_STATE_HOME".to_owned(), exists)))
+    };
     match (xdg, home) {
-        (Some(xdg), Some(home)) if xdg != home => Err(format!(
-            "both {} and {} exist; pass --state-dir to choose the Herdr plugin state directory",
-            xdg.display(),
-            home.display()
-        )),
-        (Some(xdg), _) => Ok(Some((xdg, "default (XDG_STATE_HOME)".into()))),
-        (None, Some(home)) => Ok(Some((home, "default (~/.local/state)".into()))),
         (None, None) => Ok(None),
+        (Some(xdg), None) => xdg_choice(xdg),
+        (None, Some(home)) => {
+            let exists = home.is_dir();
+            Ok(Some((home, "~/.local/state".into(), exists)))
+        }
+        (Some(xdg), Some(home)) if xdg == home => xdg_choice(xdg),
+        (Some(xdg), Some(home)) => {
+            let (xdg_store, home_store) = (holds_store(&xdg), holds_store(&home));
+            if xdg_store && home_store {
+                return Err(format!(
+                    "both {} and {} hold a store; pass --state-dir to choose the Herdr plugin \
+                     state directory",
+                    xdg.display(),
+                    home.display()
+                ));
+            }
+            if home_store {
+                return Ok(Some((home, LEGACY.into(), true)));
+            }
+            xdg_choice(xdg)
+        }
+    }
+}
+
+/// The two candidate plugin state directories of `home` and `xdg_state_home`, each only when
+/// the base is an absolute path.
+pub(crate) fn state_candidates(
+    home: Option<&Path>,
+    xdg_state_home: Option<&Path>,
+) -> (Option<PathBuf>, Option<PathBuf>) {
+    (
+        xdg_state_home
+            .filter(|dir| dir.is_absolute())
+            .map(|dir| plugin_state_dir(dir, false)),
+        home.filter(|dir| dir.is_absolute())
+            .map(|dir| plugin_state_dir(dir, true)),
+    )
+}
+
+/// The fast state-directory default: `Ok(None)` when no candidate exists (fall back),
+/// `Err` when both Herdr state roots hold a store (ambiguous). A named Herdr session
+/// (`non_default_server`) gets no fast default: its server, not the default one, owns the
+/// plugin, so the slower `herdr` query decides.
+pub fn default_state_dir(inputs: &InstanceInputs) -> Result<Option<(PathBuf, String)>, String> {
+    if inputs.non_default_server {
+        return Ok(None);
+    }
+    let (xdg, home) = state_candidates(absolute(&inputs.home), absolute(&inputs.xdg_state_home));
+    Ok(choose_state_dir(xdg, home)?.and_then(|(dir, how, exists)| {
+        exists.then(|| {
+            let how = if how.starts_with("legacy") {
+                how
+            } else {
+                format!("default ({how})")
+            };
+            (dir, how)
+        })
+    }))
+}
+
+/// What Herdr's plugin registry says about this plugin, read from a file only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginRegistry {
+    Installed,
+    Disabled,
+    NotInstalled,
+    /// No registry file, or one this version does not understand: nothing is claimed.
+    Unknown,
+}
+
+/// Herdr's plugin registry, `$XDG_CONFIG_HOME/herdr/plugins.json` (else
+/// `~/.config/herdr/plugins.json`): a JSON array of plugins with `plugin_id` and `enabled`
+/// (Herdr 0.9.1). A named Herdr session or `HERDR_CONFIG_PATH` may keep its own, so the
+/// default registry is not read for them. File reads only, no subprocess.
+pub fn plugin_registry(inputs: &InstanceInputs) -> PluginRegistry {
+    if inputs.non_default_server {
+        return PluginRegistry::Unknown;
+    }
+    let path = match absolute(&inputs.xdg_config_home) {
+        Some(dir) => dir.join("herdr/plugins.json"),
+        None => match absolute(&inputs.home) {
+            Some(home) => home.join(".config/herdr/plugins.json"),
+            None => return PluginRegistry::Unknown,
+        },
+    };
+    let Ok(bytes) = std::fs::read(path) else {
+        return PluginRegistry::Unknown;
+    };
+    let Ok(Value::Array(plugins)) = serde_json::from_slice::<Value>(&bytes) else {
+        return PluginRegistry::Unknown;
+    };
+    if plugins
+        .iter()
+        .any(|plugin| !plugin["plugin_id"].is_string())
+    {
+        return PluginRegistry::Unknown;
+    }
+    match plugins
+        .iter()
+        .find(|plugin| plugin["plugin_id"] == PLUGIN_ID)
+    {
+        None => PluginRegistry::NotInstalled,
+        Some(plugin) if plugin["enabled"] == json!(false) => PluginRegistry::Disabled,
+        Some(_) => PluginRegistry::Installed,
+    }
+}
+
+/// Why a state directory taken from the fast default (`how` starts with `default` or
+/// `legacy`; flags, Herdr's environment and the `herdr plugin list` query already name an
+/// installed plugin) may be a leftover: Herdr's registry says the plugin is not installed or
+/// is disabled. `setup` refuses on it, `doctor` warns, other commands keep working.
+pub fn leftover_state_dir(inputs: &InstanceInputs, state: &Path, how: &str) -> Option<String> {
+    if !(how.starts_with("default") || how.starts_with("legacy")) {
+        return None;
+    }
+    match plugin_registry(inputs) {
+        PluginRegistry::NotInstalled => Some(format!(
+            "plugin not installed (leftover state dir {}); install or link the {PLUGIN_ID} \
+             Herdr plugin, or pass --state-dir",
+            state.display()
+        )),
+        PluginRegistry::Disabled => Some(format!(
+            "plugin disabled (leftover state dir {}); enable the {PLUGIN_ID} Herdr plugin, or \
+             pass --state-dir",
+            state.display()
+        )),
+        PluginRegistry::Installed | PluginRegistry::Unknown => None,
     }
 }
 
@@ -174,6 +324,9 @@ pub fn resolve_context(inputs: &InstanceInputs) -> io::Result<(RuntimeContext, V
         std::env::var_os("HERDR_BIN_PATH").map(PathBuf::from),
     )?;
     let mut source = Map::new();
+    if let Some(leftover) = leftover_state_dir(inputs, &context.state_dir, &state_how) {
+        source.insert("state_dir_leftover".into(), json!(leftover));
+    }
     source.insert("state_dir".into(), json!(state_how));
     source.insert("host_endpoint".into(), json!(host_how));
     Ok((context, Value::Object(source)))
@@ -313,6 +466,18 @@ mod tests {
             "default (XDG_STATE_HOME)"
         );
         fs::create_dir_all(dir.join("home/.local/state/herdr/plugins/herdr-threads")).unwrap();
+        // A stale directory without a store never makes the XDG one ambiguous.
+        assert_eq!(
+            resolve_state_dir(&inputs).unwrap().1,
+            "default (XDG_STATE_HOME)"
+        );
+        for root in [
+            dir.join("xdg/herdr/plugins/herdr-threads"),
+            dir.join("home/.local/state/herdr/plugins/herdr-threads"),
+        ] {
+            fs::create_dir_all(root.join("instances/abc")).unwrap();
+            fs::write(root.join("instances/abc/threads.sqlite3"), "").unwrap();
+        }
         let error = resolve_state_dir(&inputs).unwrap_err();
         assert!(error.contains("both"), "{error}");
         let error = resolve_context(&inputs).unwrap_err().to_string();
@@ -323,6 +488,187 @@ mod tests {
         fs::remove_dir_all(dir.join("home")).unwrap();
         let error = resolve_context(&inputs).unwrap_err().to_string();
         assert!(error.contains("state directory unknown"), "{error}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn store_in(state: &Path) {
+        fs::create_dir_all(state.join("instances/abc")).unwrap();
+        fs::write(state.join("instances/abc/threads.sqlite3"), "").unwrap();
+    }
+
+    /// Kills: the `~/.local` directory taken because it exists while `XDG_STATE_HOME` is set
+    /// but its herdr-threads directory does not exist yet (Herdr would use the XDG root), and a
+    /// stale `~/.local` directory (no store) making an existing XDG directory ambiguous.
+    #[test]
+    fn stale_local_state_dir_is_not_chosen_over_xdg() {
+        let dir = scratch();
+        let mut inputs = inputs(&dir);
+        inputs.xdg_state_home = Some(dir.join("xdg"));
+        let stale = dir.join("home/.local/state/herdr/plugins/herdr-threads");
+        fs::create_dir_all(stale.join("setup")).unwrap();
+        // XDG directory missing: no fast default; Herdr's answer is the XDG root.
+        assert_eq!(default_state_dir(&inputs), Ok(None));
+        let (state, how) = resolve_state_dir(&inputs).unwrap();
+        assert_eq!(state, dir.join("xdg/herdr/plugins/herdr-threads"));
+        assert_eq!(how, "herdr plugin list + XDG_STATE_HOME");
+        // XDG directory present: chosen, the stale one is not ambiguous.
+        fs::create_dir_all(dir.join("xdg/herdr/plugins/herdr-threads")).unwrap();
+        assert_eq!(
+            default_state_dir(&inputs).unwrap(),
+            Some((
+                dir.join("xdg/herdr/plugins/herdr-threads"),
+                "default (XDG_STATE_HOME)".into()
+            ))
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Kills: ignoring a store under `~/.local` after `XDG_STATE_HOME` was set (the daemon's
+    /// threads would silently vanish), a source that does not say which directory and why, and
+    /// picking one of two directories that both hold a store.
+    #[test]
+    fn legacy_local_state_dir_with_a_store_is_chosen() {
+        let dir = scratch();
+        let mut inputs = inputs(&dir);
+        inputs.xdg_state_home = Some(dir.join("xdg"));
+        let legacy = dir.join("home/.local/state/herdr/plugins/herdr-threads");
+        store_in(&legacy);
+        let why = "legacy ~/.local/state (holds a store; XDG_STATE_HOME has none)";
+        inputs.host_flag = Some(dir.join("host.sock"));
+        assert_eq!(
+            default_state_dir(&inputs).unwrap(),
+            Some((legacy.clone(), why.into()))
+        );
+        // The reason reaches `doctor` as the state directory's source.
+        assert_eq!(resolve_context(&inputs).unwrap().1["state_dir"], why);
+        // An XDG directory without a store does not displace it.
+        fs::create_dir_all(dir.join("xdg/herdr/plugins/herdr-threads")).unwrap();
+        assert_eq!(
+            default_state_dir(&inputs).unwrap(),
+            Some((legacy, why.into()))
+        );
+        // Both holding a store is ambiguous.
+        store_in(&dir.join("xdg/herdr/plugins/herdr-threads"));
+        assert!(default_state_dir(&inputs).unwrap_err().contains("both"));
+        // Without XDG_STATE_HOME the `~/.local` directory is simply Herdr's root.
+        inputs.xdg_state_home = None;
+        assert_eq!(
+            default_state_dir(&inputs).unwrap().unwrap().1,
+            "default (~/.local/state)"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Kills: a named Herdr session pairing the default plugin state root (and the default
+    /// socket) with its own server: neither fast default may apply, so resolution falls through
+    /// to the flags, Herdr's environment or the `herdr` query (the latter run in that session).
+    #[test]
+    fn herdr_session_disables_both_fast_defaults() {
+        let dir = scratch();
+        let mut inputs = inputs(&dir);
+        let state = dir.join("home/.local/state/herdr/plugins/herdr-threads");
+        fs::create_dir_all(&state).unwrap();
+        fs::create_dir_all(dir.join("home/.config/herdr")).unwrap();
+        let _listener = UnixListener::bind(dir.join("home/.config/herdr/herdr.sock")).unwrap();
+        assert!(default_state_dir(&inputs).unwrap().is_some());
+        assert!(default_host_endpoint(&inputs).is_some());
+        inputs.non_default_server = true;
+        assert_eq!(default_state_dir(&inputs), Ok(None));
+        assert_eq!(default_host_endpoint(&inputs), None);
+        // Resolution asks Herdr instead, for both fields.
+        let (_, how) = resolve_state_dir(&inputs).unwrap();
+        assert!(how.starts_with("herdr plugin list"), "{how}");
+        let (host, how) = resolve_host_endpoint(&inputs).unwrap();
+        assert_eq!(
+            (host, how.as_str()),
+            ("/slow/herdr.sock".into(), "herdr status server")
+        );
+        assert_eq!(calls(&dir), "plugin list --json\nstatus server --json\n");
+        // Flags still win without any query.
+        inputs.state_flag = Some(PathBuf::from("/flag/state"));
+        assert_eq!(resolve_state_dir(&inputs).unwrap().1, "--state-dir");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Kills: a leftover state directory (plugin uninstalled or disabled) taken silently by the
+    /// fast default, a registry check that fires for flags/env/queried directories, or one that
+    /// claims anything when the registry file is missing or not understood.
+    #[test]
+    fn fast_state_dir_requires_an_installed_plugin() {
+        let dir = scratch();
+        let mut inputs = inputs(&dir);
+        inputs.host_flag = Some(dir.join("host.sock"));
+        let state = dir.join("home/.local/state/herdr/plugins/herdr-threads");
+        fs::create_dir_all(&state).unwrap();
+        let registry = dir.join("home/.config/herdr/plugins.json");
+        fs::create_dir_all(registry.parent().unwrap()).unwrap();
+        let leftover = |inputs: &InstanceInputs, how: &str| leftover_state_dir(inputs, &state, how);
+        let fast = "default (~/.local/state)";
+
+        // No registry file, or one that is not a list of plugins: nothing is claimed.
+        assert_eq!(plugin_registry(&inputs), PluginRegistry::Unknown);
+        assert_eq!(leftover(&inputs, fast), None);
+        for text in ["not json", "{}", "[1]", "[{\"name\":\"x\"}]"] {
+            fs::write(&registry, text).unwrap();
+            assert_eq!(plugin_registry(&inputs), PluginRegistry::Unknown, "{text}");
+        }
+
+        fs::write(&registry, r#"[{"plugin_id":"other","enabled":true}]"#).unwrap();
+        assert_eq!(plugin_registry(&inputs), PluginRegistry::NotInstalled);
+        let message = leftover(&inputs, fast).unwrap();
+        assert!(
+            message.starts_with(&format!(
+                "plugin not installed (leftover state dir {})",
+                state.display()
+            )),
+            "{message}"
+        );
+        assert!(
+            leftover(
+                &inputs,
+                "legacy ~/.local/state (holds a store; XDG_STATE_HOME has none)"
+            )
+            .is_some()
+        );
+        // Not from the fast default: flags, Herdr's env and `herdr plugin list` name the plugin.
+        for how in [
+            "--state-dir",
+            "HERDR_PLUGIN_STATE_DIR",
+            "herdr plugin list + ~/.local/state",
+        ] {
+            assert_eq!(leftover(&inputs, how), None, "{how}");
+        }
+        // The context report carries it for doctor.
+        assert!(
+            resolve_context(&inputs).unwrap().1["state_dir_leftover"]
+                .as_str()
+                .is_some_and(|m| m.starts_with("plugin not installed"))
+        );
+
+        fs::write(
+            &registry,
+            r#"[{"plugin_id":"herdr-threads","enabled":false}]"#,
+        )
+        .unwrap();
+        assert_eq!(plugin_registry(&inputs), PluginRegistry::Disabled);
+        assert!(
+            leftover(&inputs, fast)
+                .unwrap()
+                .starts_with("plugin disabled")
+        );
+        fs::write(
+            &registry,
+            r#"[{"plugin_id":"herdr-threads","enabled":true}]"#,
+        )
+        .unwrap();
+        assert_eq!(plugin_registry(&inputs), PluginRegistry::Installed);
+        assert_eq!(leftover(&inputs, fast), None);
+        assert!(resolve_context(&inputs).unwrap().1["state_dir_leftover"].is_null());
+
+        // A named session keeps its own registry, which is not read.
+        fs::write(&registry, "[]").unwrap();
+        inputs.non_default_server = true;
+        assert_eq!(plugin_registry(&inputs), PluginRegistry::Unknown);
         fs::remove_dir_all(&dir).unwrap();
     }
 }

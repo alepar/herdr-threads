@@ -15,8 +15,8 @@
 # PACKAGE_VALIDATION_PASS and a JSON evidence summary on success.
 set -eu
 
-script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd -P)
-source_repository=${1:-$(CDPATH= cd "$script_dir/.." && pwd -P)}
+script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd -P)
+source_repository=${1:-$(CDPATH='' cd "$script_dir/.." && pwd -P)}
 source_ref=${2:-HEAD}
 exec python3 - "$source_repository" "$source_ref" <<'PY'
 import hashlib

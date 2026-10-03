@@ -1,0 +1,5 @@
+{
+  "harness": "claude",
+  "mode": "tui",
+  "scenario": "burst"
+}

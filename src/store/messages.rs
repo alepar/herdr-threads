@@ -2,9 +2,9 @@
 
 use crate::ports::{DurableWorkAdmission, SendPreparationProgress};
 use crate::protocol::{
-    authority::{DecisionFence, MutationPermit, ObligationRef, VerifiedCaller},
+    authority::{MutationPermit, ObligationRef},
     commands::SendMessage,
-    ids::{MessageId, OperationId, SeatId, prefix},
+    ids::{MessageId, SeatId, prefix},
     results::{ApiError, CommandResult, ErrorCode},
     time::CallBudget,
 };
@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
 use super::{
-    connection::{DecisionInstant, StoreContext, api_error, store_error},
+    connection::{StoreContext, api_error, store_error},
     effective::{self, UnavailableWarningKey},
     schema,
 };
@@ -63,13 +63,8 @@ impl Default for MessageLimits {
 
 /// The caller claim and transient operation key are excluded from semantic replay identity.
 pub fn send_payload(request: &SendMessage) -> Value {
-    if !request.claim.instance.is_empty() {
-        return json!({"kind":"send_message","thread":request.thread,"body":request.body,
-            "invited_recipients":request.invited_recipients,"deadline_millis":request.deadline_millis,"claim":request.claim});
-    }
-    let recipients: BTreeSet<_> = request.invited_recipients.iter().collect();
-    json!({"kind":"send_message", "thread":request.thread, "body":request.body,
-        "invited_recipients":recipients, "deadline_millis":request.deadline_millis})
+    json!({"kind":"send_message","thread":request.thread,"body":request.body,
+        "invited_recipients":request.invited_recipients,"deadline_millis":request.deadline_millis,"claim":request.claim})
 }
 
 /// One hidden preparation quantum. The caller yields the writer between steps.
@@ -91,12 +86,8 @@ pub fn prepare_send_step(
         ));
     }
     let digest = schema::canonical_digest(&send_payload(request))?;
-    let seat = if !request.claim.instance.is_empty() {
-        super::seats::cooperative_instance(conn, &request.claim.instance, &request.claim)?;
-        request.claim.seat.clone()
-    } else {
-        resolve_operation_seat(conn, &request.claim.target, &request.operation)?
-    };
+    super::seats::cooperative_instance(conn, &request.claim.instance, &request.claim)?;
+    let seat = request.claim.seat.clone();
     let scope = format!("seat:{}", seat.as_str());
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -131,7 +122,12 @@ pub fn prepare_send_step(
     let (instance, membership_revision, timeline_revision, archived): (String, i64, i64, bool) = tx.query_row(
         "SELECT instance_id,membership_revision,timeline_revision,archived FROM threads WHERE id=?1",
         [request.thread.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
-    ).map_err(store_error)?;
+    ).optional().map_err(store_error)?.ok_or_else(|| {
+        api_error(
+            ErrorCode::NotFound,
+            format!("thread {} not found", request.thread.as_str()),
+        )
+    })?;
     if archived {
         return Err(api_error(ErrorCode::Archived, "thread is archived"));
     }
@@ -482,17 +478,12 @@ pub fn publish_send(
     request: &SendMessage,
     permit: &mut MutationPermit,
     budget: &CallBudget,
-    decision_fence: impl FnOnce(&Transaction<'_>, DecisionInstant) -> Result<DecisionFence, ApiError>,
     current_body_bytes: impl FnOnce() -> usize,
 ) -> Result<CommandResult, ApiError> {
     require_live_budget(context, budget)?;
     let digest = schema::canonical_digest(&send_payload(request))?;
-    let seat = if !request.claim.instance.is_empty() {
-        super::seats::cooperative_instance(conn, &request.claim.instance, &request.claim)?;
-        request.claim.seat.clone()
-    } else {
-        resolve_operation_seat(conn, &request.claim.target, &request.operation)?
-    };
+    super::seats::cooperative_instance(conn, &request.claim.instance, &request.claim)?;
+    let seat = request.claim.seat.clone();
     let scope = format!("seat:{}", seat.as_str());
     let cooperative = permit.cooperative_metadata();
     let result = schema::execute_accountable_transaction(
@@ -539,9 +530,6 @@ pub fn publish_send(
             Ok(())
         },
         |tx, decision| {
-            if permit.cooperative_claim().is_none() {
-                require_live_budget(context, budget)?;
-            }
             if request.body.is_empty()
                 || request.body.len() > current_body_bytes().min(MAX_BODY_BYTES)
             {
@@ -550,42 +538,16 @@ pub fn publish_send(
                     "message body byte limit",
                 ));
             }
-            let actor = if permit.cooperative_claim().is_some() {
-                super::control::decide_accountable(
-                    tx,
-                    decision,
-                    permit,
-                    &request.claim,
-                    &seat,
-                    &request.operation,
-                    &ObligationRef::Control(request.thread.clone()),
-                    &digest,
-                    || decision_fence(tx, decision),
-                )?
-            } else {
-                let mut fence = decision_fence(tx, decision)?;
-                fence.now = decision.monotonic;
-                let native_actor = permit
-                    .consume(
-                        &fence,
-                        &request.operation,
-                        &ObligationRef::Control(request.thread.clone()),
-                        &digest,
-                    )
-                    .map_err(|why| api_error(ErrorCode::CallerUnverified, why))?;
-                if native_actor.seat != seat
-                    || native_actor.native_session != request.claim.native_session
-                    || native_actor.execution != request.claim.execution
-                    || native_actor.harness != request.claim.harness
-                {
-                    return Err(api_error(
-                        ErrorCode::CallerUnverified,
-                        "permit actor does not match current claim target",
-                    ));
-                }
-                assert_actor_current(tx, &seat, &request.claim.target, native_actor, &fence)?;
-                super::control::AccountableActor::native(native_actor)
-            };
+            let actor = super::control::decide_accountable(
+                tx,
+                decision,
+                permit,
+                &request.claim,
+                &seat,
+                &request.operation,
+                &ObligationRef::Control(request.thread.clone()),
+                &digest,
+            )?;
             let revisions_match:bool=tx.query_row(
                 "SELECT p.captured_membership_revision=t.membership_revision AND p.captured_lifecycle_revision=h.lifecycle_revision AND p.captured_eligibility_revision=h.send_eligibility_revision AND p.captured_timeline_revision=t.timeline_revision AND p.captured_config_revision=h.duration_config_revision AND t.archived=0 FROM send_preparations p JOIN threads t ON t.id=p.thread_id JOIN host_instances h ON h.id=t.instance_id WHERE p.operation_scope=?1 AND p.operation_key=?2 AND p.digest=?3",
                 params![scope,request.operation.as_str(),digest.as_slice()],|r|r.get(0),
@@ -650,65 +612,6 @@ pub fn publish_send(
     Ok(result)
 }
 
-pub(crate) fn resolve_claim_seat(
-    conn: &Connection,
-    target: &crate::protocol::ids::HostTargetId,
-) -> Result<SeatId, ApiError> {
-    let seat: Option<String> = conn
-        .query_row(
-            "SELECT id FROM seats WHERE target_id=?1 AND state='resolved'",
-            [target.as_str()],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(store_error)?;
-    seat.map(SeatId::new).ok_or_else(|| {
-        api_error(
-            ErrorCode::CallerUnverified,
-            "current target has no resolved seat",
-        )
-    })
-}
-
-/// A committed operation keeps its original seat scope after retirement.
-/// A new operation still requires a presently resolved target.
-pub(crate) fn resolve_operation_seat(
-    conn: &Connection,
-    target: &crate::protocol::ids::HostTargetId,
-    operation: &OperationId,
-) -> Result<SeatId, ApiError> {
-    let mut stmt = conn.prepare("SELECT s.id FROM seats s JOIN operations o ON o.actor_scope='seat:'||s.id WHERE s.target_id=?1 AND o.operation_key=?2 LIMIT 2").map_err(store_error)?;
-    let prior = stmt
-        .query_map(params![target.as_str(), operation.as_str()], |r| {
-            r.get::<_, String>(0)
-        })
-        .map_err(store_error)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(store_error)?;
-    match prior.as_slice() {
-        [only] => Ok(SeatId::new(only.clone())),
-        [] => resolve_claim_seat(conn, target),
-        _ => Err(api_error(
-            ErrorCode::Conflict,
-            "operation key is ambiguous for target",
-        )),
-    }
-}
-
-pub(crate) fn assert_actor_current(
-    tx: &Transaction<'_>,
-    seat: &SeatId,
-    target: &crate::protocol::ids::HostTargetId,
-    actor: &VerifiedCaller,
-    fence: &DecisionFence,
-) -> Result<(), ApiError> {
-    let current: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.state='resolved' AND s.target_id=?2 AND s.target_generation=?3 AND s.generation=?4 AND h.host_boot=?5 AND h.host_epoch=?6)",
-        params![seat.as_str(),target.as_str(),actor.target_generation as i64,actor.binding_generation as i64,actor.host_boot.as_str(),fence.host_epoch as i64], |r| r.get(0)).map_err(store_error)?;
-    if !current {
-        return Err(api_error(
-            ErrorCode::CallerUnverified,
-            "persisted target changed before decision",
-        ));
-    }
-    Ok(())
-}
+#[cfg(test)]
+#[path = "../../tests/store/messages.rs"]
+mod messages_tests;

@@ -113,20 +113,6 @@ impl OperatorActor {
     }
 }
 
-/// Proven after a current-target host observation. This type has no wire decoder.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VerifiedCaller {
-    pub(crate) seat: SeatId,
-    pub(crate) harness: Harness,
-    pub(crate) native_session: NativeSessionId,
-    pub(crate) execution: ExecutionId,
-    pub(crate) host_boot: HostBootId,
-    pub(crate) target_generation: u64,
-    /// Durable seat/binding generation, independent of host target generation.
-    pub(crate) binding_generation: u64,
-    pub(crate) observed_at_utc: UtcMillis,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObligationRef {
     /// Issuer request marker only: freeze the current addressed invitation before issuing.
@@ -167,56 +153,24 @@ pub struct CooperativeDecisionFence {
     pub known_invalidated: bool,
 }
 
-#[derive(Debug)]
-enum PermitActor {
-    Native(VerifiedCaller),
-    Cooperative {
-        claim: CallerClaim,
-        mapping_revision: u64,
-        invalidation_revision: u64,
-    },
-}
-
 /// One transaction decision may consume this exact request/payload grant once.
 #[derive(Debug)]
 pub struct MutationPermit {
-    actor: PermitActor,
+    claim: CallerClaim,
+    mapping_revision: u64,
+    invalidation_revision: u64,
     request: OperationId,
     obligation: ObligationRef,
     payload_hash: [u8; 32],
     observed_at: MonoInstant,
-    host_epoch: u64,
     consumed: bool,
-    cooperative_budget: Option<CallBudget>,
+    cooperative_budget: CallBudget,
 }
 impl MutationPermit {
     /// Stable durable-seat scope for looking up a previously committed operation.
     /// Reading this identity does not consume the permit or authorize new work.
     pub(crate) fn seat_for_replay_scope(&self) -> &SeatId {
-        match &self.actor {
-            PermitActor::Native(v) => &v.seat,
-            PermitActor::Cooperative { claim, .. } => &claim.seat,
-        }
-    }
-    #[allow(dead_code)] // Caller verifier issues this in the runtime task.
-    pub(crate) fn new(
-        actor: VerifiedCaller,
-        request: OperationId,
-        obligation: ObligationRef,
-        payload_hash: [u8; 32],
-        observed_at: MonoInstant,
-        host_epoch: u64,
-    ) -> Self {
-        Self {
-            actor: PermitActor::Native(actor),
-            request,
-            obligation,
-            payload_hash,
-            observed_at,
-            host_epoch,
-            consumed: false,
-            cooperative_budget: None,
-        }
+        &self.claim.seat
     }
     /// Issued only after service-local durable context validation. No wire decoder.
     pub(crate) fn cooperative(
@@ -225,38 +179,26 @@ impl MutationPermit {
         obligation: ObligationRef,
         payload_hash: [u8; 32],
         observed_at: MonoInstant,
-        mapping_revision: u64,
-        invalidation_revision: u64,
+        (mapping_revision, invalidation_revision): (u64, u64),
+        budget: CallBudget,
     ) -> Self {
         Self {
-            actor: PermitActor::Cooperative {
-                claim,
-                mapping_revision,
-                invalidation_revision,
-            },
+            claim,
+            mapping_revision,
+            invalidation_revision,
             request,
             obligation,
             payload_hash,
             observed_at,
-            host_epoch: 0,
             consumed: false,
-            cooperative_budget: None,
+            cooperative_budget: budget,
         }
     }
-    pub(crate) fn with_cooperative_budget(mut self, budget: CallBudget) -> Self {
-        self.cooperative_budget = Some(budget);
-        self
+    pub(crate) fn cooperative_metadata(&self) -> (CallerClaim, CallBudget) {
+        (self.claim.clone(), self.cooperative_budget.clone())
     }
-    pub(crate) fn cooperative_metadata(&self) -> Option<(CallerClaim, CallBudget)> {
-        self.cooperative_claim()
-            .cloned()
-            .zip(self.cooperative_budget.clone())
-    }
-    pub(crate) fn cooperative_claim(&self) -> Option<&CallerClaim> {
-        match &self.actor {
-            PermitActor::Cooperative { claim, .. } => Some(claim),
-            _ => None,
-        }
+    pub(crate) fn claim(&self) -> &CallerClaim {
+        &self.claim
     }
     pub fn consume_cooperative(
         &mut self,
@@ -265,27 +207,20 @@ impl MutationPermit {
         obligation: &ObligationRef,
         payload_hash: &[u8; 32],
     ) -> Result<&CallerClaim, &'static str> {
-        let PermitActor::Cooperative {
-            claim,
-            mapping_revision,
-            invalidation_revision,
-        } = &self.actor
-        else {
-            return Err("native permit cannot authorize cooperative work");
-        };
         if self.consumed {
             return Err("permit already consumed");
         }
         if fence.known_invalidated {
             return Err("known mapping invalidation");
         }
+        let claim = &self.claim;
         if claim.role != CallerRole::TopLevel
             || claim.instance != fence.instance
             || claim.seat != fence.seat
             || claim.target != fence.target
             || claim.binding_generation != fence.binding_generation
-            || *mapping_revision != fence.mapping_revision
-            || *invalidation_revision != fence.invalidation_revision
+            || self.mapping_revision != fence.mapping_revision
+            || self.invalidation_revision != fence.invalidation_revision
         {
             return Err("cooperative context changed");
         }
@@ -300,54 +235,8 @@ impl MutationPermit {
             return Err("permit payload mismatch");
         }
         self.consumed = true;
-        Ok(claim)
+        Ok(&self.claim)
     }
-    pub fn consume(
-        &mut self,
-        fence: &DecisionFence,
-        request: &OperationId,
-        obligation: &ObligationRef,
-        payload_hash: &[u8; 32],
-    ) -> Result<&VerifiedCaller, &'static str> {
-        let PermitActor::Native(actor) = &self.actor else {
-            return Err("cooperative permit is not native evidence");
-        };
-        if self.consumed {
-            return Err("permit already consumed");
-        }
-        if fence.known_invalidated {
-            return Err("known host invalidation");
-        }
-        if fence.host_epoch != self.host_epoch
-            || fence.host_boot != actor.host_boot
-            || fence.target_generation != actor.target_generation
-            || fence.binding_generation != actor.binding_generation
-        {
-            return Err("host target changed");
-        }
-        if fence.now.0 < self.observed_at.0 || fence.now.0 - self.observed_at.0 > MAX_PERMIT_MILLIS
-        {
-            return Err("permit expired");
-        }
-        if request != &self.request
-            || obligation != &self.obligation
-            || payload_hash != &self.payload_hash
-        {
-            return Err("permit payload mismatch");
-        }
-        self.consumed = true;
-        Ok(actor)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReceiptRegistration {
-    pub seat: SeatId,
-    pub host_boot: HostBootId,
-    pub target_generation: u64,
-    pub binding_generation: u64,
-    pub native_session: NativeSessionId,
-    pub execution: ExecutionId,
 }
 
 #[cfg(test)]
@@ -366,95 +255,8 @@ mod tests {
             Harness::Human
         );
     }
-    fn actor() -> VerifiedCaller {
-        VerifiedCaller {
-            seat: SeatId::new("s1"),
-            harness: Harness::Codex,
-            native_session: NativeSessionId::new("n1"),
-            execution: ExecutionId::new("e1"),
-            host_boot: HostBootId::new("b1"),
-            target_generation: 7,
-            binding_generation: 2,
-            observed_at_utc: UtcMillis(1),
-        }
-    }
     #[test]
-    fn permit_checks_current_target_fence_payload_and_single_use() {
-        let obligation = ObligationRef::Invitation(InvitationId::new("i1"));
-        let mut permit = MutationPermit::new(
-            actor(),
-            OperationId::new("o1"),
-            obligation.clone(),
-            [4; 32],
-            MonoInstant(100),
-            3,
-        );
-        assert_eq!(permit.seat_for_replay_scope().as_str(), "s1");
-        let mut fence = DecisionFence {
-            now: MonoInstant(200),
-            host_boot: HostBootId::new("b2"),
-            host_epoch: 3,
-            target_generation: 7,
-            binding_generation: 2,
-            known_invalidated: false,
-        };
-        assert!(
-            permit
-                .consume(&fence, &OperationId::new("o1"), &obligation, &[4; 32])
-                .is_err()
-        );
-        fence.host_boot = HostBootId::new("b1");
-        fence.target_generation = 8;
-        assert!(
-            permit
-                .consume(&fence, &OperationId::new("o1"), &obligation, &[4; 32])
-                .is_err()
-        );
-        fence.target_generation = 7;
-        fence.binding_generation = 8;
-        assert!(
-            permit
-                .consume(&fence, &OperationId::new("o1"), &obligation, &[4; 32])
-                .is_err()
-        );
-        fence.binding_generation = 2;
-        fence.known_invalidated = true;
-        assert!(
-            permit
-                .consume(&fence, &OperationId::new("o1"), &obligation, &[4; 32])
-                .is_err()
-        );
-        fence.known_invalidated = false;
-        assert!(
-            permit
-                .consume(&fence, &OperationId::new("o2"), &obligation, &[4; 32])
-                .is_err()
-        );
-        assert!(
-            permit
-                .consume(&fence, &OperationId::new("o1"), &obligation, &[5; 32])
-                .is_err()
-        );
-        fence.now = MonoInstant(351);
-        assert!(
-            permit
-                .consume(&fence, &OperationId::new("o1"), &obligation, &[4; 32])
-                .is_err()
-        );
-        fence.now = MonoInstant(250);
-        assert!(
-            permit
-                .consume(&fence, &OperationId::new("o1"), &obligation, &[4; 32])
-                .is_ok()
-        );
-        assert!(
-            permit
-                .consume(&fence, &OperationId::new("o1"), &obligation, &[4; 32])
-                .is_err()
-        );
-    }
-    #[test]
-    fn cooperative_permit_is_payload_bound_expires_and_cannot_be_consumed_as_native() {
+    fn cooperative_permit_is_payload_bound_expires_and_single_use() {
         let claim = CallerClaim {
             instance: "i".into(),
             seat: SeatId::new("s"),
@@ -472,8 +274,11 @@ mod tests {
             obligation.clone(),
             [7; 32],
             MonoInstant(100),
-            0,
-            3,
+            (0, 3),
+            CallBudget {
+                deadline: MonoInstant(1000),
+                cancellation: Default::default(),
+            },
         );
         let mut fence = CooperativeDecisionFence {
             now: MonoInstant(350),

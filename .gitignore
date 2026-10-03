@@ -9,6 +9,10 @@
 .worktrees/
 /target/
 
+# sed -i backups (BSD sed -i -E) and merge leftovers
+*-E
+*.orig
+
 __pycache__/
 /bin/
 .DS_Store

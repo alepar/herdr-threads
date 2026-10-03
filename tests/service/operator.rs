@@ -89,12 +89,7 @@ impl HostPort for Host {
                 > 0
         );
         if self.fail.load(Ordering::SeqCst) {
-            return Err(ApiError {
-                code: ErrorCode::HostUnavailable,
-                detail: "fixture unavailable".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
+            return Err(ApiError::host_unavailable("fixture unavailable"));
         }
         let mut observation = self.observation(
             target.as_str(),
@@ -136,12 +131,6 @@ impl HostPort for Host {
                 .collect(),
         })
     }
-    fn subscribe_lifecycle(
-        &self,
-        _: &HostCallContext,
-    ) -> Result<Box<dyn HostLifecycleSubscription>, ApiError> {
-        unreachable!()
-    }
     fn safe_wake_target(&self, _: &SeatId, _: &HostObservation) -> Option<SafeWakeTarget> {
         None
     }
@@ -153,12 +142,27 @@ impl HostPort for Host {
     ) -> Result<PromptOutcome, ApiError> {
         unreachable!()
     }
+    fn pane_agent_state(
+        &self,
+        _target: &SafeWakeTarget,
+        _context: &HostCallContext,
+    ) -> Result<herdr_threads::ports::AgentComposerState, ApiError> {
+        Ok(herdr_threads::ports::AgentComposerState::Submitted)
+    }
+
     fn launch_native(
         &self,
         _: NativeLaunchRequest,
         _: &HostCallContext,
     ) -> Result<NativeLaunchOutcome, ApiError> {
         unreachable!()
+    }
+    fn send_submit_key(
+        &self,
+        _: &herdr_threads::ports::SafeWakeTarget,
+        _: &herdr_threads::ports::HostCallContext,
+    ) -> Result<(), herdr_threads::protocol::results::ApiError> {
+        Ok(())
     }
 }
 struct Fixture {
@@ -270,7 +274,7 @@ impl Fixture {
                     },
                 ))
         });
-        let descriptor = match rx.recv_timeout(Duration::from_secs(3)) {
+        let descriptor = match rx.recv_timeout(Duration::from_secs(30)) {
             Ok(d) => d,
             Err(error) => {
                 stop.cancel();

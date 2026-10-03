@@ -15,7 +15,14 @@
 //! the follow with that error after [`DEFINITIVE_LIMIT`] polls in a row. An
 //! archived thread is reported by its own archive notice and still followed
 //! (it can be reopened); a thread that disappears ends the follow with status
-//! 0, also when that is learned right after a reconnect. Ctrl-C ends it with 0.
+//! 0, also when that is learned right after a reconnect. Ctrl-C ends it with 0,
+//! also in the middle of a call: the interrupt cancels the [`Cancellation`]
+//! every call's budget carries, so a daemon that never answers cannot hold the
+//! follower. A slow connect is a `Transient` failure (see
+//! [`crate::client::error_class`]), retried quietly like a slow poll. Every
+//! notice goes through [`escape_for_terminal`]; the fatal notice is printed
+//! once and the run then exits with the error's status without a second
+//! report.
 
 use super::{
     RunError, connect,
@@ -23,28 +30,30 @@ use super::{
     output,
 };
 use crate::{
-    client::local::LocalSocketClient,
     daemon::paths::{InstancePaths, RuntimeContext},
     harness::context::{ContextJournal, Harness},
     host::{native::NativeCli, observation::PaneName},
     ports::LocalClient,
     protocol::{
+        capabilities::HISTORY_FULL_BODIES,
         commands::{
-            BodyReadRequest, Command, HistoryQuery, HistoryRange, MessageQuery, SeatInspectQuery,
-            ThreadQuery,
+            BodyReadRequest, Command, FULL_BODY_FETCH_BYTES, HistoryQuery, HistoryRange,
+            MessageQuery, ParticipantsQuery, SeatInspectQuery, SeatsQuery, ThreadQuery,
         },
-        ids::SeatId,
+        ids::{HostTargetId, SeatId, ThreadId},
         output::{OutputFormat, OutputSpec, selected_result},
         pagination::{MAX_PAGE_BYTES, MAX_PAGE_LIMIT, Page, PageRequest},
         results::{
             ApiError, CommandResult, ErrorCode, MessageContent, MessageKind, MessageSummary,
         },
+        service::EventAuthor,
         time::{CallBudget, Cancellation, Clock, MonoInstant},
     },
+    view::escape::{Context, escape_for_terminal, is_unsafe_char, push_u4},
 };
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{self, Write},
     path::PathBuf,
     sync::{
@@ -71,16 +80,21 @@ const NICK_TTL: Duration = Duration::from_secs(60);
 /// How long one host pane-name snapshot is reused.
 const PANES_TTL: Duration = Duration::from_secs(15);
 /// Body bytes fetched for a message whose preview was clipped.
-const BODY_BYTES: u32 = 16_384;
+const BODY_BYTES: u32 = FULL_BODY_FETCH_BYTES;
 
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+/// How often the interrupt watcher looks at the signal flag; bounds how long
+/// a Ctrl-C takes to reach a call that is waiting on the daemon.
+const INTERRUPT_POLL: Duration = Duration::from_millis(10);
 
 extern "C" fn on_interrupt(_: libc::c_int) {
     INTERRUPTED.store(true, Ordering::SeqCst);
 }
 
-/// Ctrl-C (and SIGTERM) end the follow cleanly with status 0.
-fn install_interrupt() {
+/// Ctrl-C (and SIGTERM) end the follow cleanly with status 0. Returns the
+/// [`Cancellation`] the signal cancels: put it in every call budget.
+fn install_interrupt() -> Cancellation {
     // SAFETY: the handler only stores into an atomic, which is async-signal-safe.
     unsafe {
         libc::signal(
@@ -92,23 +106,31 @@ fn install_interrupt() {
             on_interrupt as *const () as libc::sighandler_t,
         );
     }
+    let cancel = Cancellation::default();
+    watch_interrupt(&INTERRUPTED, cancel.clone());
+    cancel
 }
 
-fn interrupted() -> bool {
-    INTERRUPTED.load(Ordering::SeqCst)
-}
-
-/// Sleep in small steps so Ctrl-C is noticed promptly. Returns `false` when
-/// interrupted.
-fn pause(total: Duration) -> bool {
-    let end = Instant::now() + total;
-    while Instant::now() < end {
-        if interrupted() {
-            return false;
+/// A signal handler may only touch atomics, so a thread turns the flag into a
+/// real [`Cancellation`] (waking async waiters, which is what interrupts a
+/// call in flight). It ends when the flag is seen or `cancel` is cancelled.
+fn watch_interrupt(flag: &'static AtomicBool, cancel: Cancellation) {
+    std::thread::spawn(move || {
+        loop {
+            if flag.load(Ordering::SeqCst) {
+                cancel.cancel();
+                return;
+            }
+            if cancel.wait_blocking(INTERRUPT_POLL) {
+                return;
+            }
         }
-        std::thread::sleep(Duration::from_millis(50).min(end - Instant::now()));
-    }
-    !interrupted()
+    });
+}
+
+/// Sleep, waking at once on Ctrl-C. Returns `false` when interrupted.
+fn pause(total: Duration, cancel: &Cancellation) -> bool {
+    !cancel.wait_blocking(total)
 }
 
 /// Columns of the terminal on stdout, or `$COLUMNS`, or 100.
@@ -141,17 +163,40 @@ pub(crate) fn live_style() -> Style {
     }
 }
 
+/// A seat's host target (when mapped) and binding generation.
+type SeatBinding = (Option<HostTargetId>, u64);
+
+/// Where a [`NickCache`] reads host pane names from.
+pub(crate) trait PaneNameSource {
+    fn pane_names(&self, budget: &CallBudget) -> Result<Vec<PaneName>, ApiError>;
+}
+
+impl PaneNameSource for NativeCli {
+    fn pane_names(&self, budget: &CallBudget) -> Result<Vec<PaneName>, ApiError> {
+        NativeCli::pane_names(self, budget)
+    }
+}
+
 /// Seat nicks resolved from the service mapping, the host pane names and the
 /// seat's local binding context, cached across polls.
 pub(crate) struct NickCache {
     /// The clock every request budget is measured against: the same one the
     /// daemon client and the host adapter compare deadlines with.
     clock: Arc<dyn Clock>,
-    host: NativeCli,
+    host: Box<dyn PaneNameSource>,
     paths: InstancePaths,
     instance: uuid::Uuid,
     panes: Option<(Instant, Vec<PaneName>)>,
     nicks: HashMap<SeatId, (Instant, Nick)>,
+    /// The seats of each thread's last Participants page.
+    participants: HashMap<ThreadId, (Instant, HashSet<SeatId>)>,
+    /// Target and binding generation per seat from the last Seats page.
+    mapped: Option<(Instant, HashMap<SeatId, SeatBinding>)>,
+    /// While a history page is being resolved: whether its one pane-name
+    /// snapshot has been read already. `None` outside a page (the follower).
+    page_panes_read: Option<bool>,
+    /// Cancelled by Ctrl-C; carried by every call budget this cache mints.
+    cancel: Cancellation,
 }
 
 impl NickCache {
@@ -161,25 +206,77 @@ impl NickCache {
         instance: uuid::Uuid,
         clock: &Arc<dyn Clock>,
     ) -> Self {
+        Self::with_pane_source(
+            Box::new(NativeCli::new(
+                context.host_endpoint.clone(),
+                Arc::clone(clock),
+            )),
+            paths,
+            instance,
+            clock,
+        )
+    }
+
+    /// A cache reading pane names from `host`: the production host adapter,
+    /// or a counting fixture.
+    fn with_pane_source(
+        host: Box<dyn PaneNameSource>,
+        paths: &InstancePaths,
+        instance: uuid::Uuid,
+        clock: &Arc<dyn Clock>,
+    ) -> Self {
         Self {
             clock: Arc::clone(clock),
-            host: NativeCli::new(context.host_endpoint.clone(), Arc::clone(clock)),
+            host,
             paths: paths.clone(),
             instance,
             panes: None,
             nicks: HashMap::new(),
+            participants: HashMap::new(),
+            mapped: None,
+            page_panes_read: None,
+            cancel: Cancellation::default(),
+        }
+    }
+
+    /// Make every call this cache issues give up when `cancel` fires.
+    fn cancelled_by(mut self, cancel: &Cancellation) -> Self {
+        self.cancel = cancel.clone();
+        self
+    }
+
+    /// Whether the pane-name snapshot must be read again before it can name
+    /// `targets`: absent, past its TTL, or (after two seconds) missing one.
+    fn panes_stale<'t>(&self, targets: impl IntoIterator<Item = &'t str>) -> bool {
+        self.panes.as_ref().is_none_or(|(at, panes)| {
+            at.elapsed() > PANES_TTL
+                || at.elapsed() > Duration::from_secs(2)
+                    && targets
+                        .into_iter()
+                        .any(|target| !panes.iter().any(|pane| pane.target.as_str() == target))
+        })
+    }
+
+    /// Re-read the pane names when stale for `targets`. Inside a history
+    /// page this happens at most once, however many authors need it.
+    fn refresh_panes<'t>(
+        &mut self,
+        targets: impl IntoIterator<Item = &'t str>,
+        budget: &CallBudget,
+    ) {
+        if self.page_panes_read == Some(true) || !self.panes_stale(targets) {
+            return;
+        }
+        if self.page_panes_read.is_some() {
+            self.page_panes_read = Some(true);
+        }
+        if let Ok(panes) = self.host.pane_names(budget) {
+            self.panes = Some((Instant::now(), panes));
         }
     }
 
     fn pane_label(&mut self, target: &str, budget: &CallBudget) -> Option<String> {
-        let stale = self.panes.as_ref().is_none_or(|(at, panes)| {
-            at.elapsed() > PANES_TTL
-                || !panes.iter().any(|pane| pane.target.as_str() == target)
-                    && at.elapsed() > Duration::from_secs(2)
-        });
-        if stale && let Ok(panes) = self.host.pane_names(budget) {
-            self.panes = Some((Instant::now(), panes));
-        }
+        self.refresh_panes([target], budget);
         let (_, panes) = self.panes.as_ref()?;
         let pane = panes.iter().find(|pane| pane.target.as_str() == target)?;
         pane.label
@@ -195,41 +292,149 @@ impl NickCache {
     /// The harness of the seat's current binding, from its private local
     /// context (read only when it already exists; nothing is created).
     fn harness(&self, seat: &SeatId, generation: u64) -> Option<&'static str> {
-        let root = self
-            .paths
-            .instance_dir
-            .canonicalize()
-            .ok()?
-            .join("contexts");
-        let dir: PathBuf = root.join(format!("{:x}", Sha256::digest(seat.as_str().as_bytes())));
-        if !dir.join("context.json").is_file() {
-            return None;
+        read_harness(&self.paths.instance_dir, self.instance, seat, generation)
+    }
+
+    fn fresh_nick(&self, seat: &SeatId) -> Option<&Nick> {
+        self.nicks
+            .get(seat)
+            .filter(|(at, _)| at.elapsed() < NICK_TTL)
+            .map(|(_, nick)| nick)
+    }
+
+    /// The nick of `seat` bound to `target` at `generation`, cached.
+    fn build_nick(
+        &mut self,
+        seat: &SeatId,
+        target: Option<&HostTargetId>,
+        generation: u64,
+    ) -> Nick {
+        let mut nick = Nick::seat(seat);
+        if let Some(target) = target
+            && let Some(label) = self.pane_label(
+                target.as_str(),
+                &budget(self.clock.as_ref(), 2_000, &self.cancel),
+            )
+        {
+            nick.name = label;
         }
-        let journal = ContextJournal::open(
-            &dir,
-            self.instance,
-            seat.as_str(),
-            Duration::from_millis(200),
-        )
-        .ok()?;
-        let current = journal.current().ok()??;
-        if current.seat != seat.as_str() || current.binding_generation != generation {
-            return None;
+        nick.harness = self.harness(seat, generation).map(str::to_owned);
+        self.nicks
+            .insert(seat.clone(), (Instant::now(), nick.clone()));
+        nick
+    }
+
+    /// Resolve the authors of one history page before it renders: one
+    /// Participants page per thread (reused while fresh), one Seats page
+    /// when a participant's binding is unknown, and one pane-name snapshot
+    /// when stale. Only an author found in neither is left to
+    /// [`Self::resolve`], which asks `SeatInspect` once and caches it.
+    fn prefetch(
+        &mut self,
+        client: &dyn LocalClient,
+        thread: &ThreadId,
+        page: &Page<MessageSummary>,
+        spec: &OutputSpec,
+    ) {
+        self.page_panes_read = Some(false);
+        let mut missing: Vec<SeatId> = Vec::new();
+        for summary in &page.items {
+            let native = match &summary.event_author {
+                Some(EventAuthor::Native(seat)) => Some(seat),
+                _ => None,
+            };
+            for seat in native.into_iter().chain(summary.author.as_ref()) {
+                if self.fresh_nick(seat).is_none() && !missing.contains(seat) {
+                    missing.push(seat.clone());
+                }
+            }
         }
-        Some(match current.harness {
-            Harness::Claude => "claude",
-            Harness::Codex => "codex",
-            Harness::Human => "human",
-        })
+        if missing.is_empty() {
+            return;
+        }
+        let first_page = PageRequest {
+            cursor: None,
+            limit: MAX_PAGE_LIMIT,
+            max_bytes: MAX_PAGE_BYTES,
+        };
+        if self
+            .participants
+            .get(thread)
+            .is_none_or(|(at, _)| at.elapsed() >= NICK_TTL)
+            && let Ok(CommandResult::Participants(members)) = client.call_with_output(
+                Command::Participants(ParticipantsQuery {
+                    thread: thread.clone(),
+                    page: first_page.clone(),
+                    caller: None,
+                }),
+                spec,
+                &budget(self.clock.as_ref(), 2_000, &self.cancel),
+            )
+        {
+            let seats = members.items.into_iter().map(|row| row.seat).collect();
+            self.participants
+                .insert(thread.clone(), (Instant::now(), seats));
+        }
+        let Some((_, members)) = self.participants.get(thread) else {
+            return;
+        };
+        let known: Vec<SeatId> = missing
+            .into_iter()
+            .filter(|seat| members.contains(seat))
+            .collect();
+        if known.is_empty() {
+            return;
+        }
+        let unmapped = known.iter().any(|seat| {
+            !self
+                .mapped
+                .as_ref()
+                .is_some_and(|(at, map)| at.elapsed() < NICK_TTL && map.contains_key(seat))
+        });
+        if unmapped
+            && let Ok(CommandResult::Seats(seats)) = client.call_with_output(
+                Command::Seats(SeatsQuery {
+                    page: first_page,
+                    target: None,
+                }),
+                spec,
+                &budget(self.clock.as_ref(), 2_000, &self.cancel),
+            )
+        {
+            self.mapped = Some((
+                Instant::now(),
+                seats
+                    .items
+                    .into_iter()
+                    .map(|row| (row.seat, (row.target, row.generation)))
+                    .collect(),
+            ));
+        }
+        let Some((_, map)) = &self.mapped else {
+            return;
+        };
+        let bound: Vec<(SeatId, Option<HostTargetId>, u64)> = known
+            .into_iter()
+            .filter_map(|seat| {
+                let (target, generation) = map.get(&seat)?.clone();
+                Some((seat, target, generation))
+            })
+            .collect();
+        let targets: Vec<String> = bound
+            .iter()
+            .filter_map(|(_, target, _)| target.as_ref().map(|target| target.as_str().to_owned()))
+            .collect();
+        let snapshot_budget = budget(self.clock.as_ref(), 2_000, &self.cancel);
+        self.refresh_panes(targets.iter().map(String::as_str), &snapshot_budget);
+        for (seat, target, generation) in bound {
+            self.build_nick(&seat, target.as_ref(), generation);
+        }
     }
 
     fn resolve(&mut self, client: &dyn LocalClient, seat: &SeatId, spec: &OutputSpec) -> Nick {
-        if let Some((at, nick)) = self.nicks.get(seat)
-            && at.elapsed() < NICK_TTL
-        {
+        if let Some(nick) = self.fresh_nick(seat) {
             return nick.clone();
         }
-        let mut nick = Nick::seat(seat);
         let inspect = client.call_with_output(
             Command::SeatInspect(SeatInspectQuery {
                 seat: seat.clone(),
@@ -240,33 +445,60 @@ impl NickCache {
                 },
             }),
             spec,
-            &budget(self.clock.as_ref(), 2_000),
+            &budget(self.clock.as_ref(), 2_000, &self.cancel),
         );
         if let Ok(CommandResult::SeatInspect(inspection)) = inspect {
-            if let Some(target) = &inspection.summary.target
-                && let Some(label) =
-                    self.pane_label(target.as_str(), &budget(self.clock.as_ref(), 2_000))
-            {
-                nick.name = label;
-            }
-            nick.harness = self
-                .harness(seat, inspection.summary.generation)
-                .map(str::to_owned);
+            return self.build_nick(
+                seat,
+                inspection.summary.target.as_ref(),
+                inspection.summary.generation,
+            );
         }
+        let nick = Nick::seat(seat);
         self.nicks
             .insert(seat.clone(), (Instant::now(), nick.clone()));
         nick
     }
 }
 
+/// The harness of `seat`'s current binding, from its private local context
+/// under `instance_dir` (read only when it already exists; nothing is
+/// created). This runs while a message is being rendered, so it reads a
+/// lock-free snapshot ([`ContextJournal::current_snapshot`]): it never waits
+/// on a check-in that holds `context.lock`, and never delays one.
+fn read_harness(
+    instance_dir: &std::path::Path,
+    instance: uuid::Uuid,
+    seat: &SeatId,
+    generation: u64,
+) -> Option<&'static str> {
+    let root = instance_dir.canonicalize().ok()?.join("contexts");
+    let dir: PathBuf = root.join(format!("{:x}", Sha256::digest(seat.as_str().as_bytes())));
+    if !dir.join("context.json").is_file() {
+        return None;
+    }
+    let journal =
+        ContextJournal::open(&dir, instance, seat.as_str(), Duration::from_millis(200)).ok()?;
+    let current = journal.current_snapshot().ok()??;
+    if current.seat != seat.as_str() || current.binding_generation != generation {
+        return None;
+    }
+    Some(match current.harness {
+        Harness::Claude => "claude",
+        Harness::Codex => "codex",
+        Harness::Human => "human",
+    })
+}
+
 /// A request budget of `millis` from now on `clock`. It must be the clock
 /// the client compares the deadline with: a budget minted on a fresh clock
 /// (which starts at zero) is already spent once the process has lived
 /// longer than `millis`, and every later request fails before it is sent.
-fn budget(clock: &dyn Clock, millis: u64) -> CallBudget {
+/// The call gives up as soon as `cancel` fires (Ctrl-C).
+fn budget(clock: &dyn Clock, millis: u64, cancel: &Cancellation) -> CallBudget {
     CallBudget {
         deadline: MonoInstant(clock.monotonic_now().0.saturating_add(millis)),
-        cancellation: Cancellation::default(),
+        cancellation: cancel.clone(),
     }
 }
 
@@ -295,7 +527,7 @@ impl Lookup for LiveLookup<'_> {
                     },
                 }),
                 self.spec,
-                &budget(self.cache.clock.as_ref(), 5_000),
+                &budget(self.cache.clock.as_ref(), 5_000, &self.cache.cancel),
             )
             .ok()?;
         let CommandResult::Message(details) = result else {
@@ -326,33 +558,60 @@ fn text_spec(spec: &OutputSpec) -> OutputSpec {
 }
 
 /// Human `read`: the IRC transcript with nicks and full bodies resolved.
+/// Asks the daemon to inline complete bodies only when it advertises
+/// `HISTORY_FULL_BODIES`; an older daemon gets today's request and the
+/// per-preview body fetches.
 pub(crate) fn render_history(
-    client: &LocalSocketClient,
+    client: &crate::client::local::LocalSocketClient,
     query: HistoryQuery,
     spec: &OutputSpec,
     cache: &mut NickCache,
     writer: &mut dyn Write,
 ) -> Result<(), RunError> {
+    let full_bodies = client
+        .capabilities(&budget(cache.clock.as_ref(), 5_000, &cache.cancel))
+        .supports(HISTORY_FULL_BODIES);
+    render_history_with(
+        client,
+        full_bodies,
+        query,
+        spec,
+        cache,
+        writer,
+        &live_style(),
+    )
+}
+
+fn render_history_with(
+    client: &dyn LocalClient,
+    full_bodies: bool,
+    mut query: HistoryQuery,
+    spec: &OutputSpec,
+    cache: &mut NickCache,
+    writer: &mut dyn Write,
+    style: &Style,
+) -> Result<(), RunError> {
+    let thread = query.thread.clone();
+    query.full_bodies = full_bodies;
     let result = client.call_with_output(
         Command::History(query),
         spec,
-        &budget(cache.clock.as_ref(), 5_000),
+        &budget(cache.clock.as_ref(), 5_000, &cache.cancel),
     )?;
     let CommandResult::History(page) = selected_result(&result, spec) else {
-        return Err(RunError::Api(ApiError {
-            code: ErrorCode::StoreCorrupt,
-            detail: "daemon returned no history page".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        }));
+        return Err(RunError::Api(ApiError::store_corrupt(
+            "daemon returned no history page",
+        )));
     };
     let lookup_spec = text_spec(spec);
+    cache.prefetch(client, &thread, &page, &lookup_spec);
     let mut lookup = LiveLookup {
         client,
         cache,
         spec: &lookup_spec,
     };
-    let text = irc::render_page(&page, &mut lookup, &live_style());
+    let text = irc::render_page(&page, &mut lookup, style);
+    lookup.cache.page_panes_read = None;
     writer.write_all(text.as_bytes())?;
     writer.flush()?;
     Ok(())
@@ -371,6 +630,8 @@ struct Printer<'a> {
     style: Style,
     no_system: bool,
     writer: &'a mut dyn Write,
+    /// Where notices go for the machine form (stderr in a real run).
+    errors: &'a mut dyn Write,
 }
 
 impl Printer<'_> {
@@ -417,10 +678,11 @@ impl Printer<'_> {
                 self.writer.write_all(line.as_bytes())?;
                 self.writer.flush()
             }
-            Form::Lines => {
-                eprintln!("herdr-threads: {text}");
-                Ok(())
-            }
+            Form::Lines => writeln!(
+                self.errors,
+                "herdr-threads: {}",
+                escape_for_terminal(text, Context::SingleLine)
+            ),
         }
     }
 }
@@ -431,8 +693,8 @@ pub(crate) fn json_line(summary: &MessageSummary) -> String {
     let raw = serde_json::to_string(summary).unwrap_or_default();
     let mut out = String::with_capacity(raw.len());
     for ch in raw.chars() {
-        if matches!(ch, '\u{007f}'..='\u{009f}' | '\u{2028}' | '\u{2029}') {
-            out.push_str(&format!("\\u{:04x}", ch as u32));
+        if !ch.is_ascii_control() && is_unsafe_char(ch) {
+            push_u4(ch, &mut out);
         } else {
             out.push(ch);
         }
@@ -442,12 +704,12 @@ pub(crate) fn json_line(summary: &MessageSummary) -> String {
 
 fn history(
     client: &dyn LocalClient,
-    clock: &dyn Clock,
     thread: &crate::protocol::ids::ThreadId,
     initial: Option<HistoryRange>,
     cursor: Option<String>,
     limit: u16,
     spec: &OutputSpec,
+    budget: &CallBudget,
 ) -> Result<Page<MessageSummary>, ApiError> {
     let result = client.call_with_output(
         Command::History(HistoryQuery {
@@ -458,18 +720,14 @@ fn history(
                 max_bytes: MAX_PAGE_BYTES,
             },
             initial,
+            full_bodies: false,
         }),
         spec,
-        &budget(clock, 5_000),
+        budget,
     )?;
     match selected_result(&result, spec) {
         CommandResult::History(page) => Ok(page),
-        _ => Err(ApiError {
-            code: ErrorCode::StoreCorrupt,
-            detail: "daemon returned no history page".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        }),
+        _ => Err(ApiError::store_corrupt("daemon returned no history page")),
     }
 }
 
@@ -487,6 +745,12 @@ enum FailureClass {
 }
 
 fn classify(error: &ApiError) -> FailureClass {
+    // One slow connect is the daemon being slow, not gone: retry it quietly.
+    if crate::client::error_class(error) == Some(crate::protocol::results::ErrorClass::Transient)
+        && error.code == ErrorCode::HostUnavailable
+    {
+        return FailureClass::Transient;
+    }
     match error.code {
         ErrorCode::NotFound => FailureClass::Gone,
         ErrorCode::HostUnavailable | ErrorCode::TransportDenied => FailureClass::ConnectionLost,
@@ -558,6 +822,63 @@ impl Outage {
     }
 }
 
+/// What the loop does after [`failed_poll`] has told the person what it must.
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    /// Wait, reconnect and poll again.
+    Retry,
+    /// End the follow with status 0 (thread gone, or the output closed).
+    Stop,
+}
+
+/// Apply one failed poll to the outage state and print the notice it calls
+/// for. Each notice is printed at most once per outage, and a fatal one ends
+/// the run with [`RunError::Exit`]: the notice is the report, so the caller's
+/// top level does not print the error a second time.
+fn failed_poll(
+    outage: &mut Outage,
+    error: &ApiError,
+    now: Instant,
+    thread: &crate::protocol::ids::ThreadId,
+    printer: &mut Printer<'_>,
+) -> Result<Step, RunError> {
+    match outage.failed(error, now) {
+        Verdict::Gone => {
+            write_result(printer.notice(&format!(
+                "thread {} no longer exists; stopped following",
+                thread.as_str()
+            )))?;
+            Ok(Step::Stop)
+        }
+        Verdict::Fatal => {
+            let remedy = error
+                .restart_argv
+                .as_ref()
+                .map_or_else(String::new, |argv| format!("; restart: {}", argv.join(" ")));
+            write_result(printer.notice(&format!(
+                "stopped following: the daemon keeps refusing ({}){remedy}",
+                error.detail
+            )))?;
+            Err(RunError::Exit(super::exit::api_exit_code(&error.code)))
+        }
+        Verdict::Announce => {
+            let shown = write_result(
+                printer.notice(&format!("lost the daemon ({}); reconnecting", error.detail)),
+            )?;
+            Ok(if shown { Step::Retry } else { Step::Stop })
+        }
+        Verdict::Quiet => Ok(Step::Retry),
+    }
+}
+
+/// Cancels the wrapped [`Cancellation`] when dropped.
+struct StopOnDrop(Cancellation);
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
 /// A write to a closed pipe (`| head`) ends the follow quietly.
 fn write_result(result: io::Result<()>) -> Result<bool, RunError> {
     match result {
@@ -577,14 +898,17 @@ pub(crate) fn run(
     clock: &Arc<dyn Clock>,
     writer: &mut dyn Write,
 ) -> Result<(), RunError> {
-    install_interrupt();
+    let cancel = install_interrupt();
+    // Stops the interrupt watcher on every way out of the follow.
+    let _stop_watcher = StopOnDrop(cancel.clone());
     let form = if output::human_active() {
         Form::Human
     } else {
         Form::Lines
     };
     let (instance, _, mut client) = connect(paths, clock)?;
-    let mut cache = NickCache::new(context, paths, instance, clock);
+    let mut cache = NickCache::new(context, paths, instance, clock).cancelled_by(&cancel);
+    let mut stderr = io::stderr();
     let mut printer = Printer {
         form,
         style: if form == Form::Human {
@@ -594,6 +918,7 @@ pub(crate) fn run(
         },
         no_system: request.no_system,
         writer,
+        errors: &mut stderr,
     };
     let thread = &request.thread;
 
@@ -604,7 +929,6 @@ pub(crate) fn run(
         None => {
             let page = history(
                 &client,
-                clock.as_ref(),
                 thread,
                 Some(HistoryRange::Recent {
                     count: request.recent.max(1),
@@ -612,6 +936,7 @@ pub(crate) fn run(
                 None,
                 request.recent.max(1),
                 spec,
+                &budget(clock.as_ref(), 5_000, &cancel),
             )?;
             if form == Form::Human {
                 let topic = match client.call_with_output(
@@ -625,7 +950,7 @@ pub(crate) fn run(
                         caller: None,
                     }),
                     &text_spec(spec),
-                    &budget(clock.as_ref(), 5_000),
+                    &budget(clock.as_ref(), 5_000, &cancel),
                 ) {
                     Ok(CommandResult::Thread(details)) => {
                         let mut text = format!(
@@ -664,7 +989,7 @@ pub(crate) fn run(
     let mut outage = Outage::default();
     let mut retry_wait = MIN_RETRY;
     loop {
-        if interrupted() {
+        if cancel.is_cancelled() {
             return Ok(());
         }
         // Drain everything after `last`, following page continuations.
@@ -676,12 +1001,12 @@ pub(crate) fn run(
                 .then_some(HistoryRange::After { sequence: last });
             match history(
                 &client,
-                clock.as_ref(),
                 thread,
                 initial,
                 cursor.take(),
                 MAX_PAGE_LIMIT,
                 spec,
+                &budget(clock.as_ref(), 5_000, &cancel),
             ) {
                 Ok(page) => {
                     let mut items = page.items;
@@ -696,7 +1021,7 @@ pub(crate) fn run(
                         last = summary.sequence;
                         printed = true;
                     }
-                    if page.has_more && page.next_cursor.is_some() && !interrupted() {
+                    if page.has_more && page.next_cursor.is_some() && !cancel.is_cancelled() {
                         cursor = page.next_cursor;
                         continue;
                     }
@@ -717,39 +1042,20 @@ pub(crate) fn run(
                 } else {
                     (idle.mul_f32(1.5)).min(MAX_IDLE)
                 };
-                if !pause(idle) {
+                if !pause(idle, &cancel) {
                     return Ok(());
                 }
             }
             Err(error) => {
-                match outage.failed(&error, Instant::now()) {
-                    Verdict::Gone => {
-                        write_result(printer.notice(&format!(
-                            "thread {} no longer exists; stopped following",
-                            thread.as_str()
-                        )))?;
-                        return Ok(());
-                    }
-                    Verdict::Fatal => {
-                        write_result(printer.notice(&format!(
-                            "stopped following: the daemon keeps refusing ({})",
-                            error.detail
-                        )))?;
-                        return Err(RunError::Api(error));
-                    }
-                    Verdict::Announce => {
-                        if !write_result(
-                            printer.notice(&format!(
-                                "lost the daemon ({}); reconnecting",
-                                error.detail
-                            )),
-                        )? {
-                            return Ok(());
-                        }
-                    }
-                    Verdict::Quiet => {}
+                // Ctrl-C cancelled the call: that is the end, not an outage.
+                if cancel.is_cancelled() {
+                    return Ok(());
                 }
-                if !pause(retry_wait) {
+                match failed_poll(&mut outage, &error, Instant::now(), thread, &mut printer)? {
+                    Step::Retry => {}
+                    Step::Stop => return Ok(()),
+                }
+                if !pause(retry_wait, &cancel) {
                     return Ok(());
                 }
                 retry_wait = retry_wait.mul_f32(1.5).min(MAX_RECONNECT);
@@ -768,12 +1074,7 @@ mod outage_tests {
     use super::*;
 
     fn api(code: ErrorCode) -> ApiError {
-        ApiError {
-            code,
-            detail: "detail".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        }
+        ApiError::new(code, "detail")
     }
 
     #[test]
@@ -881,8 +1182,22 @@ mod outage_tests {
                 MonoInstant(60_000)
             }
         }
-        let budget = budget(&Late, 5_000);
+        let budget = budget(&Late, 5_000, &Cancellation::default());
         assert_eq!(budget.deadline, MonoInstant(65_000));
         assert!(!budget.is_exhausted(&Late));
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/cli/follow_retry.rs"]
+mod follow_retry;
+
+#[cfg(test)]
+#[path = "../../tests/cli/read_bodies.rs"]
+mod read_bodies;
+#[cfg(test)]
+#[path = "../../tests/cli/read_cost_names.rs"]
+mod read_cost_names;
+#[cfg(test)]
+#[path = "../../tests/cli/read_cost_seam.rs"]
+mod read_cost_seam;

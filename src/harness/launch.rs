@@ -93,12 +93,7 @@ pub trait LaunchHookInspector: Send + Sync {
 }
 
 fn error(code: ErrorCode, detail: &str) -> ApiError {
-    ApiError {
-        code,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::new(code, detail)
 }
 
 fn launch_target(
@@ -113,10 +108,6 @@ fn launch_target(
         ));
     }
     let availability_ok = match capability {
-        NativeLaunchCapability::ProvenEmptyShell => {
-            observation.occupancy == StructuralOccupancy::EmptyShell
-                && observation.ui == HostUiState::Idle
-        }
         NativeLaunchCapability::HostGuardedStart => {
             observation.occupancy != StructuralOccupancy::Occupied
                 && matches!(observation.ui, HostUiState::Idle | HostUiState::Unknown)
@@ -143,7 +134,7 @@ fn launch_target(
 /// `--flag=value` spellings never consume the next argument. `-i/--image`
 /// takes one or more values, so its separated spelling is refused
 /// ([`CODEX_MULTI_VALUE_OPTIONS`]) rather than guessing its arity.
-const CODEX_VALUE_OPTIONS: &[&str] = &[
+pub(super) const CODEX_VALUE_OPTIONS: &[&str] = &[
     "-c",
     "--config",
     "--enable",
@@ -183,7 +174,7 @@ const CODEX_MULTI_VALUE_OPTIONS: &[&str] = &["-i", "--image"];
 /// codex-cli 0.159.2 (plus older names), so a bare first positional naming a
 /// Codex subcommand is never mistaken for an interactive prompt; a prompt
 /// that is such a word goes after `--`.
-const CODEX_UNSUPPORTED_SUBCOMMANDS: &[&str] = &[
+pub(super) const CODEX_UNSUPPORTED_SUBCOMMANDS: &[&str] = &[
     "agents",
     "e",
     "review",
@@ -222,7 +213,7 @@ const CODEX_UNSUPPORTED_SUBCOMMANDS: &[&str] = &[
 /// `codex exec` subcommands other than `resume` (codex-cli 0.159.2
 /// `codex exec --help`): refused, since no evidence shows they read the
 /// exec-level owned hooks.
-const CODEX_EXEC_UNSUPPORTED_SUBCOMMANDS: &[&str] = &["fork", "review", "help"];
+pub(super) const CODEX_EXEC_UNSUPPORTED_SUBCOMMANDS: &[&str] = &["fork", "review", "help"];
 
 /// Where a managed Codex launch places the owned `-c` configuration. Codex
 /// 0.159.2 `exec` ignores root-level `hooks.*` overrides

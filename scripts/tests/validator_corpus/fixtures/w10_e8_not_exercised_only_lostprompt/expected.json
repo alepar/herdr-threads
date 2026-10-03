@@ -1,0 +1,6 @@
+{
+  "finding": "w10_e8_not_exercised_only_lostprompt",
+  "entry": "manifest",
+  "verdict": "FAIL",
+  "reason": "scenario_failed"
+}

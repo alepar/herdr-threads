@@ -2,16 +2,45 @@
 name = "herdr-threads"
 version = "0.1.0"
 edition = "2024"
+autotests = false
 license = "MIT OR Apache-2.0"
 
 [features]
 test-support = []
 
-# Uses `herdr_threads::test_support::history` (production-writer history
-# fixtures), which exists only with the `test-support` feature.
+# Test targets. Cargo would discover each top-level tests/*.rs as its own
+# binary that links the whole library; `autotests = false` keeps the list
+# explicit. Suites that keep no process-wide state share the `combined`
+# binary (tests/combined.rs); a suite that redirects stdio, installs a panic
+# hook, runs an in-process daemon, arms failpoints or changes the umask gets
+# its own target.
+#
+# Every target here uses `herdr_threads::test_support` (spawn, isolation,
+# history fixtures, probes), which exists only with the `test-support`
+# feature, so each needs `required-features`.
+[[test]]
+name = "combined"
+path = "tests/combined.rs"
+required-features = ["test-support"]
+
 [[test]]
 name = "hook_entrypoint"
 path = "tests/hook_entrypoint.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "package"
+path = "tests/package.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "service"
+path = "tests/service.rs"
 required-features = ["test-support"]
 
 [dependencies]
@@ -24,6 +53,19 @@ sha2 = "=0.10.9"
 tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal"] }
 libc = "=0.2.189"
 toml_edit = { version = "=0.25.13", default-features = false, features = ["parse", "display"] }
+unicode-width = { version = "=0.2.2", default-features = false }
+
+# Debug info for our own code is line tables only (backtraces keep file:line;
+# no variable inspection in a debugger) and none for dependencies: smaller
+# objects, faster codegen and linking (docs/dev/build-speed.md).
+[profile.dev]
+debug = "line-tables-only"
+# Fewer, larger incremental codegen units than the default 256: about 14% less
+# CPU per edit-and-rebuild, same wall time (docs/dev/build-speed.md).
+codegen-units = 64
+
+[profile.dev.package."*"]
+debug = false
 
 # The Codex schema fingerprint hashes a ~240 MB binary within the version
 # observation deadline; unoptimized SHA-256 alone would exceed it in debug

@@ -1,0 +1,1 @@
+{"result":"fail","checks":[{"id":"t0.version","status":"pass","detail":"codex-cli 0.159.3"},{"id":"t0.schema","status":"warn","detail":"drift"},{"id":"t1.payload-parse","status":"fail","detail":"PreToolUse: missing tool_input"}],"failed_tier":1}

@@ -34,6 +34,13 @@ const V9: &str = include_str!("../../migrations/0009_human_occupant.sql");
 /// B5 trust guards: reconciliation marker, wider allocation kinds and the
 /// cooperative-continuity diagnostic column.
 const V10: &str = include_str!("../../migrations/0010_b5_trust_guards.sql");
+/// Cooperative-only skeleton (ht-p03.2): the table sweep found nothing the
+/// deleted verification layer alone used, so it drops no table; B1 appends its
+/// partial indexes to this migration. (Renumbered from v10 to v11 when main's
+/// B5 trust guards took v10.)
+const V11: &str = include_str!("../../migrations/0011_cooperative_only.sql");
+/// The schema version this build writes and audits (the last migration).
+pub(crate) const LATEST_VERSION: i64 = 11;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -116,7 +123,8 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
                 .and_then(|_| conn.execute_batch(V8))
                 .and_then(|_| conn.execute_batch(V9))
                 .and_then(|_| conn.execute_batch(V10))
-                .and_then(|_| conn.pragma_update(None, "user_version", 10));
+                .and_then(|_| conn.execute_batch(V11))
+                .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
                 Err(error) => {
@@ -137,6 +145,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v7_to_v8(conn)?;
             migrate_v8_to_v9(conn)?;
             migrate_v9_to_v10(conn)?;
+            migrate_v10_to_v11(conn)?;
             verify_existing(conn)
         }
         2 => {
@@ -150,6 +159,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v7_to_v8(conn)?;
             migrate_v8_to_v9(conn)?;
             migrate_v9_to_v10(conn)?;
+            migrate_v10_to_v11(conn)?;
             verify_existing(conn)
         }
         3 => {
@@ -163,6 +173,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v7_to_v8(conn)?;
             migrate_v8_to_v9(conn)?;
             migrate_v9_to_v10(conn)?;
+            migrate_v10_to_v11(conn)?;
             verify_existing(conn)
         }
         4 => {
@@ -177,6 +188,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v7_to_v8(conn)?;
             migrate_v8_to_v9(conn)?;
             migrate_v9_to_v10(conn)?;
+            migrate_v10_to_v11(conn)?;
             verify_existing(conn)
         }
         5 => {
@@ -191,6 +203,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v7_to_v8(conn)?;
             migrate_v8_to_v9(conn)?;
             migrate_v9_to_v10(conn)?;
+            migrate_v10_to_v11(conn)?;
             verify_existing(conn)
         }
         6 => {
@@ -205,6 +218,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v7_to_v8(conn)?;
             migrate_v8_to_v9(conn)?;
             migrate_v9_to_v10(conn)?;
+            migrate_v10_to_v11(conn)?;
             verify_existing(conn)
         }
         7 => {
@@ -219,20 +233,28 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v7_to_v8(conn)?;
             migrate_v8_to_v9(conn)?;
             migrate_v9_to_v10(conn)?;
+            migrate_v10_to_v11(conn)?;
             verify_existing(conn)
         }
         8 => {
             verify_existing_v8_shape(conn)?;
             migrate_v8_to_v9(conn)?;
             migrate_v9_to_v10(conn)?;
+            migrate_v10_to_v11(conn)?;
             verify_existing(conn)
         }
         9 => {
             verify_existing_v9_shape(conn)?;
             migrate_v9_to_v10(conn)?;
+            migrate_v10_to_v11(conn)?;
             verify_existing(conn)
         }
-        10 => verify_existing(conn),
+        10 => {
+            verify_existing_v10_shape(conn)?;
+            migrate_v10_to_v11(conn)?;
+            verify_existing(conn)
+        }
+        11 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -338,24 +360,110 @@ pub(crate) fn binding_evidence_lacking(conn: &Connection, seat: &str) -> rusqlit
     )
 }
 
+/// The current (v11) shape audit: the v10 (B5 trust guards) shape plus the
+/// statements `0011_cooperative_only.sql` adds; later additions to that file
+/// extend this audit.
 pub fn verify_existing(conn: &Connection) -> Result<(), ApiError> {
-    verify_existing_v1(conn)?;
-    verify_execution_index(conn)?;
-    verify_existing_v2(conn)?;
-    verify_existing_v3(conn)?;
-    verify_existing_v4(conn)?;
-    verify_existing_v5(conn)?;
-    verify_existing_v6(conn)?;
-    verify_existing_v7(conn)?;
-    verify_existing_v8(conn)?;
-    verify_existing_v9(conn)?;
-    verify_existing_v10(conn)
+    verify_existing_v10_shape(conn)?;
+    verify_v11_b1(conn)
+}
+
+/// Access paths ht-p03.12.5 probes with `INDEXED BY`; all pre-date v11 and are
+/// audited by their own version's verifier, so v11 only re-asserts presence.
+const B1_EXISTING_ACCESS_PATHS: [&str; 7] = [
+    "digest_pending_invitations_seat",
+    "digest_pending_manifest_receipts_seat",
+    "receipts_seat_state_ordinal",
+    "digest_open_warning_recipients_seat",
+    "digest_open_warnings_affected",
+    "digest_programmatic_warnings_seat",
+    "occupant_bindings_current",
+];
+
+/// ht-p03.12.1 (B1): every statement below the marker in the v11 migration
+/// must be installed exactly as written (same normalization as v7).
+fn verify_v11_b1(conn: &Connection) -> Result<(), ApiError> {
+    let normalize = |sql: &str| {
+        sql.trim()
+            .trim_end_matches(';')
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase()
+    };
+    let b1 = V11
+        .split_once("-- B1 (ht-p03.12.1) partial indexes")
+        .map(|(_, rest)| rest)
+        .ok_or_else(|| api_error(ErrorCode::IncompatibleSchema, "v11 B1 marker missing"))?;
+    for statement in b1.lines().filter(|line| !line.trim().is_empty()) {
+        if statement.starts_with("ALTER TABLE work_jobs ADD COLUMN completed_at") {
+            let table: Option<String> = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='work_jobs'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(store_error)?;
+            let table = table.map(|sql| normalize(&sql)).unwrap_or_default();
+            if !table
+                .contains("completed_at integer check(completed_at is null or completed_at >= 0)")
+            {
+                return Err(api_error(
+                    ErrorCode::IncompatibleSchema,
+                    "work_jobs.completed_at is missing or altered",
+                ));
+            }
+            continue;
+        }
+        let name = statement
+            .strip_prefix("CREATE INDEX ")
+            .and_then(|rest| rest.split_whitespace().next())
+            .ok_or_else(|| api_error(ErrorCode::IncompatibleSchema, "invalid v11 index DDL"))?;
+        let installed: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1",
+                [name],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if installed.as_deref().map(normalize) != Some(normalize(statement)) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("incompatible v11 index {name}"),
+            ));
+        }
+    }
+    for name in B1_EXISTING_ACCESS_PATHS {
+        let present: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)",
+                [name],
+                |row| row.get(0),
+            )
+            .map_err(store_error)?;
+        if !present {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing access path index {name}"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// A v9 store is audited as v9 before allocation decisions are rebuilt.
 fn verify_existing_v9_shape(conn: &Connection) -> Result<(), ApiError> {
     verify_existing_v8_shape(conn)?;
     verify_existing_v9(conn)
+}
+
+/// A v10 (B5 trust guards) store is audited as v10 before the v11
+/// cooperative-only additions.
+fn verify_existing_v10_shape(conn: &Connection) -> Result<(), ApiError> {
+    verify_existing_v9_shape(conn)?;
+    verify_existing_v10(conn)
 }
 
 fn migrate_v9_to_v10(conn: &Connection) -> Result<(), ApiError> {
@@ -425,6 +533,20 @@ fn verify_existing_v8_shape(conn: &Connection) -> Result<(), ApiError> {
     verify_existing_v6(conn)?;
     verify_existing_v7(conn)?;
     verify_existing_v8(conn)
+}
+
+fn migrate_v10_to_v11(conn: &Connection) -> Result<(), ApiError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    let result = conn
+        .execute_batch(V11)
+        .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(store_error(error))
+        }
+    }
 }
 
 fn migrate_v8_to_v9(conn: &Connection) -> Result<(), ApiError> {
@@ -1256,7 +1378,7 @@ fn verify_existing_v1(conn: &Connection) -> Result<(), ApiError> {
 /// Read workers must not scan the whole database during connection setup.
 /// The writer performs the full integrity and schema audit at startup.
 pub fn verify_query_connection(conn: &Connection) -> Result<(), ApiError> {
-    verify_query_connection_version(conn, 10, false)
+    verify_query_connection_version(conn, LATEST_VERSION, false)
 }
 
 fn verify_query_connection_version(
@@ -1267,7 +1389,7 @@ fn verify_query_connection_version(
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .map_err(store_error)?;
-    if version != expected_version && !(allow_v2 && (2..=10).contains(&version)) {
+    if version != expected_version && !(allow_v2 && (2..=LATEST_VERSION).contains(&version)) {
         return Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -1292,7 +1414,7 @@ fn verify_query_connection_version(
     Ok(())
 }
 
-fn check_integrity(conn: &Connection) -> Result<(), ApiError> {
+pub(crate) fn check_integrity(conn: &Connection) -> Result<(), ApiError> {
     let result: String = conn
         .query_row("PRAGMA integrity_check", [], |r| r.get(0))
         .map_err(store_error)?;
@@ -1805,33 +1927,6 @@ pub fn effective_membership_state(
         .optional().map_err(store_error)
 }
 
-pub fn effective_invitation_state(
-    tx: &Transaction<'_>,
-    invitation: &InvitationId,
-) -> Result<Option<EffectiveState>, ApiError> {
-    tx.query_row("SELECT CASE WHEN c.invitation_id IS NOT NULL THEN 'cancelled' WHEN s.state='retired' AND i.state='pending' THEN 'recipient_retired' ELSE i.state END, s.retired_at FROM invitations i JOIN seats s ON s.id=i.seat_id LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.id=?1",
-        [invitation.as_str()], |r| Ok(EffectiveState { state: r.get(0)?, retired_at: r.get::<_, Option<i64>>(1)?.map(UtcMillis) }))
-        .optional().map_err(store_error)
-}
-
-pub fn effective_receipt_state(
-    tx: &Transaction<'_>,
-    message: &MessageId,
-    seat: &SeatId,
-) -> Result<Option<EffectiveState>, ApiError> {
-    effective_receipt(tx, message.as_str(), seat.as_str()).map(|receipt| {
-        receipt.map(|receipt| EffectiveState {
-            state: match receipt.state {
-                EffectiveReceiptState::Pending => "pending",
-                EffectiveReceiptState::Acknowledged => "acked",
-                EffectiveReceiptState::RecipientRetired => "recipient_retired",
-            }
-            .to_owned(),
-            retired_at: receipt.retired_at.map(UtcMillis),
-        })
-    })
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverdueOutcome {
     pub warning: Option<MessageId>,
@@ -2175,47 +2270,36 @@ fn execute_budgeted_idempotent_transaction_with_constraints(
     })
 }
 
-/// Native callers retain their legacy replay digest. Cooperative callers use
-/// the explicit current call budget plus independent issuance constraints, and
-/// validate instance before historical lookup.
+/// Accountable decisions use the explicit current call budget plus independent
+/// issuance constraints, and validate instance before historical lookup.
 // Allowed: accountable transaction skeleton: identity, budgets and its phase closures.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_accountable_transaction(
     context: &StoreContext,
     conn: &mut Connection,
     current_budget: &crate::protocol::time::CallBudget,
-    cooperative: Option<(
+    cooperative: (
         crate::protocol::authority::CallerClaim,
         crate::protocol::time::CallBudget,
-    )>,
+    ),
     actor_scope: &str,
     operation_key: &str,
     digest: [u8; 32],
     validate: impl FnOnce(&Transaction<'_>) -> Result<(), ApiError>,
     apply: impl FnOnce(&Transaction<'_>, DecisionInstant) -> Result<CommandResult, ApiError>,
 ) -> Result<CommandResult, ApiError> {
-    match cooperative {
-        Some((claim, issuance)) => execute_budgeted_idempotent_transaction_with_constraints(
-            context,
-            conn,
-            current_budget,
-            Some(&issuance),
-            actor_scope,
-            operation_key,
-            digest,
-            |tx| super::seats::cooperative_instance(tx, &claim.instance, &claim),
-            validate,
-            apply,
-            |_, result| Ok(result),
-        ),
-        None => execute_idempotent_transaction(
-            context,
-            conn,
-            actor_scope,
-            operation_key,
-            digest,
-            validate,
-            apply,
-        ),
-    }
+    let (claim, issuance) = cooperative;
+    execute_budgeted_idempotent_transaction_with_constraints(
+        context,
+        conn,
+        current_budget,
+        Some(&issuance),
+        actor_scope,
+        operation_key,
+        digest,
+        |tx| super::seats::cooperative_instance(tx, &claim.instance, &claim),
+        validate,
+        apply,
+        |_, result| Ok(result),
+    )
 }

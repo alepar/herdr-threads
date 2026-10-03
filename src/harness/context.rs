@@ -557,6 +557,14 @@ impl ContextJournal {
         let _lock = self.lock()?;
         Ok(self.load()?.current)
     }
+    /// The current context read without taking `context.lock`, for display
+    /// paths that must never wait on (or delay) a check-in. `save` replaces
+    /// `context.json` by atomic rename, so this sees one whole version: the
+    /// one before or the one after a concurrent write, never a torn file.
+    /// Not for decisions: it can be one write behind.
+    pub fn current_snapshot(&self) -> Result<Option<OccupantContext>, ContextError> {
+        Ok(self.load()?.current)
+    }
     pub fn pending(&self) -> Result<Option<PendingCheckIn>, ContextError> {
         let _lock = self.lock()?;
         Ok(self.load()?.pending)

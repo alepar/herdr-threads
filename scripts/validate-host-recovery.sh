@@ -14,8 +14,8 @@
 # stand-in script). Exits 0 only when every scenario PASSes; results.json/report.md in the run dir.
 # Default --bin: target/release/herdr-threads, built with `cargo build --release --locked`.
 set -eu
-script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd -P)
-root=$(CDPATH= cd "$script_dir/.." && pwd -P)
+script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd -P)
+root=$(CDPATH='' cd "$script_dir/.." && pwd -P)
 umask 077
 case " $* " in
   *" --bin "*) ;;

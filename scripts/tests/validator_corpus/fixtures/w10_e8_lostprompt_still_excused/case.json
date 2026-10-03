@@ -1,0 +1,30 @@
+{
+  "harness": "claude",
+  "mode": "tui",
+  "scenario": "lostprompt",
+  "facts": {
+    "safe_wake_unsupported": true
+  },
+  "steps": [
+    [
+      "S17",
+      "PASS"
+    ],
+    [
+      "S18",
+      "NOT_EXERCISED"
+    ],
+    [
+      "S18C",
+      "NOT_EXERCISED"
+    ],
+    [
+      "SL1",
+      "NOT_EXERCISED"
+    ],
+    [
+      "SL2",
+      "NOT_EXERCISED"
+    ]
+  ]
+}

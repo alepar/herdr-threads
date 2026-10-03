@@ -7,7 +7,7 @@ use herdr_threads::{
 };
 use std::{
     ffi::OsString,
-    io::{self, IsTerminal},
+    io::{self, IsTerminal, Write},
     path::PathBuf,
     sync::Arc,
 };
@@ -52,7 +52,10 @@ fn main() {
     let args: Vec<OsString> = std::env::args_os().collect();
     if args.get(1).is_some_and(|s| s == "daemon") && args.get(2).is_some_and(|s| s == "run") {
         if let Err(error) = detached_child(&args) {
-            eprintln!("herdr-threads daemon: {error}");
+            // Pre-election stderr is the starter's attempt file (or a pipe the
+            // starter may already have closed): a failed write must not turn
+            // the real error into a panic.
+            let _ = writeln!(io::stderr(), "herdr-threads daemon: {error}");
             std::process::exit(2);
         }
         return;

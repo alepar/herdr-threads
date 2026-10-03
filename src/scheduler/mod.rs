@@ -13,7 +13,7 @@ use crate::{
         policy::{AttentionSnapshot, DurableRetry, RetryConfig},
     },
     ports::{
-        HostCallContext, NotificationPort, StorePort, WakeCandidate, WakeOutcome,
+        HostCallContext, NotificationPort, PriorLadder, WakeCandidate, WakeOutcome,
         WakeRecoveryCandidate, WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation,
     },
     protocol::{
@@ -32,8 +32,9 @@ const COMPLETION_BUDGET_MILLIS: u64 = 2_000;
 const WAKE_PAGE_LIMIT: u16 = 16;
 const WAKE_PAGE_BYTES: u32 = 16_384;
 
-/// The narrow store boundary keeps fake-port tests on the same reservation and
-/// completion calls used by the production StorePort.
+/// The narrow store boundary between the wake lane and its store: production
+/// implements it with `ScheduledStore` (and `ObservedWakePort`); tests with
+/// explicit fakes or a `ScheduledStore` over a real `SqliteStore`.
 pub trait WakePort: Send + Sync {
     fn clock(&self) -> &dyn Clock;
     fn wake_candidates(
@@ -50,8 +51,9 @@ pub trait WakePort: Send + Sync {
         &self,
         attempt: WakeAttemptId,
         outcome: WakeOutcome,
+        refused_restore: Option<&PriorLadder>,
         budget: &CallBudget,
-    ) -> Result<(), ApiError>;
+    ) -> Result<bool, ApiError>;
     fn wake_recovery_candidates(
         &self,
         page: PageRequest,
@@ -63,52 +65,12 @@ pub trait WakePort: Send + Sync {
         budget: &CallBudget,
     ) -> Result<WakeRecoveryOutcome, ApiError>;
 }
-impl<T: StorePort + ?Sized> WakePort for T {
-    fn clock(&self) -> &dyn Clock {
-        StorePort::clock(self)
-    }
-    fn wake_candidates(
-        &self,
-        page: PageRequest,
-        budget: &CallBudget,
-    ) -> Result<Page<WakeCandidate>, ApiError> {
-        StorePort::wake_candidates(self, page, budget)
-    }
-    fn reserve_wake(
-        &self,
-        candidate: &WakeCandidate,
-        budget: &CallBudget,
-    ) -> Result<Option<WakeReservation>, ApiError> {
-        StorePort::reserve_wake(self, candidate, budget)
-    }
-    fn complete_wake(
-        &self,
-        attempt: WakeAttemptId,
-        outcome: WakeOutcome,
-        budget: &CallBudget,
-    ) -> Result<(), ApiError> {
-        StorePort::complete_wake(self, attempt, outcome, budget)
-    }
-    fn wake_recovery_candidates(
-        &self,
-        page: PageRequest,
-        budget: &CallBudget,
-    ) -> Result<Page<WakeRecoveryCandidate>, ApiError> {
-        StorePort::wake_recovery_candidates(self, page, budget)
-    }
-    fn recover_wake_reservation(
-        &self,
-        request: WakeRecoveryRequest,
-        budget: &CallBudget,
-    ) -> Result<WakeRecoveryOutcome, ApiError> {
-        StorePort::recover_wake_reservation(self, request, budget)
-    }
-}
-
 #[derive(Default)]
 struct WakeScanState {
     cursor: Option<String>,
     pending: VecDeque<WakeCandidate>,
+    /// Seats the current scan cycle (first page to last) has listed.
+    seen: std::collections::HashSet<SeatId>,
 }
 #[derive(Default)]
 struct RecoveryScanState {
@@ -123,6 +85,48 @@ pub struct WakeDriveOutcome {
     pub examined: u16,
     pub attempted: u16,
     pub has_more: bool,
+    /// Per-drive verification results of prompts this drive actually sent, as
+    /// the notifier reported them; an unsent attempt (refused, cancelled, timed
+    /// out, unavailable, unsent outcome-unknown) or a notifier that does not
+    /// verify adds no entry.
+    pub verification: Vec<(SeatId, SubmissionVerification)>,
+    /// Earliest instant a seat in refusal backoff (or waiting on its ladder)
+    /// can be tried again; the deadline/wake lane sleeps until then.
+    pub next_due_at: Option<MonoInstant>,
+}
+
+/// Whether a sent wake prompt was seen submitted (the dispatcher performs the
+/// check and the single submit-key retry).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SubmissionVerification {
+    #[default]
+    NotChecked,
+    Verified,
+    Retried,
+    Unsubmitted,
+}
+
+impl SubmissionVerification {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotChecked => "not_checked",
+            Self::Verified => "verified",
+            Self::Retried => "retried",
+            Self::Unsubmitted => "unsubmitted",
+        }
+    }
+}
+
+/// The decision as code (ht-p03.41): a prompt still unsent after the single
+/// submit-key retry was delivered to the pane, so it maps to OutcomeUnknown
+/// (keeps the advanced ladder step, never re-sent in a loop); the existing
+/// OutcomeUnknown last_outcome string is stored. 'unsubmitted' lives only in
+/// WakeDriveOutcome::verification and the daemon.log line.
+pub fn outcome_for_verification(v: SubmissionVerification) -> WakeOutcome {
+    match v {
+        SubmissionVerification::Unsubmitted => WakeOutcome::OutcomeUnknown,
+        _ => WakeOutcome::Submitted,
+    }
 }
 
 /// The deadline and wake lanes have separate locks. A caller can drive due
@@ -231,6 +235,8 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
             } else {
                 None
             };
+            scan.seen
+                .extend(page.items.iter().map(|candidate| candidate.seat.clone()));
             scan.pending = page.items.into();
         }
         drop(scan);
@@ -249,8 +255,23 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
                 break;
             };
             outcome.examined += 1;
-            match self.wakes.try_candidate(&candidate, budget) {
-                Ok(Some(_)) => outcome.attempted += 1,
+            let attempt = self.wakes.try_candidate(&candidate, budget);
+            // Taken after every try (ht-p03.141): the notifier stores an entry
+            // only for a prompt this try actually sent, so an unsent attempt (a
+            // pre-send refusal, Cancelled, TimedOut, Unavailable, an unsent
+            // OutcomeUnknown) reports nothing. Draining on error too means an
+            // entry a failed completion left behind can never be reported
+            // against a later attempt.
+            let verification = self.wakes.notifier.take_verification(&candidate.seat);
+            match attempt {
+                Ok(Some(_)) => {
+                    outcome.attempted += 1;
+                    if let Some(verification) = verification {
+                        outcome
+                            .verification
+                            .push((candidate.seat.clone(), verification));
+                    }
+                }
                 Ok(None) => {}
                 Err(err) => {
                     self.scan
@@ -262,13 +283,22 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
                 }
             }
         }
-        let scan = self
+        let mut scan = self
             .scan
             .lock()
             .map_err(|_| error(ErrorCode::StoreCorrupt, "wake scan lock poisoned"))?;
+        if scan.pending.is_empty() && scan.cursor.is_none() {
+            // A whole cycle ended: a seat in refusal backoff that no page
+            // listed has no wake work left, so its backoff has nothing to
+            // retry. Left in place its past retry time would hold the lane
+            // at its minimum wait forever.
+            let seen = std::mem::take(&mut scan.seen);
+            self.wakes.clear_refusals_not_in(&seen)?;
+        }
         outcome.has_more = !scan.pending.is_empty()
             || scan.cursor.is_some()
             || self.wakes.has_pending_completions()?;
+        outcome.next_due_at = self.wakes.next_due_at()?;
         match completion_error {
             Some(err) => Err(err),
             None => Ok(outcome),
@@ -364,6 +394,8 @@ struct PendingCompletion {
     seat: SeatId,
     attempt: WakeAttemptId,
     outcome: WakeOutcome,
+    /// Pre-reservation ladder row, restored by a Refused completion.
+    prior: PriorLadder,
     claimed: bool,
 }
 
@@ -411,6 +443,10 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             || !candidate.continuity_resolved
             || candidate.target.is_none()
         {
+            // No actionable work: a refusal backoff has nothing left to retry.
+            if let Ok(mut state) = self.state.lock() {
+                state.dispatch.clear_refusal(&candidate.seat);
+            }
             return Ok(None);
         }
         let seat = candidate.seat.clone();
@@ -472,6 +508,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             "wake.after_reservation",
             reservation.daemon_boot.to_string()
         );
+        let prior = PriorLadder::from_candidate(candidate);
         let committed_at = self.store.clock().monotonic_now();
         let local_reservation = state.dispatch.reserved(
             seat.clone(),
@@ -484,6 +521,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             self.store.complete_wake(
                 reservation.attempt,
                 WakeOutcome::OutcomeUnknown,
+                None,
                 &self.completion_budget(),
             )?;
             return Err(dispatch_error(cause));
@@ -543,10 +581,12 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             )
             .map_err(dispatch_error)?;
         if current {
+            state.dispatch.record_outcome(&seat, outcome, completed_at);
             let completion = PendingCompletion {
                 seat,
                 attempt: reservation.attempt.clone(),
                 outcome,
+                prior,
                 claimed: true,
             };
             state.pending.push_back(completion.clone());
@@ -619,9 +659,16 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
         completion: PendingCompletion,
         budget: &CallBudget,
     ) -> Result<(), ApiError> {
-        let result =
-            self.store
-                .complete_wake(completion.attempt.clone(), completion.outcome, budget);
+        let refused_restore = match completion.outcome {
+            WakeOutcome::Refused(_) => Some(&completion.prior),
+            _ => None,
+        };
+        let result = self.store.complete_wake(
+            completion.attempt.clone(),
+            completion.outcome,
+            refused_restore,
+            budget,
+        );
         let mut state = self
             .state
             .lock()
@@ -635,11 +682,48 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             .pending
             .remove(index)
             .expect("located retained completion");
-        if result.is_err() {
-            retained.claimed = false;
-            state.pending.push_back(retained);
+        match result {
+            Ok(matched) => {
+                // Fence miss (matched == false): the durable step stays
+                // advanced, so the in-memory guard stays advanced too.
+                if matched {
+                    state.dispatch.restore_prior_guard(&retained.seat);
+                }
+                Ok(())
+            }
+            Err(err) => {
+                retained.claimed = false;
+                state.pending.push_back(retained);
+                Err(err)
+            }
         }
-        result
+    }
+
+    /// Drops the refusal backoff of every seat in `listed`'s complement.
+    fn clear_refusals_not_in(
+        &self,
+        listed: &std::collections::HashSet<SeatId>,
+    ) -> Result<(), ApiError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| error(ErrorCode::StoreCorrupt, "wake state lock poisoned"))?;
+        for seat in state.dispatch.refusing_seats() {
+            if !listed.contains(&seat) {
+                state.dispatch.clear_refusal(&seat);
+            }
+        }
+        Ok(())
+    }
+
+    fn next_due_at(&self) -> Result<Option<MonoInstant>, ApiError> {
+        let now = self.store.clock().monotonic_now();
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| error(ErrorCode::StoreCorrupt, "wake state lock poisoned"))?
+            .dispatch
+            .next_due_at(now))
     }
 
     /// The supervisor can cancel a connected call at the lease deadline while
@@ -699,12 +783,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
 }
 
 fn error(code: ErrorCode, detail: &'static str) -> ApiError {
-    ApiError {
-        code,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::new(code, detail)
 }
 fn dispatch_error(err: crate::notification::dispatch::DispatchError) -> ApiError {
     error(

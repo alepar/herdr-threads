@@ -48,9 +48,20 @@ RECONCILE_TIMEOUT = 40
 WAKE_MARKER = "herdr-threads: attention pending; run herdr-threads inbox"
 WAKE_RECEIVED = "HT-WAKE-RECEIVED: "
 WAKE_DEADLINE_S = 5
+# W9-5: the wake attempt made while the pane is still a shell is refused as unsafe; the durable row says so
+# (src/store/wake.rs: WakeOutcome::Unsafe is stored as `unsafe`).
+SHELL_PHASE_OUTCOME = "unsafe"
 # Quiet window after the first received prompt: shorter than the 30 s minimum wake spacing, so a second
 # prompt inside it would be a storm, not a retry.
 WAKE_QUIET_S = 20
+
+
+def shell_phase_wake_check(wake):
+    """(ok, detail) for R13's shell phase (W9-5): the seat's wake_work row, read while the pane was still a shell, must
+    record the refused attempt (`last_outcome` unsafe). "No prompt was typed" alone cannot tell a refused attempt from a
+    wake that never ran."""
+    outcome = (wake or {}).get("last_outcome")
+    return outcome == SHELL_PHASE_OUTCOME, f"wake_work while the pane was a shell: {wake!r} (expected last_outcome {SHELL_PHASE_OUTCOME!r})"
 
 
 class Scenario:
@@ -331,6 +342,18 @@ class Suite:
         finally:
             connection.close()
 
+    def check_shell_phase_wake(self, s, seat, wait_s=10):
+        """R13: the shell-phase wake attempt is recorded as an Unsafe row. Polled for up to `wait_s`, since the attempt
+        follows the attention by a scheduler tick."""
+        deadline = time.monotonic() + wait_s
+        wake = self.wake_rows(seat)
+        while not shell_phase_wake_check(wake)[0] and time.monotonic() < deadline:
+            time.sleep(0.5)
+            wake = self.wake_rows(seat)
+        wake = s.save("wake-work-while-shell", wake)
+        ok, detail = shell_phase_wake_check(wake)
+        return s.check("the wake attempt while the pane was a shell is recorded as an Unsafe row", ok, detail)
+
     def r13(self, s):
         """Cooperative production wake (ht-4is.5.6): a stand-in agent seat misses a short receipt deadline; the one
         durable overdue warning is carried to the pane by exactly one prompt once Herdr reports the agent idle. While
@@ -356,6 +379,7 @@ class Suite:
         time.sleep(3)  # the wake lane has attention for W while its pane is still a shell
         shell_text = s.save("pane-while-shell", {"text": self.host.pane_text(pane)})["text"]
         s.check("the shell pane was never prompted", WAKE_MARKER not in shell_text, shell_text[-600:])
+        self.check_shell_phase_wake(s, W)
         self.host.run_in_pane(pane, str(self.wake_stub))
         idle = wait_for(lambda: self.agent_status(pane) == ("claude", "idle"), timeout=30,
                         description="Herdr to report the stand-in agent idle")

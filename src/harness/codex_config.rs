@@ -77,6 +77,13 @@ pub struct AllowanceManifest {
     /// A prepared upgrade: the file bytes it was composed from.
     #[serde(default)]
     pub upgrade_base: Option<Vec<u8>>,
+    /// Dotted keys under `features.network_proxy` (other than the owned `enabled` and
+    /// `unix_sockets`) the user's file already held when the allowance was installed, for
+    /// example `features.network_proxy.domains`. They do nothing while `network_access` is
+    /// off; setup turning it on makes them effective, so doctor and setup warn about them.
+    /// Setup never edits them.
+    #[serde(default)]
+    pub foreign_network_proxy: Vec<String>,
 }
 
 /// Why an allowance could not be composed, with the offending dotted key where there is one.
@@ -297,6 +304,22 @@ pub fn plan_install(
     Ok((render(&doc)?, keys, created))
 }
 
+/// The dotted keys under `features.network_proxy` in `base` that the allowance does not own
+/// (everything but `enabled` and `unix_sockets`): turning `network_access` on makes them
+/// effective.
+pub fn foreign_network_proxy_keys(base: &[u8]) -> Result<Vec<String>, SetupError> {
+    let doc = parse(base)?;
+    let proxy_path = ["features".to_owned(), "network_proxy".to_owned()];
+    let Some(table) = lookup(&doc, &proxy_path).and_then(Item::as_table_like) else {
+        return Ok(Vec::new());
+    };
+    Ok(table
+        .iter()
+        .filter(|(key, _)| !matches!(*key, "enabled" | "unix_sockets"))
+        .map(|(key, _)| dotted(&[proxy_path[0].clone(), proxy_path[1].clone(), key.to_owned()]))
+        .collect())
+}
+
 /// Re-add the owned keys missing from `base` (a prepared installation or upgrade publishing).
 fn reapply(base: &[u8], keys: &[AllowanceKey]) -> Result<Vec<u8>, AllowanceError> {
     let mut doc = parse(base)?;
@@ -347,7 +370,17 @@ pub fn plan_remove(current: &[u8], manifest: &AllowanceManifest) -> Result<Vec<u
                     .get_mut(last)
                     .and_then(Item::as_array_mut)
                     .ok_or(SetupError::Conflict)?;
-                array.retain(|value| value.as_str() != Some(member.as_str()));
+                // Exactly one occurrence, the last (setup appended it): a duplicate the user
+                // added by hand later is theirs and stays.
+                if let Some(at) = array
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, value)| value.as_str() == Some(member.as_str()))
+                    .map(|(at, _)| at)
+                    .last()
+                {
+                    array.remove(at);
+                }
             }
             _ => {
                 container.remove(last);
@@ -501,6 +534,7 @@ pub fn install(
         phase: InstallPhase::Prepared,
         restore_exact: true,
         upgrade_base: None,
+        foreign_network_proxy: foreign_network_proxy_keys(&current)?,
     };
     let manifest_bytes = serde_json::to_vec(&manifest).map_err(|_| SetupError::Invalid)?;
     publish_manifest(manifest_path, &manifest_bytes, false)?;
@@ -763,6 +797,83 @@ mod tests {
             );
             assert_eq!(keys.len(), 3);
         }
+    }
+
+    /// Kills: setup editing or dropping other `features.network_proxy` keys (`domains`,
+    /// `allow_local_binding`, `dangerously_allow_all_unix_sockets`), not recording them
+    /// (doctor could not warn that network_access=true now makes them effective), or listing
+    /// the owned `enabled` / `unix_sockets` keys as foreign.
+    #[test]
+    fn setup_never_widens_a_preexisting_network_proxy_allowance() {
+        let dir = tmp();
+        let config = dir.join("config.toml");
+        let manifest = dir.join("m.json");
+        let text = "[features.network_proxy]\ndomains = [\"x\"]\nallow_local_binding = true\n\
+                    dangerously_allow_all_unix_sockets = true\n";
+        std::fs::write(&config, text).unwrap();
+        let (bytes, keys, _) = plan_install(text.as_bytes(), SOCK, &[]).unwrap();
+        let doc: DocumentMut = String::from_utf8(bytes).unwrap().parse().unwrap();
+        let proxy = &doc["features"]["network_proxy"];
+        assert_eq!(proxy["domains"].to_string().trim(), "[\"x\"]");
+        assert_eq!(proxy["allow_local_binding"].as_bool(), Some(true));
+        assert_eq!(
+            proxy["dangerously_allow_all_unix_sockets"].as_bool(),
+            Some(true)
+        );
+        assert!(keys.iter().all(|key| key.path.last().unwrap() != "domains"));
+
+        let installed = install(&config, &manifest, SOCK, &[]).unwrap();
+        assert_eq!(
+            installed.manifest.foreign_network_proxy,
+            [
+                "features.network_proxy.domains",
+                "features.network_proxy.allow_local_binding",
+                "features.network_proxy.dangerously_allow_all_unix_sockets"
+            ]
+        );
+        assert_eq!(
+            read_manifest(&manifest)
+                .unwrap()
+                .unwrap()
+                .foreign_network_proxy,
+            installed.manifest.foreign_network_proxy
+        );
+        // A file without such keys records none (the owned keys are not foreign).
+        assert_eq!(
+            foreign_network_proxy_keys(b"[features.network_proxy]\nenabled = true\n").unwrap(),
+            Vec::<String>::new()
+        );
+        // Removal restores the user's bytes exactly, foreign keys included.
+        assert!(remove(&config, &manifest).unwrap());
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), text);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Kills: removal deleting every occurrence of an owned root, so a duplicate the user
+    /// appended by hand after setup disappears with ours; and an array removed while the
+    /// user's duplicate is still in it.
+    #[test]
+    fn plan_remove_keeps_a_hand_added_duplicate_root() {
+        let dir = tmp();
+        let config = dir.join("config.toml");
+        let manifest = dir.join("m.json");
+        std::fs::write(&config, "model = \"m\"\n").unwrap();
+        install(&config, &manifest, SOCK, &roots()).unwrap();
+        let installed = std::fs::read_to_string(&config).unwrap();
+        let mut doc: DocumentMut = installed.parse().unwrap();
+        doc["sandbox_workspace_write"]["writable_roots"]
+            .as_array_mut()
+            .unwrap()
+            .push(roots()[0].as_str());
+        std::fs::write(&config, doc.to_string()).unwrap();
+        let recorded = read_manifest(&manifest).unwrap().unwrap();
+
+        let removed = plan_remove(&std::fs::read(&config).unwrap(), &recorded).unwrap();
+        let after: DocumentMut = String::from_utf8(removed).unwrap().parse().unwrap();
+        assert_eq!(members(&after), [roots()[0].clone()]);
+        assert!(lookup(&after, &["features".into()]).is_none());
+        assert_eq!(after["model"].as_str(), Some("m"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn roots() -> Vec<String> {

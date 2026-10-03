@@ -1,9 +1,7 @@
 use super::*;
 use crate::{
     protocol::{
-        authority::{
-            CallerClaim, DecisionFence, Harness, MutationPermit, ObligationRef, VerifiedCaller,
-        },
+        authority::{CallerClaim, Harness, MutationPermit, ObligationRef},
         commands::{Accept, CreateThread, Invite, Leave, ThreadMutation},
         ids::*,
         results::CommandResult,
@@ -45,6 +43,16 @@ fn fixture(at: i64) -> (StoreContext, Connection, PathBuf, Arc<FixedClock>) {
         conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [seat]).unwrap();
     }
     (context, conn, path, clock)
+}
+
+/// `fixture` plus a live, not-yet-registered cooperative occupant binding for
+/// each acting seat, so cooperative permits can be issued for them.
+fn bound_fixture(at: i64) -> (StoreContext, Connection, PathBuf, Arc<FixedClock>) {
+    let fixture = fixture(at);
+    for seat in ["s1", "s2"] {
+        fixture.1.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,?1,'b',1,1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-'||?1,'inc')", [seat]).unwrap();
+    }
+    fixture
 }
 
 fn snapshot_for_test(sequence: u64, targets: &[&str]) -> crate::ports::HostSnapshot {
@@ -585,7 +593,7 @@ fn guarded_absence_retirement_commits_one_fence_and_rejects_invalidation() {
 }
 
 #[test]
-fn guarded_move_preserves_binding_and_replacement_ends_predecessor() {
+fn guarded_move_preserves_binding() {
     use crate::ports::{
         EvidenceKind, ExecutionEvidence, GuardedSeatTransition, NativeOccupant,
         ReconciliationAction, ReconciliationOutcome,
@@ -656,52 +664,6 @@ fn guarded_move_preserves_binding_and_replacement_ends_predecessor() {
         moved_state,
         ("moved-target".into(), 1, "moved-target".into())
     );
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
-    let replacement = observed(3, "execution-2");
-    let stage = staged_test_snapshot(&context, &mut conn, admission, &replacement, &budget);
-    let publication = seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
-    let replaced = seats::apply_reconciliation_transition(
-        &context,
-        &mut conn,
-        GuardedSeatTransition {
-            publication,
-            seat: SeatId::new("s1"),
-            expected_binding_generation: 1,
-            expected_target: Some(HostTargetId::new("moved-target")),
-            expected_terminal: Some(TerminalId::new("terminal-1")),
-            action: ReconciliationAction::Replace {
-                target: HostTargetId::new("moved-target"),
-                terminal: TerminalId::new("terminal-1"),
-                execution: ExecutionId::new("execution-2"),
-            },
-        },
-        &budget,
-    )
-    .unwrap();
-    assert_eq!(replaced, ReconciliationOutcome::Applied);
-    assert_eq!(
-        conn.query_row(
-            "SELECT structural_observation_sequence FROM seats WHERE id='s1'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        3
-    );
-    let generation: i64 = conn
-        .query_row("SELECT generation FROM seats WHERE id='s1'", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    assert_eq!(generation, 2);
-    let active_bindings: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(active_bindings, 0);
     drop(conn);
     let _ = std::fs::remove_file(path);
 }
@@ -767,8 +729,7 @@ fn move_with_absent_occupant_evidence(
 }
 
 /// W5-4: a registered binding is never carried by a Move when the snapshot
-/// positively shows its occupant absent; loss against a registered binding
-/// is MarkOccupantUnavailable's decision. The seat keeps its old target and
+/// positively shows its occupant absent. The seat keeps its old target and
 /// its live binding. Kills: dropping `registered && shows_occupant_absent()`
 /// from the Move arm's unknown-execution branch.
 #[test]
@@ -1133,10 +1094,9 @@ fn invalidated_seat_reconfirms_moved_terminal_without_restoring_registration() {
         expected_binding_generation: 2,
         expected_target: Some(HostTargetId::new("s1")),
         expected_terminal: Some(TerminalId::new("terminal-1")),
-        action: ReconciliationAction::Reconfirm {
+        action: ReconciliationAction::ReconfirmStructure {
             target: HostTargetId::new("moved-target"),
             terminal: TerminalId::new("terminal-1"),
-            verified_execution: Some(ExecutionId::new("execution-2")),
         },
     };
     conn.execute(
@@ -1176,160 +1136,6 @@ fn invalidated_seat_reconfirms_moved_terminal_without_restoring_registration() {
         )
         .unwrap();
     assert_eq!(active, 0);
-    drop(conn);
-    let _ = std::fs::remove_file(path);
-}
-
-#[test]
-fn invalidated_prelaunch_shell_reconfirms_only_with_retained_published_proof() {
-    use crate::ports::{
-        GuardedInvalidationTransition, GuardedSeatTransition, HostInvalidationReason,
-        ReconciliationAction, ReconciliationOutcome, StructuralOccupancy,
-    };
-    use crate::protocol::time::{CallBudget, Cancellation};
-    use crate::store::seats;
-    let (context, mut conn, path, _) = fixture(100);
-    let budget = CallBudget {
-        deadline: MonoInstant(1_000),
-        cancellation: Cancellation::default(),
-    };
-    let shell = |sequence, target: &str| {
-        let mut snapshot = snapshot_for_test(sequence, &[target]);
-        snapshot.targets[0].terminal = Some(TerminalId::new("shell-terminal"));
-        snapshot
-    };
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
-    let first = shell(2, "s1");
-    let prior_stage = staged_test_snapshot(&context, &mut conn, admission, &first, &budget);
-    seats::publish_snapshot_stage(&context, &mut conn, &prior_stage, &budget).unwrap();
-    let failed = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
-    let fence = seats::invalidate_host_observation(
-        &context,
-        &mut conn,
-        &failed,
-        HostInvalidationReason::HostUnavailable,
-        &budget,
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(
-        seats::mark_unresolved_from_invalidation(
-            &context,
-            &mut conn,
-            GuardedInvalidationTransition {
-                fence,
-                seat: SeatId::new("s1"),
-                expected_binding_generation: 1,
-                expected_target: Some(HostTargetId::new("s1")),
-                expected_terminal: None,
-            },
-            &budget
-        )
-        .unwrap(),
-        ReconciliationOutcome::Applied
-    );
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
-    let next = shell(3, "moved-shell");
-    let stage = staged_test_snapshot(&context, &mut conn, admission, &next, &budget);
-    let publication = seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
-    let page = seats::saved_seats_page(&context, &conn, &stage, 0, None, 16, &budget).unwrap();
-    let saved = page
-        .seats
-        .iter()
-        .find(|saved| saved.seat.as_str() == "s1")
-        .unwrap();
-    let prior = saved.prior_published_observation.as_ref().unwrap();
-    assert_eq!(prior.generation_id, prior_stage);
-    assert_eq!(prior.target.occupancy, StructuralOccupancy::EmptyShell);
-    assert_eq!(prior.prior_binding_generation, 1);
-    assert_eq!(saved.terminal.as_ref().unwrap().as_str(), "shell-terminal");
-    assert_eq!(
-        saved.observed_match.as_ref().unwrap().target.as_str(),
-        "moved-shell"
-    );
-    let transition = GuardedSeatTransition {
-        publication,
-        seat: SeatId::new("s1"),
-        expected_binding_generation: 2,
-        expected_target: Some(HostTargetId::new("s1")),
-        expected_terminal: Some(TerminalId::new("shell-terminal")),
-        action: ReconciliationAction::Reconfirm {
-            target: HostTargetId::new("moved-shell"),
-            terminal: TerminalId::new("shell-terminal"),
-            verified_execution: None,
-        },
-    };
-    conn.execute("UPDATE seats SET unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL WHERE id='s1'", []).unwrap();
-    assert_eq!(
-        seats::apply_reconciliation_transition(&context, &mut conn, transition.clone(), &budget)
-            .unwrap(),
-        ReconciliationOutcome::Stale
-    );
-    conn.execute("UPDATE seats SET unresolved_from_generation_id=?1,unresolved_prior_binding_generation=1 WHERE id='s1'", [prior_stage.as_str()]).unwrap();
-    assert_eq!(
-        seats::apply_reconciliation_transition(&context, &mut conn, transition.clone(), &budget)
-            .unwrap(),
-        ReconciliationOutcome::Applied
-    );
-    let state: (String, Option<String>, Option<String>, i64) = conn.query_row(
-        "SELECT state,unresolved_reason,unresolved_from_generation_id,generation FROM seats WHERE id='s1'", [],
-        |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
-    ).unwrap();
-    assert_eq!(state, ("resolved".into(), None, None, 2));
-    assert_eq!(conn.query_row("SELECT structural_terminal_id,structural_observation_sequence FROM seats WHERE id='s1'", [], |r| Ok((r.get::<_, String>(0)?,r.get::<_, i64>(1)?))).unwrap(), ("shell-terminal".into(), 3));
-    assert_eq!(
-        seats::apply_reconciliation_transition(&context, &mut conn, transition, &budget).unwrap(),
-        ReconciliationOutcome::Stale
-    );
-    let failed = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
-    let fence = seats::invalidate_host_observation(
-        &context,
-        &mut conn,
-        &failed,
-        HostInvalidationReason::HostUnavailable,
-        &budget,
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(
-        seats::mark_unresolved_from_invalidation(
-            &context,
-            &mut conn,
-            GuardedInvalidationTransition {
-                fence,
-                seat: SeatId::new("s1"),
-                expected_binding_generation: 2,
-                expected_target: Some(HostTargetId::new("moved-shell")),
-                expected_terminal: Some(TerminalId::new("shell-terminal")),
-            },
-            &budget
-        )
-        .unwrap(),
-        ReconciliationOutcome::Applied
-    );
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
-    let empty = snapshot_for_test(4, &[]);
-    let stage = staged_test_snapshot(&context, &mut conn, admission, &empty, &budget);
-    let publication = seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
-    assert!(matches!(
-        seats::apply_reconciliation_transition(
-            &context,
-            &mut conn,
-            GuardedSeatTransition {
-                publication,
-                seat: SeatId::new("s1"),
-                expected_binding_generation: 3,
-                expected_target: Some(HostTargetId::new("moved-shell")),
-                expected_terminal: Some(TerminalId::new("shell-terminal")),
-                action: ReconciliationAction::BeginRetirement {
-                    absent_target: HostTargetId::new("moved-shell")
-                },
-            },
-            &budget
-        )
-        .unwrap(),
-        ReconciliationOutcome::RetirementStarted(_)
-    ));
     drop(conn);
     let _ = std::fs::remove_file(path);
 }
@@ -1534,13 +1340,13 @@ fn snapshot_stage_is_hidden_bounded_and_allows_a_foreground_writer() {
 
 fn claim(seat: &str) -> CallerClaim {
     CallerClaim {
-        instance: String::new(),
-        seat: SeatId::new("legacy-fixture"),
-        binding_generation: 0,
+        instance: "i".into(),
+        seat: SeatId::new(seat),
+        binding_generation: 1,
         role: crate::protocol::authority::CallerRole::TopLevel,
         harness: Harness::Codex,
         native_session: NativeSessionId::new("n"),
-        execution: ExecutionId::new("e"),
+        execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
         target: HostTargetId::new(seat),
     }
 }
@@ -1551,36 +1357,18 @@ fn permit(
     hash: [u8; 32],
     at: i64,
 ) -> MutationPermit {
-    MutationPermit::new(
-        VerifiedCaller {
-            seat: SeatId::new(seat),
-            harness: Harness::Codex,
-            native_session: NativeSessionId::new("n"),
-            execution: ExecutionId::new("e"),
-            host_boot: HostBootId::new("b"),
-            target_generation: 1,
-            binding_generation: 1,
-            observed_at_utc: UtcMillis(at),
-        },
+    MutationPermit::cooperative(
+        claim(seat),
         OperationId::new(operation),
         obligation,
         hash,
         MonoInstant(at as u64),
-        1,
+        (1, 0),
+        crate::protocol::time::CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
     )
-}
-fn fence(
-    _tx: &rusqlite::Transaction<'_>,
-    at: crate::store::connection::DecisionInstant,
-) -> Result<DecisionFence, crate::protocol::results::ApiError> {
-    Ok(DecisionFence {
-        now: at.monotonic,
-        host_boot: HostBootId::new("b"),
-        host_epoch: 1,
-        target_generation: 1,
-        binding_generation: 1,
-        known_invalidated: false,
-    })
 }
 
 struct GraphGate(ServiceAuthorId);
@@ -1628,7 +1416,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
     use crate::ports::ServiceAuthorityGate;
     use crate::protocol::{commands::AcceptRequired, service::*};
     use sha2::Digest;
-    let (context, mut conn, path, clock) = fixture(100);
+    let (context, mut conn, path, clock) = bound_fixture(100);
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(1000),
         cancellation: Default::default(),
@@ -1710,8 +1498,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
                 ObligationRef::Invitation(required.invitation.clone()),
                 required_hash,
                 110
-            ),
-            fence
+            )
         )
         .unwrap(),
         CommandResult::RequiredAccepted(_)
@@ -1812,7 +1599,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
         operation: OperationId::new("accept-ordinary-two"),
         claim: claim("s2"),
     };
-    let ordinary_hash = schema::canonical_digest(&("accept", &ordinary_command.thread)).unwrap();
+    let ordinary_hash = cooperative_payload_hash("accept", &ordinary_command).unwrap();
     assert_eq!(
         accept(
             &context,
@@ -1825,8 +1612,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
                 ObligationRef::Invitation(ordinary.invitation.clone()),
                 ordinary_hash,
                 130
-            ),
-            fence
+            )
         )
         .unwrap(),
         CommandResult::Accepted(ordinary.invitation.clone())
@@ -1886,8 +1672,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
                 ObligationRef::Invitation(ordinary.invitation.clone()),
                 ordinary_hash,
                 130
-            ),
-            fence
+            )
         )
         .unwrap(),
         CommandResult::Accepted(ordinary.invitation.clone())
@@ -1906,10 +1691,9 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
                 "s2",
                 "accept-ordinary-two-again",
                 ObligationRef::Invitation(ordinary.invitation.clone()),
-                ordinary_hash,
+                cooperative_payload_hash("accept", &fresh_repeat).unwrap(),
                 130
-            ),
-            fence
+            )
         )
         .unwrap(),
         CommandResult::Accepted(ordinary.invitation.clone())
@@ -1964,7 +1748,8 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
         operation: OperationId::new("accept-ordinary-reverse"),
         claim: claim("s2"),
     };
-    let reverse_ordinary_hash = schema::canonical_digest(&("accept", &reverse)).unwrap();
+    let reverse_ordinary_hash =
+        cooperative_payload_hash("accept", &reverse_ordinary_command).unwrap();
     assert_eq!(
         accept(
             &context,
@@ -1977,8 +1762,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
                 ObligationRef::Invitation(reverse_ordinary.invitation.clone()),
                 reverse_ordinary_hash,
                 140
-            ),
-            fence
+            )
         )
         .unwrap(),
         CommandResult::Accepted(reverse_ordinary.invitation.clone())
@@ -2020,8 +1804,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
                 ObligationRef::Invitation(reverse_required.invitation.clone()),
                 reverse_required_hash,
                 150
-            ),
-            fence
+            )
         )
         .unwrap(),
         CommandResult::RequiredAccepted(_)
@@ -2059,7 +1842,7 @@ fn native_ordinary_offer_after_required_offer_can_be_accepted_after_join() {
     use crate::ports::ServiceAuthorityGate;
     use crate::protocol::{commands::AcceptRequired, service::*};
     use sha2::Digest;
-    let (context, mut conn, path, clock) = fixture(100);
+    let (context, mut conn, path, clock) = bound_fixture(100);
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(1000),
         cancellation: Default::default(),
@@ -2107,7 +1890,7 @@ fn native_ordinary_offer_after_required_offer_can_be_accepted_after_join() {
         operation: OperationId::new("accept-creator"),
         claim: claim("s1"),
     };
-    let creator_hash = schema::canonical_digest(&("accept", &thread)).unwrap();
+    let creator_hash = cooperative_payload_hash("accept", &creator_accept).unwrap();
     accept(
         &context,
         &mut conn,
@@ -2120,7 +1903,6 @@ fn native_ordinary_offer_after_required_offer_can_be_accepted_after_join() {
             creator_hash,
             100,
         ),
-        fence,
     )
     .unwrap();
     let ServiceResult::Invitation(required) = operate(
@@ -2142,13 +1924,7 @@ fn native_ordinary_offer_after_required_offer_can_be_accepted_after_join() {
         operation: OperationId::new("native-independent-offer"),
         claim: claim("s1"),
     };
-    let invite_hash = schema::canonical_digest(&(
-        "invite",
-        &thread,
-        &native_invite.seat,
-        native_invite.deadline_millis,
-    ))
-    .unwrap();
+    let invite_hash = cooperative_payload_hash("invite", &native_invite).unwrap();
     let CommandResult::Invitation(ordinary) = invite(
         &context,
         &mut conn,
@@ -2161,7 +1937,6 @@ fn native_ordinary_offer_after_required_offer_can_be_accepted_after_join() {
             invite_hash,
             100,
         ),
-        fence,
         None,
     )
     .unwrap() else {
@@ -2194,7 +1969,6 @@ fn native_ordinary_offer_after_required_offer_can_be_accepted_after_join() {
             required_hash,
             110,
         ),
-        fence,
     )
     .unwrap();
     let original:i64=conn.query_row("SELECT joined_seq FROM membership_intervals WHERE thread_id=?1 AND seat_id='s2' AND left_seq IS NULL",[thread.as_str()],|r|r.get(0)).unwrap();
@@ -2204,7 +1978,7 @@ fn native_ordinary_offer_after_required_offer_can_be_accepted_after_join() {
         operation: OperationId::new("accept-native-offer"),
         claim: claim("s2"),
     };
-    let ordinary_hash = schema::canonical_digest(&("accept", &thread)).unwrap();
+    let ordinary_hash = cooperative_payload_hash("accept", &ordinary_accept).unwrap();
     assert_eq!(
         accept(
             &context,
@@ -2217,8 +1991,7 @@ fn native_ordinary_offer_after_required_offer_can_be_accepted_after_join() {
                 ObligationRef::Invitation(ordinary.clone()),
                 ordinary_hash,
                 120
-            ),
-            fence
+            )
         )
         .unwrap(),
         CommandResult::Accepted(ordinary.clone())
@@ -2254,7 +2027,7 @@ fn managed_required_upgrade_preserves_deadline_and_demands_native_revision() {
     use crate::ports::ServiceAuthorityGate;
     use crate::protocol::{commands::AcceptRequired, service::*};
     use sha2::Digest;
-    let (context, mut conn, path, _) = fixture(100);
+    let (context, mut conn, path, _) = bound_fixture(100);
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(1000),
         cancellation: Default::default(),
@@ -2358,7 +2131,7 @@ fn managed_required_upgrade_preserves_deadline_and_demands_native_revision() {
         operation: OperationId::new("stale-ordinary"),
         claim: native_claim.clone(),
     };
-    let stale_hash = schema::canonical_digest(&("accept", &stale.thread)).unwrap();
+    let stale_hash = cooperative_payload_hash("accept", &stale).unwrap();
     let stale_error = accept(
         &context,
         &mut conn,
@@ -2371,7 +2144,6 @@ fn managed_required_upgrade_preserves_deadline_and_demands_native_revision() {
             stale_hash,
             100,
         ),
-        fence,
     )
     .unwrap_err();
     assert_eq!(stale_error.code, ErrorCode::StaleRequirementAcceptance);
@@ -2397,7 +2169,6 @@ fn managed_required_upgrade_preserves_deadline_and_demands_native_revision() {
             accepted_hash,
             100,
         ),
-        fence,
     )
     .unwrap();
     let CommandResult::RequiredAccepted(accepted_state) = result else {
@@ -2435,7 +2206,6 @@ fn managed_required_upgrade_preserves_deadline_and_demands_native_revision() {
             repeated_hash,
             100,
         ),
-        fence,
     )
     .unwrap();
     assert_eq!(
@@ -2449,7 +2219,7 @@ fn managed_required_upgrade_preserves_deadline_and_demands_native_revision() {
         operation: OperationId::new("leave-required"),
         claim: claim("s2"),
     };
-    let leave_hash = schema::canonical_digest(&("leave", &thread)).unwrap();
+    let leave_hash = cooperative_payload_hash("leave", &left).unwrap();
     assert_eq!(
         leave(
             &context,
@@ -2462,8 +2232,7 @@ fn managed_required_upgrade_preserves_deadline_and_demands_native_revision() {
                 ObligationRef::Control(thread.clone()),
                 leave_hash,
                 100
-            ),
-            fence
+            )
         )
         .unwrap_err()
         .code,
@@ -2495,10 +2264,9 @@ fn managed_required_upgrade_preserves_deadline_and_demands_native_revision() {
                 "s2",
                 "leave-after-release",
                 ObligationRef::Control(thread.clone()),
-                leave_hash,
+                cooperative_payload_hash("leave", &left).unwrap(),
                 100
-            ),
-            fence
+            )
         )
         .unwrap(),
         CommandResult::Left(_)
@@ -3106,7 +2874,7 @@ fn joined_voluntary_requirement_waits_for_new_acceptance_and_can_leave_first() {
     use crate::ports::ServiceAuthorityGate;
     use crate::protocol::{commands::AcceptRequired, service::*};
     use sha2::Digest;
-    let (context, mut conn, path, _) = fixture(100);
+    let (context, mut conn, path, _) = bound_fixture(100);
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(1000),
         cancellation: Default::default(),
@@ -3152,7 +2920,7 @@ fn joined_voluntary_requirement_waits_for_new_acceptance_and_can_leave_first() {
         operation: OperationId::new("accept-ordinary"),
         claim: claim("s2"),
     };
-    let accept_hash = schema::canonical_digest(&("accept", &thread)).unwrap();
+    let accept_hash = cooperative_payload_hash("accept", &accept_cmd).unwrap();
     let ordinary_invitation = InvitationId::new(
         conn.query_row(
             "SELECT id FROM invitations WHERE thread_id=?1 AND seat_id='s2'",
@@ -3173,8 +2941,7 @@ fn joined_voluntary_requirement_waits_for_new_acceptance_and_can_leave_first() {
                 ObligationRef::Invitation(ordinary_invitation),
                 accept_hash,
                 100
-            ),
-            fence
+            )
         )
         .unwrap(),
         CommandResult::Accepted(_)
@@ -3184,7 +2951,7 @@ fn joined_voluntary_requirement_waits_for_new_acceptance_and_can_leave_first() {
         operation: OperationId::new("native-archive-managed"),
         claim: claim("s2"),
     };
-    let archive_hash = schema::canonical_digest(&("archive", &thread)).unwrap();
+    let archive_hash = cooperative_payload_hash("archive", &native_archive).unwrap();
     assert_eq!(
         archive(
             &context,
@@ -3197,8 +2964,7 @@ fn joined_voluntary_requirement_waits_for_new_acceptance_and_can_leave_first() {
                 ObligationRef::Control(thread.clone()),
                 archive_hash,
                 100
-            ),
-            fence
+            )
         )
         .unwrap_err()
         .code,
@@ -3233,7 +2999,7 @@ fn joined_voluntary_requirement_waits_for_new_acceptance_and_can_leave_first() {
         operation: OperationId::new("leave-before-consent"),
         claim: claim("s2"),
     };
-    let leave_hash = schema::canonical_digest(&("leave", &thread)).unwrap();
+    let leave_hash = cooperative_payload_hash("leave", &leave_cmd).unwrap();
     assert!(matches!(
         leave(
             &context,
@@ -3246,8 +3012,7 @@ fn joined_voluntary_requirement_waits_for_new_acceptance_and_can_leave_first() {
                 ObligationRef::Control(thread.clone()),
                 leave_hash,
                 100
-            ),
-            fence
+            )
         )
         .unwrap(),
         CommandResult::Left(_)
@@ -3280,7 +3045,6 @@ fn joined_voluntary_requirement_waits_for_new_acceptance_and_can_leave_first() {
             hash,
             100,
         ),
-        fence,
     )
     .unwrap();
     assert!(
@@ -3414,16 +3178,14 @@ fn retirement_cutover_makes_pending_requirement_terminal_before_bounded_cleanup(
 
 #[test]
 fn create_thread_persists_joined_creator_and_creation_audit() {
-    let (context, mut conn, path, _) = fixture(100);
+    let (context, mut conn, path, _) = bound_fixture(100);
     let command = CreateThread {
         topic: "topic".into(),
         goal: "goal".into(),
         operation: OperationId::new("o1"),
         claim: claim("s1"),
     };
-    let hash =
-        crate::store::schema::canonical_digest(&("create_thread", &command.topic, &command.goal))
-            .unwrap();
+    let hash = cooperative_payload_hash("create_thread", &command).unwrap();
     let result = create_thread(
         &context,
         &mut conn,
@@ -3439,7 +3201,6 @@ fn create_thread_persists_joined_creator_and_creation_audit() {
             hash,
             100,
         ),
-        fence,
     )
     .unwrap();
     let CommandResult::ThreadCreated(thread) = result else {
@@ -3501,7 +3262,6 @@ fn create_thread_persists_joined_creator_and_creation_audit() {
             hash,
             100,
         ),
-        fence,
     )
     .unwrap();
     assert_eq!(replay, CommandResult::ThreadCreated(thread));
@@ -3510,9 +3270,7 @@ fn create_thread_persists_joined_creator_and_creation_audit() {
         topic: "changed".into(),
         ..command.clone()
     };
-    let changed_hash =
-        crate::store::schema::canonical_digest(&("create_thread", &changed.topic, &changed.goal))
-            .unwrap();
+    let changed_hash = cooperative_payload_hash("create_thread", &changed).unwrap();
     assert_eq!(
         create_thread(
             &context,
@@ -3528,8 +3286,7 @@ fn create_thread_persists_joined_creator_and_creation_audit() {
                 ObligationRef::CheckIn(SeatId::new("s1")),
                 changed_hash,
                 100
-            ),
-            fence
+            )
         )
         .unwrap_err()
         .code,
@@ -3554,8 +3311,7 @@ fn create_thread_persists_joined_creator_and_creation_audit() {
                 ObligationRef::CheckIn(SeatId::new("s1")),
                 hash,
                 100
-            ),
-            fence
+            )
         )
         .is_err()
     );
@@ -3566,16 +3322,14 @@ fn create_thread_persists_joined_creator_and_creation_audit() {
 #[test]
 fn joined_member_changes_topic_with_scoped_revision_and_audit() {
     use crate::protocol::commands::SetTopic;
-    let (context, mut conn, path, _) = fixture(100);
+    let (context, mut conn, path, _) = bound_fixture(100);
     let create = CreateThread {
         topic: "old".into(),
         goal: "goal".into(),
         operation: OperationId::new("create-topic"),
         claim: claim("s1"),
     };
-    let hash =
-        crate::store::schema::canonical_digest(&("create_thread", &create.topic, &create.goal))
-            .unwrap();
+    let hash = cooperative_payload_hash("create_thread", &create).unwrap();
     let CommandResult::ThreadCreated(thread) = create_thread(
         &context,
         &mut conn,
@@ -3591,7 +3345,6 @@ fn joined_member_changes_topic_with_scoped_revision_and_audit() {
             hash,
             100,
         ),
-        fence,
     )
     .unwrap() else {
         panic!()
@@ -3602,8 +3355,7 @@ fn joined_member_changes_topic_with_scoped_revision_and_audit() {
         operation: OperationId::new("set-topic"),
         claim: claim("s1"),
     };
-    let hash =
-        crate::store::schema::canonical_digest(&("set_topic", &thread, &command.topic)).unwrap();
+    let hash = cooperative_payload_hash("set_topic", &command).unwrap();
     assert_eq!(
         set_topic(
             &context,
@@ -3619,8 +3371,7 @@ fn joined_member_changes_topic_with_scoped_revision_and_audit() {
                 ObligationRef::Control(thread.clone()),
                 hash,
                 100
-            ),
-            fence
+            )
         )
         .unwrap(),
         CommandResult::TopicChanged(thread.clone())
@@ -3649,16 +3400,14 @@ fn joined_member_changes_topic_with_scoped_revision_and_audit() {
 
 #[test]
 fn pending_reinvite_keeps_first_deadline_and_new_invites_use_precedence() {
-    let (context, mut conn, path, _) = fixture(100);
+    let (context, mut conn, path, _) = bound_fixture(100);
     let create = CreateThread {
         topic: "topic".into(),
         goal: "goal".into(),
         operation: OperationId::new("create"),
         claim: claim("s1"),
     };
-    let digest =
-        crate::store::schema::canonical_digest(&("create_thread", &create.topic, &create.goal))
-            .unwrap();
+    let digest = cooperative_payload_hash("create_thread", &create).unwrap();
     let CommandResult::ThreadCreated(thread) = create_thread(
         &context,
         &mut conn,
@@ -3674,7 +3423,6 @@ fn pending_reinvite_keeps_first_deadline_and_new_invites_use_precedence() {
             digest,
             100,
         ),
-        fence,
     )
     .unwrap() else {
         panic!("create failed")
@@ -3693,13 +3441,7 @@ fn pending_reinvite_keeps_first_deadline_and_new_invites_use_precedence() {
         operation: OperationId::new("invite1"),
         claim: claim("s1"),
     };
-    let hash = crate::store::schema::canonical_digest(&(
-        "invite",
-        &first.thread,
-        &first.seat,
-        first.deadline_millis,
-    ))
-    .unwrap();
+    let hash = cooperative_payload_hash("invite", &first).unwrap();
     let CommandResult::Invitation(invitation) = invite(
         &context,
         &mut conn,
@@ -3715,7 +3457,6 @@ fn pending_reinvite_keeps_first_deadline_and_new_invites_use_precedence() {
             hash,
             100,
         ),
-        fence,
         Some(120_000),
     )
     .unwrap() else {
@@ -3742,13 +3483,7 @@ fn pending_reinvite_keeps_first_deadline_and_new_invites_use_precedence() {
         operation: OperationId::new("invite2"),
         ..first
     };
-    let hash = crate::store::schema::canonical_digest(&(
-        "invite",
-        &again.thread,
-        &again.seat,
-        again.deadline_millis,
-    ))
-    .unwrap();
+    let hash = cooperative_payload_hash("invite", &again).unwrap();
     let result = invite(
         &context,
         &mut conn,
@@ -3758,7 +3493,6 @@ fn pending_reinvite_keeps_first_deadline_and_new_invites_use_precedence() {
         },
         &again,
         permit("s1", "invite2", ObligationRef::Control(thread), hash, 100),
-        fence,
         Some(120_000),
     )
     .unwrap();
@@ -3851,532 +3585,15 @@ fn operator_orphan_invite_uses_configured_duration_and_keeps_pending_deadline() 
 }
 
 #[test]
-fn verified_registration_anchors_once_and_rolls_back_failed_offer() {
-    use crate::{
-        protocol::{
-            authority::ReceiptRegistration,
-            commands::CheckIn,
-            pagination::{Consistency, Page, StopReason},
-            results::CheckInResult,
-        },
-        store::seats,
-    };
-    let (context, mut conn, path, _) = fixture(100);
-    let command = CheckIn {
-        mode: crate::protocol::commands::CheckInMode::Current,
-        claim: claim("s2"),
-        operation: OperationId::new("check-in-1"),
-    };
-    let registration = ReceiptRegistration {
-        seat: SeatId::new("s2"),
-        host_boot: HostBootId::new("b"),
-        target_generation: 1,
-        binding_generation: 1,
-        native_session: NativeSessionId::new("n"),
-        execution: ExecutionId::new("e"),
-    };
-    let digest = crate::store::schema::canonical_digest(
-        &crate::store::seats::native_check_in_payload(&command),
-    )
-    .unwrap();
-    let failed = seats::register_available(
-        &context,
-        &mut conn,
-        &command,
-        Some(&registration),
-        None,
-        &crate::protocol::time::CallBudget {
-            deadline: crate::protocol::time::MonoInstant(u64::MAX),
-            cancellation: Default::default(),
-        },
-        permit(
-            "s2",
-            "check-in-1",
-            ObligationRef::CheckIn(SeatId::new("s2")),
-            digest,
-            100,
-        ),
-        fence,
-        |_tx, _seat, _seq| {
-            Err(crate::store::connection::api_error(
-                crate::protocol::results::ErrorCode::InvalidBudget,
-                "offer too large",
-            ))
-        },
-    );
-    assert!(failed.is_err());
-    assert_eq!(
-        conn.query_row("SELECT count(*) FROM seat_availability", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
-    let make_offer = |_tx: &rusqlite::Transaction<'_>, seat: &SeatId, seq: u64| {
-        Ok(CheckInResult {
-            context_disposition: crate::protocol::results::CheckInContextDisposition::Current,
-            context: claim(seat.as_str()),
-            seat: seat.clone(),
-            offered_through: Some(seq.to_string()),
-            warning_count: 0,
-            warning_count_has_more: false,
-            warnings: Page {
-                items: vec![],
-                next_cursor: None,
-                next_argv: None,
-                high_water_ordinal: 0,
-                scope_revision: None,
-                has_more: false,
-                stop_reason: StopReason::Complete,
-                consistency: Consistency::BoundedLive,
-            },
-            notices: Default::default(),
-            inbox: Page {
-                items: vec![],
-                next_cursor: None,
-                next_argv: None,
-                high_water_ordinal: 0,
-                scope_revision: None,
-                has_more: false,
-                stop_reason: StopReason::Complete,
-                consistency: Consistency::BoundedLive,
-            },
-        })
-    };
-    let result = seats::register_available(
-        &context,
-        &mut conn,
-        &command,
-        Some(&registration),
-        None,
-        &crate::protocol::time::CallBudget {
-            deadline: crate::protocol::time::MonoInstant(u64::MAX),
-            cancellation: Default::default(),
-        },
-        permit(
-            "s2",
-            "check-in-1",
-            ObligationRef::CheckIn(SeatId::new("s2")),
-            digest,
-            100,
-        ),
-        fence,
-        make_offer,
-    )
-    .unwrap();
-    assert!(matches!(result, CommandResult::CheckedIn(_)));
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM seat_availability WHERE seat_id='s2'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        1
-    );
-    assert!(
-        conn.query_row(
-            "SELECT offered_through_seq FROM warning_offer WHERE seat_id='s2'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap()
-            > 0
-    );
-    conn.execute("UPDATE host_instances SET host_epoch=2 WHERE id='i'", [])
-        .unwrap();
-    conn.execute(
-        "UPDATE observed_targets SET epoch=2 WHERE instance_id='i' AND target_id='s2'",
-        [],
-    )
-    .unwrap();
-    let second = CheckIn {
-        operation: OperationId::new("check-in-2"),
-        ..command
-    };
-    let second_permit = MutationPermit::new(
-        VerifiedCaller {
-            seat: SeatId::new("s2"),
-            harness: Harness::Codex,
-            native_session: NativeSessionId::new("n"),
-            execution: ExecutionId::new("e"),
-            host_boot: HostBootId::new("b"),
-            target_generation: 1,
-            binding_generation: 1,
-            observed_at_utc: UtcMillis(100),
-        },
-        second.operation.clone(),
-        ObligationRef::CheckIn(SeatId::new("s2")),
-        digest,
-        MonoInstant(100),
-        2,
-    );
-    let second_fence = |_tx: &rusqlite::Transaction<'_>,
-                        at: crate::store::connection::DecisionInstant| {
-        Ok(DecisionFence {
-            now: at.monotonic,
-            host_boot: HostBootId::new("b"),
-            host_epoch: 2,
-            target_generation: 1,
-            binding_generation: 1,
-            known_invalidated: false,
-        })
-    };
-    seats::register_available(
-        &context,
-        &mut conn,
-        &second,
-        Some(&registration),
-        None,
-        &crate::protocol::time::CallBudget {
-            deadline: crate::protocol::time::MonoInstant(u64::MAX),
-            cancellation: Default::default(),
-        },
-        second_permit,
-        second_fence,
-        make_offer,
-    )
-    .unwrap();
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM seat_availability WHERE seat_id='s2'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        2
-    );
-    assert_eq!(
-        conn.query_row("SELECT generation FROM seats WHERE id='s2'", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        2
-    );
-    assert_eq!(
-        conn.query_row(
-            "SELECT unavailability_episode FROM seats WHERE id='s2'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        2
-    );
-    assert_eq!(
-        conn.query_row(
-            "SELECT unavailability_open FROM seats WHERE id='s2'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
-    use crate::ports::{RegistrationLossReason, RegistrationRevocation};
-    conn.execute(
-        "UPDATE host_instances SET host_epoch=3,observation_sequence=3 WHERE id='i'",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "UPDATE observed_targets SET epoch=3 WHERE instance_id='i' AND target_id='s2'",
-        [],
-    )
-    .unwrap();
-    let loss = RegistrationRevocation::from_trusted_loss(
-        SeatId::new("s2"),
-        2,
-        ExecutionId::new("e"),
-        RegistrationLossReason::HostStructuralChange {
-            current_boot: HostBootId::new("b"),
-            current_epoch: 3,
-            current_target_generation: 1,
-            current_observation_sequence: 3,
-        },
-    );
-    assert!(seats::revoke_registration(&context, &mut conn, loss.clone()).unwrap());
-    assert_eq!(
-        conn.query_row(
-            "SELECT unavailability_episode FROM seats WHERE id='s2'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        3
-    );
-    assert_eq!(
-        conn.query_row(
-            "SELECT unavailability_open FROM seats WHERE id='s2'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        1
-    );
-    assert!(!seats::revoke_registration(&context, &mut conn, loss).unwrap());
-    drop(conn);
-    let _ = std::fs::remove_file(path);
-}
-
-#[test]
-fn structural_target_generation_change_rotates_binding_even_for_same_execution() {
-    use crate::{
-        protocol::{
-            authority::ReceiptRegistration,
-            commands::CheckIn,
-            pagination::{Consistency, Page, StopReason},
-            results::CheckInResult,
-        },
-        store::seats,
-    };
-    let (context, mut conn, path, _) = fixture(100);
-    let offer = |_tx: &rusqlite::Transaction<'_>, seat: &SeatId, seq: u64| {
-        Ok(CheckInResult {
-            context_disposition: crate::protocol::results::CheckInContextDisposition::Current,
-            context: claim(seat.as_str()),
-            seat: seat.clone(),
-            offered_through: Some(seq.to_string()),
-            warning_count: 0,
-            warning_count_has_more: false,
-            warnings: Page {
-                items: vec![],
-                next_cursor: None,
-                next_argv: None,
-                high_water_ordinal: 0,
-                scope_revision: None,
-                has_more: false,
-                stop_reason: StopReason::Complete,
-                consistency: Consistency::BoundedLive,
-            },
-            notices: Default::default(),
-            inbox: Page {
-                items: vec![],
-                next_cursor: None,
-                next_argv: None,
-                high_water_ordinal: 0,
-                scope_revision: None,
-                has_more: false,
-                stop_reason: StopReason::Complete,
-                consistency: Consistency::BoundedLive,
-            },
-        })
-    };
-    let command = CheckIn {
-        mode: crate::protocol::commands::CheckInMode::Current,
-        claim: claim("s2"),
-        operation: OperationId::new("first"),
-    };
-    let digest = crate::store::schema::canonical_digest(
-        &crate::store::seats::native_check_in_payload(&command),
-    )
-    .unwrap();
-    let registration = ReceiptRegistration {
-        seat: SeatId::new("s2"),
-        host_boot: HostBootId::new("b"),
-        target_generation: 1,
-        binding_generation: 1,
-        native_session: NativeSessionId::new("n"),
-        execution: ExecutionId::new("e"),
-    };
-    seats::register_available(
-        &context,
-        &mut conn,
-        &command,
-        Some(&registration),
-        None,
-        &crate::protocol::time::CallBudget {
-            deadline: crate::protocol::time::MonoInstant(u64::MAX),
-            cancellation: Default::default(),
-        },
-        permit(
-            "s2",
-            "first",
-            ObligationRef::CheckIn(SeatId::new("s2")),
-            digest,
-            100,
-        ),
-        fence,
-        offer,
-    )
-    .unwrap();
-    conn.execute("UPDATE seats SET target_generation=2 WHERE id='s2'", [])
-        .unwrap();
-    conn.execute(
-        "UPDATE observed_targets SET generation=2 WHERE instance_id='i' AND target_id='s2'",
-        [],
-    )
-    .unwrap();
-    let second = CheckIn {
-        operation: OperationId::new("second"),
-        ..command
-    };
-    let updated = ReceiptRegistration {
-        target_generation: 2,
-        ..registration
-    };
-    let updated_permit = MutationPermit::new(
-        VerifiedCaller {
-            seat: SeatId::new("s2"),
-            harness: Harness::Codex,
-            native_session: NativeSessionId::new("n"),
-            execution: ExecutionId::new("e"),
-            host_boot: HostBootId::new("b"),
-            target_generation: 2,
-            binding_generation: 1,
-            observed_at_utc: UtcMillis(100),
-        },
-        second.operation.clone(),
-        ObligationRef::CheckIn(SeatId::new("s2")),
-        digest,
-        MonoInstant(100),
-        1,
-    );
-    let updated_fence = |_tx: &rusqlite::Transaction<'_>,
-                         at: crate::store::connection::DecisionInstant| {
-        Ok(DecisionFence {
-            now: at.monotonic,
-            host_boot: HostBootId::new("b"),
-            host_epoch: 1,
-            target_generation: 2,
-            binding_generation: 1,
-            known_invalidated: false,
-        })
-    };
-    seats::register_available(
-        &context,
-        &mut conn,
-        &second,
-        Some(&updated),
-        None,
-        &crate::protocol::time::CallBudget {
-            deadline: crate::protocol::time::MonoInstant(u64::MAX),
-            cancellation: Default::default(),
-        },
-        updated_permit,
-        updated_fence,
-        offer,
-    )
-    .unwrap();
-    assert_eq!(
-        conn.query_row("SELECT generation FROM seats WHERE id='s2'", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        2
-    );
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM seat_availability WHERE seat_id='s2'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        2
-    );
-    let third = CheckIn {
-        operation: OperationId::new("third"),
-        ..second
-    };
-    let stable = ReceiptRegistration {
-        binding_generation: 2,
-        ..updated
-    };
-    let stable_permit = MutationPermit::new(
-        VerifiedCaller {
-            seat: SeatId::new("s2"),
-            harness: Harness::Codex,
-            native_session: NativeSessionId::new("n"),
-            execution: ExecutionId::new("e"),
-            host_boot: HostBootId::new("b"),
-            target_generation: 2,
-            binding_generation: 2,
-            observed_at_utc: UtcMillis(100),
-        },
-        third.operation.clone(),
-        ObligationRef::CheckIn(SeatId::new("s2")),
-        digest,
-        MonoInstant(100),
-        1,
-    );
-    let stable_fence = |_tx: &rusqlite::Transaction<'_>,
-                        at: crate::store::connection::DecisionInstant| {
-        Ok(DecisionFence {
-            now: at.monotonic,
-            host_boot: HostBootId::new("b"),
-            host_epoch: 1,
-            target_generation: 2,
-            binding_generation: 2,
-            known_invalidated: false,
-        })
-    };
-    seats::register_available(
-        &context,
-        &mut conn,
-        &third,
-        Some(&stable),
-        None,
-        &crate::protocol::time::CallBudget {
-            deadline: crate::protocol::time::MonoInstant(u64::MAX),
-            cancellation: Default::default(),
-        },
-        stable_permit,
-        stable_fence,
-        offer,
-    )
-    .unwrap();
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM seat_availability WHERE seat_id='s2'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        2
-    );
-    conn.execute(
-        "UPDATE host_instances SET observation_sequence=4 WHERE id='i'",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "UPDATE observed_targets SET generation=3 WHERE instance_id='i' AND target_id='s2'",
-        [],
-    )
-    .unwrap();
-    use crate::ports::{RegistrationLossReason, RegistrationRevocation};
-    let loss = RegistrationRevocation::from_trusted_loss(
-        SeatId::new("s2"),
-        2,
-        ExecutionId::new("e"),
-        RegistrationLossReason::HostStructuralChange {
-            current_boot: HostBootId::new("b"),
-            current_epoch: 1,
-            current_target_generation: 3,
-            current_observation_sequence: 4,
-        },
-    );
-    assert!(seats::revoke_registration(&context, &mut conn, loss).unwrap());
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM occupant_bindings WHERE seat_id='s2' AND ended_at IS NULL",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
-    drop(conn);
-    let _ = std::fs::remove_file(path);
-}
-
-#[test]
 fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
-    let (context, mut conn, path, clock) = fixture(100);
+    let (context, mut conn, path, clock) = bound_fixture(100);
     let create = CreateThread {
         topic: "topic".into(),
         goal: "goal".into(),
         operation: OperationId::new("c"),
         claim: claim("s1"),
     };
-    let hash =
-        crate::store::schema::canonical_digest(&("create_thread", &create.topic, &create.goal))
-            .unwrap();
+    let hash = cooperative_payload_hash("create_thread", &create).unwrap();
     let CommandResult::ThreadCreated(thread) = create_thread(
         &context,
         &mut conn,
@@ -4392,7 +3609,6 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
             hash,
             100,
         ),
-        fence,
     )
     .unwrap() else {
         panic!()
@@ -4404,13 +3620,7 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
         operation: OperationId::new("i"),
         claim: claim("s1"),
     };
-    let hash = crate::store::schema::canonical_digest(&(
-        "invite",
-        &thread,
-        &invitation_request.seat,
-        invitation_request.deadline_millis,
-    ))
-    .unwrap();
+    let hash = cooperative_payload_hash("invite", &invitation_request).unwrap();
     let CommandResult::Invitation(invitation) = invite(
         &context,
         &mut conn,
@@ -4420,7 +3630,6 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
         },
         &invitation_request,
         permit("s1", "i", ObligationRef::Control(thread.clone()), hash, 100),
-        fence,
         None,
     )
     .unwrap() else {
@@ -4431,7 +3640,7 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
         operation: OperationId::new("a"),
         claim: claim("s1"),
     };
-    let hash = crate::store::schema::canonical_digest(&("archive", &thread)).unwrap();
+    let hash = cooperative_payload_hash("archive", &archive_request).unwrap();
     archive(
         &context,
         &mut conn,
@@ -4441,7 +3650,6 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
         },
         &archive_request,
         permit("s1", "a", ObligationRef::Control(thread.clone()), hash, 100),
-        fence,
     )
     .unwrap();
     clock.0.store(300_100, Ordering::SeqCst);
@@ -4450,7 +3658,7 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
         operation: OperationId::new("accept"),
         claim: claim("s2"),
     };
-    let hash = crate::store::schema::canonical_digest(&("accept", &thread)).unwrap();
+    let hash = cooperative_payload_hash("accept", &accept_request).unwrap();
     assert_eq!(
         accept(
             &context,
@@ -4466,8 +3674,7 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
                 ObligationRef::Invitation(invitation.clone()),
                 hash,
                 300_100
-            ),
-            fence
+            )
         )
         .unwrap(),
         CommandResult::Accepted(invitation.clone())
@@ -4479,13 +3686,7 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
         operation: OperationId::new("invite-accepted"),
         claim: claim("s1"),
     };
-    let joined_hash = crate::store::schema::canonical_digest(&(
-        "invite",
-        &thread,
-        &joined_invite.seat,
-        joined_invite.deadline_millis,
-    ))
-    .unwrap();
+    let joined_hash = cooperative_payload_hash("invite", &joined_invite).unwrap();
     assert_eq!(
         invite(
             &context,
@@ -4502,7 +3703,6 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
                 joined_hash,
                 300_100
             ),
-            fence,
             None,
         )
         .unwrap(),
@@ -4548,7 +3748,7 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
         operation: OperationId::new("leave"),
         claim: claim("s2"),
     };
-    let hash = crate::store::schema::canonical_digest(&("leave", &thread)).unwrap();
+    let hash = cooperative_payload_hash("leave", &leave_request).unwrap();
     let inbox_before_leave: i64 = conn.query_row("SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind='inbox' AND scope_key='s2'",[],|r|r.get(0)).unwrap();
     leave(
         &context,
@@ -4565,7 +3765,6 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
             hash,
             300_100,
         ),
-        fence,
     )
     .unwrap();
     assert_eq!(conn.query_row("SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind='inbox' AND scope_key='s2'",[],|r|r.get::<_,i64>(0)).unwrap(),inbox_before_leave+1);
@@ -4595,8 +3794,7 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
         ports::{
             EnumerationEvidence, EvidenceKind, ExecutionEvidence, HostObservation, HostSnapshot,
             HostUiState, IncarnationEvidence, ObservationProvenance, OperatorRequest,
-            OperatorTargetGuard, OrdinaryAllocationGuard, RecoveryBaseline, RecoveryDisposition,
-            StructuralOccupancy,
+            OperatorTargetGuard, StructuralOccupancy,
         },
         protocol::{
             authority::{OperatorActor, PeerIdentity},
@@ -4692,14 +3890,22 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
         target: HostTargetId::new("p1"),
         operation: OperationId::new("resolve"),
     };
-    let baseline = RecoveryBaseline::new(
-        HostBootId::new("b"),
-        2,
-        ordinary.target.clone(),
-        RecoveryDisposition::UnambiguousUnclaimed,
+    let guard =
+        crate::ports::OrdinaryResolutionGuard::try_new(&ordinary, observation.clone(), &admission)
+            .unwrap();
+    assert_eq!(
+        seats::resolve_seat(
+            &context,
+            &mut conn,
+            "i",
+            ordinary,
+            crate::ports::OrdinaryResolutionAttempt::Observed(guard),
+            &budget,
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::TargetUnresolved
     );
-    let guard = OrdinaryAllocationGuard::try_new(&ordinary, observation.clone(), baseline).unwrap();
-    assert!(seats::allocate(&context, &mut conn, "i", ordinary, guard).is_err());
     let fresh = OperatorFreshSeat {
         target: HostTargetId::new("p1"),
         operation: OperationId::new("fresh"),
@@ -4833,8 +4039,8 @@ fn ordinary_allocation_replay_returns_original_seat_after_retirement() {
     use crate::{
         ports::{
             EvidenceKind, ExecutionEvidence, HostObservation, HostUiState, IncarnationEvidence,
-            ObservationProvenance, OrdinaryAllocationGuard, RecoveryBaseline, RecoveryDisposition,
-            StructuralOccupancy,
+            ObservationProvenance, OrdinaryResolutionAttempt as Attempt, OrdinaryResolutionGuard,
+            OrdinaryResolutionOutcome as Outcome, StructuralOccupancy,
         },
         protocol::commands::ResolveSeat,
         protocol::time::{CallBudget, Cancellation},
@@ -4888,28 +4094,35 @@ fn ordinary_allocation_replay_returns_original_seat_after_retirement() {
         target: HostTargetId::new("p3"),
         operation: OperationId::new("resolve-once"),
     };
-    let guard = || {
-        OrdinaryAllocationGuard::try_new(
-            &request,
-            observation.clone(),
-            RecoveryBaseline::new(
-                HostBootId::new("b"),
-                1,
-                request.target.clone(),
-                RecoveryDisposition::UnambiguousUnclaimed,
-            ),
-        )
-        .unwrap()
+    let guard =
+        || OrdinaryResolutionGuard::try_new(&request, observation.clone(), &admission).unwrap();
+    let Outcome::Resolved(seat) = seats::resolve_seat(
+        &context,
+        &mut conn,
+        "i",
+        request.clone(),
+        Attempt::Observed(guard()),
+        &budget,
+    )
+    .unwrap() else {
+        panic!("seat missing")
     };
-    let seat = seats::allocate(&context, &mut conn, "i", request.clone(), guard()).unwrap();
     conn.execute(
         "UPDATE seats SET state='retired',retired_at=100 WHERE id=?1",
         [seat.as_str()],
     )
     .unwrap();
     assert_eq!(
-        seats::allocate(&context, &mut conn, "i", request.clone(), guard()).unwrap(),
-        seat
+        seats::resolve_seat(
+            &context,
+            &mut conn,
+            "i",
+            request.clone(),
+            Attempt::Observed(guard()),
+            &budget,
+        )
+        .unwrap(),
+        Outcome::Resolved(seat.clone())
     );
     assert_eq!(
         conn.query_row(
@@ -4929,9 +4142,9 @@ fn ordinary_empty_allocation_retains_structural_identity_without_occupant_bindin
     use crate::{
         ports::{
             EvidenceKind, ExecutionEvidence, GuardedSeatTransition, HostObservation, HostUiState,
-            IncarnationEvidence, ObservationProvenance, OrdinaryAllocationGuard,
-            ReconciliationAction, ReconciliationOutcome, RecoveryBaseline, RecoveryDisposition,
-            StructuralOccupancy,
+            IncarnationEvidence, ObservationProvenance, OrdinaryResolutionAttempt,
+            OrdinaryResolutionGuard, OrdinaryResolutionOutcome, ReconciliationAction,
+            ReconciliationOutcome, StructuralOccupancy,
         },
         protocol::commands::ResolveSeat,
         protocol::time::{CallBudget, Cancellation},
@@ -4986,18 +4199,18 @@ fn ordinary_empty_allocation_retains_structural_identity_without_occupant_bindin
         )
         .unwrap()
     );
-    let guard = OrdinaryAllocationGuard::try_new(
-        &request,
-        observation,
-        RecoveryBaseline::new(
-            HostBootId::new("b"),
-            1,
-            request.target.clone(),
-            RecoveryDisposition::UnambiguousUnclaimed,
-        ),
+    let guard = OrdinaryResolutionGuard::try_new(&request, observation, &admission).unwrap();
+    let OrdinaryResolutionOutcome::Resolved(seat) = seats::resolve_seat(
+        &context,
+        &mut conn,
+        "i",
+        request,
+        OrdinaryResolutionAttempt::Observed(guard),
+        &budget,
     )
-    .unwrap();
-    let seat = seats::allocate(&context, &mut conn, "i", request, guard).unwrap();
+    .unwrap() else {
+        panic!("seat missing")
+    };
     assert_eq!(
         conn.query_row(
             "SELECT count(*) FROM occupant_bindings WHERE seat_id=?1",
@@ -5425,16 +4638,14 @@ fn snapshot_rejects_nonrepresentable_host_numbers_without_changing_state() {
 
 #[test]
 fn inviting_directly_joined_creator_is_truthful_replayable_noop() {
-    let (context, mut conn, path, _) = fixture(100);
+    let (context, mut conn, path, _) = bound_fixture(100);
     let create = CreateThread {
         topic: "topic".into(),
         goal: "goal".into(),
         operation: OperationId::new("create-creator"),
         claim: claim("s1"),
     };
-    let create_hash =
-        crate::store::schema::canonical_digest(&("create_thread", &create.topic, &create.goal))
-            .unwrap();
+    let create_hash = cooperative_payload_hash("create_thread", &create).unwrap();
     let CommandResult::ThreadCreated(thread) = create_thread(
         &context,
         &mut conn,
@@ -5450,7 +4661,6 @@ fn inviting_directly_joined_creator_is_truthful_replayable_noop() {
             create_hash,
             100,
         ),
-        fence,
     )
     .unwrap() else {
         panic!()
@@ -5462,13 +4672,7 @@ fn inviting_directly_joined_creator_is_truthful_replayable_noop() {
         operation: OperationId::new("invite-creator"),
         claim: claim("s1"),
     };
-    let digest = crate::store::schema::canonical_digest(&(
-        "invite",
-        &thread,
-        &request.seat,
-        request.deadline_millis,
-    ))
-    .unwrap();
+    let digest = cooperative_payload_hash("invite", &request).unwrap();
     let expected = CommandResult::AlreadyJoined(crate::protocol::results::AlreadyJoined {
         thread: thread.clone(),
         seat: SeatId::new("s1"),
@@ -5489,7 +4693,6 @@ fn inviting_directly_joined_creator_is_truthful_replayable_noop() {
                 digest,
                 100,
             ),
-            fence,
             None,
         )
         .unwrap();
@@ -5597,38 +4800,25 @@ fn retirement_rejects_exhausted_binding_generation_before_fence() {
 #[test]
 fn registration_rejects_exhausted_binding_generation_without_anchor() {
     use crate::{
-        protocol::{authority::ReceiptRegistration, commands::CheckIn},
+        protocol::commands::{CheckIn, CheckInMode},
         store::seats,
     };
     let (context, mut conn, path, _) = fixture(100);
-    conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s2',?1,'s2','b',1,1,'codex','old','old','verified_current_target',0,'term-'||'s2','inc')",[i64::MAX]).unwrap();
+    conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s2',?1,'s2','b',1,1,'codex','old','old','cooperative_top_level',0,'term-'||'s2','inc')",[i64::MAX]).unwrap();
     let command = CheckIn {
-        mode: crate::protocol::commands::CheckInMode::Current,
+        mode: CheckInMode::Lifecycle {
+            expected_binding_generation: 1,
+        },
         claim: claim("s2"),
         operation: OperationId::new("exhausted-check-in"),
     };
-    let registration = ReceiptRegistration {
-        seat: SeatId::new("s2"),
-        host_boot: HostBootId::new("b"),
-        target_generation: 1,
-        binding_generation: 1,
-        native_session: NativeSessionId::new("n"),
-        execution: ExecutionId::new("e"),
-    };
-    let digest = crate::store::schema::canonical_digest(
-        &crate::store::seats::native_check_in_payload(&command),
-    )
-    .unwrap();
+    let digest =
+        crate::store::schema::canonical_digest(&seats::check_in_payload(&command)).unwrap();
     let error = seats::register_available(
         &context,
         &mut conn,
         &command,
-        Some(&registration),
         None,
-        &crate::protocol::time::CallBudget {
-            deadline: crate::protocol::time::MonoInstant(u64::MAX),
-            cancellation: Default::default(),
-        },
         permit(
             "s2",
             "exhausted-check-in",
@@ -5636,7 +4826,10 @@ fn registration_rejects_exhausted_binding_generation_without_anchor() {
             digest,
             100,
         ),
-        fence,
+        &crate::protocol::time::CallBudget {
+            deadline: crate::protocol::time::MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
         |_tx, _seat, _seq| panic!("offer must not run after exhausted generation"),
     )
     .unwrap_err();
@@ -6167,7 +5360,6 @@ fn retirement_fence_is_immediate_and_cleanup_is_bounded_with_ordered_warnings() 
     use crate::{
         ports::{ClosureEvidence, WorkAdmission},
         protocol::time::{CallBudget, Cancellation},
-        store::schema,
     };
     let (context, mut conn, path, _) = fixture(100);
     conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
@@ -6214,15 +5406,11 @@ fn retirement_fence_is_immediate_and_cleanup_is_bounded_with_ordered_warnings() 
         25
     );
     assert_eq!(
-        schema::effective_receipt_state(
-            &conn.unchecked_transaction().unwrap(),
-            &MessageId::new("m0"),
-            &SeatId::new("s2")
-        )
-        .unwrap()
-        .unwrap()
-        .state,
-        "recipient_retired"
+        crate::store::effective::effective_receipt(&conn, "m0", "s2")
+            .unwrap()
+            .unwrap()
+            .state,
+        crate::store::effective::EffectiveReceiptState::RecipientRetired
     );
     drop(conn);
     let budget = CallBudget {
@@ -6421,106 +5609,6 @@ fn retirement_materializes_unprojected_manifest_receipts_in_bounded_turns() {
     assert!(warning_sequence < audit_sequence);
     drop(conn);
     let _ = std::fs::remove_file(path);
-}
-
-#[test]
-fn coherent_occupant_loss_moves_structure_and_preserves_attempt_fence() {
-    use crate::ports::{
-        GuardedSeatTransition, ReconciliationAction, ReconciliationOutcome, StructuralOccupancy,
-    };
-    use crate::protocol::time::{CallBudget, Cancellation};
-    use crate::store::seats;
-    for target in ["s1", "moved-target"] {
-        let (context, mut conn, path, _) = fixture(100);
-        conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,terminal_id,incarnation,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES ('s1',1,'s1','terminal-1','test-incarnation','b',1,1,'codex','native-1','execution-1','verified_current_target',100,100)", []).unwrap();
-        conn.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version,binding_generation,retry_step,reservation_id,reservation_boot,reserved_at_utc,minimum_delay_ms,effective_delay_ms,last_reservation_id,last_reservation_boot,last_reserved_at_utc) VALUES ('s1',3,7,1,2,'attempt-1','daemon-1',90,1000,2000,'attempt-1','daemon-1',90)", []).unwrap();
-        let budget = CallBudget {
-            deadline: MonoInstant(1000),
-            cancellation: Cancellation::default(),
-        };
-        let mut snapshot = snapshot_for_test(2, &[target]);
-        snapshot.targets[0].terminal = Some(TerminalId::new("terminal-1"));
-        // Loss needs positive evidence: an observed empty shell. Unknown
-        // occupancy is refused by the store guard (native-claude-demo-1 P2).
-        snapshot.targets[0].occupancy = StructuralOccupancy::EmptyShell;
-        snapshot.targets[0].generation = 2;
-        let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
-        let stage = staged_test_snapshot(&context, &mut conn, admission, &snapshot, &budget);
-        let publication =
-            seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
-        let mut transition = GuardedSeatTransition {
-            publication,
-            seat: SeatId::new("s1"),
-            expected_binding_generation: 1,
-            expected_target: Some(HostTargetId::new("s1")),
-            expected_terminal: Some(TerminalId::new("terminal-1")),
-            action: ReconciliationAction::MarkOccupantUnavailable {
-                target: HostTargetId::new(target),
-                terminal: TerminalId::new("terminal-1"),
-                expected_execution: ExecutionId::new("execution-1"),
-            },
-        };
-        let mut unsafe_move = transition.clone();
-        unsafe_move.action = ReconciliationAction::Move {
-            target: HostTargetId::new(target),
-            terminal: TerminalId::new("terminal-1"),
-        };
-        assert_eq!(
-            seats::apply_reconciliation_transition(&context, &mut conn, unsafe_move, &budget)
-                .unwrap(),
-            ReconciliationOutcome::Stale
-        );
-        if let ReconciliationAction::MarkOccupantUnavailable {
-            expected_execution, ..
-        } = &mut transition.action
-        {
-            *expected_execution = ExecutionId::new("stale-execution");
-        }
-        assert_eq!(
-            seats::apply_reconciliation_transition(
-                &context,
-                &mut conn,
-                transition.clone(),
-                &budget
-            )
-            .unwrap(),
-            ReconciliationOutcome::Stale
-        );
-        if let ReconciliationAction::MarkOccupantUnavailable {
-            expected_execution, ..
-        } = &mut transition.action
-        {
-            *expected_execution = ExecutionId::new("execution-1");
-        }
-        assert_eq!(
-            seats::apply_reconciliation_transition(
-                &context,
-                &mut conn,
-                transition.clone(),
-                &budget
-            )
-            .unwrap(),
-            ReconciliationOutcome::Applied
-        );
-        assert_eq!(conn.query_row("SELECT state,target_id,generation,target_generation,structural_observation_sequence FROM seats WHERE id='s1'", [], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?,r.get::<_, i64>(2)?,r.get::<_, i64>(3)?,r.get::<_, i64>(4)?))).unwrap(), ("resolved".into(),target.into(),1,2,2));
-        assert_eq!(conn.query_row("SELECT ended_at,registered_at,execution_id FROM occupant_bindings WHERE seat_id='s1'", [], |r| Ok((r.get::<_, i64>(0)?,r.get::<_, i64>(1)?,r.get::<_, String>(2)?))).unwrap(), (100,100,"execution-1".into()));
-        assert_eq!(conn.query_row("SELECT reservation_id,reservation_boot,binding_generation,minimum_delay_ms,effective_delay_ms,reason_bits,retry_step FROM wake_work WHERE seat_id='s1'", [], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?,r.get::<_, i64>(2)?,r.get::<_, i64>(3)?,r.get::<_, i64>(4)?,r.get::<_, i64>(5)?,r.get::<_, i64>(6)?))).unwrap(), ("attempt-1".into(),"daemon-1".into(),1,1000,2000,3,2));
-        assert_eq!(
-            conn.query_row("SELECT count(*) FROM seat_availability", [], |r| r
-                .get::<_, i64>(0))
-                .unwrap(),
-            0
-        );
-        drop(conn);
-        let mut conn = context.open_writer().unwrap();
-        assert_eq!(
-            seats::apply_reconciliation_transition(&context, &mut conn, transition, &budget)
-                .unwrap(),
-            ReconciliationOutcome::Stale
-        );
-        drop(conn);
-        let _ = std::fs::remove_file(path);
-    }
 }
 
 fn seed_structural_continuity_obligations(conn: &Connection) {
@@ -6763,234 +5851,6 @@ fn review_operator_rebind_new_incarnation_then_absence() {
     let _ = std::fs::remove_file(path);
 }
 #[test]
-fn review_unavailable_historical_execution_move() {
-    use crate::ports::{
-        GuardedSeatTransition, ReconciliationAction, ReconciliationOutcome, StructuralOccupancy,
-    };
-    use crate::protocol::time::{CallBudget, Cancellation};
-    use crate::store::seats;
-    for target in ["s1", "moved-target"] {
-        let (context, mut conn, path, _) = fixture(100);
-        conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,terminal_id,incarnation,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES ('s1',1,'s1','terminal-1','test-incarnation','b',1,1,'codex','native-1','execution-1','verified_current_target',100,100)", []).unwrap();
-        conn.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version,binding_generation,retry_step,reservation_id,reservation_boot,reserved_at_utc,minimum_delay_ms,effective_delay_ms,last_reservation_id,last_reservation_boot,last_reserved_at_utc) VALUES ('s1',3,7,1,2,'attempt-1','daemon-1',90,1000,2000,'attempt-1','daemon-1',90)", []).unwrap();
-        let budget = CallBudget {
-            deadline: MonoInstant(1000),
-            cancellation: Cancellation::default(),
-        };
-        let mut snapshot = snapshot_for_test(2, &[target]);
-        snapshot.targets[0].terminal = Some(TerminalId::new("terminal-1"));
-        // Loss needs positive evidence: an observed empty shell. Unknown
-        // occupancy is refused by the store guard (native-claude-demo-1 P2).
-        snapshot.targets[0].occupancy = StructuralOccupancy::EmptyShell;
-        snapshot.targets[0].generation = 2;
-        let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
-        let stage = staged_test_snapshot(&context, &mut conn, admission, &snapshot, &budget);
-        let publication =
-            seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
-        let mut transition = GuardedSeatTransition {
-            publication,
-            seat: SeatId::new("s1"),
-            expected_binding_generation: 1,
-            expected_target: Some(HostTargetId::new("s1")),
-            expected_terminal: Some(TerminalId::new("terminal-1")),
-            action: ReconciliationAction::MarkOccupantUnavailable {
-                target: HostTargetId::new(target),
-                terminal: TerminalId::new("terminal-1"),
-                expected_execution: ExecutionId::new("execution-1"),
-            },
-        };
-        let mut unsafe_move = transition.clone();
-        unsafe_move.action = ReconciliationAction::Move {
-            target: HostTargetId::new(target),
-            terminal: TerminalId::new("terminal-1"),
-        };
-        assert_eq!(
-            seats::apply_reconciliation_transition(&context, &mut conn, unsafe_move, &budget)
-                .unwrap(),
-            ReconciliationOutcome::Stale
-        );
-        if let ReconciliationAction::MarkOccupantUnavailable {
-            expected_execution, ..
-        } = &mut transition.action
-        {
-            *expected_execution = ExecutionId::new("stale-execution");
-        }
-        assert_eq!(
-            seats::apply_reconciliation_transition(
-                &context,
-                &mut conn,
-                transition.clone(),
-                &budget
-            )
-            .unwrap(),
-            ReconciliationOutcome::Stale
-        );
-        if let ReconciliationAction::MarkOccupantUnavailable {
-            expected_execution, ..
-        } = &mut transition.action
-        {
-            *expected_execution = ExecutionId::new("execution-1");
-        }
-        assert_eq!(
-            seats::apply_reconciliation_transition(
-                &context,
-                &mut conn,
-                transition.clone(),
-                &budget
-            )
-            .unwrap(),
-            ReconciliationOutcome::Applied
-        );
-        assert_eq!(conn.query_row("SELECT state,target_id,generation,target_generation,structural_observation_sequence FROM seats WHERE id='s1'", [], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?,r.get::<_, i64>(2)?,r.get::<_, i64>(3)?,r.get::<_, i64>(4)?))).unwrap(), ("resolved".into(),target.into(),1,2,2));
-        assert_eq!(conn.query_row("SELECT ended_at,registered_at,execution_id FROM occupant_bindings WHERE seat_id='s1'", [], |r| Ok((r.get::<_, i64>(0)?,r.get::<_, i64>(1)?,r.get::<_, String>(2)?))).unwrap(), (100,100,"execution-1".into()));
-        assert_eq!(conn.query_row("SELECT reservation_id,reservation_boot,binding_generation,minimum_delay_ms,effective_delay_ms,reason_bits,retry_step FROM wake_work WHERE seat_id='s1'", [], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?,r.get::<_, i64>(2)?,r.get::<_, i64>(3)?,r.get::<_, i64>(4)?,r.get::<_, i64>(5)?,r.get::<_, i64>(6)?))).unwrap(), ("attempt-1".into(),"daemon-1".into(),1,1000,2000,3,2));
-        assert_eq!(
-            conn.query_row("SELECT count(*) FROM seat_availability", [], |r| r
-                .get::<_, i64>(0))
-                .unwrap(),
-            0
-        );
-
-        seed_structural_continuity_obligations(&conn);
-        let mut later = snapshot_for_test(3, &["later-target"]);
-        later.targets[0].terminal = Some(TerminalId::new("terminal-1"));
-        later.targets[0].occupancy = StructuralOccupancy::Occupied;
-        later.targets[0].occupant = Some(crate::ports::NativeOccupant {
-            execution: ExecutionId::new("execution-1"),
-            harness: crate::protocol::authority::Harness::Codex,
-            session: crate::protocol::ids::NativeSessionId::new("native-1"),
-            is_top_level: true,
-        });
-        later.targets[0].execution = crate::ports::ExecutionEvidence::Verified {
-            execution: ExecutionId::new("execution-1"),
-            evidence_kind: crate::ports::EvidenceKind::NativeCurrentTarget,
-        };
-        let a = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
-        let st = staged_test_snapshot(&context, &mut conn, a, &later, &budget);
-        seats::publish_snapshot_stage(&context, &mut conn, &st, &budget).unwrap();
-        let pg = seats::saved_seats_page(&context, &conn, &st, 0, None, 16, &budget).unwrap();
-        let ts = crate::identity::reconcile::plan_page(&pg).unwrap();
-        let t = ts.into_iter().find(|t| t.seat.as_str() == "s1").unwrap();
-        assert!(matches!(t.action, ReconciliationAction::Move { .. }));
-        let published_proof: (i64,String) = conn.query_row("SELECT connection_epoch,incarnation_source_kind FROM snapshot_targets WHERE generation_id=?1 AND target_id='later-target'", [st.as_str()], |r|Ok((r.get(0)?,r.get(1)?))).unwrap();
-        conn.execute("UPDATE snapshot_targets SET connection_epoch=0 WHERE generation_id=?1 AND target_id='later-target'", [st.as_str()]).unwrap();
-        assert_eq!(
-            seats::apply_reconciliation_transition(&context, &mut conn, t.clone(), &budget)
-                .unwrap(),
-            ReconciliationOutcome::Stale
-        );
-        conn.execute("UPDATE snapshot_targets SET connection_epoch=NULL,incarnation_source_kind=NULL WHERE generation_id=?1 AND target_id='later-target'", [st.as_str()]).unwrap();
-        assert_eq!(
-            seats::apply_reconciliation_transition(&context, &mut conn, t.clone(), &budget)
-                .unwrap(),
-            ReconciliationOutcome::Stale
-        );
-        conn.execute("UPDATE snapshot_targets SET connection_epoch=?1,incarnation_source_kind=?2 WHERE generation_id=?3 AND target_id='later-target'", rusqlite::params![published_proof.0,published_proof.1,st.as_str()]).unwrap();
-        conn.execute("UPDATE snapshot_targets SET verified_execution='different-execution' WHERE generation_id=?1 AND target_id='later-target'", [st.as_str()]).unwrap();
-        assert_eq!(
-            seats::apply_reconciliation_transition(&context, &mut conn, t.clone(), &budget)
-                .unwrap(),
-            ReconciliationOutcome::Stale
-        );
-        conn.execute("UPDATE snapshot_targets SET verified_execution='execution-1' WHERE generation_id=?1 AND target_id='later-target'", [st.as_str()]).unwrap();
-        reject_changed_structural_continuity(&context, &mut conn, &t, &budget);
-        conn.execute(
-            "UPDATE seats SET target_id='later-target' WHERE id='s2'",
-            [],
-        )
-        .unwrap();
-        assert_eq!(
-            seats::apply_reconciliation_transition(&context, &mut conn, t.clone(), &budget)
-                .unwrap(),
-            ReconciliationOutcome::Stale
-        );
-        conn.execute("UPDATE seats SET target_id='s2' WHERE id='s2'", [])
-            .unwrap();
-        assert_eq!(
-            seats::apply_reconciliation_transition(&context, &mut conn, t.clone(), &budget)
-                .unwrap(),
-            ReconciliationOutcome::Applied,
-            "historical same execution must permit structural movement without restoring registration"
-        );
-        assert_eq!(
-            seats::apply_reconciliation_transition(&context, &mut conn, t, &budget).unwrap(),
-            ReconciliationOutcome::Stale
-        );
-        assert_eq!(
-            conn.query_row(
-                "SELECT count(*) FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
-                [],
-                |r| r.get::<_, i64>(0)
-            )
-            .unwrap(),
-            0
-        );
-        assert_eq!(conn.query_row("SELECT ended_at,registered_at,execution_id FROM occupant_bindings WHERE seat_id='s1'", [], |r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?))).unwrap(), (100,100,"execution-1".into()));
-        assert_eq!(conn.query_row("SELECT reservation_id,reservation_boot,minimum_delay_ms,effective_delay_ms,retry_step FROM wake_work WHERE seat_id='s1'", [], |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?))).unwrap(), ("attempt-1".into(),"daemon-1".into(),1000,2000,2));
-        assert_eq!(
-            conn.query_row(
-                "SELECT unavailability_open,target_id FROM seats WHERE id='s1'",
-                [],
-                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-            )
-            .unwrap(),
-            (1, "later-target".into())
-        );
-        assert_eq!(
-            conn.query_row("SELECT count(*) FROM seat_availability", [], |r| r
-                .get::<_, i64>(0))
-                .unwrap(),
-            0
-        );
-        assert_eq!(conn.query_row("SELECT state,available_at,deadline_at,acked_at FROM receipts WHERE message_id='fix3-message'", [], |r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<i64>>(1)?,r.get::<_,Option<i64>>(2)?,r.get::<_,Option<i64>>(3)?))).unwrap(), ("pending".into(),None,None,None));
-        assert_eq!(
-            conn.query_row(
-                "SELECT state,deadline_at,accepted_at FROM invitations WHERE id='fix3-invite'",
-                [],
-                |r| Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, Option<i64>>(2)?
-                ))
-            )
-            .unwrap(),
-            ("pending".into(), 300, None)
-        );
-        assert_eq!(
-            conn.query_row("SELECT count(*) FROM warning_offer", [], |r| r
-                .get::<_, i64>(0))
-                .unwrap(),
-            0
-        );
-        drop(conn);
-        let mut conn = context.open_writer().unwrap();
-        let reopened = seats::saved_seats_page(&context, &conn, &st, 0, None, 16, &budget).unwrap();
-        let saved = reopened
-            .seats
-            .iter()
-            .find(|seat| seat.seat.as_str() == "s1")
-            .unwrap();
-        assert_eq!(
-            saved.structural_proof.as_ref().unwrap().target().as_str(),
-            "later-target"
-        );
-        assert_eq!(
-            saved.binding_execution,
-            Some(ExecutionId::new("execution-1"))
-        );
-        assert!(saved.active_binding_execution.is_none());
-
-        assert_eq!(
-            seats::apply_reconciliation_transition(&context, &mut conn, transition, &budget)
-                .unwrap(),
-            ReconciliationOutcome::Stale
-        );
-        drop(conn);
-        let _ = std::fs::remove_file(path);
-    }
-}
-
-#[test]
 fn ordinary_resolution_guard_rejects_unqualified_or_mismatched_read() {
     use crate::ports::{
         EvidenceKind, IncarnationEvidence, ObservationProvenance, OrdinaryResolutionGuard,
@@ -7224,8 +6084,8 @@ fn ordinary_resolution_returns_existing_owner_and_replays_through_host_loss_and_
 #[test]
 fn ordinary_resolution_two_keys_share_allocation_and_operation_namespace() {
     use crate::ports::{
-        OrdinaryAllocationGuard, OrdinaryResolutionAttempt as Attempt, OrdinaryResolutionGuard,
-        OrdinaryResolutionOutcome as Outcome, RecoveryBaseline, RecoveryDisposition, StorePort,
+        OrdinaryResolutionAttempt as Attempt, OrdinaryResolutionGuard,
+        OrdinaryResolutionOutcome as Outcome, StorePort,
     };
     use crate::protocol::commands::ResolveSeat;
     let (context, mut conn, path, store, observation, budget) = ordinary_resolution_fixture();
@@ -7279,20 +6139,17 @@ fn ordinary_resolution_two_keys_share_allocation_and_operation_namespace() {
         target: current.target.clone(),
         operation: OperationId::new("concurrent-a"),
     };
-    let guard = OrdinaryAllocationGuard::try_new(
-        &replay,
-        current.clone(),
-        RecoveryBaseline::new(
-            HostBootId::new("b"),
-            1,
-            current.target,
-            RecoveryDisposition::UnambiguousUnclaimed,
-        ),
-    )
-    .unwrap();
     assert_eq!(
-        crate::store::seats::allocate(&context, &mut conn, "i", replay, guard).unwrap(),
-        seat
+        crate::store::seats::resolve_seat(
+            &context,
+            &mut conn,
+            "i",
+            replay,
+            Attempt::ReplayOnly,
+            &budget,
+        )
+        .unwrap(),
+        Outcome::Resolved(seat)
     );
     drop(store);
     drop(conn);
@@ -7907,33 +6764,25 @@ fn idle_retirement_quantum_returns_and_keeps_retained_error() {
     let _ = std::fs::remove_file(path);
 }
 
-/// Kills: a native registration stored without the terminal/incarnation of
-/// its verified effective observation (unreconfirmable after invalidation),
-/// or a registration that silently proceeds when that evidence is missing.
+/// Kills: a registration stored without the terminal/incarnation of its
+/// verified effective observation (unreconfirmable after invalidation), or a
+/// registration that silently proceeds when that evidence is missing.
 #[test]
-fn native_registration_requires_and_records_reconfirmation_evidence() {
+fn registration_requires_and_records_reconfirmation_evidence() {
     use crate::{
-        protocol::{authority::ReceiptRegistration, commands::CheckIn},
+        protocol::commands::{CheckIn, CheckInMode},
         store::seats,
     };
     let (context, mut conn, path, _) = fixture(100);
     let command = CheckIn {
-        mode: crate::protocol::commands::CheckInMode::Current,
+        mode: CheckInMode::Lifecycle {
+            expected_binding_generation: 1,
+        },
         claim: claim("s2"),
         operation: OperationId::new("check-in-1"),
     };
-    let registration = ReceiptRegistration {
-        seat: SeatId::new("s2"),
-        host_boot: HostBootId::new("b"),
-        target_generation: 1,
-        binding_generation: 1,
-        native_session: NativeSessionId::new("n"),
-        execution: ExecutionId::new("e"),
-    };
-    let digest = crate::store::schema::canonical_digest(
-        &crate::store::seats::native_check_in_payload(&command),
-    )
-    .unwrap();
+    let digest =
+        crate::store::schema::canonical_digest(&seats::check_in_payload(&command)).unwrap();
     let budget = crate::protocol::time::CallBudget {
         deadline: crate::protocol::time::MonoInstant(u64::MAX),
         cancellation: Default::default(),
@@ -7968,9 +6817,7 @@ fn native_registration_requires_and_records_reconfirmation_evidence() {
         &context,
         &mut conn,
         &command,
-        Some(&registration),
         None,
-        &budget,
         permit(
             "s2",
             "check-in-1",
@@ -7978,7 +6825,7 @@ fn native_registration_requires_and_records_reconfirmation_evidence() {
             digest,
             100,
         ),
-        fence,
+        &budget,
         offer,
     )
     .unwrap_err();
@@ -8002,9 +6849,7 @@ fn native_registration_requires_and_records_reconfirmation_evidence() {
         &context,
         &mut conn,
         &command,
-        Some(&registration),
         None,
-        &budget,
         permit(
             "s2",
             "check-in-1",
@@ -8012,7 +6857,7 @@ fn native_registration_requires_and_records_reconfirmation_evidence() {
             digest,
             100,
         ),
-        fence,
+        &budget,
         offer,
     )
     .unwrap();

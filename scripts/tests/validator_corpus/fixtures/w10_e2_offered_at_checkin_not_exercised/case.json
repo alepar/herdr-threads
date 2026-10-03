@@ -1,0 +1,28 @@
+{
+  "harness": "claude",
+  "mode": "tui",
+  "scenario": "lostprompt",
+  "db": {
+    "messages": [
+      {
+        "id": "msg-1",
+        "seq": 5
+      }
+    ],
+    "invitations": [
+      {
+        "id": "inv-1",
+        "seq": 3,
+        "state": "pending"
+      }
+    ]
+  },
+  "facts": {
+    "lostprompt": {
+      "safe_prompt": "supported",
+      "wake_before": {},
+      "wake_after": {},
+      "waited_s": 60
+    }
+  }
+}

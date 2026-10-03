@@ -4,27 +4,32 @@ use crate::client::local::LocalSocketClient;
 use crate::daemon::diagnostics::{
     BufferLimits, DiagnosticBuffer, DiagnosticSink, DiagnosticSource,
 };
+use crate::daemon::logs::{
+    StartAttempt, create_startup_log, daemon_log_path, prune_startup_logs, read_startup_tail,
+    startup_log_path, startup_logs_dir, startup_tail_text,
+};
 use crate::daemon::ownership::{
     EndpointDescriptor, OwnerLock, owner_lock_identity, previous_owner_released, read_descriptor,
     read_existing_namespace,
 };
 use crate::daemon::paths::{InstancePaths, RuntimeContext, effective_uid};
+use crate::daemon::remedy::{RemedyContext, remedy};
 use crate::daemon::transport::{self, ServeOutcome};
 use crate::ports::LocalService;
 use crate::protocol::{
     commands::Command,
-    results::{ApiError, CommandResult, ErrorCode, HealthState},
+    results::{ApiError, CommandResult, ErrorClass, ErrorCode, HealthState},
     time::{CallBudget, Cancellation, Clock, MonoInstant},
     wire::PROTOCOL_VERSION,
 };
 use std::{
     future::Future,
-    io,
+    io::{self, Read},
     os::unix::process::CommandExt,
-    path::Path,
-    process::{Command as ProcessCommand, Stdio},
-    sync::Arc,
-    time::{Duration, Instant},
+    path::{Path, PathBuf},
+    process::{Child, Command as ProcessCommand, Stdio},
+    sync::{Arc, Condvar, Mutex},
+    time::{Duration, Instant, SystemTime},
 };
 use uuid::Uuid;
 
@@ -112,39 +117,26 @@ fn record_owner_error<S: DiagnosticSink>(owner: &mut OwnerSession<S>, error: &io
 }
 
 fn api_error(code: ErrorCode, detail: impl Into<String>) -> ApiError {
-    ApiError {
-        code,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
-}
-
-/// The definite refusal for a daemon whose published protocol differs from
-/// this executable's, from `ensure` and (via [`check_protocol`]) every client,
-/// so none of them sends a request an older daemon would drop at decode. It
-/// names the published pid: when the older executable is gone, stopping that
-/// process is the way out.
-fn protocol_mismatch_error(descriptor: &EndpointDescriptor) -> ApiError {
-    let daemon_protocol = descriptor.protocol_version;
-    let pid = descriptor.pid;
-    api_error(
-        ErrorCode::UnknownWireVersion,
-        format!(
-            "daemon protocol {daemon_protocol} differs from executable protocol {PROTOCOL_VERSION}; run `daemon stop` with the matching older executable/protocol (if it is gone, stop the daemon process, pid {pid}, by hand), then `daemon ensure` with the new executable and the same state/host context"
-        ),
-    )
+    ApiError::new(code, detail)
 }
 
 /// Refuse a published daemon whose protocol differs from this executable's
 /// before any request is sent: an older daemon drops a newer request at
 /// decode with no reply, so a caller would otherwise wait out its budget.
-/// The one check every client (CLI `connect`, the native hook) applies.
+/// The descriptor-only check the native hook applies (it has no time to
+/// confirm the owner is alive); the CLI and `ensure` use [`live_skew`], which
+/// also tells a stale descriptor from a live skewed daemon. The text is the
+/// one VersionSkew `remedy()` line; `daemon stop` from this executable is
+/// skew-tolerant, so the remedy works from the CLI that printed it.
 pub(crate) fn check_protocol(descriptor: &EndpointDescriptor) -> Result<(), ApiError> {
     if descriptor.protocol_version == PROTOCOL_VERSION {
         Ok(())
     } else {
-        Err(protocol_mismatch_error(descriptor))
+        Err(skew_error(
+            ErrorCode::UnknownWireVersion,
+            &descriptor.software_version,
+            descriptor.protocol_version,
+        ))
     }
 }
 
@@ -161,6 +153,51 @@ fn instance_uuid(paths: &InstancePaths) -> io::Result<Option<Uuid>> {
     read_existing_namespace(paths)
 }
 
+/// The VersionSkew error: `code` stays the caller's (wire vs software skew),
+/// the text is the one `remedy()` line naming both versions.
+pub(crate) fn skew_error(code: ErrorCode, daemon_software: &str, daemon_protocol: u16) -> ApiError {
+    api_error(
+        code,
+        remedy(
+            Some(ErrorClass::VersionSkew),
+            &RemedyContext::VersionSkew {
+                daemon: format!("{daemon_software} (protocol {daemon_protocol})"),
+                cli: format!(
+                    "{} (protocol {PROTOCOL_VERSION})",
+                    env!("CARGO_PKG_VERSION")
+                ),
+            },
+        ),
+    )
+}
+
+/// Skew error for a descriptor whose protocol this CLI does not speak, when
+/// its owner is still alive. `None` when the owner is gone (stale descriptor,
+/// nothing to skew against). Never decodes anything the daemon wrote.
+pub(crate) fn live_skew(
+    paths: &InstancePaths,
+    instance: Uuid,
+    descriptor: &EndpointDescriptor,
+) -> Result<Option<ApiError>, ApiError> {
+    let lock_identity = owner_lock_identity(paths).map_err(io_error)?;
+    if previous_owner_released(paths, lock_identity).map_err(io_error)? {
+        return Ok(None);
+    }
+    let current = match read_descriptor(paths, instance) {
+        Ok(current) => current,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(io_error(error)),
+    };
+    if &current != descriptor || previous_owner_released(paths, lock_identity).map_err(io_error)? {
+        return Ok(None);
+    }
+    Ok(Some(skew_error(
+        ErrorCode::UnknownWireVersion,
+        &descriptor.software_version,
+        descriptor.protocol_version,
+    )))
+}
+
 async fn handshake(
     paths: &InstancePaths,
     clock: Arc<dyn Clock>,
@@ -175,21 +212,11 @@ async fn handshake(
         Err(error) => return Err(io_error(error)),
     };
     if descriptor.protocol_version != PROTOCOL_VERSION {
-        let lock_identity = owner_lock_identity(paths).map_err(io_error)?;
-        if previous_owner_released(paths, lock_identity).map_err(io_error)? {
-            return Ok(None);
-        }
-        let current = match read_descriptor(paths, instance) {
-            Ok(current) => current,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(io_error(error)),
+        // Skew is read from the descriptor before any wire decode.
+        return match live_skew(paths, instance, &descriptor)? {
+            Some(error) => Err(error),
+            None => Ok(None),
         };
-        if current != descriptor
-            || previous_owner_released(paths, lock_identity).map_err(io_error)?
-        {
-            return Ok(None);
-        }
-        return Err(protocol_mismatch_error(&descriptor));
     }
     let client = LocalSocketClient::new(
         descriptor.endpoint.clone(),
@@ -220,9 +247,10 @@ async fn handshake(
         ));
     };
     if health.protocol_version != PROTOCOL_VERSION {
-        return Err(api_error(
+        return Err(skew_error(
             ErrorCode::UnknownWireVersion,
-            "daemon health protocol differs from endpoint; run `daemon stop` then `daemon ensure`",
+            &health.software_version,
+            health.protocol_version,
         ));
     }
     if health.instance_id != instance.to_string()
@@ -237,13 +265,10 @@ async fn handshake(
     if health.software_version != env!("CARGO_PKG_VERSION")
         || descriptor.software_version != env!("CARGO_PKG_VERSION")
     {
-        return Err(api_error(
+        return Err(skew_error(
             ErrorCode::DaemonVersionMismatch,
-            format!(
-                "daemon version {} differs from executable {}; run `daemon stop` then `daemon ensure`",
-                health.software_version,
-                env!("CARGO_PKG_VERSION")
-            ),
+            &health.software_version,
+            health.protocol_version,
         ));
     }
     // A reachable, identity-matching daemon that reports Degraded (for
@@ -252,13 +277,78 @@ async fn handshake(
     if health.state == HealthState::Unavailable {
         return Err(api_error(
             ErrorCode::HostUnavailable,
-            "daemon is reachable but unavailable; inspect `daemon health` and logs",
+            format!(
+                "daemon is reachable but unavailable; {}",
+                remedy(
+                    Some(ErrorClass::Unavailable),
+                    &RemedyContext::StartupFailure {
+                        log: daemon_log_path(paths)
+                    }
+                )
+            ),
         ));
     }
     Ok(Some(descriptor))
 }
 
-fn spawn_detached(executable: &Path, context: &RuntimeContext) -> io::Result<()> {
+/// Where one detached child's stderr goes, kept by the starter that spawned it
+/// so it can print only its own attempt's output.
+enum StartupStderr {
+    /// The per-attempt startup log the child writes through its descriptor.
+    File(PathBuf),
+    /// `<state>/logs` could not be used: the child's stderr is a bounded pipe
+    /// whose last bytes this starter keeps.
+    Piped {
+        reason: String,
+        tail: Arc<Mutex<Vec<u8>>>,
+        done: ReaderDone,
+    },
+}
+
+/// Set (and signalled) when the stderr reader thread reaches end of file.
+type ReaderDone = Arc<(Mutex<bool>, Condvar)>;
+
+/// A spawned detached child and its stderr destination.
+struct Launched {
+    child: Child,
+    stderr: StartupStderr,
+}
+
+/// Bytes of the child's stderr kept in the fallback ring.
+const FALLBACK_TAIL_BYTES: usize = 8 * 1024;
+
+fn pipe_reader(mut pipe: impl Read + Send + 'static) -> (Arc<Mutex<Vec<u8>>>, ReaderDone) {
+    let tail = Arc::new(Mutex::new(Vec::new()));
+    let done = Arc::new((Mutex::new(false), Condvar::new()));
+    let (ring, finished) = (Arc::clone(&tail), Arc::clone(&done));
+    let _ = std::thread::Builder::new()
+        .name("child-stderr-tail".into())
+        .spawn(move || {
+            let mut chunk = [0u8; 4096];
+            while let Ok(size) = pipe.read(&mut chunk) {
+                if size == 0 {
+                    break;
+                }
+                if let Ok(mut ring) = ring.lock() {
+                    ring.extend_from_slice(&chunk[..size]);
+                    let excess = ring.len().saturating_sub(FALLBACK_TAIL_BYTES);
+                    ring.drain(..excess);
+                }
+            }
+            if let Ok(mut flag) = finished.0.lock() {
+                *flag = true;
+                finished.1.notify_all();
+            }
+        });
+    (tail, done)
+}
+
+fn spawn_detached(
+    executable: &Path,
+    context: &RuntimeContext,
+    paths: &InstancePaths,
+    attempt: &StartAttempt,
+) -> io::Result<Launched> {
     let mut command = ProcessCommand::new(executable);
     command
         .arg("daemon")
@@ -268,15 +358,88 @@ fn spawn_detached(executable: &Path, context: &RuntimeContext) -> io::Result<()>
         .arg("--host-endpoint")
         .arg(&context.host_endpoint)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(Stdio::null());
+    let file_log = create_startup_log(paths, attempt);
+    let fallback_reason = match file_log {
+        Ok((file, path)) => {
+            prune_startup_logs(&startup_logs_dir(paths), &path, SystemTime::now());
+            command.stderr(Stdio::from(file));
+            Ok(path)
+        }
+        Err(error) => {
+            command.stderr(Stdio::piped());
+            Err(error.to_string())
+        }
+    };
     if let Some(path) = &context.herdr_bin {
         command.env("HERDR_BIN_PATH", path);
     } else {
         command.env_remove("HERDR_BIN_PATH");
     }
     command.process_group(0);
-    command.spawn().map(|_| ())
+    let mut child = command.spawn()?;
+    let stderr = match fallback_reason {
+        Ok(path) => StartupStderr::File(path),
+        Err(reason) => {
+            let pipe = child.stderr.take().expect("piped stderr");
+            let (tail, done) = pipe_reader(pipe);
+            StartupStderr::Piped { reason, tail, done }
+        }
+    };
+    Ok(Launched { child, stderr })
+}
+
+impl Launched {
+    /// The operator-facing block for this attempt only: its startup log's
+    /// tail naming the path, or the fallback's pipe tail naming the fallback.
+    /// Empty when the child wrote nothing.
+    fn tail_block(&self) -> String {
+        match &self.stderr {
+            StartupStderr::File(path) => {
+                let tail = read_startup_tail(path).unwrap_or_default();
+                if tail.is_empty() {
+                    String::new()
+                } else {
+                    format!("startup log {}:\n{tail}", path.display())
+                }
+            }
+            StartupStderr::Piped { reason, tail, done } => {
+                // The child has exited or timed out; give the reader a moment
+                // to drain what is already in the pipe.
+                if let Ok(flag) = done.0.lock() {
+                    let _ =
+                        done.1
+                            .wait_timeout_while(flag, Duration::from_millis(200), |finished| {
+                                !*finished
+                            });
+                }
+                let bytes = tail.lock().map(|ring| ring.clone()).unwrap_or_default();
+                format!(
+                    "(startup log unavailable: {reason}; showing the child's stderr)\n{}",
+                    startup_tail_text(&bytes)
+                )
+            }
+        }
+    }
+
+    /// The log file the remedy names: the attempt's file, or `daemon.log`
+    /// when the attempt had no file.
+    fn remedy_log(&self, paths: &InstancePaths) -> PathBuf {
+        match &self.stderr {
+            StartupStderr::File(path) => path.clone(),
+            StartupStderr::Piped { .. } => daemon_log_path(paths),
+        }
+    }
+}
+
+/// One error text: the summary, this attempt's output block when it has any,
+/// then the remedy. Without output the remedy follows the summary inline.
+fn startup_failure_text(summary: &str, block: &str, remedy: &str) -> String {
+    if block.is_empty() {
+        format!("{summary}; {remedy}")
+    } else {
+        format!("{summary}\n{block}\n{remedy}")
+    }
 }
 
 /// Probe first; a live lock holder is never displaced even when its socket is silent.
@@ -297,13 +460,30 @@ async fn ensure_running_with_timeout(
     let paths = InstancePaths::resolve(context).map_err(io_error)?;
     paths.prepare_instance_dir().map_err(io_error)?;
     let deadline = Instant::now() + timeout;
-    let mut launched = false;
+    let attempt = StartAttempt::new();
+    let mut launched: Option<Launched> = None;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
+            let log = launched.as_ref().map_or_else(
+                || startup_log_path(&paths, &attempt),
+                |launched| launched.remedy_log(&paths),
+            );
+            let remedy = remedy(
+                Some(ErrorClass::Unavailable),
+                &RemedyContext::StartupTimeout { log },
+            );
+            let block = launched
+                .as_ref()
+                .map(Launched::tail_block)
+                .unwrap_or_default();
             return Err(api_error(
                 ErrorCode::HostUnavailable,
-                "daemon did not become ready within five seconds; inspect daemon health and logs",
+                startup_failure_text(
+                    "daemon did not become ready within five seconds",
+                    &block,
+                    &remedy,
+                ),
             ));
         }
         match handshake(
@@ -318,12 +498,36 @@ async fn ensure_running_with_timeout(
             Err(error) if error.code == ErrorCode::DaemonVersionMismatch => return Err(error),
             Err(error) => return Err(error),
         }
+        // A child that exited with a failure before becoming ready will never
+        // be ready: report its own output now instead of waiting out the
+        // deadline. A clean exit is a lost election; the winner's readiness is
+        // what the loop is waiting for.
+        if let Some(launched) = launched.as_mut()
+            && let Ok(Some(status)) = launched.child.try_wait()
+            && !status.success()
+        {
+            let remedy = remedy(
+                None,
+                &RemedyContext::StartupFailure {
+                    log: launched.remedy_log(&paths),
+                },
+            );
+            return Err(api_error(
+                ErrorCode::HostUnavailable,
+                startup_failure_text(
+                    &format!("daemon exited during startup ({status})"),
+                    &launched.tail_block(),
+                    &remedy,
+                ),
+            ));
+        }
         match OwnerLock::acquire(&paths) {
             Ok(lock) => {
                 drop(lock);
-                if !launched {
-                    spawn_detached(executable, context).map_err(io_error)?;
-                    launched = true;
+                if launched.is_none() {
+                    launched = Some(
+                        spawn_detached(executable, context, &paths, &attempt).map_err(io_error)?,
+                    );
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
@@ -496,3 +700,7 @@ where
 #[cfg(test)]
 #[path = "../../tests/daemon/lifecycle.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/daemon/startup_log.rs"]
+mod startup_log_tests;

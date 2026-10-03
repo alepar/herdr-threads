@@ -30,7 +30,9 @@
 //! of that instance.
 //!
 //! Every install observes the installed harness version by running
-//! `<binary> --version` and refuses one that no adapter recipe covers.
+//! `<binary> --version` and refuses one the admission ladder refuses
+//! (unparsable, known-broken, older than every recipe); a newer unlisted
+//! version is admitted optimistically.
 //! The installed hook command is exactly the hook entrypoint's
 //! [`hook::installed_argv`], which its `parse_hook_argv` accepts.
 
@@ -95,8 +97,8 @@ Scope (user level, like Herdr's own agent hooks):
           the instance's client-side journals (pending-operation intents and caller contexts),
           which every mutation and check-in writes; the database and daemon files stay
           read-only. An earlier allowance without the roots is upgraded by setup. This default-deny was
-          measured on Codex 0.159.2 and 0.159.3 only: for any other admitted version the
-          allowance is not written (a warning says so). Codex runs user hooks only once you trust them: the next
+          measured on a short list of Codex versions only (setup names them when it declines):
+          for any other admitted version the allowance is not written (a warning says so). Codex runs user hooks only once you trust them: the next
           interactive `codex` start lists them for review (or use /hooks); Codex then records
           their hashes in config.toml [hooks.state]. setup never writes trust.
 
@@ -116,7 +118,12 @@ adopted: setup records a manifest for it and leaves the file byte-identical (act
 `adopted`), setup-status and doctor report it installed (adopted), and unsetup removes only
 those groups from that file.
 
-Setup observes `<harness> --version` and refuses a version no adapter recipe covers.
+Setup observes `<harness> --version` and places it on the admission ladder: listed (a recipe
+covers it); schema-matched, live-unverified (Codex only: unlisted, but its hook schemas match
+a recipe); optimistic (newer than the verified range, or unlisted inside it: admitted on an
+assumed recipe and labelled, with a note in Health and doctor); or refused (unparsable, inside
+a known-broken range, or older than every recipe). Every admitted version installs; a refused
+one exits 4. `doctor` prints the recipe registries.
 Installed is not observed: only native evidence (see `doctor`) proves hook delivery.
 
 Exit status:
@@ -127,8 +134,9 @@ Exit status:
      another value, or a file could not be written
   2  invalid arguments, undetectable Herdr instance, or invalid settings file (not a JSON
      object / not valid TOML, symlink, over 1 MiB)
-  4  the named harness's installed version is missing, unrecognized or covered by no
-     recipe (with no harness named this is reported as refused, not a failure)";
+  4  the named harness is missing from PATH, or its version is refused (unparsable, inside a
+     known-broken range, or older than every recipe); with no harness named this is reported
+     as refused, not a failure";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupVerb {
@@ -157,12 +165,7 @@ fn harness_name(harness: Harness) -> &'static str {
 }
 
 fn api(code: ErrorCode, detail: impl Into<String>) -> RunError {
-    RunError::Api(ApiError {
-        code,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    })
+    RunError::Api(ApiError::new(code, detail))
 }
 
 fn invalid(detail: impl Into<String>) -> RunError {
@@ -194,8 +197,13 @@ pub struct SetupEnv {
     pub instance_source: Value,
 }
 
-/// How long one read-only `herdr` query may take during detection.
-const HERDR_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long one read-only `herdr` query may take during instance
+/// auto-detection. Detection runs before almost every command, so a hung or
+/// wedged Herdr must not hold the command for long: a healthy `herdr plugin
+/// list --json` / `status server --json` answers in tens of milliseconds, and
+/// a probe that misses this bound fails with the "pass --state-dir /
+/// --host-endpoint" remedy instead of making the person wait out the old 5 s.
+pub(crate) const AUTODETECT_PROBE_TIMEOUT: Duration = Duration::from_millis(2_000);
 const HERDR_QUERY_LIMIT: u64 = 1 << 20;
 pub const PLUGIN_ID: &str = "herdr-threads";
 
@@ -207,15 +215,30 @@ pub struct DetectInputs {
     pub xdg_state_home: Option<PathBuf>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Unit tests that run fake `herdr` scripts in parallel with the rest of
+    /// the suite get a generous probe; the bound test sets the real one.
+    pub(crate) static PROBE_TIMEOUT: std::cell::Cell<Duration> =
+        const { std::cell::Cell::new(Duration::from_secs(30)) };
+}
+
+fn probe_timeout() -> Duration {
+    #[cfg(test)]
+    return PROBE_TIMEOUT.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    AUTODETECT_PROBE_TIMEOUT
+}
+
 fn herdr_json(herdr: &Path, args: &[&str]) -> Result<Value, String> {
-    let bytes = codex::bounded_output(herdr, args, HERDR_QUERY_LIMIT, HERDR_QUERY_TIMEOUT)
-        .map_err(|_| {
-            format!(
-                "`herdr {}` failed or did not answer within {}s",
-                args.join(" "),
-                HERDR_QUERY_TIMEOUT.as_secs()
-            )
-        })?;
+    let timeout = probe_timeout();
+    let bytes = codex::bounded_output(herdr, args, HERDR_QUERY_LIMIT, timeout).map_err(|_| {
+        format!(
+            "`herdr {}` failed or did not answer within {} ms",
+            args.join(" "),
+            timeout.as_millis()
+        )
+    })?;
     if bytes.len() as u64 > HERDR_QUERY_LIMIT {
         return Err(format!("`herdr {}` output is too large", args.join(" ")));
     }
@@ -227,8 +250,10 @@ fn herdr_json(herdr: &Path, args: &[&str]) -> Result<Value, String> {
 /// root (`$XDG_STATE_HOME/herdr/plugins`, else `~/.local/state/herdr/plugins`)
 /// joined with the plugin id, for a plugin `herdr plugin list --json` reports
 /// as installed and enabled. Refuses when the plugin is absent, disabled or
-/// listed more than once, or when both state roots hold a herdr-threads
-/// directory (ambiguous).
+/// listed more than once, or when both state roots hold a store (ambiguous);
+/// a legacy `~/.local/state` directory is chosen over `XDG_STATE_HOME` only when
+/// it holds a store and the XDG directory does not
+/// ([`super::instance::choose_state_dir`]).
 pub fn detect_state_dir(inputs: &DetectInputs) -> Result<(PathBuf, String), String> {
     let herdr = inputs
         .herdr
@@ -261,31 +286,11 @@ pub fn detect_state_dir(inputs: &DetectInputs) -> Result<(PathBuf, String), Stri
             ));
         }
     }
-    let xdg = inputs
-        .xdg_state_home
-        .clone()
-        .filter(|dir| dir.is_absolute())
-        .map(|dir| dir.join("herdr").join("plugins").join(PLUGIN_ID));
-    let home = inputs
-        .home
-        .clone()
-        .filter(|dir| dir.is_absolute())
-        .map(|dir| {
-            dir.join(".local")
-                .join("state")
-                .join("herdr")
-                .join("plugins")
-                .join(PLUGIN_ID)
-        });
-    match (xdg, home) {
-        (Some(xdg), Some(home)) if xdg != home && xdg.is_dir() && home.is_dir() => Err(format!(
-            "both {} and {} exist; pass --state-dir to choose the Herdr plugin state directory",
-            xdg.display(),
-            home.display()
-        )),
-        (Some(xdg), _) => Ok((xdg, "herdr plugin list + XDG_STATE_HOME".into())),
-        (None, Some(home)) => Ok((home, "herdr plugin list + ~/.local/state".into())),
-        (None, None) => Err("neither XDG_STATE_HOME nor HOME is an absolute path".into()),
+    let (xdg, home) =
+        super::instance::state_candidates(inputs.home.as_deref(), inputs.xdg_state_home.as_deref());
+    match super::instance::choose_state_dir(xdg, home)? {
+        Some((state, how, _)) => Ok((state, format!("herdr plugin list + {how}"))),
+        None => Err("neither XDG_STATE_HOME nor HOME is an absolute path".into()),
     }
 }
 
@@ -322,6 +327,9 @@ impl SetupEnv {
         let mut source = serde_json::Map::new();
         let state_dir = match super::instance::resolve_state_dir(&inputs) {
             Ok((state, how)) => {
+                if let Some(leftover) = super::instance::leftover_state_dir(&inputs, &state, &how) {
+                    source.insert("state_dir_leftover".into(), json!(leftover));
+                }
                 source.insert("state_dir".into(), json!(how));
                 Some(state)
             }
@@ -467,6 +475,14 @@ pub fn run<W: Write>(
 pub fn execute(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
     // A malformed argument is invalid (status 2), never a version refusal.
     harness_binary(request, env)?;
+    // A state directory left behind by an uninstalled plugin must not silently take new
+    // installations (unsetup, status and every other command keep working on it).
+    if request.verb == SetupVerb::Install
+        && request.harness != Harness::Human
+        && let Some(leftover) = env.instance_source["state_dir_leftover"].as_str()
+    {
+        return Err(invalid(format!("{leftover}; nothing was changed")));
+    }
     match (request.harness, request.verb) {
         (Harness::Claude, SetupVerb::Install) => claude_install(request, env),
         (Harness::Claude, SetupVerb::Remove) => claude_remove(env),
@@ -1189,9 +1205,61 @@ fn install_settings(
         }
         Err(error) => {
             file.undo();
+            if error == SetupError::Conflict
+                && let Some(moved) = moved_binary_conflict(kind, &path, recorded.as_ref(), &argv)
+            {
+                return Err(moved);
+            }
             Err(map(error))
         }
     }
+}
+
+/// The first word of a hook command built by `shell_command` (single-quoted, an embedded
+/// quote written `'\''`).
+fn first_shell_word(command: &str) -> Option<String> {
+    let mut chars = command.strip_prefix('\'')?.chars().peekable();
+    let mut word = String::new();
+    while let Some(c) = chars.next() {
+        if c != '\'' {
+            word.push(c);
+        } else if chars.clone().take(3).eq("\\''".chars()) {
+            chars.nth(2);
+            word.push('\'');
+        } else {
+            return Some(word);
+        }
+    }
+    None
+}
+
+/// A re-setup refused because the recorded hook command names another executable than this
+/// one (the binary was moved, reinstalled elsewhere or run from a copy): the generic conflict
+/// message lists causes such as hand removal, which misleads here. Names both paths and the fix.
+fn moved_binary_conflict(
+    kind: SettingsKind,
+    file: &Path,
+    recorded: Option<&lib::OwnershipManifest>,
+    argv: &[String],
+) -> Option<RunError> {
+    let recorded_command = recorded?.owned.first()?.group["hooks"][0]["command"].as_str()?;
+    let recorded_exe = first_shell_word(recorded_command)?;
+    let current_exe = argv.first()?;
+    if &recorded_exe == current_exe {
+        return None;
+    }
+    let harness = kind.harness();
+    Some(api(
+        ErrorCode::Conflict,
+        format!(
+            "{} already holds the herdr-threads hooks of an installation that runs \
+             `{recorded_exe}`, but this is `{current_exe}` (the binary moved, or this is another \
+             copy). Run `herdr-threads unsetup {harness}` (from either binary: it removes the \
+             recorded groups whatever executable they name), then `herdr-threads setup \
+             {harness}` from the binary you want to keep; nothing was changed",
+            file.display()
+        ),
+    ))
 }
 
 // ------------------------------------------------------------------ claude
@@ -1457,19 +1525,22 @@ pub struct CodexLayerFile {
 
 /// The Codex config files whose hooks Codex discovers as separate layers: `$CODEX_HOME/{config.toml,hooks.json}`,
 /// the system `/etc/codex` pair, and each `.codex/` pair from `cwd` up to its
-/// Git root (Codex loads project layers only for trusted projects; they are
-/// listed regardless, since trust is not ours to read).
+/// Git root, or only `cwd`'s when no ancestor holds a `.git` (Codex has no project
+/// root then, so it loads no `.codex/` above the working directory; Codex loads
+/// project layers only for trusted projects; they are listed regardless, since
+/// trust is not ours to read).
 pub fn codex_layer_paths(codex_home: Option<&Path>, cwd: &Path) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(home) = codex_home {
         dirs.push(home.to_path_buf());
     }
     dirs.push(PathBuf::from("/etc/codex"));
-    for dir in cwd.ancestors() {
+    let project_depth = cwd
+        .ancestors()
+        .position(|dir| dir.join(".git").exists())
+        .unwrap_or(0);
+    for dir in cwd.ancestors().take(project_depth + 1) {
         dirs.push(dir.join(".codex"));
-        if dir.join(".git").exists() {
-            break;
-        }
     }
     let mut paths = Vec::new();
     for dir in dirs {
@@ -1627,15 +1698,18 @@ pub(crate) fn codex_owned_command(env: &SetupEnv) -> Result<String, RunError> {
 }
 
 /// What the Codex sandbox allowance enables, reported with it.
-pub const CODEX_SANDBOX_NOTE: &str = "Codex's default `-s workspace-write` sandbox refuses \
+pub fn codex_sandbox_note() -> String {
+    let measured = CODEX_SANDBOX_MEASURED_VERSIONS.join(" and ");
+    format!(
+        "Codex's default `-s workspace-write` sandbox refuses \
      connect() to the herdr-threads daemon socket (EPERM), so sandboxed herdr-threads commands \
-     cannot reach the daemon (transport_denied). These three config.toml keys allow exactly this \
-     one Unix socket: sandbox_workspace_write.network_access=true is what makes Codex start its \
+     cannot reach the daemon (transport_denied). These three config.toml keys add this one \
+     Unix socket to the sandbox's allowed sockets: sandbox_workspace_write.network_access=true is what makes Codex start its \
      network proxy (without it the proxy settings do nothing); features.network_proxy.enabled=true \
-     turns on the proxy's enforcement; features.network_proxy.unix_sockets allows only the named \
-     daemon socket. No domain is allowed, so other network access from sandboxed commands stays \
-     denied: measured on Codex 0.159.2 and 0.159.3 only, the only versions setup writes this \
-     allowance for. In Codex demo 2 (0.159.2) and the 0.159.3 sandbox probe other Unix sockets, \
+     turns on the proxy's enforcement; features.network_proxy.unix_sockets gains only the named \
+     daemon socket (sockets already listed there stay allowed). No domain is allowed, so other network access from sandboxed commands stays \
+     denied: measured on Codex {measured} only, the only versions setup writes this \
+     allowance for. In the Codex demo and sandbox-probe runs other Unix sockets, \
      the Herdr server socket, loopback and external TCP were refused (EPERM) and proxied HTTPS \
      got 403. The socket path \
      is stable across daemon restarts but belongs to this state directory and Herdr instance. \
@@ -1644,7 +1718,9 @@ pub const CODEX_SANDBOX_NOTE: &str = "Codex's default `-s workspace-write` sandb
      and the caller's context locally first, so sandbox_workspace_write.writable_roots gains \
      exactly this instance's two client-side journal directories, <instance>/intents and \
      <instance>/contexts; the instance directory, the SQLite database and the daemon's files \
-     stay read-only (measured on Codex 0.159.3, codex-sandbox-writes-probe)";
+     stay read-only (measured in codex-sandbox-writes-probe)"
+    )
+}
 
 /// Codex versions on which the allowance's default-deny was measured: the
 /// proxy started, only the allowlisted socket connected, and other Unix
@@ -1656,7 +1732,7 @@ pub const CODEX_SANDBOX_NOTE: &str = "Codex's default `-s workspace-write` sandb
 /// ignored or did not enforce `features.network_proxy`, it would leave
 /// workspace-write with unrestricted networking. So setup writes the
 /// allowance only for a measured version, never merely an admitted one.
-pub const CODEX_SANDBOX_MEASURED_VERSIONS: &[&str] = &["0.159.2", "0.159.3"];
+pub const CODEX_SANDBOX_MEASURED_VERSIONS: &[&str] = codex::SANDBOX_MEASURED_VERSIONS;
 
 /// The loud warning for a recorded sandbox allowance that outlived the
 /// version gate: `network_access=true` stays in config.toml and applies to
@@ -1790,6 +1866,29 @@ pub(crate) fn codex_missing_roots_warning(env: &SetupEnv, version: Option<&str>)
     ))
 }
 
+/// One warning per `features.network_proxy` key the user's config.toml already held when the
+/// allowance was installed (recorded in the manifest): the allowance turns
+/// `sandbox_workspace_write.network_access` on, which makes those settings effective.
+pub(crate) fn codex_foreign_proxy_warnings(env: &SetupEnv) -> Vec<String> {
+    let Ok(paths) = codex_paths(env) else {
+        return Vec::new();
+    };
+    let Ok(Some(manifest)) = codex_config::read_manifest(&paths.config_manifest) else {
+        return Vec::new();
+    };
+    manifest
+        .foreign_network_proxy
+        .iter()
+        .map(|key| {
+            format!(
+                "{key} was already set in {}; enabling network access for the sandbox makes it \
+                 effective",
+                paths.config.display()
+            )
+        })
+        .collect()
+}
+
 /// The user-level Codex installation's hook file, config file and manifests.
 pub struct CodexPaths {
     pub hooks: PathBuf,
@@ -1904,6 +2003,18 @@ fn allowance_error(error: codex_config::AllowanceError, config: &Path) -> RunErr
     }
 }
 
+/// `error` with `note` appended to its message.
+fn with_note(error: RunError, note: &str) -> RunError {
+    match error {
+        RunError::Api(mut api) => {
+            api.detail = format!("{}; {note}", api.detail);
+            RunError::Api(api)
+        }
+        RunError::Io(error) => failed(format!("{error}; {note}")),
+        other => other,
+    }
+}
+
 fn allowance_json(
     socket: &Result<String, String>,
     roots: &[String],
@@ -1928,9 +2039,12 @@ fn allowance_json(
             "pre_existing": inspection
                 .and_then(|i| i.recorded.as_ref())
                 .map(|m| m.keys.iter().filter(|k| k.pre_existing).map(|k| k.path.join(".")).collect::<Vec<_>>()),
-            "scope": "this state directory and Herdr instance; stable across daemon restarts; \
-                      default-deny measured on Codex 0.159.2 and 0.159.3 only",
-            "note": CODEX_SANDBOX_NOTE,
+            "scope": format!(
+                "this state directory and Herdr instance; stable across daemon restarts; \
+                 default-deny measured on Codex {} only",
+                CODEX_SANDBOX_MEASURED_VERSIONS.join(" and ")
+            ),
+            "note": codex_sandbox_note(),
         }),
         Err(reason) => json!({
             "socket_path": null,
@@ -2011,7 +2125,30 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
             }
             Err(error) => {
                 config_file.undo();
-                return Err(allowance_error(error, &paths.config));
+                let mut error = allowance_error(error, &paths.config);
+                // The hooks were installed first: a failed allowance must not leave them
+                // behind (the command would exit with an error yet change behavior). Hooks
+                // an earlier setup installed, or adopted ones (nothing written), stay.
+                if !already && !adopted {
+                    let note = match remove_user_settings(
+                        SettingsKind::CodexUser,
+                        &paths.hooks,
+                        &paths.hooks_manifest,
+                    ) {
+                        Ok(()) => {
+                            delete_created(&paths.hooks, &paths.hooks_manifest, b"{}");
+                            "the hook installation was rolled back; nothing was installed"
+                                .to_owned()
+                        }
+                        Err(rollback) => format!(
+                            "the hooks in {} could not be rolled back ({rollback:?}); run \
+                             `herdr-threads unsetup codex` to remove them",
+                            paths.hooks.display()
+                        ),
+                    };
+                    error = with_note(error, &note);
+                }
+                return Err(error);
             }
         }
     }
@@ -2030,6 +2167,7 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
             ));
         }
     }
+    warnings.extend(codex_foreign_proxy_warnings(env));
     let unmeasured = codex_unmeasured_allowance_warning(env, Some(witness.as_str()));
     if let Err(reason) = &socket {
         match &unmeasured {
@@ -2214,7 +2352,11 @@ fn codex_status(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErro
         allowance_json(&socket, &roots, inspection.as_ref()),
         unmeasured.clone(),
     );
-    let warnings: Vec<String> = unmeasured.into_iter().chain(missing_roots).collect();
+    let warnings: Vec<String> = unmeasured
+        .into_iter()
+        .chain(missing_roots)
+        .chain(codex_foreign_proxy_warnings(env))
+        .collect();
     if !warnings.is_empty() {
         report["warnings"] = json!(warnings);
     }
@@ -2296,15 +2438,8 @@ fn scalar(value: &Value) -> String {
         Value::Null => "none".into(),
         other => other.to_string(),
     };
-    text.chars()
-        .flat_map(|c| {
-            if c.is_control() {
-                c.escape_default().collect::<Vec<_>>()
-            } else {
-                vec![c]
-            }
-        })
-        .collect()
+    crate::view::escape::escape_for_terminal(&text, crate::view::escape::Context::SingleLine)
+        .into_owned()
 }
 
 /// Compact `key: value` text form.
@@ -2339,6 +2474,24 @@ pub fn render_text(report: &Value) -> String {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    #[test]
+    fn scalar_escapes_bidi_and_format_controls() {
+        let text = scalar(&json!("ok\u{202e}evil\u{2066}x\u{200b}\u{1b}[31m\n"));
+        for raw in ['\u{202e}', '\u{2066}', '\u{200b}', '\u{1b}', '\n'] {
+            assert!(!text.contains(raw), "{raw:?} survived: {text:?}");
+        }
+        assert_eq!(
+            text,
+            crate::view::escape::escape_for_terminal(
+                "ok\u{202e}evil\u{2066}x\u{200b}\u{1b}[31m\n",
+                crate::view::escape::Context::SingleLine
+            )
+        );
+        assert_eq!(scalar(&Value::Null), "none");
+        assert_eq!(scalar(&json!(3)), "3");
+        assert_eq!(scalar(&json!("plain")), "plain");
+    }
 
     fn env(state: Option<&str>) -> SetupEnv {
         SetupEnv {
@@ -2478,6 +2631,61 @@ mod tests {
         assert_eq!(paths, expect);
         fs::remove_dir_all(&dir).unwrap();
     }
+
+    /// Kills: a recorded executable read wrongly (quotes in the path, spaces), which would make
+    /// the moved-binary message name a wrong path or fire when the executable did not move.
+    #[test]
+    fn first_shell_word_reads_the_quoted_executable() {
+        for exe in ["/a/b", "/tmp/space dir/it's here", "/q''x"] {
+            let command = shell_command(&[exe.to_owned(), "hook".into(), "codex".into()]).unwrap();
+            assert_eq!(
+                first_shell_word(&command).as_deref(),
+                Some(exe),
+                "{command}"
+            );
+            let marked = format!("{command} # herdr-threads-owner:abc");
+            assert_eq!(first_shell_word(&marked).as_deref(), Some(exe));
+        }
+        assert_eq!(first_shell_word("unquoted word"), None);
+    }
+
+    /// P2 (ht-p03.15). Kills: walking to `/` when no `.git` is found, which lists `.codex/`
+    /// files Codex would not load (and `refuse_duplicate` then refuses on one), and a walk that
+    /// stops short of an existing Git root.
+    #[test]
+    fn codex_layer_paths_stop_at_cwd_without_a_git_root() {
+        let dir = std::env::temp_dir().join(format!("ht-walk-{}", uuid::Uuid::new_v4()));
+        let cwd = dir.join("x/a/b");
+        fs::create_dir_all(&cwd).unwrap();
+        let layers = |root: &Path| {
+            ["config.toml", "hooks.json"]
+                .into_iter()
+                .map(|name| root.join(".codex").join(name))
+                .collect::<Vec<_>>()
+        };
+        let head = [
+            PathBuf::from("/ch/config.toml"),
+            PathBuf::from("/ch/hooks.json"),
+            PathBuf::from("/etc/codex/config.toml"),
+            PathBuf::from("/etc/codex/hooks.json"),
+        ];
+        let expect = |roots: &[PathBuf]| {
+            head.iter()
+                .cloned()
+                .chain(roots.iter().flat_map(|root| layers(root)))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            codex_layer_paths(Some(Path::new("/ch")), &cwd),
+            expect(std::slice::from_ref(&cwd))
+        );
+        fs::create_dir(dir.join("x/.git")).unwrap();
+        assert_eq!(
+            codex_layer_paths(Some(Path::new("/ch")), &cwd),
+            expect(&[cwd.clone(), dir.join("x/a"), dir.join("x")])
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -2531,6 +2739,18 @@ mod detect_tests {
         );
         fs::create_dir_all(xdg.join("herdr/plugins/herdr-threads")).unwrap();
         fs::create_dir_all(home.join(".local/state/herdr/plugins/herdr-threads")).unwrap();
+        // Two directories without a store: the XDG one wins (the other is a stale leftover).
+        assert_eq!(
+            detect_state_dir(&inputs).unwrap().0,
+            xdg.join("herdr/plugins/herdr-threads")
+        );
+        for root in [
+            xdg.join("herdr/plugins/herdr-threads"),
+            home.join(".local/state/herdr/plugins/herdr-threads"),
+        ] {
+            fs::create_dir_all(root.join("instances/abc")).unwrap();
+            fs::write(root.join("instances/abc/threads.sqlite3"), "").unwrap();
+        }
         assert!(detect_state_dir(&inputs).unwrap_err().contains("both"));
         inputs.herdr = Some(fake_herdr(&dir, r#"{"result":{"plugins":[]}}"#, "{}"));
         assert!(

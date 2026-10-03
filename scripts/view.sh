@@ -3,7 +3,7 @@ set -eu
 
 : "${HERDR_PLUGIN_STATE_DIR:?Herdr plugin state directory is required}"
 : "${HERDR_SOCKET_PATH:?Herdr socket path is required}"
-package_root=$(CDPATH= cd "$(dirname "$0")/.." && pwd -P)
+package_root=$(CDPATH='' cd "$(dirname "$0")/.." && pwd -P)
 binary="$package_root/bin/herdr-threads"
 
 case "${1:-}" in

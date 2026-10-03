@@ -1,0 +1,3 @@
+{"timestamp": "2026-09-30T00:00:01Z", "type": "session_meta", "payload": {"id": "child-1", "parent_thread_id": "11111111-2222-3333-4444-555555555555"}}
+{"timestamp": "2026-09-30T00:00:02Z", "type": "response_item", "payload": {"type": "function_call", "name": "shell", "call_id": "cc1", "arguments": "{\"command\": [\"bash\", \"-lc\", \"herdr-threads pending-receipts\"]}"}}
+{"timestamp": "2026-09-30T00:00:03Z", "type": "response_item", "payload": {"type": "function_call_output", "call_id": "cc1", "output": "{\"output\": \"[]\", \"metadata\": {\"exit_code\": 0}}"}}

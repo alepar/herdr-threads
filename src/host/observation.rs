@@ -33,12 +33,7 @@ pub struct NativeSnapshot {
 }
 
 fn invalid(detail: impl Into<String>) -> ApiError {
-    ApiError {
-        code: ErrorCode::StaleHostObservation,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::stale_host_observation(detail)
 }
 
 fn field<'a>(value: &'a Value, name: &str) -> Result<&'a str, ApiError> {
@@ -73,16 +68,14 @@ pub fn structured_host_error(value: &Value) -> Option<ApiError> {
         }
         _ => ErrorCode::HostUnavailable,
     };
-    Some(ApiError {
+    Some(ApiError::new(
         code,
-        detail: format!(
+        format!(
             "Herdr {}: {}",
             host_code.chars().take(64).collect::<String>(),
             message.chars().take(512).collect::<String>()
         ),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    })
+    ))
 }
 
 fn envelope(raw: &str, expected_type: &str) -> Result<Value, ApiError> {
@@ -162,12 +155,9 @@ pub fn normalize_snapshot(raw: &str) -> Result<NativeSnapshot, ApiError> {
     if field(snapshot, "version")? != "0.9.1"
         || snapshot.get("protocol").and_then(Value::as_u64) != Some(22)
     {
-        return Err(ApiError {
-            code: ErrorCode::Unsupported,
-            detail: "unsupported Herdr snapshot version/protocol".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        });
+        return Err(ApiError::unsupported(
+            "unsupported Herdr snapshot version/protocol",
+        ));
     }
     for collection in ["workspaces", "tabs", "agents", "layouts"] {
         if !snapshot.get(collection).is_some_and(Value::is_array) {

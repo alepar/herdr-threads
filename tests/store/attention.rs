@@ -17,8 +17,13 @@ fn digest(db: &Connection, seat: &str) -> DigestRun {
 fn wake_frontier(db: &Connection, seat: &str) -> LogicalAttentionFrontier {
     let mut position = None;
     loop {
-        let slice =
-            effective::scan_effective_seat_attention(db, seat, position.take(), 100).unwrap();
+        let slice = crate::test_support::attention_oracle::scan_effective_seat_attention(
+            db,
+            seat,
+            position.take(),
+            100,
+        )
+        .unwrap();
         if let Some(attention) = slice.attention {
             return attention.frontier;
         }
@@ -95,6 +100,109 @@ fn digest_frontier_equals_the_canonical_wake_frontier() {
     assert_eq!(ids(&other.invitations), ["inv-o"]);
     assert_eq!(ids(&other.receipts), ["mo"]);
     assert_eq!(ids(&other.warnings), ["w-other", "w-member"]);
+}
+
+/// The pre-D2 oracle, run to completion, as (attention, decision-seq position).
+fn oracle_attention(db: &Connection, seat: &str) -> (effective::EffectiveSeatAttention, i64) {
+    let mut position = None;
+    loop {
+        let slice = crate::test_support::attention_oracle::scan_effective_seat_attention(
+            db,
+            seat,
+            position.take(),
+            100,
+        )
+        .unwrap();
+        if let Some(attention) = slice.attention {
+            return (attention, slice.position.decision_seq);
+        }
+        position = Some(slice.position);
+    }
+}
+
+fn wake_attention(db: &Connection, seat: &str) -> WakeSeatAttention {
+    db.execute_batch("BEGIN DEFERRED").unwrap();
+    let wake = wake_seat_attention(db, seat).unwrap();
+    db.execute_batch("COMMIT").unwrap();
+    wake
+}
+
+// Kills: any source the wake walks drop or mis-judge (invitations, manifest
+// and physical receipts, programmatic notices above the offer frontier,
+// recipient and affected warnings, the outstanding-attribution backlog), a seat filter
+// leaking another seat's rows, and a decision-seq position derived from the
+// walked rows instead of host_instances.decision_seq. Field by field against
+// the oracle, on fixtures below WINDOW per source.
+#[test]
+fn wake_seat_attention_matches_the_oracle() {
+    use effective::EffectiveSeatAttention;
+    let db = every_source();
+    // A programmatic notice for each seat, on top of every_source's warning
+    // jobs (recipients by membership interval, attribution still outstanding).
+    db.pragma_update(None, "foreign_keys", "OFF").unwrap();
+    db.execute_batch("\
+        INSERT INTO service_authors(id,instance_id,created_at) VALUES ('svc','i',0);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t6','i','f','g',0,0);\
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset,author_kind,author_service_id) VALUES ('n1','i','t6',1,'warn','{}',0,20,3,'programmatic','svc'),('n2','i','t6',2,'warn','{}',0,21,4,'programmatic','svc');\
+        INSERT INTO service_notification_publications(preparation_id,message_id,decision_seq,recipient_count) VALUES ('np1','n1',20,1),('np2','n2',21,1);\
+        INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('n1','s',1),('n2','o',1);\
+        INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t6','s',1,1),('t6','o',1,1);\
+    ").unwrap();
+    let mut warning_sources_seen = 0;
+    for seat in ["s", "o"] {
+        let (oracle, oracle_seq) = oracle_attention(&db, seat);
+        let wake = wake_attention(&db, seat);
+        let EffectiveSeatAttention {
+            has_pending_invitation,
+            has_pending_receipt,
+            latest_warning_seq,
+            frontier,
+        } = wake.attention;
+        assert_eq!(
+            has_pending_invitation, oracle.has_pending_invitation,
+            "{seat} invitation"
+        );
+        assert_eq!(
+            has_pending_receipt, oracle.has_pending_receipt,
+            "{seat} receipt"
+        );
+        assert_eq!(
+            latest_warning_seq, oracle.latest_warning_seq,
+            "{seat} warning seq"
+        );
+        assert_eq!(frontier, oracle.frontier, "{seat} frontier");
+        assert_eq!(wake.decision_seq, oracle_seq, "{seat} decision seq");
+        assert_eq!(wake.decision_seq, 40);
+        warning_sources_seen += usize::from(latest_warning_seq.is_some());
+    }
+    assert_eq!(
+        warning_sources_seen, 2,
+        "both seats carry actionable warnings"
+    );
+}
+
+// Kills: a decision position taken from the walked rows: an ACK that settles
+// the only pending receipt adds no newer row, yet the position must follow
+// host_instances.decision_seq.
+#[test]
+fn wake_seat_attention_position_is_the_host_decision_sequence() {
+    let db = every_source();
+    assert_eq!(wake_attention(&db, "s").decision_seq, 40);
+    db.execute_batch("UPDATE receipts SET state='acked',acked_at=2,ack_actor_seat_id='s',ack_generation=1,ack_observation='obs' WHERE message_id='m1'; UPDATE host_instances SET decision_seq=41 WHERE id='i';").unwrap();
+    let after = wake_attention(&db, "s");
+    assert_eq!(after.decision_seq, 41);
+    let (oracle, oracle_seq) = oracle_attention(&db, "s");
+    assert_eq!(oracle_seq, 41);
+    assert_eq!(after.attention, oracle);
+}
+
+// Kills: a missing-seat read that fabricates empty attention.
+#[test]
+fn wake_seat_attention_of_an_unknown_seat_is_not_found() {
+    let db = empty();
+    db.execute_batch("BEGIN DEFERRED").unwrap();
+    let error = wake_seat_attention(&db, "nobody").unwrap_err();
+    assert_eq!(error.code, ErrorCode::NotFound);
 }
 
 // Kills: a producer that writes (it must leave receipts, ACK state, wake and
@@ -270,22 +378,12 @@ fn listed_required_invitations_carry_their_pending_requirement() {
     assert!(wire.get("requirement").is_none(), "{wire}");
 }
 
-/// Count SQLite VM instructions (in units of 10) while `f` runs.
+/// Count SQLite VM instructions (in units of 10) while `f` runs, with a
+/// counter private to this call (ht-p03.6).
 fn vm_units<T>(db: &Connection, f: impl FnOnce() -> T) -> (T, u64) {
-    use rusqlite::ffi;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static UNITS: AtomicU64 = AtomicU64::new(0);
-    extern "C" fn count(_: *mut std::ffi::c_void) -> std::ffi::c_int {
-        UNITS.fetch_add(1, Ordering::SeqCst);
-        0
-    }
-    UNITS.store(0, Ordering::SeqCst);
-    // SAFETY: the handle belongs to `db`, which outlives both calls; the
-    // handler is removed before returning.
-    unsafe { ffi::sqlite3_progress_handler(db.handle(), 10, Some(count), std::ptr::null_mut()) };
-    let value = f();
-    unsafe { ffi::sqlite3_progress_handler(db.handle(), 0, None, std::ptr::null_mut()) };
-    (value, UNITS.load(Ordering::SeqCst))
+    let counter = crate::test_support::isolation::CostCounter::default();
+    let value = crate::test_support::isolation::count_vm_units(db, &counter, f);
+    (value, counter.units())
 }
 
 /// `threads` instance threads, each with another seat's membership interval,
@@ -777,7 +875,7 @@ fn production_warning_history(
         INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1);\
         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,unavailability_open) VALUES ('snd','i','resolved','native','p-snd',1,1,0,1,0),('rcv','i','resolved','native','p-rcv',1,1,0,1,0);\
         INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at) VALUES ('i','p-rcv','b',1,1,1,'fresh','unknown','unknown',0,0);\
-        INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('rcv',1,1,'p-rcv','b',1,'codex','hist-rcv','hist-rcv','fresh',0,0,'term-rcv','inc');\
+        INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('rcv',1,1,'p-rcv','b',1,'codex','hist-rcv','00000000-0000-4000-8000-0000000000cc','fresh',0,0,'term-rcv','inc');\
         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('hist','i','history','g',0,0),('live','i','live','g',0,0);\
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('hist','snd','joined'),('hist','rcv','joined'),('live','snd','joined'),('live','rcv','joined');\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('hist','snd',1,1),('hist','rcv',1,1),('live','snd',1,1),('live','rcv',1,1);\
@@ -931,10 +1029,10 @@ fn check_in_reads_are_flat_at_a_hundred_thousand_settled_warnings() {
 #[ignore = "report-only inventory; writes 10^5 sends through the real writers"]
 fn scale_invariance_inventory_of_canonical_effective_scans() {
     use crate::store::effective::{
-        GlobalLogicalKinds, ReceiptScanScope, scan_effective_receipts,
-        scan_effective_seat_attention, scan_effective_timeline, scan_effective_warnings_for_seat,
-        scan_global_logical_candidates,
+        GlobalLogicalKinds, ReceiptScanScope, scan_effective_receipts, scan_effective_timeline,
+        scan_effective_warnings_for_seat, scan_global_logical_candidates,
     };
+    use crate::test_support::attention_oracle::scan_effective_seat_attention;
     let (context, mut db, _guard) = production_history(0);
     db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES ('inv','i','resolved','native','p-inv',1,1,0,1)", []).unwrap();
     let mut written = 0u64;
@@ -1352,8 +1450,6 @@ fn axis_history(
     let (context, mut db, guard) = production_warning_history(0);
     match axis {
         Axis::PendingInvitations => {
-            // The control writers verify the inviter's current observed target.
-            db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at) VALUES ('i','p-snd','b',1,1,2,'fresh','unknown','unknown',0,0)", []).unwrap();
             history::write_pending_invitations(
                 &context,
                 &mut db,
@@ -1712,4 +1808,51 @@ fn offer_settlement_writes_are_constant() {
 #[ignore = "writes 3x10^5 notices through the real writers; run in release"]
 fn offer_settlement_writes_are_constant_at_three_hundred_thousand() {
     assert_offer_settlement_constant(&[1_000, 300_000]);
+}
+
+// Kills: a v8 backfill that rebuilds `digest_open_warnings` but not
+// `digest_open_warning_recipients` (an upgraded database would list the
+// warning for nobody: the recipient walk reads the recipients projection).
+// Seat `s` received warning `w1` about seat `o`'s pending invitation before the
+// recipient projection existed; rebuilding the projections from the migration's
+// INSERT statements alone must bring the recipient row and the digest back.
+#[test]
+fn recipients_backfill_covers_existing_warnings() {
+    let db = empty();
+    db.execute_batch("\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','g',0,0);\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv-o','t','o',1,'pending',0,3,100,100);\
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('w1','i','t',1,'warn','{}',0,12,1);\
+        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('w1',12,'t',100,'o','invitation','inv-o');\
+        INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('w1','s',1);\
+        UPDATE warning_jobs SET status='complete',phase='complete';\
+    ").unwrap();
+    let recipient_rows = |db: &Connection| -> Vec<(String, String)> {
+        db.prepare("SELECT seat_id,warning_id FROM digest_open_warning_recipients ORDER BY seat_id,warning_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let live = vec![("s".to_string(), "w1".to_string())];
+    assert_eq!(recipient_rows(&db), live);
+    assert_eq!(ids(&digest(&db, "s").digest.warnings), ["w1"]);
+    // The projections as a pre-projection (v7) database would have them: empty.
+    db.execute_batch(
+        "DELETE FROM digest_open_warnings; DELETE FROM digest_open_warning_recipients;",
+    )
+    .unwrap();
+    assert!(recipient_rows(&db).is_empty());
+    assert!(ids(&digest(&db, "s").digest.warnings).is_empty());
+    let backfill: String = include_str!("../../migrations/0008_digest_pending_paths.sql")
+        .split("\n\n")
+        .filter(|s| s.trim_start().starts_with("INSERT"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    db.execute_batch(&backfill).unwrap();
+    assert_eq!(recipient_rows(&db), live);
+    let run = digest(&db, "s");
+    assert_eq!(ids(&run.digest.warnings), ["w1"]);
+    assert_eq!(run.digest.warnings.count, 1);
 }

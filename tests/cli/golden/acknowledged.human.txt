@@ -1,0 +1,2 @@
+Acknowledged 2 message(s): msg-1, msg-2.
+Already acknowledged: msg-0.

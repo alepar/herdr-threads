@@ -16,12 +16,13 @@
 use super::human::{multi_line, one_line};
 use crate::protocol::{
     ids::SeatId,
-    output::format_command_argv,
+    output::{format_command_argv, other_day, render_now},
     pagination::Page,
     results::{MessageKind, MessageSummary},
     service::EventAuthor,
     time::UtcMillis,
 };
+use crate::view::escape::display_width;
 use serde_json::Value;
 
 /// Longest nick shown, in characters (an ellipsis marks clipping).
@@ -140,17 +141,43 @@ fn nick_color(name: &str) -> &'static str {
     NICK_COLORS[hash as usize % NICK_COLORS.len()]
 }
 
-/// `HH:MM` for a Unix-millisecond timestamp, in UTC or local time.
+/// `HH:MM` for a Unix-millisecond timestamp, in UTC or local time; a time on
+/// another date than the render-time "now" (earlier or later, in the same
+/// zone) is `MM-DD HH:MM`.
 pub fn clock(at: UtcMillis, local: bool) -> String {
     let secs = at.0.div_euclid(1000);
-    if local && let Some(local) = local_hh_mm(secs) {
-        return local;
+    if local && let Some(shown) = local_clock(secs) {
+        let now = local_clock(render_now().0.div_euclid(1000));
+        let other_day = now.is_some_and(|now| now.date != shown.date);
+        return shown.format(other_day);
     }
     let rem = secs.rem_euclid(86_400);
-    format!("{:02}:{:02}", rem / 3600, (rem % 3600) / 60)
+    let time = format!("{:02}:{:02}", rem / 3600, (rem % 3600) / 60);
+    match other_day(at) {
+        Some((month, day)) => format!("{month:02}-{day:02} {time}"),
+        None => time,
+    }
 }
 
-fn local_hh_mm(secs: i64) -> Option<String> {
+/// A wall-clock reading: its civil date `(year, month, day)` and time.
+struct WallClock {
+    date: (i32, i32, i32),
+    hour: i32,
+    minute: i32,
+}
+
+impl WallClock {
+    fn format(&self, with_date: bool) -> String {
+        let time = format!("{:02}:{:02}", self.hour, self.minute);
+        if with_date {
+            format!("{:02}-{:02} {time}", self.date.1, self.date.2)
+        } else {
+            time
+        }
+    }
+}
+
+fn local_clock(secs: i64) -> Option<WallClock> {
     let time = libc::time_t::try_from(secs).ok()?;
     // SAFETY: localtime_r writes only into the zeroed `tm` we own.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
@@ -158,7 +185,11 @@ fn local_hh_mm(secs: i64) -> Option<String> {
     if result.is_null() {
         return None;
     }
-    Some(format!("{:02}:{:02}", tm.tm_hour, tm.tm_min))
+    Some(WallClock {
+        date: (tm.tm_year, tm.tm_mon + 1, tm.tm_mday),
+        hour: tm.tm_hour,
+        minute: tm.tm_min,
+    })
 }
 
 /// The author nick of a message, or `None` for a built-in system event.
@@ -294,7 +325,7 @@ fn emit(
     style: &Style,
     out: &mut String,
 ) {
-    let prefix_width = prefix_plain.chars().count();
+    let prefix_width = display_width(prefix_plain);
     let indent = if prefix_width <= style.width / 2 {
         prefix_width
     } else {
@@ -350,7 +381,7 @@ fn wrap(paragraph: &str, first: usize, rest: usize, lines: &mut Vec<String>) {
         *width = 0;
     };
     for word in paragraph.split(' ') {
-        let len = word.chars().count();
+        let len = display_width(word);
         let needed = if width == 0 { len } else { width + 1 + len };
         if needed <= limit {
             if width > 0 {
@@ -366,8 +397,17 @@ fn wrap(paragraph: &str, first: usize, rest: usize, lines: &mut Vec<String>) {
         }
         let mut chars = word.chars().peekable();
         while chars.peek().is_some() {
-            let piece: String = chars.by_ref().take(limit).collect();
-            let piece_len = piece.chars().count();
+            let mut piece = String::new();
+            let mut piece_len = 0;
+            while let Some(&next) = chars.peek() {
+                let next_width = display_width(next.encode_utf8(&mut [0; 4]));
+                if piece_len + next_width > limit && !piece.is_empty() {
+                    break;
+                }
+                piece.push(next);
+                piece_len += next_width;
+                chars.next();
+            }
             current.push_str(&piece);
             width = piece_len;
             if chars.peek().is_some() {

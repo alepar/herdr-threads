@@ -1,0 +1,9 @@
+thread t-1 messages=7 ordinary=5 joined=2 participants=2 pending_receipts=2
+topic: Plan the release…
+topic.more: herdr-threads thread show t-1
+goal: Ship the release by Friday
+pending_receipts: herdr-threads pending-receipts --thread t-1
+participants:
+seat-a joined self
+seat-b invited required invitation=inv-1 requirement=req-1 revision=2
+participants.next: herdr-threads participants t-1 --cursor cursor-1

@@ -1,0 +1,6 @@
+{
+  "finding": "w10_e8_lostprompt_still_excused",
+  "entry": "manifest",
+  "verdict": "UNSUPPORTED",
+  "reason": "safe_wake_unsupported"
+}

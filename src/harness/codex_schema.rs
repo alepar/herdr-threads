@@ -53,6 +53,9 @@ pub enum Unextractable {
     NoSchemas,
     /// One title is embedded with two different schemas.
     Conflicting(String),
+    /// The npm JS wrapper has more than one sibling platform vendor binary,
+    /// so which one runs is not known.
+    SeveralVendorBinaries(usize),
 }
 
 impl fmt::Display for Unextractable {
@@ -64,6 +67,10 @@ impl fmt::Display for Unextractable {
             Self::Changed => f.write_str("binary changed while being read"),
             Self::NoSchemas => f.write_str("no embedded hook command schemas found"),
             Self::Conflicting(title) => write!(f, "conflicting embedded schemas for {title}"),
+            Self::SeveralVendorBinaries(count) => write!(
+                f,
+                "{count} platform vendor binaries beside the npm codex wrapper; cannot tell which one runs"
+            ),
         }
     }
 }
@@ -268,6 +275,11 @@ pub struct BinaryIdentity {
 }
 
 impl BinaryIdentity {
+    /// The canonical path the identity names.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// The identity of the file `path` resolves to, if it is a regular file.
     pub fn observe(path: &Path) -> Option<Self> {
         let canonical = std::fs::canonicalize(path).ok()?;
@@ -399,6 +411,61 @@ impl<'a> FingerprintCache<'a> {
     }
 }
 
+/// Whether `canonical` is the npm JS wrapper (`codex.js`) rather than a
+/// native binary: by name, or by a `#!/usr/bin/env node` first line.
+fn is_npm_wrapper(canonical: &Path) -> bool {
+    if canonical.file_name().is_some_and(|name| name == "codex.js") {
+        return true;
+    }
+    const SHEBANG: &[u8] = b"#!/usr/bin/env node";
+    let mut head = [0u8; SHEBANG.len()];
+    File::open(canonical)
+        .and_then(|mut file| file.read_exact(&mut head))
+        .is_ok()
+        && head == SHEBANG
+}
+
+/// The file whose embedded schemas describe the Codex at `binary`: the
+/// binary itself, or, when it resolves to the npm JS wrapper
+/// (`<prefix>/node_modules/@openai/codex/bin/codex.js`), the single sibling
+/// `<prefix>/node_modules/@openai/codex-<platform>/vendor/<triple>/bin/codex`
+/// native binary of the same package version. No vendor sibling is
+/// [`Unextractable::NoSchemas`] (the wrapper embeds none); several is
+/// [`Unextractable::SeveralVendorBinaries`].
+pub fn fingerprint_target(binary: &Path) -> Result<PathBuf, Unextractable> {
+    let canonical = std::fs::canonicalize(binary).map_err(|_| Unextractable::Io)?;
+    if !is_npm_wrapper(&canonical) {
+        return Ok(canonical);
+    }
+    // <scope>/codex/bin/codex.js: the package root is two levels up.
+    let scope = canonical
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .ok_or(Unextractable::NoSchemas)?;
+    let mut found = Vec::new();
+    let packages = std::fs::read_dir(scope).map_err(|_| Unextractable::NoSchemas)?;
+    for package in packages.flatten() {
+        if !package.file_name().to_string_lossy().starts_with("codex-") {
+            continue;
+        }
+        let Ok(triples) = std::fs::read_dir(package.path().join("vendor")) else {
+            continue;
+        };
+        for triple in triples.flatten() {
+            let candidate = triple.path().join("bin").join("codex");
+            if std::fs::metadata(&candidate).is_ok_and(|meta| meta.is_file()) {
+                found.push(candidate);
+            }
+        }
+    }
+    match found.len() {
+        0 => Err(Unextractable::NoSchemas),
+        1 => Ok(found.remove(0)),
+        count => Err(Unextractable::SeveralVendorBinaries(count)),
+    }
+}
+
 /// Read, hash and fingerprint `binary` before `deadline`, reusing a cached
 /// result for the same binary identity. `cache_file`, if given, is a
 /// persistent cache in a caller-owned private directory; it is best effort.
@@ -420,7 +487,8 @@ pub fn fingerprint_binary_with(
     deadline: Instant,
     cache: FingerprintCache<'_>,
 ) -> Result<BinaryFingerprint, Unextractable> {
-    let canonical = std::fs::canonicalize(binary).map_err(|_| Unextractable::Io)?;
+    let canonical =
+        std::fs::canonicalize(fingerprint_target(binary)?).map_err(|_| Unextractable::Io)?;
     let before = std::fs::metadata(&canonical).map_err(|_| Unextractable::Io)?;
     if !before.is_file() {
         return Err(Unextractable::Io);

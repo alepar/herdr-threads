@@ -6,6 +6,7 @@ pub mod lifecycle;
 pub mod logs;
 pub mod ownership;
 pub mod paths;
+pub mod remedy;
 pub mod transport;
 
 use crate::daemon::{

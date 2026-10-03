@@ -106,8 +106,8 @@ pub(crate) fn replay(
 ) -> Result<Option<CommandResult>, ApiError> {
     let expected = digest(instance, command)?;
     let db = context.open_query(budget.clone())?;
-    // Opaque IDs are at most128 ASCII bytes; worst-case JSON escaping
-    // doubles that size.512 bytes includes every legacy operator wrapper.
+    // Opaque IDs are at most 128 ASCII bytes; worst-case JSON escaping
+    // doubles that size. 512 bytes includes every legacy operator wrapper.
     let stored: Option<(Option<Vec<u8>>, Option<String>)> = db
         .query_row(
             "SELECT CASE WHEN typeof(digest)='blob' AND length(digest)=32 THEN digest END, CASE WHEN typeof(result_json)='text' AND length(CAST(result_json AS BLOB))<=512 THEN result_json END FROM operations WHERE actor_scope=?1 AND operation_key=?2",

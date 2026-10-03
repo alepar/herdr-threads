@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import shlex
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -101,7 +102,7 @@ class CodexTuiCommandTests(unittest.TestCase):
         self.assertNotIn("exec", argv)
         for flag in ("--json", "--ignore-user-config", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "--yolo"):
             self.assertNotIn(flag, argv)
-        self.assertEqual(argv[argv.index("-a") + 1], "on-request")  # explicit -s/-a: Codex skips its folder-trust screen
+        self.assertEqual(argv[argv.index("-a") + 1], "on-request")  # explicit approval policy and sandbox (folder trust is answered separately, scratch only)
         self.assertEqual(argv[argv.index("-s") + 1], "workspace-write")
         self.assertIn("--dangerously-bypass-hook-trust", argv)
         self.assertIn("hooks.SessionStart=[x]", argv)
@@ -145,8 +146,10 @@ class CodexTuiLaunchTests(unittest.TestCase):
             self.assertIn("trust", detail)
             self.assertEqual(self.typed(host), [])
 
-    def launch_trust(self, accept, screens):
-        host = base.FakeHostDriver(self, harness="codex", mode="tui", tui_accept_trust=accept)
+    def launch_trust(self, accept, screens, tmp_dir="/private/tmp", project=None):
+        host = base.FakeHostDriver(self, harness="codex", mode="tui", tui_accept_trust=accept, tmp_dir=tmp_dir)
+        if project is not None:
+            host.driver.project = project
         host.wait_state, host.screens = "blocked", list(screens)
         host.driver.facts.update({"agent_pane": "w9:p1", "phase_started_utc": {"initial": "2026-09-30T00:00:00+00:00"}})
         with contextlib.redirect_stdout(io.StringIO()), fake_time():
@@ -160,6 +163,49 @@ class CodexTuiLaunchTests(unittest.TestCase):
         self.assertEqual(status, demo.PASS, detail)
         tags = [c[1] for c in host.calls]
         self.assertLess(tags.index("tui:accept-codex-trust:initial"), tags.index("tui:prompt:initial"))
+
+    def test_codex_folder_trust_outside_scratch_root_is_refused(self):
+        # tmp_dir=None puts the run root under the platform temp dir (/var/folders on macOS), outside /private/tmp.
+        if str(Path(tempfile.gettempdir()).resolve()).startswith("/private/tmp/"):
+            self.skipTest("gettempdir is under /private/tmp here")
+        host, (status, detail, _) = self.launch_trust(True, [self.FOLDER], tmp_dir=None)
+        self.assertEqual(status, demo.FAIL)
+        self.assertIn("outside", detail)
+        self.assertIn("nothing typed", detail)
+        self.assertNotIn("tui:accept-codex-trust:initial", [c[1] for c in host.calls])
+        self.assertEqual(self.typed(host), [])
+
+    def test_codex_folder_trust_project_moved_outside_root_is_refused(self):
+        # The check uses the live project path, not --run-root.
+        host, (status, detail, _) = self.launch_trust(True, [self.FOLDER], project=Path("/private/tmp"))
+        self.assertEqual(status, demo.FAIL)
+        self.assertIn("outside the run root", detail)
+        self.assertEqual(self.typed(host), [])
+
+    def test_codex_folder_trust_acceptance_is_recorded(self):
+        host = base.FakeHostDriver(self, harness="codex", mode="tui", tui_accept_trust=True, tmp_dir="/private/tmp")
+        d = host.driver
+        host.wait_state, host.screens = "blocked", [self.FOLDER, "OpenAI Codex", "? for shortcuts", "done"]
+        d.facts.update({"agent_pane": "w9:p1", "phase_started_utc": {"initial": "2026-09-30T00:00:00+00:00"}})
+        d.codex_tui_command("initial", "", "", d.ev / "x.rc")
+        with contextlib.redirect_stdout(io.StringIO()), fake_time():
+            status, detail, _ = d.launch_tui("initial", "true", d.ev / "x.rc")
+        self.assertEqual(status, demo.PASS, detail)
+        d.codex_tui_command("restart", "", "", d.ev / "y.rc")  # rebuilt per phase: the list must survive
+        record = d.facts["codex_tui"]["folder_trust_acceptances"]
+        self.assertEqual(len(record), 1)
+        self.assertEqual(record[0]["phase"], "initial")
+        self.assertEqual(record[0]["project"], str(d.project.resolve()))
+        self.assertEqual(record[0]["run_root"], str(d.root.resolve()))
+        self.assertTrue(record[0]["codex_config"].endswith("config.toml"))
+        self.assertIsInstance(record[0]["utc"], str)
+        self.assertNotIn("folder_trust_avoided_by", d.facts["codex_tui"])
+        self.assertIn("accepted on screen", d.facts["codex_tui"]["folder_trust"])
+
+    def test_codex_tui_record_without_flag_says_not_approved(self):
+        host = base.FakeHostDriver(self, harness="codex", mode="tui")
+        host.driver.codex_tui_command("initial", "", "", host.driver.ev / "x.rc")
+        self.assertIn("not approved", host.driver.facts["codex_tui"]["folder_trust"])
 
     def test_codex_folder_trust_without_flag_still_fails(self):
         host, (status, _, _) = self.launch_trust(False, [self.FOLDER])
@@ -689,7 +735,8 @@ class ChildrenCodexTests(base.ScenarioBase):
         self.child("child-2", "2026-09-30T00:00:02Z", "2026-09-30T00:00:09Z")
         status, detail, _ = self.verify()
         self.assertEqual(status, demo.PASS, detail)
-        self.assertEqual(self.driver.phase_results[-1]["sidechain"]["spawns"], ["s1", "s2"])
+        # W10-E6: children are counted by stable identity (the two child rollouts), not by the two spawn call ids.
+        self.assertEqual(self.driver.phase_results[-1]["sidechain"]["spawns"], ["child-1", "child-2"])
         status, detail, _ = self.driver.s_children_concurrent()
         self.assertEqual(status, demo.PASS, detail)
         self.assertIn("timestamp", detail)

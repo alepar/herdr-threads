@@ -1,5 +1,5 @@
 //! Human-readable CLI error rendering and the stable exit-status table
-//! documented in `commands::EXIT_STATUS_HELP`.
+//! documented in `commands::exit_status_help`.
 
 use super::{RunError, output::OutputError};
 use crate::protocol::results::{ApiError, ErrorCode};

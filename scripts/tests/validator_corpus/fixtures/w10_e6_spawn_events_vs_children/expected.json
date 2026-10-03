@@ -1,0 +1,6 @@
+{
+  "finding": "w10_e6_spawn_events_vs_children",
+  "entry": "child_no_ack",
+  "verdict": "PASS",
+  "reason": "sidechain complete (1 spawn(s), 1 child herdr-threads call(s)): no child write succeeded (transcript level); DB ACK execution exec-root = root binding execution n/a (consistency only; does not discriminate under B1)"
+}

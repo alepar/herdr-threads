@@ -77,3 +77,40 @@ fn skill_prints_verbatim_in_every_presentation() {
     }
     crate::cli::output::set_stdout_is_terminal(false);
 }
+
+// Kills: the blanket "--json on any command" claim coming back (`skill`
+// prints the guide whatever the flag says, and `--json` conflicts with
+// --human/--machine), and the digest example sitting inside the block of
+// ready commands the agent is told to run verbatim.
+#[test]
+fn skill_does_not_overclaim_json_and_keeps_the_digest_out_of_the_ready_block() {
+    assert!(
+        !SKILL_MD.contains("to any command for structured output"),
+        "the blanket --json claim must stay gone"
+    );
+    assert!(SKILL_MD.contains("`--json` selects JSON output for commands that return a result"));
+    let block = SKILL_MD
+        .split("```")
+        .find(|block| block.contains("Ready commands (run exactly as written"))
+        .expect("the ready commands block");
+    assert!(
+        !block.contains("attention digest:"),
+        "the digest line is not a ready command: {block}"
+    );
+    assert!(SKILL_MD.contains("`attention digest: invitations=1 [INV@THREAD]"));
+}
+
+// Kills: a compact renderer inventing a `--offset` continuation: the daemon
+// always supplies `body_next_argv`, so the fallback was dead code.
+#[test]
+fn compact_continuations_never_build_an_offset_argv() {
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/protocol/output_compact.rs"
+    ))
+    .unwrap();
+    assert!(
+        !source.contains("\"--offset\""),
+        "output_compact.rs must not build a --offset argv"
+    );
+}

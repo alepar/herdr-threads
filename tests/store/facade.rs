@@ -6,10 +6,7 @@ use crate::{
         StorePort, WorkAdmission,
     },
     protocol::{
-        authority::{
-            CallerClaim, Harness, MutationPermit, ObligationRef, ReceiptRegistration,
-            VerifiedCaller,
-        },
+        authority::{CallerClaim, Harness, MutationPermit},
         commands::{
             Accept, Ack, CheckIn, Command, CreateThread, DirectoryMembership, DirectoryQuery,
             InboxQuery, Invite, OperationStatusQuery, PermitMutation, SendMessage, ThreadMutation,
@@ -171,6 +168,7 @@ fn public_facade_late_accept_and_ack_share_unique_due_warnings() {
         INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1);\
         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','p',1,1,0);\
         INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p','b',1,1,0,'fresh','term-'||'p','inc','coherent_enumeration',1);\
+        INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',1,1,'p','b',1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-'||'p','inc');\
         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,2);\
         INSERT INTO memberships(thread_id,seat_id,state,episode) VALUES ('t','s','invited',1);\
         INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv','t','s',1,'pending',0,1,50,50);\
@@ -182,43 +180,19 @@ fn public_facade_late_accept_and_ack_share_unique_due_warnings() {
     let accept = Accept {
         thread: ThreadId::new("t"),
         operation: OperationId::new("late-accept"),
-        claim: fixture_claim("p"),
+        claim: fixture_claim("s", "p"),
     };
-    let digest = schema::canonical_digest(&("accept", &accept.thread)).unwrap();
     assert!(matches!(
-        StorePort::mutate(
-            &store,
-            PermitMutation::Accept(accept.clone()),
-            fixture_permit(
-                "s",
-                &accept.operation,
-                ObligationRef::Invitation(crate::protocol::ids::InvitationId::new("inv")),
-                digest
-            ),
-            &budget()
-        )
-        .unwrap(),
+        permitted(&store, PermitMutation::Accept(accept.clone())).unwrap(),
         CommandResult::Accepted(_)
     ));
     let ack = Ack {
         messages: vec![crate::protocol::ids::MessageId::new("m")],
         operation: OperationId::new("late-ack"),
-        claim: fixture_claim("p"),
+        claim: fixture_claim("s", "p"),
     };
-    let digest = schema::canonical_digest(&receipts::ack_payload(&ack)).unwrap();
     assert!(matches!(
-        StorePort::mutate(
-            &store,
-            PermitMutation::Ack(ack.clone()),
-            fixture_permit(
-                "s",
-                &ack.operation,
-                ObligationRef::CheckIn(SeatId::new("s")),
-                digest
-            ),
-            &budget()
-        )
-        .unwrap(),
+        permitted(&store, PermitMutation::Ack(ack.clone())).unwrap(),
         CommandResult::Acknowledged(_)
     ));
     let scan = DueScanRequest {
@@ -577,8 +551,10 @@ fn pending_work_pages_global_job_order_and_keeps_a_reachable_cursor() {
     let _ = std::fs::remove_file(path);
 }
 
+// ht-p03.12.4: discovery reads `work_jobs_live`, so a full slice of completed
+// jobs is never visited and the first page already holds the ready job.
 #[test]
-fn pending_work_advances_over_a_full_slice_of_completed_jobs() {
+fn pending_work_skips_a_full_slice_of_completed_jobs() {
     let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
     let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
     let db = context.open_writer().unwrap();
@@ -594,25 +570,17 @@ fn pending_work_advances_over_a_full_slice_of_completed_jobs() {
     drop(db);
     let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let first = StorePort::pending_work(&store, PageRequest::default(), &budget()).unwrap();
-    assert!(first.items.is_empty() && first.has_more);
-    let second = StorePort::pending_work(
-        &store,
-        PageRequest {
-            cursor: first.next_cursor,
-            ..PageRequest::default()
-        },
-        &budget(),
-    )
-    .unwrap();
-    assert_eq!(second.items.len(), 1);
-    assert_eq!(second.items[0].id, "ready");
-    assert!(!second.has_more);
+    assert_eq!(first.items.len(), 1);
+    assert_eq!(first.items[0].id, "ready");
+    assert!(!first.has_more && first.next_cursor.is_none());
     drop(store);
     let _ = std::fs::remove_file(path);
 }
 
+// With only completed jobs the live scan is empty and the page is final: no
+// continuation cursor, and the page fits the smallest legal byte budget.
 #[test]
-fn pending_work_rejects_a_budget_smaller_than_its_empty_continuation() {
+fn pending_work_with_only_completed_jobs_is_an_empty_final_page() {
     let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
     let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
     let db = context.open_writer().unwrap();
@@ -624,53 +592,21 @@ fn pending_work_rejects_a_budget_smaller_than_its_empty_continuation() {
     for n in 0..100 {
         db.execute("INSERT INTO work_jobs(id,kind,subject_id,high_water,status) VALUES (?1,'preparation_cleanup',?1,0,'complete')", [format!("done-{n}")]).unwrap();
     }
-    db.execute("INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES ('ready','send_attention','ready',0)", []).unwrap();
     drop(db);
     let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let complete = StorePort::pending_work(&store, PageRequest::default(), &budget()).unwrap();
-    let minimum = serde_json::to_vec(&complete).unwrap().len() as u32;
-    assert!(complete.items.is_empty() && complete.has_more);
-    // ht-4is.8.18: a `c3:` continuation is short enough that the empty page
-    // fits the smallest legal budget; there is no legal budget below it.
-    if minimum <= 256 {
-        let smallest = StorePort::pending_work(
-            &store,
-            PageRequest {
-                max_bytes: 256,
-                ..PageRequest::default()
-            },
-            &budget(),
-        )
-        .unwrap();
-        assert_eq!(smallest, complete);
-        drop(store);
-        std::fs::remove_file(path).unwrap();
-        return;
-    }
-    let exact = StorePort::pending_work(
+    assert!(complete.items.is_empty() && !complete.has_more && complete.next_cursor.is_none());
+    assert!(serde_json::to_vec(&complete).unwrap().len() <= 256);
+    let smallest = StorePort::pending_work(
         &store,
         PageRequest {
-            max_bytes: minimum,
+            max_bytes: 256,
             ..PageRequest::default()
         },
         &budget(),
     )
     .unwrap();
-    assert_eq!(exact, complete);
-    let error = StorePort::pending_work(
-        &store,
-        PageRequest {
-            max_bytes: minimum - 1,
-            ..PageRequest::default()
-        },
-        &budget(),
-    )
-    .unwrap_err();
-    assert_eq!(
-        error.code,
-        crate::protocol::results::ErrorCode::InvalidBudget
-    );
-    assert_eq!(error.required_minimum_bytes, Some(minimum));
+    assert_eq!(smallest, complete);
     drop(store);
     std::fs::remove_file(path).unwrap();
 }
@@ -1315,49 +1251,20 @@ fn public_facade_check_in_commits_anchor_and_exact_empty_offer() {
     drop(db);
     let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let command = CheckIn {
-        mode: crate::protocol::commands::CheckInMode::Current,
-        claim: CallerClaim {
-            instance: String::new(),
-            seat: SeatId::new("legacy-fixture"),
-            binding_generation: 0,
-            role: crate::protocol::authority::CallerRole::TopLevel,
-            harness: Harness::Codex,
-            native_session: NativeSessionId::new("native"),
-            execution: ExecutionId::new("exec"),
-            target: HostTargetId::new("p1"),
+        mode: crate::protocol::commands::CheckInMode::Lifecycle {
+            expected_binding_generation: 1,
         },
+        claim: fixture_claim("s1", "p1"),
         operation: OperationId::new("check-in"),
     };
-    let digest =
-        schema::canonical_digest(&crate::store::seats::native_check_in_payload(&command)).unwrap();
-    let permit = MutationPermit::new(
-        VerifiedCaller {
-            seat: SeatId::new("s1"),
-            harness: Harness::Codex,
-            native_session: NativeSessionId::new("native"),
-            execution: ExecutionId::new("exec"),
-            host_boot: HostBootId::new("b"),
-            target_generation: 1,
-            binding_generation: 1,
-            observed_at_utc: UtcMillis(100),
-        },
-        command.operation.clone(),
-        ObligationRef::CheckIn(SeatId::new("s1")),
-        digest,
-        MonoInstant(1),
-        1,
-    );
-    let registration = ReceiptRegistration {
-        seat: SeatId::new("s1"),
-        host_boot: HostBootId::new("b"),
-        target_generation: 1,
-        binding_generation: 1,
-        native_session: NativeSessionId::new("native"),
-        execution: ExecutionId::new("exec"),
-    };
+    let permit = StorePort::issue_cooperative_permit(
+        &store,
+        cooperative_permit_request(&PermitMutation::CheckIn(command.clone())).unwrap(),
+        &budget(),
+    )
+    .unwrap();
     let request = RegisterAvailableRequest {
         command,
-        registration: Some(registration),
         read: ReadContext {
             instance: "i".into(),
             output: OutputSpec::default(),
@@ -1397,7 +1304,7 @@ fn public_facade_check_in_commits_anchor_and_exact_empty_offer() {
 }
 
 #[test]
-fn public_facade_rejects_expired_permit_even_with_future_diagnostic_utc() {
+fn public_facade_rejects_expired_permit() {
     struct LateClock;
     impl Clock for LateClock {
         fn utc_now(&self) -> UtcMillis {
@@ -1414,33 +1321,27 @@ fn public_facade_rejects_expired_permit_even_with_future_diagnostic_utc() {
         INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1);\
         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','p',1,1,0);\
         INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p','b',1,1,0,'fresh','term-'||'p','inc','coherent_enumeration',1);\
+        INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',1,1,'p','b',1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-'||'p','inc');\
     ").unwrap();
     drop(db);
     let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let command = CreateThread {
         topic: "expired".into(),
         goal: "goal".into(),
-        claim: fixture_claim("p"),
+        claim: fixture_claim("s", "p"),
         operation: OperationId::new("expired"),
     };
-    let digest =
-        schema::canonical_digest(&("create_thread", &command.topic, &command.goal)).unwrap();
-    let permit = MutationPermit::new(
-        VerifiedCaller {
-            seat: SeatId::new("s"),
-            harness: Harness::Codex,
-            native_session: NativeSessionId::new("n"),
-            execution: ExecutionId::new("e"),
-            host_boot: HostBootId::new("b"),
-            target_generation: 1,
-            binding_generation: 1,
-            observed_at_utc: UtcMillis(i64::MAX),
-        },
-        command.operation.clone(),
-        ObligationRef::CheckIn(SeatId::new("s")),
-        digest,
+    let request =
+        cooperative_permit_request(&PermitMutation::CreateThread(command.clone())).unwrap();
+    // Issued far earlier than the store's decision sample (monotonic 252).
+    let permit = MutationPermit::cooperative(
+        request.claim,
+        request.operation,
+        request.obligation,
+        request.payload_hash,
         MonoInstant(1),
-        1,
+        (1, 0),
+        budget(),
     );
     let error = StorePort::mutate(
         &store,
@@ -1482,7 +1383,7 @@ fn public_facade_rejects_expired_permit_even_with_future_diagnostic_utc() {
 }
 
 #[test]
-fn public_facade_creates_thread_with_current_verified_permit() {
+fn public_facade_creates_thread_with_current_cooperative_permit() {
     let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
     let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
     let db = context.open_writer().unwrap();
@@ -1493,49 +1394,18 @@ fn public_facade_creates_thread_with_current_verified_permit() {
     .unwrap();
     db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s1','i','resolved','native','p1',1,1,0)",[]).unwrap();
     db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p1','b',1,1,0,'fresh','term-'||'p1','inc','coherent_enumeration',1)",[]).unwrap();
+    db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s1',1,1,'p1','b',1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-'||'p1','inc');",[]).unwrap();
     drop(db);
     let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let command = CreateThread {
         topic: "topic".into(),
         goal: "goal".into(),
         operation: OperationId::new("create"),
-        claim: CallerClaim {
-            instance: String::new(),
-            seat: SeatId::new("legacy-fixture"),
-            binding_generation: 0,
-            role: crate::protocol::authority::CallerRole::TopLevel,
-            harness: Harness::Codex,
-            native_session: NativeSessionId::new("native"),
-            execution: ExecutionId::new("exec"),
-            target: HostTargetId::new("p1"),
-        },
+        claim: fixture_claim("s1", "p1"),
     };
-    let digest =
-        schema::canonical_digest(&("create_thread", &command.topic, &command.goal)).unwrap();
-    let permit = MutationPermit::new(
-        VerifiedCaller {
-            seat: SeatId::new("s1"),
-            harness: Harness::Codex,
-            native_session: NativeSessionId::new("native"),
-            execution: ExecutionId::new("exec"),
-            host_boot: HostBootId::new("b"),
-            target_generation: 1,
-            binding_generation: 1,
-            observed_at_utc: UtcMillis(100),
-        },
-        command.operation.clone(),
-        ObligationRef::CheckIn(SeatId::new("s1")),
-        digest,
-        MonoInstant(1),
-        1,
-    );
-    let CommandResult::ThreadCreated(thread) = StorePort::mutate(
-        &store,
-        PermitMutation::CreateThread(command),
-        permit,
-        &budget(),
-    )
-    .unwrap() else {
+    let CommandResult::ThreadCreated(thread) =
+        permitted(&store, PermitMutation::CreateThread(command)).unwrap()
+    else {
         panic!()
     };
     let db = store.context.open_writer().unwrap();
@@ -1604,41 +1474,27 @@ fn budget() -> CallBudget {
     }
 }
 
-fn fixture_claim(target: &str) -> CallerClaim {
+fn fixture_claim(seat: &str, target: &str) -> CallerClaim {
     CallerClaim {
-        instance: String::new(),
-        seat: SeatId::new("legacy-fixture"),
-        binding_generation: 0,
+        instance: "i".into(),
+        seat: SeatId::new(seat),
+        binding_generation: 1,
         role: crate::protocol::authority::CallerRole::TopLevel,
         harness: Harness::Codex,
         native_session: NativeSessionId::new("n"),
-        execution: ExecutionId::new("e"),
+        execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
         target: HostTargetId::new(target),
     }
 }
-fn fixture_permit(
-    seat: &str,
-    operation: &OperationId,
-    obligation: ObligationRef,
-    digest: [u8; 32],
-) -> MutationPermit {
-    MutationPermit::new(
-        VerifiedCaller {
-            seat: SeatId::new(seat),
-            harness: Harness::Codex,
-            native_session: NativeSessionId::new("n"),
-            execution: ExecutionId::new("e"),
-            host_boot: HostBootId::new("b"),
-            target_generation: 1,
-            binding_generation: 1,
-            observed_at_utc: UtcMillis(100),
-        },
-        operation.clone(),
-        obligation,
-        digest,
-        MonoInstant(1),
-        1,
-    )
+/// Mutates through the production cooperative path: the service-local permit
+/// issuer derives the permit, obligation and digest from the command itself.
+fn permitted(
+    store: &SqliteStore,
+    mutation: PermitMutation,
+) -> Result<CommandResult, crate::protocol::results::ApiError> {
+    let request = cooperative_permit_request(&mutation)?;
+    let permit = StorePort::issue_cooperative_permit(store, request, &budget())?;
+    StorePort::mutate(store, mutation, permit, &budget())
 }
 
 #[test]
@@ -1654,6 +1510,7 @@ fn public_facade_creates_invites_sends_accepts_acks_and_archives_with_stable_ids
     for seat in ["s1", "s2"] {
         db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?1,1,1,0)",[seat]).unwrap();
         db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)",[seat]).unwrap();
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,1,?1,'b',1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-'||?1,'inc')",[seat]).unwrap();
     }
     drop(db);
     let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
@@ -1661,21 +1518,11 @@ fn public_facade_creates_invites_sends_accepts_acks_and_archives_with_stable_ids
         topic: "topic".into(),
         goal: "goal".into(),
         operation: OperationId::new("create"),
-        claim: fixture_claim("s1"),
+        claim: fixture_claim("s1", "s1"),
     };
-    let digest = schema::canonical_digest(&("create_thread", &create.topic, &create.goal)).unwrap();
-    let CommandResult::ThreadCreated(thread) = StorePort::mutate(
-        &store,
-        PermitMutation::CreateThread(create.clone()),
-        fixture_permit(
-            "s1",
-            &create.operation,
-            ObligationRef::CheckIn(SeatId::new("s1")),
-            digest,
-        ),
-        &budget(),
-    )
-    .unwrap() else {
+    let CommandResult::ThreadCreated(thread) =
+        permitted(&store, PermitMutation::CreateThread(create.clone())).unwrap()
+    else {
         panic!()
     };
     let invite = Invite {
@@ -1683,27 +1530,11 @@ fn public_facade_creates_invites_sends_accepts_acks_and_archives_with_stable_ids
         seat: SeatId::new("s2"),
         deadline_millis: Some(1000),
         operation: OperationId::new("invite"),
-        claim: fixture_claim("s1"),
+        claim: fixture_claim("s1", "s1"),
     };
-    let digest = schema::canonical_digest(&(
-        "invite",
-        &invite.thread,
-        &invite.seat,
-        invite.deadline_millis,
-    ))
-    .unwrap();
-    let CommandResult::Invitation(invitation) = StorePort::mutate(
-        &store,
-        PermitMutation::Invite(invite.clone()),
-        fixture_permit(
-            "s1",
-            &invite.operation,
-            ObligationRef::Control(thread.clone()),
-            digest,
-        ),
-        &budget(),
-    )
-    .unwrap() else {
+    let CommandResult::Invitation(invitation) =
+        permitted(&store, PermitMutation::Invite(invite.clone())).unwrap()
+    else {
         panic!()
     };
     let send = SendMessage {
@@ -1712,7 +1543,7 @@ fn public_facade_creates_invites_sends_accepts_acks_and_archives_with_stable_ids
         invited_recipients: vec![SeatId::new("s2")],
         deadline_millis: None,
         operation: OperationId::new("send"),
-        claim: fixture_claim("s1"),
+        claim: fixture_claim("s1", "s1"),
     };
     loop {
         match StorePort::prepare_send_step(
@@ -1728,107 +1559,45 @@ fn public_facade_creates_invites_sends_accepts_acks_and_archives_with_stable_ids
             SendPreparationProgress::Committed(_) => panic!("unexpected committed preparation"),
         }
     }
-    let digest = schema::canonical_digest(&messages::send_payload(&send)).unwrap();
-    let CommandResult::MessageSent(message) = StorePort::mutate(
-        &store,
-        PermitMutation::SendMessage(send.clone()),
-        fixture_permit(
-            "s1",
-            &send.operation,
-            ObligationRef::Control(thread.clone()),
-            digest,
-        ),
-        &budget(),
-    )
-    .unwrap() else {
+    let CommandResult::MessageSent(message) =
+        permitted(&store, PermitMutation::SendMessage(send.clone())).unwrap()
+    else {
         panic!()
     };
-    let replay = StorePort::mutate(
-        &store,
-        PermitMutation::SendMessage(send.clone()),
-        fixture_permit(
-            "s1",
-            &send.operation,
-            ObligationRef::Control(thread.clone()),
-            digest,
-        ),
-        &budget(),
-    )
-    .unwrap();
+    let replay = permitted(&store, PermitMutation::SendMessage(send.clone())).unwrap();
     assert_eq!(replay, CommandResult::MessageSent(message.clone()));
     let accept = Accept {
         thread: thread.clone(),
         operation: OperationId::new("accept"),
-        claim: fixture_claim("s2"),
+        claim: fixture_claim("s2", "s2"),
     };
-    let digest = schema::canonical_digest(&("accept", &accept.thread)).unwrap();
-    let CommandResult::Accepted(accepted) = StorePort::mutate(
-        &store,
-        PermitMutation::Accept(accept.clone()),
-        fixture_permit(
-            "s2",
-            &accept.operation,
-            ObligationRef::Invitation(invitation.clone()),
-            digest,
-        ),
-        &budget(),
-    )
-    .unwrap() else {
+    let CommandResult::Accepted(accepted) =
+        permitted(&store, PermitMutation::Accept(accept.clone())).unwrap()
+    else {
         panic!()
     };
     assert_eq!(accepted, invitation);
     let ack = Ack {
         messages: vec![message.clone()],
         operation: OperationId::new("ack"),
-        claim: fixture_claim("s2"),
+        claim: fixture_claim("s2", "s2"),
     };
-    let digest = schema::canonical_digest(&receipts::ack_payload(&ack)).unwrap();
-    let CommandResult::Acknowledged(ids) = StorePort::mutate(
-        &store,
-        PermitMutation::Ack(ack.clone()),
-        fixture_permit(
-            "s2",
-            &ack.operation,
-            ObligationRef::CheckIn(SeatId::new("s2")),
-            digest,
-        ),
-        &budget(),
-    )
-    .unwrap() else {
+    let CommandResult::Acknowledged(ids) =
+        permitted(&store, PermitMutation::Ack(ack.clone())).unwrap()
+    else {
         panic!()
     };
     assert_eq!(ids.acknowledged, vec![message.clone()]);
-    let replay = StorePort::mutate(
-        &store,
-        PermitMutation::Ack(ack.clone()),
-        fixture_permit(
-            "s2",
-            &ack.operation,
-            ObligationRef::CheckIn(SeatId::new("s2")),
-            digest,
-        ),
-        &budget(),
-    )
-    .unwrap();
+    let replay = permitted(&store, PermitMutation::Ack(ack.clone())).unwrap();
     assert_eq!(replay, CommandResult::Acknowledged(ids));
     let archive = ThreadMutation {
         thread: thread.clone(),
         operation: OperationId::new("archive"),
-        claim: fixture_claim("s1"),
+        claim: fixture_claim("s1", "s1"),
     };
-    let digest = schema::canonical_digest(&("archive", &archive.thread)).unwrap();
-    let CommandResult::Archived(archived) = StorePort::mutate(
-        &store,
-        PermitMutation::Archive(archive.clone()),
-        fixture_permit(
-            "s1",
-            &archive.operation,
-            ObligationRef::Control(thread.clone()),
-            digest,
-        ),
-        &budget(),
-    )
-    .unwrap() else {
+    let CommandResult::Archived(archived) =
+        permitted(&store, PermitMutation::Archive(archive.clone())).unwrap()
+    else {
         panic!()
     };
     assert_eq!(archived, thread);

@@ -8,7 +8,6 @@ use crate::daemon::{
         EndpointDescriptor, owner_lock_identity, previous_owner_released, read_descriptor,
     },
     paths::InstancePaths,
-    transport::LiveServiceGate,
 };
 use crate::ports::{LocalClient, LocalService, ServiceAuthorityGate, ServiceConnectionAuthority};
 use crate::protocol::{
@@ -16,13 +15,14 @@ use crate::protocol::{
     commands::{Command as ApiCommand, StopRequest},
     output::OutputSpec,
     results::{
-        ApiError, CommandResult, ErrorCode, ServiceDisconnectResult, ServiceRecoveryAudit,
-        StopAccepted,
+        ApiError, CapabilityList, CommandResult, ErrorCode, ServiceDisconnectResult,
+        ServiceRecoveryAudit, StopAccepted,
     },
     service::{ServiceOperation, ServiceResult},
     time::{CallBudget, Cancellation, Clock},
     wire::PROTOCOL_VERSION,
 };
+use crate::service::live_gate::LiveServiceGate;
 use std::{
     io::{self, Read},
     process::{Command, ExitStatus, Stdio},
@@ -52,12 +52,9 @@ impl StopController {
 
     pub fn request_stop(&self, instance: Uuid, boot: Uuid) -> Result<(), ApiError> {
         if instance != self.instance || boot != self.boot {
-            return Err(ApiError {
-                code: ErrorCode::InstanceMismatch,
-                detail: "stop target is not this daemon boot".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
+            return Err(ApiError::instance_mismatch(
+                "stop target is not this daemon boot",
+            ));
         }
         self.shutdown.cancel();
         Ok(())
@@ -70,6 +67,7 @@ pub struct ControlService<H, S> {
     stop: StopController,
     health: H,
     domain: S,
+    hook_parse_failures: Option<std::sync::Arc<crate::daemon::logs::HookParseFailures>>,
 }
 
 impl<H, S> ControlService<H, S>
@@ -82,7 +80,18 @@ where
             stop,
             health,
             domain,
+            hook_parse_failures: None,
         }
+    }
+
+    /// Where hook parse-failure reports are counted and logged. Without it
+    /// the report is accepted and dropped.
+    pub fn with_hook_parse_failures(
+        mut self,
+        failures: std::sync::Arc<crate::daemon::logs::HookParseFailures>,
+    ) -> Self {
+        self.hook_parse_failures = Some(failures);
+        self
     }
 }
 
@@ -104,12 +113,9 @@ where
             || instance != self.stop.instance.to_string()
             || boot != self.stop.boot.to_string()
         {
-            return Err(ApiError {
-                code: ErrorCode::Unauthorized,
-                detail: "service recovery requires this daemon's local owner".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
+            return Err(ApiError::unauthorized(
+                "service recovery requires this daemon's local owner",
+            ));
         }
         match command {
             ApiCommand::ServiceInspect => Ok(CommandResult::ServiceInspection(
@@ -119,12 +125,9 @@ where
                 if request.expected_boot != boot
                     || !gate.disconnect(instance, boot, request.expected_generation)
                 {
-                    return Err(ApiError {
-                        code: ErrorCode::StaleServiceGeneration,
-                        detail: "observed service boot or generation is no longer active".into(),
-                        restart_argv: None,
-                        required_minimum_bytes: None,
-                    });
+                    return Err(ApiError::stale_service_generation(
+                        "observed service boot or generation is no longer active",
+                    ));
                 }
                 let audit = match self.domain.audit_service_disconnect(
                     boot,
@@ -145,12 +148,9 @@ where
                     },
                 ))
             }
-            _ => Err(ApiError {
-                code: ErrorCode::InvalidRequest,
-                detail: "invalid service recovery command".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            }),
+            _ => Err(ApiError::invalid_request(
+                "invalid service recovery command",
+            )),
         }
     }
 
@@ -194,13 +194,21 @@ where
         match command {
             // Health reads storage under this request's cancellation and deadline.
             ApiCommand::Health => Ok(CommandResult::Health((self.health)(budget).assemble())),
+            ApiCommand::Capabilities => Ok(CommandResult::Capabilities(CapabilityList {
+                capabilities: crate::protocol::capabilities::ADVERTISED
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect(),
+            })),
+            ApiCommand::HookParseFailure(report) => {
+                if let Some(failures) = &self.hook_parse_failures {
+                    failures.record(&report.harness, &report.detail);
+                }
+                Ok(CommandResult::HookParseFailureRecorded)
+            }
             ApiCommand::Stop(StopRequest { expected_boot }) => {
-                let boot = Uuid::parse_str(&expected_boot).map_err(|_| ApiError {
-                    code: ErrorCode::InvalidRequest,
-                    detail: "invalid stop boot ID".into(),
-                    restart_argv: None,
-                    required_minimum_bytes: None,
-                })?;
+                let boot = Uuid::parse_str(&expected_boot)
+                    .map_err(|_| ApiError::invalid_request("invalid stop boot ID"))?;
                 self.stop.request_stop(self.stop.instance, boot)?;
                 Ok(CommandResult::StopAccepted(StopAccepted {
                     boot_id: self.stop.boot.to_string(),
@@ -213,20 +221,115 @@ where
     }
 }
 
-/// The supplied client must be bound to the descriptor endpoint, instance and
-/// boot. A successful response acknowledges shutdown; lifecycle drain follows.
+fn stop_error(code: ErrorCode, detail: impl Into<String>) -> ApiError {
+    ApiError::new(code, detail)
+}
+
+/// Bounded wait for a SIGTERMed skewed owner to release its lock.
+const SKEW_STOP_WAIT: Duration = Duration::from_secs(10);
+
+/// What "the pid and boot_id match the running daemon" means, mechanically
+/// (the boot_id is published nowhere else): the owner lock is held; the
+/// descriptor re-read after that probe is identical (same pid and boot_id);
+/// the pid is a live process other than this one; its command line is a
+/// `daemon run` for this state directory (`ps -o command= -p <pid>`); and the
+/// socket at `descriptor.endpoint` is the one this boot bound (the
+/// descriptor's `socket_device`/`socket_inode`). Any mismatch refuses and no
+/// signal is sent. `Ok(false)` means no owner holds the lock: nothing to stop.
+fn confirm_skewed_owner(
+    paths: &InstancePaths,
+    descriptor: &EndpointDescriptor,
+) -> Result<bool, ApiError> {
+    use std::os::unix::fs::MetadataExt;
+    let refuse = |why: &str| {
+        Err(stop_error(
+            ErrorCode::HostUnavailable,
+            format!(
+                "refusing to signal pid {}: {why}; nothing was stopped",
+                descriptor.pid
+            ),
+        ))
+    };
+    let io_failure = |error: io::Error| {
+        stop_error(
+            ErrorCode::HostUnavailable,
+            format!("unable to identify daemon owner: {error}"),
+        )
+    };
+    let lock = owner_lock_identity(paths).map_err(io_failure)?;
+    if previous_owner_released(paths, lock).map_err(io_failure)? {
+        return Ok(false);
+    }
+    match read_descriptor(paths, descriptor.instance_uuid) {
+        Ok(current) if &current == descriptor => {}
+        Ok(_) => return refuse("the published descriptor changed (pid or boot_id differs)"),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return refuse("the endpoint descriptor vanished");
+        }
+        Err(error) => return Err(io_failure(error)),
+    }
+    if descriptor.pid <= 1 || descriptor.pid == std::process::id() {
+        return refuse("the descriptor names an unsignalable pid");
+    }
+    // SAFETY: signal 0 only probes for existence.
+    if unsafe { libc::kill(descriptor.pid as libc::pid_t, 0) } != 0 {
+        return refuse("the descriptor's pid is not a live process we may signal");
+    }
+    let command = Command::new("ps")
+        .args(["-ww", "-o", "command=", "-p"])
+        .arg(descriptor.pid.to_string())
+        .output()
+        .map_err(io_failure)?;
+    let command = String::from_utf8_lossy(&command.stdout).into_owned();
+    let state = paths
+        .instance_dir
+        .parent()
+        .and_then(std::path::Path::parent)
+        .map(|dir| dir.display().to_string())
+        .unwrap_or_default();
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let runs_daemon = words.windows(2).any(|pair| pair == ["daemon", "run"]);
+    let this_state = words
+        .windows(2)
+        .any(|pair| pair[0] == "--state-dir" && pair[1] == state);
+    if !(runs_daemon && this_state) {
+        return refuse("its command line is not a `daemon run` for this state directory");
+    }
+    match std::fs::symlink_metadata(&descriptor.endpoint) {
+        Ok(meta)
+            if meta.dev() == descriptor.socket_device && meta.ino() == descriptor.socket_inode => {}
+        _ => return refuse("the socket is not the one this boot bound (boot_id mismatch)"),
+    }
+    Ok(true)
+}
+
+/// Request shutdown of the daemon `descriptor` describes. The supplied client
+/// must be bound to the descriptor endpoint, instance and boot. With a
+/// matching protocol the wire Stop is sent and a successful response
+/// acknowledges shutdown. With a mismatched protocol (root §B3 D3 as amended
+/// r2) nothing is decoded and no wire Stop is sent: the owner is confirmed
+/// pid/lock based (see `confirm_skewed_owner`) and SIGTERMed. Lifecycle drain
+/// follows either way.
 pub fn request_stop(
     client: &dyn LocalClient,
+    paths: &InstancePaths,
     descriptor: &EndpointDescriptor,
     budget: &CallBudget,
 ) -> Result<(), ApiError> {
     if descriptor.protocol_version != PROTOCOL_VERSION {
-        return Err(ApiError {
-            code: ErrorCode::UnknownWireVersion,
-            detail: "daemon protocol is incompatible with stop".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        });
+        if confirm_skewed_owner(paths, descriptor)? {
+            // SAFETY: the pid was confirmed above to be this state's daemon.
+            if unsafe { libc::kill(descriptor.pid as libc::pid_t, libc::SIGTERM) } != 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(stop_error(
+                        ErrorCode::HostUnavailable,
+                        format!("unable to signal pid {}: {error}", descriptor.pid),
+                    ));
+                }
+            }
+        }
+        return Ok(());
     }
     let result = client.call(
         ApiCommand::Stop(StopRequest {
@@ -240,17 +343,16 @@ pub fn request_stop(
         {
             Ok(())
         }
-        _ => Err(ApiError {
-            code: ErrorCode::UnknownOutcome,
-            detail: "stop response did not confirm requested boot".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        }),
+        _ => Err(stop_error(
+            ErrorCode::UnknownOutcome,
+            "stop response did not confirm requested boot",
+        )),
     }
 }
 
 /// Request shutdown, then wait for the prior owner's lock lease to release.
-/// The deadline includes both the IPC exchange and the owner drain.
+/// The deadline includes both the IPC exchange and the owner drain; a
+/// skew stop waits up to ten seconds for the SIGTERMed owner regardless.
 pub fn stop_and_wait(
     client: &dyn LocalClient,
     paths: &InstancePaths,
@@ -258,28 +360,28 @@ pub fn stop_and_wait(
     clock: &dyn Clock,
     budget: &CallBudget,
 ) -> Result<(), ApiError> {
-    let prior_lock = owner_lock_identity(paths).map_err(|error| ApiError {
-        code: ErrorCode::HostUnavailable,
-        detail: format!(
+    let prior_lock = owner_lock_identity(paths).map_err(|error| {
+        ApiError::host_unavailable(format!(
             "unable to identify daemon owner lock: {error}; inspect daemon health and owner lock"
-        ),
-        restart_argv: None,
-        required_minimum_bytes: None,
+        ))
     })?;
-    request_stop(client, descriptor, budget)?;
+    request_stop(client, paths, descriptor, budget)?;
     let remaining_ms = budget.deadline.0.saturating_sub(clock.monotonic_now().0);
-    wait_for_stop_with_probe(
-        Duration::from_millis(remaining_ms).min(Duration::from_secs(5)),
-        &budget.cancellation,
-        || match read_descriptor(paths, descriptor.instance_uuid) {
+    let wait = if descriptor.protocol_version == PROTOCOL_VERSION {
+        Duration::from_millis(remaining_ms).min(Duration::from_secs(5))
+    } else {
+        SKEW_STOP_WAIT
+    };
+    wait_for_stop_with_probe(wait, &budget.cancellation, || {
+        match read_descriptor(paths, descriptor.instance_uuid) {
             Ok(current) if current.boot_id != descriptor.boot_id => Ok(true),
             Ok(_) => previous_owner_released(paths, prior_lock),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 previous_owner_released(paths, prior_lock)
             }
             Err(error) => Err(error),
-        },
-    )
+        }
+    })
 }
 
 fn wait_for_stop_with_probe(
@@ -290,39 +392,25 @@ fn wait_for_stop_with_probe(
     let deadline = Instant::now() + remaining;
     loop {
         if cancellation.is_cancelled() {
-            return Err(ApiError {
-                code: ErrorCode::Cancelled,
-                detail: "daemon stop wait cancelled".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
+            return Err(ApiError::cancelled("daemon stop wait cancelled"));
         }
         if Instant::now() >= deadline {
-            return Err(ApiError {
-                code: ErrorCode::DeadlineExceeded,
-                detail: "daemon accepted stop but did not exit before the deadline; inspect its health and owner lock".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
+            return Err(ApiError::deadline_exceeded(
+                "daemon accepted stop but did not exit before the deadline; inspect its health and owner lock",
+            ));
         }
-        if stopped().map_err(|error| ApiError {
-            code: ErrorCode::HostUnavailable,
-            detail: format!(
+        if stopped().map_err(|error| {
+            ApiError::host_unavailable(format!(
                 "unable to verify daemon stop: {error}; inspect daemon health and owner lock"
-            ),
-            restart_argv: None,
-            required_minimum_bytes: None,
+            ))
         })? {
             return Ok(());
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Err(ApiError {
-                code: ErrorCode::DeadlineExceeded,
-                detail: "daemon accepted stop but did not exit before the deadline; inspect its health and owner lock".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
+            return Err(ApiError::deadline_exceeded(
+                "daemon accepted stop but did not exit before the deadline; inspect its health and owner lock",
+            ));
         }
         let pause = remaining.min(Duration::from_millis(10));
         thread::sleep(pause);

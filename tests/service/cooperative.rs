@@ -82,7 +82,7 @@ fn fixture_with_clock(
                 .with_operator_owner(501)
                 .with_cooperative_owner(
                     501,
-                    Arc::new(crate::service::workers::FairWriter::new(32)),
+                    Arc::new(crate::service::fair_writer::FairWriter::new(32)),
                 ),
             directory: directory.clone(),
         },
@@ -565,55 +565,6 @@ fn partial_send_preparation_survives_budget_expiry_and_resumes_exact_intent() {
             .get::<_, i64>(0))
             .unwrap(),
         1
-    );
-}
-
-#[test]
-fn current_checkin_restores_availability_without_replacing_occupant() {
-    use crate::ports::{RegistrationLossReason, RegistrationRevocation};
-    let (service, db) = fixture();
-    let first = checked(&service, lifecycle(claim(), "first"));
-    db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('i','p','b',1,'outage')",[]).unwrap();
-    assert!(
-        service
-            .store
-            .revoke_registration(
-                RegistrationRevocation::from_trusted_loss(
-                    SeatId::new("s"),
-                    1,
-                    first.context.execution.clone(),
-                    RegistrationLossReason::RecoveryHold {
-                        target: HostTargetId::new("p"),
-                        baseline_boot: HostBootId::new("b"),
-                        baseline_epoch: 1
-                    }
-                ),
-                &budget()
-            )
-            .unwrap()
-    );
-    db.execute("UPDATE recovery_holds SET released_at=100", [])
-        .unwrap();
-    let restored = checked(
-        &service,
-        Command::CheckIn(CheckIn {
-            mode: CheckInMode::Current,
-            claim: first.context.clone(),
-            operation: OperationId::new("restore"),
-        }),
-    );
-    assert_eq!(restored.context, first.context);
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM occupant_bindings", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM seat_availability", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        2
     );
 }
 

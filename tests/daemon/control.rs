@@ -33,6 +33,12 @@ impl crate::protocol::time::Clock for RetirementClock {
 
 struct RetirementDomain(std::sync::Arc<crate::store::SqliteStore>, String);
 impl LocalService for RetirementDomain {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        service_operation,
+        handle_with_output
+    );
     fn handle(
         &self,
         command: Command,
@@ -625,8 +631,12 @@ fn production_health_builder_redacts_retirement_failure_and_clears_on_partial_pr
         deadline: MonoInstant(clock.0.load(Ordering::SeqCst) + span),
         cancellation: Cancellation::default(),
     };
-    let mut driver = DeadlineDriver::new(store.as_ref());
-    let drive = |driver: &mut DeadlineDriver<'_, crate::store::SqliteStore>| {
+    let ports = crate::service::workers::ScheduledStore::new(
+        store.clone(),
+        Arc::new(crate::service::fair_writer::FairWriter::new(32)),
+    );
+    let mut driver = DeadlineDriver::new(&ports);
+    let drive = |driver: &mut DeadlineDriver<'_, crate::service::workers::ScheduledStore>| {
         // Past the one-second tick and the five-second retirement backoff.
         clock.0.fetch_add(10_000, Ordering::SeqCst);
         status
@@ -698,6 +708,7 @@ fn production_health_builder_redacts_retirement_failure_and_clears_on_partial_pr
             .any(|item| item.starts_with("scheduler "))
     );
     drop(driver);
+    drop(ports);
     drop(store);
     fs::remove_file(path).unwrap();
 }
@@ -768,7 +779,14 @@ fn production_health_builder_pins_every_elected_field() {
         last_reconciliation_at,
         binding_evidence,
         unresolved,
+        log_path: _,
+        degraded_lanes,
+        transitions_refused,
+        hook_parse_failures,
     } = health(&budget);
+    assert!(hook_parse_failures.is_empty());
+    assert!(degraded_lanes.is_empty());
+    assert_eq!(transitions_refused, 0);
     assert_eq!(got_instance, instance_id);
     assert_eq!(got_boot, boot);
     assert_eq!(database, ComponentStatus::Ready);
@@ -1055,18 +1073,19 @@ fn health_reports_the_codex_admission_detail_as_a_bounded_limitation() {
 
 struct FakeService;
 impl LocalService for FakeService {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        service_operation,
+        handle_with_output
+    );
     fn handle(
         &self,
         _command: Command,
         _peer: PeerIdentity,
         _budget: &CallBudget,
     ) -> Result<CommandResult, ApiError> {
-        Err(ApiError {
-            code: ErrorCode::NotFound,
-            detail: "exact seat absent".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        })
+        Err(ApiError::not_found("exact seat absent"))
     }
 }
 
@@ -1140,6 +1159,7 @@ struct FakeClient {
     result: Result<CommandResult, ApiError>,
 }
 impl LocalClient for FakeClient {
+    crate::default_output_local_client!();
     fn call(&self, command: Command, _budget: &CallBudget) -> Result<CommandResult, ApiError> {
         assert!(
             matches!(command, Command::Stop(StopRequest { expected_boot }) if Uuid::parse_str(&expected_boot).is_ok())
@@ -1166,36 +1186,42 @@ fn compatible_old_software_stops_and_unresponsive_client_fails_without_pid_actio
         deadline: MonoInstant(100),
         cancellation: Cancellation::default(),
     };
+    let root = std::env::temp_dir().join(format!("herdr-stop-skew-{}", Uuid::new_v4()));
+    fs::create_dir(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    let paths = crate::daemon::paths::InstancePaths::resolve(
+        &crate::daemon::paths::RuntimeContext::explicit(root.clone(), root.join("host.sock"), None)
+            .unwrap(),
+    )
+    .unwrap();
     let success = FakeClient {
         result: Ok(CommandResult::StopAccepted(StopAccepted {
             boot_id: boot.to_string(),
         })),
     };
-    assert!(request_stop(&success, &descriptor, &budget).is_ok());
+    assert!(request_stop(&success, &paths, &descriptor, &budget).is_ok());
     let timeout = FakeClient {
-        result: Err(ApiError {
-            code: ErrorCode::HostUnavailable,
-            detail: "unresponsive".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        }),
+        result: Err(ApiError::host_unavailable("unresponsive")),
     };
     assert_eq!(
-        request_stop(&timeout, &descriptor, &budget)
+        request_stop(&timeout, &paths, &descriptor, &budget)
             .unwrap_err()
             .code,
         ErrorCode::HostUnavailable
     );
     let incompatible = EndpointDescriptor {
-        protocol_version: crate::protocol::wire::PROTOCOL_VERSION + 1,
+        // The real release skew pair: a protocol-1 daemon, this protocol-2 CLI.
+        protocol_version: crate::protocol::wire::PROTOCOL_VERSION - 1,
         ..descriptor
     };
-    assert_eq!(
-        request_stop(&success, &incompatible, &budget)
-            .unwrap_err()
-            .code,
-        ErrorCode::UnknownWireVersion
-    );
+    // A mismatched protocol is no longer refused as UnknownWireVersion, and
+    // never sends the wire Stop (`success` would answer it): with no owner
+    // lock to confirm, it fails without signalling anything (this very
+    // process is the descriptor's pid).
+    let error = request_stop(&success, &paths, &incompatible, &budget).unwrap_err();
+    assert_ne!(error.code, ErrorCode::UnknownWireVersion);
+    assert_eq!(error.code, ErrorCode::HostUnavailable);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -1519,7 +1545,7 @@ fn cooperative_inputs() -> HealthInputs {
 /// limitations; dropping the schema-matched flag.
 #[test]
 fn cooperative_mode_is_healthy_with_notes() {
-    use crate::daemon::health::{COOPERATIVE_RECEIPT_LINE, COOPERATIVE_WAKE_LINE};
+    use crate::daemon::health::{COOPERATIVE_WAKE_LINE, cooperative_receipt_line};
     use crate::protocol::results::HarnessState;
     let health = cooperative_inputs().assemble();
     assert_eq!(health.state, HealthState::Healthy, "{health:?}");
@@ -1537,11 +1563,11 @@ fn cooperative_mode_is_healthy_with_notes() {
         health.notes,
         vec![
             "harness claude: claude 2.1.286: listed: recipe claude-hooks-2.1.283".to_owned(),
-            COOPERATIVE_RECEIPT_LINE.to_owned(),
+            cooperative_receipt_line(),
             COOPERATIVE_WAKE_LINE.to_owned(),
         ]
     );
-    assert!(COOPERATIVE_RECEIPT_LINE.len() <= 256 && COOPERATIVE_WAKE_LINE.len() <= 256);
+    assert!(cooperative_receipt_line().len() <= 256 && COOPERATIVE_WAKE_LINE.len() <= 256);
     let json = serde_json::to_value(&health).unwrap();
     assert_eq!(json["harness"]["claude"], "cooperative");
     assert_eq!(json["state"], "healthy");
@@ -1649,13 +1675,26 @@ fn claude_observation_classifies_cooperative_refused_and_absent() {
         HarnessStatus::Supported(_)
     ));
     assert!(matches!(
-        crate::app::claude_status(Some(Err(VersionError::Unsupported("2.1.287".into()))), unsupported),
-        HarnessStatus::Refused(detail) if detail.starts_with("claude 2.1.287: no recipe admits it")
+        crate::app::claude_status(Some(Err(VersionError::Unsupported("2.1.288".into()))), unsupported),
+        HarnessStatus::Refused(detail) if detail.starts_with("claude 2.1.288: no recipe admits it")
     ));
     assert!(matches!(
         crate::app::claude_status(Some(Err(VersionError::Unavailable)), unsupported),
         HarnessStatus::Refused(_)
     ));
+    // Optimistic: unlisted but newer than every recipe is its own status (a
+    // cooperative state, rendered as an informational note), never Supported,
+    // whatever the native capability.
+    for native in [unsupported, CapabilityState::Supported] {
+        assert_eq!(
+            crate::app::claude_status(Some(Ok("2.1.288".into())), native),
+            HarnessStatus::Optimistic(
+                "claude 2.1.288: optimistic \u{2014} newer than verified 2.1.287, assumed \
+                 compatible with recipe claude-hooks-2.1.283"
+                    .into()
+            )
+        );
+    }
     assert!(matches!(
         crate::app::claude_status(None, unsupported),
         HarnessStatus::NotInstalled(_)

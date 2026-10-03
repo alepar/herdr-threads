@@ -1,32 +1,43 @@
 use super::*;
+use crate::protocol::time::{MonoInstant, UtcMillis};
 use crate::store::schema;
 use rusqlite::Connection;
+
+struct FixedClock;
+impl Clock for FixedClock {
+    fn utc_now(&self) -> UtcMillis {
+        UtcMillis(1_234_567)
+    }
+    fn monotonic_now(&self) -> MonoInstant {
+        MonoInstant(0)
+    }
+}
 
 #[test]
 fn durable_work_cursor_commits_only_a_bounded_prefix() {
     let mut db = Connection::open_in_memory().unwrap();
     schema::initialize(&db).unwrap();
     db.execute("INSERT INTO work_jobs(id, kind, subject_id, high_water) VALUES ('j', 'warning_attribution', 'warning', 40)", []).unwrap();
-    let found = discover_work(&db, WorkKind::WarningAttribution, 0, 1).unwrap();
-    assert_eq!(found.len(), 1);
-    assert_eq!(found[0].position, 0);
-    assert!(found[0].has_more);
+    let position = |db: &Connection| -> i64 {
+        db.query_row("SELECT position FROM work_jobs WHERE id='j'", [], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    };
+    assert_eq!(position(&db), 0);
 
     let tx = db.transaction().unwrap();
-    let progress = commit_work_prefix(&tx, "j", 0, 16, 16, true, None).unwrap();
+    let progress = commit_work_prefix(&tx, "j", 0, 16, 16, true, None, &FixedClock).unwrap();
     assert_eq!(progress.completed_units, 16);
     assert_eq!(progress.next_position, 16);
     assert!(progress.has_more);
     tx.commit().unwrap();
 
     let tx = db.transaction().unwrap();
-    assert!(commit_work_prefix(&tx, "j", 0, 1, 17, true, None).is_err());
+    assert!(commit_work_prefix(&tx, "j", 0, 1, 17, true, None, &FixedClock).is_err());
     tx.rollback().unwrap();
     assert!(WorkAdmission::new(17).is_err());
-    assert_eq!(
-        discover_work(&db, WorkKind::WarningAttribution, 0, 1).unwrap()[0].position,
-        16
-    );
+    assert_eq!(position(&db), 16);
 }
 
 #[test]
@@ -35,12 +46,12 @@ fn sparse_physical_ordinals_advance_without_counting_gaps_as_units() {
     schema::initialize(&db).unwrap();
     db.execute("INSERT INTO work_jobs(id, kind, subject_id, high_water) VALUES ('sparse', 'receipt_timer_materialization', 'seat', 1000)", []).unwrap();
     let tx = db.transaction().unwrap();
-    let progress = commit_work_prefix(&tx, "sparse", 0, 2, 700, true, None).unwrap();
+    let progress = commit_work_prefix(&tx, "sparse", 0, 2, 700, true, None, &FixedClock).unwrap();
     assert_eq!(progress.completed_units, 2);
     assert_eq!(progress.next_position, 700);
     tx.commit().unwrap();
     let tx = db.transaction().unwrap();
-    assert!(commit_work_prefix(&tx, "sparse", 700, 1, 699, true, None).is_err());
+    assert!(commit_work_prefix(&tx, "sparse", 700, 1, 699, true, None, &FixedClock).is_err());
 }
 
 #[test]
@@ -49,7 +60,7 @@ fn a_non_cursor_finalize_unit_can_commit_without_moving_physical_position() {
     schema::initialize(&db).unwrap();
     db.execute("INSERT INTO work_jobs(id, kind, subject_id, high_water) VALUES ('finalize', 'send_attention', 'prep', 2)", []).unwrap();
     let tx = db.transaction().unwrap();
-    let progress = commit_work_prefix(&tx, "finalize", 0, 1, 0, true, None).unwrap();
+    let progress = commit_work_prefix(&tx, "finalize", 0, 1, 0, true, None, &FixedClock).unwrap();
     assert_eq!(progress.completed_units, 1);
     assert_eq!(progress.next_position, 0);
     tx.commit().unwrap();
@@ -65,14 +76,40 @@ fn work_prefix_reports_units_committed_by_this_call_not_the_running_total() {
     schema::initialize(&db).unwrap();
     db.execute("INSERT INTO work_jobs(id, kind, subject_id, high_water) VALUES ('j', 'warning_attribution', 'warning', 40)", []).unwrap();
     let tx = db.transaction().unwrap();
-    let first = commit_work_prefix(&tx, "j", 0, 16, 16, true, None).unwrap();
+    let first = commit_work_prefix(&tx, "j", 0, 16, 16, true, None, &FixedClock).unwrap();
     assert_eq!(first.processed_this_turn, 16);
     tx.commit().unwrap();
     let tx = db.transaction().unwrap();
-    let second = commit_work_prefix(&tx, "j", 16, 3, 19, true, None).unwrap();
+    let second = commit_work_prefix(&tx, "j", 16, 3, 19, true, None, &FixedClock).unwrap();
     assert_eq!(
         (second.completed_units, second.processed_this_turn),
         (19, 3)
     );
     tx.commit().unwrap();
+}
+
+// ht-p03.12.1: the completion write stamps completed_at from the injected
+// clock; pending and failed rows keep NULL. Kills: a missing stamp, an SQL
+// clock, and a stamp applied on a non-complete transition.
+#[test]
+fn completing_a_job_stamps_completed_at_from_the_clock() {
+    let mut db = Connection::open_in_memory().unwrap();
+    schema::initialize(&db).unwrap();
+    db.execute_batch("INSERT INTO work_jobs(id, kind, subject_id, high_water) VALUES ('p', 'warning_attribution', 'w1', 4), ('f', 'warning_attribution', 'w2', 4), ('c', 'warning_attribution', 'w3', 4);").unwrap();
+    let tx = db.transaction().unwrap();
+    commit_work_prefix(&tx, "p", 0, 1, 1, true, None, &FixedClock).unwrap();
+    commit_work_prefix(&tx, "f", 0, 1, 1, true, Some("boom"), &FixedClock).unwrap();
+    commit_work_prefix(&tx, "c", 0, 1, 4, false, None, &FixedClock).unwrap();
+    tx.commit().unwrap();
+    let row = |id: &str| -> (String, Option<i64>) {
+        db.query_row(
+            "SELECT status, completed_at FROM work_jobs WHERE id=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    assert_eq!(row("p"), ("pending".into(), None));
+    assert_eq!(row("f"), ("failed".into(), None));
+    assert_eq!(row("c"), ("complete".into(), Some(1_234_567)));
 }

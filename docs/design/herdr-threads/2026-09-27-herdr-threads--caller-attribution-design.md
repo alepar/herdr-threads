@@ -48,6 +48,18 @@ The authority point is the validated observation plus the transaction decision c
 
 Add sanitized fixtures for request-before-observation ordering, cached predecessor metadata, stale/expired permits and evidence unavailable until after the hook returns. Both harnesses still require positive invocation-context transport evidence before downstream implementation can pass its prerequisite gate.
 
+## Cooperative reality (2026-10)
+
+The probe, recipe and permit machinery above were built to prove, per request, that a caller was the top-level agent. That proof needs evidence Herdr 0.9.1 does not provide, and the deployment has no adversary the proof would stop (every caller runs as the same local user). The shipped design attributes by cooperation and records how.
+
+- **Provenance.** `cooperative_top_level` (a prompted top-level agent's accept or ACK), `operator_human` (a person's pane via `me init`), operator (local-account repair, `--operator`). Subagents and scripts are asked to read only; the service does not try to stop a same-user program that lies.
+- **Removed.** The native caller verifier, verified-caller and native-actor types, native permit construction, the native digest branches and the per-decision fence (symbol list: `docs/history/remaining-findings-run/b4-removed-symbols.txt`).
+- **self.** `thread participants THREAD` (also the top-level alias `participants THREAD`) marks the querying caller's own seat: the wire row carries `"self": true` (`Participant::is_self`, set where the row's seat equals the query's `caller`); compact output appends ` self` and human output ` (you)`. The marker is absent for every other row and for a query with no caller. `self` is a display marker for the caller's seat, not a seat name you can pass to `--seat`.
+- **alias.** `participants` is a documented alias of `thread participants` (same `ParticipantsQuery`, same paging). For panes, `--pane` accepts a pane ID or a name; resolution precedence is an exact pane ID, then a unique pane label, then the label of a tab holding exactly one pane. A name that matches several panes, or none, is refused with `herdr pane current` / `herdr pane list` guidance, and an exact pane ID always outranks a name. Names are a lookup aid, never identity evidence.
+- **rank.** The ready-command order the hook shows an agent is specified in the harness design (require-ACK handoff first, required accepts next, one reply form, at most two optional accepts last).
+
+Decision record: [root spec §B4](remaining-findings/2026-10-01-remaining-herdr-threads-findings-design.md#b4-remove-the-pre-cooperative-verification-layer) (ht-p03.2 deleted the code, ht-p03.5 rewrote these docs). Normative trust rules: `TRUST-POLICY.md` (branch `trust-model-invariants`), which supersedes any text above that requires adversarial proof of who is calling. Text above that describes the removed layer stays for history and is marked superseded where it names a removed symbol.
+
 ## Post-Implementation Notes
 
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*

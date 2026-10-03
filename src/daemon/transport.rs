@@ -1,7 +1,6 @@
 //! Bounded local IPC: ordinary requests are one-shot; registered service sessions persist.
 
 mod service_connection;
-pub(crate) use service_connection::LiveServiceGate;
 
 use crate::protocol::{
     authority::PeerIdentity,
@@ -13,14 +12,16 @@ use crate::protocol::{
         MAX_WIRE_FRAME_BYTES, PROTOCOL_VERSION, WireRequest, WireResponse, encode_wire_response,
     },
 };
-use crate::{daemon::ownership::OwnedAsyncListener, ports::LocalService};
+use crate::{
+    daemon::ownership::OwnedAsyncListener, ports::LocalService, service::live_gate::LiveServiceGate,
+};
 use serde::Serialize;
 use std::{io, io::Write, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::UnixStream,
     sync::Semaphore,
-    task::JoinHandle,
+    task::JoinSet,
 };
 use uuid::Uuid;
 
@@ -40,34 +41,30 @@ pub enum ServeOutcome {
 #[must_use]
 pub struct PendingDrain {
     _listener: OwnedAsyncListener,
-    tasks: Vec<JoinHandle<io::Result<()>>>,
-    next: usize,
+    tasks: JoinSet<io::Result<()>>,
     first_error: Option<io::Error>,
 }
 impl PendingDrain {
     pub fn remaining(&self) -> usize {
-        self.tasks.iter().filter(|task| !task.is_finished()).count()
+        self.tasks.len()
     }
 
-    /// Safe to cancel and call again: the handle and owner lease stay in `self`.
+    /// Safe to cancel and call again: the task set and owner lease stay in `self`.
     pub async fn wait(&mut self) -> io::Result<()> {
-        while self.next < self.tasks.len() {
-            let result = (&mut self.tasks[self.next])
-                .await
-                .map_err(io::Error::other)
-                .and_then(|result| result);
+        while let Some(joined) = self.tasks.join_next().await {
+            let result = joined.map_err(io::Error::other).and_then(|result| result);
             if self.first_error.is_none() {
                 self.first_error = result.err();
             }
-            self.next += 1;
         }
         self.first_error.take().map_or(Ok(()), Err)
     }
 }
-
-async fn cancelled(shutdown: &Cancellation) {
-    while !shutdown.is_cancelled() {
-        tokio::time::sleep(Duration::from_millis(10)).await;
+impl Drop for PendingDrain {
+    /// Dropping a `JoinSet` aborts its tasks; a dropped drain detaches them,
+    /// as the handle vector it replaced did.
+    fn drop(&mut self) {
+        self.tasks.detach_all();
     }
 }
 
@@ -96,12 +93,7 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, body: &[u8]) -> 
 }
 
 fn api_error(code: ErrorCode, detail: &str) -> ApiError {
-    ApiError {
-        code,
-        detail: detail.to_owned(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::new(code, detail.to_owned())
 }
 
 struct BoundedJson(Vec<u8>);
@@ -189,7 +181,7 @@ pub(crate) async fn serve_with_gate(
     let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let search_slots = Arc::new(Semaphore::new(5));
     let active_search = Arc::new(Semaphore::new(1));
-    let mut tasks = Vec::new();
+    let mut tasks: JoinSet<io::Result<()>> = JoinSet::new();
     let mut accept_error = None;
     while !shutdown.is_cancelled() {
         let accepted = tokio::select! {
@@ -201,7 +193,7 @@ pub(crate) async fn serve_with_gate(
                     break;
                 }
             },
-            _ = cancelled(&shutdown) => break,
+            _ = shutdown.cancelled() => break,
         };
         let Ok(permit) = connections.clone().try_acquire_owned() else {
             drop(accepted);
@@ -216,8 +208,8 @@ pub(crate) async fn serve_with_gate(
         let instance = instance.clone();
         let daemon_boot = daemon_boot.clone();
         let service_gate = service_gate.clone();
-        tasks.retain(|task: &JoinHandle<io::Result<()>>| !task.is_finished());
-        tasks.push(tokio::spawn(async move {
+        while tasks.try_join_next().is_some() {}
+        tasks.spawn(async move {
             let _permit = permit;
             serve_connection(
                 stream,
@@ -232,27 +224,64 @@ pub(crate) async fn serve_with_gate(
                 service_gate,
             )
             .await
-        }));
+        });
     }
     let drain_deadline = tokio::time::Instant::now() + SHUTDOWN_DRAIN;
-    loop {
-        tasks.retain(|task| !task.is_finished());
-        if tasks.is_empty() {
-            return match accept_error {
-                Some(error) => Err(error),
-                None => Ok(ServeOutcome::Drained),
-            };
+    // Wake on each finishing task; the deadline bounds the whole drain.
+    while !tasks.is_empty() {
+        tokio::select! {
+            _ = tasks.join_next() => {}
+            _ = tokio::time::sleep_until(drain_deadline) => {
+                return Ok(ServeOutcome::Incomplete(PendingDrain {
+                    _listener: listener,
+                    tasks,
+                    first_error: accept_error,
+                }));
+            }
         }
-        if tokio::time::Instant::now() >= drain_deadline {
-            return Ok(ServeOutcome::Incomplete(PendingDrain {
-                _listener: listener,
-                tasks,
-                next: 0,
-                first_error: accept_error,
-            }));
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    match accept_error {
+        Some(error) => Err(error),
+        None => Ok(ServeOutcome::Drained),
+    }
+}
+
+/// The minimal skew answer: when `frame` is a JSON object whose `version` is
+/// a wire version this daemon does not speak and whose `request_id` is a
+/// valid id, a `WireResponse` echoing both (so the sender's own correlation
+/// accepts it) carrying `UnknownWireVersion` with the skew remedy. Reads two
+/// fields only; nothing else of the foreign request is decoded.
+fn skew_reply(frame: &[u8], instance: &str, daemon_boot: &str) -> Option<WireResponse> {
+    let value: serde_json::Value = serde_json::from_slice(frame).ok()?;
+    let object = value.as_object()?;
+    let version = u16::try_from(object.get("version")?.as_u64()?).ok()?;
+    if version == PROTOCOL_VERSION {
+        return None;
+    }
+    let request_id = object.get("request_id")?.as_str()?;
+    if request_id.is_empty()
+        || request_id.len() > 128
+        || !request_id.bytes().all(|b| b.is_ascii_graphic())
+    {
+        return None;
+    }
+    let detail = crate::daemon::remedy::remedy(
+        Some(crate::protocol::results::ErrorClass::VersionSkew),
+        &crate::daemon::remedy::RemedyContext::VersionSkew {
+            daemon: format!(
+                "{} (protocol {PROTOCOL_VERSION})",
+                env!("CARGO_PKG_VERSION")
+            ),
+            cli: format!("protocol {version}"),
+        },
+    );
+    Some(WireResponse {
+        version,
+        request_id: request_id.to_owned(),
+        instance: instance.to_owned(),
+        daemon_boot: daemon_boot.to_owned(),
+        result: Err(api_error(ErrorCode::UnknownWireVersion, &detail)),
+    })
 }
 
 // Allowed: per-connection state handed over from the accept loop.
@@ -267,7 +296,7 @@ async fn serve_connection(
     shutdown: Cancellation,
     search_slots: Arc<Semaphore>,
     active_search: Arc<Semaphore>,
-    service_gate: Arc<service_connection::LiveServiceGate>,
+    service_gate: Arc<LiveServiceGate>,
 ) -> io::Result<()> {
     let uid = stream.peer_cred()?.uid();
     if uid != owner_uid {
@@ -281,7 +310,7 @@ async fn serve_connection(
     let frame = tokio::select! {
         result = tokio::time::timeout_at(expires, read_frame(&mut stream)) =>
             result.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "request expired"))??,
-        _ = cancelled(&shutdown) => return Ok(()),
+        _ = shutdown.cancelled() => return Ok(()),
     };
     if let Ok(request) = serde_json::from_slice::<ServiceWireRequest>(&frame) {
         return service_connection::serve_registered(
@@ -297,8 +326,20 @@ async fn serve_connection(
         )
         .await;
     }
-    let request =
-        WireRequest::decode(&frame).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let request = match WireRequest::decode(&frame) {
+        Ok(request) => request,
+        Err(error) => {
+            // A request of another wire version gets a reply its sender's
+            // decoder understands instead of a closed socket (root §B3 D3).
+            if let Some(response) = skew_reply(&frame, &instance, &daemon_boot) {
+                let frame = encode_response(&response)?;
+                return tokio::time::timeout_at(expires, stream.write_all(&frame))
+                    .await
+                    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "response expired"))?;
+            }
+            return Err(io::Error::new(io::ErrorKind::InvalidData, error));
+        }
+    };
     if request.expected_instance != instance {
         let response = WireResponse {
             version: PROTOCOL_VERSION,
@@ -384,7 +425,7 @@ async fn serve_connection(
                 acquired = acquire => acquired.ok(),
                 _ = tokio::time::sleep_until(expires) => None,
                 _ = read_half.read_u8() => None,
-                _ = cancelled(&shutdown) => None,
+                _ = shutdown.cancelled() => None,
             }
         } else {
             None
@@ -435,7 +476,7 @@ async fn serve_connection(
                 cancellation.cancel();
                 None
             }
-            _ = cancelled(&shutdown), if !is_stop => {
+            _ = shutdown.cancelled(), if !is_stop => {
                 cancellation.cancel();
                 None
             }

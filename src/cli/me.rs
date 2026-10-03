@@ -195,7 +195,7 @@ pub(crate) fn run_me_init<W: Write>(
         return Err(agent_evidence_refusal(pane.as_str(), &evidence));
     }
     let (instance, _, client) = connect(paths, clock)?;
-    let seat = match pane_seat(&parsed, &pane, paths, clock)? {
+    let seat = match pane_seat(&client, &parsed.output, &pane, clock.as_ref())? {
         Some(seat) => seat,
         None => resolve_seat(&client, paths, instance, &pane, clock.as_ref())?,
     };
@@ -253,15 +253,13 @@ pub(crate) fn run_me_init<W: Write>(
             }
             RunError::Api(api)
         }
-        RunError::Api(api) if api.code == ErrorCode::Conflict => {
-            RunError::Api(crate::protocol::results::ApiError {
-                detail: format!(
-                    "{}; another check-in for this seat is in progress or was interrupted: see \
-                     `herdr-threads pending-ops`",
-                    api.detail
-                ),
-                ..api
-            })
+        RunError::Api(mut api) if api.code == ErrorCode::Conflict => {
+            api.detail = format!(
+                "{}; another check-in for this seat is in progress or was interrupted: see \
+                 `herdr-threads pending-ops`",
+                api.detail
+            );
+            RunError::Api(api)
         }
         other => other,
     })?;

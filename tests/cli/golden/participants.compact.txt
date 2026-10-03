@@ -1,0 +1,4 @@
+participants
+seat-a joined self
+seat-b invited required invitation=inv-1 requirement=req-1 revision=2
+next: herdr-threads participants t-1 --cursor cursor-1

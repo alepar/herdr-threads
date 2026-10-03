@@ -1,0 +1,1 @@
+Seat seat-a has already joined thread t-1; no invitation sent.

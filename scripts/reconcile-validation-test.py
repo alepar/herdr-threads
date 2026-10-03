@@ -210,5 +210,60 @@ class CommittedEvidence(unittest.TestCase):
         self.assertIn("concurrent-children / codex: NOT_EXERCISED", gaps)
 
 
+class NativeRerun(unittest.TestCase):
+    """ht-p03.20: matrix log -> results; closures bind to backing cells on one SHA."""
+
+    SHA = "a" * 40
+
+    def line(self, cell, outcome, attempts=1, sha=None, version="2.1.287 (Claude Code)", status="PASS"):
+        sha = sha or self.SHA
+        cell_line = (f"CELL {cell} sha={sha} rc=0 manifest_status={status} harness_bin=/x "
+                     f"harness_before=[{version}] harness_after=[{version}] harness_ran=[{version.split()[-1].strip('()') if 'codex' in version else version.split()[0]}] "
+                     f"evidence=none out=/o")
+        return f"ATTEMPT {attempts} {cell_line}\nMATRIX cell={cell} attempts={attempts} outcome={outcome} :: {cell_line}"
+
+    def collect(self, overrides=None, sha_for=None):
+        overrides = overrides or {}
+        lines = []
+        for cell, harness in rv.RERUN_CELL_HARNESS.items():
+            version = "codex-cli 0.159.3" if harness == "codex" else "2.1.287 (Claude Code)"
+            lines.append(self.line(cell, overrides.get(cell, "PASS"), version=version,
+                                   sha=(sha_for or {}).get(cell)))
+        return rv.collect_native_rerun("\n".join(lines), read_evidence=False)
+
+    def test_all_pass_closes_everything_on_one_sha(self):
+        rerun = self.collect()
+        self.assertEqual(rerun["evidence_sha"], self.SHA)
+        self.assertTrue(all(c["closed"] for c in rv.rerun_closures(rerun)))
+        cell = next(c for c in rerun["cells"] if c["cell"] == "claude-manual")
+        self.assertEqual((cell["harness_before"], cell["harness_ran"], cell["attempts"]), ("2.1.287 (Claude Code)", "2.1.287", 1))
+
+    def test_not_exercised_or_invalid_never_closes(self):
+        rerun = self.collect({"sw2-claude": "NOT_EXERCISED (UNSUPPORTED)",
+                              "codex-manual": "INVALID: version before [a] after [b] want [c]"})
+        closures = {c["closure"]: c for c in rv.rerun_closures(rerun)}
+        self.assertFalse(closures["R20 MET (W9-1)"]["closed"])
+        self.assertIn("sw2-claude: NOT_EXERCISED", closures["R20 MET (W9-1)"]["why"])
+        self.assertFalse(closures["B6 current-version evidence, Codex Listed row"]["closed"])
+        self.assertTrue(closures["Wave 28 (wake left typed but unsent)"]["closed"])
+
+    def test_flaky_pass_holds_and_stale_cell_opens(self):
+        rerun = self.collect({"ht910-codex": "PASS (flaky)"}, sha_for={"p40-crash-fix3": "b" * 40})
+        self.assertIsNone(rerun["evidence_sha"])
+        closures = {c["closure"]: c for c in rv.rerun_closures(rerun)}
+        self.assertFalse(closures["P40 crash-fix3 real-host acceptance"]["closed"])
+        self.assertFalse(closures["ht-910 daemon restart, agent stays in its pane"]["closed"])
+
+    def test_rerun_settles_gap_rows(self):
+        rerun = self.collect({"children-codex": "FAIL (FAIL)"})
+        result = {"overall": ("PASS_WITH_GAPS", [], ["concurrent-children / claude: NOT_EXERCISED",
+                                                     "concurrent-children / codex: NOT_EXERCISED"])}
+        rv.apply_rerun(result, rerun)
+        status, failures, gaps = result["overall"]
+        self.assertEqual(status, "FAIL")
+        self.assertEqual(failures, ["rerun children-codex: FAIL"])
+        self.assertEqual(gaps, ["concurrent-children / codex: FAIL in the ht-p03.20 rerun (children-codex)"])
+
+
 if __name__ == "__main__":
     unittest.main()

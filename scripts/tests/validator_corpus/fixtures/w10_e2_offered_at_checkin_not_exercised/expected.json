@@ -1,0 +1,6 @@
+{
+  "finding": "w10_e2_offered_at_checkin_not_exercised",
+  "entry": "lostprompt_wake",
+  "verdict": "NOT_EXERCISED",
+  "reason": "the agent's startup check-in already offered it the pending handoff (SessionStart context names msg-1), so nothing was lost and no recovery wake was owed in 60s; lost-prompt recovery not exercised"
+}

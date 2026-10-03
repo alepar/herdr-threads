@@ -181,8 +181,9 @@ fn hook_parses_only_under_an_observed_pinned_harness_version() {
     let codex = observe_harness(Harness::Codex, Some(&path), budget);
     assert!(matches!(codex, Ok(InstalledHarness::Codex(_))), "{codex:?}");
     // An unsupported installed version never parses. (The recipe registry
-    // covers 2.1.283..=2.1.286, so the first unsupported patch is 2.1.287.)
-    let unsupported = InstalledHarness::Claude("2.1.287".into());
+    // covers 2.1.283..=2.1.287, so 2.1.282 is older than every recipe and
+    // refused; 2.1.288 is newer and is admitted optimistically.)
+    let unsupported = InstalledHarness::Claude("2.1.282".into());
     assert!(parse_event(&unsupported, CLAUDE_TOOL).is_err());
     let outcome = run_hook(
         &args(&root),
@@ -206,8 +207,20 @@ fn hook_parses_only_under_an_observed_pinned_harness_version() {
         observe_harness(Harness::Codex, Some(&path), budget),
         Ok(InstalledHarness::Codex(_))
     ));
-    fake_harness(&bin, "codex", "codex-cli 0.159.0");
+    fake_harness(&bin, "codex", "codex-cli 0.155.1");
     assert!(observe_harness(Harness::Codex, Some(&path), budget).is_err());
+    // Newer than every recipe: admitted optimistically (no schemas embedded
+    // in the fake binary, so the schema observation is unreadable).
+    fake_harness(&bin, "codex", "codex-cli 0.160.0");
+    assert!(matches!(
+        observe_harness(Harness::Codex, Some(&path), budget),
+        Ok(InstalledHarness::Codex(_))
+    ));
+    fake_harness(&bin, "claude", "2.1.288 (Claude Code)");
+    assert_eq!(
+        observe_harness(Harness::Claude, Some(&path), budget),
+        Ok(InstalledHarness::Claude("2.1.288".into()))
+    );
     fake_harness(&bin, "claude", "2.1.285 (Claude Code)");
     assert_eq!(
         observe_harness(Harness::Claude, Some(&path), budget),
@@ -218,7 +231,7 @@ fn hook_parses_only_under_an_observed_pinned_harness_version() {
         observe_harness(Harness::Claude, Some(&path), budget),
         Ok(InstalledHarness::Claude("2.1.286".into()))
     );
-    fake_harness(&bin, "claude", "2.1.287 (Claude Code)");
+    fake_harness(&bin, "claude", "2.1.282 (Claude Code)");
     assert!(observe_harness(Harness::Claude, Some(&path), budget).is_err());
     fake_harness(&bin, "claude", "Claude Code 2.1.283");
     assert!(observe_harness(Harness::Claude, Some(&path), budget).is_err());
@@ -329,6 +342,11 @@ fn oversized_offer_falls_back_to_fixed_text_and_read_argv() {
     );
 }
 
+/// The `thread` value of a compact overview row.
+fn thread_of(row: &str) -> &str {
+    let rest = row.split_once("\"thread\":\"").unwrap().1;
+    rest.split('"').next().unwrap()
+}
 fn digest(invitations: &[(&str, &str)], receipts: &[(&str, &str)]) -> AttentionDigest {
     use crate::protocol::{
         attention::{AttentionClass, AttentionRef},
@@ -785,9 +803,15 @@ fn extreme_budget_trims_items_to_the_pin_then_the_notices_then_the_pin() {
         if kept < actions.items.len() {
             item_trimmed += 1;
             assert!(!data.contains("attention digest:"), "{pad}: {data}");
+            // P19: only the handoff thread's row (the main thread, named by
+            // the kept pinned commands) may outlive the trimmed items.
             assert!(
-                overview.rows.iter().all(|row| !data.contains(row.as_str())),
-                "{pad}: a row outlived an item"
+                overview
+                    .rows
+                    .iter()
+                    .filter(|row| !row.contains(&handoff))
+                    .all(|row| !data.contains(row.as_str())),
+                "{pad}: a row outlived its item"
             );
         }
         if notices_kept {
@@ -963,6 +987,7 @@ fn oversize_trim_order_keeps_commands_and_the_offered_notices_line() {
     let instruction = render_context(Role::TopLevel, &[], true).unwrap();
     let threads: Vec<String> = (0..8).map(|_| format!("thread-{}", uuid())).collect();
     let (offer, overview, _, _) = startup_offer(&instruction, &threads);
+    let overview8 = overview.clone();
     let inv: Vec<(String, String)> = (0..4)
         .map(|n| (format!("invitation-{}", uuid()), threads[n].clone()))
         .collect();
@@ -1053,14 +1078,10 @@ fn oversize_trim_order_keeps_commands_and_the_offered_notices_line() {
     assert!(data.contains(&notice_line), "notice line trimmed: {data}");
     assert!(!data.contains("attention digest:"), "{data}");
     assert!(fixed.contains(&actions.continuation), "{fixed}");
-    assert!(
-        overview.rows.iter().all(|row| !data.contains(row.as_str())),
-        "rows outlived commands"
-    );
-    assert!(
-        data.contains("overview has_more: 0 of 8 threads shown"),
-        "{data}"
-    );
+    // P19: rows and item commands are trimmed together, never rows alone
+    // down to one while every command stays: each kept command keeps its
+    // thread's row, and a row with no kept command is gone (the main thread's
+    // row, the first command's, is exempt).
     let kept = actions
         .items
         .iter()
@@ -1072,6 +1093,28 @@ fn oversize_trim_order_keeps_commands_and_the_offered_notices_line() {
             .iter()
             .all(|item| !fixed.contains(item.as_str())),
         "commands are trimmed from the end"
+    );
+    let main = overview8
+        .rows
+        .iter()
+        .position(|row| actions.items[0].contains(thread_of(row)))
+        .unwrap();
+    let mut shown = 0;
+    for (index, row) in overview8.rows.iter().enumerate() {
+        let named = actions.items[..kept]
+            .iter()
+            .any(|item| item.split_whitespace().any(|word| word == thread_of(row)));
+        assert_eq!(
+            data.contains(row.as_str()),
+            named || index == main,
+            "row {index} ({row}) vs kept commands"
+        );
+        shown += usize::from(data.contains(row.as_str()));
+    }
+    assert!((1..8).contains(&shown), "{shown}");
+    assert!(
+        data.contains(&format!("overview has_more: {shown} of 8 threads shown")),
+        "{data}"
     );
     // Without a budget problem every item is present.
     let actions = next_actions(&prefix("/s"), Some(&digest));
@@ -1086,6 +1129,354 @@ fn oversize_trim_order_keeps_commands_and_the_offered_notices_line() {
     for item in &actions.items {
         assert!(small.contains(item.as_str()));
     }
+}
+
+// Wave 20: the skill pointer is a SessionStart-only line, as docs/agent-usage.md
+// and the README say. SubagentStart shares SessionStart's lifecycle mode but
+// is its own native event. Kills: gating on `mode() == Lifecycle` (a
+// SubagentStart context carries the hint), or dropping the hint from
+// startup/resume/clear.
+#[test]
+fn skill_hint_is_sessionstart_only() {
+    let instruction = render_context(Role::TopLevel, &[], true).unwrap();
+    let text = format!("{instruction}\nsmall offer\n");
+    let start = event(CLAUDE_START);
+    let mut cases: Vec<(&str, LifecycleEvent, &str, bool)> = Vec::new();
+    for harness in [Harness::Claude, Harness::Codex] {
+        for (label, kind, source) in [
+            ("startup", EventKind::Startup, "startup"),
+            ("resume", EventKind::Resume, "resume"),
+            ("clear", EventKind::Clear, "clear"),
+        ] {
+            let mut ev = start.clone();
+            ev.harness = harness;
+            ev.kind = kind;
+            ev.source = source.to_owned();
+            cases.push((label, ev, "SessionStart", true));
+        }
+        let mut subagent = start.clone();
+        subagent.harness = harness;
+        subagent.source = "SubagentStart".to_owned();
+        cases.push(("subagent-start", subagent, "SubagentStart", false));
+        let mut tool = event(CLAUDE_TOOL);
+        tool.harness = harness;
+        cases.push(("pre-tool-use", tool, "PreToolUse", false));
+    }
+    for (label, ev, native, hinted) in cases {
+        let bytes = encode_native(&ev, text.as_bytes(), &[], None, None, None);
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            value["hookSpecificOutput"]["hookEventName"], native,
+            "{label}"
+        );
+        let context = additional_context(&bytes);
+        assert_eq!(
+            context.contains(crate::cli::skill::HOOK_SKILL_HINT),
+            hinted,
+            "{label}: {context}"
+        );
+    }
+}
+
+// W6-R3: a missing digest (the best-effort query failed) still emits the D2
+// procedure line, in the fixed section; a digest that shows no required
+// invitation keeps it absent (native codex matrix P3). Kills: dropping the line
+// when `digest` is None, and emitting it unconditionally.
+#[test]
+fn procedure_line_survives_a_missing_digest() {
+    use crate::protocol::attention::AttentionRequirement;
+    let sentence = REQUIRED_INVITATION_INSTRUCTION
+        .split_once(". ")
+        .unwrap()
+        .0
+        .to_owned();
+    let none = next_actions(&prefix("/s"), None);
+    assert!(none.header.contains(&sentence), "{}", none.header);
+    assert!(none.header.ends_with(READY_HEADER), "{}", none.header);
+    // End to end through the native envelope: fixed section, not peer data.
+    let instruction = render_context(Role::TopLevel, &[], true).unwrap();
+    let context = additional_context(&encode_native(
+        &event(CLAUDE_START),
+        format!("{instruction}\nsmall offer\n").as_bytes(),
+        &[],
+        None,
+        Some(&none),
+        None,
+    ));
+    let fixed = context.split("\nuntrusted_peer_data: ").next().unwrap();
+    assert!(fixed.contains(&sentence), "{context}");
+    // A digest with no required invitation: absent.
+    let plain = digest(&[("invitation-p", "thread-p")], &[]);
+    let actions = next_actions(&prefix("/s"), Some(&plain));
+    assert!(!actions.header.contains(&sentence), "{}", actions.header);
+    // A digest with one: present.
+    let mut required = digest(&[("invitation-r", "thread-r")], &[]);
+    required.invitations.items[0].requirement = Some(AttentionRequirement {
+        id: "requirement-9".into(),
+        revision: 3,
+    });
+    let actions = next_actions(&prefix("/s"), Some(&required));
+    assert!(actions.header.contains(&sentence), "{}", actions.header);
+}
+
+// P19/P20/W6-D5: one context-budget function with a documented trim order.
+// Sweeping the state dir length from short to the point the fixed text alone
+// no longer fits walks the budget through every stage: at each step a part
+// that outranks a surviving part is itself fully present, so parts only give
+// way in the documented order (digest IDs, other rows, digest counts, item
+// commands beyond the pin, notices, pinned commands), and the continuation
+// and the main thread's row always survive. Kills: dropping rows before any
+// item command regardless of rank (the 8-thread probe), trimming the digest
+// counts before the rows, dropping the main thread's row, or dropping the
+// continuation.
+#[test]
+fn context_budget_trim_order_is_documented_order() {
+    let start = event(CLAUDE_START);
+    let instruction = render_context(Role::TopLevel, &[], true).unwrap();
+    let handoff = format!("thread-{}", uuid());
+    let (digest, _) = burst_digest(&handoff);
+    let mut threads: Vec<String> = (0..7).map(|_| format!("thread-{}", uuid())).collect();
+    threads.push(handoff.clone());
+    let (offer, overview, _, _) = startup_offer(&instruction, &threads);
+    let notices = (0..16)
+        .map(|_| format!("event-{}@thread-{}", uuid(), uuid()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let notice_line = format!("offered notices: 16 [{notices}] +more");
+    let summary = format!("{}\n{notice_line}", digest.summary());
+    let counts = digest_counts(&digest.summary());
+    assert_ne!(counts, digest.summary(), "the digest carries exact IDs");
+    let mut stages = std::collections::BTreeSet::new();
+    for pad in (0..=840).step_by(10) {
+        let state = format!("/s/{}", "x".repeat(pad));
+        let actions = next_actions(&prefix(&state), Some(&digest));
+        let context = additional_context(&encode_native(
+            &start,
+            offer.as_bytes(),
+            &prefix(&state),
+            Some(&summary),
+            Some(&actions),
+            Some(&overview),
+        ));
+        assert!(context.len() <= MAX_CONTEXT, "{pad}: {}", context.len());
+        let (fixed, data) = context
+            .split_once("\nuntrusted_peer_data: ")
+            .unwrap_or((context.as_str(), "\"\""));
+        let data: String = serde_json::from_str(data).unwrap();
+        assert!(fixed.contains(&actions.continuation), "{pad}: continuation");
+        let main = overview
+            .rows
+            .iter()
+            .find(|row| thread_of(row) == handoff)
+            .unwrap();
+        let main_shown = data.contains(main.as_str());
+        let in_fixed = |items: &[String]| -> Vec<bool> {
+            items
+                .iter()
+                .map(|item| fixed.contains(item.as_str()))
+                .collect()
+        };
+        let pin = actions.pinned;
+        let others = || overview.rows.iter().filter(|row| *row != main);
+        // Rank order of the parts (the digest's exact IDs, other overview
+        // rows, the digest counts line, item commands beyond the pin, the
+        // notices line, the pinned commands): is any of it still there, and
+        // is all of it?
+        let ids = data.contains(&digest.summary());
+        let pinned = in_fixed(&actions.items[..pin]).iter().all(|kept| *kept);
+        let any = [
+            ids,
+            others().any(|row| data.contains(row.as_str())),
+            data.contains(&counts),
+            in_fixed(&actions.items[pin..]).contains(&true),
+            data.contains(&notice_line),
+            pinned,
+        ];
+        let all = [
+            ids,
+            others().all(|row| data.contains(row.as_str())),
+            data.contains(&counts),
+            !in_fixed(&actions.items[pin..]).contains(&false),
+            data.contains(&notice_line),
+            pinned,
+        ];
+        // The main thread's row outlives every other part but the pinned
+        // commands; only the continuation-only form drops it.
+        assert!(
+            main_shown || !pinned,
+            "{pad}: main row dropped while the pinned commands stay"
+        );
+        for (lower, present) in any.iter().enumerate() {
+            for (higher, full) in all.iter().enumerate().skip(lower + 1) {
+                // The digest line is one line: its IDs form replaces the
+                // counts form, so `ids` does not require a separate `counts`.
+                if lower == 0 && higher == 2 {
+                    continue;
+                }
+                assert!(
+                    !present || *full,
+                    "{pad}: part {lower} survives but part {higher} is trimmed"
+                );
+            }
+        }
+        stages.insert(any);
+    }
+    assert!(
+        stages.len() >= 4,
+        "the sweep walked only {} stages: {stages:?}",
+        stages.len()
+    );
+}
+
+// P20: the last fallback has a fit check. A pathological state dir (3,000
+// bytes) makes the continuation alone exceed MAX_CONTEXT; the output is still
+// within the budget, ends at a line boundary with a `…` marker that names the
+// read command with the path abbreviated, and never splits a line. Kills:
+// returning the unchecked continuation-only form, cutting mid-line, and
+// printing the whole 3,000-byte path in the marker.
+#[test]
+fn final_fallback_never_exceeds_max_context() {
+    let start = event(CLAUDE_START);
+    let tool = event(CLAUDE_TOOL);
+    let instruction = render_context(Role::TopLevel, &[], true).unwrap();
+    let state = format!("/Users/person/{}/herdr-threads", "d".repeat(3000));
+    let threads: Vec<String> = (0..3).map(|_| format!("thread-{}", uuid())).collect();
+    let (offer, overview, digest, _) = startup_offer(&instruction, &threads);
+    let actions = next_actions(&prefix(&state), Some(&digest));
+    let abbreviated = abbreviate_path(&state);
+    assert!(
+        abbreviated.len() <= 3 + 2 * DISPLAY_PATH_BYTES + 1,
+        "{abbreviated}"
+    );
+    assert!(abbreviated.starts_with("…/") && abbreviated.ends_with("/herdr-threads"));
+    // Without a command block the read argv itself carries the path: it needs
+    // a longer one to overflow.
+    let huge = format!("/Users/person/{}/herdr-threads", "d".repeat(5000));
+    for (label, ev, actions, overview, state) in [
+        (
+            "start+actions",
+            &start,
+            Some(&actions),
+            Some(&overview),
+            &state,
+        ),
+        ("tool+actions", &tool, Some(&actions), None, &state),
+        ("start-no-actions", &start, None, Some(&overview), &huge),
+        ("tool-no-actions", &tool, None, None, &huge),
+    ] {
+        let bytes = encode_native(
+            ev,
+            offer.as_bytes(),
+            &prefix(state),
+            Some(&digest.summary()),
+            actions,
+            overview,
+        );
+        let context = additional_context(&bytes);
+        assert!(
+            !bytes.is_empty() && context.len() <= MAX_CONTEXT,
+            "{label}: {}",
+            context.len()
+        );
+        assert!(context.starts_with(&instruction), "{label}");
+        assert!(!context.contains(state), "{label}: the full path is shown");
+        let last = context.lines().last().unwrap();
+        assert!(last.starts_with('…'), "{label}: {last}");
+        assert!(
+            last.contains(&format!("--state-dir {abbreviated} inbox")),
+            "{label}: {last}"
+        );
+    }
+    // Every budget yields a result within it, cut only at line boundaries.
+    let (notice_line, digest_lines) =
+        split_summary(Some("attention digest: x\noffered notices: 1"));
+    let parts = ContextParts {
+        instruction: &instruction,
+        actions: Some(&actions),
+        overview: Some(&overview),
+        fallback: &prefix(&state),
+        notice_line,
+        digest_lines,
+    };
+    let whole = fit_context(&parts, usize::MAX);
+    for budget in (0..=1500).step_by(37) {
+        let fitted = fit_context(&parts, budget);
+        assert!(fitted.len() <= budget, "{budget}: {}", fitted.len());
+        if budget > 800 {
+            let body = fitted.rsplit_once('\n').unwrap().0;
+            assert!(
+                whole.starts_with(body)
+                    && matches!(whole[body.len()..].chars().next(), Some('\n') | None),
+                "{budget}: cut mid-line"
+            );
+        }
+    }
+}
+
+// W6-D5: S15 failed with a long run root. A 400-byte state dir with 23
+// pending threads fits, keeps the main thread's row and its command, keeps
+// every ready command exact (a model runs them verbatim), and shows the path
+// only in ready commands (display text abbreviates it). Kills: overflowing
+// MAX_CONTEXT with a long root, dropping the main thread's row or command,
+// and abbreviating a path inside a command.
+#[test]
+fn deep_run_root_context_fits_and_abbreviates() {
+    let start = event(CLAUDE_START);
+    let instruction = render_context(Role::TopLevel, &[], true).unwrap();
+    let root = format!(
+        "/private/var/folders/{}/T/herdr-threads-run-root/state",
+        "r".repeat(380)
+    );
+    assert!(root.len() >= 400);
+    let threads: Vec<String> = (0..23).map(|_| format!("thread-{}", uuid())).collect();
+    let (offer, overview, digest, threads) = startup_offer(&instruction, &threads);
+    let actions = next_actions(&prefix(&root), Some(&digest));
+    let context = additional_context(&encode_native(
+        &start,
+        offer.as_bytes(),
+        &prefix(&root),
+        Some(&digest.summary()),
+        Some(&actions),
+        Some(&overview),
+    ));
+    assert!(context.len() <= MAX_CONTEXT, "{}", context.len());
+    let (fixed, data) = context.split_once("\nuntrusted_peer_data: ").unwrap();
+    let data: String = serde_json::from_str(data).unwrap();
+    // The main thread: the first receipt's thread, named by the first command.
+    let main = &threads[0];
+    assert!(
+        actions.items[0].contains(main.as_str()),
+        "{:?}",
+        actions.items
+    );
+    assert!(fixed.contains(&actions.items[0]), "main command: {fixed}");
+    let row = overview
+        .rows
+        .iter()
+        .find(|row| thread_of(row) == main.as_str())
+        .unwrap();
+    assert!(data.contains(row.as_str()), "main row: {data}");
+    assert!(fixed.contains(&actions.continuation), "{fixed}");
+    // Rows were trimmed (23 threads cannot fit), and said so.
+    assert!(data.contains("overview has_more:"), "{data}");
+    // The full root appears only inside ready commands, whole; no other line
+    // and no peer data carries it.
+    assert!(!data.contains(&root));
+    for line in fixed.lines().filter(|line| line.contains(&root)) {
+        assert!(line.starts_with("- "), "{line}");
+        assert!(
+            actions.items.iter().any(|item| item == line)
+                || line == actions.continuation
+                || actions.overview.as_deref() == Some(line),
+            "a command carries an altered path: {line}"
+        );
+    }
+    let short = abbreviate_path(&root);
+    assert!(
+        short.len() < root.len() / 4 && short.starts_with("…/"),
+        "{short}"
+    );
+    assert_eq!(abbreviate_path("/short/path"), "/short/path");
 }
 
 fn private_root() -> PathBuf {
@@ -1110,6 +1501,38 @@ fn herdr() -> HookEnv {
         herdr_env: true,
         pane: Some("w9:p1".into()),
     }
+}
+
+// Wave 17 (ht-p03.15). Kills: a parse error (for example a stale installed argv after a CLI
+// change) that prints a diagnostic in every non-Herdr session because the quiet gate only
+// applied once parsing succeeded, or one that goes quiet inside a Herdr pane (where the
+// message is the only sign the installed hook is stale), or a nonzero status.
+#[test]
+fn hook_parse_error_outside_herdr_is_quiet() {
+    let outside = HookEnv {
+        herdr_env: false,
+        pane: None,
+    };
+    let no_pane = HookEnv {
+        herdr_env: true,
+        pane: None,
+    };
+    for env in [&outside, &no_pane] {
+        assert_eq!(
+            parse_failure_outcome("bad argv".into(), env),
+            HookOutcome::default(),
+            "{env:?}"
+        );
+        assert_eq!(run_process_in(Err("bad argv".into()), env), 0);
+    }
+    assert_eq!(
+        parse_failure_outcome("bad argv".into(), &herdr()),
+        HookOutcome {
+            stdout: Vec::new(),
+            diagnostic: Some("bad argv".into()),
+            attention: None,
+        }
+    );
 }
 
 fn clock() -> Arc<dyn Clock> {
@@ -1282,15 +1705,18 @@ fn hook_refuses_previous_protocol_daemon_before_send() {
             diagnostic.contains("daemon protocol: UnknownWireVersion"),
             "{diagnostic}"
         );
+        // The one VersionSkew remedy line (B3): `daemon stop` from this
+        // executable is skew-tolerant, so stop-then-ensure is the remedy.
         assert!(
             diagnostic.contains(&format!(
-                "daemon protocol {} differs from executable protocol {PROTOCOL_VERSION}",
-                PROTOCOL_VERSION - 1
+                "daemon is version 0.0.1 (protocol {}), CLI is {} (protocol {PROTOCOL_VERSION})",
+                PROTOCOL_VERSION - 1,
+                env!("CARGO_PKG_VERSION")
             )),
             "{diagnostic}"
         );
         assert!(
-            diagnostic.contains(&format!("pid {}", std::process::id())),
+            diagnostic.contains("`herdr-threads daemon stop`"),
             "{diagnostic}"
         );
         if payload == CLAUDE_TOOL {
@@ -1595,7 +2021,7 @@ fn ready_prefix_stays_explicit_for_a_non_default_state_dir_or_host() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-// Kills: going bare when two Herdr state roots exist (a plain command in the
+// Kills: going bare when two Herdr state roots both hold a store (a plain command in the
 // pane is refused as ambiguous), or when HERDR_PLUGIN_STATE_DIR in the pane
 // points elsewhere.
 #[test]
@@ -1605,6 +2031,10 @@ fn ready_prefix_stays_explicit_when_the_default_is_ambiguous_or_overridden() {
     let host = dir.join("herdr.sock");
     std::fs::create_dir_all(dir.join("xdg/herdr/plugins/herdr-threads")).unwrap();
     pane.xdg_state_home = Some(dir.join("xdg"));
+    for root in [state.clone(), dir.join("xdg/herdr/plugins/herdr-threads")] {
+        std::fs::create_dir_all(root.join("instances/abc")).unwrap();
+        std::fs::write(root.join("instances/abc/threads.sqlite3"), "").unwrap();
+    }
     assert!(resolve_state_dir(&pane).is_err(), "ambiguous default");
     assert_eq!(
         cli_prefix(&pane_selectors(Some(&state), Some(&host), &pane)),
@@ -1657,6 +2087,7 @@ mod pane_seat_selection {
     /// the requested page limit and cursor, like the service does.
     struct Seats(Vec<SeatSummary>);
     impl LocalClient for Seats {
+        crate::default_output_local_client!();
         fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
             match command {
                 Command::Seats(q) => {
@@ -1763,6 +2194,124 @@ mod pane_seat_selection {
     }
 }
 
+// -- parse-failure reports under an optimistic admission (ht-p03.23) --------
+
+mod parse_failure_report {
+    use super::*;
+    use crate::protocol::results::CommandResult;
+    use crate::test_support::counting_client::{CallKind, CountingLocalClient, DaemonVintage};
+
+    fn budget() -> CallBudget {
+        CallBudget {
+            deadline: MonoInstant(u64::MAX / 2),
+            cancellation: Cancellation::default(),
+        }
+    }
+
+    fn daemon(vintage: DaemonVintage) -> CountingLocalClient {
+        CountingLocalClient::scripted(
+            |command| match command {
+                Command::HookParseFailure(_) => Ok(CommandResult::HookParseFailureRecorded),
+                other => panic!("unexpected command {other:?}"),
+            },
+            vintage,
+        )
+    }
+
+    /// Kills: a report sent to a daemon that did not advertise
+    /// `hook.parse_failure_report` (an older daemon cannot decode it), a
+    /// report never sent to one that did, and a report that panics or fails
+    /// the hook when the daemon refuses it.
+    #[test]
+    fn hook_reports_parse_failure_only_when_advertised() {
+        let error = ContextError::Invalid;
+        let current = daemon(DaemonVintage::Current);
+        assert!(report_parse_failure(
+            &current,
+            &current.capabilities(),
+            Harness::Claude,
+            &error,
+            &budget()
+        ));
+        assert_eq!(current.calls(CallKind::HookParseFailure), 1);
+
+        let older = daemon(DaemonVintage::Older);
+        assert!(!report_parse_failure(
+            &older,
+            &older.capabilities(),
+            Harness::Claude,
+            &error,
+            &budget()
+        ));
+        assert_eq!(older.calls(CallKind::HookParseFailure), 0);
+
+        // A daemon that advertises the capability but refuses the report:
+        // best effort, nothing propagates.
+        let refusing = CountingLocalClient::scripted(
+            |_| Err(ApiError::new(ErrorCode::Unsupported, "no")),
+            DaemonVintage::Current,
+        );
+        assert!(report_parse_failure(
+            &refusing,
+            &refusing.capabilities(),
+            Harness::Codex,
+            &error,
+            &budget()
+        ));
+        assert_eq!(refusing.calls(CallKind::HookParseFailure), 1);
+    }
+
+    /// Kills: a report naming a human occupant (no harness), and an optimistic
+    /// check that is true for a listed Claude version.
+    #[test]
+    fn only_optimistic_claude_and_never_a_human_reports() {
+        let current = daemon(DaemonVintage::Current);
+        assert!(!report_parse_failure(
+            &current,
+            &current.capabilities(),
+            Harness::Human,
+            &ContextError::Invalid,
+            &budget()
+        ));
+        assert_eq!(current.calls(CallKind::HookParseFailure), 0);
+        assert!(is_optimistic(&InstalledHarness::Claude("2.1.299".into())));
+        assert!(!is_optimistic(&InstalledHarness::Claude("2.1.286".into())));
+    }
+
+    /// Kills: an unparsable payload under an optimistic admission that fails
+    /// the hook (it must stay a diagnostic with no stdout), including when no
+    /// daemon is reachable to report to.
+    #[test]
+    fn unparsable_payload_under_optimistic_admission_stays_quiet() {
+        let args = HookArgs {
+            state_dir: Some("/nonexistent-ht-p03-23".into()),
+            host_endpoint: Some("/nonexistent-ht-p03-23/herdr.sock".into()),
+            harness: Harness::Claude,
+        };
+        let env = HookEnv {
+            herdr_env: true,
+            pane: Some("w1:p1".into()),
+        };
+        let outcome = run_hook(
+            &args,
+            &InstalledHarness::Claude("2.1.299".into()),
+            b"not json",
+            &env,
+            Instant::now() + Duration::from_millis(500),
+            Arc::new(SystemClock::new()),
+            None,
+        );
+        assert!(outcome.stdout.is_empty());
+        assert!(
+            outcome
+                .diagnostic
+                .as_deref()
+                .is_some_and(|line| line.starts_with("unsupported hook payload")),
+            "{outcome:?}"
+        );
+    }
+}
+
 /// TRUST-POLICY C1 gate and journal behavior of the seatless continuity
 /// check-in, against a scripted daemon client (no process, no socket).
 mod continuity_gate {
@@ -1841,6 +2390,14 @@ mod continuity_gate {
         }
     }
     impl LocalClient for Daemon {
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
         fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
             let seats = matches!(command, Command::Seats(_));
             self.seen.lock().unwrap().push(command);
@@ -1873,12 +2430,7 @@ mod continuity_gate {
     }
 
     fn rejection(code: ErrorCode) -> ApiError {
-        ApiError {
-            code,
-            detail: "scripted".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        }
+        ApiError::new(code, "scripted")
     }
     fn reattached(seat: &str, generation: u64) -> Reply {
         Ok(Ok(CommandResult::ContinuityReattached(
@@ -2407,7 +2959,10 @@ mod continuity_gate {
                 | ErrorCode::TargetUnsafe
                 | ErrorCode::CallerUnverified
                 | ErrorCode::Unsupported
-                | ErrorCode::SequenceExhausted => true,
+                | ErrorCode::SequenceExhausted
+                // A deterministic rejection on this branch's retry path
+                // (ht-p03): identical retry repeats it.
+                | ErrorCode::StaleRequirementAcceptance => true,
                 ErrorCode::UnknownWireVersion
                 | ErrorCode::DaemonVersionMismatch
                 | ErrorCode::InstanceMismatch
@@ -2434,7 +2989,6 @@ mod continuity_gate {
                 | ErrorCode::StaleServiceGeneration
                 | ErrorCode::IncompatibleOwnership
                 | ErrorCode::RequiredInvitationNeedsManagedThread
-                | ErrorCode::StaleRequirementAcceptance
                 | ErrorCode::TransportDenied => false,
             }
         }

@@ -1,0 +1,14 @@
+checked_in seat-a codex top_level generation=3 current offered_through=evt-9
+inbox:
+t-1 receipts=2 invitations=1 required
+  accept-required: herdr-threads accept-required t-1 --invitation inv-1 --requirement req-1 --revision 2
+t-2 receipts=1+
+inbox.next: herdr-threads inbox --cursor cursor-1
+warnings: 2 pending
+warning_history:
+warn-4 t-1#4
+warn-5 t-1#5
+warning_history.next: herdr-threads warnings --seat seat-a --cursor cursor-1
+notices:
+warn-6 t-1#6
+notices.more: herdr-threads warnings --seat seat-a

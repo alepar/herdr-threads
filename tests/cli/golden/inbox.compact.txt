@@ -1,0 +1,5 @@
+inbox
+t-1 receipts=2 invitations=1 required
+  accept-required: herdr-threads accept-required t-1 --invitation inv-1 --requirement req-1 --revision 2
+t-2 receipts=1+
+next: herdr-threads inbox --cursor cursor-1

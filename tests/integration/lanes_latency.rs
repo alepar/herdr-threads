@@ -1,0 +1,795 @@
+//! ht-p03.9.4: deadline and wake lane latency, idleness and outage cost
+//! through the daemon request path. Every test runs the production elected
+//! daemon (`run_elected_probed`, the same composition `daemon run` uses, with
+//! the production `NativeCli` host) in this process against a private named
+//! Herdr session from `IsolatedHerdr` (never the shared server). Seats are
+//! driven through the built `herdr-threads` executable with the cooperative
+//! caller flags, exactly as `sweep.rs` does; panes are plain shells unless a
+//! test starts the stand-in `claude` script (no model, no network) in one.
+//! The `LaneProbe` reads the daemon's per-origin commit counter, flushed kick
+//! log and lane Pacer idle counts without changing its behaviour.
+use herdr_threads::{
+    app::{KickRecord, LaneProbe, SystemClock, run_elected_probed},
+    daemon::paths::{InstancePaths, RuntimeContext},
+    host::native::NativeCli,
+    ports::HostPort,
+    protocol::time::{Cancellation, Clock},
+    service::{
+        config::ServiceConfig,
+        kicks::{Lane, lanes_for_table},
+    },
+    test_support::isolated_herdr::IsolatedHerdr,
+};
+use serde_json::Value;
+use std::{
+    collections::BTreeMap,
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::PathBuf,
+    sync::{Arc, Mutex, MutexGuard, atomic::AtomicBool, atomic::Ordering},
+    thread::JoinHandle,
+    time::{Duration, Instant},
+};
+
+const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
+
+/// A stand-in agent named `claude`, which Herdr classifies as an agent: it
+/// echoes every line typed into it, so each wake prompt is visible once.
+const STAND_IN: &str = "#!/bin/sh\necho HT-STANDIN-START\n\
+    while IFS= read -r line; do echo \"HT-RECEIVED:$line\"; done\n";
+
+#[derive(Clone)]
+pub(crate) struct Caller {
+    pub(crate) seat: String,
+    pub(crate) pane: String,
+}
+
+pub(crate) struct Session {
+    pub(crate) herdr: IsolatedHerdr,
+    pub(crate) state: PathBuf,
+    pub(crate) probe: LaneProbe,
+    stop: Cancellation,
+    daemon: Option<JoinHandle<std::io::Result<bool>>>,
+    stand_in: PathBuf,
+    _guard: MutexGuard<'static, ()>,
+}
+
+impl Session {
+    pub(crate) fn new(case: &str) -> Option<Self> {
+        let herdr = IsolatedHerdr::new(case)?;
+        let guard = crate::ONE_DAEMON.lock().unwrap_or_else(|e| e.into_inner());
+        herdr.start();
+        let bin = herdr.root().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let stand_in = bin.join("claude");
+        fs::write(&stand_in, STAND_IN).unwrap();
+        fs::set_permissions(&stand_in, fs::Permissions::from_mode(0o755)).unwrap();
+        let state = herdr.root().join("plugin-state");
+        fs::create_dir_all(&state).unwrap();
+        let context = RuntimeContext::explicit(state.clone(), herdr.socket_path(), None).unwrap();
+        let paths = InstancePaths::resolve(&context).unwrap();
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        let host: Arc<dyn HostPort> =
+            Arc::new(NativeCli::new(herdr.socket_path(), Arc::clone(&clock)));
+        let probe = LaneProbe::default();
+        let stop = Cancellation::default();
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let (daemon_stop, daemon_probe) = (stop.clone(), probe.clone());
+        let daemon = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(run_elected_probed(
+                    &paths,
+                    clock,
+                    daemon_stop,
+                    ServiceConfig::default(),
+                    host,
+                    daemon_probe,
+                    move |descriptor| {
+                        ready_tx
+                            .send(descriptor.clone())
+                            .map_err(std::io::Error::other)
+                    },
+                ))
+        });
+        ready_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the elected daemon did not publish its endpoint");
+        // The elected daemon installs a quiet panic hook; restore visible failures.
+        std::panic::set_hook(Box::new(|info| eprintln!("{info}")));
+        let session = Self {
+            herdr,
+            state,
+            probe,
+            stop,
+            daemon: Some(daemon),
+            stand_in,
+            _guard: guard,
+        };
+        wait_until("the probe to attach", Duration::from_secs(5), || {
+            session.probe.attached()
+        });
+        Some(session)
+    }
+
+    /// A `herdr` CLI call in the private session; `None` when it fails (an
+    /// agent that is not there yet, for one), else its `result`.
+    pub(crate) fn herdr_try(&self, args: &[&str]) -> Option<Value> {
+        let output = self.herdr.command("herdr").args(args).output().unwrap();
+        if !output.status.success() {
+            return None;
+        }
+        // Some verbs (`pane run`) print nothing on success.
+        if output.stdout.iter().all(u8::is_ascii_whitespace) {
+            return Some(Value::Null);
+        }
+        let value: Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|e| panic!("herdr {args:?}: {e}: {output:?}"));
+        Some(value["result"].clone())
+    }
+
+    pub(crate) fn herdr_api(&self, args: &[&str]) -> Value {
+        self.herdr_try(args)
+            .unwrap_or_else(|| panic!("herdr {args:?} failed"))
+    }
+
+    pub(crate) fn first_pane(&self) -> String {
+        let created = self.herdr_api(&["workspace", "create"]);
+        created["root_pane"]["pane_id"].as_str().unwrap().to_owned()
+    }
+
+    pub(crate) fn split_pane(&self, from: &str) -> String {
+        let pane = self.herdr_api(&["pane", "split", from, "--direction", "right"]);
+        pane["pane"]["pane_id"].as_str().unwrap().to_owned()
+    }
+
+    pub(crate) fn run_stand_in(&self, pane: &str) {
+        let script = self.stand_in.to_string_lossy().into_owned();
+        self.herdr_api(&["pane", "run", pane, &script]);
+        wait_until(
+            "Herdr to report the stand-in agent idle",
+            Duration::from_secs(30),
+            || {
+                self.herdr_try(&["agent", "get", pane])
+                    .is_some_and(|agent| {
+                        agent["agent"]["agent"] == "claude"
+                            && agent["agent"]["agent_status"] == "idle"
+                    })
+            },
+        );
+    }
+
+    pub(crate) fn pane_text(&self, pane: &str) -> String {
+        let output = self
+            .herdr
+            .command("herdr")
+            .args(["pane", "read", pane, "--source", "recent-unwrapped"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    pub(crate) fn cli(&self, caller: Option<&Caller>, args: &[&str]) -> (i32, Value, String) {
+        let mut command = self.herdr.command(BIN);
+        command
+            .arg("--json")
+            .arg("--state-dir")
+            .arg(&self.state)
+            .arg("--host-endpoint")
+            .arg(self.herdr.socket_path());
+        if let Some(caller) = caller {
+            command.args([
+                "--cooperative-seat",
+                &caller.seat,
+                "--cooperative-target",
+                &caller.pane,
+                "--cooperative-harness",
+                "claude",
+                "--cooperative-role",
+                "top-level",
+            ]);
+        }
+        let output = command
+            .args(args)
+            .env_remove("HERDR_PLUGIN_STATE_DIR")
+            .env_remove("HERDR_PANE_ID")
+            .env_remove("HERDR_BIN_PATH")
+            .env_remove("HERDR_ENV")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let value = serde_json::from_str(&stdout).unwrap_or(Value::Null);
+        (output.status.code().unwrap_or(-1), value, stderr)
+    }
+
+    pub(crate) fn ok(&self, caller: Option<&Caller>, args: &[&str]) -> Value {
+        let (code, value, stderr) = self.cli(caller, args);
+        assert_eq!(code, 0, "herdr-threads {args:?} failed: {stderr}{value}");
+        value["result"]["data"].clone()
+    }
+
+    /// The operator's first contact after a Herdr restart may be refused as a
+    /// transient `stale_host_observation` (the published boot is the old one);
+    /// that refusal forces an observation capture (ht-p03.104), so a retry
+    /// succeeds well inside the lane's ~25 s backoff step.
+    pub(crate) fn ok_retrying_stale(&self, caller: Option<&Caller>, args: &[&str]) -> Value {
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            let (code, value, stderr) = self.cli(caller, args);
+            if code == 0 {
+                return value["result"]["data"].clone();
+            }
+            let text = format!("{stderr}{value}");
+            assert!(
+                text.contains("stale_host_observation") && Instant::now() < until,
+                "herdr-threads {args:?} failed: {text}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// A seat for `pane`, checked in as a top-level stand-in cooperative caller.
+    pub(crate) fn seat(&self, pane: &str) -> Caller {
+        let seat = self.ok(None, &["seat", "resolve", "--pane", pane]);
+        let caller = Caller {
+            seat: seat.as_str().unwrap().to_owned(),
+            pane: pane.to_owned(),
+        };
+        self.ok(
+            Some(&caller),
+            &["check-in", "--lifecycle-event", &format!("start-{pane}")],
+        );
+        caller
+    }
+
+    pub(crate) fn db(&self) -> rusqlite::Connection {
+        let paths = InstancePaths::resolve(
+            &RuntimeContext::explicit(self.state.clone(), self.herdr.socket_path(), None).unwrap(),
+        )
+        .unwrap();
+        let db = rusqlite::Connection::open(&paths.database_path).unwrap();
+        db.busy_timeout(Duration::from_secs(5)).unwrap();
+        db
+    }
+
+    pub(crate) fn commits(&self, origin: &str) -> u64 {
+        self.probe.commit_counts().get(origin).copied().unwrap_or(0)
+    }
+
+    /// Waits until the `origin` commit counter has stood still for `window`.
+    pub(crate) fn wait_commits_quiet(&self, origin: &str, window: Duration) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut last = self.commits(origin);
+        let mut since = Instant::now();
+        while since.elapsed() < window {
+            assert!(
+                Instant::now() < deadline,
+                "{origin} commits never went quiet"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+            let now = self.commits(origin);
+            if now != last {
+                last = now;
+                since = Instant::now();
+            }
+        }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.stop.cancel();
+        if let Some(daemon) = self.daemon.take() {
+            let _ = daemon.join();
+        }
+    }
+}
+
+fn wait_until(what: &str, timeout: Duration, mut done: impl FnMut() -> bool) {
+    let until = Instant::now() + timeout;
+    while !done() {
+        assert!(Instant::now() < until, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Records the instant a polled counter first exceeds `above`.
+struct FirstExceeding {
+    at: Arc<Mutex<Option<Instant>>>,
+    stop: Arc<AtomicBool>,
+    poller: Option<JoinHandle<()>>,
+}
+impl FirstExceeding {
+    fn watch(read: impl Fn() -> u64 + Send + 'static, above: u64) -> Self {
+        let at = Arc::new(Mutex::new(None));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (slot, halt) = (Arc::clone(&at), Arc::clone(&stop));
+        let poller = std::thread::spawn(move || {
+            while !halt.load(Ordering::SeqCst) {
+                if read() > above {
+                    *slot.lock().unwrap() = Some(Instant::now());
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        Self {
+            at,
+            stop,
+            poller: Some(poller),
+        }
+    }
+    fn wait(&mut self, timeout: Duration) -> Option<Instant> {
+        let until = Instant::now() + timeout;
+        while Instant::now() < until {
+            if let Some(at) = *self.at.lock().unwrap() {
+                return Some(at);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        None
+    }
+}
+impl Drop for FirstExceeding {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(poller) = self.poller.take() {
+            let _ = poller.join();
+        }
+    }
+}
+
+/// A content digest per table, so a send's writes are the tables whose digest
+/// changed (a count alone would miss an upsert).
+fn table_digests(db: &rusqlite::Connection) -> BTreeMap<String, String> {
+    let tables: Vec<String> = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    tables
+        .into_iter()
+        .map(|table| {
+            let columns: Vec<String> = db
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap()
+                .query_map([], |row| row.get(1))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            let row = columns
+                .iter()
+                .map(|column| format!("quote(\"{column}\")"))
+                .collect::<Vec<_>>()
+                .join("||'|'||");
+            let digest: Option<String> = db
+                .query_row(
+                    &format!("SELECT group_concat(r, char(10)) FROM (SELECT {row} AS r FROM \"{table}\" ORDER BY rowid)"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            (table, digest.unwrap_or_default())
+        })
+        .collect()
+}
+
+/// A sender and `recipients` recipients, each recipient in a thread of its
+/// own (it created the thread, so it joined without an invitation). A
+/// recipient therefore has had no wake attention yet, and the first wake it
+/// receives is the one the test provokes: a wake that reaches a plain shell
+/// pane is `Unsafe` and holds the seat on the 30 s ladder, which would hide
+/// the latency under test. The sender is invited and accepts in each thread
+/// (its own wakes at setup are of no interest).
+pub(crate) struct Scene {
+    pub(crate) session: Session,
+    pub(crate) sender: Caller,
+    pub(crate) recipients: Vec<(Caller, String)>,
+}
+
+impl Scene {
+    pub(crate) fn new(case: &str, recipients: usize) -> Option<Self> {
+        let session = Session::new(case)?;
+        let sender_pane = session.first_pane();
+        let sender = session.seat(&sender_pane);
+        let mut joined = Vec::new();
+        let mut from = sender_pane;
+        for index in 0..recipients {
+            from = session.split_pane(&from);
+            let caller = session.seat(&from);
+            let thread = session
+                .ok(
+                    Some(&caller),
+                    &["thread", "create", "--topic", &format!("{case}-{index}")],
+                )
+                .as_str()
+                .unwrap()
+                .to_owned();
+            session.ok(Some(&caller), &["invite", &thread, "--seat", &sender.seat]);
+            session.ok(Some(&sender), &["accept", &thread]);
+            joined.push((caller, thread));
+        }
+        Some(Self {
+            session,
+            sender,
+            recipients: joined,
+        })
+    }
+
+    pub(crate) fn send(&self, index: usize, body: &str, extra: &[&str]) -> Value {
+        let (to, thread) = &self.recipients[index];
+        let mut args = vec!["send", thread, "--body", body, "--require-ack", &to.seat];
+        args.extend_from_slice(extra);
+        self.session.ok(Some(&self.sender), &args)
+    }
+}
+
+fn kicks_after(log: Vec<KickRecord>, since: Instant) -> Vec<KickRecord> {
+    log.into_iter().filter(|(_, _, at)| *at >= since).collect()
+}
+
+/// A send committed through client, transport and store on the full
+/// production worker set is attempted by the wake lane in under 100 ms, with
+/// no safety-tick wait; every table the send writes maps to a lane, and
+/// `wake_work` maps to the wake lane.
+/// Kills: a wake lane that waits for its 5 s tick (or a 1 s gate) after a
+/// commit, and a commit-to-lane map that misses the send path's wake table.
+#[test]
+fn send_is_attempted_within_100ms_without_a_tick_wait() {
+    let Some(scene) = Scene::new("send_is_attempted_within_100ms", 1) else {
+        return;
+    };
+    let s = &scene.session;
+    // The sender's setup wake (its invitation, `Unsafe` on a plain shell) is
+    // done; the recipient has had no attention at all. Wait until the wake
+    // lane has nothing left to do before measuring.
+    s.wait_commits_quiet("wake", Duration::from_millis(1500));
+    let before = table_digests(&s.db());
+    let baseline = s.commits("wake");
+    let probe = s.probe.clone();
+    let mut attempt = FirstExceeding::watch(
+        move || probe.commit_counts().get("wake").copied().unwrap_or(0),
+        baseline,
+    );
+    let sent_after = Instant::now();
+    scene.send(0, "latency probe", &[]);
+    let attempted_at = attempt
+        .wait(Duration::from_secs(3))
+        .expect("the wake lane never attempted the send within 3 s");
+    // Read after the attempt, so the deadline lane's follow-up commit is in.
+    let after = table_digests(&s.db());
+    let kicks = kicks_after(s.probe.kick_log(), sent_after);
+    // The send's own commit runs on a request thread and kicks the deadline
+    // lane (the new `send_attention` job); that lane's commit writes the
+    // seat's `wake_work` attention and kicks the wake lane. The whole chain
+    // must reach an attempt inside the budget.
+    let (_, _, committed_at) = kicks
+        .iter()
+        .find(|(_, origin, _)| origin.is_none())
+        .unwrap_or_else(|| panic!("no request-origin commit after the send: {kicks:?}"));
+    let (_, wake_kick_origin, _) = kicks
+        .iter()
+        .find(|(lanes, _, _)| lanes.contains(Lane::Wakes))
+        .unwrap_or_else(|| panic!("nothing kicked the wake lane: {kicks:?}"));
+    assert_eq!(
+        *wake_kick_origin,
+        Some(Lane::Deadlines),
+        "the wake kick comes from the deadline lane's materialization: {kicks:?}"
+    );
+    let latency = attempted_at.saturating_duration_since(*committed_at);
+    assert!(
+        latency < Duration::from_millis(100),
+        "send commit to wake attempt took {latency:?}"
+    );
+    let changed: Vec<&String> = before
+        .iter()
+        .filter(|(table, digest)| after.get(*table) != Some(*digest))
+        .map(|(table, _)| table)
+        .collect();
+    assert!(
+        changed.iter().any(|table| *table == "wake_work"),
+        "the send path writes wake_work: {changed:?}"
+    );
+    for table in &changed {
+        // lanes_for_table debug-asserts that every table is classified; the
+        // tables that carry a send into an attempt must each map to a lane.
+        let lanes = lanes_for_table(table);
+        if ["work_jobs", "wake_work", "receipt_state"].contains(&table.as_str()) {
+            assert!(!lanes.is_empty(), "{table} kicks no lane");
+        }
+    }
+    assert!(lanes_for_table("wake_work").contains(Lane::Wakes));
+    assert!(lanes_for_table("work_jobs").contains(Lane::Deadlines));
+}
+
+/// An idle daemon commits nothing from the deadline, wake or request origins
+/// and each of those two lanes makes at most one pass per 5 s safety tick,
+/// with the observation lane running at its own 5 s cadence. Observation
+/// commits (admission, snapshot stage, seal, publish) kick no lane.
+/// Kills: a lane that polls on a short turn (many passes), a tick pass that
+/// commits (an empty scan writing), and an observation commit that is mapped
+/// to a lane and so wakes the wake lane every cycle.
+#[test]
+fn idle_daemon_commits_nothing_from_deadline_wake_request_for_30s() {
+    let Some(scene) = Scene::new("idle_daemon_30s", 1) else {
+        return;
+    };
+    let s = &scene.session;
+    // Let setup's own work (invitation wake, receipts, first observation
+    // publication) settle, then take the baseline.
+    std::thread::sleep(Duration::from_secs(8));
+    s.wait_commits_quiet("wake", Duration::from_secs(2));
+    s.wait_commits_quiet("deadline", Duration::from_secs(2));
+    // On a loaded host setup's own wake work can outlast the fixed 8 s: take
+    // the baseline once neither lane has passed for 3 s. A lane that polls on
+    // a short turn never gets there, so that failure still fails here.
+    for lane in [Lane::Wakes, Lane::Deadlines] {
+        let give_up = Instant::now() + Duration::from_secs(90);
+        let mut last = (s.probe.idle_events(lane), Instant::now());
+        while last.1.elapsed() < Duration::from_secs(3) {
+            assert!(
+                Instant::now() < give_up,
+                "the {lane:?} lane never went quiet after setup"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+            let now = s.probe.idle_events(lane);
+            if now != last.0 {
+                last = (now, Instant::now());
+            }
+        }
+    }
+    let counts = s.probe.commit_counts();
+    let kicks = s.probe.kick_log().len();
+    let (wake_idle, deadline_idle) = (
+        s.probe.idle_events(Lane::Wakes),
+        s.probe.idle_events(Lane::Deadlines),
+    );
+    let window = Duration::from_secs(30);
+    let started = Instant::now();
+    std::thread::sleep(window);
+    let elapsed = started.elapsed();
+    let after = s.probe.commit_counts();
+    for origin in ["deadline", "wake", "request"] {
+        assert_eq!(
+            after.get(origin),
+            counts.get(origin),
+            "an idle daemon committed from the {origin} origin: {counts:?} -> {after:?}"
+        );
+    }
+    // The observation lane really ran (its commits are the only ones), and
+    // none of them kicked anything.
+    assert!(
+        after["observation"] > counts["observation"],
+        "the observation lane never committed: {counts:?} -> {after:?}"
+    );
+    let new_kicks: Vec<KickRecord> = s.probe.kick_log().split_off(kicks);
+    assert_eq!(
+        new_kicks.len(),
+        0,
+        "no commit at idle kicks any lane: {new_kicks:?}"
+    );
+    // One pass per 5 s tick, plus one for the window's edges.
+    let ticks = elapsed.as_secs() / 5 + 1;
+    let wake_passes = s.probe.idle_events(Lane::Wakes) - wake_idle;
+    let deadline_passes = s.probe.idle_events(Lane::Deadlines) - deadline_idle;
+    assert!(
+        (1..=ticks).contains(&wake_passes),
+        "wake lane made {wake_passes} passes in {elapsed:?}"
+    );
+    assert!(
+        (1..=ticks).contains(&deadline_passes),
+        "deadline lane made {deadline_passes} passes in {elapsed:?}"
+    );
+}
+
+/// A deadline-lane commit that creates a warning wake (an overdue invitation
+/// writes `warning_jobs`, then `warning_recipients` and `wake_work`) is
+/// attempted by the wake lane in under 100 ms, with no tick wait for the wake
+/// lane: the commit's kick, not its 5 s safety tick, starts the pass.
+/// Kills: a deadline-origin commit that does not kick the wake lane (the
+/// warning would wait up to 5 s), and a wake lane that ignores the kick.
+#[test]
+fn deadline_commit_creating_a_warning_wake_is_attempted_within_100ms() {
+    let Some(session) = Session::new("warning_wake_within_100ms") else {
+        return;
+    };
+    let inviter_pane = session.first_pane();
+    let guest_pane = session.split_pane(&inviter_pane);
+    let inviter = session.seat(&inviter_pane);
+    // A prelaunch guest: a seat for its pane that never checks in, so its
+    // invitation stays pending past its 1 s deadline.
+    let guest = session
+        .ok(None, &["seat", "resolve", "--pane", &guest_pane])
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let thread = session
+        .ok(Some(&inviter), &["thread", "create", "--topic", "overdue"])
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The inviter has had no attention yet, so the warning is the first wake it
+    // is owed; the guest's own invitation wake is not the measured one.
+    session.ok(
+        Some(&inviter),
+        &["invite", &thread, "--seat", &guest, "--deadline", "1"],
+    );
+    session.wait_commits_quiet("wake", Duration::from_millis(1500));
+    let baseline = session.commits("wake");
+    let kicks_before = session.probe.kick_log().len();
+    let probe = session.probe.clone();
+    let mut attempt = FirstExceeding::watch(
+        move || probe.commit_counts().get("wake").copied().unwrap_or(0),
+        baseline,
+    );
+    // The deadline passes after 1 s; the deadline lane notices at its next
+    // 5 s safety tick (documented as up to 5 s late).
+    let attempted_at = attempt
+        .wait(Duration::from_secs(15))
+        .expect("the overdue invitation never produced a wake attempt");
+    let kicks = session.probe.kick_log().split_off(kicks_before);
+    let (_, _, kicked_at) = kicks
+        .iter()
+        .find(|(lanes, origin, _)| lanes.contains(Lane::Wakes) && *origin == Some(Lane::Deadlines))
+        .unwrap_or_else(|| panic!("no deadline-origin Wakes kick: {kicks:?}"));
+    let latency = attempted_at.saturating_duration_since(*kicked_at);
+    assert!(
+        latency < Duration::from_millis(100),
+        "deadline commit to wake attempt took {latency:?}: {kicks:?}"
+    );
+    assert!(
+        session
+            .db()
+            .query_row(
+                "SELECT count(*) FROM warning_recipients WHERE seat_id=?1",
+                [&inviter.seat],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap()
+            > 0,
+        "the warning's recipients include the inviter"
+    );
+    assert!(lanes_for_table("warning_recipients").contains(Lane::Wakes));
+    assert!(lanes_for_table("warning_jobs").contains(Lane::Deadlines));
+}
+
+/// The most attempts one seat can make in `elapsed` seconds after its first
+/// refused attempt: the n-th retry comes `100 ms x 2^(n-1)` (-20 %, capped at
+/// 30 s) after the previous one.
+fn most_attempts(elapsed: f64) -> u64 {
+    let (mut most, mut cumulative) = (1, 0.0);
+    for n in 1..200 {
+        cumulative += (100.0 * 2f64.powi(n - 1)).min(30_000.0) * 0.8 / 1000.0;
+        if cumulative <= elapsed {
+            most += 1;
+        }
+    }
+    most
+}
+
+/// Herdr stopped with `SEATS` seats holding pending wake work: the wake lane
+/// stays within `2 x SEATS x steps` durable commits (a refused attempt costs a
+/// reservation and a restoring completion, once per refusal-backoff step),
+/// never hot-loops against the dead host, and after Herdr returns and the
+/// operator repairs the seats each one is submitted exactly once. The bound
+/// records pacer D5's cost as currently specified. It does not resolve the
+/// parked round-1 escalation (wake-lane durable commits while Herdr is down,
+/// run.md `parked:`); if the human resolves that with a different bound, this
+/// test is revised to match (design roast r2, ht-p03.70).
+///
+/// A real stop also makes the observation lane invalidate the host snapshot
+/// within a few seconds, which marks every seat unresolved and so removes it
+/// from wake discovery; the wake lane is therefore quiet for most of the
+/// outage, and the backoff schedule itself (growth, the 30 s cap, two commits
+/// per step) is pinned against a host that refuses while seats stay resolved
+/// in `tests/service/lanes.rs`
+/// (`refusal_backoff_costs_two_commits_per_seat_per_step_and_caps_at_30s`).
+/// Kills: a wake lane that retries a down host on every pass or tick (far
+/// more than `2 x SEATS x steps` commits), and a refusal path that climbs the
+/// 30 s ladder (the seats would not be submitted promptly after the restore).
+#[test]
+fn herdr_stopped_bounds_wake_commits_per_seat() {
+    const SEATS: u64 = 3;
+    const OUTAGE: Duration = Duration::from_secs(45);
+    let Some(scene) = Scene::new("herdr_stopped_bounds_wake_commits", SEATS as usize) else {
+        return;
+    };
+    let s = &scene.session;
+    for index in 0..SEATS as usize {
+        scene.send(index, &format!("owed {index}"), &[]);
+    }
+    // Each recipient's first wake runs with Herdr up and reaches a plain
+    // shell (`Unsafe`); the sender was woken for its invitations in setup.
+    wait_until(
+        "each recipient's first wake",
+        Duration::from_secs(15),
+        || {
+            let waked: i64 = s
+                .db()
+                .query_row(
+                    "SELECT count(*) FROM wake_work WHERE last_outcome IS NOT NULL",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            waked == SEATS as i64 + 1
+        },
+    );
+    s.wait_commits_quiet("wake", Duration::from_secs(1));
+    let before = s.commits("wake");
+    s.herdr.stop();
+    let stopped = Instant::now();
+    std::thread::sleep(OUTAGE);
+    let commits = s.commits("wake") - before;
+    let bound = 2 * SEATS * most_attempts(stopped.elapsed().as_secs_f64());
+    assert!(
+        commits <= bound,
+        "{commits} wake commits in {:?} with Herdr down exceed 2 x {SEATS} seats x steps ({bound})",
+        stopped.elapsed()
+    );
+    let unresolved: i64 = s
+        .db()
+        .query_row(
+            "SELECT count(*) FROM seats WHERE state='unresolved'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        unresolved,
+        SEATS as i64 + 1,
+        "the host going away leaves no seat resolved (and so none to wake)"
+    );
+    // Herdr returns with fresh terminals: the seats are unresolved until the
+    // operator repairs them, as in the host-recovery validation.
+    s.herdr.start();
+    for (caller, _) in &scene.recipients {
+        s.run_stand_in(&caller.pane);
+        s.ok_retrying_stale(
+            None,
+            &[
+                "seat",
+                "rebind",
+                &caller.seat,
+                "--pane",
+                &caller.pane,
+                "--operator",
+            ],
+        );
+        s.ok(Some(caller), &["check-in", "--lifecycle-event", "restored"]);
+    }
+    wait_until(
+        "every recipient submitted after the restore",
+        Duration::from_secs(90),
+        || {
+            let submitted: i64 = s
+                .db()
+                .query_row(
+                    "SELECT count(*) FROM wake_work WHERE last_outcome='submitted'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            submitted == SEATS as i64
+        },
+    );
+    std::thread::sleep(Duration::from_secs(3));
+    for (caller, _) in &scene.recipients {
+        let text = s.pane_text(&caller.pane);
+        // The stand-in echoes each submitted line; an empty echo is only the
+        // dispatcher's single submit-key retry, not another prompt.
+        let received = text
+            .matches("HT-RECEIVED:herdr-threads: attention pending")
+            .count();
+        assert_eq!(
+            received, 1,
+            "{} was prompted {received} times: {text}",
+            caller.seat
+        );
+    }
+}

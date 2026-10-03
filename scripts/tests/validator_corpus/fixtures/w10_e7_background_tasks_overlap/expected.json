@@ -1,0 +1,6 @@
+{
+  "finding": "w10_e7_background_tasks_overlap",
+  "entry": "children_concurrent",
+  "verdict": "PASS",
+  "reason": "2 concurrent subagents (root transcript spawn/result order); 2 of them read mail successfully"
+}

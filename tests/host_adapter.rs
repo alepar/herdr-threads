@@ -12,7 +12,10 @@ use std::{
     io::{BufRead, BufReader, Write},
     os::unix::net::{UnixListener, UnixStream},
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -450,41 +453,75 @@ fn response_limit_counts_lf_and_accepts_exact_boundary() {
     }
 }
 
+/// Real elapsed time plus a skew the test advances; lets the test move the
+/// shared deadline's clock instead of sleeping across it.
+struct SkewClock {
+    start: Instant,
+    skew_ms: Arc<AtomicU64>,
+}
+impl Clock for SkewClock {
+    fn utc_now(&self) -> UtcMillis {
+        UtcMillis(0)
+    }
+    fn monotonic_now(&self) -> MonoInstant {
+        MonoInstant(self.start.elapsed().as_millis() as u64 + self.skew_ms.load(Ordering::SeqCst))
+    }
+}
+
 #[test]
 fn ping_and_operation_share_absolute_deadline() {
+    // The ping answers, and the clock then jumps to 100 ms before the 10 s
+    // deadline; the operation connection must be bounded by the 100 ms that
+    // remain, not by a fresh 10 s. A per-phase deadline would hold the
+    // operation for the full 10 s, two orders of magnitude over the bound
+    // below, so no wall-clock slack is needed.
     let path = socket_path();
     let listener = UnixListener::bind(&path).unwrap();
-    let worker = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let request = read_request(&mut stream);
-        thread::sleep(Duration::from_millis(80));
-        respond(
-            &mut stream,
-            &request,
-            json!({"type":"pong","version":"0.9.1","protocol":22}),
-        );
-        drop(stream);
-        let (mut stream, _) = listener.accept().unwrap();
-        read_request(&mut stream);
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        let mut byte = [0];
-        assert_eq!(std::io::Read::read(&mut stream, &mut byte).unwrap(), 0);
+    let skew = Arc::new(AtomicU64::new(0));
+    let worker = thread::spawn({
+        let skew = skew.clone();
+        move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_request(&mut stream);
+            respond(
+                &mut stream,
+                &request,
+                json!({"type":"pong","version":"0.9.1","protocol":22}),
+            );
+            skew.store(9_900, Ordering::SeqCst);
+            drop(stream);
+            let (mut stream, _) = listener.accept().unwrap();
+            read_request(&mut stream);
+            stream
+                .set_read_timeout(Some(Duration::from_secs(30)))
+                .unwrap();
+            let mut byte = [0];
+            assert_eq!(std::io::Read::read(&mut stream, &mut byte).unwrap(), 0);
+        }
     });
-    let cli = NativeCli::new(path.clone(), Arc::new(TestClock(Instant::now())));
+    let cli = NativeCli::new(
+        path.clone(),
+        Arc::new(SkewClock {
+            start: Instant::now(),
+            skew_ms: skew,
+        }),
+    );
     let started = Instant::now();
     assert_eq!(
         cli.run(
             &["pane", "get", "w4:p1"],
-            &budget(130),
-            Duration::from_secs(2)
+            &budget(10_000),
+            Duration::from_secs(30)
         )
         .unwrap_err()
         .code,
         ErrorCode::DeadlineExceeded
     );
-    assert!(started.elapsed() < Duration::from_millis(190));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "operation was not bounded by the shared deadline: {:?}",
+        started.elapsed()
+    );
     cleanup(path, worker);
 }
 
@@ -670,10 +707,6 @@ fn isolated_pinned_herdr_readonly_compatibility() {
         assert_eq!(fetched.target, pane.target);
         assert_eq!(fetched.terminal_id, pane.terminal_id);
     }
-    assert_ne!(
-        cli.native_launch_capability(),
-        NativeLaunchCapability::ProvenEmptyShell
-    );
     println!(
         "read-only pinned compatibility: {} pane(s); version/protocol/id/framing/EOF validated; native authority unavailable",
         snapshot.panes.len()

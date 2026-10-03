@@ -350,12 +350,9 @@ pub(crate) fn page_error(error: CacheReadError) -> ApiError {
         }
         _ => (ErrorCode::InvalidRequest, None),
     };
-    ApiError {
-        code,
-        detail: format!("cached CheckIn page: {error:?}"),
-        restart_argv: None,
-        required_minimum_bytes,
-    }
+    let mut api_error = ApiError::new(code, format!("cached CheckIn page: {error:?}"));
+    api_error.required_minimum_bytes = required_minimum_bytes;
+    api_error
 }
 
 fn page_argv(
@@ -968,6 +965,7 @@ mod tests {
         assert_eq!(before, fs::read(directory.join("context.json")).unwrap());
         struct Never;
         impl crate::ports::LocalClient for Never {
+            crate::default_output_local_client!();
             fn call(
                 &self,
                 _: crate::protocol::commands::Command,

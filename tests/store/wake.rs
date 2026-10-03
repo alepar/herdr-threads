@@ -49,7 +49,7 @@ fn pending_invitation_is_a_wake_candidate_before_work_row_projection() {
 }
 
 #[test]
-fn wake_candidate_resumes_past_one_hundred_settled_receipts() {
+fn wake_candidate_is_found_past_one_hundred_settled_receipts() {
     let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock));
     let db = context.open_writer().unwrap();
@@ -69,18 +69,10 @@ fn wake_candidate_resumes_past_one_hundred_settled_receipts() {
     }
     drop(db);
     let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
-    let first = StorePort::wake_candidates(&store, PageRequest::default(), &budget()).unwrap();
-    assert!(first.items.is_empty());
-    assert!(first.has_more && first.next_cursor.is_some());
-    let second = StorePort::wake_candidates(
-        &store,
-        PageRequest {
-            cursor: first.next_cursor,
-            ..PageRequest::default()
-        },
-        &budget(),
-    )
-    .unwrap();
+    // The pending probe finds the one pending receipt without walking the 100
+    // settled ones, so the seat is complete within the first page.
+    let second = StorePort::wake_candidates(&store, PageRequest::default(), &budget()).unwrap();
+    assert!(!second.has_more && second.next_cursor.is_none());
     assert_eq!(second.items.len(), 1);
     assert!(second.items[0].has_pending_receipt);
     drop(store);
@@ -88,7 +80,7 @@ fn wake_candidate_resumes_past_one_hundred_settled_receipts() {
 }
 
 #[test]
-fn partial_attention_cursor_requires_its_complete_encoded_page_budget() {
+fn wake_page_requires_its_complete_encoded_page_budget() {
     let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path.clone(), Arc::new(WakeClock));
     let db = context.open_writer().unwrap();
@@ -108,7 +100,7 @@ fn partial_attention_cursor_requires_its_complete_encoded_page_budget() {
     let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let complete = StorePort::wake_candidates(&store, PageRequest::default(), &budget()).unwrap();
     let minimum = serde_json::to_vec(&complete).unwrap().len() as u32;
-    assert!(minimum > 256 && complete.items.is_empty() && complete.has_more);
+    assert!(minimum > 256 && complete.items.len() == 1 && !complete.has_more);
     let exact = StorePort::wake_candidates(
         &store,
         PageRequest {
@@ -318,6 +310,7 @@ fn reservation_persists_daemon_boot_attempt_and_delay_then_ignores_late_completi
         &store,
         WakeAttemptId::new("obsolete"),
         WakeOutcome::Submitted,
+        None,
         &budget(),
     )
     .unwrap();
@@ -448,6 +441,7 @@ fn old_boot_recovery_is_exact_preserves_history_and_cannot_clear_successor() {
         &reopened,
         reservation.attempt,
         WakeOutcome::Submitted,
+        None,
         &budget(),
     )
     .unwrap();
@@ -594,6 +588,7 @@ fn completion_cas_ignores_old_attempt_and_releases_matching_attempt_without_losi
         &store,
         WakeAttemptId::new("old"),
         WakeOutcome::Submitted,
+        None,
         &budget(),
     )
     .unwrap();
@@ -612,6 +607,7 @@ fn completion_cas_ignores_old_attempt_and_releases_matching_attempt_without_losi
         &store,
         WakeAttemptId::new("current"),
         WakeOutcome::Submitted,
+        None,
         &budget(),
     )
     .unwrap();
@@ -649,6 +645,7 @@ fn matching_completion_records_submitted_and_retains_zero_reason_history() {
         &store,
         WakeAttemptId::new("current"),
         WakeOutcome::Submitted,
+        None,
         &budget(),
     )
     .unwrap();
@@ -818,6 +815,735 @@ fn unverified_execution_gets_structural_cooperative_reservation() {
     let _ = std::fs::remove_file(path);
 }
 
+/// The pre-ht-p03.12.9 recovery walk, kept as an oracle: a LEFT JOIN over every
+/// seat of the instance, one page of at most 100 seats after `after`.
+pub(super) fn old_walk(
+    db: &rusqlite::Connection,
+    instance: &str,
+    after: u64,
+    high: u64,
+) -> Vec<(u64, String, Option<String>, Option<String>)> {
+    let mut statement = db.prepare("SELECT s.ordinal,s.id,w.reservation_id,w.reservation_boot FROM seats s LEFT JOIN wake_work w ON w.seat_id=s.id WHERE s.instance_id=?1 AND s.ordinal>?2 AND s.ordinal<=?3 ORDER BY s.ordinal LIMIT 100").unwrap();
+    statement
+        .query_map(params![instance, after as i64, high as i64], |row| {
+            Ok((
+                row.get::<_, i64>(0)? as u64,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+            ))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// What the old walk's candidate filter keeps, drained over every page: seats
+/// with a reservation whose boot is not `current_boot`, in seat-ordinal order.
+fn old_candidates(
+    db: &rusqlite::Connection,
+    instance: &str,
+    current_boot: &str,
+) -> Vec<(String, String, String)> {
+    let high: i64 = db
+        .query_row(
+            "SELECT COALESCE(MAX(ordinal),0) FROM seats WHERE instance_id=?1",
+            [instance],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let (mut after, mut out) = (0u64, Vec::new());
+    loop {
+        let page = old_walk(db, instance, after, high as u64);
+        let Some(last) = page.last() else { break };
+        after = last.0;
+        for (_, seat, attempt, boot) in page {
+            if let (Some(attempt), Some(boot)) = (attempt, boot)
+                && boot != current_boot
+            {
+                out.push((seat, attempt, boot));
+            }
+        }
+    }
+    out
+}
+
+/// `n` seats: every fifth retired, every third with a reservation (alternating
+/// the old and the current daemon boot), every third-plus-one with a settled
+/// (unreserved) wake_work row; retired and reserved overlap.
+fn seed_recovery_seats(db: &rusqlite::Connection, n: u64, old: &str, current: &str) {
+    db.execute_batch(&format!("\
+        INSERT INTO host_instances(id,created_at) VALUES ('i',0);\
+        WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{n})\
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq) SELECT 's'||x,'i',IIF(x%5=0,'retired','resolved'),'native',1,0,IIF(x%5=0,0,NULL),IIF(x%5=0,x,NULL) FROM n;\
+        INSERT INTO wake_work(seat_id,reservation_id,reservation_boot) SELECT id,'r'||ordinal,IIF(ordinal%2=0,'{old}','{current}') FROM seats WHERE ordinal%3=0;\
+        INSERT INTO wake_work(seat_id) SELECT id FROM seats WHERE ordinal%3=1;\
+    ")).unwrap();
+}
+
+fn walk_all(store: &SqliteStore, limit: u16) -> (Vec<(String, String, String)>, usize) {
+    let (mut cursor, mut out, mut pages) = (None, Vec::new(), 0);
+    loop {
+        let page = StorePort::wake_recovery_candidates(
+            store,
+            PageRequest {
+                cursor,
+                limit,
+                ..PageRequest::default()
+            },
+            &budget(),
+        )
+        .unwrap();
+        pages += 1;
+        out.extend(page.items.iter().map(|c| {
+            (
+                c.seat.as_str().to_string(),
+                c.attempt.as_str().to_string(),
+                c.prior_daemon_boot.to_string(),
+            )
+        }));
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            return (out, pages);
+        }
+    }
+}
+
+fn recovery_store(seats: u64) -> (SqliteStore, std::path::PathBuf, rusqlite::Connection) {
+    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let context = StoreContext::new(path.clone(), Arc::new(WakeClock));
+    let db = context.open_writer().unwrap();
+    let current = "00000000-0000-0000-0000-000000000002";
+    seed_recovery_seats(&db, seats, DAEMON_BOOT, current);
+    let store = SqliteStore::new(
+        context,
+        "i",
+        StoreSettings {
+            daemon_boot: Some(uuid::Uuid::parse_str(current).unwrap()),
+            ..StoreSettings::default()
+        },
+    )
+    .unwrap();
+    (store, path, db)
+}
+
+// Kills: a walk that drops mid-reservation seats of retired seats, mis-orders
+// candidates, applies the boot filter wrongly, or loses the tail after the last
+// reserved seat (the cursor must finish at the high water).
+#[test]
+fn recovery_walk_equals_the_old_walk() {
+    let (store, path, db) = recovery_store(500);
+    let expected = old_candidates(&db, "i", "00000000-0000-0000-0000-000000000002");
+    assert_eq!(
+        expected.len(),
+        83,
+        "fixture: reserved seats on the old boot"
+    );
+    assert!(
+        expected.iter().any(|(seat, ..)| {
+            let ordinal: u64 = seat[1..].parse().unwrap();
+            ordinal.is_multiple_of(5)
+        }),
+        "fixture must include reserved retired seats"
+    );
+    let (got, _) = walk_all(&store, 100);
+    assert_eq!(got, expected);
+    drop((store, db));
+    let _ = std::fs::remove_file(path);
+}
+
+// Kills: a cursor that does not resume after the last returned seat (repeats
+// or skips candidates at a page boundary), and a first page that is not capped
+// by the 100-row walk or the page limit.
+#[test]
+fn multi_page_recovery_walk_round_trips_its_cursor() {
+    let (store, path, db) = recovery_store(900);
+    let expected = old_candidates(&db, "i", "00000000-0000-0000-0000-000000000002");
+    assert!(expected.len() > 100, "{}", expected.len());
+    let (got, pages) = walk_all(&store, 100);
+    assert!(
+        pages >= 2,
+        "{pages} pages for {} candidates",
+        expected.len()
+    );
+    assert_eq!(got, expected);
+    let (got_small, small_pages) = walk_all(&store, 7);
+    assert!(small_pages > pages);
+    assert_eq!(got_small, expected);
+    drop((store, db));
+    let _ = std::fs::remove_file(path);
+}
+
+/// A resolved seat with one live reservation `current` at ladder step 2 and a
+/// pre-reservation row (`prior`, step 1) the caller carries as `PriorLadder`.
+fn refusal_store(path: &std::path::Path) -> SqliteStore {
+    let context = StoreContext::new(path.to_path_buf(), Arc::new(WakeClock));
+    let db = context.open_writer().unwrap();
+    db.execute(
+        "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
+        [],
+    )
+    .unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0)",[]).unwrap();
+    db.execute("INSERT INTO wake_work(seat_id,reason_bits,binding_generation,reservation_id,reservation_boot,reserved_at_utc,retry_step,minimum_delay_ms,effective_delay_ms,last_reservation_id,last_reservation_boot,last_reserved_at_utc,last_invitation_seq,last_invitation_offset) VALUES ('s',1,1,'current',?1,100,2,30000,120000,'current',?1,100,7,3)",[DAEMON_BOOT]).unwrap();
+    drop(db);
+    SqliteStore::new(
+        context,
+        "i",
+        StoreSettings {
+            daemon_boot: Some(uuid::Uuid::parse_str(DAEMON_BOOT).unwrap()),
+            ..StoreSettings::default()
+        },
+    )
+    .unwrap()
+}
+fn prior_ladder() -> crate::ports::PriorLadder {
+    crate::ports::PriorLadder {
+        retry_step: 1,
+        minimum_delay_ms: 30_000,
+        effective_delay_ms: 60_000,
+        last_reservation_id: Some(WakeAttemptId::new("prior")),
+        last_reservation_boot: Some(crate::protocol::ids::HostBootId::new("prior-boot")),
+        last_reserved_at_utc: Some(UtcMillis(50)),
+        last_reserved_frontier: crate::ports::LogicalAttentionFrontier {
+            invitation: Some(crate::ports::LogicalPublicationKey {
+                decision_seq: 4,
+                event_offset: 1,
+            }),
+            addressed_receipt: None,
+            actionable_warning: None,
+        },
+    }
+}
+type LadderRow = (
+    Option<String>,
+    i64,
+    i64,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<String>,
+);
+fn ladder_row(store: &SqliteStore) -> LadderRow {
+    let db = store.context.open_writer().unwrap();
+    db.query_row("SELECT reservation_id,retry_step,minimum_delay_ms,effective_delay_ms,last_reservation_id,last_reservation_boot,last_reserved_at_utc,last_invitation_seq,last_invitation_offset,last_outcome FROM wake_work WHERE seat_id='s'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?))).unwrap()
+}
+
+#[test]
+fn refused_completion_restores_the_prior_ladder_in_the_fenced_update() {
+    // Kills: a Refused completion that leaves the advanced step in place (the
+    // ladder would climb on every pre-send refusal) or restores a stale row.
+    for (cause, outcome) in [
+        (crate::ports::RefusalCause::Unsafe, "unsafe"),
+        (crate::ports::RefusalCause::Unavailable, "unavailable"),
+        (crate::ports::RefusalCause::TimedOut, "timed_out"),
+    ] {
+        let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+        let store = refusal_store(&path);
+        let matched = StorePort::complete_wake(
+            &store,
+            WakeAttemptId::new("current"),
+            WakeOutcome::Refused(cause),
+            Some(&prior_ladder()),
+            &budget(),
+        )
+        .unwrap();
+        assert!(matched, "{cause:?}");
+        assert_eq!(
+            ladder_row(&store),
+            (
+                None,
+                1,
+                30_000,
+                60_000,
+                Some("prior".into()),
+                Some("prior-boot".into()),
+                Some(50),
+                Some(4),
+                Some(1),
+                Some(outcome.into())
+            ),
+            "{cause:?}"
+        );
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn non_refused_completions_ignore_a_supplied_restore_and_report_no_match() {
+    // Kills: restoring on OutcomeUnknown (the unsent-prompt outcome keeps the
+    // advanced step) or returning true for a plain settlement.
+    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let store = refusal_store(&path);
+    let matched = StorePort::complete_wake(
+        &store,
+        WakeAttemptId::new("current"),
+        WakeOutcome::OutcomeUnknown,
+        Some(&prior_ladder()),
+        &budget(),
+    )
+    .unwrap();
+    assert!(!matched);
+    assert_eq!(
+        ladder_row(&store),
+        (
+            None,
+            2,
+            30_000,
+            120_000,
+            Some("current".into()),
+            Some(DAEMON_BOOT.into()),
+            Some(100),
+            Some(7),
+            Some(3),
+            Some("outcome_unknown".into())
+        )
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn fence_miss_restores_nothing_and_keeps_the_advanced_step() {
+    // Design roast r1 (ht-p03.56): mark-unresolved / registration loss clears
+    // reservation_id between reserve and a Refused completion. The fenced
+    // restore matches 0 rows: no error, the step stays advanced by one.
+    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let store = refusal_store(&path);
+    let db = store.context.open_writer().unwrap();
+    db.execute(
+        "UPDATE wake_work SET reservation_id=NULL,reservation_boot=NULL,binding_generation=NULL WHERE seat_id='s'",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let before = ladder_row(&store);
+    let matched = StorePort::complete_wake(
+        &store,
+        WakeAttemptId::new("current"),
+        WakeOutcome::Refused(crate::ports::RefusalCause::Unavailable),
+        Some(&prior_ladder()),
+        &budget(),
+    )
+    .unwrap();
+    assert!(!matched);
+    assert_eq!(ladder_row(&store), before);
+    assert_eq!(
+        before.1, 2,
+        "retry_step advanced by exactly one, not restored"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn refused_completion_of_a_different_boot_matches_nothing() {
+    // Kills: a restore fenced on reservation_id alone, which would let a stale
+    // boot rewrite a successor daemon's reservation.
+    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let store = refusal_store(&path);
+    let db = store.context.open_writer().unwrap();
+    db.execute(
+        "UPDATE wake_work SET reservation_boot='00000000-0000-0000-0000-000000000009' WHERE seat_id='s'",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let before = ladder_row(&store);
+    let matched = StorePort::complete_wake(
+        &store,
+        WakeAttemptId::new("current"),
+        WakeOutcome::Refused(crate::ports::RefusalCause::Unsafe),
+        Some(&prior_ladder()),
+        &budget(),
+    )
+    .unwrap();
+    assert!(!matched);
+    assert_eq!(ladder_row(&store), before);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// A file-backed store on instance `i`, thread `t`, and one live seat per
+/// `(id, harness)`: occupied idle pane, current binding of that harness, an
+/// invited membership and a pending invitation (decision sequence 1).
+fn seeded_store(seats: &[(&str, &str)]) -> (SqliteStore, std::path::PathBuf) {
+    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let context = StoreContext::new(path.clone(), Arc::new(WakeClock));
+    let db = context.open_writer().unwrap();
+    db.execute_batch("\
+        INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);\
+    ").unwrap();
+    for (seat, harness) in seats {
+        let pane = format!("pane-{seat}");
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?2,1,1,0)", params![seat, pane]).unwrap();
+        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'host',1,1,0,'fresh','occupied','idle','exec',1,'term-'||?1,'inc','coherent_enumeration',1)", [&pane]).unwrap();
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,1,1,?2,'host',1,?3,'session','exec','fresh',0,0,'term-'||?2,'inc')", params![seat, pane, harness]).unwrap();
+        db.execute(
+            "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'invited')",
+            [seat],
+        )
+        .unwrap();
+        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv-'||?1,'t',?1,1,'pending',0,1,100,100)", [seat]).unwrap();
+    }
+    drop(db);
+    let settings = StoreSettings {
+        daemon_boot: Some(uuid::Uuid::parse_str(DAEMON_BOOT).unwrap()),
+        minimum_wake_delay_ms: 120_000,
+        ..StoreSettings::default()
+    };
+    (SqliteStore::new(context, "i", settings).unwrap(), path)
+}
+
+fn page_seats(store: &SqliteStore) -> Vec<String> {
+    let mut seats = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = StorePort::wake_candidates(
+            store,
+            PageRequest {
+                cursor: cursor.take(),
+                ..PageRequest::default()
+            },
+            &budget(),
+        )
+        .unwrap();
+        seats.extend(page.items.iter().map(|c| c.seat.as_str().to_owned()));
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => return seats,
+        }
+    }
+}
+
+/// Settle seat `seat`'s pending invitation and commit a decision.
+fn accept_invitation(store: &SqliteStore, seat: &str) {
+    let db = store.context.open_writer().unwrap();
+    db.execute("UPDATE invitations SET state='accepted',accepted_at=1,accepted_actor_seat_id=?1,accepted_generation=1,accepted_observation='proof' WHERE id='inv-'||?1", [seat]).unwrap();
+    db.execute(
+        "UPDATE host_instances SET decision_seq=decision_seq+1 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+}
+
+// Kills: dropping the human exclusion from the seat walk (the human seat's
+// pending invitation and receipt would list it), and any path that gives a
+// human seat a reservation or a ladder step.
+#[test]
+fn human_bound_seat_never_in_a_candidate_page() {
+    let (store, path) = seeded_store(&[("h", "human"), ("a", "codex")]);
+    let db = store.context.open_writer().unwrap();
+    db.execute_batch("\
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('m','i','t',1,'ordinary','body',1,0);\
+        INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t','h','pending',100);\
+        INSERT INTO wake_work(seat_id,retry_step) VALUES ('h',3);\
+    ").unwrap();
+    drop(db);
+    for _ in 0..3 {
+        assert_eq!(page_seats(&store), ["a"]);
+    }
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    assert_eq!(candidate.seat.as_str(), "a");
+    assert!(
+        StorePort::reserve_wake(&store, &candidate, &budget())
+            .unwrap()
+            .is_some()
+    );
+    let db = store.context.open_writer().unwrap();
+    let human: (i64, Option<String>) = db
+        .query_row(
+            "SELECT retry_step,reservation_id FROM wake_work WHERE seat_id='h'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(human, (3, None), "the human seat's ladder never moves");
+    drop(db);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+// Kills: re-emitting settled seats (the old `|| historical` rule): a seat with
+// a wake_work row must leave the page once settled, keep its row untouched,
+// and resume the ladder (retry_step 2) on its next actionable episode.
+#[test]
+fn settled_seat_leaves_the_page_and_keeps_its_wake_work_row() {
+    let (store, path) = seeded_store(&[("s", "codex")]);
+    let db = store.context.open_writer().unwrap();
+    db.execute("INSERT INTO wake_work(seat_id,retry_step,last_invitation_seq,last_invitation_offset,last_outcome) VALUES ('s',2,1,1,'submitted')", []).unwrap();
+    drop(db);
+    let row = |store: &SqliteStore| -> (i64, Option<i64>, Option<i64>, Option<String>) {
+        store
+            .context
+            .open_writer()
+            .unwrap()
+            .query_row(
+                "SELECT retry_step,last_invitation_seq,last_invitation_offset,last_outcome FROM wake_work WHERE seat_id='s'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap()
+    };
+    let before = row(&store);
+    assert_eq!(page_seats(&store), ["s"]);
+    accept_invitation(&store, "s");
+    for _ in 0..2 {
+        assert!(
+            page_seats(&store).is_empty(),
+            "settled seat is not re-listed"
+        );
+    }
+    assert_eq!(row(&store), before, "discovery never touches wake_work");
+    let db = store.context.open_writer().unwrap();
+    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv-2','t','s',2,'pending',0,3,100,100)", []).unwrap();
+    db.execute("UPDATE host_instances SET decision_seq=3 WHERE id='i'", [])
+        .unwrap();
+    drop(db);
+    let resumed = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items;
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(
+        resumed[0].retry_step, 2,
+        "the ladder resumes, it does not reset"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+// Kills: tying recovery to discovery (a seat that settled while reserved must
+// still be reached by the recovery walk after a restart).
+#[test]
+fn seat_mid_reservation_when_it_settles_is_reached_by_recovery() {
+    let (store, path) = seeded_store(&[("s", "codex")]);
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
+        .unwrap()
+        .unwrap();
+    accept_invitation(&store, "s");
+    assert!(page_seats(&store).is_empty());
+    drop(store);
+    // A restarted daemon (new boot) recovers the prior boot's reservation.
+    let next_boot = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap();
+    let reopened = SqliteStore::new(
+        StoreContext::new(path.clone(), Arc::new(WakeClock)),
+        "i",
+        StoreSettings {
+            daemon_boot: Some(next_boot),
+            minimum_wake_delay_ms: 120_000,
+            ..StoreSettings::default()
+        },
+    )
+    .unwrap();
+    assert!(page_seats(&reopened).is_empty());
+    let recovery =
+        StorePort::wake_recovery_candidates(&reopened, PageRequest::default(), &budget()).unwrap();
+    assert_eq!(recovery.items.len(), 1);
+    assert_eq!(recovery.items[0].attempt, reservation.attempt);
+    drop(reopened);
+    let _ = std::fs::remove_file(path);
+}
+
+// Kills: a witness stamped from anything but host_instances.decision_seq at
+// page read: a decision that commits between discovery and reserve changes no
+// attention row here, yet must refuse the reservation.
+#[test]
+fn reservation_after_a_decision_commit_is_refused() {
+    let (store, path) = seeded_store(&[("s", "codex")]);
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    let db = store.context.open_writer().unwrap();
+    db.execute(
+        "UPDATE host_instances SET decision_seq=decision_seq+1 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    assert!(
+        StorePort::reserve_wake(&store, &candidate, &budget())
+            .unwrap()
+            .is_none()
+    );
+    let reserved: i64 = store
+        .context
+        .open_writer()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM wake_work WHERE reservation_id IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(reserved, 0);
+    let fresh = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    assert!(
+        StorePort::reserve_wake(&store, &fresh, &budget())
+            .unwrap()
+            .is_some(),
+        "a candidate read after the commit reserves"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+// Kills: a decoder that still accepts attention / last_examined_key /
+// scope_revision (the path still resumes mid-seat from a legacy cursor).
+#[test]
+fn legacy_wake_cursor_is_invalid_cursor() {
+    use crate::protocol::pagination::SeatAttentionCursorState;
+    let (store, path) = seeded_store(&[("s", "codex")]);
+    let legacy = WakePageCursor {
+        after_ordinal: 0,
+        high_water_ordinal: 1,
+        legacy: Some(LegacyWakePosition {
+            last_examined_key: "s".into(),
+            scope_revision: 1,
+            attention: SeatAttentionCursorState {
+                invitation_after_seq: 0,
+                invitation_after_ordinal: 0,
+                invitations_done: false,
+                has_pending_invitation: false,
+                invitation_frontier: None,
+                receipts: None,
+                receipts_done: false,
+                has_pending_receipt: false,
+                receipt_frontier_seq: None,
+                physical_warning_after: 0,
+                physical_warning_high_water: 0,
+                manifest_warning_after: 0,
+                manifest_warning_high_water: 0,
+                next_manifest_warning: false,
+                latest_warning_seq: None,
+                latest_warning_offset: None,
+            },
+        }),
+    }
+    .encode("i")
+    .unwrap();
+    let error = StorePort::wake_candidates(
+        &store,
+        PageRequest {
+            cursor: Some(legacy),
+            ..PageRequest::default()
+        },
+        &budget(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.code,
+        crate::protocol::results::ErrorCode::InvalidCursor
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+// Kills: a walk that ends at the last live seat but reports `after < high_water`
+// because retired seats follow it: the page would carry a cursor forever and a
+// scheduler would never wrap back to the first seat.
+#[test]
+fn trailing_retired_seats_do_not_leave_a_dangling_cursor() {
+    let (store, path) = seeded_store(&[("s", "codex")]);
+    let db = store.context.open_writer().unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,target_generation,created_at,retired_at,retired_seq) VALUES ('gone','i','retired','native',1,1,0,1,1)", []).unwrap();
+    drop(db);
+    let page = StorePort::wake_candidates(&store, PageRequest::default(), &budget()).unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert!(!page.has_more && page.next_cursor.is_none(), "{page:?}");
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+// Kills (Wave 18, ht-p03.12.5): dropping the human exclusion from the seat walk
+// (the person's seat, holding a pending invitation and a pending receipt, would
+// be listed on some page) and dropping the human guard from reservation
+// authority (a candidate read while the seat was still agent-bound would still
+// reserve and move the ladder after `me init` bound a person to the seat).
+// The seat is first an ordinary codex occupant with a ladder row, so a real
+// candidate exists for it; the person then takes the seat.
+#[test]
+fn human_bound_seat_with_pending_acks_is_never_a_wake_candidate() {
+    let (store, path) = seeded_store(&[("h", "codex")]);
+    let db = store.context.open_writer().unwrap();
+    db.execute_batch("\
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('m','i','t',1,'ordinary','body',1,0);\
+        INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t','h','pending',100);\
+        INSERT INTO wake_work(seat_id,retry_step) VALUES ('h',3);\
+    ").unwrap();
+    drop(db);
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    assert_eq!(candidate.seat.as_str(), "h");
+    assert!(candidate.has_pending_invitation && candidate.has_pending_receipt);
+    assert_eq!(candidate.retry_step, 3);
+    // `me init` binds a person to the seat.
+    let db = store.context.open_writer().unwrap();
+    db.execute(
+        "UPDATE occupant_bindings SET harness='human' WHERE seat_id='h' AND ended_at IS NULL",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    for limit in [1u16, 2, 100] {
+        let mut listed = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = StorePort::wake_candidates(
+                &store,
+                PageRequest {
+                    cursor: cursor.take(),
+                    limit,
+                    ..PageRequest::default()
+                },
+                &budget(),
+            )
+            .unwrap();
+            listed.extend(page.items.iter().map(|c| c.seat.as_str().to_owned()));
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        assert!(listed.is_empty(), "limit {limit}: {listed:?}");
+    }
+    assert!(
+        StorePort::reserve_wake(&store, &candidate, &budget())
+            .unwrap()
+            .is_none(),
+        "a human-bound seat is never reserved"
+    );
+    let db = store.context.open_writer().unwrap();
+    let row: (i64, Option<String>) = db
+        .query_row(
+            "SELECT retry_step,reservation_id FROM wake_work WHERE seat_id='h'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(row, (3, None), "the person's ladder row never moves");
+    drop(db);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
 /// Kills: a cooperative wake authority for a seat with no open binding (the
 /// harness comparison would be skipped and any recognized agent prompted).
 #[test]
@@ -910,15 +1636,23 @@ fn cooperative_reservation_carries_bound_harness() {
 #[test]
 fn human_bound_seat_with_agent_in_pane_gets_no_wake_authority() {
     let (store, path) = bound_seat_store("human");
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+    // This branch's wake discovery (B1) already leaves a person's seat out of
+    // the candidates; any candidate that does appear must not reserve.
+    let candidates = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
         .unwrap()
-        .items
-        .remove(0);
-    assert!(
-        StorePort::reserve_wake(&store, &candidate, &budget())
-            .unwrap()
-            .is_none()
-    );
+        .items;
+    for candidate in &candidates {
+        assert!(
+            StorePort::reserve_wake(&store, candidate, &budget())
+                .unwrap()
+                .is_none()
+        );
+    }
+    // Control: the same fixture bound to an agent does yield wake authority.
+    let (agent, agent_path) = bound_seat_store("claude");
+    assert!(reserve_for_seat(&agent).is_some());
+    drop(agent);
+    let _ = std::fs::remove_file(agent_path);
     drop(store);
     let _ = std::fs::remove_file(path);
 }

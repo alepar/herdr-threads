@@ -1,5 +1,6 @@
 //! Bounded admission for work that must not occupy the domain writer.
 
+use crate::daemon::logs::{LaneErrorLog, NoopLaneErrorLog};
 use crate::ports::SnapshotGenerationId;
 use crate::ports::{
     GuardedInvalidationTransition, GuardedSeatTransition, HostInvalidationFence,
@@ -11,6 +12,9 @@ use crate::protocol::{
     results::{ApiError, ErrorCode},
     time::{CallBudget, Clock},
 };
+use crate::service::fair_writer::FairWriter;
+use crate::service::kicks::{self, Lane};
+use crate::service::pacer::{Pacer, Wake};
 use crate::{
     notification::{dispatch::NativeWakeDispatcher, policy::RetryConfig},
     ports::{
@@ -27,7 +31,7 @@ use crate::{
     },
     scheduler::{
         Scheduler, WakePort,
-        deadlines::{DeadlineDriver, DeadlinePort, DriveOutcome},
+        deadlines::{DeadlineDriver, DeadlinePort, DriveOutcome, TICK_MILLIS},
     },
 };
 use std::{
@@ -39,6 +43,11 @@ use std::{
     thread,
     time::Duration,
 };
+
+/// The wake lane's safety tick (the deadline lane's is `TICK_MILLIS`).
+const WAKE_SAFETY_TICK_MILLIS: u64 = 5_000;
+/// The wake lane's wait when a seat's retry time has already passed.
+const WAKE_MIN_WAIT_MILLIS: u64 = 100;
 
 #[derive(Debug, Default)]
 struct LaneState {
@@ -119,161 +128,15 @@ impl Drop for LaneGuard<'_> {
     }
 }
 
-fn error(code: ErrorCode, detail: &str) -> ApiError {
-    ApiError {
-        code,
-        detail: detail.into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+pub(super) fn error(code: ErrorCode, detail: &str) -> ApiError {
+    ApiError::new(code, detail)
 }
 
-#[derive(Debug, Default)]
-struct WriterState {
-    active: bool,
-    next_ticket: u64,
-    foreground: VecDeque<u64>,
-    background: VecDeque<u64>,
-    foreground_since_background: u8,
+fn error_for_spawn(lane: Lane, error: &std::io::Error) -> ApiError {
+    ApiError::service_busy(format!("lane {} thread spawn failed: {error}", lane.name()))
 }
 
-/// One writer admission at a time. Waiting foreground calls retain FIFO order.
-/// A ready background quantum follows at most eight foreground decisions;
-/// foreground resumes after that single quantum.
-#[derive(Debug)]
-pub struct FairWriter {
-    queued_limit: usize,
-    state: Mutex<WriterState>,
-    changed: Condvar,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum WriterClass {
-    Foreground,
-    Background,
-}
-
-#[derive(Debug)]
-pub struct WriterGuard<'a> {
-    lane: &'a FairWriter,
-    class: WriterClass,
-}
-
-impl FairWriter {
-    pub fn new(queued_limit: usize) -> Self {
-        Self {
-            queued_limit,
-            state: Mutex::new(WriterState::default()),
-            changed: Condvar::new(),
-        }
-    }
-
-    pub fn waiting(&self) -> (usize, usize) {
-        let state = self.state.lock().expect("writer lane lock poisoned");
-        (state.foreground.len(), state.background.len())
-    }
-
-    pub fn enter_foreground(
-        &self,
-        budget: &CallBudget,
-        clock: &dyn Clock,
-    ) -> Result<WriterGuard<'_>, ApiError> {
-        self.enter(WriterClass::Foreground, budget, clock)
-    }
-
-    pub fn enter_background(
-        &self,
-        budget: &CallBudget,
-        clock: &dyn Clock,
-    ) -> Result<WriterGuard<'_>, ApiError> {
-        self.enter(WriterClass::Background, budget, clock)
-    }
-
-    fn enter(
-        &self,
-        class: WriterClass,
-        budget: &CallBudget,
-        clock: &dyn Clock,
-    ) -> Result<WriterGuard<'_>, ApiError> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| error(ErrorCode::StoreCorrupt, "writer lane lock poisoned"))?;
-        if budget.is_exhausted(clock) {
-            return Err(budget_error(budget));
-        }
-        if state.foreground.len() + state.background.len() >= self.queued_limit {
-            return Err(error(ErrorCode::StoreBusy, "writer admission full"));
-        }
-        let ticket = state.next_ticket;
-        state.next_ticket = state
-            .next_ticket
-            .checked_add(1)
-            .ok_or_else(|| error(ErrorCode::StoreBusy, "writer admission counter exhausted"))?;
-        match class {
-            WriterClass::Foreground => state.foreground.push_back(ticket),
-            WriterClass::Background => state.background.push_back(ticket),
-        }
-        loop {
-            if budget.is_exhausted(clock) {
-                let queue = match class {
-                    WriterClass::Foreground => &mut state.foreground,
-                    WriterClass::Background => &mut state.background,
-                };
-                if let Some(position) = queue.iter().position(|queued| *queued == ticket) {
-                    queue.remove(position);
-                }
-                self.changed.notify_all();
-                return Err(budget_error(budget));
-            }
-            let ready = match class {
-                WriterClass::Foreground => {
-                    state.foreground.front() == Some(&ticket)
-                        && (state.background.is_empty() || state.foreground_since_background < 8)
-                }
-                WriterClass::Background => {
-                    state.background.front() == Some(&ticket)
-                        && (state.foreground.is_empty() || state.foreground_since_background >= 8)
-                }
-            };
-            if !state.active && ready {
-                match class {
-                    WriterClass::Foreground => {
-                        state.foreground.pop_front();
-                    }
-                    WriterClass::Background => {
-                        state.background.pop_front();
-                    }
-                }
-                state.active = true;
-                return Ok(WriterGuard { lane: self, class });
-            }
-            state = self
-                .changed
-                .wait_timeout(state, Duration::from_millis(10))
-                .map_err(|_| error(ErrorCode::StoreCorrupt, "writer lane lock poisoned"))?
-                .0;
-        }
-    }
-}
-
-impl Drop for WriterGuard<'_> {
-    fn drop(&mut self) {
-        if let Ok(mut state) = self.lane.state.lock() {
-            state.active = false;
-            match self.class {
-                WriterClass::Foreground => {
-                    state.foreground_since_background =
-                        state.foreground_since_background.saturating_add(1).min(8);
-                }
-                WriterClass::Background => state.foreground_since_background = 0,
-            }
-            self.lane.changed.notify_all();
-        }
-    }
-}
-
-fn budget_error(budget: &CallBudget) -> ApiError {
+pub(super) fn budget_error(budget: &CallBudget) -> ApiError {
     if budget.cancellation.is_cancelled() {
         error(ErrorCode::Cancelled, "lane admission cancelled")
     } else {
@@ -284,9 +147,15 @@ fn budget_error(budget: &CallBudget) -> ApiError {
     }
 }
 
-struct ScheduledStore {
+pub(crate) struct ScheduledStore {
     store: Arc<dyn StorePort>,
     writer: Arc<FairWriter>,
+}
+
+impl ScheduledStore {
+    pub(crate) fn new(store: Arc<dyn StorePort>, writer: Arc<FairWriter>) -> Self {
+        Self { store, writer }
+    }
 }
 
 impl DeadlinePort for ScheduledStore {
@@ -346,6 +215,10 @@ enum FailureKey {
     Work(String),
     ObservationCapture,
     ObservationReconciliation,
+    /// A lane-reported failure (`WorkerStatus::record_failure`).
+    LaneFailure,
+    /// The lane's thread never started; only a restart clears it.
+    LaneSpawn,
 }
 impl FailureKey {
     fn job_class(&self) -> Option<usize> {
@@ -409,8 +282,34 @@ pub enum RedactedFailure {
     /// A host observation was durably invalidated (fail-closed).
     ObservationInvalidated(HostInvalidationReason),
     ObservationReconciliation(ErrorCode),
+    /// A lane reported a failed pass through `WorkerStatus::record_failure`.
+    LaneFailure(&'static str, ErrorCode),
+    /// A lane's thread failed to spawn; the lane is absent.
+    LaneSpawn(&'static str),
+    /// The lane's status mutex is poisoned: its failure state can no longer be
+    /// read, so the lane must never read as Ready.
+    StatusPoisoned,
 }
 impl RedactedFailure {
+    /// The typed code behind the failure; `None` for the variants that carry
+    /// none (an invalidation reason, a spawn failure, a poisoned status).
+    pub fn code(&self) -> Option<&ErrorCode> {
+        match self {
+            Self::DeadlineDrive(code)
+            | Self::DueScan(_, code)
+            | Self::RetirementDiscovery(code)
+            | Self::RetirementCleanup(code)
+            | Self::WorkDiscovery(code)
+            | Self::WorkJob(code)
+            | Self::WakeCallback { code, .. }
+            | Self::WakeDriver(code)
+            | Self::ObservationCapture(code)
+            | Self::ObservationReconciliation(code)
+            | Self::LaneFailure(_, code) => Some(code),
+            Self::ObservationInvalidated(_) | Self::LaneSpawn(_) | Self::StatusPoisoned => None,
+        }
+    }
+
     pub fn summary(&self) -> String {
         match self {
             Self::DeadlineDrive(code) => format!("deadline drive failed: {code:?}"),
@@ -443,6 +342,9 @@ impl RedactedFailure {
             Self::ObservationReconciliation(code) => {
                 format!("host observation reconciliation failed: {code:?}")
             }
+            Self::LaneFailure(lane, code) => format!("lane {lane} failed: {code:?}"),
+            Self::LaneSpawn(lane) => format!("lane {lane} failed to start"),
+            Self::StatusPoisoned => "status poisoned".into(),
         }
     }
 }
@@ -453,16 +355,25 @@ impl RedactedFailure {
 pub struct RedactedWorkerHealth {
     pub failure: Option<RedactedFailure>,
     pub tracking_gap: bool,
+    /// The attached Pacer's backoff: attempt count and whole seconds (rounded
+    /// up) until the next retry. Set only while attempts > 0.
+    pub retry: Option<(u32, u64)>,
 }
 impl RedactedWorkerHealth {
     pub fn summary(&self) -> String {
-        match (&self.failure, self.tracking_gap) {
+        let mut summary = match (&self.failure, self.tracking_gap) {
             (Some(failure), true) => {
                 format!("{}; unresolved failure tracking gap", failure.summary())
             }
             (Some(failure), false) => failure.summary(),
             (None, _) => "unresolved failure tracking gap".into(),
+        };
+        if let Some((attempts, seconds)) = self.retry {
+            summary.push_str(&format!(
+                "; retrying (attempt {attempts}, next ≤ {seconds}s)"
+            ));
         }
+        summary
     }
 }
 
@@ -601,8 +512,92 @@ pub struct WorkerStatus {
     /// Set when the lane's thread ended while its owner had not asked it to
     /// stop (panic or early return); never cleared.
     lane_dead: AtomicBool,
+    /// Where `record_failure` reports; unset means `NoopLaneErrorLog`.
+    error_log: Mutex<Option<Arc<dyn LaneErrorLog>>>,
+    /// The lane's Pacer, whose backoff Health publishes as a retry suffix.
+    pacer: Mutex<Option<Arc<Pacer>>>,
 }
 impl WorkerStatus {
+    /// Attaches the lane's Pacer so Health shows its retry state.
+    pub fn attach_pacer(&self, pacer: Arc<Pacer>) {
+        if let Ok(mut slot) = self.pacer.lock() {
+            *slot = Some(pacer);
+        }
+    }
+    /// Whether a Pacer is attached (test support).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn has_pacer(&self) -> bool {
+        self.pacer.lock().is_ok_and(|slot| slot.is_some())
+    }
+    /// The attached Pacer's `(attempts, next_retry_at)` while attempts > 0.
+    pub fn retry(&self) -> Option<(u32, crate::protocol::time::MonoInstant)> {
+        let pacer = self.pacer.lock().ok()?.clone()?;
+        let attempts = pacer.attempts();
+        if attempts == 0 {
+            return None;
+        }
+        Some((attempts, pacer.next_retry_at()?))
+    }
+    /// Installs the lane-error hook `record_failure` calls.
+    pub fn set_error_log(&self, log: Arc<dyn LaneErrorLog>) {
+        if let Ok(mut slot) = self.error_log.lock() {
+            *slot = Some(log);
+        }
+    }
+    fn report_to_error_log(&self, lane: Lane, error: &ApiError) {
+        // Clone out so the hook never runs under the status lock.
+        let log = self.error_log.lock().ok().and_then(|slot| slot.clone());
+        let attempt = self.retry().map_or(0, |(attempts, _)| attempts);
+        match log {
+            Some(log) => log.record_with_attempt(lane, error, attempt),
+            None => NoopLaneErrorLog.record(lane, error),
+        }
+    }
+    /// Reports a wake prompt whose submission was `NotChecked` or stayed
+    /// `Unsubmitted` to the lane error log (rate limited there). A no-op when
+    /// no log is set; never touches Health.
+    pub fn report_wake_verification(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        verification: crate::scheduler::SubmissionVerification,
+    ) {
+        // Clone out so the hook never runs under the status lock.
+        let log = self.error_log.lock().ok().and_then(|slot| slot.clone());
+        if let Some(log) = log {
+            log.record_wake_verification(seat, verification);
+        }
+    }
+    /// The only way a lane reports a good pass: clears the lane's reported
+    /// failure and advances `last_tick`.
+    pub fn record_success(&self, at: crate::protocol::time::UtcMillis) {
+        self.record(FailureKey::LaneFailure, None);
+        self.record_tick(at);
+    }
+    /// The only way a lane reports a failed pass: records the typed failure
+    /// for Health (`last_tick` does not advance) and calls the lane-error hook.
+    pub fn record_failure(&self, lane: Lane, error: &ApiError) {
+        self.record(
+            FailureKey::LaneFailure,
+            Some((
+                RedactedFailure::LaneFailure(lane.name(), error.code.clone()),
+                error_diagnostic(lane.name(), error),
+            )),
+        );
+        self.report_to_error_log(lane, error);
+    }
+    /// Records that `lane`'s thread failed to spawn so Health shows it
+    /// degraded instead of the lane being silently absent.
+    pub fn record_spawn_failure(&self, lane: Lane, error: &std::io::Error) {
+        let api = error_for_spawn(lane, error);
+        self.record(
+            FailureKey::LaneSpawn,
+            Some((
+                RedactedFailure::LaneSpawn(lane.name()),
+                error_diagnostic(lane.name(), &api),
+            )),
+        );
+        self.report_to_error_log(lane, &api);
+    }
     /// Guard held for the lane thread's whole body: if the thread unwinds or
     /// returns without a requested stop, the lane is recorded dead so Health
     /// stops reporting it Ready.
@@ -621,15 +616,24 @@ impl WorkerStatus {
     pub fn last_tick(&self) -> Option<crate::protocol::time::UtcMillis> {
         self.last_tick.lock().ok().and_then(|tick| *tick)
     }
-    /// Record that a pass completed without error at `at`.
-    pub fn record_tick(&self, at: crate::protocol::time::UtcMillis) {
+    /// Record that a pass completed without error at `at`. Only a good pass
+    /// reports through here (`record_success`, an error-free deadline tick).
+    fn record_tick(&self, at: crate::protocol::time::UtcMillis) {
         if let Ok(mut tick) = self.last_tick.lock() {
             *tick = Some(at);
         }
     }
     /// The typed redacted status production Health consumes.
     pub fn health(&self) -> Option<RedactedWorkerHealth> {
-        let state = self.state.lock().ok()?;
+        // A poisoned lock means the failure state is unreadable: report the
+        // lane degraded, never Ready.
+        let Ok(state) = self.state.lock() else {
+            return Some(RedactedWorkerHealth {
+                failure: Some(RedactedFailure::StatusPoisoned),
+                tracking_gap: false,
+                retry: None,
+            });
+        };
         let failure = state
             .current
             .first()
@@ -645,9 +649,19 @@ impl WorkerStatus {
                     })
             });
         let tracking_gap = state.gaps.iter().any(|gap| *gap);
+        let retry = self.retry().map(|(attempts, next)| {
+            let now = self
+                .pacer
+                .lock()
+                .ok()
+                .and_then(|slot| slot.as_ref().map(|pacer| pacer.now().0))
+                .unwrap_or(next.0);
+            (attempts, next.0.saturating_sub(now).div_ceil(1000))
+        });
         (failure.is_some() || tracking_gap).then_some(RedactedWorkerHealth {
             failure,
             tracking_gap,
+            retry,
         })
     }
     /// The Health text of `health()`: fixed classes and codes only.
@@ -736,7 +750,11 @@ impl WorkerStatus {
         }
         // Health's `last_scheduler_tick_at`: every tick (not a skipped call)
         // that finished without error, whether or not any deadline was due.
-        if result.as_ref().is_ok_and(|outcome| outcome.ticked) {
+        // A pass that retained a job `work_error` is not an error-free pass.
+        if result
+            .as_ref()
+            .is_ok_and(|outcome| outcome.ticked && outcome.work_error.is_none())
+        {
             self.record_tick(driver.clock().utc_now());
         }
         result
@@ -844,23 +862,42 @@ impl WorkerStatus {
         result: &Result<Option<crate::identity::reconcile::ObservationOutcome>, ApiError>,
     ) {
         use crate::identity::reconcile::ObservationOutcome;
+        let mut logged = None;
         let failure = match result {
             Ok(None) => return,
             Ok(Some(ObservationOutcome::Published(_) | ObservationOutcome::Superseded)) => None,
-            Ok(Some(ObservationOutcome::Invalidated { reason, cause, .. })) => Some((
-                RedactedFailure::ObservationInvalidated(*reason),
-                diagnostic(format!("capture {reason:?}: {cause:?}")),
-            )),
-            Err(error) => Some((
-                RedactedFailure::ObservationCapture(error.code.clone()),
-                error_diagnostic("capture", error),
-            )),
+            Ok(Some(
+                ObservationOutcome::Invalidated { reason, cause, .. }
+                | ObservationOutcome::InvalidationRepeated { reason, cause },
+            )) => {
+                logged = Some(ApiError::new(
+                    ErrorCode::HostUnavailable,
+                    format!("capture invalidated ({reason:?}): {cause:?}"),
+                ));
+                Some((
+                    RedactedFailure::ObservationInvalidated(*reason),
+                    diagnostic(format!("capture {reason:?}: {cause:?}")),
+                ))
+            }
+            Err(error) => {
+                logged = Some(error.clone());
+                Some((
+                    RedactedFailure::ObservationCapture(error.code.clone()),
+                    error_diagnostic("capture", error),
+                ))
+            }
         };
         self.record(FailureKey::ObservationCapture, failure);
+        if let Some(error) = logged {
+            self.report_to_error_log(Lane::Observation, &error);
+        }
     }
     /// The observation worker's reconciliation page result. A committed page
     /// clears the reconciliation failure.
     pub fn observe_reconciliation<T>(&self, result: &Result<T, ApiError>) {
+        if let Err(error) = result {
+            self.report_to_error_log(Lane::Observation, error);
+        }
         self.record(
             FailureKey::ObservationReconciliation,
             result.as_ref().err().map(|error| {
@@ -879,31 +916,216 @@ impl WorkerStatus {
 pub fn start_deadline_worker(
     store: Arc<dyn StorePort>,
     writer: Arc<FairWriter>,
+    pacer: Arc<Pacer>,
     cancellation: Cancellation,
     status: Arc<WorkerStatus>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("herdr-deadlines".into())
         .spawn(move || {
+            let _origin = kicks::enter_lane(Lane::Deadlines);
+            status.attach_pacer(Arc::clone(&pacer));
             let _guard = status.lane_guard(&cancellation);
-            let port = ScheduledStore { store, writer };
+            let port = ScheduledStore::new(store, writer);
             let mut driver = DeadlineDriver::new(&port);
+            let tick = Duration::from_millis(TICK_MILLIS);
+            // The first pass runs at boot, before the first wait.
+            let mut waited = false;
             while !cancellation.is_cancelled() {
-                let budget = CallBudget {
-                    deadline: crate::protocol::time::MonoInstant(
-                        port.store.clock().monotonic_now().0.saturating_add(500),
-                    ),
-                    cancellation: cancellation.clone(),
-                };
-                let _ = status.drive_deadlines(&mut driver, &budget);
-                for _ in 0..5 {
-                    if cancellation.is_cancelled() {
-                        break;
+                if waited {
+                    match pacer.wait_blocking(tick) {
+                        Wake::Cancelled => break,
+                        // A kick means committed work; a due retry must not be
+                        // skipped by the tick gate a failed pass left closed.
+                        Wake::Kicked | Wake::RetryDue => driver.after_committed_change(),
+                        Wake::Tick => {}
                     }
-                    thread::sleep(Duration::from_millis(20));
+                }
+                waited = true;
+                loop {
+                    let budget = CallBudget {
+                        deadline: crate::protocol::time::MonoInstant(
+                            port.store.clock().monotonic_now().0.saturating_add(500),
+                        ),
+                        cancellation: cancellation.clone(),
+                    };
+                    match status.drive_deadlines(&mut driver, &budget) {
+                        Err(error) => {
+                            if !cancellation.is_cancelled() {
+                                pacer.on_failure();
+                                status.record_failure(Lane::Deadlines, &error);
+                            }
+                            break;
+                        }
+                        Ok(outcome) => {
+                            pacer.on_success();
+                            // A skipped (gated) call is not a completed tick.
+                            if outcome.ticked {
+                                status.record_success(port.store.clock().utc_now());
+                            }
+                            if outcome.progressed_with_more() {
+                                // Retirement and work progress do not reopen the
+                                // tick gate themselves.
+                                driver.after_committed_change();
+                            }
+                            if cancellation.is_cancelled()
+                                || !(outcome.due_continuation || outcome.progressed_with_more())
+                            {
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         })
+}
+
+/// Safety tick of the retention lane: with nothing kicking it (no table maps
+/// to `Lane::Retention`), it still looks for prunable rows once a minute.
+const RETENTION_TICK: Duration = Duration::from_secs(60);
+
+/// The retention lane (nested spec D3/D4): prunes superseded snapshot
+/// generations and completed work jobs on a `Pacer`. Each pass takes one
+/// background writer turn and runs the store's bounded `prune_retention`;
+/// `has_more` re-runs at once, so a backlog drains one batch per writer turn
+/// and a request write waits for at most one batch. A failed pass backs off on
+/// the Pacer (100 ms x 2^n, 30 s cap) and is reported through
+/// `WorkerStatus::record_failure`, which feeds Health's retry suffix and the
+/// lane error log. Cancellation ends the lane after the batch in flight.
+pub fn start_retention_worker(
+    store: Arc<dyn StorePort>,
+    writer: Arc<FairWriter>,
+    pacer: Arc<Pacer>,
+    cancellation: Cancellation,
+    status: Arc<WorkerStatus>,
+) -> std::io::Result<thread::JoinHandle<()>> {
+    status.attach_pacer(Arc::clone(&pacer));
+    thread::Builder::new()
+        .name("herdr-retention".into())
+        .spawn(move || {
+            // Commits made on this thread count as Retention-origin and kick no lane.
+            let _origin = crate::service::kicks::enter_lane(Lane::Retention);
+            let _guard = status.lane_guard(&cancellation);
+            let pass = || -> Result<crate::ports::PruneProgress, ApiError> {
+                let budget = CallBudget {
+                    deadline: crate::protocol::time::MonoInstant(
+                        store.clock().monotonic_now().0.saturating_add(5_000),
+                    ),
+                    cancellation: cancellation.clone(),
+                };
+                let _turn = writer.enter_background(&budget, store.clock())?;
+                store.prune_retention(&budget)
+            };
+            while !cancellation.is_cancelled() {
+                let mut has_more = true;
+                while has_more && !cancellation.is_cancelled() {
+                    match pass() {
+                        Ok(progress) => {
+                            pacer.on_success();
+                            status.record_success(store.clock().utc_now());
+                            has_more = progress.has_more;
+                        }
+                        Err(_) if cancellation.is_cancelled() => break,
+                        Err(error) => {
+                            pacer.on_failure();
+                            status.record_failure(Lane::Retention, &error);
+                            has_more = false;
+                        }
+                    }
+                }
+                if cancellation.is_cancelled()
+                    || pacer.wait_blocking(RETENTION_TICK) == crate::service::pacer::Wake::Cancelled
+                {
+                    break;
+                }
+            }
+        })
+}
+
+/// The admission observer's safety tick: a swapped `claude` or `codex` binary
+/// is noticed within a minute, and one pass costs one `--version` run per
+/// harness. Never below 5 s (nested spec D2).
+pub const ADMISSION_TICK: Duration = Duration::from_secs(60);
+const _: () = assert!(ADMISSION_TICK.as_secs() >= 5);
+
+/// The admission-observer lane (root spec B2, nested spec D2): re-observes the
+/// installed harnesses on a `Pacer` instead of once at boot, and replaces the
+/// whole `HarnessObservations` in `slot` after each good pass so Health never
+/// reads a half-updated pair. The first pass runs at once, then one per
+/// [`ADMISSION_TICK`]; a failed pass backs off on the Pacer (100 ms x 2^n,
+/// 30 s cap) and reports through `WorkerStatus::record_failure`, which feeds
+/// Health's existing retry suffix. The lane's kick set is empty by decision:
+/// it runs only on its tick and its backoff. It holds no store, so it commits
+/// nothing. Cancellation also kills the pass's in-flight `--version` run, so
+/// shutdown's join returns promptly and leaves no harness child behind.
+pub(crate) fn start_admission_observer<O>(
+    observe: O,
+    slot: Arc<Mutex<crate::app::HarnessObservations>>,
+    pacer: Arc<Pacer>,
+    clock: Arc<dyn Clock>,
+    cancellation: Cancellation,
+    status: Arc<WorkerStatus>,
+) -> std::io::Result<thread::JoinHandle<()>>
+where
+    O: Fn(&CallBudget) -> Result<crate::app::HarnessObservations, ApiError> + Send + 'static,
+{
+    status.attach_pacer(Arc::clone(&pacer));
+    thread::Builder::new()
+        .name("herdr-admission".into())
+        .spawn(move || {
+            let _origin = kicks::enter_lane(Lane::AdmissionObserver);
+            let _guard = status.lane_guard(&cancellation);
+            while !cancellation.is_cancelled() {
+                let budget = CallBudget {
+                    deadline: crate::protocol::time::MonoInstant(
+                        clock.monotonic_now().0.saturating_add(30_000),
+                    ),
+                    cancellation: cancellation.clone(),
+                };
+                match observe(&budget) {
+                    Ok(observed) => {
+                        *slot.lock().unwrap_or_else(|e| e.into_inner()) = observed;
+                        pacer.on_success();
+                        status.record_success(clock.utc_now());
+                    }
+                    Err(_) if cancellation.is_cancelled() => break,
+                    Err(error) => {
+                        pacer.on_failure();
+                        status.record_failure(Lane::AdmissionObserver, &error);
+                    }
+                }
+                if pacer.wait_blocking(ADMISSION_TICK) == Wake::Cancelled {
+                    break;
+                }
+            }
+        })
+}
+
+/// Checks the admission observer's spawn `Result`: a failed spawn is recorded
+/// on `status` so Health shows the lane degraded instead of silently absent.
+pub fn admission_handle(
+    spawned: std::io::Result<thread::JoinHandle<()>>,
+    status: &WorkerStatus,
+) -> Option<thread::JoinHandle<()>> {
+    match spawned {
+        Ok(handle) => Some(handle),
+        Err(error) => {
+            status.record_spawn_failure(Lane::AdmissionObserver, &error);
+            None
+        }
+    }
+}
+
+/// The final attempt fence runs on the store directly: it holds no writer turn
+/// across the prompt I/O it precedes.
+impl crate::notification::dispatch::ReservationCheck for ScheduledStore {
+    fn is_current(
+        &self,
+        reservation: &WakeReservation,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        self.store.validate_wake_reservation(reservation, budget)
+    }
 }
 
 impl WakePort for ScheduledStore {
@@ -929,10 +1151,12 @@ impl WakePort for ScheduledStore {
         &self,
         attempt: crate::protocol::ids::WakeAttemptId,
         outcome: WakeOutcome,
+        refused_restore: Option<&crate::ports::PriorLadder>,
         budget: &CallBudget,
-    ) -> Result<(), ApiError> {
+    ) -> Result<bool, ApiError> {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
-        self.store.complete_wake(attempt, outcome, budget)
+        self.store
+            .complete_wake(attempt, outcome, refused_restore, budget)
     }
     fn wake_recovery_candidates(
         &self,
@@ -974,7 +1198,21 @@ impl<'a, P: WakePort + ?Sized> ObservedWakePort<'a, P> {
                 .observe_wake_callback(WakePhase::Admission, None, None);
         }
     }
+    /// Whether a store callback of the current drive failed (so the failure
+    /// is already reported per phase).
+    pub fn callback_failed(&self) -> bool {
+        self.callback_failed
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
     pub fn observe_drive(&self, result: &Result<crate::scheduler::WakeDriveOutcome, ApiError>) {
+        use crate::scheduler::SubmissionVerification::{NotChecked, Unsubmitted};
+        if let Ok(outcome) = result {
+            for (seat, verification) in &outcome.verification {
+                if matches!(verification, NotChecked | Unsubmitted) {
+                    self.status.report_wake_verification(seat, *verification);
+                }
+            }
+        }
         if let Err(error) = result
             && !self
                 .callback_failed
@@ -1005,9 +1243,16 @@ impl<'a, P: WakePort + ?Sized> ObservedWakePort<'a, P> {
         identity: Option<String>,
         result: Result<T, ApiError>,
     ) -> Result<T, ApiError> {
-        if result.is_err() {
+        if let Err(error) = &result {
             self.callback_failed
                 .store(true, std::sync::atomic::Ordering::Relaxed);
+            // The lane loop leaves a callback failure to this per-phase report
+            // (no backoff, no `record_failure`), so it reaches the daemon log
+            // here, through the same rate-limited lane log. A cancelled call
+            // is a shutdown, not a failure.
+            if error.code != ErrorCode::Cancelled {
+                self.status.report_to_error_log(Lane::Wakes, error);
+            }
         }
         self.status
             .observe_wake_callback(phase, identity, result.as_ref().err());
@@ -1044,12 +1289,14 @@ impl<P: WakePort + ?Sized> WakePort for ObservedWakePort<'_, P> {
         &self,
         attempt: crate::protocol::ids::WakeAttemptId,
         outcome: WakeOutcome,
+        refused_restore: Option<&crate::ports::PriorLadder>,
         budget: &CallBudget,
-    ) -> Result<(), ApiError> {
+    ) -> Result<bool, ApiError> {
         self.observed(
             WakePhase::Completion,
             Some(attempt.as_str().into()),
-            self.port.complete_wake(attempt, outcome, budget),
+            self.port
+                .complete_wake(attempt, outcome, refused_restore, budget),
         )
     }
     fn wake_recovery_candidates(
@@ -1087,35 +1334,81 @@ pub fn start_wake_worker(
     instance: String,
     boot: uuid::Uuid,
     retry: RetryConfig,
+    pacer: Arc<Pacer>,
     cancellation: Cancellation,
     status: Arc<WorkerStatus>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("herdr-wakes".into())
         .spawn(move || {
+            let _origin = kicks::enter_lane(Lane::Wakes);
+            status.attach_pacer(Arc::clone(&pacer));
             let _guard = status.lane_guard(&cancellation);
-            let port = ScheduledStore { store, writer };
-            let notifier =
-                NativeWakeDispatcher::new(host.as_ref(), port.store.as_ref(), port.store.clock());
+            let port = ScheduledStore::new(store, writer);
+            let notifier = NativeWakeDispatcher::new(host.as_ref(), &port, port.store.clock());
             let observed = ObservedWakePort::new(&port, &status);
             let scheduler = Scheduler::new(instance, &port, &observed, &notifier, retry, boot);
+            let safety_tick = Duration::from_millis(WAKE_SAFETY_TICK_MILLIS);
+            // The first pass runs at boot, before the first wait.
+            let mut next_due_at: Option<crate::protocol::time::MonoInstant> = None;
+            let mut waited = false;
             while !cancellation.is_cancelled() {
-                let budget = CallBudget {
-                    deadline: crate::protocol::time::MonoInstant(
-                        port.store.clock().monotonic_now().0.saturating_add(5_000),
-                    ),
-                    cancellation: cancellation.clone(),
-                };
-                observed.begin_drive(&budget);
-                observed.observe_drive(&scheduler.drive_wakes(&budget));
-                for _ in 0..5 {
-                    if cancellation.is_cancelled() {
+                if waited {
+                    let tick = wake_wait(safety_tick, next_due_at, pacer.now());
+                    if pacer.wait_blocking(tick) == Wake::Cancelled {
                         break;
                     }
-                    thread::sleep(Duration::from_millis(20));
+                }
+                waited = true;
+                next_due_at = None;
+                loop {
+                    let budget = CallBudget {
+                        deadline: crate::protocol::time::MonoInstant(
+                            port.store.clock().monotonic_now().0.saturating_add(5_000),
+                        ),
+                        cancellation: cancellation.clone(),
+                    };
+                    observed.begin_drive(&budget);
+                    let result = scheduler.drive_wakes(&budget);
+                    observed.observe_drive(&result);
+                    match result {
+                        Err(error) => {
+                            // A failure raised inside a store callback is already
+                            // reported per phase and retried on the next wake;
+                            // only an unclassified error backs the lane off.
+                            if !observed.callback_failed() && !cancellation.is_cancelled() {
+                                pacer.on_failure();
+                                status.record_failure(Lane::Wakes, &error);
+                            }
+                            break;
+                        }
+                        Ok(outcome) => {
+                            pacer.on_success();
+                            status.record_success(port.store.clock().utc_now());
+                            next_due_at = outcome.next_due_at;
+                            if !outcome.has_more || cancellation.is_cancelled() {
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         })
+}
+
+/// The wake lane's wait: the safety tick, or less when a seat's retry comes
+/// due sooner. A due time that has already passed waits `WAKE_MIN_WAIT_MILLIS`,
+/// so stale bookkeeping can never spin the lane.
+fn wake_wait(
+    safety_tick: Duration,
+    next_due_at: Option<crate::protocol::time::MonoInstant>,
+    now: crate::protocol::time::MonoInstant,
+) -> Duration {
+    match next_due_at {
+        Some(due) if due.0 > now.0 => safety_tick.min(Duration::from_millis(due.0 - now.0)),
+        Some(_) => safety_tick.min(Duration::from_millis(WAKE_MIN_WAIT_MILLIS)),
+        None => safety_tick,
+    }
 }
 
 impl crate::identity::reconcile::observation_store::ObservationStore for ScheduledStore {
@@ -1275,25 +1568,31 @@ pub fn start_observation_worker(
     cancellation: Cancellation,
     status: Arc<WorkerStatus>,
     host_evidence: Arc<crate::service::host_evidence::HostEvidenceStatus>,
+    pacer: Arc<Pacer>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
     spawn_observation_loop(
         identity,
-        ScheduledStore { store, writer },
+        ScheduledStore::new(store, writer),
         cancellation,
         status,
         host_evidence,
+        pacer,
     )
 }
 
 /// The observation worker loop over its scheduled store port. Every feeder
 /// of the lane's `WorkerStatus` (capture and reconciliation) is called here;
 /// the production entry point above only supplies the fair-writer port.
+/// The lane blocks in its Pacer: the 5 s cadence while healthy, the capped
+/// backoff after a failed capture, and no wait while a reconciliation
+/// continuation page is pending (pacer spec D4).
 fn spawn_observation_loop<S>(
     identity: Arc<crate::identity::repair::OrdinaryIdentity>,
     port: S,
     cancellation: Cancellation,
     status: Arc<WorkerStatus>,
     host_evidence: Arc<crate::service::host_evidence::HostEvidenceStatus>,
+    pacer: Arc<Pacer>,
 ) -> std::io::Result<thread::JoinHandle<()>>
 where
     S: crate::identity::reconcile::observation_store::ObservationStore + 'static,
@@ -1301,6 +1600,9 @@ where
     thread::Builder::new()
         .name("herdr-observations".into())
         .spawn(move || {
+            // Its commits count as the observation origin, never as requests.
+            let _origin = kicks::enter_lane(Lane::Observation);
+            status.attach_pacer(Arc::clone(&pacer));
             let _guard = status.lane_guard(&cancellation);
             let mut continuation = None;
             while !cancellation.is_cancelled() {
@@ -1314,19 +1616,28 @@ where
                     status.observe_reconciliation(&page);
                     if let Ok(page) = page {
                         let (done, refused) = pass_complete(refused, &page);
+                        // Health: success-only `last_reconciliation_at` (B3).
+                        host_evidence.record_reconcile_page(
+                            u64::from(page.transitions_refused),
+                            done && matches!(
+                                outcome,
+                                crate::identity::reconcile::ObservationOutcome::Published(_)
+                            ),
+                            port.clock().utc_now(),
+                        );
                         if let (false, Some(next)) = (done, page.next_after_ordinal) {
                             continuation =
                                 Some((outcome, next, Some(page.high_water_ordinal), refused));
                         } else if let crate::identity::reconcile::ObservationOutcome::Published(
                             published,
                         ) = &outcome
+                            && !refused
                         {
-                            if !refused {
-                                // An Err leaves the marker behind; the next
-                                // pass retries.
-                                let _ = port.record_reconciliation_pass(published, &budget);
-                            }
-                            host_evidence.record_reconciled(port.clock().utc_now());
+                            // Durable reconciliation marker (TRUST-POLICY C2):
+                            // only a pass with no refused transition records
+                            // it. An Err leaves the marker behind; the next
+                            // pass retries.
+                            let _ = identity.record_reconciliation_pass(&port, published, &budget);
                         }
                     }
                 } else {
@@ -1340,34 +1651,54 @@ where
                         Ok(Some(outcome)) => {
                             match &outcome {
                                 crate::identity::reconcile::ObservationOutcome::Published(_) => {
-                                    host_evidence.record_published()
+                                    host_evidence.record_published();
+                                    pacer.on_success();
                                 }
                                 crate::identity::reconcile::ObservationOutcome::Invalidated {
                                     reason,
                                     cause,
                                     ..
-                                } => host_evidence.record_invalidated(*reason, cause.as_ref()),
+                                } => {
+                                    host_evidence.record_invalidated(*reason, cause.as_ref());
+                                    pacer.on_failure();
+                                }
+                                crate::identity::reconcile::ObservationOutcome::InvalidationRepeated {
+                                    reason,
+                                    cause,
+                                } => {
+                                    host_evidence.record_invalidated(*reason, cause.as_ref());
+                                    pacer.on_failure();
+                                }
                                 crate::identity::reconcile::ObservationOutcome::Superseded => {}
                             }
+                            // A repeated invalidation arms no continuation: its
+                            // marking pass already completed.
                             if !matches!(
                                 outcome,
                                 crate::identity::reconcile::ObservationOutcome::Superseded
+                                    | crate::identity::reconcile::ObservationOutcome::InvalidationRepeated {
+                                        ..
+                                    }
                             ) {
+                                host_evidence.begin_reconcile_pass();
                                 continuation = Some((outcome, 0, None, false));
                             }
                         }
                         Ok(None) => {}
                         // No durable outcome: never leave an earlier
                         // publication reported as verified host evidence.
-                        Err(error) => host_evidence.record_capture_failed(&error),
+                        Err(error) => {
+                            host_evidence.record_capture_failed(&error);
+                            pacer.on_failure();
+                        }
                     }
                 }
-                // One bounded page per turn; failed captures cannot hot-loop.
-                for _ in 0..5 {
-                    if cancellation.is_cancelled() {
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(20));
+                // Re-run immediately while a continuation page is pending;
+                // otherwise block in the Pacer (cadence, backoff, cancel).
+                if continuation.is_none()
+                    && pacer.wait_blocking(Duration::from_millis(5_000)) == Wake::Cancelled
+                {
+                    break;
                 }
             }
         })
@@ -1376,3 +1707,18 @@ where
 #[cfg(test)]
 #[path = "../../tests/service/worker_health.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/service/retention_lane.rs"]
+mod retention_lane_tests;
+
+#[cfg(test)]
+#[path = "../../tests/service/observation_lane.rs"]
+mod observation_lane_tests;
+
+#[cfg(test)]
+#[path = "../../tests/service/admission_observer.rs"]
+mod admission_observer_tests;
+#[cfg(test)]
+#[path = "../../tests/service/admission_reobserve.rs"]
+mod admission_reobserve_tests;

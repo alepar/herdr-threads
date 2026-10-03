@@ -7,7 +7,6 @@ use crate::harness::codex::{
     VersionError,
 };
 use crate::harness::codex_schema::{self, Unextractable};
-use crate::harness::context::ContextError;
 use crate::harness::{Capability, setup::plan_codex_for_version};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -175,13 +174,14 @@ fn unlisted_version_with_matching_schemas_is_admitted_schema_matched() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// One changed schema (a new SessionStart source) changes the fingerprint,
-/// and the unlisted version is refused with the actionable message naming
-/// the measured fingerprint and the supported recipes.
-/// Kills: admitting on a mismatched fingerprint, fingerprinting only titles
-/// or a subset of the schemas, and a refusal without the recipe list.
+/// One changed schema (a new SessionStart source) changes the fingerprint:
+/// the unlisted, not-older version is admitted optimistically with the
+/// measured fingerprint recorded as drift, never as a schema match.
+/// Kills: admitting on a mismatched fingerprint as schema-matched,
+/// fingerprinting only titles or a subset of the schemas, and losing the
+/// measured fingerprint from the evidence.
 #[test]
-fn unlisted_version_with_mismatched_schemas_is_refused() {
+fn unlisted_version_with_mismatched_schemas_is_optimistic_with_drift() {
     let dir = private_dir("mismatch");
     let mut schemas = committed_schemas();
     let start = schemas
@@ -201,40 +201,45 @@ fn unlisted_version_with_mismatched_schemas_is_refused() {
         ("missing", embedded(&fewer)),
     ] {
         let binary = synthetic_binary(&dir, label, "0.160.0", &tail);
-        let error = InstalledVersion::observe(&binary).unwrap_err();
-        let VersionError::SchemaUnmatched {
-            version,
-            fingerprint,
-        } = &error
-        else {
-            panic!("{label}: {error:?}");
+        let version = InstalledVersion::observe(&binary).unwrap();
+        let Admission::Optimistic { admission, schema } = version.admission() else {
+            panic!("{label}: {:?}", version.admission());
         };
-        assert_eq!(version, "0.160.0");
+        let codex::SchemaObservation::Drift { fingerprint } = schema else {
+            panic!("{label}: {schema:?}");
+        };
         assert!(fingerprint.starts_with("sha256:"));
         assert_ne!(fingerprint, HOOKS_V1_SCHEMA_FINGERPRINT, "{label}");
-        let message = error.to_string();
+        assert_eq!(admission.assumed_recipe, "codex-hooks-v1");
+        assert_eq!(version.recipe().id, "codex-hooks-v1");
+        let evidence = version.evidence();
         assert!(
-            message.contains("codex 0.160.0 has no adapter recipe")
-                && message.contains(fingerprint.as_str())
-                && message.contains("match no recipe's captured schemas")
-                && message.contains("supported recipes: codex-hooks-v1 {0.157.1, 0.158.0}")
-                && message.contains("capture this version's hook payloads"),
-            "{message}"
+            evidence.starts_with(
+                "codex 0.160.0: optimistic (newer-than-verified): assumed recipe codex-hooks-v1; schema drift sha256:"
+            ) && evidence.contains(fingerprint.as_str())
+                && evidence.len() <= 256,
+            "{evidence}"
         );
-        assert_eq!(
-            ContextError::from(error.clone()),
-            ContextError::UnsupportedVersion(message)
-        );
+        let event = codex::parse_event_for_version(LIVE_START, "external", &version).unwrap();
+        assert_eq!(event.capability, Capability::OptimisticInput);
+        let state = codex::InstalledAdmission {
+            binary: Some(binary.clone()),
+            result: Ok(version.clone()),
+        }
+        .state();
+        assert_eq!(state, codex::OPTIMISTIC_LABEL);
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// No embedded schemas, conflicting duplicates, or an already-passed
-/// deadline: the unlisted version is refused as unextractable.
-/// Kills: treating an unextractable binary as matching, and extraction that
-/// ignores the observation deadline.
+/// No embedded schemas, conflicting duplicates, or a binary that changed
+/// while observed: the unlisted version is admitted optimistically with an
+/// `Unreadable` schema observation; an already-passed deadline still fails
+/// extraction itself.
+/// Kills: treating an unextractable binary as matching, extraction that
+/// ignores the observation deadline, and dropping the reason.
 #[test]
-fn unlisted_version_with_unextractable_schemas_is_refused() {
+fn unlisted_version_with_unextractable_schemas_is_optimistic_unreadable() {
     let dir = private_dir("unextractable");
     let none = synthetic_binary(&dir, "none", "0.160.0", b"no schemas here");
     let schemas = committed_schemas();
@@ -254,20 +259,20 @@ fn unlisted_version_with_unextractable_schemas_is_refused() {
             Unextractable::Conflicting("stop.command.output".into()),
         ),
     ] {
-        let error = InstalledVersion::observe(binary).unwrap_err();
+        let version = InstalledVersion::observe(binary).unwrap();
+        let Admission::Optimistic { schema, .. } = version.admission() else {
+            panic!("{:?}", version.admission());
+        };
         assert_eq!(
-            error,
-            VersionError::SchemaUnextractable {
-                version: "0.160.0".into(),
-                reason: reason.clone(),
+            schema,
+            &codex::SchemaObservation::Unreadable {
+                reason: reason.clone()
             }
         );
-        let message = error.to_string();
+        let evidence = version.evidence();
         assert!(
-            message.contains("could not be fingerprinted")
-                && message.contains(&reason.to_string())
-                && message.contains("supported recipes: codex-hooks-v1 {0.157.1, 0.158.0}"),
-            "{message}"
+            evidence.contains("schema unreadable") && evidence.contains(&reason.to_string()),
+            "{evidence}"
         );
     }
     // A binary that modifies itself when run: the file fingerprinted is not
@@ -283,12 +288,19 @@ fn unlisted_version_with_unextractable_schemas_is_refused() {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         path
     };
-    assert_eq!(
-        InstalledVersion::observe(&rewriting),
-        Err(VersionError::SchemaUnextractable {
-            version: "0.160.0".into(),
-            reason: Unextractable::Changed,
-        })
+    let version = InstalledVersion::observe(&rewriting).unwrap();
+    assert!(
+        matches!(
+            version.admission(),
+            Admission::Optimistic {
+                schema: codex::SchemaObservation::Unreadable {
+                    reason: Unextractable::Changed
+                },
+                ..
+            }
+        ),
+        "{:?}",
+        version.admission()
     );
     let far_past = Instant::now();
     assert_eq!(
@@ -300,6 +312,157 @@ fn unlisted_version_with_unextractable_schemas_is_refused() {
         codex_schema::fingerprint_binary(&fresh, far_past, None),
         Err(Unextractable::Deadline)
     );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// An older-than-every-recipe version whose binary embeds the matching
+/// schemas is refused (ladder row 5), not schema-matched, and the binary is
+/// never fingerprinted (design roast r2, ht-p03.62).
+/// An npm layout: `.bin/codex` -> `../@openai/codex/bin/codex.js` (a script
+/// printing `version`, embedding no schemas) and one native vendor binary per
+/// `(package, triple)` in `vendors`, each embedding `tail`.
+fn npm_layout(
+    dir: &Path,
+    version: &str,
+    vendors: &[(&str, &str)],
+    tail: &[u8],
+) -> (PathBuf, Vec<PathBuf>) {
+    use std::os::unix::fs::PermissionsExt;
+    let modules = dir.join("node_modules");
+    let wrapper_dir = modules.join("@openai/codex/bin");
+    std::fs::create_dir_all(&wrapper_dir).unwrap();
+    let wrapper = wrapper_dir.join("codex.js");
+    std::fs::write(
+        &wrapper,
+        format!("#!/bin/sh\nprintf 'codex-cli {version}\\n'\nexit 0\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::create_dir_all(modules.join(".bin")).unwrap();
+    let shim = modules.join(".bin/codex");
+    std::os::unix::fs::symlink("../@openai/codex/bin/codex.js", &shim).unwrap();
+    let natives = vendors
+        .iter()
+        .map(|(package, triple)| {
+            let bin = modules.join(format!("@openai/{package}/vendor/{triple}/bin"));
+            std::fs::create_dir_all(&bin).unwrap();
+            synthetic_binary(&bin, "codex", version, tail)
+        })
+        .collect();
+    (shim, natives)
+}
+
+/// An npm-installed Codex is fingerprinted through its native vendor binary,
+/// not the JS wrapper, and the observation records which file that was.
+/// Kills: fingerprinting the wrapper (Optimistic/NoSchemas for a matching
+/// install) and not recording the fingerprinted path.
+#[test]
+fn npm_wrapper_resolves_to_the_vendor_binary_and_schema_matches() {
+    let dir = private_dir("npm");
+    let (shim, natives) = npm_layout(
+        &dir,
+        "0.160.0",
+        &[("codex-darwin-arm64", "aarch64-apple-darwin")],
+        &embedded(&committed_schemas()),
+    );
+    let version = InstalledVersion::observe(&shim).unwrap();
+    assert_eq!(
+        version.admission(),
+        &Admission::SchemaMatched {
+            fingerprint: HOOKS_V1_SCHEMA_FINGERPRINT.into(),
+            binary_sha256: sha256_hex(&std::fs::read(&natives[0]).unwrap()),
+        }
+    );
+    assert_eq!(
+        version.fingerprinted(),
+        Some(std::fs::canonicalize(&natives[0]).unwrap().as_path())
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A wrapper with no vendor sibling keeps the existing refusal: optimistic
+/// with "no embedded hook command schemas found".
+#[test]
+fn bare_wrapper_without_vendor_sibling_reports_the_existing_error() {
+    let dir = private_dir("npm-bare");
+    let (shim, _) = npm_layout(&dir, "0.160.0", &[], b"");
+    let version = InstalledVersion::observe(&shim).unwrap();
+    assert!(
+        matches!(
+            version.admission(),
+            Admission::Optimistic {
+                schema: codex::SchemaObservation::Unreadable {
+                    reason: Unextractable::NoSchemas
+                },
+                ..
+            }
+        ),
+        "{:?}",
+        version.admission()
+    );
+    assert_eq!(
+        Unextractable::NoSchemas.to_string(),
+        "no embedded hook command schemas found"
+    );
+    assert_eq!(version.fingerprinted(), None);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Several vendor binaries cannot be attributed to the running wrapper: the
+/// error names the count, and nothing is schema-matched.
+#[test]
+fn several_vendor_binaries_is_an_error() {
+    let dir = private_dir("npm-several");
+    let (shim, _) = npm_layout(
+        &dir,
+        "0.160.0",
+        &[
+            ("codex-darwin-arm64", "aarch64-apple-darwin"),
+            ("codex-linux-x64", "x86_64-unknown-linux-musl"),
+        ],
+        &embedded(&committed_schemas()),
+    );
+    assert_eq!(
+        codex_schema::fingerprint_target(&shim),
+        Err(Unextractable::SeveralVendorBinaries(2))
+    );
+    assert!(
+        Unextractable::SeveralVendorBinaries(2)
+            .to_string()
+            .starts_with("2 platform vendor binaries")
+    );
+    let version = InstalledVersion::observe(&shim).unwrap();
+    assert!(
+        matches!(
+            version.admission(),
+            Admission::Optimistic {
+                schema: codex::SchemaObservation::Unreadable {
+                    reason: Unextractable::SeveralVendorBinaries(2)
+                },
+                ..
+            }
+        ),
+        "{:?}",
+        version.admission()
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn older_version_with_matching_schemas_is_refused_without_fingerprinting() {
+    let dir = private_dir("older-match");
+    let binary = synthetic_binary(&dir, "old", "0.155.1", &embedded(&committed_schemas()));
+    assert_eq!(
+        InstalledVersion::observe(&binary),
+        Err(VersionError::Unsupported("0.155.1".into()))
+    );
+    // Inside the span with matching schemas stays schema-matched.
+    let inside = synthetic_binary(&dir, "inside", "0.157.5", &embedded(&committed_schemas()));
+    let version = InstalledVersion::observe(&inside).unwrap();
+    assert!(matches!(
+        version.admission(),
+        Admission::SchemaMatched { .. }
+    ));
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -453,8 +616,9 @@ fn hook_observation_uses_a_private_persistent_cache_and_stores_evidence() {
     );
 
     // A later process consults the persistent cache: a tampered entry is
-    // what it sees (proof it did not rescan), and it is refused, and the
-    // refusal is stored as the hook's evidence.
+    // what it sees (proof it did not rescan): the fingerprint no longer
+    // matches, so it is admitted optimistically with that drift, and the
+    // optimistic admission is stored as the hook's evidence.
     let original = std::fs::read(&cache).unwrap();
     let tampered = String::from_utf8(original.clone())
         .unwrap()
@@ -462,11 +626,21 @@ fn hook_observation_uses_a_private_persistent_cache_and_stores_evidence() {
     assert_ne!(tampered.as_bytes(), original.as_slice());
     std::fs::write(&cache, &tampered).unwrap();
     codex_schema::clear_memory_cache_for_test();
-    let refused = observe().unwrap_err();
-    assert!(refused.contains("sha256:tampered"), "{refused}");
+    let Ok(InstalledHarness::Codex(drifted)) = observe() else {
+        panic!("a drifted fingerprint is admitted optimistically");
+    };
+    assert!(
+        matches!(drifted.admission(), Admission::Optimistic { .. }),
+        "{:?}",
+        drifted.admission()
+    );
     let record = codex_evidence::read(&record_path).unwrap();
-    assert_eq!(record.admission, "refused");
-    assert!(record.evidence.contains("match no recipe"), "{record:?}");
+    assert_eq!(record.admission, codex::OPTIMISTIC_LABEL);
+    assert!(
+        record.optimistic() && !record.schema_matched(),
+        "{record:?}"
+    );
+    assert!(record.evidence.contains("sha256:tampered"), "{record:?}");
 
     // A cache file that is not private is not trusted: rescanned, admitted
     // again, and the cache rewritten private.

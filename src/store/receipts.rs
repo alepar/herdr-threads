@@ -3,39 +3,32 @@
 use crate::{
     ports::TimeBasis,
     protocol::{
-        authority::{DecisionFence, MutationPermit, ObligationRef},
+        authority::{MutationPermit, ObligationRef},
         commands::Ack,
         ids::{MessageId, SeatId, ThreadId},
         results::{AckResult, ApiError, CommandResult, ErrorCode},
     },
 };
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    connection::{DecisionInstant, StoreContext, api_error, store_error},
+    connection::{StoreContext, api_error, store_error},
     effective::{self, EffectiveReceiptState},
-    messages::{assert_actor_current, resolve_operation_seat},
     schema::{self, EventInput},
 };
 
 pub fn ack_payload(request: &Ack) -> Value {
-    if !request.claim.instance.is_empty() {
-        return json!({"kind":"ack", "messages":request.messages,"claim":request.claim});
-    }
-    json!({"kind":"ack", "messages":request.messages})
+    json!({"kind":"ack", "messages":request.messages,"claim":request.claim})
 }
 
-/// The callback supplies a current, local-only fence. `now` always comes from
-/// the store's decision sample after validation and lock acquisition.
 pub fn ack(
     context: &StoreContext,
     conn: &mut Connection,
     budget: &crate::protocol::time::CallBudget,
     request: &Ack,
     permit: &mut MutationPermit,
-    decision_fence: impl FnOnce(&Transaction<'_>, DecisionInstant) -> Result<DecisionFence, ApiError>,
 ) -> Result<CommandResult, ApiError> {
     if request.messages.is_empty() || request.messages.len() > 100 {
         return Err(api_error(
@@ -52,11 +45,7 @@ pub fn ack(
     }
     let digest = schema::canonical_digest(&ack_payload(request))?;
     let cooperative = permit.cooperative_metadata();
-    let seat = if cooperative.is_some() {
-        request.claim.seat.clone()
-    } else {
-        resolve_operation_seat(conn, &request.claim.target, &request.operation)?
-    };
+    let seat = request.claim.seat.clone();
     let scope = format!("seat:{}", seat.as_str());
     let result = schema::execute_accountable_transaction(
         context,
@@ -103,42 +92,16 @@ pub fn ack(
         },
         |tx, decision| {
             failpoint!("ack.after_decision_sample", context.failpoint_scope());
-            let actor = if permit.cooperative_claim().is_some() {
-                super::control::decide_accountable(
-                    tx,
-                    decision,
-                    permit,
-                    &request.claim,
-                    &seat,
-                    &request.operation,
-                    &ObligationRef::CheckIn(seat.clone()),
-                    &digest,
-                    || decision_fence(tx, decision),
-                )?
-            } else {
-                let mut fence = decision_fence(tx, decision)?;
-                fence.now = decision.monotonic;
-                let native_actor = permit
-                    .consume(
-                        &fence,
-                        &request.operation,
-                        &ObligationRef::CheckIn(seat.clone()),
-                        &digest,
-                    )
-                    .map_err(|why| api_error(ErrorCode::CallerUnverified, why))?;
-                if native_actor.seat != seat
-                    || native_actor.native_session != request.claim.native_session
-                    || native_actor.execution != request.claim.execution
-                    || native_actor.harness != request.claim.harness
-                {
-                    return Err(api_error(
-                        ErrorCode::CallerUnverified,
-                        "permit actor does not match current claim target",
-                    ));
-                }
-                assert_actor_current(tx, &seat, &request.claim.target, native_actor, &fence)?;
-                super::control::AccountableActor::native(native_actor)
-            };
+            let actor = super::control::decide_accountable(
+                tx,
+                decision,
+                permit,
+                &request.claim,
+                &seat,
+                &request.operation,
+                &ObligationRef::CheckIn(seat.clone()),
+                &digest,
+            )?;
             let mut newly = Vec::new();
             let mut prior = Vec::new();
             let mut by_thread: BTreeMap<ThreadId, Vec<MessageId>> = BTreeMap::new();

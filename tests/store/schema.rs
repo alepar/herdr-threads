@@ -191,7 +191,7 @@ fn v5_upgrade_adds_index_for_failed_pending_retirements() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        10
+        11
     );
     let plan: Vec<String> = db.prepare(
         "EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM retirements r INDEXED BY retirements_failed_pending JOIN seats s ON s.id=r.seat_id WHERE r.status='pending' AND r.last_error IS NOT NULL AND s.instance_id='i')",
@@ -230,7 +230,7 @@ fn v6_upgrade_adds_seat_and_thread_leading_digest_indexes() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        10
+        11
     );
     assert_eq!(
         db.query_row(
@@ -326,7 +326,7 @@ fn v7_upgrade_backfills_only_pending_rows_into_the_digest_projections() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        10
+        11
     );
     assert_eq!(history(&db), before);
     let rows = |sql: &str| -> Vec<String> {
@@ -447,7 +447,7 @@ fn v1_history_migrates_once_with_native_and_builtin_authors_intact() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        10
+        11
     );
     assert_eq!(
         db.query_row("SELECT id FROM seats", [], |r| r.get::<_, String>(0))
@@ -549,15 +549,18 @@ fn service_requirement_substrate_enforces_owner_link_and_one_effective_episode()
         db.execute(insert, params!["req2", author.as_str(), "inv2", 2, 200])
             .is_err()
     );
-    let (voluntary, requirement) = crate::store::service_substrate::membership_and_requirement(
+    let projected = crate::store::service_substrate::effective_membership(
         &db,
         &ThreadId::new("t"),
         &SeatId::new("s"),
     )
     .unwrap();
-    assert_eq!(voluntary.as_deref(), Some("joined"));
     assert_eq!(
-        requirement.unwrap().state,
+        projected.voluntary,
+        crate::protocol::service::VoluntaryMembershipState::Joined
+    );
+    assert_eq!(
+        projected.requirement.unwrap().state,
         crate::protocol::service::RequirementState::Pending
     );
     assert!(
@@ -583,15 +586,14 @@ fn service_requirement_substrate_enforces_owner_link_and_one_effective_episode()
     db.execute(insert, params!["req2", author.as_str(), "inv2", 2, 200])
         .unwrap();
     assert_eq!(
-        crate::store::service_substrate::membership_and_requirement(
+        crate::store::service_substrate::effective_membership(
             &db,
             &ThreadId::new("t"),
             &SeatId::new("s")
         )
         .unwrap()
-        .0
-        .as_deref(),
-        Some("joined")
+        .voluntary,
+        crate::protocol::service::VoluntaryMembershipState::Joined
     );
     assert!(
         db.execute(
@@ -841,7 +843,7 @@ fn startup_rejects_missing_or_weakened_acceptance_guard_without_history_changes(
         assert_eq!(
             db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            10
+            11
         );
         assert_eq!(
             db.query_row(
@@ -990,7 +992,7 @@ fn startup_rejects_missing_or_weakened_actor_presence_checks() {
         assert_eq!(
             db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            10
+            11
         );
         assert_eq!(
             db.query_row(
@@ -1259,7 +1261,7 @@ fn fresh_database_has_durable_settings_constraints_and_read_only_queries() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        10
+        11
     );
     assert!(db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('s', 'missing', 'resolved', 'native', 1, 0)", []).is_err());
     db.execute(
@@ -2477,28 +2479,16 @@ fn effective_retirement_fences_pending_rows_but_preserves_settled_provenance() {
                     "retired"
                 );
                 assert_eq!(
-                    schema::effective_invitation_state(tx, &InvitationId::new("v1"))?
+                    crate::store::effective::effective_receipt(tx, "m1", "s")?
                         .unwrap()
                         .state,
-                    "recipient_retired"
+                    crate::store::effective::EffectiveReceiptState::RecipientRetired
                 );
                 assert_eq!(
-                    schema::effective_invitation_state(tx, &InvitationId::new("v2"))?
+                    crate::store::effective::effective_receipt(tx, "m2", "s")?
                         .unwrap()
                         .state,
-                    "accepted"
-                );
-                assert_eq!(
-                    schema::effective_receipt_state(tx, &MessageId::new("m1"), &SeatId::new("s"))?
-                        .unwrap()
-                        .state,
-                    "recipient_retired"
-                );
-                assert_eq!(
-                    schema::effective_receipt_state(tx, &MessageId::new("m2"), &SeatId::new("s"))?
-                        .unwrap()
-                        .state,
-                    "acked"
+                    crate::store::effective::EffectiveReceiptState::Acknowledged
                 );
                 Ok(())
             },
@@ -2551,7 +2541,7 @@ fn v2_database_migrates_to_additive_invitation_cancellations_and_voluntary_state
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        10
+        11
     );
     assert_eq!(
         db.query_row(
@@ -2595,7 +2585,7 @@ fn v4_database_adds_notification_schema_without_changing_existing_history() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        10
+        11
     );
     assert_eq!(
         db.query_row("SELECT event_json FROM messages WHERE id='old'", [], |r| {
@@ -2794,7 +2784,7 @@ fn v3_required_only_shadow_recovers_prior_left_only_from_exact_leave_audit() {
         recovered
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        10
+        11
     );
     assert_eq!(
         recovered
@@ -3022,7 +3012,7 @@ fn v8_upgrade_rebuilds_occupant_bindings_to_accept_a_human_occupant() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        10
+        11
     );
     assert_eq!(rows(&db), before);
     for index in [
@@ -3076,8 +3066,207 @@ fn v9_database() -> Connection {
     db
 }
 
-// B5 (ht-rzi.1): a populated v9 store upgrades to v10 by rebuilding
-// allocation_decisions. Kills: a rebuild that renumbers or drops history,
+/// Tables dropped by the v11 migration (B4; v10 is B5's trust guards): those only the deleted pre-cooperative
+/// verification layer used. The mechanical sweep (`rg -w <table> src/`) found
+/// none: allocation_decisions, recovery_baseline_releases and
+/// recovery_baseline_targets are still written or read by ordinary resolution,
+/// operator repair and the effective recovery disposition.
+const DROPPED_IN_V11: &[&str] = &[];
+
+// ht-p03.2: a v9 database upgrades (through B5's v10) to v11 by dropping only
+// the tables the removed verification layer used; cooperative tables and rows
+// are intact. Kills: a missing 9 => upgrade arm, a v11 not stamped as version 11,
+// and a migration that drops or alters a cooperative table or its rows.
+#[test]
+fn v9_upgrade_to_v11_drops_removed_only_tables() {
+    let db = v9_database();
+    db.execute_batch("\
+        INSERT INTO host_instances(id,created_at) VALUES ('i',0);\
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0);\
+        INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,'w1:p1','b',0,'claude','n1','e1','cooperative_top_level',1,1,'t','inc');\
+    ").unwrap();
+    schema::initialize(&db).unwrap();
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 11);
+    for dropped in DROPPED_IN_V11 {
+        let exists: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)",
+                [dropped],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!exists, "{dropped} still present");
+    }
+    for kept in [
+        "seats",
+        "occupant_bindings",
+        "threads",
+        "messages",
+        "receipts",
+        "recovery_holds",
+        "wake_work",
+        "work_jobs",
+        "allocation_decisions",
+        "recovery_baseline_releases",
+        "recovery_baseline_targets",
+    ] {
+        let exists: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [kept],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(exists, "{kept} dropped");
+    }
+    let rows: i64 = db
+        .query_row("SELECT count(*) FROM occupant_bindings", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 1);
+    schema::initialize(&db).unwrap(); // second startup is a verified no-op
+}
+
+const B1_V11: &[(&str, &str)] = &[
+    (
+        "seats_live_ordinal",
+        "CREATE INDEX seats_live_ordinal ON seats(instance_id, ordinal) WHERE state!='retired'",
+    ),
+    (
+        "work_jobs_live",
+        "CREATE INDEX work_jobs_live ON work_jobs(ordinal) WHERE status IN ('pending','failed')",
+    ),
+    (
+        "work_jobs_retention",
+        "CREATE INDEX work_jobs_retention ON work_jobs(kind, completed_at) WHERE status='complete'",
+    ),
+    (
+        "snapshot_generations_retention",
+        "CREATE INDEX snapshot_generations_retention ON snapshot_generations(instance_id, admission_sequence)",
+    ),
+    (
+        "wake_work_reserved",
+        "CREATE INDEX wake_work_reserved ON wake_work(seat_id) WHERE reservation_id IS NOT NULL",
+    ),
+];
+
+fn normalize_sql(sql: &str) -> String {
+    sql.trim()
+        .trim_end_matches(';')
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+// ht-p03.12.1: a v9 database gains the five B1 indexes with exactly the
+// contract SQL and work_jobs.completed_at; pre-v11 completed rows keep NULL.
+// Kills: a missing or reworded index, a missing column, a backfilled stamp.
+#[test]
+fn v9_upgrade_creates_b1_indexes_and_completed_at() {
+    let db = v9_database();
+    db.execute_batch("INSERT INTO work_jobs(id,kind,subject_id,high_water,status) VALUES ('done','send_attention','p1',1,'complete'),('todo','send_attention','p2',1,'pending');").unwrap();
+    schema::initialize(&db).unwrap();
+    for (name, sql) in B1_V11 {
+        let installed: String = db
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1",
+                [name],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(normalize_sql(&installed), normalize_sql(sql), "{name}");
+    }
+    let has_column: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('work_jobs') WHERE name='completed_at')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(has_column);
+    let stamped: i64 = db
+        .query_row(
+            "SELECT count(*) FROM work_jobs WHERE completed_at IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stamped, 0);
+    assert!(
+        db.execute("UPDATE work_jobs SET completed_at=-1 WHERE id='done'", [])
+            .is_err(),
+        "negative completed_at violates the CHECK"
+    );
+}
+
+#[test]
+fn startup_verification_rejects_a_tampered_b1_index() {
+    let db = v9_database();
+    schema::initialize(&db).unwrap();
+    db.execute_batch("DROP INDEX work_jobs_live; CREATE INDEX work_jobs_live ON work_jobs(ordinal) WHERE status='pending';").unwrap();
+    let error = schema::initialize(&db).unwrap_err();
+    assert_eq!(error.code, ErrorCode::IncompatibleSchema);
+    assert!(error.detail.contains("work_jobs_live"), "{}", error.detail);
+}
+
+// Every index is usable by name with its own predicate (INDEXED BY fails to
+// prepare when the index is missing or cannot serve the probe), including the
+// seven access paths ht-p03.12.5 relies on.
+#[test]
+fn b1_indexes_are_usable_by_name() {
+    let db = v9_database();
+    schema::initialize(&db).unwrap();
+    for probe in [
+        "SELECT ordinal FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND state!='retired' AND ordinal>?2 ORDER BY ordinal LIMIT 1",
+        "SELECT ordinal FROM work_jobs INDEXED BY work_jobs_live WHERE status IN ('pending','failed') AND ordinal>?1 ORDER BY ordinal LIMIT 1",
+        "SELECT ordinal FROM work_jobs INDEXED BY work_jobs_retention WHERE status='complete' AND kind=?1 AND completed_at<?2 ORDER BY completed_at LIMIT 1",
+        "SELECT admission_sequence FROM snapshot_generations INDEXED BY snapshot_generations_retention WHERE instance_id=?1 AND admission_sequence<?2 ORDER BY admission_sequence LIMIT 1",
+        "SELECT seat_id FROM wake_work INDEXED BY wake_work_reserved WHERE reservation_id IS NOT NULL AND seat_id>?1 LIMIT 1",
+        "SELECT ordinal FROM digest_pending_invitations INDEXED BY digest_pending_invitations_seat WHERE seat_id=?1 AND created_decision_seq>?2 ORDER BY created_decision_seq, ordinal LIMIT 1",
+        "SELECT ordinal FROM digest_pending_manifest_receipts INDEXED BY digest_pending_manifest_receipts_seat WHERE seat_id=?1 AND decision_seq>?2 ORDER BY decision_seq, ordinal LIMIT 1",
+        "SELECT ordinal FROM receipts INDEXED BY receipts_seat_state_ordinal WHERE seat_id=?1 AND state=?2 AND ordinal>?3 ORDER BY ordinal LIMIT 1",
+        "SELECT source_ordinal FROM digest_open_warning_recipients INDEXED BY digest_open_warning_recipients_seat WHERE seat_id=?1 AND source=?2 AND source_ordinal>?3 ORDER BY source_ordinal LIMIT 1",
+        "SELECT source_ordinal FROM digest_open_warnings INDEXED BY digest_open_warnings_affected WHERE affected_seat_id=?1 AND source=?2 AND source_ordinal>?3 ORDER BY source_ordinal LIMIT 1",
+        "SELECT ordinal FROM digest_programmatic_warnings INDEXED BY digest_programmatic_warnings_seat WHERE seat_id=?1 AND ordinal>?2 ORDER BY ordinal LIMIT 1",
+        "SELECT ordinal FROM occupant_bindings INDEXED BY occupant_bindings_current WHERE seat_id=?1 AND ended_at IS NULL",
+    ] {
+        db.prepare(probe).unwrap_or_else(|e| panic!("{probe}: {e}"));
+    }
+}
+
+// ht-p03.12.6 pin criterion: after v11 the baseline and recovery tables below
+// all still exist (ht-p03.2 dropped no table; b4-removed-symbols.txt).
+#[test]
+fn v11_survivors_recorded() {
+    let db = v9_database();
+    schema::initialize(&db).unwrap();
+    let mut statement = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE '%baseline%' OR name LIKE '%recovery%' OR name='allocation_decisions') ORDER BY name")
+        .unwrap();
+    let survivors: Vec<String> = statement
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    println!("v11 baseline/recovery survivors: {survivors:?}");
+    for table in [
+        "allocation_decisions",
+        "recovery_baseline_releases",
+        "recovery_baseline_targets",
+        "recovery_holds",
+    ] {
+        assert!(
+            survivors.iter().any(|s| s == table),
+            "{table} missing: {survivors:?}"
+        );
+    }
+}
+
+// B5 (ht-rzi.1): a populated v9 store upgrades through v10 (rebuilding
+// allocation_decisions) to the current v11. Kills: a rebuild that renumbers or drops history,
 // loses an index, or seeds the new marker/diagnostic columns with non-NULL.
 #[test]
 fn v9_store_with_rows_migrates_to_v10_preserving_allocation_history() {
@@ -3103,7 +3292,7 @@ fn v9_store_with_rows_migrates_to_v10_preserving_allocation_history() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        10
+        11
     );
     assert_eq!(rows(&db), before);
     let diagnostics: i64 = db
@@ -3173,4 +3362,112 @@ fn v10_allocation_decisions_accepts_b5_kinds() {
         insert("cooperative_continuity", Some(diagnostic)).unwrap();
     }
     assert!(insert("cooperative_continuity", Some("maybe")).is_err());
+}
+
+/// A store at main's v10 (B5 trust guards, before the B4/B1 cooperative-only
+/// migration was renumbered to v11).
+fn v10_database() -> Connection {
+    let db = v9_database();
+    db.execute_batch(include_str!("../../migrations/0010_b5_trust_guards.sql"))
+        .unwrap();
+    db.pragma_update(None, "user_version", 10).unwrap();
+    db
+}
+
+// Merge of main (B5, v10) into the remaining-findings run (B1/B4, renumbered
+// to v11): a populated main-v10 store upgrades to v11 keeping every B5 column,
+// kind and row, and gains exactly the B1 indexes and work_jobs.completed_at.
+// Kills: a missing 10 => upgrade arm, a v11 that re-runs or skips the B5
+// migration, a v10 store verified against the v11 shape before upgrading, and
+// a second startup that is not a verified no-op.
+#[test]
+fn main_v10_store_upgrades_to_v11_with_both_migrations() {
+    let db = v10_database();
+    db.execute_batch("\
+        INSERT INTO host_instances(id,created_at,reconciled_boot,reconciled_epoch) VALUES ('i',0,'b',3);\
+        INSERT INTO allocation_decisions(ordinal,instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,continuity_diagnostic) VALUES (4,'i','w1:p1','s1','cooperative_continuity',10,'b',3,2,'match');\
+        INSERT INTO work_jobs(id,kind,subject_id,high_water,status) VALUES ('done','send_attention','p1',1,'complete');\
+    ").unwrap();
+    schema::initialize(&db).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        11
+    );
+    let marker: (String, i64) = db
+        .query_row(
+            "SELECT reconciled_boot,reconciled_epoch FROM host_instances WHERE id='i'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(marker, ("b".to_owned(), 3));
+    let decision: (i64, String, Option<String>) = db
+        .query_row(
+            "SELECT ordinal,kind,continuity_diagnostic FROM allocation_decisions",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        decision,
+        (
+            4,
+            "cooperative_continuity".to_owned(),
+            Some("match".to_owned())
+        )
+    );
+    for (name, sql) in B1_V11 {
+        let installed: String = db
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1",
+                [name],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(normalize_sql(&installed), normalize_sql(sql), "{name}");
+    }
+    let stamped: i64 = db
+        .query_row(
+            "SELECT count(*) FROM work_jobs WHERE completed_at IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stamped, 0, "pre-v11 completed rows keep NULL");
+    schema::initialize(&db).unwrap(); // second startup is a verified no-op
+}
+
+// A fresh store and a main-v10 store end in the same v11 shape.
+// Kills: a fresh path that skips either migration.
+#[test]
+fn fresh_and_main_v10_stores_share_the_v11_shape() {
+    let shape = |db: &Connection| -> Vec<(String, String, Option<String>)> {
+        db.prepare(
+            "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    let fresh = Connection::open_in_memory().unwrap();
+    schema::initialize(&fresh).unwrap();
+    let upgraded = v10_database();
+    schema::initialize(&upgraded).unwrap();
+    for db in [&fresh, &upgraded] {
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            11
+        );
+    }
+    let normalize =
+        |rows: Vec<(String, String, Option<String>)>| -> Vec<(String, String, Option<String>)> {
+            rows.into_iter()
+                .map(|(t, n, sql)| (t, n, sql.map(|sql| normalize_sql(&sql))))
+                .collect()
+        };
+    assert_eq!(normalize(shape(&fresh)), normalize(shape(&upgraded)));
 }

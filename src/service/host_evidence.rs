@@ -42,6 +42,11 @@ struct State {
     /// replace (it would raise it); reported beside that prior only.
     later_error: Option<String>,
     last_reconciliation_at: Option<UtcMillis>,
+    /// Guarded per-seat transitions the store refused, summed over every
+    /// reconciliation page this daemon boot (skipped, never fatal).
+    transitions_refused: u64,
+    /// Refusals on the pages of the pass in progress.
+    pass_refused: u64,
 }
 
 /// Shared between the observation worker (writer) and the Health producer.
@@ -94,11 +99,34 @@ impl HostEvidenceStatus {
         }
     }
 
-    /// Every saved-seat page of a verified publication was reconciled.
-    pub fn record_reconciled(&self, at: UtcMillis) {
+    /// A new reconciliation pass over a fresh publication starts: refusals
+    /// seen on an earlier pass no longer block this pass's completion.
+    pub fn begin_reconcile_pass(&self) {
         if let Ok(mut state) = self.state.lock() {
-            state.last_reconciliation_at = Some(at);
+            state.pass_refused = 0;
         }
+    }
+
+    /// One saved-seat page was reconciled. `refused` is the transitions the
+    /// store refused on it (skipped, never fatal; counted for Health);
+    /// `completes_publication` marks the pass's last page. Success-only:
+    /// `last_reconciliation_at` advances only when the whole pass completed
+    /// and the store refused no transition on any of its pages.
+    pub fn record_reconcile_page(&self, refused: u64, completes_publication: bool, at: UtcMillis) {
+        if let Ok(mut state) = self.state.lock() {
+            state.transitions_refused = state.transitions_refused.saturating_add(refused);
+            state.pass_refused = state.pass_refused.saturating_add(refused);
+            if completes_publication && state.pass_refused == 0 {
+                state.last_reconciliation_at = Some(at);
+            }
+        }
+    }
+
+    /// Total transitions the store refused since boot; 0 when unreadable.
+    pub fn transitions_refused(&self) -> u64 {
+        self.state
+            .lock()
+            .map_or(0, |state| state.transitions_refused)
     }
 
     pub fn health(&self, witness: CapabilityState) -> HostEvidenceHealth {
@@ -190,15 +218,9 @@ fn with_later_error(detail: String, error: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::results::ErrorCode;
 
     fn unavailable() -> ApiError {
-        ApiError {
-            code: ErrorCode::HostUnavailable,
-            detail: "socket gone".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        }
+        ApiError::host_unavailable("socket gone")
     }
 
     /// Kills: reporting Supported/Ready before any capture (asserted rather
@@ -240,7 +262,7 @@ mod tests {
     fn latest_outcome_wins_and_reconciliation_time_is_kept() {
         let status = HostEvidenceStatus::default();
         status.record_published();
-        status.record_reconciled(UtcMillis(42));
+        status.record_reconcile_page(0, true, UtcMillis(42));
         let verified = status.health(CapabilityState::Unknown);
         assert_eq!(verified.host, ComponentStatus::Ready);
         assert_eq!(verified.coherent_enumeration, CapabilityState::Supported);
@@ -285,13 +307,8 @@ mod tests {
     fn errored_attempt_after_publication_is_not_verified() {
         let status = HostEvidenceStatus::default();
         status.record_published();
-        status.record_reconciled(UtcMillis(7));
-        status.record_capture_failed(&ApiError {
-            code: ErrorCode::StoreBusy,
-            detail: "writer contended".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        });
+        status.record_reconcile_page(0, true, UtcMillis(7));
+        status.record_capture_failed(&ApiError::store_busy("writer contended"));
         let health = status.health(CapabilityState::Unknown);
         let ComponentStatus::Degraded(detail) = &health.host else {
             panic!("{health:?}");
@@ -316,12 +333,7 @@ mod tests {
     }
 
     fn errored(detail: &str) -> ApiError {
-        ApiError {
-            code: ErrorCode::DeadlineExceeded,
-            detail: detail.into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        }
+        ApiError::deadline_exceeded(detail)
     }
 
     /// Strength of the positive host claim Health makes. Verified negatives

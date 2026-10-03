@@ -1,0 +1,10 @@
+{"type": "item.completed", "item": {"id": "item_accept", "type": "command_execution", "command": "/bin/zsh -lc 'herdr-threads accept thread-1'", "aggregated_output": "", "exit_code": 0, "status": "completed"}}
+{"type": "item.started", "item": {"id": "item_1", "type": "collab_tool_call", "tool": "spawn_agent", "sender_thread_id": "11111111-2222-3333-4444-555555555555", "receiver_thread_ids": ["child-1"], "status": "completed"}}
+{"type": "item.completed", "item": {"id": "item_1", "type": "collab_tool_call", "tool": "spawn_agent", "sender_thread_id": "11111111-2222-3333-4444-555555555555", "receiver_thread_ids": ["child-1"], "status": "completed"}}
+{"type": "item.started", "item": {"id": "item_2", "type": "collab_tool_call", "tool": "wait", "sender_thread_id": "11111111-2222-3333-4444-555555555555", "receiver_thread_ids": ["child-1"], "status": "completed"}}
+{"type": "item.completed", "item": {"id": "item_2", "type": "collab_tool_call", "tool": "wait", "sender_thread_id": "11111111-2222-3333-4444-555555555555", "receiver_thread_ids": ["child-1"], "status": "completed"}}
+{"type": "item.started", "item": {"id": "item_3", "type": "collab_tool_call", "tool": "wait", "sender_thread_id": "11111111-2222-3333-4444-555555555555", "receiver_thread_ids": ["child-1"], "status": "completed"}}
+{"type": "item.completed", "item": {"id": "item_3", "type": "collab_tool_call", "tool": "wait", "sender_thread_id": "11111111-2222-3333-4444-555555555555", "receiver_thread_ids": ["child-1"], "status": "completed"}}
+{"type": "item.started", "item": {"id": "item_4", "type": "collab_tool_call", "tool": "close_agent", "sender_thread_id": "11111111-2222-3333-4444-555555555555", "receiver_thread_ids": ["child-1"], "status": "completed"}}
+{"type": "item.completed", "item": {"id": "item_4", "type": "collab_tool_call", "tool": "close_agent", "sender_thread_id": "11111111-2222-3333-4444-555555555555", "receiver_thread_ids": ["child-1"], "status": "completed"}}
+{"type": "item.completed", "item": {"id": "item_ack", "type": "command_execution", "command": "/bin/zsh -lc 'herdr-threads ack msg-1'", "aggregated_output": "", "exit_code": 0, "status": "completed"}}

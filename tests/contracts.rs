@@ -6,6 +6,18 @@ use herdr_threads::protocol::{
     wire::{PROTOCOL_VERSION, WireRequest, WireResponse},
 };
 
+/// The built binary or a helper process with every inherited HERDR_/CLAUDE/CODEX
+/// variable removed (ht-p03.24); a test sets the variables it needs after this
+/// call. The scrub is part of the `test-support` build; without the feature the
+/// suite still compiles and the process is spawned as before.
+fn scrubbed_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    #[cfg_attr(not(feature = "test-support"), allow(unused_mut))]
+    let mut command = std::process::Command::new(program);
+    #[cfg(feature = "test-support")]
+    herdr_threads::test_support::isolation::scrub_env(&mut command);
+    command
+}
+
 const WIRE_FIXTURE_INSTANCE: &str = "00000000-0000-4000-8000-000000000001";
 
 fn wire_fixture(command: serde_json::Value) -> serde_json::Value {
@@ -222,12 +234,9 @@ fn wire_instance_mismatch_and_uuid_boot_are_typed() {
         request_id: "r".into(),
         instance: request.expected_instance.clone(),
         daemon_boot: "boot-a".into(),
-        result: Err(herdr_threads::protocol::results::ApiError {
-            code: ErrorCode::InstanceMismatch,
-            detail: "wrong instance".into(),
-            restart_argv: None,
-            required_minimum_bytes: None,
-        }),
+        result: Err(
+            herdr_threads::protocol::results::ApiError::instance_mismatch("wrong instance"),
+        ),
     };
     assert!(!malformed.correlates_to(&request, None));
     assert!(
@@ -312,29 +321,21 @@ fn ordinary_seat_resolution_has_a_private_operation_key() {
 }
 
 #[test]
-fn send_preparation_progress_never_grants_publish_authority() {
+fn send_preparation_progress_reports_visited_count_and_preparation_id() {
     use herdr_threads::ports::SendPreparationProgress;
     let progress = SendPreparationProgress::More {
         visited: 16,
         preparation_id: "prep-1".into(),
     };
     assert_eq!(progress.visited(), 16);
-    assert!(!progress.is_ready());
     assert_eq!(progress.preparation_id(), Some("prep-1"));
-    assert!(
-        SendPreparationProgress::Ready {
-            visited: 0,
-            preparation_id: "prep-1".into()
-        }
-        .is_ready()
-    );
 }
 
 #[test]
 fn registration_request_binds_operation_and_selected_offer_context() {
     use herdr_threads::ports::{ReadContext, RegisterAvailableRequest};
     use herdr_threads::protocol::{
-        authority::{CallerClaim, Harness, ReceiptRegistration},
+        authority::{CallerClaim, Harness},
         commands::CheckIn,
         ids::*,
         output::OutputSpec,
@@ -354,14 +355,6 @@ fn registration_request_binds_operation_and_selected_offer_context() {
             },
             operation: OperationId::new("op"),
         },
-        registration: Some(ReceiptRegistration {
-            seat: SeatId::new("s"),
-            host_boot: HostBootId::new("b"),
-            target_generation: 1,
-            binding_generation: 1,
-            native_session: NativeSessionId::new("n"),
-            execution: ExecutionId::new("e"),
-        }),
         read: ReadContext {
             instance: "i".into(),
             output: OutputSpec::default(),
@@ -419,10 +412,6 @@ fn due_receipt_cursor_retains_both_physical_and_sparse_positions() {
 #[test]
 fn native_launch_capability_is_an_adapter_owned_boundary() {
     use herdr_threads::ports::NativeLaunchCapability;
-    assert_ne!(
-        NativeLaunchCapability::ProvenEmptyShell,
-        NativeLaunchCapability::HostGuardedStart
-    );
     assert_ne!(
         NativeLaunchCapability::Unsupported,
         NativeLaunchCapability::HostGuardedStart
@@ -691,12 +680,9 @@ fn wire_response_is_bounded_and_correlates_actual_identity() {
     );
     assert!(frame.len() <= MAX_WIRE_FRAME_BYTES);
     let mut oversized = response;
-    oversized.result = Err(herdr_threads::protocol::results::ApiError {
-        code: ErrorCode::InvalidRequest,
-        detail: "x".repeat(MAX_WIRE_FRAME_BYTES),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    });
+    oversized.result = Err(herdr_threads::protocol::results::ApiError::invalid_request(
+        "x".repeat(MAX_WIRE_FRAME_BYTES),
+    ));
     assert!(encode_wire_response(&oversized).is_err());
 }
 
@@ -890,6 +876,7 @@ fn wake_candidate_exposes_pending_obligation_with_zero_projection_bits() {
         minimum_delay_ms: 0,
         effective_delay_ms: 0,
         last_outcome: None,
+        last_reserved_at_utc: None,
     };
     assert!(candidate.has_actionable_work());
     assert!(!candidate.warning_offered_for_current_occupant());
@@ -1267,8 +1254,7 @@ fn direct_request_deserialization_enforces_version_and_page_validation() {
 fn production_entry_rejects_missing_command_without_creating_state() {
     let temp = std::env::temp_dir().join(format!("herdr-threads-contract-{}", std::process::id()));
     std::fs::create_dir_all(&temp).unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_herdr-threads"))
-        .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
+    let output = scrubbed_command(env!("CARGO_BIN_EXE_herdr-threads"))
         .current_dir(&temp)
         .output()
         .unwrap();

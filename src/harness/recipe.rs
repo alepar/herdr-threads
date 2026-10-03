@@ -6,9 +6,9 @@
 //! evidence covers, and a harness-specific profile selecting parse/encode
 //! behaviour. Versions are canonical `MAJOR.MINOR.PATCH` decimal triples;
 //! anything else (prefixes, suffixes, whitespace, leading zeros, pre-release
-//! tags) is unrecognized. A well-formed version outside every recipe is
-//! rejected with a message naming the supported recipes: unknown versions are
-//! fail-closed, never matched by prefix or by nearest recipe.
+//! tags) is unrecognized. [`lookup`] matches only listed versions and never by
+//! prefix or nearest recipe; a version it does not list is classified by the
+//! admission ladder in [`super::admission`].
 use std::fmt;
 
 /// Whether a native capability is supported by the recipe's evidence.
@@ -69,16 +69,47 @@ impl fmt::Display for Version {
 pub enum VersionSet {
     /// Exactly these versions.
     Exact(&'static [Version]),
-    /// Every version `v` with `min <= v <= max`. Use only when every such
-    /// version is backed by evidence (for example consecutive patch releases).
-    Interval { min: Version, max: Version },
+    /// Every version `v` with `min <= v <= max` (inclusive); a `None` bound
+    /// is open. A recipe's own `versions` interval must have both bounds and
+    /// be used only when every such version is backed by evidence (for example
+    /// consecutive patch releases); an open bound is for `known_broken`.
+    Interval {
+        min: Option<Version>,
+        max: Option<Version>,
+    },
 }
 
 impl VersionSet {
     pub fn contains(&self, version: Version) -> bool {
         match self {
             Self::Exact(versions) => versions.contains(&version),
-            Self::Interval { min, max } => *min <= version && version <= *max,
+            Self::Interval { min, max } => {
+                min.is_none_or(|min| min <= version) && max.is_none_or(|max| version <= max)
+            }
+        }
+    }
+
+    /// The least member (an open lower bound reads as `0.0.0`).
+    pub fn min_version(&self) -> Version {
+        match self {
+            Self::Exact(versions) => versions
+                .iter()
+                .min()
+                .copied()
+                .unwrap_or(Version::new(0, 0, 0)),
+            Self::Interval { min, .. } => min.unwrap_or(Version::new(0, 0, 0)),
+        }
+    }
+
+    /// The greatest member (an open upper bound reads as the largest version).
+    pub fn max_version(&self) -> Version {
+        match self {
+            Self::Exact(versions) => versions
+                .iter()
+                .max()
+                .copied()
+                .unwrap_or(Version::new(0, 0, 0)),
+            Self::Interval { max, .. } => max.unwrap_or(Version::new(u32::MAX, u32::MAX, u32::MAX)),
         }
     }
 }
@@ -96,9 +127,36 @@ impl fmt::Display for VersionSet {
                 }
                 f.write_str("}")
             }
-            Self::Interval { min, max } => write!(f, "[{min}, {max}]"),
+            Self::Interval {
+                min: Some(min),
+                max: Some(max),
+            } => write!(f, "[{min}, {max}]"),
+            Self::Interval {
+                min: Some(min),
+                max: None,
+            } => write!(f, "[{min}, \u{2026})"),
+            Self::Interval {
+                min: None,
+                max: Some(max),
+            } => write!(f, "(\u{2026}, {max}]"),
+            Self::Interval {
+                min: None,
+                max: None,
+            } => f.write_str("(\u{2026}, \u{2026})"),
         }
     }
+}
+
+/// How much native evidence backs one listed version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Evidence {
+    /// A live native run was observed.
+    Live,
+    /// Input captured (and/or source read), but no live model run.
+    NoModel,
+    /// No evidence beyond the version being listed.
+    None,
 }
 
 /// One evidence-backed adapter recipe.
@@ -111,8 +169,48 @@ pub struct Recipe<P: 'static> {
     pub evidence: &'static [&'static str],
     /// What the evidence covers, and what it does not.
     pub scope: &'static str,
+    /// One entry per listed version: how much evidence backs it. A listed
+    /// version without an entry is an error the registry test catches.
+    pub evidence_levels: &'static [(Version, Evidence)],
+    /// Versions known not to work, each a [`VersionSet::Interval`] (empty =
+    /// none known). The admission ladder refuses these before anything else.
+    pub known_broken: &'static [VersionSet],
     /// Harness-specific parse/encode behaviour selector and capabilities.
     pub profile: P,
+}
+
+impl<P> Recipe<P> {
+    /// The least listed version.
+    pub fn min_version(&self) -> Version {
+        self.versions.min_version()
+    }
+
+    /// The greatest listed version.
+    pub fn max_version(&self) -> Version {
+        self.versions.max_version()
+    }
+
+    /// Every listed version: the `Exact` list, or for an `Interval` the
+    /// versions of `evidence_levels` (the registry test requires those to
+    /// enumerate every patch from min to max).
+    pub fn listed_versions(&self) -> Vec<Version> {
+        match self.versions {
+            VersionSet::Exact(versions) => versions.to_vec(),
+            VersionSet::Interval { .. } => self
+                .evidence_levels
+                .iter()
+                .map(|(version, _)| *version)
+                .collect(),
+        }
+    }
+
+    /// The evidence level recorded for `version`, if any.
+    pub fn evidence_level(&self, version: Version) -> Option<Evidence> {
+        self.evidence_levels
+            .iter()
+            .find(|(listed, _)| *listed == version)
+            .map(|(_, level)| *level)
+    }
 }
 
 /// Why an installed version string selected no recipe.

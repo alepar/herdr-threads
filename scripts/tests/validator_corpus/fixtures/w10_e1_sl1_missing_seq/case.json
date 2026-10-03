@@ -1,0 +1,35 @@
+{
+  "harness": "claude",
+  "mode": "tui",
+  "scenario": "lostprompt",
+  "db": {
+    "messages": [
+      {
+        "id": "msg-1",
+        "seq": 5
+      }
+    ],
+    "invitations": [
+      {
+        "id": "inv-1",
+        "seq": 3,
+        "state": "pending"
+      }
+    ],
+    "wake_work": {
+      "last_reservation_id": "r1",
+      "last_reservation_boot": "b1",
+      "last_reserved_at_utc": 7000,
+      "last_receipt_seq": 5,
+      "last_outcome": "submitted"
+    }
+  },
+  "facts": {
+    "lostprompt": {
+      "safe_prompt": "supported",
+      "wake_before": {},
+      "wake_after": "@wake_row",
+      "waited_s": 60
+    }
+  }
+}

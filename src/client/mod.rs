@@ -2,6 +2,47 @@
 pub mod local;
 pub mod service;
 
+/// Classify a failed Unix-socket connect (root §B3 D3). A refused connect or
+/// a missing socket path is a server that is not running (a stale socket
+/// whose owner died refuses); a timeout is transient; a permission denial is
+/// the sandbox. Consumed by the daemon client, the Herdr host connect path
+/// and ht-p03.34 (follow).
+pub fn classify_connect_error(
+    error: &std::io::Error,
+) -> (crate::protocol::results::ErrorClass, &'static str) {
+    use crate::protocol::results::ErrorClass;
+    use std::io::ErrorKind;
+    match error.kind() {
+        ErrorKind::ConnectionRefused | ErrorKind::NotFound => {
+            (ErrorClass::Unavailable, "server not running")
+        }
+        ErrorKind::TimedOut | ErrorKind::WouldBlock | ErrorKind::Interrupted => {
+            (ErrorClass::Transient, CONNECT_TIMED_OUT)
+        }
+        ErrorKind::PermissionDenied => (ErrorClass::Unavailable, "socket refused by sandbox"),
+        _ => (ErrorClass::Unavailable, "connection failed"),
+    }
+}
+
+/// The detail every client gives a connect that timed out. Both producers
+/// (the daemon client's own timeout and [`connect_error`] for an OS-level
+/// timeout) end with it, which is how [`error_class`] recognizes a slow connect.
+pub(crate) const CONNECT_TIMED_OUT: &str = "connect timed out";
+
+/// The failure class of a client error, with a slow connect recognized: the
+/// code of a timed-out connect is `host_unavailable` (nothing was sent), whose
+/// default class is `Unavailable`, but the daemon is merely slow, so it is
+/// `Transient` (root §B10 D3). Everything else keeps the code's default class.
+pub fn error_class(
+    error: &crate::protocol::results::ApiError,
+) -> Option<crate::protocol::results::ErrorClass> {
+    use crate::protocol::results::{ErrorClass, ErrorCode};
+    if error.code == ErrorCode::HostUnavailable && error.detail.ends_with(CONNECT_TIMED_OUT) {
+        return Some(ErrorClass::Transient);
+    }
+    error.class()
+}
+
 /// Map a failed Unix-socket connect to the client's error. A permission
 /// denial (EPERM/EACCES, e.g. a Codex seatbelt sandbox refusing the socket)
 /// is `transport_denied` with the remedy, never `host_unavailable`: the
@@ -24,15 +65,13 @@ pub(crate) fn connect_error(
     } else {
         (
             ErrorCode::HostUnavailable,
-            "daemon connection unavailable".to_owned(),
+            format!(
+                "daemon connection unavailable: {}",
+                classify_connect_error(error).1
+            ),
         )
     };
-    ApiError {
-        code,
-        detail,
-        restart_argv: None,
-        required_minimum_bytes: None,
-    }
+    ApiError::new(code, detail)
 }
 
 #[cfg(test)]

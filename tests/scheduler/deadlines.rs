@@ -52,6 +52,7 @@ struct FakePort {
     warnings: AtomicU64,
 }
 impl DeadlinePort for FakePort {
+    crate::no_durable_work!();
     fn clock(&self) -> &dyn Clock {
         &self.clock
     }
@@ -105,7 +106,7 @@ fn budget() -> CallBudget {
 fn tick_uses_store_decision_clock_at_exact_boundary_after_wall_jumps() {
     let port = FakePort::default();
     port.deadline.store(300_000, Ordering::SeqCst);
-    let mut driver = DeadlineDriver::new(&port);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
     assert_eq!(driver.drive(&budget()).unwrap().due_warnings_added, 0);
     port.clock.utc.store(299_999, Ordering::SeqCst);
     port.clock.mono.store(1_000, Ordering::SeqCst);
@@ -184,6 +185,7 @@ impl RetirementPort {
     }
 }
 impl DeadlinePort for RetirementPort {
+    crate::no_durable_work!();
     fn clock(&self) -> &dyn Clock {
         &self.clock
     }
@@ -202,20 +204,10 @@ impl DeadlinePort for RetirementPort {
         _: &CallBudget,
     ) -> Result<Page<RetirementStatus>, ApiError> {
         if page.cursor.is_some() && self.stale_cursor_once.swap(0, Ordering::SeqCst) == 1 {
-            return Err(ApiError {
-                code: ErrorCode::CursorStale,
-                detail: "changed scope".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
+            return Err(ApiError::cursor_stale("changed scope"));
         }
         if self.discover_fail_once.swap(0, Ordering::SeqCst) == 1 {
-            return Err(ApiError {
-                code: ErrorCode::StoreBusy,
-                detail: "discovery failed".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
+            return Err(ApiError::store_busy("discovery failed"));
         }
         assert_eq!(page.limit, 1);
         let after = page
@@ -266,12 +258,7 @@ impl DeadlinePort for RetirementPort {
         self.advance_calls.fetch_add(1, Ordering::SeqCst);
         if job == RetirementJobId::new("b") && self.fail_b_persistently.load(Ordering::SeqCst) == 1
         {
-            return Err(ApiError {
-                code: ErrorCode::StoreBusy,
-                detail: "persistent failure".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
+            return Err(ApiError::store_busy("persistent failure"));
         }
         if job == RetirementJobId::new("b") && self.retained_error_b.load(Ordering::SeqCst) == 1 {
             // An idle quantum (no unit ran) reports the retained failure of an
@@ -291,12 +278,7 @@ impl DeadlinePort for RetirementPort {
         let mut fail = self.fail_once.lock().unwrap();
         if fail.as_ref() == Some(&job) {
             *fail = None;
-            return Err(ApiError {
-                code: ErrorCode::StoreBusy,
-                detail: "temporary".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
+            return Err(ApiError::store_busy("temporary"));
         }
         let mut jobs = self.jobs.lock().unwrap();
         let state = &mut jobs.iter_mut().find(|(id, _)| id == &job).unwrap().1;
@@ -316,7 +298,7 @@ impl DeadlinePort for RetirementPort {
 fn persistent_retirement_failure_allows_healthy_jobs_and_due_work_under_foreground_load() {
     let port = RetirementPort::new();
     port.fail_b_persistently.store(1, Ordering::SeqCst);
-    let mut driver = DeadlineDriver::new(&port);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
     let mut observed_errors = 0;
     for tick in 0..40 {
         // Model a foreground turn consuming 100 ms before each bounded
@@ -346,9 +328,52 @@ fn persistent_retirement_failure_allows_healthy_jobs_and_due_work_under_foregrou
 }
 
 #[test]
+fn default_tick_is_the_five_second_safety_tick_and_a_committed_change_bypasses_it() {
+    assert_eq!(TICK_MILLIS, 5_000);
+    let port = FakePort::default();
+    let mut driver = DeadlineDriver::new(&port);
+    assert!(driver.drive(&budget()).unwrap().ticked);
+    port.clock.mono.store(4_999, Ordering::SeqCst);
+    assert!(
+        !driver.drive(&budget()).unwrap().ticked,
+        "a call inside the 5 s gate is skipped"
+    );
+    driver.after_committed_change();
+    assert!(
+        driver.drive(&budget()).unwrap().ticked,
+        "a committed change reopens the gate at once"
+    );
+    // The reopened pass re-armed the gate from 4_999.
+    port.clock.mono.store(9_998, Ordering::SeqCst);
+    assert!(!driver.drive(&budget()).unwrap().ticked);
+    port.clock.mono.store(9_999, Ordering::SeqCst);
+    assert!(driver.drive(&budget()).unwrap().ticked);
+    assert_eq!(port.due_calls.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn progressed_with_more_needs_unfinished_progress() {
+    let mut outcome = DriveOutcome::default();
+    assert!(!outcome.progressed_with_more());
+    outcome.work_progressed = true;
+    outcome.work_complete = true;
+    assert!(
+        !outcome.progressed_with_more(),
+        "finished work needs no rerun"
+    );
+    outcome.work_complete = false;
+    assert!(outcome.progressed_with_more());
+    outcome.work_progressed = false;
+    outcome.retirement_progressed = true;
+    assert!(outcome.progressed_with_more());
+    outcome.retirement_complete = true;
+    assert!(!outcome.progressed_with_more());
+}
+
+#[test]
 fn retirement_jobs_rotate_retry_and_resume_without_blocking_due_scans() {
     let port = RetirementPort::new();
-    let mut driver = DeadlineDriver::new(&port);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
     let first = driver.drive(&budget()).unwrap();
     assert_eq!(first.retirement_job, Some(RetirementJobId::new("a")));
     port.clock.mono.store(1_000, Ordering::SeqCst);
@@ -358,7 +383,7 @@ fn retirement_jobs_rotate_retry_and_resume_without_blocking_due_scans() {
     port.clock.mono.store(2_000, Ordering::SeqCst);
     assert_eq!(driver.drive(&budget()).unwrap().retirement_job, None);
     drop(driver); // daemon restart; store retains partial progress and failed job
-    let mut restarted = DeadlineDriver::new(&port);
+    let mut restarted = DeadlineDriver::new(&port).with_tick_millis(1_000);
     for turn in 3..20 {
         port.clock.mono.store(turn * 1_000, Ordering::SeqCst);
         restarted.drive(&budget()).unwrap();
@@ -378,7 +403,7 @@ fn retirement_jobs_rotate_retry_and_resume_without_blocking_due_scans() {
 fn discovery_failure_and_backoff_do_not_block_due_ticks() {
     let port = RetirementPort::new();
     port.discover_fail_once.store(1, Ordering::SeqCst);
-    let mut driver = DeadlineDriver::new(&port);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
     let first = driver.drive(&budget()).unwrap();
     assert_eq!(first.retirement_error.unwrap().code, ErrorCode::StoreBusy);
     assert_eq!(first.due_warnings_added, 0);
@@ -398,6 +423,7 @@ fn discovery_failure_and_backoff_do_not_block_due_ticks() {
 fn full_due_batch_continues_without_waiting_for_next_tick() {
     struct FullBatch(FakeClock, AtomicU64);
     impl DeadlinePort for FullBatch {
+        crate::no_durable_work!();
         fn clock(&self) -> &dyn Clock {
             &self.0
         }
@@ -441,7 +467,7 @@ fn full_due_batch_continues_without_waiting_for_next_tick() {
         }
     }
     let port = FullBatch(FakeClock::default(), AtomicU64::new(0));
-    let mut driver = DeadlineDriver::new(&port);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
     assert!(driver.drive(&budget()).unwrap().due_continuation);
     assert_eq!(driver.drive(&budget()).unwrap().due_warnings_added, 1);
     assert_eq!(port.1.load(Ordering::SeqCst), 2);
@@ -451,6 +477,7 @@ fn full_due_batch_continues_without_waiting_for_next_tick() {
 fn zero_warning_progress_retains_exact_due_cursor_and_continues() {
     struct CursorPort(FakeClock, AtomicU64);
     impl DeadlinePort for CursorPort {
+        crate::no_durable_work!();
         fn clock(&self) -> &dyn Clock {
             &self.0
         }
@@ -511,7 +538,7 @@ fn zero_warning_progress_retains_exact_due_cursor_and_continues() {
         }
     }
     let port = CursorPort(FakeClock::default(), AtomicU64::new(0));
-    let mut driver = DeadlineDriver::new(&port);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
     for expected_more in [true, true, false] {
         let outcome = driver.drive(&budget()).unwrap();
         assert_eq!(outcome.due_examined_candidates, 100);
@@ -528,6 +555,7 @@ fn failed_invitation_phase_backs_off_while_receipts_keep_scanning() {
         requests: Mutex<Vec<DueScanRequest>>,
     }
     impl DeadlinePort for PhasePort {
+        crate::no_durable_work!();
         fn clock(&self) -> &dyn Clock {
             &self.clock
         }
@@ -588,7 +616,7 @@ fn failed_invitation_phase_backs_off_while_receipts_keep_scanning() {
         clock: FakeClock::default(),
         requests: Mutex::new(vec![]),
     };
-    let mut driver = DeadlineDriver::new(&port);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
     driver.drive(&budget()).unwrap();
     driver.drive(&budget()).unwrap();
     port.clock.mono.store(5_000, Ordering::SeqCst);
@@ -699,7 +727,7 @@ fn durable_work_jobs_get_one_bounded_quantum_and_rotate_with_due_and_retirement(
         }
     }
     let port = WorkPort(FakeClock::default(), AtomicU64::new(0), AtomicU64::new(0));
-    let mut driver = DeadlineDriver::new(&port);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
     let mut jobs = Vec::new();
     for tick in 0..4 {
         port.0.mono.store(tick * 1_000, Ordering::SeqCst);
@@ -793,12 +821,7 @@ fn failing_work_job_does_not_pause_healthy_materialization() {
             _: &CallBudget,
         ) -> Result<WorkProgress, ApiError> {
             if job == "w0" {
-                return Err(ApiError {
-                    code: ErrorCode::StoreBusy,
-                    detail: "stuck".into(),
-                    restart_argv: None,
-                    required_minimum_bytes: None,
-                });
+                return Err(ApiError::store_busy("stuck"));
             }
             self.1.fetch_add(1, Ordering::SeqCst);
             Ok(WorkProgress {
@@ -811,7 +834,7 @@ fn failing_work_job_does_not_pause_healthy_materialization() {
         }
     }
     let port = MixedWork(FakeClock::default(), AtomicU64::new(0));
-    let mut driver = DeadlineDriver::new(&port);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
     for tick in 0..6 {
         port.0.mono.store(tick * 1_000, Ordering::SeqCst);
         driver.drive(&budget()).unwrap();
@@ -903,16 +926,11 @@ fn work_retry_cache_is_bounded_and_keeps_discovery_moving() {
                 });
             }
             self.1.fetch_add(1, Ordering::SeqCst);
-            Err(ApiError {
-                code: ErrorCode::StoreBusy,
-                detail: "failed".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            })
+            Err(ApiError::store_busy("failed"))
         }
     }
     let port = ManyFailures(FakeClock::default(), AtomicU64::new(0), AtomicU64::new(0));
-    let mut driver = DeadlineDriver::new(&port);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
     for _ in 0..67 {
         driver.after_committed_change();
         driver.drive(&budget()).unwrap();
@@ -1048,7 +1066,7 @@ fn committed_work_prefix_error_is_visible_and_retries_at_exact_cooldown() {
             healthy_calls: AtomicU64::new(0),
             due_calls: AtomicU64::new(0),
         };
-        let mut driver = DeadlineDriver::new(&port);
+        let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
         let first = driver.drive(&budget()).unwrap();
         assert_eq!(first.work_job.as_deref(), Some("failed"));
         let error = first
@@ -1078,7 +1096,7 @@ fn committed_work_prefix_error_is_visible_and_retries_at_exact_cooldown() {
 #[test]
 fn stale_retirement_cursor_restarts_discovery_after_backoff() {
     let port = RetirementPort::new();
-    let mut driver = DeadlineDriver::new(&port);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
     driver.drive(&budget()).unwrap();
     port.stale_cursor_once.store(1, Ordering::SeqCst);
     port.clock.mono.store(1_000, Ordering::SeqCst);
@@ -1102,7 +1120,7 @@ fn stale_retirement_cursor_restarts_discovery_after_backoff() {
 fn committed_change_requests_immediate_scan_between_timer_ticks() {
     let port = FakePort::default();
     port.deadline.store(1, Ordering::SeqCst);
-    let mut driver = DeadlineDriver::new(&port);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
     driver.drive(&budget()).unwrap();
     port.clock.utc.store(1, Ordering::SeqCst);
     assert_eq!(driver.drive(&budget()).unwrap().due_warnings_added, 0);
@@ -1115,6 +1133,7 @@ fn committed_change_requests_immediate_scan_between_timer_ticks() {
 fn due_gets_first_turn_after_retirement_exhausts_shared_budget() {
     struct BudgetPort(FakeClock, AtomicU64, AtomicU64, AtomicU64);
     impl DeadlinePort for BudgetPort {
+        crate::no_durable_work!();
         fn clock(&self) -> &dyn Clock {
             &self.0
         }
@@ -1125,12 +1144,7 @@ fn due_gets_first_turn_after_retirement_exhausts_shared_budget() {
         ) -> Result<DueScanProgress, ApiError> {
             self.1.fetch_add(1, Ordering::SeqCst);
             if budget.is_exhausted(&self.0) {
-                return Err(ApiError {
-                    code: ErrorCode::DeadlineExceeded,
-                    detail: "spent".into(),
-                    restart_argv: None,
-                    required_minimum_bytes: None,
-                });
+                return Err(ApiError::deadline_exceeded("spent"));
             }
             self.3.fetch_add(1, Ordering::SeqCst);
             Ok(due_progress(request, 0, 0, false))
@@ -1168,7 +1182,7 @@ fn due_gets_first_turn_after_retirement_exhausts_shared_budget() {
         AtomicU64::new(0),
         AtomicU64::new(0),
     );
-    let mut driver = DeadlineDriver::new(&port);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
     let short = CallBudget {
         deadline: MonoInstant(5),
         cancellation: Cancellation::default(),
@@ -1192,7 +1206,7 @@ fn due_gets_first_turn_after_retirement_exhausts_shared_budget() {
 fn long_suspend_scans_on_resume_without_a_utc_or_restart_guard() {
     let port = FakePort::default();
     port.deadline.store(300_000, Ordering::SeqCst);
-    let mut driver = DeadlineDriver::new(&port);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
     driver.drive(&budget()).unwrap();
     // A monotonic clock that includes suspend; a clock that excludes it is
     // covered by the next ordinary one-second tick.
@@ -1200,7 +1214,7 @@ fn long_suspend_scans_on_resume_without_a_utc_or_restart_guard() {
     port.clock.utc.store(86_400_000, Ordering::SeqCst);
     assert_eq!(driver.drive(&budget()).unwrap().due_warnings_added, 1);
     drop(driver);
-    let mut restarted = DeadlineDriver::new(&port);
+    let mut restarted = DeadlineDriver::new(&port).with_tick_millis(1_000);
     assert_eq!(restarted.drive(&budget()).unwrap().due_warnings_added, 1);
 }
 
@@ -1213,6 +1227,7 @@ fn pre_due_retirement_is_driven_before_post_suspend_due_scan() {
         due_warnings: AtomicU64,
     }
     impl DeadlinePort for CutoverPort {
+        crate::no_durable_work!();
         fn clock(&self) -> &dyn Clock {
             &self.clock
         }
@@ -1286,7 +1301,7 @@ fn pre_due_retirement_is_driven_before_post_suspend_due_scan() {
     };
     port.clock.utc.store(86_400_000, Ordering::SeqCst);
     port.clock.mono.store(86_400_000, Ordering::SeqCst);
-    let mut driver = DeadlineDriver::new(&port);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
     let outcome = driver.drive(&budget()).unwrap();
     assert_eq!(outcome.retirement_job, Some(RetirementJobId::new("fence")));
     assert!(outcome.retirement_complete);
@@ -1301,6 +1316,7 @@ fn logical_decision_uses_store_time_across_pauses() {
         pause_before: bool,
     }
     impl DeadlinePort for PausePort {
+        crate::no_durable_work!();
         fn clock(&self) -> &dyn Clock {
             &self.clock
         }
@@ -1354,7 +1370,7 @@ fn logical_decision_uses_store_time_across_pauses() {
             pause_before,
         };
         port.clock.utc.store(299_999, Ordering::SeqCst);
-        let mut driver = DeadlineDriver::new(&port);
+        let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
         assert_eq!(
             driver.drive(&budget()).unwrap().due_warnings_added,
             expected
@@ -1368,7 +1384,7 @@ fn retained_retirement_quantum_error_is_reported_and_backed_off() {
     let port = RetirementPort::new();
     *port.fail_once.lock().unwrap() = None;
     port.retained_error_b.store(1, Ordering::SeqCst);
-    let mut driver = DeadlineDriver::new(&port);
+    let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
     let first = driver.drive(&budget()).unwrap();
     assert_eq!(first.retirement_job, Some(RetirementJobId::new("a")));
     assert!(first.retirement_error.is_none());

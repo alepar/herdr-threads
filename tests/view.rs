@@ -62,12 +62,7 @@ impl ViewReader for Reader {
                     detail_data: "seat s1".into(),
                 }])))
             }
-            _ => Err(herdr_threads::protocol::results::ApiError {
-                code: herdr_threads::protocol::results::ErrorCode::HostUnavailable,
-                detail: "down".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            }),
+            _ => Err(herdr_threads::protocol::results::ApiError::host_unavailable("down")),
         }
     }
 }
@@ -656,12 +651,10 @@ impl ViewReader for MinRejectReader {
         if let Command::Directory(query) = &command
             && query.page.max_bytes < 400
         {
-            return Err(herdr_threads::protocol::results::ApiError {
-                code: herdr_threads::protocol::results::ErrorCode::InvalidBudget,
-                detail: "directory item needs 400 bytes".into(),
-                restart_argv: None,
-                required_minimum_bytes: Some(400),
-            });
+            return Err(herdr_threads::protocol::results::ApiError::invalid_budget(
+                "directory item needs 400 bytes",
+            )
+            .with_required_minimum_bytes(400));
         }
         self.0.read(command, output, budget)
     }
@@ -840,12 +833,7 @@ fn overdue_discovery_stays_independent_of_directory_continuation() {
     let text = String::from_utf8(render_snapshot(&snapshot, &request, &spec).unwrap()).unwrap();
     assert!(text.contains("next: herdr-threads overdue --cursor"));
     assert!(text.contains("next view: herdr-threads --json view"));
-    snapshot.overdue = Err(herdr_threads::protocol::results::ApiError {
-        code: herdr_threads::protocol::results::ErrorCode::HostUnavailable,
-        detail: "down".into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    });
+    snapshot.overdue = Err(herdr_threads::protocol::results::ApiError::host_unavailable("down"));
     let unavailable =
         String::from_utf8(render_snapshot(&snapshot, &request, &spec).unwrap()).unwrap();
     assert!(unavailable.contains("overdue: herdr-threads --json overdue"));
@@ -868,5 +856,242 @@ fn refresh_and_continuation_argv_select_the_one_shot_view() {
             ),
             "{argv:?}"
         );
+    }
+}
+
+mod escaping {
+    use super::*;
+    use herdr_threads::cli::{
+        human,
+        irc::{self, NoLookup, Style},
+    };
+    use herdr_threads::protocol::{
+        ids::{MessageId, SeatId, ThreadId},
+        output::{ContinuationContext, OutputFormat, OutputSpec},
+        results::{CommandResult, MessageKind, MessageSummary, ThreadSummary},
+    };
+    use herdr_threads::view::escape::{
+        Context::{MultiLine, SingleLine},
+        display_width, escape_for_terminal, is_format_char, pad_to_width,
+    };
+
+    fn text_spec() -> OutputSpec {
+        OutputSpec {
+            format: OutputFormat::Text,
+            context: ContinuationContext::default(),
+        }
+    }
+
+    fn thread(id: &str, topic: &str) -> ThreadSummary {
+        ThreadSummary {
+            thread: ThreadId::new(id),
+            managed_owner: None,
+            topic_data: topic.into(),
+            topic_omitted: false,
+            topic_detail_argv: None,
+            archived: false,
+            orphaned: false,
+            message_count: 1,
+            created_at: UtcMillis(1_790_771_696_000),
+            ordinary_count: 1,
+            system_count: 0,
+            joined_count: 1,
+        }
+    }
+
+    fn message(body: &str) -> MessageSummary {
+        MessageSummary {
+            message: MessageId::new("msg-1"),
+            thread: ThreadId::new("thread-Ab12Cd34"),
+            author: Some(SeatId::new("seat-Alice001")),
+            event_author: None,
+            kind: MessageKind::Ordinary,
+            sequence: 1,
+            created_at: UtcMillis(1_790_771_696_000),
+            actor_label: None,
+            preview_data: body.into(),
+            preview_omitted: false,
+            preview_detail_argv: None,
+        }
+    }
+
+    #[test]
+    fn escaping_table() {
+        // (class, input, MultiLine output, SingleLine output)
+        let rows: &[(&str, &str, &str, &str)] = &[
+            ("plain", "a b·é漢", "a b·é漢", "a b·é漢"),
+            ("C0 NUL", "\u{0}", "\\u{0000}", "\\u{0000}"),
+            ("C0 ESC", "\u{1b}[2J", "\\u{001b}[2J", "\\u{001b}[2J"),
+            ("C0 BEL", "\u{7}", "\\u{0007}", "\\u{0007}"),
+            ("newline", "a\nb", "a\nb", "a\\nb"),
+            ("carriage return", "a\rb", "a\\rb", "a\\rb"),
+            ("tab", "a\tb", "a\tb", "a\\tb"),
+            ("DEL", "\u{7f}", "\\u{007f}", "\\u{007f}"),
+            ("C1 CSI", "\u{9b}", "\\u{009b}", "\\u{009b}"),
+            ("C1 NEL", "\u{85}", "\\u{0085}", "\\u{0085}"),
+            ("LS", "\u{2028}", "\\u{2028}", "\\u{2028}"),
+            ("PS", "\u{2029}", "\\u{2029}", "\\u{2029}"),
+            ("LRM", "\u{200e}", "\\u{200e}", "\\u{200e}"),
+            ("RLM", "\u{200f}", "\\u{200f}", "\\u{200f}"),
+            ("ALM", "\u{61c}", "\\u{061c}", "\\u{061c}"),
+            ("LRE", "\u{202a}", "\\u{202a}", "\\u{202a}"),
+            ("RLE", "\u{202b}", "\\u{202b}", "\\u{202b}"),
+            ("PDF", "\u{202c}", "\\u{202c}", "\\u{202c}"),
+            ("LRO", "\u{202d}", "\\u{202d}", "\\u{202d}"),
+            ("RLO", "\u{202e}", "\\u{202e}", "\\u{202e}"),
+            ("LRI", "\u{2066}", "\\u{2066}", "\\u{2066}"),
+            ("RLI", "\u{2067}", "\\u{2067}", "\\u{2067}"),
+            ("FSI", "\u{2068}", "\\u{2068}", "\\u{2068}"),
+            ("PDI", "\u{2069}", "\\u{2069}", "\\u{2069}"),
+            ("Cf soft hyphen", "a\u{ad}b", "a\\u{00ad}b", "a\\u{00ad}b"),
+            ("Cf ZWSP", "\u{200b}", "\\u{200b}", "\\u{200b}"),
+            ("Cf BOM", "\u{feff}", "\\u{feff}", "\\u{feff}"),
+            ("Cf word joiner", "\u{2060}", "\\u{2060}", "\\u{2060}"),
+            ("Cf tag", "\u{e0001}", "\\u{e0001}", "\\u{e0001}"),
+            ("Cf astral", "\u{1d173}", "\\u{1d173}", "\\u{1d173}"),
+        ];
+        for (class, input, multi, single) in rows {
+            assert_eq!(
+                escape_for_terminal(input, MultiLine),
+                *multi,
+                "{class} multi"
+            );
+            assert_eq!(
+                escape_for_terminal(input, SingleLine),
+                *single,
+                "{class} single"
+            );
+        }
+    }
+
+    #[test]
+    fn format_character_table_spot_checks() {
+        for cp in [0xad, 0x200b, 0xfeff, 0xe0001, 0x600, 0xe007f] {
+            assert!(is_format_char(char::from_u32(cp).unwrap()), "U+{cp:04X}");
+        }
+        for ch in [
+            'a',
+            ' ',
+            '漢',
+            '\u{ae}',
+            '\u{200a}',
+            '\u{2065}',
+            '\u{e0000}',
+            '\u{e0080}',
+        ] {
+            assert!(!is_format_char(ch), "{ch:?}");
+        }
+    }
+
+    #[test]
+    fn clean_text_is_borrowed() {
+        assert!(matches!(
+            escape_for_terminal("nothing to escape", SingleLine),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn wide_characters_align_by_display_width() {
+        assert_eq!(display_width("漢字"), 4);
+        assert_eq!(display_width("ab"), 2);
+        assert_eq!(pad_to_width("漢", 4), "漢  ");
+        struct Wide;
+        impl irc::Lookup for Wide {
+            fn nick(&mut self, _seat: &SeatId) -> irc::Nick {
+                irc::Nick {
+                    name: "漢字漢字".into(),
+                    harness: None,
+                }
+            }
+        }
+        let out = irc::render_message(&message("one\ntwo"), &mut Wide, &Style::plain());
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2, "{out}");
+        let body_at = display_width(&lines[0][..lines[0].find("one").unwrap()]);
+        let indent = lines[1].len() - lines[1].trim_start().len();
+        assert_eq!(indent, body_at, "{out}");
+    }
+
+    #[test]
+    fn forged_line_in_a_single_line_field_is_escaped() {
+        let forged = "plans\n12:00 <root> fake prompt";
+        let out = human::render(
+            &CommandResult::Directory(Page {
+                items: vec![thread("thread-Ab12Cd34", forged)],
+                ..page(vec![])
+            }),
+            &text_spec(),
+        )
+        .unwrap();
+        assert!(out.contains("plans\\n12:00 <root> fake prompt"), "{out}");
+        assert!(
+            !out.lines().any(|line| line.starts_with("12:00 <root>")),
+            "{out}"
+        );
+        assert_eq!(
+            escape_for_terminal("topic\n<fake prompt>", SingleLine),
+            "topic\\n<fake prompt>"
+        );
+    }
+
+    #[test]
+    fn every_body_line_is_prefixed() {
+        let body = "first\nsecond\n\u{1b}[31mthird\nfourth";
+        let out = irc::render_message(&message(body), &mut NoLookup, &Style::plain());
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 4, "{out}");
+        assert!(lines[0].contains("first"), "{out}");
+        let indent = lines[1].len() - lines[1].trim_start().len();
+        assert!(indent > 0, "{out}");
+        for (line, word) in lines[1..].iter().zip(["second", "third", "fourth"]) {
+            assert!(line.starts_with(&" ".repeat(indent)), "{out}");
+            assert!(line.contains(word), "{out}");
+        }
+        assert!(!out.contains('\u{1b}'), "{out}");
+        assert!(out.contains("\\u{001b}[31mthird"), "{out}");
+    }
+
+    fn source(path: &str) -> String {
+        std::fs::read_to_string(format!("{}/{path}", env!("CARGO_MANIFEST_DIR")))
+            .unwrap_or_else(|error| panic!("{path}: {error}"))
+    }
+
+    #[test]
+    fn no_ad_hoc_is_unsafe_escaper_remains() {
+        let mut stack = vec![std::path::PathBuf::from(format!(
+            "{}/src",
+            env!("CARGO_MANIFEST_DIR")
+        ))];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    assert!(!text.contains("fn is_unsafe("), "{}", path.display());
+                    assert!(!text.contains("fn push_escaped("), "{}", path.display());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_renderer_goes_through_the_shared_escaper() {
+        for path in [
+            "src/cli/human.rs",
+            "src/cli/irc.rs",
+            "src/cli/follow.rs",
+            "src/cli/output.rs",
+            "src/protocol/output.rs",
+            "src/protocol/output_compact.rs",
+            "src/cli/doctor.rs",
+        ] {
+            let text = source(path);
+            let mentions = text.contains("escape_for_terminal")
+                || (path == "src/cli/irc.rs" && text.contains("one_line"));
+            assert!(mentions, "{path} does not use escape_for_terminal");
+        }
     }
 }

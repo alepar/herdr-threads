@@ -1,0 +1,16 @@
+{
+  "harness": "codex",
+  "mode": "tui",
+  "scenario": "lostprompt",
+  "db": {
+    "messages": [
+      {
+        "id": "msg-1",
+        "seq": 5
+      }
+    ]
+  },
+  "panes": {
+    "initial": "OpenAI Codex\n\n\u25a0 You've hit your usage limit. Upgrade to Pro or try again at 3:42 PM.\n"
+  }
+}

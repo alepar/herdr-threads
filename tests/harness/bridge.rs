@@ -153,6 +153,7 @@ impl Transport {
     }
 }
 impl crate::ports::LocalClient for Transport {
+    crate::default_output_local_client!();
     fn call(
         &self,
         command: Command,
@@ -163,12 +164,10 @@ impl crate::ports::LocalClient for Transport {
         calls.push(command.clone());
         if matches!(command, Command::Directory(_)) {
             if self.directory_error {
-                return Err(crate::protocol::results::ApiError {
-                    code: crate::protocol::results::ErrorCode::InvalidBudget,
-                    detail: "overview unavailable".into(),
-                    restart_argv: None,
-                    required_minimum_bytes: Some(4096),
-                });
+                return Err(crate::protocol::results::ApiError::invalid_budget(
+                    "overview unavailable",
+                )
+                .with_required_minimum_bytes(4096));
             }
             return Ok(self
                 .directory
@@ -176,16 +175,14 @@ impl crate::ports::LocalClient for Transport {
                 .unwrap_or_else(|| crate::protocol::results::CommandResult::Directory(empty())));
         }
         if self.reject || (self.lose_first && calls.len() == 1) {
-            return Err(crate::protocol::results::ApiError {
-                code: if self.reject {
+            return Err(crate::protocol::results::ApiError::new(
+                if self.reject {
                     crate::protocol::results::ErrorCode::Conflict
                 } else {
                     crate::protocol::results::ErrorCode::UnknownOutcome
                 },
-                detail: "response lost or CAS conflict".into(),
-                restart_argv: None,
-                required_minimum_bytes: None,
-            });
+                "response lost or CAS conflict",
+            ));
         }
         let Command::CheckIn(ci) = command else {
             panic!("hook may only check in")
@@ -1239,6 +1236,7 @@ fn explicit_model_accept_and_ack_are_separate_calls_after_hook_registration() {
     assert_eq!(check.calls.lock().unwrap().len(), 2);
     struct Model(std::sync::Mutex<Vec<Command>>);
     impl crate::ports::LocalClient for Model {
+        crate::default_output_local_client!();
         fn call(
             &self,
             command: Command,
@@ -1287,11 +1285,14 @@ fn explicit_model_accept_and_ack_are_separate_calls_after_hook_registration() {
     );
     fs::remove_dir_all(root).unwrap();
 }
+/// Every code: the eight deterministic codes discard, every other code keeps;
+/// an uncorrelated failure always keeps.
 #[test]
 fn cooperative_typed_rejection_discards_intent_but_transport_failure_keeps_it() {
     use crate::protocol::results::{ApiError, CommandResult, ErrorCode};
     struct Answer(Result<Result<CommandResult, ApiError>, ApiError>);
     impl crate::ports::LocalClient for Answer {
+        crate::default_output_local_client!();
         fn call(
             &self,
             _: Command,
@@ -1308,21 +1309,36 @@ fn cooperative_typed_rejection_discards_intent_but_transport_failure_keeps_it() 
             self.0.clone()
         }
     }
-    let error = |code| ApiError {
-        code,
-        detail: "answer".into(),
-        restart_argv: None,
-        required_minimum_bytes: None,
-    };
-    for (answer, pending) in [
-        (Ok(Err(error(ErrorCode::InvalidRequest))), 0),
-        (Err(error(ErrorCode::HostUnavailable)), 1),
-        (Ok(Err(error(ErrorCode::UnknownOutcome))), 1),
-        (Ok(Err(error(ErrorCode::StoreBusy))), 1),
-        (Ok(Err(error(ErrorCode::DeadlineExceeded))), 1),
-        (Ok(Err(error(ErrorCode::Cancelled))), 1),
-        (Ok(Err(error(ErrorCode::StoreCorrupt))), 1),
-    ] {
+    let error = |code| ApiError::new(code, "answer");
+    // The cooperative codes that prove an identical retry is refused
+    // identically (src/cli/retry.rs is_deterministic_rejection). Written out
+    // here, not imported, so a change to the list must change this test.
+    const DISCARDED: &[ErrorCode] = &[
+        ErrorCode::InvalidRequest,
+        ErrorCode::Unauthorized,
+        ErrorCode::Archived,
+        ErrorCode::Conflict,
+        ErrorCode::OperationPayloadMismatch,
+        ErrorCode::MembershipRequired,
+        ErrorCode::NotFound,
+        ErrorCode::StaleRequirementAcceptance,
+    ];
+    type Reply = Result<Result<CommandResult, ApiError>, ApiError>;
+    let mut answers: Vec<(Reply, usize)> = ErrorCode::ALL
+        .iter()
+        .map(|code| {
+            (
+                Ok(Err(error(code.clone()))),
+                usize::from(!DISCARDED.contains(code)),
+            )
+        })
+        .collect();
+    // An uncorrelated failure (transport error) never discards, even with a
+    // deterministic code.
+    answers.push((Err(error(ErrorCode::HostUnavailable)), 1));
+    answers.push((Err(error(ErrorCode::NotFound)), 1));
+    answers.push((Err(error(ErrorCode::InvalidRequest)), 1));
+    for (answer, pending) in answers {
         let (root, j, cj, seed, event) = fixture();
         let check = Transport::new();
         let mut out = vec![];
@@ -1505,6 +1521,7 @@ impl Mailbox {
     }
 }
 impl crate::ports::LocalClient for Mailbox {
+    crate::default_output_local_client!();
     fn call(
         &self,
         command: Command,
@@ -1516,12 +1533,9 @@ impl crate::ports::LocalClient for Mailbox {
                 self.calls.lock().unwrap().push("digest");
                 assert_eq!(query.seat.as_str(), "seat");
                 if self.fail_digest {
-                    return Err(crate::protocol::results::ApiError {
-                        code: crate::protocol::results::ErrorCode::ReadBudgetExhausted,
-                        detail: "bounded read exhausted".into(),
-                        restart_argv: None,
-                        required_minimum_bytes: None,
-                    });
+                    return Err(crate::protocol::results::ApiError::read_budget_exhausted(
+                        "bounded read exhausted",
+                    ));
                 }
                 let digest = self.digest();
                 let arriving: Vec<_> = self.arrive_after_digest.lock().unwrap().drain(..).collect();

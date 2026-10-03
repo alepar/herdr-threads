@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+"""Fail when test-spawned processes outlive their run (ht-p03.131). Usage:
+  check-no-leaked-processes [--run-id ID] [--root DIR] [--grace SECONDS] [--exclude PID]... [--kill]
+Rules (a process is a leak when any matches; the checker, its ancestors and
+anything in --exclude never match):
+  run-id      its environment has HT_LEAK_RUN_ID=<ID>             (needs --run-id)
+  dead-owner  HT_TEST_OWNER or HERDR_THREADS_TEST_OWNER_PID names a dead pid
+  artifact    argv[0] or cwd is under <root>/target/  (root: --root, else git toplevel)
+  orphan-temp PPID 1, a `herdr server` or `daemon run`, HOME or --state-dir under a
+              test temp prefix, and no live owner tag
+Exit 0 clean, 1 leaks (one `LEAK rule=... pid=... ppid=... cmd=...` line each), 2 usage.
+Never kills unless --kill is passed; never matches the real ~/.config/herdr server or
+the user's real daemon (no test tag, HOME and state dir outside the temp prefixes)."""
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+
+TEMP_PREFIXES = (
+    "/tmp/ih.", "/private/tmp/ih.", "/tmp/htlat-", "/private/tmp/htlat-",
+    "/tmp/hts-", "/private/tmp/hts-", "/tmp/ht-", "/private/tmp/ht-",
+    "/tmp/htci.", "/private/tmp/htci.",
+)  # plus os.environ["TMPDIR"] + "/ht-" when set
+OWNER_KEYS = ("HT_TEST_OWNER", "HERDR_THREADS_TEST_OWNER_PID")
+WANTED_ENV = ("HT_LEAK_RUN_ID", "HOME") + OWNER_KEYS
+
+
+@dataclass
+class Proc:
+    pid: int
+    ppid: int
+    argv0: str
+    command: str
+    env: dict
+    cwd: "str | None"
+
+
+def temp_prefixes() -> tuple:
+    extra = ()
+    tmpdir = os.environ.get("TMPDIR")
+    if tmpdir:
+        base = tmpdir.rstrip("/")
+        extra = (base + "/ht-",)
+        if base.startswith("/var/"):
+            extra += ("/private" + base + "/ht-",)
+    return TEMP_PREFIXES + extra
+
+
+def _owner_pids(proc: Proc) -> list:
+    pids = []
+    for key in OWNER_KEYS:
+        value = proc.env.get(key)
+        if value and value.isdigit():
+            pids.append(int(value))
+    return pids
+
+
+def _under(path: "str | None", prefixes) -> bool:
+    return bool(path) and any(path.startswith(p) for p in prefixes)
+
+
+def _is_server_or_daemon(proc: Proc) -> bool:
+    cmd = proc.command
+    return cmd.endswith("herdr server") or " daemon run" in cmd
+
+
+def _state_dir(command: str) -> "str | None":
+    match = re.search(r"--state-dir[ =](\S+)", command)
+    return match.group(1) if match else None
+
+
+def classify(procs, *, root, run_id, alive, exclude, temp_prefixes):
+    """Return [(Proc, rule)] for every leaked process in `procs`."""
+    leaks = []
+    artifact = (root.rstrip("/") + "/target/") if root else None
+    for proc in procs:
+        if proc.pid in exclude:
+            continue
+        owners = _owner_pids(proc)
+        live_owner = any(alive(pid) for pid in owners)
+        if run_id and proc.env.get("HT_LEAK_RUN_ID") == run_id:
+            leaks.append((proc, "run-id"))
+        elif owners and not live_owner:
+            leaks.append((proc, "dead-owner"))
+        elif artifact and (_under(proc.argv0, (artifact,)) or _under(proc.cwd, (artifact,))):
+            leaks.append((proc, "artifact"))
+        elif (
+            proc.ppid == 1
+            and _is_server_or_daemon(proc)
+            and not live_owner
+            and (
+                _under(proc.env.get("HOME"), temp_prefixes)
+                or _under(_state_dir(proc.command), temp_prefixes)
+            )
+        ):
+            leaks.append((proc, "orphan-temp"))
+    return leaks
+
+
+def _run(argv):
+    return subprocess.run(argv, capture_output=True, text=True, check=False).stdout
+
+
+def collect() -> list:
+    """Snapshot of every process: argv from `ps`, env from `ps eww`, cwd from lsof."""
+    argv_of, ppid_of = {}, {}
+    for line in _run(["ps", "-axww", "-o", "pid=", "-o", "ppid=", "-o", "command="]).splitlines():
+        parts = line.split(None, 2)
+        if len(parts) >= 2 and parts[0].isdigit():
+            argv_of[int(parts[0])] = parts[2] if len(parts) > 2 else ""
+            ppid_of[int(parts[0])] = int(parts[1])
+    env_of = {}
+    # BSD style (no dash): `e` appends the environment to the command.
+    for line in _run(["ps", "axeww", "-o", "pid=", "-o", "command="]).splitlines():
+        parts = line.split(None, 1)
+        if len(parts) < 2 or not parts[0].isdigit():
+            continue
+        pid = int(parts[0])
+        rest = parts[1]
+        argv = argv_of.get(pid)
+        if argv is not None and rest.startswith(argv):
+            rest = rest[len(argv):]
+        env = {}
+        for token in rest.split():
+            key, sep, value = token.partition("=")
+            if sep and key in WANTED_ENV:
+                env.setdefault(key, value)
+        env_of[pid] = env
+    cwd_of = {}
+    current = None
+    for line in _run(["lsof", "-a", "-d", "cwd", "-u", str(os.getuid()), "-Fpn"]).splitlines():
+        if line.startswith("p") and line[1:].isdigit():
+            current = int(line[1:])
+        elif line.startswith("n") and current is not None:
+            cwd_of[current] = line[1:]
+    procs = []
+    for pid, argv in argv_of.items():
+        argv0 = argv.split(" ", 1)[0] if argv else ""
+        procs.append(Proc(pid, ppid_of[pid], argv0, argv, env_of.get(pid, {}), cwd_of.get(pid)))
+    return procs
+
+
+def ancestors(procs, start: int) -> set:
+    ppid_of = {p.pid: p.ppid for p in procs}
+    chain, pid = set(), start
+    while pid and pid not in chain:
+        chain.add(pid)
+        pid = ppid_of.get(pid, 0)
+    return chain
+
+
+def pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def find_root(explicit: "str | None") -> "str | None":
+    if explicit:
+        return os.path.realpath(explicit)
+    out = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False
+    ).stdout.strip()
+    return os.path.realpath(out) if out else None
+
+
+def scan(root, run_id, extra_exclude):
+    procs = collect()
+    exclude = ancestors(procs, os.getpid()) | set(extra_exclude)
+    return classify(
+        procs, root=root, run_id=run_id, alive=pid_alive, exclude=exclude,
+        temp_prefixes=temp_prefixes(),
+    )
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(prog="check-no-leaked-processes")
+    parser.add_argument("--run-id")
+    parser.add_argument("--root")
+    parser.add_argument("--grace", type=float, default=10.0)
+    parser.add_argument("--exclude", type=int, action="append", default=[])
+    parser.add_argument("--kill", action="store_true")
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        return 2 if exc.code else 0
+    root = find_root(args.root)
+    deadline = time.monotonic() + max(args.grace, 0.0)
+    leaks = scan(root, args.run_id, args.exclude)
+    while leaks and time.monotonic() < deadline:
+        time.sleep(0.5)
+        leaks = scan(root, args.run_id, args.exclude)
+    if not leaks:
+        print("no leaked test processes")
+        return 0
+    for proc, rule in leaks:
+        print(f"LEAK rule={rule} pid={proc.pid} ppid={proc.ppid} cmd={proc.command[:200]}")
+    if args.kill:
+        pids = [proc.pid for proc, _ in leaks]
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        time.sleep(2)
+        for pid in pids:
+            if pid_alive(pid):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

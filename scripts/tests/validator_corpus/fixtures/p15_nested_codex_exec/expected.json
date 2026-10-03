@@ -1,0 +1,6 @@
+{
+  "finding": "p15_nested_codex_exec",
+  "entry": "child_check",
+  "verdict": "UNVERIFIED",
+  "reason": "subagent/collab activity [('item_nested', 'nested_agent_cli', 'codex')] in root transcript; a child ACK would be stored with the same seat/provenance/execution (cooperative limit), so child ACK absence is UNVERIFIED; manifest cannot PASS"
+}

@@ -1,0 +1,5 @@
+THREAD  PENDING  INVITATIONS  WARNINGS  MEMBERSHIP
+t-1     2        1            0         required inv=inv-1 rev=2
+t-2     1+       0            0         -
+accept-required: herdr-threads accept-required t-1 --invitation inv-1 --requirement req-1 --revision 2
+more: herdr-threads inbox --cursor cursor-1

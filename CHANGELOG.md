@@ -1,0 +1,16 @@
+# Changelog
+
+## v0.1.0
+
+First release. Not yet published: see [docs/release.md](docs/release.md) for the checklist and the post-merge follow-on steps.
+
+Changes that matter to anyone who scripted against pre-release builds:
+
+- **Removed STATUS constants.** The public `EXIT_STATUS_HELP` string constant is gone: the top-level `--help` exit-status text is now built by `exit_status_help()`, so the exit-3 remedy always matches the daemon's own remedy text. The pre-cooperative verification layer (`CallerVerifier`, `VerifiedCaller`, the native check-in branches and the decision fence) is removed with it; the cooperative path is the only one.
+- **`inv-` prefix.** Invitation IDs carry the `inv-` prefix (`inv-Q1w2E3r4`), as message IDs carry `msg-`, threads `thread-` and seats `seat-`. Match on the prefix to tell an invitation ID from the others.
+- **Manifest v2 downgrade refusal.** Since manifest version 2, the Codex sandbox allowance in `$CODEX_HOME/config.toml` also records the instance's client-journal writable roots. An older build that only understands the version-1 manifest refuses to touch a version-2 manifest instead of corrupting it, so downgrading herdr-threads after `setup codex` needs `unsetup codex` with the newer build first. A version-1 manifest is upgraded in place.
+- **Optimistic admission.** A Claude Code or Codex version no recipe lists is no longer refused outright when it is newer than the verified range or inside the supported span: it is admitted on an assumed recipe and reported honestly. Health shows an informational note and `doctor` a warning with the same wording, for example `optimistic — newer than verified 2.1.286, assumed compatible with recipe claude-hooks-2.1.283; major version change` (doctor appends `(report issues: <URL>)`). Versions inside a recipe's known-broken range are still refused, naming the range and the newest working version. A scheduled canary (`harness-canary.yml`) checks new harness versions daily.
+- **`doctor --json` Claude keys.** `hooks.claude.installed` was a bool (owned hooks installed); it is now the `claude` binary object `{binary, version, admission, recipe}`, mirroring `hooks.codex.installed`. The bool moved to `hooks.claude.setup.installed`, and the text output's `hooks.claude.installed:` line is now `hooks.claude.setup_installed:`. A script testing `.hooks.claude.installed == true` now reads false. The Codex keys did not move.
+- **Platforms.** `herdr-plugin.toml` declares `platforms = ["macos", "linux"]`. macOS arm64 is the validated platform. Linux (x86_64 and aarch64, static musl archives) is **unverified** until the clean-machine rehearsal in the release checklist; Intel macOS archives are cross-built and not exercised.
+- **Installer.** `scripts/install.sh` ends with one final status line and an exit status that agrees with it (0 done; 3 done but not linked, setup incomplete, or not unregistered; 1 failure), documented in [docs/install.md](docs/install.md#installer-contract-final-status-and-exit-codes). Replacement of an installed package is crash-safe (rename aside, rename in, restore on failure), not atomic.
+- **Release workflow.** A release is published only from a `v*` tag push, as an idempotent draft, upload, checksum verification, publish sequence.

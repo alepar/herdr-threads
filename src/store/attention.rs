@@ -851,6 +851,113 @@ pub fn seat_pending_warnings(
     Ok(set)
 }
 
+/// One O(1) existence probe of a pending access path: the index it must use
+/// and the statement. `?1` is the seat; the programmatic probe also takes
+/// `?2`, the seat's offered notice frontier.
+pub struct WakeProbe {
+    pub index: &'static str,
+    pub sql: &'static str,
+}
+
+/// The six pending access paths wake discovery probes per live non-human
+/// seat (spec D2), in probe order. Each is an `INDEXED BY` seat-leading
+/// existence lookup. `wake_work` is deliberately not probed.
+pub const WAKE_PROBES: [WakeProbe; 6] = [
+    WakeProbe {
+        index: "digest_pending_invitations_seat",
+        sql: "SELECT EXISTS(SELECT 1 FROM digest_pending_invitations INDEXED BY digest_pending_invitations_seat WHERE seat_id=?1)",
+    },
+    WakeProbe {
+        index: "digest_pending_manifest_receipts_seat",
+        sql: "SELECT EXISTS(SELECT 1 FROM digest_pending_manifest_receipts INDEXED BY digest_pending_manifest_receipts_seat WHERE seat_id=?1)",
+    },
+    WakeProbe {
+        index: "receipts_seat_state_ordinal",
+        sql: "SELECT EXISTS(SELECT 1 FROM receipts INDEXED BY receipts_seat_state_ordinal WHERE seat_id=?1 AND state='pending')",
+    },
+    WakeProbe {
+        index: "digest_open_warning_recipients_seat",
+        sql: "SELECT EXISTS(SELECT 1 FROM digest_open_warning_recipients INDEXED BY digest_open_warning_recipients_seat WHERE seat_id=?1)",
+    },
+    WakeProbe {
+        index: "digest_open_warnings_affected",
+        sql: "SELECT EXISTS(SELECT 1 FROM digest_open_warnings INDEXED BY digest_open_warnings_affected WHERE affected_seat_id=?1)",
+    },
+    WakeProbe {
+        index: "digest_programmatic_warnings_seat",
+        sql: "SELECT EXISTS(SELECT 1 FROM digest_programmatic_warnings INDEXED BY digest_programmatic_warnings_seat WHERE seat_id=?1 AND ordinal>?2)",
+    },
+];
+
+/// Does any pending access path hold a row for the seat? At most six O(1)
+/// probes, stopping at the first hit. A hit is only a reason to examine the
+/// seat: the canonical judges still decide whether the work is actionable.
+pub fn seat_has_pending_rows(db: &Connection, seat_id: &str) -> Result<bool, ApiError> {
+    for probe in &WAKE_PROBES {
+        let hit: bool = if probe.index == "digest_programmatic_warnings_seat" {
+            let frontier = notice_frontier(db, seat_id)?;
+            db.prepare_cached(probe.sql)
+                .map_err(store_error)?
+                .query_row(params![seat_id, frontier], |r| r.get(0))
+        } else {
+            db.prepare_cached(probe.sql)
+                .map_err(store_error)?
+                .query_row([seat_id], |r| r.get(0))
+        }
+        .map_err(store_error)?;
+        if hit {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// A seat's wake attention: the canonical judgement of what is pending for
+/// it, with the decision-sequence position it was read at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WakeSeatAttention {
+    pub attention: effective::EffectiveSeatAttention,
+    /// `host_instances.decision_seq`, read once before the walks. It is the
+    /// position `reserve` re-reads and refuses on any change; it is not
+    /// derived from the walked rows (an ACK that settles a receipt adds no
+    /// newer row).
+    pub decision_seq: i64,
+}
+
+/// The wake attention of one seat, from the newest-first per-source walks
+/// and canonical judges (`effective_receipt`, `is_warning_recipient`,
+/// `warning_condition_actionable`): O(`WINDOW` x sources), independent of
+/// retained history. Call it inside the caller's read transaction; the
+/// decision sequence is read first, so the walks see at least that state.
+pub fn wake_seat_attention(db: &Connection, seat_id: &str) -> Result<WakeSeatAttention, ApiError> {
+    let decision_seq: i64 = db
+        .query_row(
+            "SELECT h.decision_seq FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1",
+            [seat_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?
+        .ok_or_else(|| api_error(ErrorCode::NotFound, "seat missing"))?;
+    let invitations = pending_invitations(db, seat_id, None, decision_seq)?;
+    let receipts = pending_receipts(db, seat_id, None)?;
+    let warnings = seat_pending_warnings(db, seat_id, &|| Ok(()))?;
+    let latest_warning_seq = warnings.items.first().map(|item| item.key.0);
+    Ok(WakeSeatAttention {
+        attention: effective::EffectiveSeatAttention {
+            has_pending_invitation: !invitations.items.is_empty(),
+            has_pending_receipt: !receipts.items.is_empty(),
+            latest_warning_seq,
+            frontier: LogicalAttentionFrontier {
+                invitation: frontier_key(&invitations)?,
+                addressed_receipt: frontier_key(&receipts)?,
+                actionable_warning: frontier_key(&warnings)?,
+            },
+        },
+        decision_seq,
+    })
+}
+
 #[cfg(test)]
 #[path = "../../tests/store/attention.rs"]
 mod tests;

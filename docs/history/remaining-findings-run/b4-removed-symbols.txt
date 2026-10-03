@@ -1,0 +1,110 @@
+# ht-p03.2 (B4): removed symbols, deleted files, table decisions, remaining hits.
+# Consumed by ht-p03.5 (coverage r1). Produced from branch task-ht-p03.2.
+
+removed symbols:
+# the named pre-cooperative verification layer
+CallerVerifier (trait)  -- src/ports.rs
+MutationPermit::new, MutationPermit::consume, PermitActor::Native, VerifiedCaller  -- src/protocol/authority.rs
+ReceiptRegistration, RegisterAvailableRequest.registration  -- src/protocol/authority.rs, src/ports.rs
+OrdinaryAllocationGuard, RecoveryBaseline  -- src/ports.rs
+StorePort::allocate_seat (trait method + SqliteStore impl)  -- src/ports.rs, src/store/mod.rs
+seats::allocate  -- src/store/seats.rs
+StorePort::revoke_registration (trait method + SqliteStore impl), seats::revoke_registration  -- src/ports.rs, src/store/mod.rs, src/store/seats.rs
+RegistrationRevocation, RegistrationLossReason  -- src/ports.rs
+native branch of seats::register_available (the cooperative path is the only one left; register_cooperative is renamed register_available), seats::native_check_in_payload  -- src/store/seats.rs
+# W5-1 (policy A2)
+SqliteStore::decision_fence and every decision_fence closure parameter (control::{create_thread,invite,accept,accept_required,leave,set_topic,archive,reopen,set_archived}, messages::publish_send, receipts::ack, seats::register_available)  -- src/store/{mod,control,messages,receipts,seats}.rs
+control::decide_native, AccountableActor::native, native digest branches of control::*, messages::{send_payload,..}, receipts::ack_payload, schema::execute_accountable_transaction (None arm)  -- src/store/*.rs
+messages::{resolve_claim_seat, resolve_operation_seat, assert_actor_current}  -- src/store/messages.rs
+# P10 (policy C5)
+ReconciliationAction::MarkOccupantUnavailable (planner emission, store application)  -- src/identity/reconcile.rs, src/store/seats.rs, src/ports.rs
+reconcile::proven_empty_shell_bridge  -- src/identity/reconcile.rs
+ReconciliationAction::Reconfirm (with and without verified execution) and its store application  -- src/identity/reconcile.rs, src/store/seats.rs, src/ports.rs
+ReconciliationAction::Replace and its store application  -- src/identity/reconcile.rs, src/store/seats.rs, src/ports.rs
+NativeLaunchCapability::ProvenEmptyShell  -- src/ports.rs, src/harness/launch.rs
+# mechanical no-production-caller sweep (src/ports.rs, src/store/*.rs)
+SendPreparationProgress::is_ready  -- src/ports.rs
+HostLifecycleSubscription (trait), LifecycleHint, HostPort::subscribe_lifecycle and NativeCli::subscribe_lifecycle  -- src/ports.rs, src/host/native.rs
+schema::effective_invitation_state, schema::effective_receipt_state  -- src/store/schema.rs
+service_events::prepare_notify_step, service_events::publish_notify (pub wrappers; the same two-line mappings now live in the service_events test module; test_support/history.rs calls the pub(crate) *_internal steps)  -- src/store/service_events.rs
+service_substrate::membership_and_requirement  -- src/store/service_substrate.rs
+materialization::capture_abandoned_preparation_high_water, materialization::recover_abandoned_preparations, RecoveryPhase, RecoveryCursor, RecoveryProgress  -- src/store/materialization.rs
+work::discover_work, WorkKind::as_sql  -- src/store/work.rs
+QueryConnection::interrupt_handle  -- src/store/connection.rs
+MonotonicWakeGuard (pub struct, no reference anywhere)  -- src/ports.rs
+
+deleted files:
+none (no file path or basename was deleted; tests/store/work.rs and tests/store/materialization.rs keep their remaining tests)
+
+deleted tests (exercised only a removed path):
+tests/store/control.rs: verified_registration_anchors_once_and_rolls_back_failed_offer, structural_target_generation_change_rotates_binding_even_for_same_execution, invalidated_prelaunch_shell_reconfirms_only_with_retained_published_proof, coherent_occupant_loss_moves_structure_and_preserves_attempt_fence, review_unavailable_historical_execution_move
+tests/store/cooperative_checkin.rs: availability_revocation_restores_same_occupant_generation_and_keeps_prior_anchor, native_missing_evidence_and_cooperative_supplied_native_evidence_are_rejected, legacy_native_check_in_digest_and_result_are_retained_with_explicit_diagnostic
+tests/store/receipts.rs: reordered_explicit_recipients_replay_original_message (native digest normalization)
+tests/store/materialization.rs: boot_recovery_discards_unpublished_preparations_in_bounded_slices, boot_recovery_keeps_committed_manifest_visible
+tests/service/cooperative.rs: current_checkin_restores_availability_without_replacing_occupant
+tests/identity/reconcile.rs: real_invalidation_page_reconfirms_a_prelaunch_shell_once, registered_occupant_loss_crosses_real_saved_page_and_planner
+tests/harness/launch.rs: direct_start_rejects_unknown_availability_for_both_harnesses
+src/ports.rs: ordinary_allocation_needs_fresh_target_and_clear_recovery_baseline (narrowed to structural_proof_needs_fresh_ordered_verified_evidence)
+src/protocol/authority.rs: permit_checks_current_target_fence_payload_and_single_use
+
+rewritten tests (assertion kept, setup or action moved onto the cooperative production path):
+tests/store/{control,receipts,facade}.rs permit helpers and fixtures (cooperative permits, live unregistered cooperative bindings, cooperative payload digests)
+tests/store/control.rs: registration_rejects_exhausted_binding_generation_without_anchor, registration_requires_and_records_reconfirmation_evidence (cooperative lifecycle check-in), recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice and the three ordinary-allocation tests (seats::resolve_seat), guarded_move_preserves_binding (Replace tail removed), invalidated_seat_reconfirms_moved_terminal_without_restoring_registration (ReconfirmStructure)
+tests/store/facade.rs: public_facade_check_in_commits_anchor_and_exact_empty_offer, public_facade_rejects_expired_permit, public_facade_creates_thread_with_current_cooperative_permit and the stable-ids flow (StorePort::issue_cooperative_permit)
+tests/identity/reconcile.rs: occupant_evidence_never_unseats_or_replaces_the_active_occupant, host_invalidation_never_reconfirms_from_execution_or_prior_empty_shell_evidence, ordinary_empty_allocation_survives_a_later_coherent_publication, plan-page assertions for Replace now expect Move
+src/test_support/history.rs: actors, permits and notice steps minted through the cooperative issuer
+
+dropped tables:
+none. v10 drops no table: the mechanical rule (rg -w <table> src/ finds it only in migrations/ and the schema verification lists of src/store/schema.rs) matched none of the 46 tables.
+
+kept candidate tables:
+== allocation_decisions (rg -nw allocation_decisions src/)
+src/store/queries.rs:768:                "SELECT coalesce(max(ordinal),0) FROM allocation_decisions WHERE seat_id=?1",
+src/store/queries.rs:800:        let repair:Option<RepairRow>=db.query_row("SELECT ordinal,target_id,kind,decided_at,host_boot,epoch,generation,operator_label FROM allocation_decisions WHERE seat_id=?
+src/store/seats.rs:2207:    tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation) VALUES (?1,?2,?3,'ordinary',?4,?5,?6,?7)",
+src/store/seats.rs:2741:            tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,?4,?5,?6,?7,?
+src/store/schema.rs:1016:        "allocation_decisions",
+== recovery_baseline_releases (rg -nw recovery_baseline_releases src/)
+src/store/effective.rs:169:            "SELECT EXISTS(SELECT 1 FROM recovery_baseline_releases WHERE instance_id=?1 AND baseline_generation_id=?2 AND target_id=?3)",
+src/store/schema.rs:1012:        "recovery_baseline_releases",
+src/store/seats.rs:2763:                        "INSERT INTO recovery_baseline_releases(instance_id,baseline_generation_id,target_id,decision_seq) VALUES (?1,?2,?3,?4) ON CONFLICT(instance_id,baseline
+== recovery_baseline_targets (rg -nw recovery_baseline_targets src/)
+src/store/seats.rs:2119:                let prior: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM recovery_baseline_targets WHERE instance_id=?1 AND target_id=?2 AND baseline_boot=?3)",
+src/store/seats.rs:2124:                tx.execute("INSERT INTO recovery_baseline_targets(instance_id,target_id,baseline_boot,baseline_epoch,captured_at,disposition) VALUES (?1,?2,?3,?4,?5,?6) \
+src/store/seats.rs:2769:            tx.execute("UPDATE recovery_baseline_targets SET disposition='already_owned' WHERE instance_id=?1 AND target_id=?2",
+src/store/schema.rs:1014:        "recovery_baseline_targets",
+  recovery_baseline_targets is still named by seats::mutate_operator (the operator repair update at
+  seats.rs:2769) and by the cfg(test) record_snapshot helper; recovery_baseline_releases by
+  effective.rs and seats::mutate_operator; allocation_decisions by queries.rs, seats::mutate_operator
+  and the ordinary resolution insert. recovery_holds (effective.rs/queries.rs/wake.rs/seats.rs) is kept
+  for the same reason.
+  Other low-hit tables checked and kept because a live statement names them:
+== delivery_observations
+src/store/receipts.rs:209:                tx.execute("INSERT INTO delivery_observations(seat_id,thread_id,acked) VALUES (?1,?2,?3) ON CONFLICT(seat_id,thread_id
+== retirement_audits
+src/store/control.rs:279:                        tx.execute("INSERT OR IGNORE INTO retirement_audits(job_id,thread_id,message_id) VALUES (?1,?2,?3)",
+== seat_availability
+src/store/materialization.rs:438:            "SELECT seat_id FROM seat_availability WHERE ordinal=?1",
+src/store/effective.rs:2077:                "SELECT decision_at FROM seat_availability WHERE seat_id=?1 AND decision_seq>?2 \
+src/store/seats.rs:3129:                tx.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VA
+== service_authors
+src/store/service_substrate.rs:24:        "INSERT INTO service_authors(id, instance_id, created_at) VALUES (?1, ?2, ?3) \
+src/store/service_substrate.rs:31:            "SELECT id FROM service_authors WHERE instance_id=?1 AND reserved_name='herdr-graph'",
+== observed_targets
+src/store/seats.rs:244:                "SELECT host_boot,epoch,observation_sequence,connection_epoch FROM observed_targets WHERE instance_id=?1 AND target_id=?2
+src/store/seats.rs:260:                "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,connection_epoch,inca
+src/store/seats.rs:2080:                    "SELECT host_boot,epoch,generation,observation_sequence,observed_at,provenance FROM observed_targets WHERE instance_
+src/store/seats.rs:2100:                tx.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_
+src/store/effective.rs:88:        "SELECT host_boot,epoch,generation,observation_sequence,terminal_id,occupancy,ui_state,verified_execution,top_level_occupant,c
+
+unsafe deletions:
+none. Every P10 (MarkOccupantUnavailable emission and application, proven_empty_shell_bridge,
+Reconfirm-with-execution, Replace, NativeLaunchCapability::ProvenEmptyShell) and W5-1 (decision_fence)
+deletion compiled lib+bin before any test was touched; only tests and test_support failed afterwards.
+DecisionFence itself stays: the operator repair guards (OperatorTargetGuard::consume) still use it.
+
+remaining hits (rg 'allocate_seat|revoke_registration|CallerVerifier|MutationPermit::new|OrdinaryAllocationGuard|RecoveryBaseline|decision_fence|ProvenEmptyShell|proven_empty_shell_bridge|MarkOccupantUnavailable' --hidden -g '!.git'):
+src/ tests/ scripts/ integrations/ migrations/ Cargo.toml Cargo.lock .github/ -> zero hits
+docs/design/herdr-threads/** and docs/validation/integration-sweep.md -> the B4 design-docs bead (marks text superseded)
+docs/history/** -> historical record, stays verbatim
+docs/history/remaining-findings-run/** (including this file) -> historical record of this run

@@ -1,3 +1,4 @@
+use herdr_threads::test_support::spawn::{OwnedChild, SpawnOwned};
 use herdr_threads::{
     app::SystemClock,
     client::local::LocalSocketClient,
@@ -18,13 +19,13 @@ use herdr_threads::{
 use std::{
     fs,
     os::unix::fs::DirBuilderExt,
-    process::{Child, Stdio},
+    process::Stdio,
     sync::Arc,
     time::{Duration, Instant},
 };
 use uuid::Uuid;
 
-struct TestChild(Child);
+struct TestChild(OwnedChild);
 impl Drop for TestChild {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -62,8 +63,7 @@ fn elected_health_sees_late_retirement_and_keeps_exact_error_on_seat_inspect() {
     drop(db);
 
     let child = TestChild(
-        std::process::Command::new(env!("CARGO_BIN_EXE_herdr-threads"))
-            .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
+        super::scrubbed_command(env!("CARGO_BIN_EXE_herdr-threads"))
             .args([
                 "daemon",
                 "run",
@@ -75,7 +75,7 @@ fn elected_health_sees_late_retirement_and_keeps_exact_error_on_seat_inspect() {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .spawn()
+            .spawn_owned()
             .unwrap(),
     );
     let deadline = Instant::now() + Duration::from_secs(5);

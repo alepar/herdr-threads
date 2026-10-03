@@ -1,0 +1,6 @@
+{
+  "finding": "w6_d3_sm2_delivery_counts_as_seen",
+  "entry": "midturn_ack",
+  "verdict": "FAIL",
+  "reason": "mid-turn message msg-mid not ACKed (state 'pending')"
+}

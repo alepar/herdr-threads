@@ -1,0 +1,4 @@
+#2 msg-2 seat-b 09:30Z bytes=0-39/400
+  Here is the first part
+  of a longer body
+more: herdr-threads body msg-2 --offset 39

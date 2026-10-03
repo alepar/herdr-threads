@@ -15,16 +15,20 @@ const TABLE: &[Recipe<&str>] = &[
         versions: VersionSet::Exact(&[v(1, 0, 3), v(1, 2, 0)]),
         evidence: &[],
         scope: "",
+        evidence_levels: &[],
+        known_broken: &[],
         profile: "a",
     },
     Recipe {
         id: "interval",
         versions: VersionSet::Interval {
-            min: v(2, 0, 5),
-            max: v(2, 1, 0),
+            min: Some(v(2, 0, 5)),
+            max: Some(v(2, 1, 0)),
         },
         evidence: &[],
         scope: "",
+        evidence_levels: &[],
+        known_broken: &[],
         profile: "b",
     },
 ];
@@ -73,8 +77,8 @@ fn version_sets_match_exact_members_and_inclusive_interval_bounds() {
         assert!(!exact.contains(miss), "{miss}");
     }
     let interval = VersionSet::Interval {
-        min: v(2, 0, 5),
-        max: v(2, 1, 0),
+        min: Some(v(2, 0, 5)),
+        max: Some(v(2, 1, 0)),
     };
     for hit in [v(2, 0, 5), v(2, 0, 6), v(2, 0, 999_999), v(2, 1, 0)] {
         assert!(interval.contains(hit), "{hit}");
@@ -84,6 +88,21 @@ fn version_sets_match_exact_members_and_inclusive_interval_bounds() {
     }
     assert_eq!(exact.to_string(), "{1.0.3, 1.2.0}");
     assert_eq!(interval.to_string(), "[2.0.5, 2.1.0]");
+    // Open bounds (known_broken's encoding): None is unbounded on that side.
+    let above = VersionSet::Interval {
+        min: Some(v(2, 1, 290)),
+        max: None,
+    };
+    assert!(above.contains(v(2, 1, 290)) && above.contains(v(9, 0, 0)));
+    assert!(!above.contains(v(2, 1, 289)));
+    let below = VersionSet::Interval {
+        min: None,
+        max: Some(v(0, 5, 0)),
+    };
+    assert!(below.contains(v(0, 0, 0)) && below.contains(v(0, 5, 0)));
+    assert!(!below.contains(v(0, 5, 1)));
+    assert_eq!(above.to_string(), "[2.1.290, \u{2026})");
+    assert_eq!(below.to_string(), "(\u{2026}, 0.5.0]");
 }
 
 /// Kills: lookup falling back to a default/first recipe for an unknown
@@ -139,14 +158,14 @@ fn lookup_selects_exact_and_interval_recipes_and_fails_closed() {
 fn members<P>(recipe: &Recipe<P>) -> Vec<Version> {
     match recipe.versions {
         VersionSet::Exact(versions) => versions.to_vec(),
-        VersionSet::Interval { min, max } => vec![min, max],
+        VersionSet::Interval { min, max } => vec![min.unwrap(), max.unwrap()],
     }
 }
 
 fn overlaps<P>(a: &Recipe<P>, b: &Recipe<P>) -> bool {
     match (a.versions, b.versions) {
         (VersionSet::Interval { min: a0, max: a1 }, VersionSet::Interval { min: b0, max: b1 }) => {
-            a0 <= b1 && b0 <= a1
+            a0.unwrap() <= b1.unwrap() && b0.unwrap() <= a1.unwrap()
         }
         _ => {
             members(a).iter().any(|x| b.versions.contains(*x))
@@ -161,7 +180,9 @@ fn check_table<P>(table: &[Recipe<P>]) {
     for (index, recipe) in table.iter().enumerate() {
         match recipe.versions {
             VersionSet::Exact(versions) => assert!(!versions.is_empty(), "{}", recipe.id),
-            VersionSet::Interval { min, max } => assert!(min <= max, "{}", recipe.id),
+            VersionSet::Interval { min, max } => {
+                assert!(min.unwrap() <= max.unwrap(), "{}", recipe.id);
+            }
         }
         assert!(!recipe.evidence.is_empty(), "{} has no evidence", recipe.id);
         for path in recipe.evidence {
@@ -226,10 +247,10 @@ fn codex_registry_admits_exactly_the_captured_versions() {
     assert_eq!(codex::RECIPES.len(), 1);
     let recipe = &codex::RECIPES[0];
     assert_eq!(recipe.id, "codex-hooks-v1");
-    const CAPTURED: VersionSet = VersionSet::Exact(&[v(0, 157, 1), v(0, 158, 0)]);
+    const CAPTURED: VersionSet = VersionSet::Exact(&[v(0, 157, 1), v(0, 158, 0), v(0, 159, 3)]);
     assert_eq!(recipe.versions, CAPTURED);
     assert_eq!(recipe.profile.input_schema, codex::InputSchema::HooksV1);
-    for version in ["0.157.1", "0.158.0"] {
+    for version in ["0.157.1", "0.158.0", "0.159.3"] {
         assert_eq!(codex::recipe_for(version), Ok(recipe), "{version}");
     }
     for version in [

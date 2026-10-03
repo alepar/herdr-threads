@@ -8,6 +8,7 @@
 //! and never report a lost daemon. Every wait is bounded.
 
 use super::sweep::Scratch;
+use herdr_threads::test_support::spawn::SpawnOwned;
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -165,8 +166,7 @@ struct Plugin {
 }
 impl Plugin {
     fn command(&self) -> Command {
-        let mut command = Command::new(BIN);
-        command.envs([herdr_threads::daemon::lifecycle::test_owner_env()]);
+        let mut command = crate::scrubbed_command(BIN);
         command
             .arg("--state-dir")
             .arg(&self.state)
@@ -282,9 +282,17 @@ fn history_and_health_stay_fast_under_a_party_with_a_slow_host() {
         .args(["read", &thread, "--follow", "--human", "--recent", "1"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_owned()
         .unwrap();
     let follower_out = follower.stdout.take().unwrap();
+    // The follower's stderr is drained for the whole run so it can never block
+    // on a full pipe, and is reported with any failure below.
+    let follower_err = follower.stderr.take().unwrap();
+    let stderr_drain = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(&mut BufReader::new(follower_err), &mut text);
+        text
+    });
     let (tx, follower_lines) = channel();
     std::thread::spawn(move || {
         for line in BufReader::new(follower_out).lines() {
@@ -372,7 +380,7 @@ fn history_and_health_stay_fast_under_a_party_with_a_slow_host() {
     );
     // A slow host can leave seats unresolved until a prompt snapshot
     // reconfirms them; that is the host lane's honest state, not latency.
-    let resend = Instant::now() + Duration::from_secs(30);
+    let resend = Instant::now() + Duration::from_secs(90);
     loop {
         let (ok, value, stderr) = plugin.run(
             Some(agent(0)),
@@ -401,6 +409,7 @@ fn history_and_health_stay_fast_under_a_party_with_a_slow_host() {
     }
     let _ = follower.kill();
     let _ = follower.wait();
+    let follower_stderr = stderr_drain.join().unwrap();
 
     let (h50, h95, hmax) = (
         percentile(&mut history, 50),
@@ -408,6 +417,22 @@ fn history_and_health_stay_fast_under_a_party_with_a_slow_host() {
         *history.iter().max().unwrap(),
     );
     let (k50, k95) = (percentile(&mut health, 50), percentile(&mut health, 95));
+    // Wake timing is the daemon's (the minimum retry delay is 30 s), so the
+    // party alone may end before the first prompt is due. The party leaves
+    // required ACKs outstanding; wait, bounded, for the wake lane to prompt
+    // one of the idle agents before counting.
+    let prompt_count = || {
+        host.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| *m == "agent.prompt")
+            .count()
+    };
+    let prompt_deadline = Instant::now() + Duration::from_secs(60);
+    while prompt_count() == 0 && Instant::now() < prompt_deadline {
+        std::thread::sleep(Duration::from_millis(250));
+    }
     let host_calls = host.calls.lock().unwrap().clone();
     let prompts = host_calls.iter().filter(|m| *m == "agent.prompt").count();
     eprintln!(
@@ -420,6 +445,13 @@ fn history_and_health_stay_fast_under_a_party_with_a_slow_host() {
         failures.lock().unwrap().len(),
     );
     assert!(sent.load(Ordering::SeqCst) >= 5, "the party made progress");
+    // Due wakes were really prompted through the slow host: without this the
+    // latency numbers would describe a party that never exercised the wake path.
+    assert!(
+        prompts > 0,
+        "no agent.prompt reached the host ({} host calls: {host_calls:?}); follower stderr: {follower_stderr}",
+        host_calls.len()
+    );
     assert!(
         h95 < Duration::from_millis(1_000),
         "history p95 {h95:?} (p50 {h50:?}, max {hmax:?})"
@@ -428,10 +460,10 @@ fn history_and_health_stay_fast_under_a_party_with_a_slow_host() {
     assert!(
         seen.iter()
             .any(|line| line.contains("Off with their heads!")),
-        "the long-running follower kept printing: {seen:?}"
+        "the long-running follower kept printing: {seen:?}; follower stderr: {follower_stderr}"
     );
     assert!(
         !seen.iter().any(|line| line.contains("lost the daemon")),
-        "no reconnect notice while the daemon stayed up: {seen:?}"
+        "no reconnect notice while the daemon stayed up: {seen:?}; follower stderr: {follower_stderr}"
     );
 }

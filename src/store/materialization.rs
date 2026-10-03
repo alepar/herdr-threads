@@ -28,139 +28,6 @@ struct Job {
     high_water: u64,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum RecoveryPhase {
-    #[default]
-    Building,
-    Sealed,
-    Complete,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RecoveryCursor {
-    pub phase: RecoveryPhase,
-    pub after_id: Option<String>,
-}
-
-pub struct RecoveryProgress {
-    pub cursor: RecoveryCursor,
-    pub examined: u8,
-    pub has_more: bool,
-    pub last_error: Option<String>,
-}
-
-/// Capture before admitting any send preparation after startup. The ID bound
-/// is lexical, not a creation ordinal; new sends stay gated until recovery is
-/// complete. Health, reads, ACK and retirement can continue during the sweep.
-pub fn capture_abandoned_preparation_high_water(
-    db: &Connection,
-) -> Result<Option<String>, ApiError> {
-    db.query_row(
-        "SELECT id FROM send_preparations ORDER BY id DESC LIMIT 1",
-        [],
-        |r| r.get(0),
-    )
-    .optional()
-    .map_err(store_error)
-}
-
-/// Sweep only the captured startup set. Each inspected candidate costs one
-/// unit, including an already published sealed preparation. The caller keeps
-/// `cursor` and retries an error at the same ID. Run only in the boot recovery
-/// phase while new send preparation is gated.
-pub fn recover_abandoned_preparations(
-    db: &mut Connection,
-    high_water: &str,
-    mut cursor: RecoveryCursor,
-    admission: WorkAdmission,
-    budget: &CallBudget,
-    clock: &dyn Clock,
-) -> Result<RecoveryProgress, ApiError> {
-    if !(1..=16).contains(&admission.max_units) || high_water.is_empty() {
-        return Err(api_error(
-            ErrorCode::InvalidRequest,
-            "invalid recovery admission",
-        ));
-    }
-    if budget.is_exhausted(clock) {
-        return Err(budget_error(budget));
-    }
-    let started = clock.monotonic_now().0;
-    let starting_phase = cursor.phase;
-    let mut tx = db.transaction().map_err(store_error)?;
-    let mut examined = 0;
-    let mut last_error = None;
-    while examined < admission.max_units && cursor.phase != RecoveryPhase::Complete {
-        if budget.is_exhausted(clock) {
-            last_error = Some(budget_error(budget).detail);
-            break;
-        }
-        if clock.monotonic_now().0.saturating_sub(started) >= 5 {
-            break;
-        }
-        let status = match cursor.phase {
-            RecoveryPhase::Building => "building",
-            RecoveryPhase::Sealed => "sealed",
-            RecoveryPhase::Complete => break,
-        };
-        let candidate:Option<String>=tx.query_row("SELECT id FROM send_preparations INDEXED BY send_preparations_status WHERE status=?1 AND id>?2 AND id<=?3 ORDER BY id LIMIT 1",params![status,cursor.after_id.as_deref().unwrap_or(""),high_water],|r|r.get(0)).optional().map_err(store_error)?;
-        let Some(id) = candidate else {
-            cursor.phase = if cursor.phase == RecoveryPhase::Building {
-                RecoveryPhase::Sealed
-            } else {
-                RecoveryPhase::Complete
-            };
-            cursor.after_id = None;
-            continue;
-        };
-        let mut save = tx.savepoint().map_err(store_error)?;
-        let step = (|| -> Result<(), ApiError> {
-            let published: bool = save
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=?1)",
-                    [id.as_str()],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?;
-            if !published {
-                save.execute(
-                    "UPDATE send_preparations SET status='discarded' WHERE id=?1 AND status=?2",
-                    params![id, status],
-                )
-                .map_err(store_error)?;
-                save.execute("INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES(?1,'preparation_cleanup',?2,0)",params![format!("work:cleanup:{id}"),id]).map_err(store_error)?;
-            }
-            Ok(())
-        })();
-        match step {
-            Ok(()) => {
-                save.commit().map_err(store_error)?;
-                cursor.after_id = Some(id);
-                examined += 1;
-            }
-            Err(error) => {
-                save.rollback().map_err(store_error)?;
-                last_error = Some(error.detail.chars().take(256).collect());
-                break;
-            }
-        }
-    }
-    if examined == 0
-        && last_error.is_none()
-        && cursor.phase == starting_phase
-        && cursor.phase != RecoveryPhase::Complete
-    {
-        return Err(budget_error(budget));
-    }
-    tx.commit().map_err(store_error)?;
-    Ok(RecoveryProgress {
-        has_more: cursor.phase != RecoveryPhase::Complete,
-        cursor,
-        examined,
-        last_error,
-    })
-}
-
 pub fn advance_work(
     db: &mut Connection,
     job_id: &str,
@@ -262,6 +129,7 @@ pub fn advance_work(
         position,
         !done,
         error_text.as_deref(),
+        clock,
     )?;
     tx.commit().map_err(store_error)?;
     Ok(result)
