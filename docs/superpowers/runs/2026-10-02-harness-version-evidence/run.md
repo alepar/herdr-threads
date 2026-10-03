@@ -2,7 +2,7 @@
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
 resumeChange: 2026-10-02 · "[coordinator update] flakiness side quest landed on main (a7255713) ... 'no full suite' pause is lifted. Speed budgets in AGENTS.md still apply" · base main merged in at a7255713; phase-6 sweep command = nice scripts/full-suite-gate 1
-phase: code
+phase: roast-code
 
 idea: Epic ht-xoc (harness version evidence), base main (26eef585, B6 landed). Design already exists: spec docs/superpowers/specs/2026-10-02-harness-version-evidence-design.md (two design roasts already run: docs/superpowers/reviews/2026-10-02-harness-version-evidence-roast-design-{1,2}.md, round 2 converged) and the filed bead tree ht-xoc.1-.8 — start from the design's coverage checks. Fully autonomous (no questions), both roasts on (design roast and code roast). Merge back into main at the end (user pre-authorized). Test policy: ht-zo4 (flakiness side quest) is closed, so the full suite may run; respect AGENTS.md speed budgets on main.
 branch: super-auto/harness-version-evidence
@@ -31,3 +31,14 @@ graph-pass: depth 5→5 · width 1.6→1.6 · applied 0 · parked 2
 assumption: ht-xoc.8 Codex half was BLOCKED-AUTH (codex exec --dangerously-bypass-hook-trust and app-server hooks/list refused); not routed around — answered from read-only analysis of existing Codex rollouts plus the Claude half the task captured; Codex resumed sessions declared unattributable (docs/compatibility/harness-transcript-version.md)
 assumption: final-review F3 decided autonomously — canary takes verified_max/exclusions under main's contract and re-probes known_broken rows from other contracts (bead ht-xoc.14)
 phase3-launch-1: wf_b7d446aa-7f9 → ready-drained; completed ht-xoc.1, .3, .6; escalated ht-xoc.8 (BLOCKED-AUTH); final review NOT READY (F1 settings.json double schema Critical, F2 publish gate, F3 canary re-probe) → fix beads ht-xoc.12, .13, .14; relaunching
+
+codeBuckets:
+  completed: ht-xoc.1, ht-xoc.2, ht-xoc.3, ht-xoc.4, ht-xoc.5, ht-xoc.6, ht-xoc.7, ht-xoc.12, ht-xoc.13, ht-xoc.14
+  escalated:
+  pendingRetry:
+  parked:
+  stalled: false
+  review: NOT READY (final review: loop_inventory test fails on manifest.rs wait_idle sleep; F1 resumed Codex sessions attributed to the creator's version; F2-F7 minor; F3 needs a decision before any recipe known_broken entry)
+  sweep: SWEEP DEFERRED (caller-owned)
+  slowness: launch 1 drained on BLOCKED-AUTH spike (ht-xoc.8) — answered by session, relaunched
+roastCodeRound: 1
