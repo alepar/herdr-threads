@@ -1,0 +1,16 @@
+{
+  "source": "read-only ps -axo pid=,command= and private host socket existence check",
+  "observed_at": "2026-10-03T07:16:34.443907+00:00",
+  "run_id": "ht-demo-codex-20261003T001113-9d0076",
+  "host_root": "/tmp/ih.2ucxx5",
+  "matching_processes": 0,
+  "host_socket_exists": false,
+  "daemon_cleanup": {
+    "close_rc": {
+      "daemon": 0,
+      "tab:w1:t2": 0
+    },
+    "daemon_health_after_rc": 3,
+    "daemon_owned": true
+  }
+}

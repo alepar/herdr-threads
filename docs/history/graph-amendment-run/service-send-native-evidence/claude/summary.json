@@ -1,0 +1,276 @@
+{
+  "manifest_status": "PASS",
+  "manifest_source": "cooperative",
+  "facts": {
+    "run_id": "ht-demo-claude-20261003T001114-5e93a4",
+    "harness": "claude",
+    "mode": "print",
+    "launch": "manual",
+    "started_utc": "2026-10-03T07:11:14.409181+00:00",
+    "finished_utc": "2026-10-03T07:11:53.113123+00:00",
+    "versions": {
+      "claude": {
+        "out": "2.1.287 (Claude Code)",
+        "rc": 0
+      },
+      "claude_bin_pinned": "/private/tmp/ht-cell-claude-2.1.287/shim/claude",
+      "claude_path": "~/.local/share/claude/versions/2.1.287",
+      "claude_sha256": "6eab8333fe2121553100d8f40bfada384a3e989b94f947e18ba6677a6fcb41ea",
+      "driver_repo_head": "df85b04fd5cca2a7650aa63bbfc9a8e651b190e0",
+      "herdr": {
+        "out": "herdr 0.9.1",
+        "rc": 0
+      },
+      "herdr_threads": {
+        "out": "herdr-threads 0.1.0",
+        "rc": 0
+      },
+      "herdr_threads_sha256": "3287f07e1e46a10a97c0fe7fc6627052a8f29ad19573e517573ca0e0446f9a21"
+    },
+    "harness_version": {
+      "doctor_admission": "listed",
+      "doctor_installed": {
+        "admission": "listed",
+        "binary": "/private/tmp/ht-cell-claude-2.1.287/shim/claude",
+        "recipe": "claude-hooks-2.1.287",
+        "version": "2.1.287"
+      },
+      "doctor_rc": 3,
+      "doctor_recipes": "claude-hooks-2.1.283 [2.1.283, 2.1.286]; claude-hooks-2.1.287 {2.1.287}",
+      "installed": "2.1.287"
+    },
+    "servicesend": {
+      "author": "graph:662ae073c91b5cd0a23196b39bf28fd962c2e1d9c7a02ea4550c6ff1a3cd961b",
+      "invitation": "inv-hrKnonNb",
+      "message": "msg-GMLSSLM8",
+      "requirement": "requirement-k0UUgDug",
+      "revision": 1,
+      "thread": "ssend-261003T001114-5e93a4"
+    },
+    "cleanup": {
+      "close_rc": {
+        "daemon": 0,
+        "tab:w1:t2": 0
+      },
+      "daemon_health_after_rc": 3,
+      "daemon_owned": true
+    },
+    "provenance_classes": [
+      "cooperative_top_level"
+    ],
+    "safe_prompt": "supported",
+    "codex_config": []
+  },
+  "steps": [
+    {
+      "detail": "environment usable",
+      "status": "PASS",
+      "step": "S01",
+      "title": "preflight environment and versions",
+      "utc": "2026-10-03T07:11:14.775369+00:00"
+    },
+    {
+      "detail": "hook=present; setup=present; operator_resolve=present; check_in=present; launch=present",
+      "status": "INFO",
+      "step": "S03",
+      "title": "CLI surface probe",
+      "utc": "2026-10-03T07:11:14.818977+00:00"
+    },
+    {
+      "detail": "`hook` subcommand present: []",
+      "status": "PASS",
+      "step": "S04",
+      "title": "hook entrypoint present",
+      "utc": "2026-10-03T07:11:14.819024+00:00"
+    },
+    {
+      "detail": "run root /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-claude-20261003T001114-5e93a4 (0700), state /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-claude-20261003T001114-5e93a4/state, project /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-claude-20261003T001114-5e93a4/project",
+      "status": "PASS",
+      "step": "S05",
+      "title": "scratch run/state/project dirs",
+      "utc": "2026-10-03T07:11:14.890832+00:00"
+    },
+    {
+      "detail": "installed claude 2.1.287 admitted by doctor recipes: claude-hooks-2.1.283 [2.1.283, 2.1.286]; claude-hooks-2.1.287 {2.1.287}",
+      "status": "PASS",
+      "step": "S02",
+      "title": "installed harness version vs doctor recipe registry",
+      "utc": "2026-10-03T07:11:15.910928+00:00"
+    },
+    {
+      "detail": "hook admits installed claude version (empty payload refused only: herdr-threads hook: unsupported hook payload: Invalid)",
+      "status": "PASS",
+      "step": "S02H",
+      "title": "hook version gate (empty-stdin probe, no service call)",
+      "utc": "2026-10-03T07:11:15.941351+00:00"
+    },
+    {
+      "detail": "hook exits 0 silently outside Herdr and in another Herdr instance's pane: no_herdr 0.008s, other_instance 0.008s",
+      "status": "PASS",
+      "step": "S02Q",
+      "title": "user-level hook silent outside its Herdr instance",
+      "utc": "2026-10-03T07:11:15.957855+00:00"
+    },
+    {
+      "detail": "daemon reachable (health rc=0)",
+      "status": "PASS",
+      "step": "S06",
+      "title": "isolated daemon ensure + health",
+      "utc": "2026-10-03T07:11:16.222551+00:00"
+    },
+    {
+      "detail": "owned tab w1:t2: agent pane w1:p2, coordinator pane w1:p3",
+      "status": "PASS",
+      "step": "S07",
+      "title": "owned scratch tab: agent + coordinator panes",
+      "utc": "2026-10-03T07:11:16.263426+00:00"
+    },
+    {
+      "detail": "agent seat seat-yYR1gvPl for pane w1:p2",
+      "status": "PASS",
+      "step": "S08",
+      "title": "operator seat for agent pane (prelaunch)",
+      "utc": "2026-10-03T07:11:16.327105+00:00"
+    },
+    {
+      "detail": "coordinator seat seat-n7D2vcmn for pane w1:p3",
+      "status": "PASS",
+      "step": "S09",
+      "title": "operator seat for coordinator pane",
+      "utc": "2026-10-03T07:11:16.449234+00:00"
+    },
+    {
+      "detail": "coordinator checked in (cooperative claim, driver-operated seat; not the agent under test)",
+      "status": "PASS",
+      "step": "S10",
+      "title": "coordinator lifecycle check-in",
+      "utc": "2026-10-03T07:11:16.521608+00:00"
+    },
+    {
+      "detail": "thread thread-i5FsmD1A topic 'ht native demo ht-demo-claude-20261003T001114-5e93a4'",
+      "status": "PASS",
+      "step": "S11",
+      "title": "thread create with topic",
+      "utc": "2026-10-03T07:11:16.570656+00:00"
+    },
+    {
+      "detail": "agent seat seat-yYR1gvPl invited before launch (invitation inv-v6qe1fbi)",
+      "status": "PASS",
+      "step": "S12",
+      "title": "INVITE agent seat before agent start",
+      "utc": "2026-10-03T07:11:16.628991+00:00"
+    },
+    {
+      "detail": "service author graph:662ae073c91b5cd0a23196b39bf28fd962c2e1d9c7a02ea4550c6ff1a3cd961b (v2 session) ensured managed thread ssend-261003T001114-5e93a4, required-invited the agent seat and sent ACK-required message msg-GMLSSLM8",
+      "status": "PASS",
+      "step": "SS0",
+      "title": "servicesend: v2 service registers, ensures a managed thread, required-invites the agent seat and sends an ACK-required request",
+      "utc": "2026-10-03T07:11:16.648471+00:00"
+    },
+    {
+      "detail": "require-ACK message msg-o7oA8SCt to seat-yYR1gvPl",
+      "status": "PASS",
+      "step": "S13",
+      "title": "send require-ACK handoff (initial)",
+      "utc": "2026-10-03T07:11:16.716777+00:00"
+    },
+    {
+      "detail": "setup_mode=cli: owned hooks installed by public setup CLI ['setup', 'claude'] into scratch homes {'HOME': '/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-claude-20261003T001114-5e93a4/home', 'CLAUDE_CONFIG_DIR': '/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-claude-20261003T001114-5e93a4/claude-config', 'CODEX_HOME': '/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-claude-20261003T001114-5e93a4/codex-home'}; hook argv ['~/AleCode/herdr-threads/.worktrees/ht-5nb-graph-amendment/target/debug/herdr-threads', '--state-dir', '/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-claude-20261003T001114-5e93a4/state', '--host-endpoint', '/private/tmp/ih.X9uQ8k/h.sock', 'hook', 'claude']",
+      "status": "PASS",
+      "step": "S14",
+      "title": "install owned user-level hooks into scratch config homes",
+      "utc": "2026-10-03T07:11:16.800201+00:00"
+    },
+    {
+      "detail": "dry-run-only step; not applicable to a live run",
+      "status": "SKIPPED",
+      "step": "S15",
+      "title": "SessionStart hook with captured payload (dry-run only)",
+      "utc": "2026-10-03T07:11:16.800327+00:00"
+    },
+    {
+      "detail": "dry-run-only step; not applicable to a live run",
+      "status": "SKIPPED",
+      "step": "S16",
+      "title": "PreToolUse(Bash) hook with captured payload (dry-run only)",
+      "utc": "2026-10-03T07:11:16.800360+00:00"
+    },
+    {
+      "detail": "dry-run-only step; not applicable to a live run",
+      "status": "SKIPPED",
+      "step": "S16C",
+      "title": "agent-pane CLI read of pending receipts (dry-run only)",
+      "utc": "2026-10-03T07:11:16.800388+00:00"
+    },
+    {
+      "detail": "dry-run-only step; not applicable to a live run",
+      "status": "SKIPPED",
+      "step": "S16X",
+      "title": "one rendered ready command executes via the agent shim (dry-run only)",
+      "utc": "2026-10-03T07:11:16.800405+00:00"
+    },
+    {
+      "detail": "invitation pending, receipt msg-o7oA8SCt pending, membership ['invited'], 0 occupant bindings",
+      "status": "PASS",
+      "step": "S16P",
+      "title": "prelaunch SQLite state (read-only): pending invite + receipt, no ACK",
+      "utc": "2026-10-03T07:11:16.809845+00:00"
+    },
+    {
+      "detail": "all 7 ready commands (rendered ready-command forms) permitted by ['Bash(herdr-threads *)']",
+      "status": "PASS",
+      "step": "S16R",
+      "title": "every ready command is permitted by the project allow rules",
+      "utc": "2026-10-03T07:11:16.810217+00:00"
+    },
+    {
+      "detail": "agent process exited 0; transcript /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-claude-20261003T001114-5e93a4/evidence/claude-initial-48cb.stream.jsonl; tokens {'input_tokens': 74, 'cache_creation_input_tokens': 14532, 'cache_read_input_tokens': 223504, 'output_tokens': 2977}, $0.0663734",
+      "status": "PASS",
+      "step": "S17",
+      "title": "launch native agent (initial)",
+      "utc": "2026-10-03T07:11:52.980600+00:00"
+    },
+    {
+      "detail": "SessionStart additionalContext delivered 1x naming the handoff; PreToolUse additionalContext delivered 0x (0 naming msg-o7oA8SCt); evidence hook-context-initial.json",
+      "status": "PASS",
+      "step": "S17H",
+      "title": "hook additionalContext delivery (Claude session transcript, read-only) (initial)",
+      "utc": "2026-10-03T07:11:52.982605+00:00"
+    },
+    {
+      "detail": "model ACK of msg-o7oA8SCt (transcript root call) matches SQLite; DB provenance ack=cooperative_top_level accept=cooperative_top_level -> cooperative (cooperative claim, NOT native proof)",
+      "status": "PASS",
+      "step": "S18",
+      "title": "verify model accept + ACK in SQLite and transcript (initial)",
+      "utc": "2026-10-03T07:11:52.992363+00:00"
+    },
+    {
+      "detail": "root transcript shows no subagent/collab activity; no child could have issued the accept/ACK",
+      "status": "PASS",
+      "step": "S18C",
+      "title": "child/subagent ACK absence (initial)",
+      "utc": "2026-10-03T07:11:52.992394+00:00"
+    },
+    {
+      "detail": "model ACKed service request msg-GMLSSLM8 by root call toolu_01G6iFu4sfnpADXNdgqQa4qp; stored actor seat-yYR1gvPl provenance cooperative_top_level",
+      "status": "PASS",
+      "step": "SS1",
+      "title": "servicesend: model ACKed the service-authored request (root call + stored provenance)",
+      "utc": "2026-10-03T07:11:52.996310+00:00"
+    },
+    {
+      "detail": "service request msg-GMLSSLM8 is a programmatic ordinary message by 'graph:662ae073c91b5cd0a23196b39bf28fd962c2e1d9c7a02ea4550c6ff1a3cd961b' with no seat actor and no receipt row for the author",
+      "status": "PASS",
+      "step": "SS2",
+      "title": "servicesend: the request is a programmatic message with no author receipt",
+      "utc": "2026-10-03T07:11:53.002240+00:00"
+    },
+    {
+      "detail": "closed 2 owned resources {'tab:w1:t2': 0, 'daemon': 0}; daemon health after stop rc=3 (owned daemon stopped)",
+      "status": "PASS",
+      "step": "S99",
+      "title": "cleanup",
+      "utc": "2026-10-03T07:11:53.112593+00:00"
+    }
+  ]
+}

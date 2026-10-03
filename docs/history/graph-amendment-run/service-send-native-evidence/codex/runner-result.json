@@ -1,0 +1,17 @@
+{
+  "source": "validate-native-demo.sh --cell stdout captured by exec tool",
+  "stdout": "CELL codex-manual sha=df85b04fd5cca2a7650aa63bbfc9a8e651b190e0 rc=0 manifest_status=PASS harness_bin=~/.codex/packages/standalone/releases/0.159.3-aarch64-apple-darwin/bin/codex harness_before=[codex-cli 0.159.3] harness_after=[codex-cli 0.159.3] harness_ran=[0.159.3] evidence=/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T001113-9d0076/evidence out=/private/tmp/ht-cell/codex-manual-20261003-001113",
+  "version_before": "0.159.3",
+  "version_after": "0.159.3",
+  "version_ran": "0.159.3",
+  "session_version_records": [
+    {
+      "artifact": "/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T001113-9d0076/codex-home/sessions/2026/10/03/rollout-2026-10-03T00-11-16-01a1009a-5256-7bf3-a066-ed8c07d76975.jsonl",
+      "sha256": "3edbd642f77547d9a804a4f48acc733d4bd87662d3a6207a6fa52972799d47f0",
+      "field": "session_meta.payload.cli_version",
+      "versions": [
+        "0.159.3"
+      ]
+    }
+  ]
+}

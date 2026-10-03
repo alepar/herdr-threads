@@ -1,0 +1,37 @@
+[
+  [
+    "item_3",
+    "/bin/zsh -lc 'herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000738-6e389b/state read thread-sJJX1aX5 --recent 20 && herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000738-6e389b/state read ssend-261003T000738-6e389b --recent 20 && herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000738-6e389b/state pending-receipts'",
+    false
+  ],
+  [
+    "item_5",
+    "/bin/zsh -lc 'herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000738-6e389b/state body msg-LUYogHZP && herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000738-6e389b/state participants thread-sJJX1aX5 && herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000738-6e389b/state participants ssend-261003T000738-6e389b'",
+    false
+  ],
+  [
+    "item_7",
+    "/bin/zsh -lc 'herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000738-6e389b/state accept thread-sJJX1aX5'",
+    false
+  ],
+  [
+    "item_8",
+    "/bin/zsh -lc 'herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000738-6e389b/state accept-required ssend-261003T000738-6e389b --invitation inv-3ZktvQ6H --requirement requirement-CjT25Ghx --revision 1'",
+    false
+  ],
+  [
+    "item_9",
+    "/bin/zsh -lc \"herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000738-6e389b/state send ssend-261003T000738-6e389b --body 'DONE'\"",
+    false
+  ],
+  [
+    "item_10",
+    "/bin/zsh -lc 'herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000738-6e389b/state ack msg-EBU3Lv8I'",
+    false
+  ],
+  [
+    "item_11",
+    "/bin/zsh -lc 'herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-demo-codex-20261003T000738-6e389b/state ack msg-LUYogHZP'",
+    false
+  ]
+]

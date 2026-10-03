@@ -1,0 +1,22 @@
+[
+  [
+    "item_3",
+    "/bin/zsh -lc 'herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261002T235529-23090d/state inbox'",
+    false
+  ],
+  [
+    "item_5",
+    "/bin/zsh -lc 'herdr-threads --help'",
+    false
+  ],
+  [
+    "item_6",
+    "/bin/zsh -lc 'herdr-threads daemon --help'",
+    false
+  ],
+  [
+    "item_8",
+    "/bin/zsh -lc 'herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261002T235529-23090d/state daemon stop'",
+    false
+  ]
+]

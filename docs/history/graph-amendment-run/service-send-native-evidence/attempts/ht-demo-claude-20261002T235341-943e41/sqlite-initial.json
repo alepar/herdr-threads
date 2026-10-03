@@ -1,0 +1,49 @@
+{
+  "invitations": [
+    {
+      "accepted_actor_seat_id": null,
+      "accepted_at": null,
+      "accepted_generation": null,
+      "accepted_observation": null,
+      "id": "inv-pwmDI1PD",
+      "state": "pending"
+    }
+  ],
+  "message": "msg-4BQ0b0FL",
+  "occupant_bindings": [
+    {
+      "ended_at": null,
+      "execution_id": "68dd9a08-8fd6-4930-886f-1fec7ac6bdb0",
+      "generation": 2,
+      "harness": "claude",
+      "native_session": "a4eaa12c-f9f2-453c-81fe-3fa493410a80",
+      "observation_provenance": "cooperative_top_level",
+      "ordinal": 2,
+      "registered_at": 1791010427147
+    }
+  ],
+  "phase": "initial",
+  "receipts": [
+    {
+      "ack_actor_seat_id": "seat-kcbWIBkm",
+      "ack_generation": 2,
+      "ack_observation": "{\"binding_generation\":2,\"decided_at\":1791010443644,\"execution\":\"68dd9a08-8fd6-4930-886f-1fec7ac6bdb0\",\"harness\":\"claude\",\"host_boot\":\"herdr-server:pid=34288:start=1791010420.649480:uid=501\",\"observed_at\":1791010443644,\"provenance\":\"cooperative_top_level\",\"session\":\"a4eaa12c-f9f2-453c-81fe-3fa493410a80\",\"target_generation\":1}",
+      "acked_at": 1791010443644,
+      "message_id": "msg-c2MLy43f",
+      "seat_id": "seat-kcbWIBkm",
+      "src": "manifest",
+      "state": "acked"
+    },
+    {
+      "ack_actor_seat_id": "seat-kcbWIBkm",
+      "ack_generation": 2,
+      "ack_observation": "{\"binding_generation\":2,\"decided_at\":1791010444193,\"execution\":\"68dd9a08-8fd6-4930-886f-1fec7ac6bdb0\",\"harness\":\"claude\",\"host_boot\":\"herdr-server:pid=34288:start=1791010420.649480:uid=501\",\"observed_at\":1791010444193,\"provenance\":\"cooperative_top_level\",\"session\":\"a4eaa12c-f9f2-453c-81fe-3fa493410a80\",\"target_generation\":1}",
+      "acked_at": 1791010444193,
+      "message_id": "msg-4BQ0b0FL",
+      "seat_id": "seat-kcbWIBkm",
+      "src": "manifest",
+      "state": "acked"
+    }
+  ],
+  "seat": "seat-kcbWIBkm"
+}

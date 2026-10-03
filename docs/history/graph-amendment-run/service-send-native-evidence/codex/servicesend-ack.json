@@ -1,0 +1,21 @@
+{
+  "message": "msg-A0wMCJDc",
+  "receipt": {
+    "message_id": "msg-A0wMCJDc",
+    "seat_id": "seat-bYvV6LG5",
+    "state": "acked",
+    "ack_actor_seat_id": "seat-bYvV6LG5",
+    "ack_generation": 2,
+    "ack_observation": "{\"binding_generation\":2,\"decided_at\":1791011495471,\"execution\":\"17e3c7c4-29c5-4bc5-97e7-890d45e99714\",\"harness\":\"codex\",\"host_boot\":\"herdr-server:pid=32782:start=1791011473.189812:uid=501\",\"observed_at\":1791011495471,\"provenance\":\"cooperative_top_level\",\"session\":\"01a1009a-5256-7bf3-a066-ed8c07d76975\",\"target_generation\":1}",
+    "acked_at": 1791011495471,
+    "src": "manifest"
+  },
+  "root_ack_calls": [
+    [
+      "item_5",
+      "/bin/zsh -lc \"herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T001113-9d0076/state accept thread-H1SAL1TM && herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T001113-9d0076/state accept-required ssend-261003T001113-9d0076 --invitation inv-72WpMCJL --requirement requirement-RkzYj3Xz --revision 1 && herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T001113-9d0076/state ack msg-jZS6vIil && herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T001113-9d0076/state send ssend-261003T001113-9d0076 --body 'DONE' && herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T001113-9d0076/state ack msg-A0wMCJDc\"",
+      false
+    ]
+  ],
+  "provenance": "cooperative_top_level"
+}

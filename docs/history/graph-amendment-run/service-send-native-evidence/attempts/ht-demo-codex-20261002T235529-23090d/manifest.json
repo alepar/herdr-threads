@@ -1,0 +1,1 @@
+{"accepted_pairs": [{"message_id": "msg-e8QbrE5W", "recipient_id": "seat-UqoNZS79"}], "artifacts": [], "db_receipts": [], "model_calls": [], "reason": "scenario_failed", "retired_pairs": [], "run_id": "ht-demo-codex-20261002T235529-23090d", "scenario": "codex-print-prelaunch-handoff.servicesend", "schema_version": 1, "source": "none", "status": "FAIL", "transport_hints": []}

@@ -1,0 +1,17 @@
+{
+  "source": "validate-native-demo.sh --cell stdout captured by exec tool",
+  "stdout": "CELL claude-manual sha=df85b04fd5cca2a7650aa63bbfc9a8e651b190e0 rc=0 manifest_status=PASS harness_bin=/private/tmp/ht-cell-claude-2.1.287/shim/claude harness_before=[2.1.287 (Claude Code)] harness_after=[2.1.287 (Claude Code)] harness_ran=[2.1.287] evidence=/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-claude-20261003T001114-5e93a4/evidence out=/private/tmp/ht-cell/claude-manual-20261003-001114",
+  "version_before": "2.1.287",
+  "version_after": "2.1.287",
+  "version_ran": "2.1.287",
+  "session_version_records": [
+    {
+      "artifact": "/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-claude-20261003T001114-5e93a4/evidence/claude-initial-48cb.stream.jsonl",
+      "sha256": "fc54825dbb51170fe63fc0ef0f6475e802a3e73ee96eb06fa3dea7412cfdc019",
+      "field": "claude_code_version",
+      "versions": [
+        "2.1.287"
+      ]
+    }
+  ]
+}

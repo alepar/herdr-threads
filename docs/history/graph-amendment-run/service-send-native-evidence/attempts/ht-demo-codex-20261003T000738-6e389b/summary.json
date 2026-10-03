@@ -1,0 +1,279 @@
+{
+  "manifest_status": "FAIL",
+  "manifest_source": "cooperative",
+  "facts": {
+    "run_id": "ht-demo-codex-20261003T000738-6e389b",
+    "harness": "codex",
+    "mode": "print",
+    "launch": "manual",
+    "started_utc": "2026-10-03T07:07:38.215805+00:00",
+    "finished_utc": "2026-10-03T07:08:48.024817+00:00",
+    "versions": {
+      "codex": {
+        "out": "codex-cli 0.159.3",
+        "rc": 0
+      },
+      "codex_bin_pinned": "~/.codex/packages/standalone/releases/0.159.3-aarch64-apple-darwin/bin/codex",
+      "codex_path": "~/.codex/packages/standalone/releases/0.159.3-aarch64-apple-darwin/bin/codex",
+      "codex_sha256": "4d210f7c5a18fd0386434df23b5bdbb8c0e7257d3e8a2b30b0769c8bbe99a878",
+      "driver_repo_head": "f8f8247dca79aeca8861234ebc9c4f870f461962",
+      "herdr": {
+        "out": "herdr 0.9.1",
+        "rc": 0
+      },
+      "herdr_threads": {
+        "out": "herdr-threads 0.1.0",
+        "rc": 0
+      },
+      "herdr_threads_sha256": "8d30596f8b21d2bf0544ff682975e439191b5c46dc2668002e3edf91b26cc0f3"
+    },
+    "harness_version": {
+      "doctor_admission": "listed",
+      "doctor_installed": {
+        "admission": "listed",
+        "binary": "~/.codex/packages/standalone/releases/0.159.3-aarch64-apple-darwin/bin/codex",
+        "evidence": "codex 0.159.3: listed recipe codex-hooks-v1",
+        "recipe": "codex-hooks-v1",
+        "version": "0.159.3"
+      },
+      "doctor_rc": 3,
+      "doctor_recipes": "codex-hooks-v1 {0.157.1, 0.158.0, 0.159.3}",
+      "installed": "0.159.3"
+    },
+    "servicesend": {
+      "author": "graph:9b3cc4693428b732f5a9a3c0689c97156743655410e6ec3382f56aab80cac164",
+      "invitation": "inv-3ZktvQ6H",
+      "message": "msg-EBU3Lv8I",
+      "requirement": "requirement-CjT25Ghx",
+      "revision": 1,
+      "thread": "ssend-261003T000738-6e389b"
+    },
+    "cleanup": {
+      "close_rc": {
+        "daemon": 0,
+        "tab:w1:t2": 0
+      },
+      "daemon_health_after_rc": 3,
+      "daemon_owned": true
+    },
+    "provenance_classes": [
+      "cooperative_top_level"
+    ],
+    "safe_prompt": "supported",
+    "codex_config": [
+      "features.shell_snapshot=false"
+    ]
+  },
+  "steps": [
+    {
+      "detail": "environment usable",
+      "status": "PASS",
+      "step": "S01",
+      "title": "preflight environment and versions",
+      "utc": "2026-10-03T07:07:40.634603+00:00"
+    },
+    {
+      "detail": "hook=present; setup=present; operator_resolve=present; check_in=present; launch=present",
+      "status": "INFO",
+      "step": "S03",
+      "title": "CLI surface probe",
+      "utc": "2026-10-03T07:07:40.723140+00:00"
+    },
+    {
+      "detail": "`hook` subcommand present: []",
+      "status": "PASS",
+      "step": "S04",
+      "title": "hook entrypoint present",
+      "utc": "2026-10-03T07:07:40.723224+00:00"
+    },
+    {
+      "detail": "run root /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000738-6e389b (0700), state /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000738-6e389b/state, project /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000738-6e389b/project",
+      "status": "PASS",
+      "step": "S05",
+      "title": "scratch run/state/project dirs",
+      "utc": "2026-10-03T07:07:40.888038+00:00"
+    },
+    {
+      "detail": "installed codex 0.159.3 admitted by doctor recipes: codex-hooks-v1 {0.157.1, 0.158.0, 0.159.3}",
+      "status": "PASS",
+      "step": "S02",
+      "title": "installed harness version vs doctor recipe registry",
+      "utc": "2026-10-03T07:07:40.951224+00:00"
+    },
+    {
+      "detail": "hook admits installed codex version (empty payload refused only: herdr-threads hook: unsupported hook payload: Invalid)",
+      "status": "PASS",
+      "step": "S02H",
+      "title": "hook version gate (empty-stdin probe, no service call)",
+      "utc": "2026-10-03T07:07:40.998841+00:00"
+    },
+    {
+      "detail": "hook exits 0 silently outside Herdr and in another Herdr instance's pane: no_herdr 0.006s, other_instance 0.01s",
+      "status": "PASS",
+      "step": "S02Q",
+      "title": "user-level hook silent outside its Herdr instance",
+      "utc": "2026-10-03T07:07:41.015204+00:00"
+    },
+    {
+      "detail": "daemon reachable (health rc=0)",
+      "status": "PASS",
+      "step": "S06",
+      "title": "isolated daemon ensure + health",
+      "utc": "2026-10-03T07:07:41.386681+00:00"
+    },
+    {
+      "detail": "owned tab w1:t2: agent pane w1:p2, coordinator pane w1:p3",
+      "status": "PASS",
+      "step": "S07",
+      "title": "owned scratch tab: agent + coordinator panes",
+      "utc": "2026-10-03T07:07:41.489702+00:00"
+    },
+    {
+      "detail": "agent seat seat-POD2ob7i for pane w1:p2",
+      "status": "PASS",
+      "step": "S08",
+      "title": "operator seat for agent pane (prelaunch)",
+      "utc": "2026-10-03T07:07:41.635914+00:00"
+    },
+    {
+      "detail": "coordinator seat seat-LJc2T6aN for pane w1:p3",
+      "status": "PASS",
+      "step": "S09",
+      "title": "operator seat for coordinator pane",
+      "utc": "2026-10-03T07:07:41.742029+00:00"
+    },
+    {
+      "detail": "coordinator checked in (cooperative claim, driver-operated seat; not the agent under test)",
+      "status": "PASS",
+      "step": "S10",
+      "title": "coordinator lifecycle check-in",
+      "utc": "2026-10-03T07:07:41.924945+00:00"
+    },
+    {
+      "detail": "thread thread-sJJX1aX5 topic 'ht native demo ht-demo-codex-20261003T000738-6e389b'",
+      "status": "PASS",
+      "step": "S11",
+      "title": "thread create with topic",
+      "utc": "2026-10-03T07:07:42.008752+00:00"
+    },
+    {
+      "detail": "agent seat seat-POD2ob7i invited before launch (invitation inv-Nete3XTZ)",
+      "status": "PASS",
+      "step": "S12",
+      "title": "INVITE agent seat before agent start",
+      "utc": "2026-10-03T07:07:42.100967+00:00"
+    },
+    {
+      "detail": "service author graph:9b3cc4693428b732f5a9a3c0689c97156743655410e6ec3382f56aab80cac164 (v2 session) ensured managed thread ssend-261003T000738-6e389b, required-invited the agent seat and sent ACK-required message msg-EBU3Lv8I",
+      "status": "PASS",
+      "step": "SS0",
+      "title": "servicesend: v2 service registers, ensures a managed thread, required-invites the agent seat and sends an ACK-required request",
+      "utc": "2026-10-03T07:07:42.123730+00:00"
+    },
+    {
+      "detail": "require-ACK message msg-LUYogHZP to seat-POD2ob7i",
+      "status": "PASS",
+      "step": "S13",
+      "title": "send require-ACK handoff (initial)",
+      "utc": "2026-10-03T07:07:42.253056+00:00"
+    },
+    {
+      "detail": "setup_mode=cli: owned hooks installed by public setup CLI ['setup', 'codex'] into scratch homes {'HOME': '/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000738-6e389b/home', 'CLAUDE_CONFIG_DIR': '/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000738-6e389b/claude-config', 'CODEX_HOME': '/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000738-6e389b/codex-home'}; hook argv ['~/AleCode/herdr-threads/.worktrees/ht-5nb-graph-amendment/target/debug/herdr-threads', '--state-dir', '/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000738-6e389b/state', '--host-endpoint', '/private/tmp/ih.q8JtjS/h.sock', 'hook', 'codex']; codex transport setup: scratch config.toml allows only /private/tmp/herdr-threads-501/e96a499c84b289a2.sock",
+      "status": "PASS",
+      "step": "S14",
+      "title": "install owned user-level hooks into scratch config homes",
+      "utc": "2026-10-03T07:07:42.551993+00:00"
+    },
+    {
+      "detail": "dry-run-only step; not applicable to a live run",
+      "status": "SKIPPED",
+      "step": "S15",
+      "title": "SessionStart hook with captured payload (dry-run only)",
+      "utc": "2026-10-03T07:07:42.552111+00:00"
+    },
+    {
+      "detail": "dry-run-only step; not applicable to a live run",
+      "status": "SKIPPED",
+      "step": "S16",
+      "title": "PreToolUse(Bash) hook with captured payload (dry-run only)",
+      "utc": "2026-10-03T07:07:42.552136+00:00"
+    },
+    {
+      "detail": "dry-run-only step; not applicable to a live run",
+      "status": "SKIPPED",
+      "step": "S16C",
+      "title": "agent-pane CLI read of pending receipts (dry-run only)",
+      "utc": "2026-10-03T07:07:42.552363+00:00"
+    },
+    {
+      "detail": "dry-run-only step; not applicable to a live run",
+      "status": "SKIPPED",
+      "step": "S16X",
+      "title": "one rendered ready command executes via the agent shim (dry-run only)",
+      "utc": "2026-10-03T07:07:42.552490+00:00"
+    },
+    {
+      "detail": "invitation pending, receipt msg-LUYogHZP pending, membership ['invited'], 0 occupant bindings",
+      "status": "PASS",
+      "step": "S16P",
+      "title": "prelaunch SQLite state (read-only): pending invite + receipt, no ACK",
+      "utc": "2026-10-03T07:07:42.583946+00:00"
+    },
+    {
+      "detail": "codex exec has no Claude-style allow rules (approval policy never under exec); not applicable",
+      "status": "INFO",
+      "step": "S16R",
+      "title": "every ready command is permitted by the project allow rules",
+      "utc": "2026-10-03T07:07:42.583998+00:00"
+    },
+    {
+      "detail": "agent process exited 0; transcript /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000738-6e389b/evidence/codex-initial-fb75.events.jsonl; tokens {'input_tokens': 71087, 'cached_input_tokens': 61440, 'cache_write_input_tokens': 0, 'output_tokens': 1203, 'reasoning_output_tokens': 0}",
+      "status": "PASS",
+      "step": "S17",
+      "title": "launch native agent (initial)",
+      "utc": "2026-10-03T07:08:16.753551+00:00"
+    },
+    {
+      "detail": "SessionStart context delivered 1x as rollout developer message naming the handoff; PreToolUse developer context 0x (0 naming msg-LUYogHZP); evidence hook-context-initial.json",
+      "status": "PASS",
+      "step": "S17H",
+      "title": "hook additionalContext delivery (Codex session rollout, read-only) (initial)",
+      "utc": "2026-10-03T07:08:16.754969+00:00"
+    },
+    {
+      "detail": "receipt msg-LUYogHZP state=pending (not ACKed within bound)",
+      "status": "FAIL",
+      "step": "S18",
+      "title": "verify model accept + ACK in SQLite and transcript (initial)",
+      "utc": "2026-10-03T07:08:46.940456+00:00"
+    },
+    {
+      "detail": "prerequisite not PASS: S18",
+      "status": "BLOCKED",
+      "step": "S18C",
+      "title": "child/subagent ACK absence (initial)",
+      "utc": "2026-10-03T07:08:46.943376+00:00"
+    },
+    {
+      "detail": "model ACKed service request msg-EBU3Lv8I by root call item_10; stored actor seat-POD2ob7i provenance cooperative_top_level",
+      "status": "PASS",
+      "step": "SS1",
+      "title": "servicesend: model ACKed the service-authored request (root call + stored provenance)",
+      "utc": "2026-10-03T07:08:46.970403+00:00"
+    },
+    {
+      "detail": "service request msg-EBU3Lv8I is a programmatic ordinary message by 'graph:9b3cc4693428b732f5a9a3c0689c97156743655410e6ec3382f56aab80cac164' with no seat actor and no receipt row for the author",
+      "status": "PASS",
+      "step": "SS2",
+      "title": "servicesend: the request is a programmatic message with no author receipt",
+      "utc": "2026-10-03T07:08:46.993308+00:00"
+    },
+    {
+      "detail": "closed 2 owned resources {'tab:w1:t2': 0, 'daemon': 0}; daemon health after stop rc=3 (owned daemon stopped)",
+      "status": "PASS",
+      "step": "S99",
+      "title": "cleanup",
+      "utc": "2026-10-03T07:08:47.959768+00:00"
+    }
+  ]
+}

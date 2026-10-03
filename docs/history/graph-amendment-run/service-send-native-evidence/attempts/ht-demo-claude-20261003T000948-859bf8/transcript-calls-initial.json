@@ -1,0 +1,42 @@
+[
+  [
+    "toolu_011YucvYpox6RMAwcAAnitQZ",
+    "herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-claude-20261003T000948-859bf8/state inbox",
+    false
+  ],
+  [
+    "toolu_01GBM3hnYYGgzFMJxhh3ZyZr",
+    "herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-claude-20261003T000948-859bf8/state read thread-16akojBu --recent 20",
+    false
+  ],
+  [
+    "toolu_01EkKDaKrAcjwa93Y19EMuqo",
+    "herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-claude-20261003T000948-859bf8/state read ssend-261003T000948-859bf8 --recent 20",
+    false
+  ],
+  [
+    "toolu_019soS57H1bXfwaz7EG6QDVx",
+    "herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-claude-20261003T000948-859bf8/state accept thread-16akojBu",
+    false
+  ],
+  [
+    "toolu_014DbznMGuiipvJh4VZM8mbm",
+    "herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-claude-20261003T000948-859bf8/state accept-required ssend-261003T000948-859bf8 --invitation inv-RiDetXnO --requirement requirement-ZLumlOQt --revision 1",
+    false
+  ],
+  [
+    "toolu_015bnoLrUePLYSjsMXCTwMhz",
+    "herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-claude-20261003T000948-859bf8/state send ssend-261003T000948-859bf8 --body 'DONE'",
+    false
+  ],
+  [
+    "toolu_01FnDavNwHeHsMbpKbtTEzfS",
+    "herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-claude-20261003T000948-859bf8/state ack msg-RMH02G5I",
+    false
+  ],
+  [
+    "toolu_018L1VyzonE2VqJR3H8fba5t",
+    "herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-claude-20261003T000948-859bf8/state ack msg-Brr19eRX",
+    false
+  ]
+]

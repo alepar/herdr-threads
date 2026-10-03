@@ -1,0 +1,21 @@
+{
+  "message": "msg-Brr19eRX",
+  "receipt": {
+    "message_id": "msg-Brr19eRX",
+    "seat_id": "seat-ZAJ2JXAO",
+    "state": "acked",
+    "ack_actor_seat_id": "seat-ZAJ2JXAO",
+    "ack_generation": 2,
+    "ack_observation": "{\"binding_generation\":2,\"decided_at\":1791011412361,\"execution\":\"0855748d-e012-49f2-ba3e-ba2453479341\",\"harness\":\"claude\",\"host_boot\":\"herdr-server:pid=95263:start=1791011388.529492:uid=501\",\"observed_at\":1791011412361,\"provenance\":\"cooperative_top_level\",\"session\":\"31d12c2e-e2b7-4413-9188-d22e2595b041\",\"target_generation\":1}",
+    "acked_at": 1791011412361,
+    "src": "manifest"
+  },
+  "root_ack_calls": [
+    [
+      "toolu_018L1VyzonE2VqJR3H8fba5t",
+      "herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-claude-20261003T000948-859bf8/state ack msg-Brr19eRX",
+      false
+    ]
+  ],
+  "provenance": "cooperative_top_level"
+}

@@ -1,35 +1,110 @@
 {
   "task": "ht-5nb.4",
-  "acceptance_item_9": "NOT PROVEN: neither live cell could run; see unsupported_reason on each cell",
-  "sha": "b3297dc09bcefc4e6abc2d98426f3cce53d46b1b",
+  "acceptance_item_9": "PROVEN: both pinned live harnesses ACKed a service-authored message by a transcript root call with stored cooperative_top_level provenance",
+  "sha": "df85b04fd5cca2a7650aa63bbfc9a8e651b190e0",
+  "main_base": "1b35596d",
   "cells": [
     {
       "harness": "claude",
-      "sha": "b3297dc09bcefc4e6abc2d98426f3cce53d46b1b",
-      "run_id": "ht-demo-claude-20261002T191850-f55a32",
-      "version_before": "2.1.288",
-      "version_after": "2.1.288",
-      "manifest_verdict": "UNSUPPORTED",
-      "unsupported_reason": "environment: installed claude 2.1.288 is outside the doctor recipe claude-hooks-2.1.283 [2.1.283, 2.1.287]; the hook fails closed (no check-in reaches the model), so a live launch would not exercise the product. No live model launch was made; the only run was --dry-run (manifest reason dry_run_no_model).",
-      "ss0": "PASS (dry-run: v2 register, ensure thread, required invite, send)",
-      "ss1": "NOT_RUN (needs a live model ACK)",
-      "ss2": "PASS (dry-run: programmatic ordinary message, no seat actor, no receipt row for the author)",
-      "ack_provenance": null,
-      "evidence_dir": "docs/history/graph-amendment-run/service-send-native-evidence/claude"
+      "sha": "df85b04fd5cca2a7650aa63bbfc9a8e651b190e0",
+      "run_id": "ht-demo-claude-20261003T001114-5e93a4",
+      "version_before": "2.1.287",
+      "version_after": "2.1.287",
+      "version_ran": "2.1.287",
+      "manifest_verdict": "PASS",
+      "ss0": "PASS",
+      "ss1": "PASS",
+      "ss2": "PASS",
+      "ack_provenance": "cooperative_top_level",
+      "service_message": "msg-GMLSSLM8",
+      "root_ack_call": "toolu_01G6iFu4sfnpADXNdgqQa4qp",
+      "evidence_dir": "docs/history/graph-amendment-run/service-send-native-evidence/claude",
+      "command": "scripts/validate-native-demo.sh --cell claude-manual --scenario servicesend",
+      "codex_config": [],
+      "binary_sha256": "3287f07e1e46a10a97c0fe7fc6627052a8f29ad19573e517573ca0e0446f9a21"
     },
     {
       "harness": "codex",
-      "sha": "b3297dc09bcefc4e6abc2d98426f3cce53d46b1b",
-      "run_id": "ht-demo-codex-20261002T191902-760eeb",
-      "version_before": "0.160.0",
-      "version_after": "0.160.0",
-      "manifest_verdict": "UNSUPPORTED",
-      "unsupported_reason": "environment: installed codex 0.160.0 is unmeasured for the sandbox socket allowance (measured: 0.159.2, 0.159.3), so `setup codex` writes none and S14 fails; --codex-transport none would deny the daemon socket (transport_denied). No live model launch was made; the only run was --dry-run (manifest reason dry_run_no_model).",
-      "ss0": "PASS (dry-run: v2 register, ensure thread, required invite, send)",
-      "ss1": "NOT_RUN (needs a live model ACK)",
-      "ss2": "PASS (dry-run: programmatic ordinary message, no seat actor, no receipt row for the author)",
-      "ack_provenance": null,
-      "evidence_dir": "docs/history/graph-amendment-run/service-send-native-evidence/codex"
+      "sha": "df85b04fd5cca2a7650aa63bbfc9a8e651b190e0",
+      "run_id": "ht-demo-codex-20261003T001113-9d0076",
+      "version_before": "0.159.3",
+      "version_after": "0.159.3",
+      "version_ran": "0.159.3",
+      "manifest_verdict": "PASS",
+      "ss0": "PASS",
+      "ss1": "PASS",
+      "ss2": "PASS",
+      "ack_provenance": "cooperative_top_level",
+      "service_message": "msg-A0wMCJDc",
+      "root_ack_call": "item_5",
+      "evidence_dir": "docs/history/graph-amendment-run/service-send-native-evidence/codex",
+      "command": "scripts/validate-native-demo.sh --cell codex-manual --scenario servicesend --codex-config features.shell_snapshot=false",
+      "codex_config": [
+        "features.shell_snapshot=false"
+      ],
+      "binary_sha256": "3287f07e1e46a10a97c0fe7fc6627052a8f29ad19573e517573ca0e0446f9a21"
     }
-  ]
+  ],
+  "prior_live_attempts": [
+    {
+      "harness": "claude",
+      "sha": "84de563dd146a381513d3faa519b944d24ef1ef3",
+      "run_id": "ht-demo-claude-20261002T235341-943e41",
+      "manifest_verdict": "FAIL",
+      "reason": "Handoff invitation instruction fell beyond the preview; service ACK passed, S18 failed.",
+      "evidence_dir": "docs/history/graph-amendment-run/service-send-native-evidence/attempts/ht-demo-claude-20261002T235341-943e41"
+    },
+    {
+      "harness": "claude",
+      "sha": "84de563dd146a381513d3faa519b944d24ef1ef3",
+      "run_id": "ht-demo-claude-20261002T235446-bfdf6b",
+      "manifest_verdict": "PASS",
+      "reason": "PASS before the preview fix was committed; implementation SHA 84de563d, driver edit in tree.",
+      "evidence_dir": "docs/history/graph-amendment-run/service-send-native-evidence/attempts/ht-demo-claude-20261002T235446-bfdf6b"
+    },
+    {
+      "harness": "codex",
+      "sha": "84de563dd146a381513d3faa519b944d24ef1ef3",
+      "run_id": "ht-demo-codex-20261002T235529-23090d",
+      "manifest_verdict": "FAIL",
+      "reason": "Protocol mismatch: interactive shell snapshot selected the installed protocol-2 executable (ht-l16).",
+      "evidence_dir": "docs/history/graph-amendment-run/service-send-native-evidence/attempts/ht-demo-codex-20261002T235529-23090d"
+    },
+    {
+      "harness": "codex",
+      "sha": "f8f8247dca79aeca8861234ebc9c4f870f461962",
+      "run_id": "ht-demo-codex-20261003T000738-6e389b",
+      "manifest_verdict": "FAIL",
+      "reason": "Snapshot override fixed selection; service ACK passed, handoff ACK mistyped state path (ht-fgo).",
+      "evidence_dir": "docs/history/graph-amendment-run/service-send-native-evidence/attempts/ht-demo-codex-20261003T000738-6e389b"
+    },
+    {
+      "harness": "codex",
+      "sha": "f8f8247dca79aeca8861234ebc9c4f870f461962",
+      "run_id": "ht-demo-codex-20261003T000924-c77247",
+      "manifest_verdict": "PASS",
+      "reason": "PASS at f8f8247d; superseded by rebase validation.",
+      "evidence_dir": "docs/history/graph-amendment-run/service-send-native-evidence/attempts/ht-demo-codex-20261003T000924-c77247"
+    },
+    {
+      "harness": "claude",
+      "sha": "f8f8247dca79aeca8861234ebc9c4f870f461962",
+      "run_id": "ht-demo-claude-20261003T000948-859bf8",
+      "manifest_verdict": "PASS",
+      "reason": "PASS at f8f8247d; superseded by rebase validation.",
+      "evidence_dir": "docs/history/graph-amendment-run/service-send-native-evidence/attempts/ht-demo-claude-20261003T000948-859bf8"
+    }
+  ],
+  "prior_unsupported_evidence": "docs/history/graph-amendment-run/service-send-native-evidence/attempts/previous-unsupported.json",
+  "open_items": [
+    "ht-l16: driver binary selection under Codex shell snapshots; existing per-run override used",
+    "ht-fgo: earlier live-model handoff state-path typo; retry passed"
+  ],
+  "checks": {
+    "validator_corpus": "35 tests passed",
+    "clippy_all_targets_all_features": "PASS",
+    "check_default_features": "PASS",
+    "cargo_fmt_check": "PASS"
+  },
+  "scope": "Manual initial servicesend cells only; cooperative claims joined to transcript root calls, not kernel-verified native proof."
 }

@@ -1,0 +1,12 @@
+[
+  [
+    "item_3",
+    "/bin/zsh -lc 'herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T001113-9d0076/state inbox && herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T001113-9d0076/state pending-receipts && herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T001113-9d0076/state read thread-H1SAL1TM --recent 20 && herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T001113-9d0076/state read ssend-261003T001113-9d0076 --recent 20'",
+    false
+  ],
+  [
+    "item_5",
+    "/bin/zsh -lc \"herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T001113-9d0076/state accept thread-H1SAL1TM && herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T001113-9d0076/state accept-required ssend-261003T001113-9d0076 --invitation inv-72WpMCJL --requirement requirement-RkzYj3Xz --revision 1 && herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T001113-9d0076/state ack msg-jZS6vIil && herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T001113-9d0076/state send ssend-261003T001113-9d0076 --body 'DONE' && herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T001113-9d0076/state ack msg-A0wMCJDc\"",
+    false
+  ]
+]

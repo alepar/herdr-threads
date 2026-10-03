@@ -1,0 +1,21 @@
+{
+  "message": "msg-8dzy9JX0",
+  "receipt": {
+    "message_id": "msg-8dzy9JX0",
+    "seat_id": "seat-2JW8Zplp",
+    "state": "acked",
+    "ack_actor_seat_id": "seat-2JW8Zplp",
+    "ack_generation": 2,
+    "ack_observation": "{\"binding_generation\":2,\"decided_at\":1791011392723,\"execution\":\"ba8ae245-c0ce-4909-84d1-799e23dcc8e3\",\"harness\":\"codex\",\"host_boot\":\"herdr-server:pid=92674:start=1791011363.773412:uid=501\",\"observed_at\":1791011392723,\"provenance\":\"cooperative_top_level\",\"session\":\"01a10098-a451-7773-82e7-6ee4a4d35fb2\",\"target_generation\":1}",
+    "acked_at": 1791011392723,
+    "src": "manifest"
+  },
+  "root_ack_calls": [
+    [
+      "item_12",
+      "/bin/zsh -lc 'herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000924-c77247/state ack msg-8dzy9JX0'",
+      false
+    ]
+  ],
+  "provenance": "cooperative_top_level"
+}

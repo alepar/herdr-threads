@@ -1,0 +1,24 @@
+{
+  "source": "read-only threads.snapshot.sqlite3",
+  "message": {
+    "id": "msg-GMLSSLM8",
+    "kind": "ordinary",
+    "author_kind": "programmatic",
+    "actor_seat_id": null,
+    "author_service_id": "graph:662ae073c91b5cd0a23196b39bf28fd962c2e1d9c7a02ea4550c6ff1a3cd961b"
+  },
+  "service_author_receipt_rows": {
+    "receipt_state": [],
+    "receipts": [],
+    "prepared_recipients": []
+  },
+  "requirements": [
+    {
+      "id": "requirement-k0UUgDug",
+      "state": "accepted",
+      "revision": 2,
+      "accepted_by_seat_id": "seat-yYR1gvPl",
+      "accepted_observation": "{\"binding_generation\":2,\"decided_at\":1791011501736,\"execution\":\"4756b92c-7a2e-4064-abab-f0f9733a4bad\",\"harness\":\"claude\",\"host_boot\":\"herdr-server:pid=33497:start=1791011474.097995:uid=501\",\"observed_at\":1791011501736,\"provenance\":\"cooperative_top_level\",\"session\":\"b64aa7bf-b243-443d-8448-c7e88fb79b30\",\"target_generation\":1}"
+    }
+  ]
+}

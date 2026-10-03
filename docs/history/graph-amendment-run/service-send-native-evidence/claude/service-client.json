@@ -1,9 +1,9 @@
 [
   {
     "request": {
-      "version": 2,
-      "request_id": "ht-demo-1-6d6aeb",
-      "expected_instance": "442e6a12-d755-4a32-9577-929c1df94cbc",
+      "version": 3,
+      "request_id": "ht-demo-1-59d972",
+      "expected_instance": "31747ddb-8f7b-497b-87b4-7179a841810a",
       "service": {
         "kind": "register",
         "args": {
@@ -12,16 +12,16 @@
       }
     },
     "response": {
-      "version": 2,
-      "request_id": "ht-demo-1-6d6aeb",
-      "instance": "442e6a12-d755-4a32-9577-929c1df94cbc",
-      "daemon_boot": "be7c3022-a1d7-4a45-b901-9fa62eada3d9",
+      "version": 3,
+      "request_id": "ht-demo-1-59d972",
+      "instance": "31747ddb-8f7b-497b-87b4-7179a841810a",
+      "daemon_boot": "e43a10c7-bbd2-42e0-9341-614042e9a066",
       "result": {
         "Ok": {
           "kind": "registered",
           "data": {
-            "author": "graph:54962fee490fee699e397d608cb95760a1dc139b72c08ec683160176f96be42b",
-            "daemon_boot": "be7c3022-a1d7-4a45-b901-9fa62eada3d9",
+            "author": "graph:662ae073c91b5cd0a23196b39bf28fd962c2e1d9c7a02ea4550c6ff1a3cd961b",
+            "daemon_boot": "e43a10c7-bbd2-42e0-9341-614042e9a066",
             "connection_generation": 1
           }
         }
@@ -30,33 +30,33 @@
   },
   {
     "request": {
-      "version": 2,
-      "request_id": "ht-demo-2-c78ec0",
-      "expected_instance": "442e6a12-d755-4a32-9577-929c1df94cbc",
+      "version": 3,
+      "request_id": "ht-demo-2-af2293",
+      "expected_instance": "31747ddb-8f7b-497b-87b4-7179a841810a",
       "service": {
         "kind": "operation",
         "args": {
           "kind": "ensure_thread",
           "args": {
-            "thread": "ssend-261002T191850-f55a32",
-            "topic": "service request demo ht-demo-claude-20261002T191850-f55a32",
+            "thread": "ssend-261003T001114-5e93a4",
+            "topic": "service request demo ht-demo-claude-20261003T001114-5e93a4",
             "goal": "Service-authored ACK-required request",
-            "operation": "ssend-261002T191850-f55a32-ensure"
+            "operation": "ssend-261003T001114-5e93a4-ensure"
           }
         }
       }
     },
     "response": {
-      "version": 2,
-      "request_id": "ht-demo-2-c78ec0",
-      "instance": "442e6a12-d755-4a32-9577-929c1df94cbc",
-      "daemon_boot": "be7c3022-a1d7-4a45-b901-9fa62eada3d9",
+      "version": 3,
+      "request_id": "ht-demo-2-af2293",
+      "instance": "31747ddb-8f7b-497b-87b4-7179a841810a",
+      "daemon_boot": "e43a10c7-bbd2-42e0-9341-614042e9a066",
       "result": {
         "Ok": {
           "kind": "thread_ensured",
           "data": {
-            "thread": "ssend-261002T191850-f55a32",
-            "owner": "graph:54962fee490fee699e397d608cb95760a1dc139b72c08ec683160176f96be42b",
+            "thread": "ssend-261003T001114-5e93a4",
+            "owner": "graph:662ae073c91b5cd0a23196b39bf28fd962c2e1d9c7a02ea4550c6ff1a3cd961b",
             "archived": false
           }
         }
@@ -65,40 +65,40 @@
   },
   {
     "request": {
-      "version": 2,
-      "request_id": "ht-demo-3-f6565d",
-      "expected_instance": "442e6a12-d755-4a32-9577-929c1df94cbc",
+      "version": 3,
+      "request_id": "ht-demo-3-4774d4",
+      "expected_instance": "31747ddb-8f7b-497b-87b4-7179a841810a",
       "service": {
         "kind": "operation",
         "args": {
           "kind": "invite",
           "args": {
-            "thread": "ssend-261002T191850-f55a32",
-            "seat": "seat-rZAPKCZE",
+            "thread": "ssend-261003T001114-5e93a4",
+            "seat": "seat-yYR1gvPl",
             "constraint": "required",
             "deadline_millis": 900000,
-            "operation": "ssend-261002T191850-f55a32-invite"
+            "operation": "ssend-261003T001114-5e93a4-invite"
           }
         }
       }
     },
     "response": {
-      "version": 2,
-      "request_id": "ht-demo-3-f6565d",
-      "instance": "442e6a12-d755-4a32-9577-929c1df94cbc",
-      "daemon_boot": "be7c3022-a1d7-4a45-b901-9fa62eada3d9",
+      "version": 3,
+      "request_id": "ht-demo-3-4774d4",
+      "instance": "31747ddb-8f7b-497b-87b4-7179a841810a",
+      "daemon_boot": "e43a10c7-bbd2-42e0-9341-614042e9a066",
       "result": {
         "Ok": {
           "kind": "invitation",
           "data": {
-            "invitation": "inv-pzk5a0VI",
+            "invitation": "inv-hrKnonNb",
             "requirement": {
-              "requirement": "requirement-hGzXDWUT",
+              "requirement": "requirement-k0UUgDug",
               "revision": 1,
-              "invitation": "inv-pzk5a0VI",
-              "thread": "ssend-261002T191850-f55a32",
-              "seat": "seat-rZAPKCZE",
-              "issuer": "graph:54962fee490fee699e397d608cb95760a1dc139b72c08ec683160176f96be42b",
+              "invitation": "inv-hrKnonNb",
+              "thread": "ssend-261003T001114-5e93a4",
+              "seat": "seat-yYR1gvPl",
+              "issuer": "graph:662ae073c91b5cd0a23196b39bf28fd962c2e1d9c7a02ea4550c6ff1a3cd961b",
               "state": "pending",
               "accepted_by": null,
               "accepted_at": null
@@ -110,55 +110,56 @@
   },
   {
     "request": {
-      "version": 2,
-      "request_id": "ht-demo-4-0df13d",
-      "expected_instance": "442e6a12-d755-4a32-9577-929c1df94cbc",
+      "version": 3,
+      "request_id": "ht-demo-4-4f99a4",
+      "expected_instance": "31747ddb-8f7b-497b-87b4-7179a841810a",
       "service": {
         "kind": "operation",
         "args": {
           "kind": "send",
           "args": {
-            "thread": "ssend-261002T191850-f55a32",
-            "body": "Service request ht-demo-claude-20261002T191850-f55a32: reply DONE in this thread, then ACK this message by its exact ID.",
+            "thread": "ssend-261003T001114-5e93a4",
+            "body": "Service request ht-demo-claude-20261003T001114-5e93a4: reply DONE in this thread, then ACK this message by its exact ID.",
             "recipients": [
-              "seat-rZAPKCZE"
+              "seat-yYR1gvPl"
             ],
             "deadline_millis": 900000,
-            "operation": "ssend-261002T191850-f55a32-send"
+            "operation": "ssend-261003T001114-5e93a4-send"
           }
         }
       }
     },
     "response": {
-      "version": 2,
-      "request_id": "ht-demo-4-0df13d",
-      "instance": "442e6a12-d755-4a32-9577-929c1df94cbc",
-      "daemon_boot": "be7c3022-a1d7-4a45-b901-9fa62eada3d9",
+      "version": 3,
+      "request_id": "ht-demo-4-4f99a4",
+      "instance": "31747ddb-8f7b-497b-87b4-7179a841810a",
+      "daemon_boot": "e43a10c7-bbd2-42e0-9341-614042e9a066",
       "result": {
         "Ok": {
           "kind": "message_sent",
           "data": {
             "summary": {
-              "message": "msg-gA6iK5X4",
-              "thread": "ssend-261002T191850-f55a32",
+              "message": "msg-GMLSSLM8",
+              "thread": "ssend-261003T001114-5e93a4",
               "author": null,
               "event_author": {
                 "kind": "programmatic",
-                "id": "graph:54962fee490fee699e397d608cb95760a1dc139b72c08ec683160176f96be42b"
+                "id": "graph:662ae073c91b5cd0a23196b39bf28fd962c2e1d9c7a02ea4550c6ff1a3cd961b"
               },
+              "author_role": "service",
               "kind": "ordinary",
               "sequence": 2,
-              "created_at": 1790993933103,
+              "created_at": 1791011476644,
               "actor_label": "herdr-graph",
-              "preview_data": "Service request ht-demo-claude-20261002T191850-f55a32: reply DONE in this thread, then ACK this message by its exact ID.",
+              "preview_data": "Service request ht-demo-claude-20261003T001114-5e93a4: reply DONE in this thread, then ACK this message by its exact ID.",
               "preview_omitted": false,
               "preview_detail_argv": [
                 "herdr-threads",
                 "body",
-                "msg-gA6iK5X4"
+                "msg-GMLSSLM8"
               ]
             },
-            "author": "graph:54962fee490fee699e397d608cb95760a1dc139b72c08ec683160176f96be42b",
+            "author": "graph:662ae073c91b5cd0a23196b39bf28fd962c2e1d9c7a02ea4550c6ff1a3cd961b",
             "recipient_count": 1,
             "receipt_duration_millis": 900000
           }

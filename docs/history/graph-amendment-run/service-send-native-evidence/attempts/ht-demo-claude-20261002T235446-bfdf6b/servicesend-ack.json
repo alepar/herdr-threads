@@ -1,0 +1,21 @@
+{
+  "message": "msg-ztTN60sC",
+  "receipt": {
+    "message_id": "msg-ztTN60sC",
+    "seat_id": "seat-n9gEATur",
+    "state": "acked",
+    "ack_actor_seat_id": "seat-n9gEATur",
+    "ack_generation": 2,
+    "ack_observation": "{\"binding_generation\":2,\"decided_at\":1791010517580,\"execution\":\"71933af3-9aa2-4f0c-b11c-0ad7fdcb8be5\",\"harness\":\"claude\",\"host_boot\":\"herdr-server:pid=42896:start=1791010485.739936:uid=501\",\"observed_at\":1791010517580,\"provenance\":\"cooperative_top_level\",\"session\":\"19681305-65c9-4a7e-ad13-a8ff109aa83b\",\"target_generation\":1}",
+    "acked_at": 1791010517580,
+    "src": "manifest"
+  },
+  "root_ack_calls": [
+    [
+      "toolu_01JZ852Mj3H2ehdJmFs8Re3d",
+      "herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-claude-20261002T235446-bfdf6b/state ack msg-ztTN60sC",
+      false
+    ]
+  ],
+  "provenance": "cooperative_top_level"
+}

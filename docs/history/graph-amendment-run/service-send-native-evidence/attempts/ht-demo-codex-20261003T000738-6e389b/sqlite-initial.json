@@ -1,0 +1,49 @@
+{
+  "invitations": [
+    {
+      "accepted_actor_seat_id": "seat-POD2ob7i",
+      "accepted_at": 1791011292111,
+      "accepted_generation": 2,
+      "accepted_observation": "{\"binding_generation\":2,\"decided_at\":1791011292111,\"execution\":\"0c1b4b6a-a7cb-493d-b1fe-4677808f30e9\",\"harness\":\"codex\",\"host_boot\":\"herdr-server:pid=56354:start=1791011257.772341:uid=501\",\"observed_at\":1791011292111,\"provenance\":\"cooperative_top_level\",\"session\":\"01a10097-1330-76a0-a6e0-557aaeb2d66d\",\"target_generation\":1}",
+      "id": "inv-Nete3XTZ",
+      "state": "accepted"
+    }
+  ],
+  "message": "msg-LUYogHZP",
+  "occupant_bindings": [
+    {
+      "ended_at": null,
+      "execution_id": "0c1b4b6a-a7cb-493d-b1fe-4677808f30e9",
+      "generation": 2,
+      "harness": "codex",
+      "native_session": "01a10097-1330-76a0-a6e0-557aaeb2d66d",
+      "observation_provenance": "cooperative_top_level",
+      "ordinal": 2,
+      "registered_at": 1791011265983
+    }
+  ],
+  "phase": "initial",
+  "receipts": [
+    {
+      "ack_actor_seat_id": "seat-POD2ob7i",
+      "ack_generation": 2,
+      "ack_observation": "{\"binding_generation\":2,\"decided_at\":1791011293148,\"execution\":\"0c1b4b6a-a7cb-493d-b1fe-4677808f30e9\",\"harness\":\"codex\",\"host_boot\":\"herdr-server:pid=56354:start=1791011257.772341:uid=501\",\"observed_at\":1791011293148,\"provenance\":\"cooperative_top_level\",\"session\":\"01a10097-1330-76a0-a6e0-557aaeb2d66d\",\"target_generation\":1}",
+      "acked_at": 1791011293148,
+      "message_id": "msg-EBU3Lv8I",
+      "seat_id": "seat-POD2ob7i",
+      "src": "manifest",
+      "state": "acked"
+    },
+    {
+      "ack_actor_seat_id": null,
+      "ack_generation": null,
+      "ack_observation": null,
+      "acked_at": null,
+      "message_id": "msg-LUYogHZP",
+      "seat_id": "seat-POD2ob7i",
+      "src": "manifest",
+      "state": "pending"
+    }
+  ],
+  "seat": "seat-POD2ob7i"
+}

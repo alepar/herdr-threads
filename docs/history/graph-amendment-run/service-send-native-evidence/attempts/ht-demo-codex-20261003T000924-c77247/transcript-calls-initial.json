@@ -1,0 +1,47 @@
+[
+  [
+    "item_3",
+    "/bin/zsh -lc 'herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000924-c77247/state inbox'",
+    false
+  ],
+  [
+    "item_4",
+    "/bin/zsh -lc 'herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000924-c77247/state read thread-4KPrQMzV --recent 20'",
+    false
+  ],
+  [
+    "item_5",
+    "/bin/zsh -lc 'herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000924-c77247/state read ssend-261003T000924-c77247 --recent 20'",
+    false
+  ],
+  [
+    "item_6",
+    "/bin/zsh -lc 'herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000924-c77247/state pending-receipts'",
+    false
+  ],
+  [
+    "item_8",
+    "/bin/zsh -lc 'herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000924-c77247/state accept thread-4KPrQMzV'",
+    false
+  ],
+  [
+    "item_9",
+    "/bin/zsh -lc 'herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000924-c77247/state accept-required ssend-261003T000924-c77247 --invitation inv-BqrMGzmw --requirement requirement-dYmIkELn --revision 1'",
+    false
+  ],
+  [
+    "item_10",
+    "/bin/zsh -lc \"herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000924-c77247/state send ssend-261003T000924-c77247 --body 'DONE'\"",
+    false
+  ],
+  [
+    "item_11",
+    "/bin/zsh -lc 'herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000924-c77247/state ack msg-IXWCNWbI'",
+    false
+  ],
+  [
+    "item_12",
+    "/bin/zsh -lc 'herdr-threads --state-dir /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-native-demo/ht-demo-codex-20261003T000924-c77247/state ack msg-8dzy9JX0'",
+    false
+  ]
+]

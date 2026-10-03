@@ -1,0 +1,49 @@
+{
+  "invitations": [
+    {
+      "accepted_actor_seat_id": "seat-ZAJ2JXAO",
+      "accepted_at": 1791011407100,
+      "accepted_generation": 2,
+      "accepted_observation": "{\"binding_generation\":2,\"decided_at\":1791011407100,\"execution\":\"0855748d-e012-49f2-ba3e-ba2453479341\",\"harness\":\"claude\",\"host_boot\":\"herdr-server:pid=95263:start=1791011388.529492:uid=501\",\"observed_at\":1791011407100,\"provenance\":\"cooperative_top_level\",\"session\":\"31d12c2e-e2b7-4413-9188-d22e2595b041\",\"target_generation\":1}",
+      "id": "inv-MrF40iVl",
+      "state": "accepted"
+    }
+  ],
+  "message": "msg-RMH02G5I",
+  "occupant_bindings": [
+    {
+      "ended_at": null,
+      "execution_id": "0855748d-e012-49f2-ba3e-ba2453479341",
+      "generation": 2,
+      "harness": "claude",
+      "native_session": "31d12c2e-e2b7-4413-9188-d22e2595b041",
+      "observation_provenance": "cooperative_top_level",
+      "ordinal": 2,
+      "registered_at": 1791011391444
+    }
+  ],
+  "phase": "initial",
+  "receipts": [
+    {
+      "ack_actor_seat_id": "seat-ZAJ2JXAO",
+      "ack_generation": 2,
+      "ack_observation": "{\"binding_generation\":2,\"decided_at\":1791011412361,\"execution\":\"0855748d-e012-49f2-ba3e-ba2453479341\",\"harness\":\"claude\",\"host_boot\":\"herdr-server:pid=95263:start=1791011388.529492:uid=501\",\"observed_at\":1791011412361,\"provenance\":\"cooperative_top_level\",\"session\":\"31d12c2e-e2b7-4413-9188-d22e2595b041\",\"target_generation\":1}",
+      "acked_at": 1791011412361,
+      "message_id": "msg-Brr19eRX",
+      "seat_id": "seat-ZAJ2JXAO",
+      "src": "manifest",
+      "state": "acked"
+    },
+    {
+      "ack_actor_seat_id": "seat-ZAJ2JXAO",
+      "ack_generation": 2,
+      "ack_observation": "{\"binding_generation\":2,\"decided_at\":1791011411717,\"execution\":\"0855748d-e012-49f2-ba3e-ba2453479341\",\"harness\":\"claude\",\"host_boot\":\"herdr-server:pid=95263:start=1791011388.529492:uid=501\",\"observed_at\":1791011411717,\"provenance\":\"cooperative_top_level\",\"session\":\"31d12c2e-e2b7-4413-9188-d22e2595b041\",\"target_generation\":1}",
+      "acked_at": 1791011411717,
+      "message_id": "msg-RMH02G5I",
+      "seat_id": "seat-ZAJ2JXAO",
+      "src": "manifest",
+      "state": "acked"
+    }
+  ],
+  "seat": "seat-ZAJ2JXAO"
+}

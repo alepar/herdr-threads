@@ -1,0 +1,15 @@
+{
+  "message": "msg-enalCXFe",
+  "receipt": {
+    "message_id": "msg-enalCXFe",
+    "seat_id": "seat-UqoNZS79",
+    "state": "pending",
+    "ack_actor_seat_id": null,
+    "ack_generation": null,
+    "ack_observation": null,
+    "acked_at": null,
+    "src": "manifest"
+  },
+  "root_ack_calls": [],
+  "provenance": null
+}

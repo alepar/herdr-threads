@@ -1195,8 +1195,9 @@ class Driver:
                          f"`herdr-threads leave {required['thread']}` once; report result.")
         servicesend = self.facts.get("servicesend") or {}
         if "servicesend" in self.scenarios and servicesend.get("thread"):
-            extra.append(f"Service request, thread {servicesend['thread']}: accept-required it, then follow that thread's "
-                         f"service message.")
+            # Like burst (D8): the handoff thread's own accept is named here, since step 1 falls past the preview.
+            extra.append(f"Accept this thread's invitation (step 1); service request, thread {servicesend['thread']}: "
+                         f"accept-required it, then ACK its service message by its exact ID.")
         if not extra:
             return ""
         return "".join(f" {chr(97 + i)}) {text}" for i, text in enumerate(extra))
