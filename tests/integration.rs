@@ -33,6 +33,12 @@ mod doctor_admission_seam;
 /// ht-4is.8.17: `read --follow`, IRC style for a person, JSON lines otherwise.
 #[path = "integration/follow.rs"]
 mod follow;
+/// ht-xoc.7: harness version evidence end to end with a stand-in harness
+/// (silent unlisted versions, verified-by-use, manifest-driven broken lines,
+/// opt-out and offline paths, unattributable and malformed payloads).
+#[cfg(feature = "test-support")]
+#[path = "integration/harness_version_evidence.rs"]
+mod harness_version_evidence;
 /// ht-p03.11: Herdr stopped under a running daemon leaves one first line and
 /// capped summaries in daemon.log.
 #[cfg(feature = "test-support")]
