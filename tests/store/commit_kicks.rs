@@ -126,6 +126,10 @@ fn set(lanes: &[Lane]) -> LaneSet {
 const INSERTS: &[(&str, &str)] = &[
     ("wake_work", "INSERT INTO wake_work(seat_id) VALUES ('s1')"),
     (
+        "wake_batches",
+        "INSERT INTO wake_batches(seat_id,deadline_at) VALUES ('s1',30000)",
+    ),
+    (
         "seats",
         "INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s1','i','unresolved','native',0,0)",
     ),
@@ -223,6 +227,21 @@ fn every_table_is_classified() {
     }
     assert_eq!(lanes_for_table("wake_work"), set(&[Lane::Wakes]));
     assert_eq!(lanes_for_table("work_jobs"), set(&[Lane::Deadlines]));
+}
+
+/// Retaining, changing or clearing a durable batch deadline changes when the
+/// wake lane must reconsider the seat, even when no wake_work row changes.
+#[test]
+fn batch_deadline_changes_kick_wakes() {
+    let fixture = Fixture::new("kicks-batch-deadline");
+    for sql in [
+        "INSERT INTO wake_batches(seat_id,deadline_at) VALUES ('s1',30000)",
+        "UPDATE wake_batches SET deadline_at=20000 WHERE seat_id='s1'",
+        "DELETE FROM wake_batches WHERE seat_id='s1'",
+    ] {
+        fixture.run(sql);
+        assert_eq!(fixture.flushed(), vec![(set(&[Lane::Wakes]), None)]);
+    }
 }
 
 #[test]

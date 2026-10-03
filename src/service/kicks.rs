@@ -77,6 +77,9 @@ impl LaneSet {
 /// Tables whose commits wake the wake lane (spec D1).
 const WAKE_TABLES: &[&str] = &[
     "wake_work",
+    // Retained batching deadlines and their canonical clear triggers change
+    // when a seat's ordinary attention can be reconsidered.
+    "wake_batches",
     "seats",
     "occupant_bindings",
     "seat_availability",

@@ -146,6 +146,9 @@ impl Matrix {
                 instance,
                 StoreSettings {
                     daemon_boot: Some(boot),
+                    // These crash boundaries exercise an immediate first wake;
+                    // retained retry spacing still uses its production default.
+                    wake_batch_delay_ms: 0,
                     ..StoreSettings::default()
                 },
             )
@@ -686,6 +689,71 @@ impl Matrix {
     fn set_mono(&self, mono: u64) {
         self.clock.mono.store(mono, Ordering::SeqCst);
     }
+}
+
+/// Production defaults delay the first ordinary wake without sliding the
+/// retained deadline on new mail or making batch bookkeeping self-kick.
+#[test]
+fn default_batching_retains_first_attention_without_self_kicks() {
+    use crate::service::kicks::{CommitKicks, Lane, LaneSet, enter_lane};
+
+    let m = Matrix::new();
+    let (s, r, thread) = m.pair();
+    m.host_observes_idle(&r);
+    let sent = m.send(&s, &thread, "first", &[], "batch-first").unwrap();
+    let store = Arc::new(
+        SqliteStore::new(
+            StoreContext::new(m.db_path.clone(), m.clock.clone()),
+            m.instance.clone(),
+            StoreSettings {
+                daemon_boot: Some(m.boot),
+                ..StoreSettings::default()
+            },
+        )
+        .unwrap()
+        .with_commit_kicks(Arc::new(CommitKicks::default())),
+    );
+    let kicks = Arc::new(Mutex::new(Vec::<LaneSet>::new()));
+    let captured = kicks.clone();
+    store.set_kick_sink(Box::new(move |lanes, _| {
+        captured.lock().unwrap().push(lanes)
+    }));
+    let ports = ScheduledStore::new(store, Arc::new(FairWriter::new(32)));
+    let notifier = PromptLog::default();
+    let scheduler = Scheduler::new(
+        m.instance.clone(),
+        &ports,
+        &ports,
+        &notifier,
+        RetryConfig::default(),
+        m.boot,
+    );
+    let _origin = enter_lane(Lane::Wakes);
+    let first = scheduler.drive_wakes(&m.budget()).unwrap();
+    assert_eq!(first.attempted, 0);
+    assert_eq!(first.next_due_at, Some(MonoInstant(31_000)));
+    assert_eq!(m.wake_row("r"), (None, None, None));
+    assert!(
+        kicks.lock().unwrap().is_empty(),
+        "batch retention must not self-kick"
+    );
+
+    // A later arrival must not slide the original durable deadline.
+    m.clock.utc.store(1_020_000, Ordering::SeqCst);
+    m.set_mono(21_000);
+    m.send(&s, &thread, "later", &[], "batch-later").unwrap();
+    assert_eq!(
+        scheduler.drive_wakes(&m.budget()).unwrap().next_due_at,
+        Some(MonoInstant(31_000))
+    );
+    m.clock.utc.store(1_029_999, Ordering::SeqCst);
+    m.set_mono(30_999);
+    assert_eq!(scheduler.drive_wakes(&m.budget()).unwrap().attempted, 0);
+    m.clock.utc.store(1_030_000, Ordering::SeqCst);
+    m.set_mono(31_000);
+    assert_eq!(scheduler.drive_wakes(&m.budget()).unwrap().attempted, 1);
+    assert_eq!(notifier.prompts.lock().unwrap().len(), 1);
+    assert_eq!(m.receipt_state(&sent, "r"), "pending");
 }
 
 /// Boundary: before wake. The send committed, then the daemon went down

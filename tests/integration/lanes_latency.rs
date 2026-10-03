@@ -84,7 +84,9 @@ impl Session {
                     &paths,
                     clock,
                     daemon_stop,
-                    ServiceConfig::default(),
+                    // Measure commit latency and outage freezing independently
+                    // of the configurable initial ordinary batching window.
+                    ServiceConfig::default().with_wake_batch_delay(0).unwrap(),
                     host,
                     daemon_probe,
                     move |descriptor| {

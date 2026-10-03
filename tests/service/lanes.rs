@@ -1600,6 +1600,9 @@ mod pacer_lanes {
                     "i",
                     StoreSettings {
                         daemon_boot: Some(boot()),
+                        // Pacer cases measure retry spacing after an immediate
+                        // first attempt, independently of initial batching.
+                        wake_batch_delay_ms: 0,
                         ..StoreSettings::default()
                     },
                 )
@@ -2005,6 +2008,7 @@ mod pacer_lanes {
                 "i",
                 StoreSettings {
                     daemon_boot: Some(boot()),
+                    wake_batch_delay_ms: 0,
                     ..StoreSettings::default()
                 },
             )

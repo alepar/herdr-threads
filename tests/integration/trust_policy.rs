@@ -235,6 +235,14 @@ struct World {
 }
 impl World {
     fn start(prefix: &str, panes: Vec<Value>) -> Self {
+        Self::start_with_wake_batch_delay(prefix, panes, None)
+    }
+
+    fn start_with_wake_batch_delay(
+        prefix: &str,
+        panes: Vec<Value>,
+        wake_batch_delay_ms: Option<u64>,
+    ) -> Self {
         let root = PathBuf::from(format!(
             "/private/tmp/{prefix}-{}",
             &uuid::Uuid::new_v4().simple().to_string()[..8]
@@ -278,6 +286,22 @@ impl World {
             stale_marker: std::cell::RefCell::new(None),
             _scratch: scratch,
         };
+        if let Some(delay) = wake_batch_delay_ms {
+            use herdr_threads::daemon::paths::{InstancePaths, RuntimeContext};
+            use std::os::unix::fs::PermissionsExt;
+            let context =
+                RuntimeContext::explicit(world.state.clone(), world.herdr.socket.clone(), None)
+                    .unwrap();
+            let paths = InstancePaths::resolve(&context).unwrap();
+            paths.prepare_instance_dir().unwrap();
+            let settings_path = paths.instance_dir.join("settings.json");
+            fs::write(
+                &settings_path,
+                serde_json::to_vec(&json!({"wake_batch_delay_ms": delay})).unwrap(),
+            )
+            .unwrap();
+            fs::set_permissions(settings_path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
         world.ensure();
         world
     }
@@ -1328,13 +1352,16 @@ fn restore_with_every_seat_structurally_reconfirmed_leaves_no_hold() {
 /// agent is idle, so the wake prompt is submitted to it alone.
 #[test]
 fn codex_reattachment_without_herdr_hint_then_wake() {
-    let mut world = World::start(
+    // Continuity and wake safety need an immediate first attempt here; initial
+    // batching is tested independently and retry spacing stays unchanged.
+    let mut world = World::start_with_wake_batch_delay(
         "htcx",
         vec![
             pane("w1:p1", "term-a"),
             pane("w1:p2", "term-b"),
             pane("w1:p3", "term-c"),
         ],
+        Some(0),
     );
     let (x, y) = (world.resolve("w1:p1"), world.resolve("w1:p3"));
     for (pane, session) in [("w1:p1", "SX"), ("w1:p3", "SY")] {

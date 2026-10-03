@@ -316,7 +316,9 @@ fn service_ack_required_request_flow() {
                 &daemon_paths,
                 daemon_clock,
                 thread_stop,
-                ServiceConfig::default(),
+                // This flow checks immediate notification delivery, separately
+                // from the initial ordinary batching window.
+                ServiceConfig::default().with_wake_batch_delay(0).unwrap(),
                 host,
                 move |descriptor| {
                     ready_tx
