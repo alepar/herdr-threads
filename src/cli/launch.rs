@@ -728,6 +728,7 @@ pub fn execute(request: &LaunchRequest, parts: &LaunchParts<'_>) -> Result<Launc
         verb: SetupVerb::Status,
         harness: request.harness,
         harness_binary: request.harness_binary.clone(),
+        prompt_suggestions: Default::default(),
     };
     // Codex: warm the hook's persistent fingerprint cache here, outside the
     // hook's time budget, so a cold scan of an unlisted (schema-matched)

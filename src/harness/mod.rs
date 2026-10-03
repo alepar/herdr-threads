@@ -45,6 +45,7 @@ mod manifest_tests;
 #[cfg(test)]
 #[path = "../../tests/harness/optimistic_render.rs"]
 mod optimistic_render;
+pub mod prompt_suggestion;
 pub mod recipe;
 #[cfg(test)]
 #[path = "../../tests/harness/recipe.rs"]

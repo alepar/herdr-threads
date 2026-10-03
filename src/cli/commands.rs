@@ -46,7 +46,10 @@ pub enum CliAction {
     Setup(super::setup::SetupRequest),
     /// `setup`, `unsetup` or `setup-status` with no harness named: every
     /// harness (setup: every detected one); local, never contacts the daemon.
-    SetupAll(super::setup::SetupVerb),
+    SetupAll(
+        super::setup::SetupVerb,
+        super::setup::PromptSuggestionPolicy,
+    ),
     /// Managed native launch into one explicit existing empty shell pane.
     Launch(super::launch::LaunchRequest),
     /// `me init`: record the invoking pane as the person's own seat identity.
@@ -157,7 +160,7 @@ pub fn dispatch<B: CliBackend>(
             return backend.local(LocalAction::CachedCheckIn(request), &parsed.output);
         }
         CliAction::Setup(_)
-        | CliAction::SetupAll(_)
+        | CliAction::SetupAll(..)
         | CliAction::Launch(_)
         | CliAction::MeInit { .. }
         | CliAction::Skill
@@ -856,6 +859,14 @@ struct SetupArgs {
     /// the first `claude`/`codex` executable on PATH, as the hook observes).
     #[arg(long, value_name = "PATH")]
     harness_binary: Option<String>,
+    /// setup (claude): set Claude's `promptSuggestionEnabled` to false without
+    /// asking (unsetup reverts it). Default: ask on a terminal, else advise.
+    #[arg(long, conflicts_with = "keep_prompt_suggestions")]
+    disable_prompt_suggestions: bool,
+    /// setup (claude): leave Claude's prompt suggestions as they are, without
+    /// asking or advising.
+    #[arg(long)]
+    keep_prompt_suggestions: bool,
 }
 
 #[derive(Args)]
@@ -889,14 +900,30 @@ struct ViewArgs {
 }
 
 fn setup_action(verb: super::setup::SetupVerb, args: SetupArgs) -> Result<CliAction, ApiError> {
+    use super::setup::PromptSuggestionPolicy;
     use crate::harness::context::Harness;
+    let prompt_suggestions = if args.disable_prompt_suggestions {
+        PromptSuggestionPolicy::Disable
+    } else if args.keep_prompt_suggestions {
+        PromptSuggestionPolicy::Keep
+    } else {
+        PromptSuggestionPolicy::Ask
+    };
+    if prompt_suggestions != PromptSuggestionPolicy::Ask
+        && (verb != super::setup::SetupVerb::Install || args.harness.as_deref() == Some("codex"))
+    {
+        return Err(invalid(
+            "--disable-prompt-suggestions and --keep-prompt-suggestions apply to `setup` and \
+             `setup claude` only (unsetup reverts what setup set)",
+        ));
+    }
     let Some(harness) = args.harness else {
         if args.harness_binary.is_some() {
             return Err(invalid(
                 "--harness-binary needs a harness: `setup claude|codex --harness-binary PATH`",
             ));
         }
-        return Ok(CliAction::SetupAll(verb));
+        return Ok(CliAction::SetupAll(verb, prompt_suggestions));
     };
     let harness = if harness == "codex" {
         Harness::Codex
@@ -912,6 +939,7 @@ fn setup_action(verb: super::setup::SetupVerb, args: SetupArgs) -> Result<CliAct
         verb,
         harness,
         harness_binary: args.harness_binary,
+        prompt_suggestions,
     }))
 }
 

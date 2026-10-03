@@ -1,5 +1,5 @@
 status: stalled at phase finish
-metrics: delivered via Herdr to the superpowers workspace agent (wB:p1); draft docs/superpowers/runs/2026-10-02-thread-summaries-compaction-survival/upstream-feedback-draft.md
+metrics: delivered via Herdr to the superpowers workspace agent (wB:p1); draft docs/history/thread-summaries-run/upstream-feedback-draft.md
 finish verification: full suite at 63af7f93 RED (exit 101, 186 s): daemon::lifecycle::tests::crashed_incompatible_protocol_owner_recovers_to_new_healthy_boot failed in the lib target (passes 3/3 alone); the phase-6 re-run at 62f9c1a7 failed a different test (composition::actual_native_snapshot_cancellation_…, also 3/3 alone). Two consecutive runs, two different load-sensitive failures — not root-caused (source: target/full-suite-gate/20261002-215955/run-1.log; run.md sweepFix)
 
 ## Implemented

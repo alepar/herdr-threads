@@ -224,6 +224,7 @@ impl Scratch {
                 verb: SetupVerb::Install,
                 harness,
                 harness_binary: None,
+                prompt_suggestions: Default::default(),
             },
             &self.env,
         )

@@ -371,8 +371,8 @@ where
     if let CliAction::Setup(request) = &parsed.action {
         return setup::run(request, &parsed.output, writer);
     }
-    if let CliAction::SetupAll(verb) = &parsed.action {
-        return setup::run_all(*verb, &parsed.output, writer);
+    if let CliAction::SetupAll(verb, prompt_suggestions) = &parsed.action {
+        return setup::run_all(*verb, *prompt_suggestions, &parsed.output, writer);
     }
     let (context, _) = instance::resolve_context(&instance::InstanceInputs::from_process(
         parsed.output.context.state_dir.as_ref().map(PathBuf::from),
@@ -585,7 +585,7 @@ where
         CliAction::Doctor => {
             unreachable!("doctor is handled before context resolution")
         }
-        CliAction::Setup(_) | CliAction::SetupAll(_) => {
+        CliAction::Setup(_) | CliAction::SetupAll(..) => {
             unreachable!("setup is handled before context resolution")
         }
         CliAction::Skill => unreachable!("skill is handled before context resolution"),

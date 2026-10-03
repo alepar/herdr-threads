@@ -2813,6 +2813,53 @@ fn due_phase_warns_exactly_once_when_the_extension_lapses() {
     assert_eq!(warning_count(&conn, "ml"), 1);
 }
 
+/// ht-hqg: a stall and re-entry cycle grants no fresh entry extension, so the
+/// overdue warning fires on the frozen deadline.
+#[test]
+fn warning_fires_on_the_frozen_deadline_after_stall_and_reentry() {
+    use crate::protocol::summary::SummarySettings;
+    use crate::store::catch_up;
+    let (context, mut conn, clock) = setup();
+    legacy_receipt(&conn, "ml", "t", 1, 200_000);
+    let (seat, thread) = (SeatId::new("b"), ThreadId::new("t"));
+    let execution = ExecutionId::new("00000000-0000-4000-8000-0000000000bb");
+    let enter = |conn: &mut Connection, now: i64| {
+        let tx = conn.transaction().unwrap();
+        catch_up::enter_or_keep(
+            &tx,
+            &catch_up::CatchUpEntry {
+                seat: &seat,
+                thread: &thread,
+                frontier_seq: 1,
+                binding_generation: 1,
+                execution: &execution,
+                now: UtcMillis(now),
+            },
+            &SummarySettings::default(),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    };
+    // First entry: cold p99 (90 s) extends to 91_000, before the frozen 200_000.
+    enter(&mut conn, 1_000);
+    assert_eq!(extension_of(&conn, "b", "t"), Some(91_000));
+    let tx = conn.transaction().unwrap();
+    assert_eq!(catch_up::stall_scan(&tx, UtcMillis(95_000), 10).unwrap(), 1);
+    tx.commit().unwrap();
+    // Re-entry at 150_000 would have extended to 240_000; it grants nothing.
+    enter(&mut conn, 150_000);
+    assert_eq!(extension_of(&conn, "b", "t"), Some(91_000));
+    assert_eq!(
+        receipts::effective_deadline(&conn, &receipt_view("b", "t", Some(200_000))).unwrap(),
+        Some(200_000)
+    );
+    clock.0.store(199_999, Ordering::SeqCst);
+    assert_eq!(due_phase(&context, &mut conn), 0);
+    clock.0.store(200_000, Ordering::SeqCst);
+    assert_eq!(due_phase(&context, &mut conn), 1);
+    assert_eq!(warning_count(&conn, "ml"), 1);
+}
+
 #[test]
 fn recheck_is_idempotent_after_restart() {
     let (context, mut conn, clock) = setup();

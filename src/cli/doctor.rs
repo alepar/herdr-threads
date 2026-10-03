@@ -670,6 +670,11 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
                 })),
             });
             claude["allow_rule"] = super::setup::allow_rule_json(inspection.allow_rule.as_ref());
+            claude["prompt_suggestions"] = super::setup::prompt_suggestion_status(
+                &env,
+                &settings,
+                std::env::var_os(crate::harness::claude::PROMPT_SUGGESTION_ENV),
+            );
         }
         Err(error) => {
             if claude_binary.is_some() {
@@ -1016,6 +1021,32 @@ pub fn render_text(report: &Value) -> String {
                 out.push_str(&format!(
                     "hooks.claude.allow_rule.note: {}\n",
                     scalar(&allow_rule["note"])
+                ));
+            }
+        }
+        let suggestions = &claude["prompt_suggestions"];
+        if suggestions.is_object() {
+            out.push_str(&format!(
+                "hooks.claude.prompt_suggestions: {} (`{}` in {}{})\n",
+                scalar(&suggestions["state"]),
+                scalar(&suggestions["setting"]),
+                scalar(&claude["setup"]["settings"]),
+                if suggestions["set_by_setup"] == json!(true) {
+                    ", set by setup"
+                } else {
+                    ""
+                }
+            ));
+            if suggestions["env_override"].is_string() {
+                out.push_str(&format!(
+                    "hooks.claude.prompt_suggestions.env_override: {}\n",
+                    scalar(&suggestions["env_override"])
+                ));
+            }
+            if suggestions["note"].is_string() {
+                out.push_str(&format!(
+                    "hooks.claude.prompt_suggestions.note: {}\n",
+                    scalar(&suggestions["note"])
                 ));
             }
         }

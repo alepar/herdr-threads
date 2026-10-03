@@ -29,7 +29,7 @@ Claude: X = seat-tJDlgi2m, thread thread-I2SWujnv. Codex: X = seat-RJ7yryH6, thr
 | Shared block reuse by second seat Y | PASS: Y's `summary` returns the same 14 block ids as X (`claude-y-04-ready.txt` vs `claude-x-04-ready.txt`, ids compared offline); no worker rerun (`claude-y-03-worker-spawns-and-submits.txt`) | PASS: same 13 block ids (`codex-y-04-ready.txt` vs `codex-x-04-ready.txt`) |
 | Catch-up hold and extension on a pending receipt | PASS for the hold: `pending-receipts` lists 51 rows as `deferred: recipient catching up (until ...)` with `deferred_until` after the original deadline (`claude-catchup/pending-receipts-X.txt`, `deferred-rows.txt`). Not captured separately: X's attention not offering the extra require-ACK message. | PASS for the hold: 43 deferred rows (`codex-catchup/`). Same gap on the attention-offer check. |
 | Soft-deadline poke on idle unfocused agent | PARTIAL; controlled probes FAILED: `claude-poke/` and `claude-poke-run1-starved-by-wake-backoff/` show no poke before the deadline (starved by the wake retry backoff, bead ht-2i4); in `claude-poke-run2-agents-acked-at-first-wake/` the agents ACKed at the first wake, so no poke was due. Incidental real pokes: `receipt due in 18s` and `58s` reached Y at 23:37:53 and 23:38:23 (`pokes-and-wakes-received.txt`). | PARTIAL, same shape: `codex-poke-run1-focus-not-applied/`, `codex-poke-after-release*/` show no poke in the probe window (ht-2i4). Incidental real pokes: `receipt due in ...` to X at 00:07:35, 00:08:24, 00:19:29, 00:20:08 and to Y (`pokes-and-wakes-received.txt`). |
-| Skip on a focused pane, then poke after focus moves away | NOT VERIFIED (acceptance unmet): `herdr agent focus` ran at T+74 / T+101 (`claude-poke*/events.txt`) but every sample reads `focused=false` (`claude-poke*/samples.txt`), so the pane was never focused; no skip log line. Bead ht-yuz. | NOT VERIFIED (acceptance unmet): focus events in `codex-poke-run1-focus-not-applied/events.txt` and `codex-poke-after-release*/events.txt`; samples show `focused=false`. Bead ht-yuz. |
+| Skip on a focused pane, then poke after focus moves away | VERIFIED on Claude 2.1.288, 2026-10-03, on the real Herdr session (see [focus-probe/](focus-probe/report.md)): no poke while focused, poke after focus moved away. Original private-server attempt: `herdr agent focus` ran at T+74 / T+101 (`claude-poke*/events.txt`) but every sample reads `focused=false` (`claude-poke*/samples.txt`), so the pane was never focused; no skip log line. Bead ht-yuz. | NOT VERIFIED (acceptance unmet): focus events in `codex-poke-run1-focus-not-applied/events.txt` and `codex-poke-after-release*/events.txt`; samples show `focused=false`. Bead ht-yuz. |
 
 The incidental pokes show the daemon can deliver a poke prompt on both harnesses. They are not the controlled
 soft-point-on-idle-unfocused demonstration the brief asked for, and nothing here proves the skip logic ran.
@@ -49,7 +49,7 @@ soft-point-on-idle-unfocused demonstration the brief asked for, and nothing here
 
 ## Not verified
 
-- Skip on a focused pane, both harnesses.
+- Skip on a focused pane on Codex (Claude verified in [focus-probe/](focus-probe/report.md)).
 - A controlled soft-point poke on an idle unfocused agent, both harnesses.
 - That X's attention output omits the catch-up-held message (only the `pending-receipts` deferral line is captured).
 - Codex hooks are `schema-matched, live-unverified` per the daemon's own limitation line (`state/doctor.txt`).

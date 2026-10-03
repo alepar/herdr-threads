@@ -224,9 +224,12 @@ The service never ACKs or accepts and is never a receipt recipient.
 **A6. Effective receipt deadlines.** A receipt's effective deadline is the later of its frozen deadline and
 the `extension_until` of the latest catch-up row for the receipt's (seat, thread). The daemon decides it (A2)
 from catch-up state the seat itself entered through its accountable claim (a `summary` call that returned
-work). It is extended only by stored summary progress (entry, each newly stored block, and the exit grace),
-never on heuristic evidence, and frozen deadlines are never rewritten: they stay stored and displayed beside
-the effective one. Overdue classification, warnings, pending receipts and the soft-deadline poke use the
+work). The first entry, and any entry after a ready or superseded row, grants one p99 job duration;
+re-entry after a stall grants nothing until a block is stored (the most recent row ended stalled and no
+block for the thread was stored since), and a repeated call on an active row grants nothing. Otherwise it
+is extended only by stored summary progress (each newly stored block, and the exit grace after a Ready),
+never on heuristic evidence, so a stall and re-entry cycle cannot postpone a warning. Frozen deadlines are
+never rewritten: they stay stored and displayed beside the effective one. Overdue classification, warnings, pending receipts and the soft-deadline poke use the
 effective deadline.
 
 ## Accepted limits
@@ -258,7 +261,13 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
 - **Pokes skip Claude panes that show composer text.** A Claude pane whose composer shows a prompt
   suggestion (or any typed text) is not poked: the suggestion cannot be told from a draft without captured
   styling. The skip is for that poke only and is retried after the wake retry spacing; only the
-  hard-deadline warning reaches a pane that keeps showing a suggestion (ht-1ip.46).
+  hard-deadline warning reaches a pane that keeps showing a suggestion (ht-1ip.46). Claude shows one after
+  every turn by default, so this skips most idle Claude panes unless suggestions are off: with
+  `promptSuggestionEnabled: false` an idle Claude composer reads empty (a bare prompt or a captured
+  placeholder) and the poke is sent. `setup claude` explains this and offers to turn suggestions off; it
+  writes the setting only on an interactive yes or `--disable-prompt-suggestions`, never silently, and
+  `unsetup` reverts what it set (ht-6jt). A project or managed setting, or the session's
+  `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION`, can turn them back on; the poke then skips as above.
 - **Ordinary wakes merge with a draft.** An ordinary wake into an idle agent pane that holds a typed, unsent
   draft submits the wake text merged with the draft (`agent prompt` merges, poke spike Q5), as before the
   composer reader existed; only soft-deadline pokes stash and restore a draft.
@@ -289,8 +298,9 @@ restart).
 ### Thread summaries and deadline extension (2026-10-02)
 
 Summaries are agent-produced, daemon-validated data under `derived_summary`; priority comes from recorded
-claims (`author_role`, `relays_user`), not from the text. Catch-up extends effective deadlines only on stored
-progress (A6). The A4 poke rule (soft-deadline pokes) is defined with its behaviour above.
+claims (`author_role`, `relays_user`), not from the text. Catch-up extends effective deadlines once on the
+first entry or an entry after a ready or superseded row, and otherwise only on stored progress (A6; re-entry
+after a stall grants nothing until a block is stored, ht-hqg). The A4 poke rule (soft-deadline pokes) is defined with its behaviour above.
 
 ### Residual trust-edge findings (bucket B5)
 

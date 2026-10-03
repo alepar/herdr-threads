@@ -1,0 +1,3 @@
+#!/bin/sh
+# herdr-threads against the private focus-smoke instance, on the REAL Herdr session
+exec /private/tmp/ht-focus-smoke/bin/herdr-threads --state-dir /private/tmp/ht-focus-smoke/state --host-endpoint ~/.config/herdr/herdr.sock "$@"

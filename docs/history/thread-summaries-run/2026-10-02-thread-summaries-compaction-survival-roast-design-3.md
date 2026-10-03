@@ -1,7 +1,7 @@
 super-roast verdict: Should-fix (6 confirmed) [converged]
 mode: design        iteration: 3 of 3
 profile (assumed): Local single-user developer tooling: a Rust daemon and CLI coordinating coding agents in terminal panes. Same-user cooperative trust model per TRUST-POLICY.md, so adversarial caller verification is out of scope. The SQLite store holds real thread history, so data loss and risky table rebuilds matter. No network exposure.
-inputs: docs/superpowers/runs/2026-10-02-thread-summaries-compaction-survival/2026-10-02-thread-summaries-compaction-survival-design.md + bead tree ht-1ip (18 leaves)
+inputs: docs/design/herdr-threads/thread-summaries/2026-10-02-thread-summaries-compaction-survival-design.md + bead tree ht-1ip (18 leaves)
 delta vs prior: 4 new confirmed (0 Blocking) · 0 carried (0 Blocking) · 11 resolved · 2 regressed (0 Blocking)
 coverage: scouts 9/9 (premortem, completeness, yagni, failure-mode, feasibility, regression, domain:distributed-systems, domain:llm-agent-orchestration, domain:data-migrations) · raw 31 → deduped 20 → panel 15 · spot 5 · promoted 0 · judge completion 100% · remainder-capped: 0
 independence: same-family (Claude) — seat-differentiated panel

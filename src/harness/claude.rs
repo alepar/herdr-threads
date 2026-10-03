@@ -601,6 +601,21 @@ pub const CALLER_CONTEXT_ALLOW_RULE: &str = "Bash(export HERDR_THREADS_CALLER_CO
 /// of a compound command (`;`, `&&`, `|`, ...) separately.
 pub const HERDR_THREADS_ALLOW_RULE: &str = "Bash(herdr-threads *)";
 
+/// Claude Code's user setting that shows or hides the grayed-out prompt
+/// suggestion drawn in the composer after a turn (default `true`). Confirmed
+/// against Claude Code's settings reference
+/// (<https://code.claude.com/docs/en/settings-reference#promptsuggestionenabled>)
+/// and used by the native summary smoke
+/// (`docs/evidence/summary-smoke/captures/state/claude-scratch-settings.json`).
+/// herdr-threads cannot tell a suggestion from typed text, so it never pokes a
+/// pane that shows one (TRUST-POLICY A4); `setup claude` offers to set it
+/// `false` ([`crate::harness::prompt_suggestion`]).
+pub const PROMPT_SUGGESTION_SETTING: &str = "promptSuggestionEnabled";
+
+/// The per-session environment override of [`PROMPT_SUGGESTION_SETTING`]
+/// (Claude Code settings reference); reported by doctor when set.
+pub const PROMPT_SUGGESTION_ENV: &str = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION";
+
 /// A conservative model of how Claude Code matches one `Bash(...)` allow rule
 /// against a whole Bash command: the pattern is the text inside `Bash(` `)`,
 /// `*` matches any run of characters, and the match is against the entire

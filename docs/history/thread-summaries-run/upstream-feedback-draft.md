@@ -160,7 +160,7 @@ If upstream decides otherwise, please state the position explicitly so downstrea
 | id | type | title | what (first sentence of description) |
 | --- | --- | --- | --- |
 | ht-1ip | epic | Thread summaries for compaction survival + soft-deadline receipt pokes | Root epic for super-auto run 2026-10-02-thread-summaries-compaction-survival. Spec: docs/superpowers/runs/2026 |
-| ht-1ip.1 | task | Seam contract: summary schema, wire types, settings, inert hooks and trust-polic | Spec docs/superpowers/runs/2026-10-02-thread-summaries-compaction-survival/2026-10-02-thread-summaries-compact |
+| ht-1ip.1 | task | Seam contract: summary schema, wire types, settings, inert hooks and trust-polic | Spec docs/history/thread-summaries-run/2026-10-02-thread-summaries-compact |
 | ht-1ip.2 | task | Message authorship: record author_role and send --relays-user | Spec §1. Send path records author_role from the sender's open binding (operator_human->human, cooperative_top_ |
 | ht-1ip.3 | task | Summary core: deterministic chunker, rendered sizes, displayed cover | Spec §2,§3. Pure module src/summary/{chunk,cover,render}.rs: render a message as a job-bundle line (header + b |
 | ht-1ip.4 | task | Summary ledger: daemon extraction, submission validation, carry-forward merge | Spec §5,§6. Pure module src/summary/{ledger,validate,identifiers}.rs: L0 ledger skeleton pre-fill (user_instru |

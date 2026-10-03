@@ -1978,3 +1978,216 @@ fn doctor_flags_legacy_event_registration_without_degrading() {
             .contains("'--event' 'SessionStart'")
     );
 }
+
+// ---------------------------------------------------------------------------
+// Claude prompt suggestions (ht-6jt). Children are never on a terminal here,
+// so the bare command is the non-interactive path; the y/N question itself is
+// covered in src/cli/setup.rs (`settle_prompt_suggestions`).
+// ---------------------------------------------------------------------------
+
+const SUGGESTION_KEY: &str = "promptSuggestionEnabled";
+
+fn settings_json(s: &Scratch) -> serde_json::Value {
+    serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap()
+}
+
+/// Non-interactive `setup claude` never changes the setting: it reports
+/// `advised` and prints the explanation as a warning; nothing is asked.
+/// Kills: writing the key silently, or dropping the advice.
+#[test]
+fn non_interactive_setup_advises_and_leaves_prompt_suggestions() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    fs::create_dir(&s.claude_config).unwrap();
+    fs::write(s.settings(), ORIGINAL).unwrap();
+    let out = s.run(&["setup", "claude"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let report = text(&out.stdout);
+    assert!(
+        report.contains("prompt_suggestions.action: advised\n"),
+        "{report}"
+    );
+    assert!(
+        report.contains("prompt_suggestions.state: default (enabled)\n"),
+        "{report}"
+    );
+    assert!(
+        report.contains("cannot tell that suggestion from text you typed"),
+        "{report}"
+    );
+    assert!(report.contains("--disable-prompt-suggestions"), "{report}");
+    assert!(!text(&out.stderr).contains("[y/N]"), "never asks off a TTY");
+    assert!(settings_json(&s).get(SUGGESTION_KEY).is_none());
+    // unsetup restores the original bytes: nothing of the setting to revert.
+    let unsetup = s.run(&["--json", "unsetup", "claude"]);
+    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
+    assert_eq!(json(&unsetup)["prompt_suggestions"], "not_recorded");
+    assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
+}
+
+/// `--disable-prompt-suggestions` sets the key false without asking, doctor
+/// and setup-status report it, a re-run is idempotent, and unsetup reverts
+/// it so the file is restored byte for byte. Kills: not writing, not
+/// recording (unsetup leaving `false`), reverting before the hooks so the
+/// byte-for-byte restore is lost, and doctor not reporting the state.
+#[test]
+fn disable_flag_sets_false_and_unsetup_reverts_it() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    fs::create_dir(&s.claude_config).unwrap();
+    fs::write(s.settings(), ORIGINAL).unwrap();
+
+    let before = json_doctor(&s);
+    assert_eq!(
+        before["hooks"]["claude"]["prompt_suggestions"]["state"], "default (enabled)",
+        "{before}"
+    );
+
+    let out = s.run(&["--json", "setup", "claude", "--disable-prompt-suggestions"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let report = json(&out);
+    assert_eq!(
+        report["prompt_suggestions"]["action"], "disabled",
+        "{report}"
+    );
+    assert_eq!(report["prompt_suggestions"]["set_by_setup"], true);
+    assert!(
+        !report["warnings"]
+            .to_string()
+            .contains("--disable-prompt-suggestions"),
+        "{report}"
+    );
+    let installed = settings_json(&s);
+    assert_eq!(installed[SUGGESTION_KEY], false);
+    assert_eq!(installed["model"], "x");
+    assert!(installed["hooks"]["SessionStart"].is_array());
+
+    let doctor = text(&s.run(&["doctor"]).stdout);
+    assert!(
+        doctor.contains(&format!(
+            "hooks.claude.prompt_suggestions: disabled (`{SUGGESTION_KEY}` in {}, set by setup)\n",
+            s.settings().display()
+        )),
+        "{doctor}"
+    );
+    assert!(
+        !doctor.contains("hooks.claude.prompt_suggestions.note"),
+        "{doctor}"
+    );
+    let status = json(&s.run(&["--json", "setup-status", "claude"]));
+    assert_eq!(status["prompt_suggestions"]["state"], "disabled");
+    assert_eq!(status["prompt_suggestions"]["set_by_setup"], true);
+
+    let again = s.run(&["--json", "setup", "claude", "--disable-prompt-suggestions"]);
+    assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
+    assert_eq!(
+        json(&again)["prompt_suggestions"]["action"],
+        "already_disabled"
+    );
+
+    let unsetup = s.run(&["unsetup", "claude"]);
+    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
+    assert!(
+        text(&unsetup.stdout).contains("prompt_suggestions: reverted\n"),
+        "{}",
+        text(&unsetup.stdout)
+    );
+    assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
+    let after = json_doctor(&s);
+    assert_eq!(
+        after["hooks"]["claude"]["prompt_suggestions"]["set_by_setup"], false,
+        "{after}"
+    );
+}
+
+/// A settings file setup created is deleted again after the revert.
+#[test]
+fn disable_flag_on_a_created_settings_file_unsetup_deletes_it() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    let out = s.run(&["setup", "--disable-prompt-suggestions"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stdout).contains(&format!(
+            "claude: prompt suggestions: disabled (`{SUGGESTION_KEY}: false`)\n"
+        )),
+        "{}",
+        text(&out.stdout)
+    );
+    assert_eq!(settings_json(&s)[SUGGESTION_KEY], false);
+    let unsetup = s.run(&["unsetup"]);
+    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
+    assert!(
+        text(&unsetup.stdout).contains("claude: prompt suggestions: reverted"),
+        "{}",
+        text(&unsetup.stdout)
+    );
+    assert!(!s.settings().exists());
+}
+
+/// `--keep-prompt-suggestions` leaves the setting and prints no advice; a
+/// value already `false` is reported and never recorded, so unsetup leaves
+/// it. Kills: writing on keep, advising on keep, and reverting a value the
+/// person set themselves.
+#[test]
+fn keep_flag_and_an_existing_false_are_left_alone() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    fs::create_dir(&s.claude_config).unwrap();
+    fs::write(s.settings(), ORIGINAL).unwrap();
+    let out = s.run(&["--json", "setup", "claude", "--keep-prompt-suggestions"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let report = json(&out);
+    assert_eq!(report["prompt_suggestions"]["action"], "kept");
+    assert!(
+        !report["warnings"].to_string().contains("prompt suggestion"),
+        "{report}"
+    );
+    assert!(settings_json(&s).get(SUGGESTION_KEY).is_none());
+    let unsetup = s.run(&["unsetup", "claude"]);
+    assert_eq!(unsetup.status.code(), Some(0));
+    assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
+
+    let own = b"{\"promptSuggestionEnabled\": false}\n";
+    fs::write(s.settings(), own).unwrap();
+    let out = s.run(&["--json", "setup", "claude"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let report = json(&out);
+    assert_eq!(report["prompt_suggestions"]["action"], "already_disabled");
+    assert_eq!(report["prompt_suggestions"]["set_by_setup"], false);
+    let doctor = text(&s.run(&["doctor"]).stdout);
+    assert!(
+        doctor.contains("hooks.claude.prompt_suggestions: disabled ("),
+        "{doctor}"
+    );
+    let unsetup = s.run(&["--json", "unsetup", "claude"]);
+    assert_eq!(unsetup.status.code(), Some(0));
+    assert_eq!(json(&unsetup)["prompt_suggestions"], "not_recorded");
+    assert_eq!(fs::read(s.settings()).unwrap(), own);
+}
+
+/// The flags belong to `setup` / `setup claude` only, and exclude each other.
+#[test]
+fn prompt_suggestion_flags_are_refused_elsewhere() {
+    let s = Scratch::new();
+    for args in [
+        &["unsetup", "claude", "--disable-prompt-suggestions"][..],
+        &["setup-status", "--keep-prompt-suggestions"],
+        &["setup", "codex", "--disable-prompt-suggestions"],
+    ] {
+        let out = s.run(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(
+            text(&out.stderr).contains("apply to `setup` and `setup claude` only"),
+            "{args:?}: {}",
+            text(&out.stderr)
+        );
+    }
+    let both = s.run(&[
+        "setup",
+        "claude",
+        "--disable-prompt-suggestions",
+        "--keep-prompt-suggestions",
+    ]);
+    assert_eq!(both.status.code(), Some(2), "{}", text(&both.stderr));
+}

@@ -1,0 +1,3 @@
+T+0 send 06:49:12
+T+63 focus -> Y 06:50:13
+T+114 focus -> home tab 06:51:04

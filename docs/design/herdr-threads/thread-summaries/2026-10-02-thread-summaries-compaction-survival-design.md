@@ -1,7 +1,7 @@
 # Thread summaries for compaction survival, and soft-deadline receipt pokes
 
 Root spec for the run `2026-10-02-thread-summaries-compaction-survival`. The requirements were agreed
-with the user section by section ([design brief](design-brief.md)); this spec turns them into
+with the user section by section ([design brief](../../../history/thread-summaries-run/design-brief.md)); this spec turns them into
 implementable contracts. [TRUST-POLICY.md](../../../../TRUST-POLICY.md) stays normative and is
 amended by this work (§Trust policy amendments).
 
@@ -411,7 +411,12 @@ ended with a future `extension_until`). With no row, it is the frozen deadline.
 - **Which receipts.** All of the seat's pending receipts on the thread, both before and after F,
   because reading a summary is not a receipt.
 - **Updates.**
-  - Entry sets `extension_until = max(current, entry + p99)`.
+  - The first entry, and any entry after a ready or superseded row, grants one p99:
+    `extension_until = max(current, entry + p99)`. Re-entry after a stall grants nothing until a
+    block is stored: when the most recent row for the `(seat, thread)` ended `stalled` and no block
+    has been stored for the thread since it ended, the row keeps the `extension_until` it already
+    holds (so a re-entered row whose extension has lapsed stalls again at the next due scan unless a
+    block is stored first). A keep-call on an active row grants nothing.
   - Each `Stored` submit that is new progress sets `extension_until = max(current, now + p99)` and
     `last_progress_at = now`. This applies to the row of every seat whose active catch-up includes
     the thread, because shared progress helps every reader.
@@ -420,8 +425,10 @@ ended with a future `extension_until`). With no row, it is the frozen deadline.
   the instance:
   - with fewer than 20 samples, it is `p99_cold` (default 90 s);
   - the result is clamped to [30 s, 10 min].
-- **No hard cap.** Every extension requires new stored progress, and the number of jobs for a thread
-  is finite.
+- **No hard cap.** Apart from one p99 per entry that follows no stall (the first entry, or one
+  after a Ready or a supersession), every extension requires new stored progress (the exit grace
+  follows a Ready, which itself requires the summary to be complete), so a stall and re-entry cycle
+  cannot extend without progress, and the number of jobs for a thread is finite.
 - **Visibility.** Pending-receipts and delivery inspect show both values plus `deferred: recipient
   catching up (until T)` while the effective deadline is later than the frozen one.
 - **Due scans.** Both receipt due-scans keep their indexes on the frozen deadline:
@@ -601,7 +608,7 @@ Settings, each a positive installation value with defaults as above: `chunk_byte
 
 > *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
 
-**Changes vs. original design (2026-10-02, epic ht-1ip; full record in [report.md](report.md))**
+**Changes vs. original design (2026-10-02, epic ht-1ip; full record in [report.md](../../../history/thread-summaries-run/report.md))**
 
 - **Migrations.** They landed as `0013_thread_summaries.sql` and `0014_catch_up_release.sql` (schema v14), because main's `0011_cooperative_only.sql` and then `0012_harness_version_evidence.sql` landed first (first renumbered to 0012/0013, then to 0013/0014 when main's harness version evidence merged). The protocol is version 3; it also carries main's capability-gated `HarnessEvidence` and `HarnessStates` commands.
 - **Ordinary wakes never read the composer.** Reading it turned Claude's dim prompt suggestion into a "typed draft" and backed wakes off to 300 s (native smoke; ht-jf3 → ht-1ip.46).
@@ -616,7 +623,9 @@ Settings, each a positive installation value with defaults as above: `chunk_byte
   - Not shown natively: the focused-pane skip and a controlled soft-point poke (ht-yuz, open).
   - Codex Q5/Q6 evidence comes from a mock provider.
   - Claude compact evidence is print-mode only.
-- **Open escalation.** Whether catch-up entry or re-entry may extend the effective deadline without stored progress (§8, TRUST-POLICY A6 wording) is unresolved.
+- **Open escalation (resolved 2026-10-02, ht-hqg).** Whether catch-up entry or re-entry may extend the effective deadline without stored progress (§8, TRUST-POLICY A6 wording). Decided: option A, below.
 
 - 2026-10-02 (ht-1ip.6): catch-up release needs a fresh attention key; migration `0014_catch_up_release.sql` (written as 0012; renumbered with the summary migration to 0013 when main's `0011_cooperative_only.sql` took v11, then to 0014, with the summary migration now `0013_thread_summaries.sql`, when main's `0012_harness_version_evidence.sql` took v12) adds `catch_up.release_seq` (the decision sequence allocated at row end). Released receipts above the row's frontier take `(release_seq, 0)` as their key.
 - 2026-10-02 (ht-1ip.18, integration sweep): the join hint ("summary available: herdr-threads summary T") is printed by `accept` only, when the thread already holds a full chunk; a joiner is not hinted anywhere else. Every summary setting has a production read on its spec path and no inert contract stub is left. The cross-flow cases live in `tests/integration/summary_sweep.rs` (join hint to Ready, recovery to Ready with the hold and poke suppression, a chunking-settings change starting a new generation) beside the per-seam `tests/integration/summary_flow.rs`. Observation: the daemon projects `receipt_state` rows (the only source of poke candidates) about one send per second, so a poke is not due for a receipt until its projection lands; the hard-deadline warning does not depend on it (logical receipts).
+- 2026-10-02 (ht-hqg, user decision option A on the parked §8 escalation): the first entry, and any entry after a ready or superseded row (including a successor binding's after `/clear`), grants one p99; re-entry after a stall grants nothing until a block is stored. Precisely, `enter_or_keep` skips the entry hook when the most recent `catch_up` row for the `(seat, thread)` ended `stalled` and no `summary_blocks` row for the thread has `created_at >= ended_at` (a block stored before the stall would have extended the active row past the scan, so `>=` cannot count pre-stall progress). Keep-calls on an active row grant nothing; progress extensions and the exit grace are unchanged. A first cut (8a6a5ed0) granted the entry extension only when no row had ever existed, which would have disabled it for every catch-up after the first; corrected the same day. Consequence: a stall and re-entry cycle can no longer postpone an overdue warning past the frozen deadline, and a re-entered row whose extension has already lapsed is ended `stalled` again by the next due scan unless a block is stored first. §8 "Updates" and "No hard cap", TRUST-POLICY A6 and docs/agent-usage.md match. Tests: `first_entry_extends_by_p99`, `reentry_after_stall_extends_nothing_until_progress_is_stored`, `reentry_after_ready_or_supersession_extends_again`, `reentry_after_a_stall_and_a_stored_block_extends_again` (tests/store/catch_up.rs) and `warning_fires_on_the_frozen_deadline_after_stall_and_reentry` (tests/store/receipts.rs).
+- 2026-10-02 (ht-6jt): `setup claude` now offers to set Claude's `promptSuggestionEnabled: false` (explain, then `Disable prompt suggestions? [y/N]` on a terminal; advice only without one; `--disable-prompt-suggestions` / `--keep-prompt-suggestions` for scripts), recorded under `<state>/setup/` and reverted by `unsetup` when setup set it; `setup-status` and `doctor` report it. With suggestions off an idle Claude composer reads empty, so the Claude poke path works; the A4 accepted limit now says so. The key name is confirmed against Claude Code's settings reference and the summary smoke's scratch settings.

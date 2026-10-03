@@ -79,7 +79,9 @@ fn thread_instance(tx: &Transaction<'_>, thread: &ThreadId) -> Result<String, Ap
 /// transaction of a `Summary` that returns Work. Returns the frontier in
 /// force: an active row's F, unchanged, else `entry.frontier_seq`. The entry
 /// claim must equal the seat's open binding (generation and execution); there
-/// is no child-role gate (spec §7, r3).
+/// is no child-role gate (spec §7, r3). The entry extension hook runs unless
+/// this is a re-entry after a stall with no block stored since (spec §8,
+/// ht-hqg).
 pub fn enter_or_keep(
     tx: &Transaction<'_>,
     entry: &CatchUpEntry<'_>,
@@ -118,6 +120,20 @@ pub fn enter_or_keep(
             entry.now,
         )?;
     }
+    // The entry extension is withheld only on re-entry after a stall with no
+    // progress since: the most recent row for this (seat, thread) ended
+    // `stalled` and no summary block has been stored for the thread since it
+    // ended. A first entry, or one after a ready or superseded row, earns one
+    // fresh p99 (spec §8, ht-hqg). Read before the upsert below overwrites
+    // the ended row; a superseded active row (just ended above) is eligible.
+    let stalled_without_progress: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM catch_up c WHERE c.seat_id=?1 AND c.thread_id=?2 AND c.state='ended' AND c.end_reason='stalled' \
+             AND NOT EXISTS (SELECT 1 FROM summary_blocks b WHERE b.thread_id=c.thread_id AND b.created_at>=c.ended_at))",
+            params![entry.seat.as_str(), entry.thread.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
     let frontier = i64::try_from(entry.frontier_seq)
         .map_err(|_| api_error(ErrorCode::InvalidRequest, "catch-up frontier out of range"))?;
     let generation = i64::try_from(entry.binding_generation)
@@ -135,9 +151,11 @@ pub fn enter_or_keep(
         ],
     )
     .map_err(store_error)?;
-    let instance = seat_instance(tx, entry.seat)?;
-    let p99 = summary::p99_job_duration(tx, &instance, settings)?;
-    receipts::extension_on_entry(tx, entry.seat, entry.thread, entry.now, p99)?;
+    if !stalled_without_progress {
+        let instance = seat_instance(tx, entry.seat)?;
+        let p99 = summary::p99_job_duration(tx, &instance, settings)?;
+        receipts::extension_on_entry(tx, entry.seat, entry.thread, entry.now, p99)?;
+    }
     Ok(entry.frontier_seq)
 }
 

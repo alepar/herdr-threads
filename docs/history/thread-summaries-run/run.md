@@ -3,7 +3,7 @@
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
 phase: done
 
-idea: Thread summaries for compaction survival + soft-deadline ACK poke — design agreed in this conversation (Mode A brainstorm complete); full brief at /private/tmp/claude-UID/-Users-alepar-AleCode-herdr-threads/59584c7d-dbca-46a8-9d2e-192c78486b77/scratchpad/thread-summaries-design-brief.md (two specs, one epic; don't re-ask recorded decisions)
+idea: Thread summaries for compaction survival + soft-deadline ACK poke — design agreed in this conversation (Mode A brainstorm complete); full brief at <scratch>/scratchpad/thread-summaries-design-brief.md (two specs, one epic; don't re-ask recorded decisions)
 epic: ht-1ip
 spec: 2026-10-02-thread-summaries-compaction-survival-design.md
 branch: super-auto/thread-summaries-compaction-survival

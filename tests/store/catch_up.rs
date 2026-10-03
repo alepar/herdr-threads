@@ -327,6 +327,112 @@ fn lifecycle_writes_extension_through_the_hooks() {
     assert_eq!(row(&db, "s").extension_until, Some(300 + 60_000));
 }
 
+fn progress(db: &mut Connection, now: UtcMillis) {
+    let tx = db.transaction().unwrap();
+    on_progress(&tx, &thread(), now, &SummarySettings::default()).unwrap();
+    tx.commit().unwrap();
+}
+
+fn stall(db: &mut Connection, now: UtcMillis) -> u16 {
+    let tx = db.transaction().unwrap();
+    let ended = stall_scan(&tx, now, 100).unwrap();
+    tx.commit().unwrap();
+    ended
+}
+
+#[test]
+fn first_entry_extends_by_p99() {
+    // Cold p99 is 90_000 ms; the first entry for (s, t) grants it.
+    let mut db = db();
+    assert_eq!(catch_up_rows(&db), 0);
+    enter(&mut db, "s", 10, UtcMillis(1_000));
+    assert_eq!(row(&db, "s").extension_until, Some(1_000 + 90_000));
+    // A keep-call on the active row grants nothing more.
+    enter(&mut db, "s", 10, UtcMillis(50_000));
+    assert_eq!(row(&db, "s").extension_until, Some(1_000 + 90_000));
+}
+
+#[test]
+fn reentry_after_stall_extends_nothing_until_progress_is_stored() {
+    let mut db = db();
+    enter(&mut db, "s", 10, UtcMillis(100));
+    assert_eq!(stall(&mut db, UtcMillis(100_000)), 1);
+    assert_eq!(row(&db, "s").end_reason.as_deref(), Some("stalled"));
+    // Re-entry reopens the row but keeps the lapsed extension.
+    enter(&mut db, "s", 20, UtcMillis(200_000));
+    let reopened = row(&db, "s");
+    assert_eq!(reopened.state, "active");
+    assert_eq!(reopened.extension_until, Some(100 + 90_000));
+    // A newly stored block extends again.
+    progress(&mut db, UtcMillis(210_000));
+    assert_eq!(row(&db, "s").extension_until, Some(210_000 + 90_000));
+}
+
+#[test]
+fn reentry_after_ready_or_supersession_extends_again() {
+    let mut db = db();
+    enter(&mut db, "s", 10, UtcMillis(100));
+    assert!(ready(&mut db, "s", 1, UtcMillis(200)));
+    assert_eq!(row(&db, "s").extension_until, Some(200 + 60_000));
+    // A later catch-up (say after the next compaction) earns a fresh p99.
+    enter(&mut db, "s", 30, UtcMillis(300_000));
+    assert_eq!(row(&db, "s").extension_until, Some(300_000 + 90_000));
+    // A keep-call on the active row grants nothing more.
+    enter(&mut db, "s", 30, UtcMillis(350_000));
+    assert_eq!(row(&db, "s").extension_until, Some(300_000 + 90_000));
+    // A successor binding (after /clear) supersedes the active row and its
+    // entry is eligible too.
+    db.execute_batch(
+        "UPDATE occupant_bindings SET ended_at=1 WHERE seat_id='s';\
+         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',2,'pane-s','host',1,'codex','n','exec-s2','cooperative_top_level',0,'tm','inc');",
+    )
+    .unwrap();
+    let tx = db.transaction().unwrap();
+    let (s, t, e) = (seat("s"), thread(), ExecutionId::new("exec-s2"));
+    enter_or_keep(
+        &tx,
+        &CatchUpEntry {
+            seat: &s,
+            thread: &t,
+            frontier_seq: 40,
+            binding_generation: 2,
+            execution: &e,
+            now: UtcMillis(400_000),
+        },
+        &SummarySettings::default(),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let reopened = row(&db, "s");
+    assert_eq!((reopened.state.as_str(), reopened.frontier), ("active", 40));
+    assert_eq!(reopened.extension_until, Some(400_000 + 90_000));
+}
+
+/// A stored summary block on `t` at `created_at`.
+fn store_block(db: &Connection, id: &str, created_at: i64) {
+    db.execute(
+        "INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at) VALUES (?1,'i','t','v1',0,?2,1,2,'h','n','s','m','p',?3)",
+        rusqlite::params![id, created_at, created_at],
+    )
+    .unwrap();
+}
+
+#[test]
+fn reentry_after_a_stall_and_a_stored_block_extends_again() {
+    let mut db = db();
+    enter(&mut db, "s", 10, UtcMillis(100));
+    // A block stored before the stall does not count as progress since it.
+    store_block(&db, "b0", 50);
+    assert_eq!(stall(&mut db, UtcMillis(100_000)), 1);
+    enter(&mut db, "s", 20, UtcMillis(150_000));
+    assert_eq!(row(&db, "s").extension_until, Some(100 + 90_000));
+    assert_eq!(stall(&mut db, UtcMillis(160_000)), 1);
+    // A block stored after the stall (by any seat) makes the next entry eligible.
+    store_block(&db, "b1", 170_000);
+    enter(&mut db, "s", 30, UtcMillis(200_000));
+    assert_eq!(row(&db, "s").extension_until, Some(200_000 + 90_000));
+}
+
 #[test]
 fn stall_scan_ends_lapsed_rows() {
     let mut db = db();

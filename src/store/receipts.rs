@@ -375,7 +375,8 @@ fn extension_end(base: UtcMillis, add_ms: u64) -> i64 {
 }
 
 /// Extension hooks the catch-up lifecycle calls (spec §7, §8). These own every
-/// `catch_up.extension_until` write. Entry: entered_at + p99, never lowering.
+/// `catch_up.extension_until` write. Entry: entered_at + p99, never lowering;
+/// the lifecycle skips it on re-entry after a stall with no block stored since.
 pub fn extension_on_entry(
     tx: &Transaction<'_>,
     seat: &SeatId,

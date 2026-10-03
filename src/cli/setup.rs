@@ -45,6 +45,7 @@ use crate::{
     harness::{
         claude, codex, codex_config,
         context::Harness,
+        prompt_suggestion::{self, SuggestionState},
         recipe,
         setup::{
             self as lib, AllowRuleInspection, AllowRuleOwnership, NativeObservation, SettingsKind,
@@ -102,6 +103,13 @@ Scope (user level, like Herdr's own agent hooks):
           interactive `codex` start lists them for review (or use /hooks); Codex then records
           their hashes in config.toml [hooks.state]. setup never writes trust.
 
+Claude prompt suggestions: Claude shows a dim prompt suggestion in its input box after every
+turn, which herdr-threads cannot tell from typed text, so it never pokes a Claude pane that shows
+one. Unless `promptSuggestionEnabled` is already false, `setup claude` (and bare `setup`) asks
+`Disable prompt suggestions? [y/N]` on a terminal and writes `promptSuggestionEnabled: false` only
+on yes; without a terminal it only advises. --disable-prompt-suggestions / --keep-prompt-suggestions
+decide without asking. The write is recorded; unsetup reverts it if setup set it.
+
 Herdr instance: --state-dir and --host-endpoint, else HERDR_PLUGIN_STATE_DIR and
 HERDR_SOCKET_PATH (set inside Herdr), else Herdr's defaults when they exist
 ($XDG_STATE_HOME or ~/.local/state, then herdr/plugins/herdr-threads; $XDG_CONFIG_HOME or
@@ -154,6 +162,41 @@ pub struct SetupRequest {
     pub verb: SetupVerb,
     pub harness: Harness,
     pub harness_binary: Option<String>,
+    /// `setup claude` only: what to do about Claude's prompt suggestions.
+    pub prompt_suggestions: PromptSuggestionPolicy,
+}
+
+/// `setup claude`: whether to set Claude's [`claude::PROMPT_SUGGESTION_SETTING`]
+/// to `false` (ht-6jt). Setup never changes it silently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PromptSuggestionPolicy {
+    /// Ask on an interactive terminal ([`settle_prompt_suggestions`]);
+    /// otherwise only advise (report and warning, no change).
+    #[default]
+    Ask,
+    /// `--disable-prompt-suggestions`: set it `false` without asking.
+    Disable,
+    /// `--keep-prompt-suggestions`: leave it, without asking or advising.
+    Keep,
+}
+
+/// Why setup offers to turn Claude's prompt suggestions off.
+pub const PROMPT_SUGGESTION_EXPLANATION: &str = "Claude Code shows a dim prompt suggestion in \
+its input box after every turn (on by default). herdr-threads cannot tell that suggestion from \
+text you typed, so it never sends a soft-deadline reminder (poke) into a Claude pane that shows \
+one; only the hard-deadline warning reaches it. With prompt suggestions off \
+(`promptSuggestionEnabled: false` in Claude's user settings), an idle Claude pane reads empty and \
+pokes reach it. unsetup reverts the setting if setup set it.";
+
+/// The non-interactive advice (nothing was changed).
+fn prompt_suggestion_advice(settings: &Path) -> String {
+    format!(
+        "{PROMPT_SUGGESTION_EXPLANATION} Prompt suggestions are on in {} and were left \
+         unchanged: re-run `herdr-threads setup claude --disable-prompt-suggestions` to turn them \
+         off (or turn off Prompt suggestions in Claude's /config), or pass \
+         --keep-prompt-suggestions to keep them without this note",
+        settings.display()
+    )
 }
 
 /// A person's pane identity (`me init`) has no hooks to set up.
@@ -460,7 +503,19 @@ pub fn run<W: Write>(
     writer: &mut W,
 ) -> Result<(), RunError> {
     let env = SetupEnv::from_process(output)?;
-    let report = execute(request, &env)?;
+    let mut report = execute(request, &env)?;
+    if request.verb == SetupVerb::Install
+        && request.harness == Harness::Claude
+        && request.prompt_suggestions == PromptSuggestionPolicy::Ask
+        && interactive()
+    {
+        settle_prompt_suggestions(
+            &env,
+            &mut report,
+            &mut io::stdin().lock(),
+            &mut io::stderr(),
+        )?;
+    }
     let bytes = match output.format {
         OutputFormat::Json => {
             let mut bytes = serde_json::to_vec(&json!({ "setup": report }))
@@ -508,11 +563,29 @@ pub const HARNESSES: [Harness; 2] = [Harness::Claude, Harness::Codex];
 /// [`RunError::Exit`]) only when a harness failed.
 pub fn run_all<W: Write>(
     verb: SetupVerb,
+    prompt_suggestions: PromptSuggestionPolicy,
     output: &OutputSpec,
     writer: &mut W,
 ) -> Result<(), RunError> {
     let env = SetupEnv::from_process(output)?;
-    let report = execute_all(verb, &env)?;
+    let mut report = execute_all(verb, prompt_suggestions, &env)?;
+    if verb == SetupVerb::Install
+        && prompt_suggestions == PromptSuggestionPolicy::Ask
+        && interactive()
+        && let Some(entry) = report["harnesses"].as_array_mut().and_then(|entries| {
+            entries
+                .iter_mut()
+                .find(|entry| entry["harness"] == "claude")
+        })
+        && entry["report"].is_object()
+    {
+        settle_prompt_suggestions(
+            &env,
+            &mut entry["report"],
+            &mut io::stdin().lock(),
+            &mut io::stderr(),
+        )?;
+    }
     let bytes = match output.format {
         OutputFormat::Json => {
             let mut bytes = serde_json::to_vec(&json!({ "setup": report }))
@@ -562,7 +635,11 @@ fn verb_name(verb: SetupVerb) -> &'static str {
 /// `exit_status` is that of the first harness that `failed`, else 0. An
 /// undetectable Herdr instance is refused up front (status 2) whenever a
 /// harness would be written.
-pub fn execute_all(verb: SetupVerb, env: &SetupEnv) -> Result<Value, RunError> {
+pub fn execute_all(
+    verb: SetupVerb,
+    prompt_suggestions: PromptSuggestionPolicy,
+    env: &SetupEnv,
+) -> Result<Value, RunError> {
     let found: Vec<(Harness, Option<PathBuf>)> = HARNESSES
         .iter()
         .map(|&harness| {
@@ -597,6 +674,7 @@ pub fn execute_all(verb: SetupVerb, env: &SetupEnv) -> Result<Value, RunError> {
             verb,
             harness,
             harness_binary: None,
+            prompt_suggestions,
         };
         match execute(&request, env) {
             Ok(mut report) => {
@@ -713,6 +791,9 @@ pub fn render_all_text(report: &Value) -> String {
             other => other.to_owned(),
         };
         out.push_str(&format!("{name}: {line}\n"));
+        if let Some(line) = prompt_suggestion_line(&inner["prompt_suggestions"]) {
+            out.push_str(&format!("{name}: {line}\n"));
+        }
         for warning in inner["warnings"].as_array().into_iter().flatten() {
             warnings.push(format!("warning: {name}: {}\n", scalar(warning)));
         }
@@ -1298,6 +1379,8 @@ fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunEr
     .ok()
     .and_then(|inspection| inspection.allow_rule);
     let command = shared_command(&installed.owned).unwrap_or_default();
+    let prompt_suggestions =
+        prompt_suggestion_step(request.prompt_suggestions, env, &settings, &mut warnings)?;
     Ok(json!({
         "action": if adopted { "adopted" } else if already { "already_installed" } else { "installed" },
         "adopted": installed.adopted.then(|| installed.installation_id.clone()),
@@ -1312,6 +1395,7 @@ fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunEr
         "events": installed.owned.iter().map(|entry| entry.event.clone()).collect::<Vec<_>>(),
         "allow_rule": allow_rule_json(allow_rule.as_ref()),
         "harness_version": observation_json(&Ok((observed, None))),
+        "prompt_suggestions": prompt_suggestions,
         "observed": "unknown",
         "note": "installed is not observed: run `herdr-threads doctor` for native evidence. \
                  Claude sessions that run with another CLAUDE_CONFIG_DIR, or with \
@@ -1348,6 +1432,152 @@ pub fn allow_rule_json(allow_rule: Option<&AllowRuleInspection>) -> Value {
     }
 }
 
+/// Where setup records that it set Claude's prompt-suggestion key.
+pub fn prompt_suggestion_manifest(env: &SetupEnv, settings: &Path) -> Result<PathBuf, RunError> {
+    Ok(manifest_path(
+        env.state_dir()?,
+        "claude-prompt-suggestion",
+        settings,
+    ))
+}
+
+fn prompt_suggestion_error(error: SetupError, settings: &Path) -> RunError {
+    let settings = settings.display();
+    match error {
+        SetupError::Invalid => invalid(format!(
+            "{settings} is not a JSON object, or the prompt-suggestion record is a symlink or \
+             damaged; prompt suggestions were not changed"
+        )),
+        SetupError::TooLarge => invalid(format!(
+            "{settings} or the prompt-suggestion record exceeds the setup size bound; prompt \
+             suggestions were not changed"
+        )),
+        SetupError::Conflict => api(
+            ErrorCode::Conflict,
+            format!(
+                "{settings} changed while setup edited `{}`, or the prompt-suggestion record \
+                 names another file; prompt suggestions were not changed. Re-run the command",
+                claude::PROMPT_SUGGESTION_SETTING
+            ),
+        ),
+        SetupError::Io => failed(format!(
+            "could not read or replace {settings} or the prompt-suggestion record"
+        )),
+    }
+}
+
+/// The report form of the prompt-suggestion setting after `action`.
+fn prompt_suggestion_json(state: SuggestionState, action: &str, recorded: bool) -> Value {
+    json!({
+        "setting": claude::PROMPT_SUGGESTION_SETTING,
+        "state": state.as_str(),
+        "action": action,
+        "set_by_setup": recorded,
+    })
+}
+
+/// `setup claude`, after the hooks: apply the policy. `advised` means the
+/// setting is on and nothing was changed (an interactive run then asks).
+fn prompt_suggestion_step(
+    policy: PromptSuggestionPolicy,
+    env: &SetupEnv,
+    settings: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<Value, RunError> {
+    let manifest = prompt_suggestion_manifest(env, settings)?;
+    let error = |e| prompt_suggestion_error(e, settings);
+    let recorded = prompt_suggestion::recorded(&manifest)
+        .map_err(error)?
+        .is_some();
+    let state = prompt_suggestion::read_state(settings).map_err(error)?;
+    if state == SuggestionState::Disabled {
+        return Ok(prompt_suggestion_json(state, "already_disabled", recorded));
+    }
+    Ok(match policy {
+        PromptSuggestionPolicy::Disable => {
+            prompt_suggestion::disable(settings, &manifest).map_err(error)?;
+            prompt_suggestion_json(SuggestionState::Disabled, "disabled", true)
+        }
+        PromptSuggestionPolicy::Keep => prompt_suggestion_json(state, "kept", recorded),
+        PromptSuggestionPolicy::Ask => {
+            warnings.push(prompt_suggestion_advice(settings));
+            prompt_suggestion_json(state, "advised", recorded)
+        }
+    })
+}
+
+/// Both stdin and stderr are terminals: setup may ask a question.
+fn interactive() -> bool {
+    use std::io::IsTerminal;
+    io::stdin().is_terminal() && io::stderr().is_terminal()
+}
+
+/// An interactive `setup claude` whose report says `advised`: explain, ask
+/// `Disable prompt suggestions? [y/N]` on `out`, read one line from `input`,
+/// and set the key `false` only on yes. The advice warning is dropped either
+/// way: the person has answered.
+pub fn settle_prompt_suggestions<R: io::BufRead, W: Write>(
+    env: &SetupEnv,
+    report: &mut Value,
+    input: &mut R,
+    out: &mut W,
+) -> Result<(), RunError> {
+    if report["prompt_suggestions"]["action"] != "advised" {
+        return Ok(());
+    }
+    let settings = env.claude_settings()?;
+    writeln!(out, "{PROMPT_SUGGESTION_EXPLANATION}")?;
+    write!(out, "Disable prompt suggestions? [y/N] ")?;
+    out.flush()?;
+    let mut answer = String::new();
+    input.read_line(&mut answer)?;
+    let yes = matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes");
+    let advice = prompt_suggestion_advice(&settings);
+    if let Some(warnings) = report["warnings"].as_array_mut() {
+        warnings.retain(|warning| warning.as_str() != Some(advice.as_str()));
+    }
+    let suggestions = &mut report["prompt_suggestions"];
+    if yes {
+        let manifest = prompt_suggestion_manifest(env, &settings)?;
+        prompt_suggestion::disable(&settings, &manifest)
+            .map_err(|e| prompt_suggestion_error(e, &settings))?;
+        suggestions["action"] = json!("disabled");
+        suggestions["state"] = json!(SuggestionState::Disabled.as_str());
+        suggestions["set_by_setup"] = json!(true);
+    } else {
+        suggestions["action"] = json!("kept");
+    }
+    Ok(())
+}
+
+/// The one-line summary `setup`/`unsetup` with no harness print for Claude's
+/// prompt suggestions; `None` when there is nothing to say (the advice is a
+/// warning).
+fn prompt_suggestion_line(value: &Value) -> Option<String> {
+    let setting = claude::PROMPT_SUGGESTION_SETTING;
+    Some(match value {
+        Value::String(outcome) => match outcome.as_str() {
+            "reverted" => format!("prompt suggestions: reverted `{setting}` (setup had set it)"),
+            "left_changed" => {
+                format!(
+                    "prompt suggestions: `{setting}` was changed by hand since setup; left as is"
+                )
+            }
+            _ => return None,
+        },
+        Value::Object(_) => match value["action"].as_str()? {
+            "disabled" => format!("prompt suggestions: disabled (`{setting}: false`)"),
+            "already_disabled" => "prompt suggestions: already disabled".to_owned(),
+            "kept" => format!(
+                "prompt suggestions: kept ({}); Claude pokes skip a pane that shows one",
+                scalar(&value["state"])
+            ),
+            _ => return None,
+        },
+        _ => return None,
+    })
+}
+
 fn instance_json(env: &SetupEnv) -> Value {
     json!({
         "state_dir": env.state_dir.as_ref().map(|p| p.display().to_string()),
@@ -1359,11 +1589,16 @@ fn instance_json(env: &SetupEnv) -> Value {
 fn claude_remove(env: &SetupEnv) -> Result<Value, RunError> {
     let (settings, manifest) = claude_paths(env)?;
     let kind = SettingsKind::ClaudeUser;
+    // First, so the hook removal below can still restore the file byte for byte.
+    let reverted =
+        prompt_suggestion::revert(&settings, &prompt_suggestion_manifest(env, &settings)?)
+            .map_err(|error| prompt_suggestion_error(error, &settings))?;
     let mut report = json!({
         "harness": "claude",
         "scope": "user",
         "settings": settings.display().to_string(),
         "manifest": manifest.display().to_string(),
+        "prompt_suggestions": reverted.as_str(),
     });
     let mut recorded = read_settings_manifest(&manifest)
         .map_err(|e| settings_error(e, SetupVerb::Remove, kind, &settings, &manifest))?;
@@ -1480,7 +1715,50 @@ fn claude_status(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
         "harness_version": observation_json(&observe(request, env)),
     });
     settings_status(SettingsKind::ClaudeUser, env, &settings, &mut report)?;
+    report["prompt_suggestions"] = prompt_suggestion_status(
+        env,
+        &settings,
+        std::env::var_os(claude::PROMPT_SUGGESTION_ENV),
+    );
     Ok(report)
+}
+
+/// Claude's prompt-suggestion setting as `setup-status` and `doctor` report
+/// it: the user settings value, whether setup set it, and the per-session
+/// environment override when one is set. Best effort: an unreadable file is
+/// reported, never an error.
+pub fn prompt_suggestion_status(
+    env: &SetupEnv,
+    settings: &Path,
+    env_override: Option<OsString>,
+) -> Value {
+    let state = prompt_suggestion::read_state(settings);
+    let recorded = prompt_suggestion_manifest(env, settings)
+        .ok()
+        .and_then(|manifest| prompt_suggestion::recorded(&manifest).ok().flatten())
+        .is_some();
+    let mut report = json!({
+        "setting": claude::PROMPT_SUGGESTION_SETTING,
+        "state": match &state {
+            Ok(state) => state.as_str(),
+            Err(_) => "unreadable",
+        },
+        "set_by_setup": recorded,
+    });
+    if let Some(value) = env_override {
+        report["env_override"] = json!(format!(
+            "{}={}",
+            claude::PROMPT_SUGGESTION_ENV,
+            value.to_string_lossy()
+        ));
+    }
+    if state != Ok(SuggestionState::Disabled) {
+        report["note"] = json!(
+            "Claude soft-deadline pokes skip a pane that shows a prompt suggestion; run \
+             `herdr-threads setup claude --disable-prompt-suggestions` to turn them off"
+        );
+    }
+    report
 }
 
 // ------------------------------------------------------------------- codex
@@ -2685,6 +2963,97 @@ mod tests {
             expect(&[cwd.clone(), dir.join("x/a"), dir.join("x")])
         );
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An isolated state directory and Claude config dir, with `settings`
+    /// as the user settings, and an `advised` install report for them.
+    fn suggestion_fixture(settings: &[u8]) -> (PathBuf, SetupEnv, Value) {
+        let root = std::env::temp_dir().join(format!("setup-suggestions-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("state/setup")).unwrap();
+        fs::create_dir_all(root.join("claude")).unwrap();
+        fs::write(root.join("claude/settings.json"), settings).unwrap();
+        let mut env = env(Some(root.join("state").to_str().unwrap()));
+        env.claude_config_dir = Some(root.join("claude"));
+        let path = root.join("claude/settings.json");
+        let mut warnings = Vec::new();
+        let report = json!({
+            "prompt_suggestions": prompt_suggestion_step(
+                PromptSuggestionPolicy::Ask, &env, &path, &mut warnings
+            )
+            .unwrap(),
+            "warnings": warnings,
+        });
+        (root, env, report)
+    }
+
+    fn settle(env: &SetupEnv, report: &mut Value, answer: &str) -> String {
+        let mut out = Vec::new();
+        settle_prompt_suggestions(env, report, &mut io::Cursor::new(answer), &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    /// Interactive yes: the explanation and `[y/N]` are printed, the key is
+    /// written false and recorded (so unsetup can revert it), and the advice
+    /// warning is dropped. Kills: writing without a yes, not recording.
+    #[test]
+    fn interactive_yes_disables_and_records() {
+        let (root, env, mut report) = suggestion_fixture(b"{\"model\":\"x\"}");
+        assert_eq!(report["prompt_suggestions"]["action"], "advised");
+        assert_eq!(report["warnings"].as_array().unwrap().len(), 1);
+        let asked = settle(&env, &mut report, "y\n");
+        assert!(asked.contains(PROMPT_SUGGESTION_EXPLANATION), "{asked}");
+        assert!(
+            asked.ends_with("Disable prompt suggestions? [y/N] "),
+            "{asked}"
+        );
+        assert_eq!(report["prompt_suggestions"]["action"], "disabled");
+        assert_eq!(report["prompt_suggestions"]["set_by_setup"], true);
+        assert_eq!(report["warnings"], json!([]));
+        let settings = root.join("claude/settings.json");
+        let value: Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
+        assert_eq!(
+            value,
+            json!({"model": "x", "promptSuggestionEnabled": false})
+        );
+        let manifest = prompt_suggestion_manifest(&env, &settings).unwrap();
+        assert_eq!(
+            prompt_suggestion::revert(&settings, &manifest).unwrap(),
+            prompt_suggestion::RevertOutcome::Reverted
+        );
+        assert_eq!(fs::read(&settings).unwrap(), b"{\"model\":\"x\"}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Interactive no (and the default: an empty answer or end of input)
+    /// keeps the setting untouched. Kills: treating anything but y/yes as yes.
+    #[test]
+    fn interactive_no_and_default_keep() {
+        for answer in ["n\n", "\n", "", "maybe\n"] {
+            let (root, env, mut report) = suggestion_fixture(b"{}");
+            settle(&env, &mut report, answer);
+            assert_eq!(report["prompt_suggestions"]["action"], "kept", "{answer:?}");
+            assert_eq!(report["warnings"], json!([]));
+            assert_eq!(fs::read(root.join("claude/settings.json")).unwrap(), b"{}");
+            assert!(
+                !prompt_suggestion_manifest(&env, &root.join("claude/settings.json"))
+                    .unwrap()
+                    .exists()
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+        let (root, env, mut report) = suggestion_fixture(b"{}");
+        settle(&env, &mut report, "YES\n");
+        assert_eq!(report["prompt_suggestions"]["action"], "disabled");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Nothing is asked when the setting is already false or a flag decided.
+    #[test]
+    fn no_question_unless_advised() {
+        let (root, env, mut report) = suggestion_fixture(b"{\"promptSuggestionEnabled\":false}");
+        assert_eq!(report["prompt_suggestions"]["action"], "already_disabled");
+        assert_eq!(settle(&env, &mut report, "y\n"), "");
+        fs::remove_dir_all(root).unwrap();
     }
 }
 

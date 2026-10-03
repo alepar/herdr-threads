@@ -1,0 +1,531 @@
+=== T+2 06:53:02
+--- w4:pBM focused=false status=working
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=working
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+7 06:53:07
+--- w4:pBM focused=false status=done
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=working
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+12 06:53:12
+--- w4:pBM focused=false status=done
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+17 06:53:17
+--- w4:pBM focused=false status=done
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+23 06:53:23
+--- w4:pBM focused=false status=done
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+28 06:53:28
+--- w4:pBM focused=true status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+33 06:53:33
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+38 06:53:38
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+43 06:53:43
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+48 06:53:48
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+53 06:53:53
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+58 06:53:58
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+64 06:54:04
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+69 06:54:09
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+74 06:54:14
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+79 06:54:19
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+84 06:54:24
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+89 06:54:29
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+94 06:54:34
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+99 06:54:39
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+105 06:54:45
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+110 06:54:50
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+115 06:54:55
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+120 06:55:00
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+125 06:55:05
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+130 06:55:10
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+135 06:55:15
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+141 06:55:21
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+146 06:55:26
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+151 06:55:31
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=true status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+156 06:55:36
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=true status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+161 06:55:41
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=true status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+167 06:55:47
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=true status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+172 06:55:52
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=true status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+177 06:55:57
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=true status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+182 06:56:02
+--- w4:pBM focused=false status=idle
+❯ herdr-threads: receipt due in 28s on thread-vItUW9VM; run herdr-threads
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+--- w4:pBN focused=true status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+187 06:56:07
+--- w4:pBM focused=false status=working
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=true status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+192 06:56:12
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=true status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+197 06:56:17
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=true status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+202 06:56:22
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=true status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+207 06:56:27
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=true status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+212 06:56:32
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=true status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+217 06:56:37
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+223 06:56:43
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+228 06:56:48
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+233 06:56:53
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+238 06:56:58
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+243 06:57:03
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=false status=idle
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+=== T+248 06:57:08
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=false status=working
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 56s on thread-vItUW9VM; run herdr-threads
+=== T+253 06:57:13
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 56s on thread-vItUW9VM; run herdr-threads
+=== T+258 06:57:18
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 56s on thread-vItUW9VM; run herdr-threads
+=== T+263 06:57:23
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 56s on thread-vItUW9VM; run herdr-threads
+=== T+268 06:57:28
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 56s on thread-vItUW9VM; run herdr-threads
+=== T+273 06:57:33
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 56s on thread-vItUW9VM; run herdr-threads
+=== T+278 06:57:38
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 56s on thread-vItUW9VM; run herdr-threads
+=== T+283 06:57:43
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 56s on thread-vItUW9VM; run herdr-threads
+=== T+289 06:57:49
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 56s on thread-vItUW9VM; run herdr-threads
+=== T+294 06:57:54
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 56s on thread-vItUW9VM; run herdr-threads
+=== T+299 06:57:59
+--- w4:pBM focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 117s on thread-vItUW9VM; run herdr-threads
+--- w4:pBN focused=false status=done
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: attention pending; run herdr-threads inbox
+❯ herdr-threads: receipt due in 56s on thread-vItUW9VM; run herdr-threads

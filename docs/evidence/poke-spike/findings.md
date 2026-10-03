@@ -1,6 +1,6 @@
 # Poke spike: composer stash, poke during a turn, worker spawn (ht-1ip.12)
 
-Native spike for spec §10 and §12 of the [thread-summaries design](../../superpowers/runs/2026-10-02-thread-summaries-compaction-survival/2026-10-02-thread-summaries-compaction-survival-design.md).
+Native spike for spec §10 and §12 of the [thread-summaries design](../../design/herdr-threads/thread-summaries/2026-10-02-thread-summaries-compaction-survival-design.md).
 It decides whether the recipe capabilities `composer_stash` and `poke_during_turn` may be declared, and records how each harness spawns summary workers.
 
 Versions: herdr 0.9.1, claude 2.1.287 (haiku-4-5), codex 0.160.0.
