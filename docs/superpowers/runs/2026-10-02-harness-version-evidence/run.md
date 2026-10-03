@@ -17,8 +17,9 @@ approvals:
 - coverage-round-1 · canonical R-list: R1-R12 (coverage-round-1-requirements.md; R13-R16 appended from r-new) · requirements: 12 · mapped: 12 · unmapped: 0 · auto 11 applied (C1-C11 in coverage-ledger.md): amended ht-xoc.1-.7, new edge ht-xoc.4←ht-xoc.3
 - coverage-round-2 · canonical R-list: R1-R16 (coverage-round-2-requirements.md) · requirements: 16 · mapped: 16 · unmapped: 0 · divergence: findings 11 → 8, novel 100%, widening: no · auto 8 applied (C12-C19), C20 NEEDS-SPEC not honored (findings actionable) · new edge ht-xoc.2←ht-xoc.1 · integration sweep ht-xoc.7 adopted
 
-roastDesignRound: 1
+roastDesignRound: 2
 roast-design: 2026-10-02-harness-version-evidence-roast-design-1.md
 
 parked:
-- 2026-10-02-harness-version-evidence-roast-design-1.md · escalation · "Material dissent: attribution step 3 vs the Codex shared app-server daemon (process start older than exe mtime on the same inode) — reproduced on a live daemon; unresolved"
+- 2026-10-02-harness-version-evidence-roast-design-1.md · escalation · "Material dissent: attribution step 3 vs the Codex shared app-server daemon (process start older than exe mtime on the same inode) — dissolved by the round-1 redesign (transcript attribution; no mtime guard)"
+stepBack-round-1: redesign — applied: process-tree/executable version attribution → version read from the harness's own session transcript at transcript_path (dissolves 2 + the parked escalation); clusters contract-scoping, evidence-transport, refused-split, opt-out-semantics patched; roll-up rule, registered-event classification and token-scope nit fixed inline
