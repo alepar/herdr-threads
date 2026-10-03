@@ -19,3 +19,9 @@ C17 · r2 · GAP · R8 schema/cache · applied — unsupported schema never repl
 C18 · r2 · UNOWNED-SEAM · canonical version string · applied — normalize_version owned by ht-xoc.1 (+ CLI), consumed by .2 .4 .5 .6; new edge ht-xoc.2←ht-xoc.1
 C19 · r2 · GAP · doctor verdict source · applied — ht-xoc.5 doctor prints source per verdict
 C20 · r2 · NEEDS-SPEC · ht-xoc.3 · not honored — findings were actionable from the ledger; opt-out confirmed present in the full description
+G1 · graph · GRAPH-EDGE · ht-xoc.5 <- ht-xoc.4 · kept — evidence schema/read API
+G2 · graph · GRAPH-EDGE · ht-xoc.4 <- ht-xoc.2 · kept — attribution result type
+G3 · graph · GRAPH-EDGE · ht-xoc.2 <- ht-xoc.8 · kept — transcript note decides reader algorithm
+G4 · graph · GRAPH-EDGE · ht-xoc.2 <- ht-xoc.1 · kept — normalize_version
+G5 · graph · PROPOSAL · ht-xoc.2/.4 attribution seam · parked
+G6 · graph · PROPOSAL · ht-xoc.4/.5 evidence API seam · parked

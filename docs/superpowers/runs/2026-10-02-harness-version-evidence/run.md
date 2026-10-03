@@ -2,7 +2,7 @@
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
 resumeChange: 2026-10-02 · "[coordinator update] flakiness side quest landed on main (a7255713) ... 'no full suite' pause is lifted. Speed budgets in AGENTS.md still apply" · base main merged in at a7255713; phase-6 sweep command = nice scripts/full-suite-gate 1
-phase: roast-design
+phase: code
 
 idea: Epic ht-xoc (harness version evidence), base main (26eef585, B6 landed). Design already exists: spec docs/superpowers/specs/2026-10-02-harness-version-evidence-design.md (two design roasts already run: docs/superpowers/reviews/2026-10-02-harness-version-evidence-roast-design-{1,2}.md, round 2 converged) and the filed bead tree ht-xoc.1-.8 — start from the design's coverage checks. Fully autonomous (no questions), both roasts on (design roast and code roast). Merge back into main at the end (user pre-authorized). Test policy: ht-zo4 (flakiness side quest) is closed, so the full suite may run; respect AGENTS.md speed budgets on main.
 branch: super-auto/harness-version-evidence
@@ -21,7 +21,10 @@ roastDesignRound: 2
 roast-design: 2026-10-02-harness-version-evidence-roast-design-1.md, 2026-10-02-harness-version-evidence-roast-design-2.md
 
 parked:
+- graph-pass · graph-change · "proposal: seam-contract attribution result type + reader signature (ht-xoc.2/.4) to take the ht-xoc.8 spike off the main chain (depth 5→4)"
+- graph-pass · graph-change · "proposal: seam-contract evidence row type + read API (ht-xoc.4/.5) so .5's table tests run beside .4 (with the first, depth 5→3)"
 - 2026-10-02-harness-version-evidence-roast-design-2.md · escalation · "UNVERIFIED external: whether resuming a Codex rollout appends a later session_meta and where; assigned to spike ht-xoc.8 with kill criteria"
 - 2026-10-02-harness-version-evidence-roast-design-1.md · escalation · "Material dissent: attribution step 3 vs the Codex shared app-server daemon (process start older than exe mtime on the same inode) — dissolved by the round-1 redesign (transcript attribution; no mtime guard)"
 stepBack-round-1: redesign — applied: process-tree/executable version attribution → version read from the harness's own session transcript at transcript_path (dissolves 2 + the parked escalation); clusters contract-scoping, evidence-transport, refused-split, opt-out-semantics patched; roll-up rule, registered-event classification and token-scope nit fixed inline
 - roast-design loop exit · converged at round 2 (Should-fix 8 confirmed [converged], 0 Blocking) · punch list applied inline to spec and beads ht-xoc.1/.2/.4/.5/.8 (transcript read rule, buffered SessionStart, transport/gate/heartbeat, registered-event --event flag, contract selection, refused-version evidence)
+graph-pass: depth 5→5 · width 1.6→1.6 · applied 0 · parked 2
