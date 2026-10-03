@@ -328,6 +328,79 @@ async fn crashed_incompatible_protocol_owner_recovers_to_new_healthy_boot() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// Kills the starter handing stale endpoint metadata to a replacement that
+/// already holds the canonical lease but has not cleaned up or published yet.
+#[tokio::test]
+async fn crashed_endpoint_is_retired_before_replacement_election() {
+    let (root, context, paths) = fixture();
+    let launcher = launcher(&root);
+    let lock = OwnerLock::acquire(&paths).unwrap();
+    let instance = lock.instance_uuid();
+    let listener = lock.bind_socket().unwrap();
+    let stale = lock
+        .publish_endpoint(&listener, "0.0.1", PROTOCOL_VERSION - 1)
+        .unwrap();
+    let identity = owner_lock_identity(&paths).unwrap();
+    drop(listener);
+    drop(lock);
+    std::fs::write(root.join("hold-replacement-election"), b"").unwrap();
+    struct ReleaseReplacement(PathBuf);
+    impl Drop for ReleaseReplacement {
+        fn drop(&mut self) {
+            let _ = std::fs::write(self.0.join("release-replacement-election"), b"");
+            let _ = std::fs::write(self.0.join("stop"), b"");
+        }
+    }
+    let cleanup = ReleaseReplacement(root.clone());
+    let (recovered, before_cleanup) = tokio::join!(
+        ensure_running_with_timeout(
+            &context,
+            &launcher,
+            Arc::new(TestClock),
+            Duration::from_secs(5)
+        ),
+        async {
+            let elected = tokio::time::timeout(Duration::from_secs(5), async {
+                while !root.join("replacement-election-held").exists() {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await;
+            let snapshot = elected.ok().map(|()| {
+                (
+                    paths.descriptor_path.exists(),
+                    stale.endpoint.exists(),
+                    previous_owner_released(&paths, identity).unwrap(),
+                )
+            });
+            std::fs::write(root.join("release-replacement-election"), b"").unwrap();
+            snapshot
+        },
+    );
+    drop(cleanup);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !root.join("replacement-exited").exists() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(previous_owner_released(&paths, identity).unwrap());
+    assert!(!paths.descriptor_path.exists());
+    assert!(!paths.socket_path.exists());
+    std::fs::remove_dir_all(root).unwrap();
+    assert_eq!(
+        before_cleanup,
+        Some((false, false, false)),
+        "old metadata must be gone while the replacement holds the lease before its own cleanup"
+    );
+    let recovered = recovered.unwrap();
+    assert_eq!(recovered.instance_uuid, instance);
+    assert_ne!(recovered.boot_id, stale.boot_id);
+    assert_eq!(recovered.endpoint, stale.endpoint);
+    assert_eq!(recovered.protocol_version, PROTOCOL_VERSION);
+}
+
 #[tokio::test]
 async fn oversized_namespace_fails_without_spawn_or_rewrite() {
     let (root, context, paths) = fixture();
@@ -911,6 +984,21 @@ fn subprocess_owner_fixture() {
     let root = PathBuf::from(std::env::var_os("HERDR_LIFECYCLE_ROOT").unwrap());
     let context = RuntimeContext::explicit(root.clone(), root.join("host.sock"), None).unwrap();
     let paths = InstancePaths::resolve(&context).unwrap();
+    let held_replacement = root.join("hold-replacement-election").exists();
+    if held_replacement {
+        let election = OwnerLock::acquire(&paths).unwrap();
+        std::fs::write(root.join("replacement-election-held"), b"").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !root.join("release-replacement-election").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "replacement election gate was not released"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        drop(election);
+    }
+    let finished_path = root.join("replacement-exited");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -957,6 +1045,9 @@ fn subprocess_owner_fixture() {
         .await
         .unwrap();
     });
+    if held_replacement {
+        std::fs::write(finished_path, b"").unwrap();
+    }
 }
 
 fn launcher(root: &std::path::Path) -> PathBuf {

@@ -535,6 +535,10 @@ pub async fn ensure_running_with_timeout(
         if launched.is_none() {
             match OwnerLock::acquire(&paths) {
                 Ok(lock) => {
+                    // Retire the old endpoint under this lease, before a
+                    // replacement can hold the lock with stale metadata that
+                    // a concurrent handshake would attribute to a live owner.
+                    lock.remove_stale_endpoint().map_err(io_error)?;
                     drop(lock);
                     launched = Some(
                         spawn_detached(executable, context, &paths, &attempt).map_err(io_error)?,
