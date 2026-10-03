@@ -391,7 +391,7 @@ impl Rig {
     }
 
     fn doctor_text(&self) -> String {
-        String::from_utf8_lossy(&self.cli(&["doctor"]).stdout).into_owned()
+        String::from_utf8_lossy(&self.cli(&["doctor", "--debug"]).stdout).into_owned()
     }
 
     /// The `harness_states` block of the named harness (null when the daemon

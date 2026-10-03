@@ -109,11 +109,24 @@ pub fn holds_store(state_dir: &Path) -> bool {
 
 impl InstancePaths {
     pub fn resolve(context: &RuntimeContext) -> io::Result<Self> {
+        Self::resolve_with_runtime_dir(context, true)
+    }
+
+    /// Compute paths for diagnostics without creating the fallback socket
+    /// directory. An existing fallback directory must still be private.
+    pub fn resolve_read_only(context: &RuntimeContext) -> io::Result<Self> {
+        Self::resolve_with_runtime_dir(context, false)
+    }
+
+    fn resolve_with_runtime_dir(
+        context: &RuntimeContext,
+        create_runtime_dir: bool,
+    ) -> io::Result<Self> {
         let locator = context.host_endpoint.to_string_lossy().into_owned();
         let instance_dir = instance_dir(context);
         let socket_path = stable_socket_path(&instance_dir)?;
         if !socket_path.starts_with(&instance_dir) {
-            ensure_private_dir(socket_path.parent().unwrap())?;
+            verify_runtime_dir(socket_path.parent().unwrap(), create_runtime_dir)?;
         }
         Ok(Self {
             lock_path: instance_dir.join("owner.lock"),
@@ -169,6 +182,18 @@ impl InstancePaths {
         ensure_owned_state_root(state)?;
         ensure_private_dir(instances)?;
         ensure_private_dir(&self.instance_dir)
+    }
+}
+
+fn verify_runtime_dir(path: &Path, create: bool) -> io::Result<()> {
+    if create {
+        ensure_private_dir(path)
+    } else {
+        match check_private_dir(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -309,4 +334,34 @@ pub(crate) fn effective_uid() -> u32 {
         fn geteuid() -> u32;
     }
     unsafe { geteuid() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_only_runtime_directory_check_creates_nothing_and_keeps_unsafe_errors() {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch =
+            Scratch(std::env::temp_dir().join(format!("ht-paths-{}", uuid::Uuid::new_v4())));
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&scratch.0)
+            .unwrap();
+        let runtime = scratch.0.join("fallback");
+        verify_runtime_dir(&runtime, false).unwrap();
+        assert!(!runtime.exists());
+
+        fs::DirBuilder::new().mode(0o755).create(&runtime).unwrap();
+        let error = verify_runtime_dir(&runtime, false).unwrap_err();
+        assert!(is_unsafe_local_state(&error), "{error}");
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+        verify_runtime_dir(&runtime, false).unwrap();
+    }
 }

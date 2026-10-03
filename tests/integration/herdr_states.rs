@@ -88,7 +88,7 @@ fn assert_reports_server_not_running(host: &Path) {
     };
     assert!(health.contains("host unavailable"), "{health}");
     assert!(health.contains("server not running"), "{health}");
-    let doctor = text(&scratch.cli(&["doctor"]).stdout);
+    let doctor = text(&scratch.cli(&["doctor", "--debug"]).stdout);
     assert!(
         doctor.contains("daemon.host_reachability: unavailable"),
         "{doctor}"
@@ -138,7 +138,7 @@ fn herdr_stopped_health_says_degraded_see_log() {
     // Wait for the daemon to verify the running host once.
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let doctor = text(&scratch.cli(&["doctor"]).stdout);
+        let doctor = text(&scratch.cli(&["doctor", "--debug"]).stdout);
         if doctor.contains("daemon.host_reachability: ready") || Instant::now() > deadline {
             assert!(
                 doctor.contains("daemon.host_reachability: ready"),
@@ -150,7 +150,7 @@ fn herdr_stopped_health_says_degraded_see_log() {
     }
     herdr.stop();
     assert_eq!(herdr.state(), HerdrState::Stopped);
-    let doctor_log = text(&scratch.cli(&["doctor"]).stdout)
+    let doctor_log = text(&scratch.cli(&["doctor", "--debug"]).stdout)
         .lines()
         .find_map(|line| line.strip_prefix("daemon_log: ").map(str::to_owned))
         .expect("doctor prints the daemon log path");
@@ -166,7 +166,7 @@ fn herdr_stopped_health_says_degraded_see_log() {
         std::thread::sleep(Duration::from_millis(200));
     };
     assert!(shows_pointer(&health), "{pointers:?} not in {health}");
-    let doctor = text(&scratch.cli(&["doctor"]).stdout);
+    let doctor = text(&scratch.cli(&["doctor", "--debug"]).stdout);
     assert!(shows_pointer(&doctor), "{pointers:?} not in {doctor}");
     assert!(
         doctor.contains(&format!("daemon_log: {doctor_log}\n")),

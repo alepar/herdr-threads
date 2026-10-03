@@ -190,7 +190,7 @@ Errors print `herdr-threads: DETAIL (error_code)` on stderr. Exit status:
 | 5 | outcome unknown | `herdr-threads pending-ops`, then `retry LOCAL_REF` |
 
 Never resend a message just because a send's outcome was unknown: use
-`pending-ops` and `retry`. `herdr-threads doctor` is a read-only diagnosis.
+`pending-ops` and `retry`. `doctor` is read-only (`--debug` shows detail); `doctor fix` may ensure an absent daemon or repair owned Claude hooks; Codex setup/trust and identity repair stay manual.
 `--json` selects JSON output for commands that return a result; `skill` always
 prints this guide. It cannot be combined with `--human` or `--machine`.
 Without a format flag, an ordinary terminal gets human text where available;

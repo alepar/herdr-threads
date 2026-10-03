@@ -2078,9 +2078,9 @@ pub(crate) fn codex_sandbox_socket(
         return Err(format!(
             "the network proxy's default-deny is unmeasured on Codex {version} (measured: {}); \
              network_access=true could leave the sandbox with unrestricted networking there. \
-             Verify on this version with `codex sandbox -c 'sandbox_mode=\"workspace-write\"' \
-             <allowance> -- curl https://example.com` (must fail) before adding the allowance \
-             by hand",
+             Before adding an allowance by hand, validate the exact target executable and \
+             effective policy with an allowed socket plus controlled denied sockets returning \
+             EPERM; a failed curl alone does not prove default-deny",
             CODEX_SANDBOX_MEASURED_VERSIONS.join(", ")
         ));
     }
@@ -2236,13 +2236,15 @@ pub const CODEX_TRUST_NOTE: &str = "Codex runs hooks from hooks.json only once y
 /// Codex's and is not verified here).
 fn codex_trust_json(paths: &CodexPaths, command: Option<&str>) -> Value {
     let Some(command) = command else {
-        return json!({"note": CODEX_TRUST_NOTE});
+        return json!({"status": "unknown", "note": CODEX_TRUST_NOTE});
     };
     let hooks: Value = fs::read(&paths.hooks)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or(Value::Null);
-    let state = fs::read_to_string(&paths.config)
+    let config = fs::read_to_string(&paths.config);
+    let state = config
+        .as_ref()
         .ok()
         .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok());
     let path = paths.hooks.display().to_string();
@@ -2268,7 +2270,35 @@ fn codex_trust_json(paths: &CodexPaths, command: Option<&str>) -> Value {
             }
         }
     }
-    json!({"hooks": keys, "note": CODEX_TRUST_NOTE})
+    let status = if keys.is_empty()
+        || (config.is_ok() && state.is_none())
+        || config
+            .as_ref()
+            .is_err_and(|error| error.kind() != io::ErrorKind::NotFound)
+    {
+        "unknown"
+    } else if keys.iter().all(|key| key["trust_recorded"] == true) {
+        // Codex owns the hashes and may change its matching rules. A record is
+        // evidence of a prior review, not proof the present hook will run.
+        "recorded_unverified"
+    } else {
+        "review_required"
+    };
+    json!({"hooks": keys, "status": status, "note": CODEX_TRUST_NOTE})
+}
+
+/// Read Codex's own recorded hook-review keys without claiming hash validity.
+pub(crate) fn codex_trust_report(env: &SetupEnv) -> Value {
+    let Ok(paths) = codex_paths(env) else {
+        return json!({"status": "unknown", "note": CODEX_TRUST_NOTE});
+    };
+    let mut status = json!({});
+    if settings_status(SettingsKind::CodexUser, env, &paths.hooks, &mut status).is_err()
+        || status["installed"] != true
+    {
+        return json!({"status": "unknown", "note": CODEX_TRUST_NOTE});
+    }
+    codex_trust_json(&paths, status["command"].as_str())
 }
 
 fn allowance_error(error: codex_config::AllowanceError, config: &Path) -> RunError {

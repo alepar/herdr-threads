@@ -67,6 +67,20 @@ say() { printf '%s\n' "herdr-threads: $*"; }
 warn() { printf '%s\n' "herdr-threads: warning: $*" >&2; }
 die() { printf '%s\n' "herdr-threads: error: $*" >&2; exit 1; }
 
+# Color is only presentation. Logs, pipes, and NO_COLOR remain plain text.
+color_enabled() { [ -t 1 ] && [ -z "${NO_COLOR+x}" ] && [ -n "${TERM:-}" ] && [ "$TERM" != dumb ]; }
+status_line() {
+    if color_enabled; then
+        case "$1" in
+            *'not linked'*|*'setup incomplete'*|*'old daemon still running'*)
+                printf '\033[1;31m%s\033[0m\n' "$1" ;;
+            *) printf '\033[1;32m%s\033[0m\n' "$1" ;;
+        esac
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
 usage() {
     cat <<'EOF'
 usage: install.sh [options]
@@ -689,12 +703,15 @@ fi
 # --- next steps and final status -------------------------------------------
 
 step() { printf '  - %s\n' "$1"; }
+important_step() {
+    if color_enabled; then printf '  \033[1;33m! %s\033[0m\n' "$1"; else step "$1"; fi
+}
 
 next_steps() {
-    printf '\n%s\n' "herdr-threads $new_version ($os-$arch)"
-    printf '  executable: %s -> %s\n' "$link_path" "$installed_binary"
-    printf '  package:    %s\n' "$install_dir"
-    printf '%s\n' "Next steps:"
+    printf '\n%s\n' "Next steps:"
+    if [ "$OUT_CODEX_SET_UP" = 1 ]; then
+        important_step "Trust the Codex hooks once: start codex interactively and review the herdr-threads hooks if prompted (or open /hooks). The installer cannot verify current hook trust."
+    fi
     if [ "$on_path" = 0 ]; then
         step "$bin_dir is not on PATH; add it, e.g.: export PATH=\"$bin_dir:\$PATH\""
     fi
@@ -715,11 +732,7 @@ next_steps() {
         complete) ;;
         *) step "Set up agent hooks: herdr-threads setup (every detected harness; check: herdr-threads setup-status)" ;;
     esac
-    if [ "$OUT_CODEX_SET_UP" = 1 ]; then
-        step "Trust the Codex hooks once: start codex interactively and trust the herdr-threads hooks it lists for review (or open /hooks)"
-    fi
     step "Try it: in a Herdr shell pane run herdr-threads me init, then follow https://github.com/$REPO#try-it-yourself"
-    step "Upgrade: re-run this installer. Remove: re-run it with --uninstall."
     if [ "$os" = linux ]; then
         printf '%s\n' "  - Linux is EXPERIMENTAL and unvalidated; please report problems."
     fi
@@ -732,29 +745,29 @@ finish() {
     still=$(old_daemon_alive)
     if [ -n "$still" ]; then
         if [ "$OUT_LINKED" = 1 ]; then
-            printf '%s\n' "$verb and linked; old daemon still running: pid $still"
+            status_line "$verb and linked; old daemon still running: pid $still"
             ensure="herdr plugin action invoke ensure --plugin $PLUGIN_ID"
         else
-            printf '%s\n' "$verb, not linked; old daemon still running: pid $still"
+            status_line "$verb, not linked; old daemon still running: pid $still"
             ensure="herdr-threads daemon ensure"
         fi
         printf '  stop it with: kill %s, then %s\n' "$still" "$ensure"
         exit 3
     fi
     if [ "$OUT_LINKED" = 0 ]; then
-        printf '%s\n' "$verb, not linked: $OUT_NOT_LINKED"
+        status_line "$verb, not linked: $OUT_NOT_LINKED"
         printf '  register it with: %s\n' "$OUT_REGISTER_CMD"
         exit 3
     fi
     if [ "$OUT_SETUP" = failed ]; then
-        printf '%s\n' "installed and linked; setup incomplete: $OUT_SETUP_FAILED"
+        status_line "installed and linked; setup incomplete: $OUT_SETUP_FAILED"
         printf '  finish it with: herdr-threads setup\n'
         exit 3
     fi
     if [ "$OUT_UPGRADED" = 1 ]; then
-        printf '%s\n' "upgraded: herdr-threads $previous_version -> $new_version (linked)"
+        status_line "upgraded: herdr-threads $previous_version -> $new_version (linked)"
     else
-        printf '%s\n' "installed and linked: herdr-threads $new_version"
+        status_line "installed and linked: herdr-threads $new_version"
     fi
     exit 0
 }

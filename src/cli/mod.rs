@@ -365,7 +365,7 @@ where
         io::Read::read_to_string(&mut io::stdin().lock(), &mut input)?;
         return internal::json_field(&input, path, writer);
     }
-    if let CliAction::Doctor = &parsed.action {
+    if let CliAction::Doctor { .. } = &parsed.action {
         return doctor::run(&parsed, writer);
     }
     if let CliAction::Setup(request) = &parsed.action {
@@ -603,7 +603,7 @@ where
             .map_err(retry_failure)?;
             return Ok(());
         }
-        CliAction::Doctor => {
+        CliAction::Doctor { .. } => {
             unreachable!("doctor is handled before context resolution")
         }
         CliAction::Setup(_) | CliAction::SetupAll(..) => {

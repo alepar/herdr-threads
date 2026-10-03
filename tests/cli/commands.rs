@@ -1,6 +1,18 @@
 use super::*;
 
 #[test]
+fn doctor_debug_and_fix_are_scoped_to_doctor() {
+    let plain = parse_argv(["herdr-threads", "doctor"]).unwrap();
+    assert!(matches!(plain.action, CliAction::Doctor { debug: false, fix: false }));
+    let debug = parse_argv(["herdr-threads", "doctor", "--debug"]).unwrap();
+    assert!(matches!(debug.action, CliAction::Doctor { debug: true, fix: false }));
+    let fix = parse_argv(["herdr-threads", "--json", "doctor", "fix"]).unwrap();
+    assert!(matches!(fix.action, CliAction::Doctor { debug: false, fix: true }));
+    assert_eq!(fix.output.format, OutputFormat::Json);
+    assert!(parse_argv(["herdr-threads", "doctor", "repair"]).is_err());
+}
+
+#[test]
 fn bounded_collection_routes_parse_with_exact_filters() {
     type Case = (Vec<&'static str>, fn(&WireCommand) -> bool);
     let cases: Vec<Case> = vec![

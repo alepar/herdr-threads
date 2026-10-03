@@ -168,7 +168,7 @@ fn doctor_text_has_one_claude_path_line() {
         |installed: &InstalledHarnessJson| json!({"hooks": {"claude": {"installed": installed}}});
     let case = PathCase::new("text");
     let binary = write_stub_harness(&case.dir, "claude", "2.1.299");
-    let text = render_text(&report_for(&case.installed(no_env)));
+    let text = render_debug_text(&report_for(&case.installed(no_env)));
     let lines: Vec<_> = text
         .lines()
         .filter(|line| line.starts_with("claude on PATH:"))
@@ -181,7 +181,7 @@ fn doctor_text_has_one_claude_path_line() {
         )]
     );
 
-    let text = render_text(&report_for(&claude_installed_stub()));
+    let text = render_debug_text(&report_for(&claude_installed_stub()));
     let lines: Vec<_> = text
         .lines()
         .filter(|line| line.starts_with("claude on PATH:"))
@@ -225,7 +225,7 @@ fn doctor_optimistic_warning() {
         "{warning}"
     );
 
-    let text = render_text(&json!({"hooks": {"claude": {
+    let text = render_debug_text(&json!({"hooks": {"claude": {
         "installed": case.installed(no_env),
         "admission_warning": warning,
     }}}));
@@ -471,7 +471,7 @@ fn doctor_report_and_text_carry_the_manifest_policy() {
                 .all(|l| !l.to_string().contains("manifest"))),
         "informational only"
     );
-    let text = render_text(&report);
+    let text = render_debug_text(&report);
     assert!(
         text.contains("harness manifest: off (settings.json)\n"),
         "{text}"
@@ -510,7 +510,7 @@ fn doctor_json_carries_harness_states_or_the_reason() {
         report["harness_states_unavailable"], "the daemon is not running",
         "{report}"
     );
-    let text = render_text(&report);
+    let text = render_debug_text(&report);
     assert!(
         text.contains("harness states unavailable: the daemon is not running\n"),
         "{text}"

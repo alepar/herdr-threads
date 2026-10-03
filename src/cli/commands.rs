@@ -39,8 +39,11 @@ pub enum CliAction {
         page: PageRequest,
     },
     Daemon(DaemonAction),
-    /// Read-only diagnostics.
-    Doctor,
+    /// Diagnose local state; `fix` attempts bounded owned repairs.
+    Doctor {
+        debug: bool,
+        fix: bool,
+    },
     CachedCheckIn(CachePageRequest),
     /// Local harness hook setup, removal or inspection; never contacts the daemon.
     Setup(super::setup::SetupRequest),
@@ -155,7 +158,7 @@ pub fn dispatch<B: CliBackend>(
         CliAction::Daemon(action) => {
             return backend.local(LocalAction::Daemon(action), &parsed.output);
         }
-        CliAction::Doctor => return backend.local(LocalAction::Doctor, &parsed.output),
+        CliAction::Doctor { .. } => return backend.local(LocalAction::Doctor, &parsed.output),
         CliAction::CachedCheckIn(request) => {
             return backend.local(LocalAction::CachedCheckIn(request), &parsed.output);
         }
@@ -514,9 +517,14 @@ enum Top {
         #[command(subcommand)]
         command: ServiceSub,
     },
-    /// Read-only local diagnostics: context, daemon health and the owned
-    /// user-level Claude and Codex hook installations.
-    Doctor,
+    /// Check daemon, harness hooks and local state; lead with judgments and fixes.
+    Doctor {
+        /// Print the full diagnostic inventory.
+        #[arg(long, global = true)]
+        debug: bool,
+        #[command(subcommand)]
+        command: Option<DoctorSub>,
+    },
     /// Install the owned herdr-threads hooks for a harness at user level
     /// (with no harness: for every detected harness).
     /// Claude: `$CLAUDE_CONFIG_DIR/settings.json` (hooks and allow rule).
@@ -581,6 +589,12 @@ enum Top {
         #[command(subcommand)]
         command: InternalSub,
     },
+}
+
+#[derive(Subcommand)]
+enum DoctorSub {
+    /// Attempt safe, owned repairs and report remaining manual actions.
+    Fix,
 }
 
 #[derive(Args)]
@@ -1540,7 +1554,10 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
                 expected_generation,
             }),
         }),
-        Top::Doctor => CliAction::Doctor,
+        Top::Doctor { debug, command } => CliAction::Doctor {
+            debug,
+            fix: matches!(command, Some(DoctorSub::Fix)),
+        },
         Top::Setup(args) => setup_action(super::setup::SetupVerb::Install, args)?,
         Top::Unsetup(args) => setup_action(super::setup::SetupVerb::Remove, args)?,
         Top::SetupStatus(args) => setup_action(super::setup::SetupVerb::Status, args)?,

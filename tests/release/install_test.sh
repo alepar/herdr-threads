@@ -189,6 +189,18 @@ install --version v0.1.0
 [ "$status" = 0 ] || fail "pinned install exits 0" "$(cat "$out")"
 pass "pinned install exits 0"
 expect "final status line: installed and linked" [ "$(last_line)" = "installed and linked: herdr-threads 0.1.0" ]
+expect "piped installer output has no ANSI color" bash -c "! grep -q $'\\033' '$out'"
+if [ "$(uname -s)" = Darwin ]; then
+    (cd "$root/cwd" && script -q "$root/color.log" "${run_env[@]}" TERM=xterm \
+        bash "$repo/scripts/install.sh" --release-url "file://$rel" --version v0.1.0 --no-setup < /dev/null > /dev/null 2>&1)
+    expect "terminal status is colored" grep -q $'\033\[1;32m' "$root/color.log"
+    (cd "$root/cwd" && script -q "$root/no-color.log" "${run_env[@]}" TERM=xterm NO_COLOR=1 \
+        bash "$repo/scripts/install.sh" --release-url "file://$rel" --version v0.1.0 --no-setup < /dev/null > /dev/null 2>&1)
+    expect "NO_COLOR suppresses terminal ANSI color" bash -c "! grep -q $'\\033' '$root/no-color.log'"
+    (cd "$root/cwd" && script -q "$root/dumb-color.log" "${run_env[@]}" TERM=dumb \
+        bash "$repo/scripts/install.sh" --release-url "file://$rel" --version v0.1.0 --no-setup < /dev/null > /dev/null 2>&1)
+    expect "TERM=dumb suppresses terminal ANSI color" bash -c "! grep -q $'\\033' '$root/dumb-color.log'"
+fi
 expect "exactly one final status line" [ "$(grep -c '^installed and linked' "$out")" = 1 ]
 expect "checksum verified" has "checksum verified"
 expect "package installed with VERSION 0.1.0" [ "$(cat "$prefix/VERSION")" = 0.1.0 ]
@@ -382,6 +394,9 @@ chmod 755 "$tools/codex"
 install --release-url "file://$stub_rel" --setup
 [ "$status" = 0 ] || fail "--setup install with codex exits 0" "$(cat "$out")"
 expect "codex --setup next steps: Codex trust reminder" has "Trust the Codex hooks once"
+expect "codex --setup trust reminder acknowledges unverified status" has "installer cannot verify current hook trust"
+expect "codex --setup trust reminder precedes routine steps" \
+    awk '/Trust the Codex hooks once/{trust=NR} /Check it:/{check=NR} END{exit !(trust && (!check || trust<check))}' "$out"
 expect "codex --setup next steps: no setup suggestion" bash -c "! grep -qF 'Set up agent hooks' '$out'"
 install --release-url "file://$stub_rel"
 expect "codex without --setup: no Codex trust reminder" bash -c "! grep -qF 'Trust the Codex hooks' '$out'"

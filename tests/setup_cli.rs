@@ -162,6 +162,145 @@ const RULE: &str = "Bash(herdr-threads *)";
 
 const ORIGINAL: &[u8] = b"{\n  \"permissions\": {\"allow\": [\"Bash(ls:*)\"]},\n  \"hooks\": {\"PreToolUse\": [{\"matcher\": \"Edit\", \"hooks\": [{\"type\": \"command\", \"command\": \"echo mine\"}]}]},\n  \"model\": \"x\"\n}\n";
 
+#[test]
+fn doctor_codex_trust_status_tracks_missing_recorded_and_unreadable_evidence() {
+    let s = Scratch::new();
+    s.harness("codex", "codex-cli 0.158.0");
+    fs::create_dir(&s.codex_home).unwrap();
+    let setup = s.run(&["setup", "codex"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    let get = || json_doctor(&s)["hooks"]["codex"]["trust"].clone();
+    let pending = get();
+    assert_eq!(pending["status"], "review_required", "{pending}");
+    let keys = pending["hooks"].as_array().unwrap();
+    assert!(!keys.is_empty());
+    let config = s.codex_home.join("config.toml");
+    let mut contents = fs::read_to_string(&config).unwrap_or_default();
+    for key in keys {
+        contents.push_str(&format!(
+            "\n[hooks.state.{}]\ntrusted_hash = \"sha256:recorded\"\n",
+            serde_json::to_string(key["key"].as_str().unwrap()).unwrap()
+        ));
+    }
+    fs::write(&config, &contents).unwrap();
+    let recorded = get();
+    assert_eq!(recorded["status"], "recorded_unverified", "{recorded}");
+    fs::write(&config, "[broken\n").unwrap();
+    let unknown = get();
+    assert_eq!(unknown["status"], "unknown", "{unknown}");
+}
+
+#[test]
+fn doctor_fix_refuses_unsafe_state_without_touching_harness_config() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    fs::create_dir(&s.state).unwrap();
+    fs::set_permissions(&s.state, fs::Permissions::from_mode(0o777)).unwrap();
+    let out = s.run(&["--json", "doctor", "fix"]);
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let doctor = &report["doctor"];
+    assert_eq!(doctor["repairs"][0]["action"], "state directory");
+    assert_eq!(doctor["repairs"][0]["outcome"], "refused");
+    assert!(!s.settings().exists());
+}
+
+#[test]
+fn doctor_fix_installs_missing_owned_hooks_idempotently_in_scratch_home() {
+    let s = Scratch::new();
+    struct Stop<'a>(&'a Scratch);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.run(&["daemon", "stop"]);
+        }
+    }
+    let _stop = Stop(&s);
+    s.harness("claude", "2.1.284 (Claude Code)");
+    fs::create_dir(&s.state).unwrap();
+    let first = s.run(&["--json", "doctor", "fix"]);
+    let first: serde_json::Value = serde_json::from_slice(&first.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", text(&first.stderr)));
+    assert_eq!(
+        first["doctor"]["hooks"]["claude"]["setup"]["installed"], true,
+        "{first}"
+    );
+    assert!(
+        first["doctor"]["repairs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["action"] == "setup claude" && row["outcome"] == "attempted"),
+        "{first}"
+    );
+    let second = s.run(&["--json", "doctor", "fix"]);
+    let second: serde_json::Value = serde_json::from_slice(&second.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", text(&second.stderr)));
+    assert!(
+        !second["doctor"]["repairs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["action"] == "setup claude"),
+        "{second}"
+    );
+}
+
+#[test]
+fn doctor_fix_reports_manual_codex_review_without_writing_trust() {
+    let s = Scratch::new();
+    struct Stop<'a>(&'a Scratch);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.run(&["daemon", "stop"]);
+        }
+    }
+    let _stop = Stop(&s);
+    s.harness("codex", "codex-cli 0.158.0");
+    fs::create_dir(&s.state).unwrap();
+    fs::create_dir(&s.codex_home).unwrap();
+    let setup = s.run(&["setup", "codex"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    let config = s.codex_home.join("config.toml");
+    let before = fs::read(&config).ok();
+    let fix = s.run(&["--json", "doctor", "fix"]);
+    let fix: serde_json::Value = serde_json::from_slice(&fix.stdout).unwrap();
+    assert!(
+        fix["doctor"]["repairs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["action"] == "Codex hook trust" && row["outcome"] == "manual"),
+        "{fix}"
+    );
+    assert_eq!(fs::read(&config).ok(), before);
+}
+
+#[test]
+fn doctor_fix_does_not_install_codex_or_global_sandbox_allowance() {
+    let s = Scratch::new();
+    struct Stop<'a>(&'a Scratch);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.run(&["daemon", "stop"]);
+        }
+    }
+    let _stop = Stop(&s);
+    s.harness("codex", "codex-cli 0.158.0");
+    fs::create_dir(&s.state).unwrap();
+    let fix = s.run(&["--json", "doctor", "fix"]);
+    let report: serde_json::Value = serde_json::from_slice(&fix.stdout).unwrap();
+    assert!(
+        report["doctor"]["repairs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["action"] == "setup codex" && row["outcome"] == "manual"),
+        "{report}"
+    );
+    assert!(!s.codex_home.join("hooks.json").exists());
+    assert!(!s.codex_home.join("config.toml").exists());
+}
+
 /// Round trip on user settings (CLAUDE_CONFIG_DIR) with unrelated settings:
 /// setup, idempotent re-setup, status, doctor, unsetup (byte-for-byte
 /// restore), status, and a second unsetup. Kills: unsetup not restoring the
@@ -223,7 +362,7 @@ fn claude_install_status_remove_round_trip_restores_settings_byte_for_byte() {
     assert_eq!(status["harness_version"]["supported"], true);
 
     // doctor reports the user-level installation.
-    let doctor = s.run(&["doctor"]);
+    let doctor = s.run(&["doctor", "--debug"]);
     let report = text(&doctor.stdout);
     assert!(
         report.contains("hooks.claude.setup_installed: yes\n"),
@@ -1053,7 +1192,7 @@ fn resetup_replaces_the_retired_export_rule_and_unsetup_restores_bytes() {
             .is_some_and(|n| n.contains(RETIRED) && n.contains("setup claude")),
         "{status}"
     );
-    let doctor = s.run(&["doctor"]);
+    let doctor = s.run(&["doctor", "--debug"]);
     let report = text(&doctor.stdout);
     assert!(
         report.contains("hooks.claude.allow_rule.ownership: superseded\n"),
@@ -1856,7 +1995,7 @@ fn json_doctor(s: &Scratch) -> serde_json::Value {
 #[test]
 fn doctor_text_renders_claude_setup_flag_and_admission_lines() {
     let s = Scratch::new();
-    let out = text(&s.run(&["doctor"]).stdout);
+    let out = text(&s.run(&["doctor", "--debug"]).stdout);
     assert!(out.contains("hooks.claude.setup_installed: no\n"), "{out}");
     assert!(
         out.contains("hooks.claude.installed.admission: not_found\n"),
@@ -1884,7 +2023,7 @@ fn doctor_reports_the_claude_on_path_end_to_end() {
     assert_eq!(installed["recipe"], "claude-hooks-2.1.283", "{installed}");
     let binary = installed["binary"].as_str().unwrap().to_owned();
     assert!(binary.ends_with("/claude"), "{installed}");
-    let out = text(&s.run(&["doctor"]).stdout);
+    let out = text(&s.run(&["doctor", "--debug"]).stdout);
     assert!(
         out.contains(&format!("claude on PATH: {binary} 2.1.284 (listed)\n")),
         "{out}"
@@ -1965,7 +2104,9 @@ fn doctor_flags_legacy_event_registration_without_degrading() {
         current["hooks"]["claude"]["setup"]["event_registration"],
         "current"
     );
-    assert!(!text(&s.run(&["doctor"]).stdout).contains("predate per-event registration"));
+    assert!(
+        !text(&s.run(&["doctor", "--debug"]).stdout).contains("predate per-event registration")
+    );
 
     downgrade_claude_to_legacy(&s);
     let legacy = json_doctor(&s);
@@ -1981,7 +2122,7 @@ fn doctor_flags_legacy_event_registration_without_degrading() {
     assert_eq!(legacy["result"], current["result"]);
     let line = "claude hooks predate per-event registration (no --event): re-run \
                 `herdr-threads setup claude`\n";
-    assert!(text(&s.run(&["doctor"]).stdout).contains(line));
+    assert!(text(&s.run(&["doctor", "--debug"]).stdout).contains(line));
 
     // Re-running setup rewrites the hooks with --event: doctor is back to current.
     let again = s.run(&["setup", "claude"]);
@@ -2092,7 +2233,7 @@ fn disable_flag_sets_false_and_unsetup_reverts_it() {
     assert_eq!(installed["model"], "x");
     assert!(installed["hooks"]["SessionStart"].is_array());
 
-    let doctor = text(&s.run(&["doctor"]).stdout);
+    let doctor = text(&s.run(&["doctor", "--debug"]).stdout);
     assert!(
         doctor.contains(&format!(
             "hooks.claude.prompt_suggestions: disabled (`{SUGGESTION_KEY}` in {}, set by setup)\n",
@@ -2185,7 +2326,7 @@ fn keep_flag_and_an_existing_false_are_left_alone() {
     let report = json(&out);
     assert_eq!(report["prompt_suggestions"]["action"], "already_disabled");
     assert_eq!(report["prompt_suggestions"]["set_by_setup"], false);
-    let doctor = text(&s.run(&["doctor"]).stdout);
+    let doctor = text(&s.run(&["doctor", "--debug"]).stdout);
     assert!(
         doctor.contains("hooks.claude.prompt_suggestions: disabled ("),
         "{doctor}"
@@ -2236,7 +2377,7 @@ fn codex_legacy_registration_rerun_warns_about_retrust() {
     assert!(!text(&setup.stdout).contains("carry --event"));
 
     downgrade_to_legacy(&s, "codex-user", &s.hooks());
-    let doctor = text(&s.run(&["doctor"]).stdout);
+    let doctor = text(&s.run(&["doctor", "--debug"]).stdout);
     assert!(
         doctor.contains(
             "codex hooks predate per-event registration (no --event): re-run \

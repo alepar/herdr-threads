@@ -1,0 +1,24 @@
+{
+  "version": "3.0.0",
+  "query": "Compare beads, Herdr, Claude Code, Codex and doctor/status/repair CLI patterns for herdr-threads redesign",
+  "mode": "standard",
+  "started_at": "2026-10-03T16:54:17.662449+00:00",
+  "finished_at": "2026-10-03T17:00:47.911102+00:00",
+  "assumptions": [
+    "Technical operator audience; product documentation and installed help may change; local baseline 0d70765e is authoritative for current behavior."
+  ],
+  "provider_config": {
+    "primary": "search-cli",
+    "scholarly": null
+  },
+  "report_dir": "docs/research/doctor-redesign-2026-10-03",
+  "artifact_paths": {
+    "sources": "sources.jsonl",
+    "evidence": "evidence.jsonl",
+    "claims": "claims.jsonl",
+    "report": "report.md",
+    "html": "report.html",
+    "pdf": "report.pdf"
+  },
+  "continuation": null
+}

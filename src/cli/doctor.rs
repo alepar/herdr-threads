@@ -1,5 +1,5 @@
-//! `doctor`: bounded, read-only local diagnostics. It never starts the daemon
-//! and never writes harness configuration. It reports the resolved context,
+//! `doctor`: bounded local diagnostics and explicit owned repairs. A plain
+//! check remains read-only. It reports the resolved context,
 //! state directory safety, daemon reachability/health, and the owned Claude
 //! user-level Claude and Codex hook installations, keeping "installed" separate
 //! from "observed" native capability.
@@ -578,7 +578,7 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
     // Resolving may check the plugin-created runtime socket directory; an
     // unsafe one is the same invalid local context `daemon ensure` reports
     // (status 2), not an unavailable daemon.
-    let resolved = InstancePaths::resolve(&context);
+    let resolved = InstancePaths::resolve_read_only(&context);
     if state_error.is_none() {
         state_error = match &resolved {
             Err(error) if is_unsafe_local_state(error) => Some(error.to_string()),
@@ -605,8 +605,10 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
     match resolved {
         Err(error) => {
             report["daemon"] = json!({"state": "unavailable", "error": error.to_string()});
-            code = code.max(exit::EXIT_UNAVAILABLE);
-            result = "unavailable";
+            if state_error.is_none() {
+                code = exit::EXIT_UNAVAILABLE;
+                result = "unavailable";
+            }
         }
         Ok(paths) => {
             report["instance_dir"] = json!(paths.instance_dir.display().to_string());
@@ -756,6 +758,14 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
         }),
         Err(error) => json!({"installed": false, "error": error}),
     };
+    let codex_trust = if codex_setup["installed"] == json!(true) {
+        super::setup::codex_trust_report(&env)
+    } else {
+        json!({"status": "not_installed"})
+    };
+    if codex_trust["status"] == "review_required" {
+        limitations.push("Codex hook review required; start codex interactively and review herdr-threads hooks in /hooks".into());
+    }
     // The `codex` a hook would resolve on this PATH, observed read-only and
     // bounded by the version-observation deadline. A listed version is
     // admitted exactly; an unlisted one only when its embedded hook schemas
@@ -804,6 +814,13 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
         &env,
         codex.result.as_ref().ok().map(|version| version.as_str()),
     );
+    let socket_policy_validation = codex.result.as_ref().ok().map(|_| "not_run");
+    let policy_unmeasured = codex.result.as_ref().ok().filter(|version| {
+        !super::setup::CODEX_SANDBOX_MEASURED_VERSIONS.contains(&version.as_str())
+    });
+    if policy_unmeasured.is_some() {
+        limitations.push("Codex socket policy unvalidated for the target executable/effective config; managed launch needs explicit -C and a target-pane executable witness; global auto repair withheld".into());
+    }
     if let Some(binary) = &codex.binary {
         match &codex.result {
             Err(_) => limitations.push(format!(
@@ -880,9 +897,11 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
             "scope": "user",
             "detail": "Codex hooks are user-level ($CODEX_HOME/hooks.json, set up by `herdr-threads setup codex`); Codex runs them only once trusted",
             "setup": codex_setup,
+            "trust": codex_trust,
             "recipes": crate::harness::recipe::describe(crate::harness::codex::RECIPES),
             "installed": installed,
             "sandbox_warning": sandbox_warning,
+            "socket_policy_validation": socket_policy_validation,
             "sandbox_roots_warning": roots_warning,
             "sandbox_proxy_warnings": proxy_warnings,
             "last_hook": last_hook.map(|record| json!({
@@ -938,8 +957,8 @@ fn scalar(value: &Value) -> String {
     }
 }
 
-/// Compact line-oriented text form of the report.
-pub fn render_text(report: &Value) -> String {
+/// The prior, detailed line-oriented text form of the report.
+pub fn render_debug_text(report: &Value) -> String {
     let mut out = String::from("herdr-threads doctor\n");
     out.push_str(&format!(
         "version: {} (protocol {})\n",
@@ -1149,6 +1168,10 @@ pub fn render_text(report: &Value) -> String {
         if let Some(line) = legacy_registration_line("codex", setup) {
             out.push_str(&line);
         }
+        out.push_str(&format!(
+            "hooks.codex.trust.status: {}\n",
+            scalar(&report["hooks"]["codex"]["trust"]["status"])
+        ));
         let installed = &report["hooks"]["codex"]["installed"];
         out.push_str(&format!(
             "hooks.codex.installed: {}\n",
@@ -1173,6 +1196,12 @@ pub fn render_text(report: &Value) -> String {
                 scalar(sandbox_warning)
             ));
         }
+        if !report["hooks"]["codex"]["socket_policy_validation"].is_null() {
+            out.push_str(&format!(
+                "hooks.codex.socket_policy_validation: {}\n",
+                scalar(&report["hooks"]["codex"]["socket_policy_validation"])
+            ));
+        }
         let last_hook = &report["hooks"]["codex"]["last_hook"];
         if !last_hook.is_null() {
             out.push_str(&format!(
@@ -1190,11 +1219,294 @@ pub fn render_text(report: &Value) -> String {
     out
 }
 
+/// Verdicts and actions first; detailed inventory is available with --debug.
+pub fn render_text(report: &Value) -> String {
+    let mut out = format!("doctor: {}\n", scalar(&report["result"]));
+    let context = &report["context"];
+    if context["ok"] == json!(false) {
+        out.push_str(&format!("issue: {}\n", scalar(&context["error"])));
+        return out;
+    }
+    let state = &report["state_dir"];
+    if state["safe"] == json!(false) {
+        out.push_str(&format!(
+            "issue: unsafe state directory: {}\n",
+            scalar(&state["error"])
+        ));
+    }
+    let daemon = &report["daemon"];
+    out.push_str(&format!("daemon: {}\n", scalar(&daemon["state"])));
+    if let Some(error) = daemon["error"].as_str() {
+        out.push_str(&format!("issue: {}\n", clean(error)));
+    }
+    if daemon["version_matches"] == json!(false) {
+        out.push_str("issue: daemon version differs from this CLI; inspect with --debug\n");
+    }
+    for name in ["claude", "codex"] {
+        let harness = &report["hooks"][name];
+        if harness.is_null() {
+            continue;
+        }
+        let admission = scalar(&harness["installed"]["admission"]);
+        let setup = if harness["setup"]["installed"] == json!(true) {
+            "hooks installed"
+        } else {
+            "hooks missing"
+        };
+        out.push_str(&format!("{name}: {admission}, {setup}\n"));
+    }
+    if report["hooks"]["codex"]["setup"]["installed"] == json!(true) {
+        match report["hooks"]["codex"]["trust"]["status"].as_str() {
+            Some("review_required") => out.push_str(
+                "issue: Codex hook review required; start codex interactively and review herdr-threads hooks in /hooks\n",
+            ),
+            Some("recorded_unverified") => out.push_str(
+                "Codex hook trust recorded (current hashes unverified)\n",
+            ),
+            _ => out.push_str(
+                "Codex hook trust unknown; inspect /hooks in an interactive Codex session\n",
+            ),
+        }
+    }
+    if let Some(harnesses) = report["harness_states"]["harnesses"].as_array() {
+        for harness in harnesses {
+            let name = scalar(&harness["harness"]);
+            let newest = harness["versions"].as_array().and_then(|rows| rows.first());
+            let detected = &harness["detected"];
+            let row = if detected.is_object()
+                && newest.is_some_and(|row| row["version"] != detected["version"])
+            {
+                Some(detected)
+            } else {
+                newest.or_else(|| detected.is_object().then_some(detected))
+            };
+            if let Some(row) = row {
+                out.push_str(&format!(
+                    "{name} version {}: {}\n",
+                    scalar(&row["version"]),
+                    scalar(&row["state"])
+                ));
+            }
+        }
+    }
+    if let Some(items) = report["daemon"]["limitations"].as_array() {
+        for item in items {
+            out.push_str(&format!("issue: {}\n", scalar(item)));
+        }
+    }
+    if let Some(items) = report["limitations"].as_array() {
+        for item in items {
+            if item
+                .as_str()
+                .is_some_and(|line| line.starts_with("Codex hook review required"))
+            {
+                continue;
+            }
+            out.push_str(&format!("issue: {}\n", scalar(item)));
+        }
+    }
+    if !repair_plan(report).is_empty() {
+        out.push_str("fix: herdr-threads doctor fix\n");
+    }
+    out.push_str("details: herdr-threads doctor --debug\n");
+    out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Repair {
+    EnsureDaemon,
+    SetupClaude,
+}
+
+/// Only evidence that the existing owner-aware operations can act on belongs
+/// in this plan. A malformed context or unsafe state tree blocks all writes.
+fn repair_plan(report: &Value) -> Vec<Repair> {
+    if report["context"]["ok"] != json!(true) || report["state_dir"]["safe"] != json!(true) {
+        return Vec::new();
+    }
+    if report["context"]["source"]["state_dir_leftover"].is_string() {
+        return Vec::new();
+    }
+    if report["daemon"]["version_matches"] == json!(false)
+        || !matches!(
+            report["daemon"]["state"].as_str(),
+            Some("not_running" | "healthy" | "degraded")
+        )
+    {
+        return Vec::new();
+    }
+    let mut repairs = Vec::new();
+    if report["daemon"]["state"] == "not_running" {
+        repairs.push(Repair::EnsureDaemon);
+    }
+    let claude = &report["hooks"]["claude"];
+    if claude["setup"]["installed"] == json!(false)
+        && claude["setup"]["error"].is_null()
+        && claude["error"].is_null()
+        && claude["installed"]["binary"].is_string()
+        && matches!(
+            claude["installed"]["admission"].as_str(),
+            Some("listed" | "optimistic")
+        )
+    {
+        repairs.push(Repair::SetupClaude);
+    }
+    repairs
+}
+
+fn add_manual_repairs(report: &Value, repairs: &mut Vec<Value>) {
+    if report["context"]["ok"] == json!(false) {
+        repairs.push(json!({"action": "context", "outcome": "refused", "detail": "invalid context; specify a valid state directory and host endpoint"}));
+    }
+    if report["state_dir"]["safe"] == json!(false) {
+        repairs.push(json!({"action": "state directory", "outcome": "refused", "detail": "unsafe state directory; inspect and repair manually"}));
+    }
+    if report["context"]["source"]["state_dir_leftover"].is_string() {
+        repairs.push(json!({"action": "plugin state", "outcome": "refused", "detail": "leftover state after uninstall; inspect before setup or daemon ensure"}));
+    }
+    if report["daemon"]["version_matches"] == json!(false) {
+        repairs.push(json!({"action": "daemon version", "outcome": "refused", "detail": "version mismatch; inspect and repair manually"}));
+    } else if report["daemon"]["state"] == "unreachable" {
+        repairs.push(json!({"action": "daemon", "outcome": "manual", "detail": "endpoint is unreachable; inspect daemon state with doctor --debug"}));
+    }
+    match report["hooks"]["codex"]["trust"]["status"].as_str() {
+        Some("review_required") => repairs.push(json!({"action": "Codex hook trust", "outcome": "manual", "detail": "start codex interactively and review herdr-threads hooks in /hooks"})),
+        Some("unknown") => repairs.push(json!({"action": "Codex hook trust", "outcome": "unknown", "detail": "trust could not be determined; inspect /hooks interactively"})),
+        _ => (),
+    }
+    let codex = &report["hooks"]["codex"];
+    if codex["setup"]["installed"] == json!(false)
+        && codex["installed"]["binary"].is_string()
+        && matches!(
+            codex["installed"]["admission"].as_str(),
+            Some("listed" | "schema-matched, live-unverified" | "optimistic")
+        )
+    {
+        if !codex["setup"]["error"].is_null() {
+            repairs.push(json!({"action": "setup codex", "outcome": "refused", "detail": "hook ownership could not be inspected; inspect doctor --debug before setup"}));
+        } else if report["context"]["ok"] == json!(true)
+            && report["state_dir"]["safe"] == json!(true)
+            && report["context"]["source"]["state_dir_leftover"].is_null()
+        {
+            repairs.push(json!({
+                "action": "setup codex",
+                "outcome": "manual",
+                "detail": "global socket policy is unvalidated for the effective Codex configuration; run `herdr-threads setup codex` explicitly after reviewing its sandbox changes"
+            }));
+        }
+    }
+    if codex["setup"]["installed"] == json!(true)
+        && codex["installed"]["version"]
+            .as_str()
+            .is_some_and(|version| {
+                !super::setup::CODEX_SANDBOX_MEASURED_VERSIONS.contains(&version)
+            })
+    {
+        repairs.push(json!({"action": "Codex socket policy", "outcome": "manual", "detail": "target executable/effective config unvalidated; managed launch needs explicit -C and a target-pane executable witness; global auto repair withheld"}));
+    }
+    if !report["hooks"]["claude"]["error"].is_null() {
+        repairs.push(json!({"action": "setup claude", "outcome": "refused", "detail": "hook ownership could not be inspected; inspect doctor --debug before setup"}));
+    }
+    for name in ["claude", "codex"] {
+        if report["hooks"][name]["installed"]["admission"] == "refused" {
+            repairs.push(json!({"action": format!("{name} version"), "outcome": "manual", "detail": "installed harness version was refused; inspect doctor --debug and install an admitted version"}));
+        }
+    }
+    if repairs.is_empty() {
+        repairs.push(
+            json!({"action": "doctor fix", "outcome": "none", "detail": "no safe repair needed"}),
+        );
+    }
+}
+
 pub(crate) fn run<W: Write>(parsed: &ParsedCli, writer: &mut W) -> Result<(), RunError> {
-    let (report, code) = report(
+    let (mut report, mut code) = report(
         parsed.output.context.state_dir.as_ref().map(PathBuf::from),
         parsed.output.context.host.as_ref().map(PathBuf::from),
     );
+    let (debug, fix) = match parsed.action {
+        super::commands::CliAction::Doctor { debug, fix } => (debug, fix),
+        _ => unreachable!("doctor run is only called for doctor"),
+    };
+    if fix {
+        let mut repairs = Vec::new();
+        let plan = repair_plan(&report);
+        let env = super::setup::SetupEnv::from_process(&parsed.output);
+        for repair in plan {
+            let (name, outcome) = match repair {
+                Repair::EnsureDaemon => {
+                    let inputs = super::instance::InstanceInputs::from_process(
+                        parsed.output.context.state_dir.as_ref().map(PathBuf::from),
+                        parsed.output.context.host.as_ref().map(PathBuf::from),
+                    );
+                    let outcome = (|| -> Result<(), RunError> {
+                        let (context, _) =
+                            super::instance::resolve_context(&inputs).map_err(|error| {
+                                RunError::Api(crate::protocol::results::ApiError::invalid_request(
+                                    error.to_string(),
+                                ))
+                            })?;
+                        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+                        let runtime = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()?;
+                        runtime.block_on(crate::daemon::lifecycle::ensure_running(
+                            &context,
+                            &std::env::current_exe()?,
+                            clock,
+                        ))?;
+                        Ok(())
+                    })();
+                    (
+                        "daemon ensure",
+                        outcome
+                            .map(|()| "attempted".to_owned())
+                            .map_err(|error| error.to_string()),
+                    )
+                }
+                Repair::SetupClaude => {
+                    let harness = Harness::Claude;
+                    let name = "setup claude";
+                    let outcome = env
+                        .as_ref()
+                        .map_err(|error| error.to_string())
+                        .and_then(|env| {
+                            super::setup::execute(
+                                &super::setup::SetupRequest {
+                                    verb: super::setup::SetupVerb::Install,
+                                    harness,
+                                    harness_binary: None,
+                                    prompt_suggestions: super::setup::PromptSuggestionPolicy::Keep,
+                                },
+                                env,
+                            )
+                            .map(|report| {
+                                report["action"].as_str().unwrap_or("attempted").to_owned()
+                            })
+                            .map_err(|error| error.to_string())
+                        });
+                    (name, outcome)
+                }
+            };
+            match outcome {
+                Ok(detail) => {
+                    repairs.push(json!({"action": name, "outcome": "attempted", "detail": detail}))
+                }
+                Err(error) => {
+                    repairs.push(json!({"action": name, "outcome": "failed", "detail": error}))
+                }
+            }
+        }
+        (report, code) = self::report(
+            parsed.output.context.state_dir.as_ref().map(PathBuf::from),
+            parsed.output.context.host.as_ref().map(PathBuf::from),
+        );
+        add_manual_repairs(&report, &mut repairs);
+        if repairs.iter().any(|entry| entry["outcome"] == "failed") && code == exit::EXIT_OK {
+            code = exit::EXIT_FAILED;
+        }
+        report["repairs"] = json!(repairs);
+    }
     let bytes = match parsed.output.format {
         OutputFormat::Json => {
             let mut bytes = serde_json::to_vec(&json!({"doctor": report}))
@@ -1202,7 +1514,24 @@ pub(crate) fn run<W: Write>(parsed: &ParsedCli, writer: &mut W) -> Result<(), Ru
             bytes.push(b'\n');
             bytes
         }
-        OutputFormat::Text => render_text(&report).into_bytes(),
+        OutputFormat::Text => {
+            let mut text = if debug {
+                render_debug_text(&report)
+            } else {
+                render_text(&report)
+            };
+            if let Some(repairs) = report["repairs"].as_array() {
+                for repair in repairs {
+                    text.push_str(&format!(
+                        "repair: {}: {}: {}\n",
+                        scalar(&repair["action"]),
+                        scalar(&repair["outcome"]),
+                        scalar(&repair["detail"])
+                    ));
+                }
+            }
+            text.into_bytes()
+        }
     };
     writer.write_all(&bytes)?;
     writer.flush()?;

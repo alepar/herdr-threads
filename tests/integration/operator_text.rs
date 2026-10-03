@@ -146,7 +146,7 @@ fn doctor_prints_the_daemon_log_path() {
         "daemon_log: {}",
         daemon_log_path(&scratch.paths()).display()
     );
-    let doctor = text(&scratch.cli(&["doctor"]).stdout);
+    let doctor = text(&scratch.cli(&["doctor", "--debug"]).stdout);
     assert!(
         doctor.lines().any(|line| line == expected),
         "no line equals {expected:?}: {doctor}"

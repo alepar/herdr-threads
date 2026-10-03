@@ -491,7 +491,7 @@ fn doctor_reports_context_daemon_and_owned_hook_installation() {
         host: host.clone(),
     };
 
-    let down = run(&state, &host, &["doctor"], None);
+    let down = run(&state, &host, &["doctor", "--debug"], None);
     assert_eq!(down.status.code(), Some(3), "{}", text(&down.stderr));
     let report = text(&down.stdout);
     assert!(
@@ -546,7 +546,7 @@ fn doctor_reports_context_daemon_and_owned_hook_installation() {
     let settings = config.join("settings.json");
     fs::write(&settings, b"{}").unwrap();
     // claude is on PATH but its hooks are not installed: a doctor limitation.
-    let missing = run_with_path(&state, &host, &["doctor"], &path);
+    let missing = run_with_path(&state, &host, &["doctor", "--debug"], &path);
     let report = text(&missing.stdout);
     assert!(
         report.contains(&format!(
@@ -619,7 +619,7 @@ fn doctor_reports_context_daemon_and_owned_hook_installation() {
         "{value}"
     );
 
-    let up = run_with_path(&state, &host, &["doctor"], &path);
+    let up = run_with_path(&state, &host, &["doctor", "--debug"], &path);
     let report = text(&up.stdout);
     assert_eq!(up.status.code(), Some(0), "{report}{}", text(&up.stderr));
     assert!(report.contains("daemon: degraded"), "{report}");
@@ -651,7 +651,7 @@ fn doctor_reports_context_daemon_and_owned_hook_installation() {
     assert!(report.contains("result: degraded"), "{report}");
 
     herdr_threads::harness::setup::remove_user_settings(kind, &settings, &manifest).unwrap();
-    let removed = run(&state, &host, &["doctor"], None);
+    let removed = run(&state, &host, &["doctor", "--debug"], None);
     assert!(text(&removed.stdout).contains("hooks.claude.setup_installed: no"));
 }
 
@@ -763,6 +763,23 @@ fn doctor_reports_codex_schema_matched_admission() {
         // and carry no error: the drifted binary is admitted, not refused.
         assert!(installed["error"].is_null(), "{label}: {installed}");
         assert_eq!(installed["recipe"], "codex-hooks-v1");
+        assert_eq!(
+            value["doctor"]["hooks"]["codex"]["socket_policy_validation"],
+            "not_run"
+        );
+        if version == "0.160.0" {
+            assert!(
+                value["doctor"]["limitations"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|row| {
+                        row.as_str()
+                            .is_some_and(|line| line.contains("target executable/effective config"))
+                    }),
+                "{value}"
+            );
+        }
     }
     let bin = codex_on_path(&scratch.0, "text", "0.160.0", &schemas);
     let output = scrubbed_command(BIN)
@@ -770,7 +787,7 @@ fn doctor_reports_codex_schema_matched_admission() {
         .arg(&state)
         .arg("--host-endpoint")
         .arg(&host)
-        .arg("doctor")
+        .args(["doctor", "--debug"])
         .env("HOME", scratch.0.join("home"))
         .env("CLAUDE_CONFIG_DIR", scratch.0.join("claude-config"))
         .env("CODEX_HOME", scratch.0.join("codex-home"))
@@ -890,7 +907,7 @@ fn unsafe_state_root_is_invalid_local_context_for_ensure_and_doctor() {
 
     let doctor = run(&state, &host, &["doctor"], None);
     assert_eq!(doctor.status.code(), Some(2), "{}", text(&doctor.stdout));
-    assert!(text(&doctor.stdout).contains("result: unsafe_state_dir"));
+    assert!(text(&doctor.stdout).starts_with("doctor: unsafe_state_dir\n"));
     assert!(!state.join("instances").exists());
 }
 
@@ -970,7 +987,7 @@ fn unsafe_private_dir_gives_same_status_from_ensure_and_doctor() {
         let stdout = text(&doctor.stdout);
         assert_eq!(doctor.status.code(), Some(2), "{level}: {stdout}");
         assert!(
-            stdout.contains("result: unsafe_state_dir"),
+            stdout.starts_with("doctor: unsafe_state_dir\n"),
             "{level}: {stdout}"
         );
         assert!(
@@ -1379,6 +1396,11 @@ fn setup_codex_withholds_sandbox_allowance_on_unmeasured_versions() {
             "{label}: {omitted}"
         );
         assert!(
+            omitted.contains("controlled denied sockets"),
+            "{label}: {omitted}"
+        );
+        assert!(!omitted.contains("-- curl"), "{label}: {omitted}");
+        assert!(
             planned["warnings"]
                 .to_string()
                 .contains("sandbox socket allowance not written"),
@@ -1540,7 +1562,7 @@ fn codex_allowance_on_an_unmeasured_version_warns_in_setup_status_and_doctor() {
             .is_some_and(loud),
         "{upgraded_doctor}"
     );
-    let doctor_text = invoke(&upgraded, &["doctor"]);
+    let doctor_text = invoke(&upgraded, &["doctor", "--debug"]);
     assert!(
         text(&doctor_text.stdout).contains("hooks.codex.sandbox_warning: WARNING"),
         "{}",
