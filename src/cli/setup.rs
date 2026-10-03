@@ -111,7 +111,9 @@ Ambiguity is refused. The installed hook command is
 `<this executable> --state-dir <state> --host-endpoint <socket> hook <harness>`, registered
 for each event with `--event <EVENT>` appended (hooks installed before that keep working;
 `doctor` suggests re-running setup); in any session that is not a pane of that Herdr
-instance it exits 0 at once with no output.
+instance it prints nothing, runs no version probe and starts no daemon, and only sends a
+short best-effort evidence note to a daemon already running (gate files under
+<state>/harness/evidence).
 Each harness's ownership manifest lives in <state>/setup/.
 
 A hook file that already holds exactly this command's hook groups under another setup's
@@ -123,9 +125,9 @@ those groups from that file.
 Setup observes `<harness> --version` and places it on the admission ladder: listed (a recipe
 covers it); schema-matched, live-unverified (Codex only: unlisted, but its hook schemas match
 a recipe); optimistic (newer than the verified range, or unlisted inside it: admitted on an
-assumed recipe and labelled, with a note in Health and doctor); or refused (unparsable, inside
-a known-broken range, or older than every recipe). Every admitted version installs; a refused
-one exits 4. `doctor` prints the recipe registries.
+assumed recipe; doctor shows it as new until it is verified by use, and Health adds no line);
+or refused (unparsable, inside a known-broken range, or older than every recipe). Every
+admitted version installs; a refused one exits 4. `doctor` prints the recipe registries.
 Installed is not observed: only native evidence (see `doctor`) proves hook delivery.
 
 Exit status:
