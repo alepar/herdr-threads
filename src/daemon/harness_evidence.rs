@@ -2,7 +2,8 @@
 //!
 //! A hook's [`HarnessEvidence`] note is recorded in `harness_version_evidence`
 //! (or, with no version, only the reason goes to `harness_unattributed`). An
-//! unattributed `SessionStart` (a resumed Claude session, say) is held per
+//! unattributed `SessionStart` (a resumed Claude session, say; not a Codex
+//! resume, whose rollout only names the creating CLI) is held per
 //! `(harness, session id)` for up to 24 hours and credited to the session's
 //! first attributed event, because the version only becomes readable once the
 //! transcript has an entry. Recording never waits for the network: a first-seen
@@ -175,6 +176,17 @@ fn outcome_of(outcome: &HarnessEvidenceOutcome) -> EvidenceOutcome {
     }
 }
 
+/// Whether an unattributed note is a `SessionStart` the daemon holds for the
+/// session's first attributed event. A Codex resume is not: its rollout
+/// only ever names the creating CLI's version, so crediting it later would
+/// file it under the wrong version.
+fn holds_session_start(message: &HarnessEvidence) -> bool {
+    message.event == "SessionStart"
+        && !(message.harness == "codex"
+            && message.unattributed_reason.as_deref()
+                == Some(crate::harness::attribution::Unattributed::CodexResumed.as_str()))
+}
+
 impl HarnessEvidenceRecorder {
     pub fn new(
         store: Arc<dyn StorePort>,
@@ -209,7 +221,7 @@ impl HarnessEvidenceRecorder {
         let now_ms = self.clock.utc_now().0;
         let outcome = outcome_of(&message.outcome);
         let Some(version) = message.version.as_deref() else {
-            if message.event == "SessionStart"
+            if holds_session_start(message)
                 && let Some(session_id) = &message.session_id
             {
                 self.pending().hold(

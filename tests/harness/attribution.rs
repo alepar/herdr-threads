@@ -184,7 +184,10 @@ fn codex_fresh_rollout_attributes() {
 }
 
 #[test]
-fn codex_resumed_rollout_uses_newest_session_meta() {
+fn codex_resumed_rollout_reads_only_the_creators_head_version() {
+    // The rollout alone cannot show the resume (the spike: one `session_meta`,
+    // later turns carry no version), which is why the payload/gate rule, not
+    // the reader, keeps resumed sessions unattributed.
     assert_eq!(
         attribute_transcript("codex", &fixture("codex-resumed.jsonl")),
         attributed("codex", "0.159.3")
@@ -192,7 +195,25 @@ fn codex_resumed_rollout_uses_newest_session_meta() {
 }
 
 #[test]
-fn codex_head_session_meta_found_when_tail_window_is_capped() {
+fn codex_later_session_meta_is_ignored() {
+    let dir = TestDir::new();
+    let meta = |v: &str| {
+        format!("{{\"type\":\"session_meta\",\"payload\":{{\"cli_version\":\"{v}\"}}}}\n")
+    };
+    let body = format!(
+        "{}{{\"type\":\"event_msg\",\"payload\":{{}}}}\n{}",
+        meta("0.158.0"),
+        meta("0.159.3")
+    );
+    let path = dir.write("t.jsonl", body.as_bytes());
+    assert_eq!(
+        attribute_transcript("codex", &path),
+        attributed("codex", "0.158.0")
+    );
+}
+
+#[test]
+fn codex_reads_only_the_head_line() {
     let mut body = std::fs::read_to_string(fixture("codex-fresh.jsonl"))
         .unwrap()
         .lines()
@@ -200,7 +221,6 @@ fn codex_head_session_meta_found_when_tail_window_is_capped() {
         .unwrap()
         .to_owned();
     body.push('\n');
-    let head_len = body.len() as u64;
     body.push_str(&versionless_lines(3 * 1024 * 1024));
     let mut r = Counting::new(body.into_bytes());
     let len = r.len();
@@ -208,8 +228,37 @@ fn codex_head_session_meta_found_when_tail_window_is_capped() {
         attribute_reader("codex", &mut r, len),
         attributed("codex", "0.158.0")
     );
-    // Capped tail window plus the head chunk, never the whole file.
-    assert!(r.read <= MAX_WINDOW + 4096.max(head_len), "read {}", r.read);
+    // The head line is shorter than one chunk; the rest is never read.
+    assert!(r.read <= 4096, "read {}", r.read);
+}
+
+#[test]
+fn codex_head_line_without_newline_is_no_version_field() {
+    let dir = TestDir::new();
+    let head = "{\"type\":\"session_meta\",\"payload\":{\"cli_version\":\"0.158.0\"}}";
+    let partial = dir.write("partial.jsonl", head.as_bytes());
+    assert_eq!(
+        attribute_transcript("codex", &partial),
+        unattributable(Unattributed::NoVersionField)
+    );
+    let empty = dir.write("empty.jsonl", b"");
+    assert_eq!(
+        attribute_transcript("codex", &empty),
+        unattributable(Unattributed::NoVersionField)
+    );
+}
+
+#[test]
+fn codex_head_line_beyond_the_window_is_window_exceeded() {
+    let mut body = "x".repeat(MAX_WINDOW as usize + 10);
+    body.push('\n');
+    let mut r = Counting::new(body.into_bytes());
+    let len = r.len();
+    assert_eq!(
+        attribute_reader("codex", &mut r, len),
+        unattributable(Unattributed::WindowExceeded)
+    );
+    assert!(r.read <= MAX_WINDOW + 4096, "read {}", r.read);
 }
 
 #[test]
@@ -325,7 +374,10 @@ fn payload_with_transcript_path_attributes() {
 fn resume_session_start_is_unattributable_without_reading() {
     let dir = TestDir::new();
     let missing = dir.0.join("nope.jsonl");
-    for harness in ["claude", "codex"] {
+    for (harness, reason) in [
+        ("claude", Unattributed::ResumeBeforeFirstEntry),
+        ("codex", Unattributed::CodexResumed),
+    ] {
         let payload = json!({
             "hook_event_name": "SessionStart",
             "source": "resume",
@@ -333,7 +385,7 @@ fn resume_session_start_is_unattributable_without_reading() {
         });
         assert_eq!(
             attribute_payload(harness, &payload),
-            unattributable(Unattributed::ResumeBeforeFirstEntry),
+            unattributable(reason),
             "{harness}"
         );
     }
@@ -390,6 +442,10 @@ fn reason_strings_are_pinned() {
         (
             Unattributed::ResumeBeforeFirstEntry,
             "resume before first entry",
+        ),
+        (
+            Unattributed::CodexResumed,
+            "codex resume: rollout version is the creating CLI's",
         ),
         (Unattributed::Absent, "transcript not found"),
         (Unattributed::Unreadable, "transcript unreadable"),

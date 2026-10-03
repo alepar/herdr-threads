@@ -89,9 +89,13 @@ a break in <event/field>; it has worked here"), never degraded.
   JSONL entry that carries a `version` field, found by scanning backward from the end over complete lines only (a
   partial trailing line and versionless record types such as cost-state or mode are skipped); the read window
   starts at 64 KB and grows in 64 KB steps up to 1 MB, beyond which the event is unattributed. Codex: `cli_version`
-  of the newest `session_meta` record (the first line, plus a backward scan of the same bounded window for a later
-  one when a rollout is resumed). The hook reads it in-process (no exec, no process tree walk, no inode/mtime
-  comparison) and never blocks on it. A `SessionStart` with source `resume` is never attributed from the old
+  of the rollout's head `session_meta` record (its first line; nothing else is read). The spike found that a resumed
+  rollout keeps its creator's single `session_meta` and appends turns with no version field, so a Codex session known
+  to be resumed is never attributed: the hook's per-session gate records `resumed` on a `SessionStart` with source
+  `resume`, and that SessionStart and every later event of the session are sent unattributed ("codex resume: rollout
+  version is the creating CLI's"); the daemon does not hold that SessionStart. A hook with no state directory, or a
+  resumed session idle past the 24 h gate-file pruning, falls back to head attribution (accepted). The hook reads it in-process (no exec, no process tree walk, no inode/mtime
+  comparison) and never blocks on it. A Claude `SessionStart` with source `resume` is never attributed from the old
   file's entries; it is buffered like any unattributed SessionStart (below). If the transcript is absent (e.g. a SessionStart
   before the first entry is written), unreadable, or has no version field, nothing is recorded for that event and
   `doctor` says "version evidence unavailable: <reason>". **Unattributed SessionStart:** its outcome is sent with
@@ -212,6 +216,8 @@ signing the manifest.
   SessionStart is buffered, not attributed from the old file. Unattributed SessionStart is attributed on the
   session's first attributed event. A violation after verification flips the state to broken. A refused
   (below-floor) version's evidence reaches Health. After a contract change the newest contract's row decides.
+- Codex reader: only the head `session_meta` is read; a session resumed after an upgrade records nothing for either
+  version (no verified, no violation).
 - Evidence transport: sent for Listed, SchemaMatched and Optimistic versions alike; a daemon without the
   capability receives nothing and the hook is unaffected.
 - End to end (stand-in harness): a new unlisted version → no Health line → first payloads → working; a payload

@@ -315,6 +315,56 @@ fn only_session_start_is_held() {
 }
 
 #[test]
+fn codex_resume_session_start_is_never_held() {
+    let fx = Fx::new("her-codex-resume");
+    let mut resume = note(None, "SessionStart", ok(), Some("s"));
+    resume.harness = "codex".into();
+    resume.unattributed_reason = Some("codex resume: rollout version is the creating CLI's".into());
+    resume.outcome = HarnessEvidenceOutcome::Violation {
+        field: "source".into(),
+    };
+    assert!(!fx.recorder.record(&resume, &budget()).unwrap());
+    assert_eq!(fx.recorder.pending().0.len(), 0, "not held");
+    assert_eq!(
+        fx.store
+            .last_unattributed("codex", &budget())
+            .unwrap()
+            .map(|(reason, _)| reason)
+            .as_deref(),
+        Some("codex resume: rollout version is the creating CLI's"),
+        "the reason is still recorded"
+    );
+    // A hook that lost its gate file attributes the next event from the head.
+    let mut tool = note(Some("0.159.3"), "PreToolUse", ok(), Some("s"));
+    tool.harness = "codex".into();
+    fx.recorder.record(&tool, &budget()).unwrap();
+    let row = fx
+        .store
+        .harness_evidence("codex", "0.159.3", CONTRACT, &budget())
+        .unwrap()
+        .expect("the tool row");
+    assert_eq!(row.lifecycle_ok_at, None, "the held start was not flushed");
+    assert_eq!(row.violation_at, None);
+    // A Claude resume SessionStart is still held and credited later.
+    fx.recorder
+        .record(&note(None, "SessionStart", ok(), Some("c")), &budget())
+        .unwrap();
+    assert_eq!(fx.recorder.pending().0.len(), 1);
+    fx.recorder
+        .record(
+            &note(Some("2.1.286"), "PreToolUse", ok(), Some("c")),
+            &budget(),
+        )
+        .unwrap();
+    assert!(
+        fx.row("2.1.286", CONTRACT)
+            .unwrap()
+            .lifecycle_ok_at
+            .is_some()
+    );
+}
+
+#[test]
 fn ensure_manifest_called_for_first_seen_version_whatever_the_outcome() {
     let fx = Fx::new("her-ensure");
     for (version, outcome) in [
