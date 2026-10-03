@@ -1,0 +1,4 @@
+{"type":"queue-operation","operation":"enqueue","sessionId":"a08aa9d0-ca4a-4ec4-8764-88b71954f910"}
+{"type":"user","version":"2.1.286","cwd":"~/proj","sessionId":"a08aa9d0-ca4a-4ec4-8764-88b71954f910","message":{"role":"user","content":"echo capture-ok"}}
+{"type":"assistant","version":"2.1.286","cwd":"~/proj","sessionId":"a08aa9d0-ca4a-4ec4-8764-88b71954f910","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}}
+{"type":"mode","mode":"default"}
