@@ -1,0 +1,406 @@
+[
+  {
+    "id": "ht-xoc.8",
+    "title": "Spike: real hook ancestry for Claude and Codex",
+    "description": "Register a logging hook (via claude --settings / a temporary CODEX_HOME, never editing ~/.claude or ~/.codex) and record proc_pidpath(getppid()) plus the full ancestor chain (pid, ppid, exe, argv) for one Claude SessionStart and one tool event, and for Codex with the shared app-server daemon and with --no-daemon, on macOS. Record whether the harness process is reachable within 6 ancestor levels and how it is recognized (native binary, node wrapper, daemon). owns: docs/compatibility note on hook ancestry. Spec: docs/superpowers/specs/2026-10-02-harness-version-evidence-design.md (Attribution).",
+    "acceptance_criteria": "Ancestry for each configuration recorded in docs/compatibility; a stated verdict per configuration (recognizable within 6 levels or not) that ht-xoc.2 implements against.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-02T07:50:33Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-02T07:50:33Z",
+    "labels": [
+      "sp:ht-xoc"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-xoc.8",
+        "depends_on_id": "ht-xoc",
+        "type": "parent-child",
+        "created_at": "2026-10-02T07:50:33Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-xoc"
+  },
+  {
+    "id": "ht-xoc.7",
+    "title": "Integration sweep: harness version evidence end to end",
+    "description": "End to end with a stand-in harness: an unlisted new version -\u003e no Health line -\u003e first lifecycle + tool payloads -\u003e working; a payload missing a required field -\u003e degraded with the 'upgrade herdr-threads to X' action from a fake manifest; manifest known_broken for an unseen version -\u003e broken with action; a version verified here stays working despite a manifest known_broken (doctor note only); offline / opt-out paths produce no fetch. Fix small gaps inline.\nblocked-by ht-xoc.1: consumes all leaves (integration sweep)\nblocked-by ht-xoc.2: consumes all leaves (integration sweep)\nblocked-by ht-xoc.3: consumes all leaves (integration sweep)\nblocked-by ht-xoc.4: consumes all leaves (integration sweep)\nblocked-by ht-xoc.5: consumes all leaves (integration sweep)\nblocked-by ht-xoc.6: consumes all leaves (integration sweep)\nSpec: docs/superpowers/specs/2026-10-02-harness-version-evidence-design.md.\nblocked-by ht-xoc.8: consumes all leaves (integration sweep)",
+    "acceptance_criteria": "Each listed scenario is an integration test and passes; fmt + check + the new tests green.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-02T07:43:40Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-02T07:50:37Z",
+    "labels": [
+      "sp:ht-xoc"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-xoc.7",
+        "depends_on_id": "ht-xoc",
+        "type": "parent-child",
+        "created_at": "2026-10-02T07:43:41Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-xoc.7",
+        "depends_on_id": "ht-xoc.1",
+        "type": "blocks",
+        "created_at": "2026-10-02T07:43:51Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-xoc.7",
+        "depends_on_id": "ht-xoc.6",
+        "type": "blocks",
+        "created_at": "2026-10-02T07:44:56Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-xoc.7",
+        "depends_on_id": "ht-xoc.2",
+        "type": "blocks",
+        "created_at": "2026-10-02T07:44:33Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-xoc.7",
+        "depends_on_id": "ht-xoc.3",
+        "type": "blocks",
+        "created_at": "2026-10-02T07:44:42Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-xoc.7",
+        "depends_on_id": "ht-xoc.8",
+        "type": "blocks",
+        "created_at": "2026-10-02T07:50:38Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-xoc.7",
+        "depends_on_id": "ht-xoc.4",
+        "type": "blocks",
+        "created_at": "2026-10-02T07:44:49Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-xoc.7",
+        "depends_on_id": "ht-xoc.5",
+        "type": "blocks",
+        "created_at": "2026-10-02T07:44:54Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 7,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-xoc"
+  },
+  {
+    "id": "ht-xoc.6",
+    "title": "Canary manifest writer and harness-manifest branch publishing",
+    "description": "Extend B6 canary: write rows to the harness-manifest branch by direct bot commit (contents: write for that branch only); only payload-contract failures write known_broken (with broken_event/broken_field); Tier 0, fingerprint drift, infra, inconclusive, flaky stay issue-only; baseline from the branch file (fallback in-repo); versions.py accepts schema 1 and 2; retention newest 50 per harness + known_broken + listed; fail above 80% of cap; contract_id from 'herdr-threads contract-id' at the tested commit; release workflow embeds the branch file. consumes: contract-id CLI, manifest schema 2. files: .github/workflows/harness-canary.yml, .github/workflows/release.yml, scripts/canary/*, scripts/harness-canary-selftest/*.\nSpec: docs/superpowers/specs/2026-10-02-harness-version-evidence-design.md.\nblocked-by ht-xoc.1: consumes contract-id CLI\nblocked-by ht-xoc.3: consumes manifest schema 2\nCanary tests the current main contract and the latest release's contract and keeps one row per live contract.",
+    "acceptance_criteria": "Offline selftest cases: all pass, payload break, known broken persists, flaky, Tier 0 failure -\u003e issue only, retention and size-cap failure, schema-1 baseline upgrade; writer contract_id equals binary's. Writer keeps rows for both live contracts; a client-contract mismatch fixture.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-02T07:42:21Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-02T07:50:36Z",
+    "labels": [
+      "sp:ht-xoc"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-xoc.6",
+        "depends_on_id": "ht-xoc.3",
+        "type": "blocks",
+        "created_at": "2026-10-02T07:43:04Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-xoc.6",
+        "depends_on_id": "ht-xoc.1",
+        "type": "blocks",
+        "created_at": "2026-10-02T07:42:38Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-xoc.6",
+        "depends_on_id": "ht-xoc",
+        "type": "parent-child",
+        "created_at": "2026-10-02T07:42:21Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-xoc"
+  },
+  {
+    "id": "ht-xoc.5",
+    "title": "Contract-first state derivation and Health/doctor rendering",
+    "description": "One pure function: local violation -\u003e broken; ladder Refused -\u003e broken; local verified -\u003e working (manifest known_broken doctor-only); manifest known_broken (same contract) -\u003e broken; manifest verified or listed -\u003e working; else admitted -\u003e new. Health: nothing for working/new; one degraded line for broken naming harness, version, event, field and action (upgrade herdr-threads to X / pin harness \u003c= last working / issue URL). doctor: one line per harness incl. evidence source, effective fetch policy and cache time. Replaces B6's Optimistic Health note. consumes: ladder classification (B6), evidence rows, manifest model, contract_id. files: src/harness/state.rs (new), src/daemon/health.rs, src/cli/doctor.rs, docs/compatibility/harnesses.md, docs/operations.md.\nSpec: docs/superpowers/specs/2026-10-02-harness-version-evidence-design.md.\nblocked-by ht-xoc.1: consumes contract_id\nblocked-by ht-xoc.4: consumes evidence rows\nblocked-by ht-xoc.3: consumes manifest model",
+    "acceptance_criteria": "Table test over every input combination; Health shows no line for working/new; broken line carries the right action for each manifest situation; doctor output pinned.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-02T07:42:20Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-02T07:42:37Z",
+    "labels": [
+      "sp:ht-xoc"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-xoc.5",
+        "depends_on_id": "ht-xoc.4",
+        "type": "blocks",
+        "created_at": "2026-10-02T07:42:36Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-xoc.5",
+        "depends_on_id": "ht-xoc.1",
+        "type": "blocks",
+        "created_at": "2026-10-02T07:42:35Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-xoc.5",
+        "depends_on_id": "ht-xoc.3",
+        "type": "blocks",
+        "created_at": "2026-10-02T07:42:37Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-xoc.5",
+        "depends_on_id": "ht-xoc",
+        "type": "parent-child",
+        "created_at": "2026-10-02T07:42:20Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 3,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-xoc"
+  },
+  {
+    "id": "ht-xoc.4",
+    "title": "Evidence store and verified-by-use recording",
+    "description": "Migration adding harness_version_evidence(harness, version, contract_id, lifecycle_ok_at, tool_ok_at, violation_at, violation_event, violation_field, last_seen_at); record lifecycle_ok on successful lifecycle check-in; hook sends best-effort non-blocking 'payload ok' note at most once per session while the daemon's reply says unverified; violations reported over B6's parse-failure channel; violation sticky until version or contract_id changes; record nothing when attribution is None. consumes: contract classifier, contract_id; attribution function. files: migrations/, src/store/, src/cli/hook.rs, src/service/dispatch.rs, src/protocol/.\nSpec: docs/superpowers/specs/2026-10-02-harness-version-evidence-design.md.\nblocked-by ht-xoc.1: consumes contract classifier and contract_id\nblocked-by ht-xoc.2: consumes attribution function",
+    "acceptance_criteria": "Tests: verified after one lifecycle + one tool payload; hooks stop sending notes once verified; violation sticks; ambiguous attribution records nothing; migration applies on a populated store.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-02T07:42:19Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-02T07:42:34Z",
+    "labels": [
+      "sp:ht-xoc"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-xoc.4",
+        "depends_on_id": "ht-xoc",
+        "type": "parent-child",
+        "created_at": "2026-10-02T07:42:19Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-xoc.4",
+        "depends_on_id": "ht-xoc.1",
+        "type": "blocks",
+        "created_at": "2026-10-02T07:42:33Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-xoc.4",
+        "depends_on_id": "ht-xoc.2",
+        "type": "blocks",
+        "created_at": "2026-10-02T07:42:33Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-xoc"
+  },
+  {
+    "id": "ht-xoc.3",
+    "title": "Manifest: schema 2, embedded copy, cache and fetch policy",
+    "description": "Upgrade B6's in-repo harness-versions.json generator to schema_version 2 (canary-only fields null); embed at build (release: harness-manifest branch file, fallback in-repo); daemon cache in state dir with fetch time + ETag; fetch via 'curl -fsS --max-time 5' only on (a) version with no local evidence and no embedded/cached row or (b) a fresh violation, at most once/day/harness; 256 KB cap; unsupported schema_version -\u003e no manifest; opt-out harness_manifest=off in instance settings or HERDR_THREADS_OFFLINE=1, read at each decision; missing curl = offline. owns: manifest model, loader, fetch policy. files: src/harness/manifest.rs (new), build.rs or include_str embed, src/daemon settings, docs/compatibility/harness-versions.json.\nSpec: docs/superpowers/specs/2026-10-02-harness-version-evidence-design.md.\nRows keyed by (harness, version, contract_id); the daemon uses only rows whose contract_id equals its own.",
+    "acceptance_criteria": "Fake-fetcher tests: triggers only on (a)/(b); once per day; opt-out and offline honored; cache then embedded fallback; size cap; schema mismatch -\u003e no manifest; generator guard test updated for schema 2. A row with another contract_id is treated as no data.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-02T07:42:18Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-02T07:50:35Z",
+    "labels": [
+      "sp:ht-xoc"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-xoc.3",
+        "depends_on_id": "ht-xoc",
+        "type": "parent-child",
+        "created_at": "2026-10-02T07:42:18Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 3,
+    "comment_count": 0,
+    "parent": "ht-xoc"
+  },
+  {
+    "id": "ht-xoc.2",
+    "title": "Seam contract: running-harness version attribution (ancestor walk, image check)",
+    "description": "Seam contract: running-harness version attribution (spec Attribution steps 1-3). Walk the hook's ancestors (\u003c=6 levels) past sh -c, env and runtime wrappers to the first recognized harness process (claude/codex native binary; node running the Claude/Codex CLI script; the Codex shared app-server daemon); read its version from its own executable (--version once per canonical path+inode+mtime, cached; npm: package.json); refuse when the process started before the executable's current mtime (replaced in place); None otherwise, with a reason string for doctor. Inert by default: no caller changes behaviour here.\nowns: attribution function and its reason strings. files: src/harness/attribution.rs (new), src/harness/mod.rs.\nblocked-by ht-xoc.8: consumes recorded hook ancestry per configuration\nSpec: docs/superpowers/specs/2026-10-02-harness-version-evidence-design.md.",
+    "acceptance_criteria": "Unit tests: per-version layout keeps A after PATH moves to B; in-place replacement after process start -\u003e None; ancestor walk passes an sh -c hop and a node wrapper; unrecognized ancestry -\u003e None with reason; version cache keyed by path+inode+mtime.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-02T07:42:17Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-02T07:50:34Z",
+    "labels": [
+      "sp:ht-xoc"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-xoc.2",
+        "depends_on_id": "ht-xoc",
+        "type": "parent-child",
+        "created_at": "2026-10-02T07:42:17Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-xoc.2",
+        "depends_on_id": "ht-xoc.8",
+        "type": "blocks",
+        "created_at": "2026-10-02T07:50:34Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-xoc"
+  },
+  {
+    "id": "ht-xoc.1",
+    "title": "Payload contract declarations, contract_id and contract-id CLI",
+    "description": "Per-harness contract as data (event kinds consumed, required fields, JSON types) derived from the parsers in src/harness/claude.rs and codex.rs; contract_id = first 16 hex of SHA-256 over canonical JSON (sorted keys, no whitespace); 'herdr-threads contract-id [--harness H] --json'; violation classifier (well-formed object, known event kind, required field missing/wrong type) vs malformed/unknown. owns: contract declaration, contract_id, violation classifier. files: src/harness/contract.rs (new), src/harness/claude.rs, src/harness/codex.rs, src/cli/commands.rs.\nSpec: docs/superpowers/specs/2026-10-02-harness-version-evidence-design.md.",
+    "acceptance_criteria": "Drift test fails if a parser requires an undeclared field; pinned contract_id test; classifier tests over existing payload fixtures (violation vs malformed vs unknown event).",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-02T07:42:16Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-02T07:42:16Z",
+    "labels": [
+      "sp:ht-xoc"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-xoc.1",
+        "depends_on_id": "ht-xoc",
+        "type": "parent-child",
+        "created_at": "2026-10-02T07:42:16Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 4,
+    "comment_count": 0,
+    "parent": "ht-xoc"
+  },
+  {
+    "id": "ht-xoc",
+    "title": "Harness version evidence: no noise on routine harness upgrades",
+    "description": "Implements docs/superpowers/specs/2026-10-02-harness-version-evidence-design.md (branch harness-version-evidence). Verified-by-use harness versions, update check only on contract failure, runtime-fetched version manifest (harness-manifest branch), contract-first user-visible states (working / new / broken). Builds on B6 (ht-p03.13 ladder, ht-p03.23 Health honesty, ht-p03.14 canary): starts only after those are merged into main.\nblocked-by ht-p03.71: consumes B6 admission ladder merged into main (every leaf builds on it)\nblocked-by ht-p03.23: consumes B6 Health version rendering and parse-failure channel\nblocked-by ht-p03.14: consumes B6 harness canary workflow",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-02T07:41:51Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-02T07:45:22Z",
+    "labels": [
+      "sp:ht-xoc"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-xoc",
+        "depends_on_id": "ht-p03.71",
+        "type": "blocks",
+        "created_at": "2026-10-02T07:41:52Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-xoc",
+        "depends_on_id": "ht-p03.23",
+        "type": "blocks",
+        "created_at": "2026-10-02T07:41:53Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-xoc",
+        "depends_on_id": "ht-p03.14",
+        "type": "blocks",
+        "created_at": "2026-10-02T07:41:53Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 3,
+    "dependent_count": 0,
+    "comment_count": 0
+  }
+]

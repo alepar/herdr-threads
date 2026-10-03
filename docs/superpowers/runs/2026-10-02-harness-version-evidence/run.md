@@ -8,3 +8,8 @@ branch: super-auto/harness-version-evidence
 base: main
 skillSource: ~/.claude/plugins/cache/superpowers-alepar/superpowers/6.4.2-alepar4.11/skills @ 6.4.2-alepar4.11 (6.4.2-alepar4.11)
 migrated: session-loaded skill text was 6.4.2-alepar4.6; the run follows the installed and published 4.11 files read from disk instead of restarting the session
+spec: ../../specs/2026-10-02-harness-version-evidence-design.md
+epic: ht-xoc
+
+approvals:
+- top-split · auto · ht-xoc.1 LEAF, ht-xoc.2 LEAF, ht-xoc.3 LEAF, ht-xoc.4 LEAF, ht-xoc.5 LEAF, ht-xoc.6 LEAF, ht-xoc.7 LEAF, ht-xoc.8 LEAF (pre-filed decomposition adopted per invocation; promotion review skipped)
