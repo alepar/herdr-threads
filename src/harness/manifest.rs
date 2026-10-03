@@ -1,6 +1,6 @@
 //! The harness version manifest: schema 2 model, reader, embedded copy,
 //! daemon cache and fetch policy (epic ht-xoc; spec
-//! `docs/superpowers/specs/2026-10-02-harness-version-evidence-design.md`).
+//! `docs/design/herdr-threads/2026-10-02-harness-version-evidence-design.md`).
 //!
 //! # Document (schema 2)
 //!
@@ -35,9 +35,10 @@
 //!
 //! # Sources and fetching
 //!
-//! Consumers read [`ManifestService::current`]: a valid cached fetch, else the
-//! copy embedded at build ([`EMBEDDED`]; release builds replace the in-repo
-//! file with the `harness-manifest` branch file first). The daemon calls
+//! Consumers read [`ManifestService::current`]: the newer (by `generated_at`,
+//! see [`prefer_newer`]) of a valid cached fetch and the copy embedded at
+//! build ([`EMBEDDED`]; release builds replace the in-repo file with the
+//! `harness-manifest` branch file first). The daemon calls
 //! [`ManifestService::ensure_manifest`] from the recording path; it never
 //! blocks its caller, it schedules one detached fetch at most (see
 //! [`should_fetch`]). Nothing about the user is sent: a plain GET with an
@@ -307,6 +308,24 @@ pub fn embedded() -> &'static Manifest {
     PARSED.get_or_init(|| parse(EMBEDDED.as_bytes()).unwrap_or_default())
 }
 
+/// The newer of a valid cache and the embedded copy. The embedded copy wins
+/// when there is no cache, or when both carry `generated_at` and the embedded
+/// one is strictly newer (RFC 3339 UTC strings order lexicographically), so a
+/// cache from before a herdr-threads upgrade never shadows a newer embedded
+/// copy. A cache without `generated_at` wins.
+pub fn prefer_newer(cache: Option<Manifest>, embedded: &Manifest) -> Manifest {
+    match cache {
+        None => embedded.clone(),
+        Some(cache) => match (
+            cache.generated_at.as_deref(),
+            embedded.generated_at.as_deref(),
+        ) {
+            (Some(cached), Some(built_in)) if built_in > cached => embedded.clone(),
+            _ => cache,
+        },
+    }
+}
+
 // -- policy -----------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -360,6 +379,30 @@ pub struct CacheMeta {
     pub fetched_at_ms: Option<i64>,
     #[serde(default)]
     pub attempts: BTreeMap<String, i64>,
+    /// The policy the daemon resolved at its last start, for `doctor`.
+    #[serde(default)]
+    pub daemon_policy: Option<RecordedPolicy>,
+}
+
+/// The effective fetch policy the daemon recorded at start (cache meta), so
+/// `doctor` reports the daemon's policy, not its own environment's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedPolicy {
+    /// `auto` or `off`.
+    pub policy: String,
+    /// `default`, `settings` or `offline_env`.
+    pub source: String,
+    pub recorded_at_ms: i64,
+}
+
+/// The (`policy`, `source`) words for a policy, shared by the daemon's record
+/// and `doctor`.
+pub fn policy_words(policy: ManifestPolicy) -> (&'static str, &'static str) {
+    match policy {
+        ManifestPolicy::Auto => ("auto", "default"),
+        ManifestPolicy::Off(OffReason::Settings) => ("off", "settings"),
+        ManifestPolicy::Off(OffReason::OfflineEnv) => ("off", "offline_env"),
+    }
 }
 
 /// Pure fetch decision. `has_row` is whether the cached-or-embedded manifest
@@ -637,10 +680,7 @@ impl Inner {
         if let Some(manifest) = cache.as_ref() {
             return Arc::clone(manifest);
         }
-        let manifest = self
-            .load_cache()
-            .map(Arc::new)
-            .unwrap_or_else(|| Arc::new(embedded().clone()));
+        let manifest = Arc::new(prefer_newer(self.load_cache(), embedded()));
         *cache = Some(Arc::clone(&manifest));
         manifest
     }
@@ -670,7 +710,7 @@ impl Inner {
                     meta.etag = etag;
                     meta.fetched_at_ms = Some(now);
                     self.persist_meta(&meta);
-                    *lock(&self.cache) = Some(Arc::new(manifest));
+                    *lock(&self.cache) = Some(Arc::new(prefer_newer(Some(manifest), embedded())));
                     (self.log)(&format!("harness manifest: fetched for {harness}"));
                 }
                 Err(error) => (self.log)(&format!(
@@ -721,8 +761,14 @@ impl ManifestService {
                 ));
             }
         }
-        let meta = read_meta(&cache_dir);
-        Self {
+        let mut meta = read_meta(&cache_dir);
+        let (policy_word, source_word) = policy_words(policy);
+        meta.daemon_policy = Some(RecordedPolicy {
+            policy: policy_word.to_owned(),
+            source: source_word.to_owned(),
+            recorded_at_ms: clock.utc_now().0,
+        });
+        let this = Self {
             inner: Arc::new(Inner {
                 dir: cache_dir,
                 policy,
@@ -730,24 +776,29 @@ impl ManifestService {
                 clock,
                 log,
                 cache: Mutex::new(None),
-                meta: Mutex::new(meta),
+                meta: Mutex::new(meta.clone()),
                 in_flight: AtomicBool::new(false),
             }),
-        }
+        };
+        // Logs on failure; never fails the service.
+        this.inner.persist_meta(&meta);
+        this
     }
 
     pub fn policy(&self) -> ManifestPolicy {
         self.inner.policy
     }
 
-    /// A valid cached fetch, else the embedded copy. Never touches the network.
+    /// The newer of a valid cached fetch and the embedded copy. Never touches
+    /// the network.
     pub fn current(&self) -> Arc<Manifest> {
         self.inner.current()
     }
 
     /// Schedule a fetch when [`should_fetch`] says so, and return at once.
     /// The fetch runs on a detached thread (single flight: a call while one
-    /// is running does nothing); errors are logged and otherwise silent; an
+    /// is running records its attempt, because the running fetch serves every
+    /// harness, and returns); errors are logged and otherwise silent; an
     /// unsupported, oversized or invalid body never replaces a valid cache.
     pub fn ensure_manifest(&self, harness: &str, reason: FetchReason) {
         let inner = &self.inner;
@@ -768,6 +819,7 @@ impl ManifestService {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
+            lock(&inner.meta).attempts.insert(harness.to_owned(), now);
             return;
         }
         // Record the attempt in memory now (a failure still counts); the
@@ -786,6 +838,9 @@ impl ManifestService {
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     thread_inner.run_fetch(&harness_name)
                 }));
+                // Attempts recorded by calls during the flight become durable.
+                let meta = lock(&thread_inner.meta).clone();
+                thread_inner.persist_meta(&meta);
                 drop(guard);
             });
         if let Err(error) = spawned {

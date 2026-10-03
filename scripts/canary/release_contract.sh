@@ -7,7 +7,10 @@
 # current tree's contract and the latest release's. This script adds a git worktree of <release-tag> under
 # <canary-out-dir>/release-src, builds it (`cargo build --locked`) and asks the built binary for its
 # `contract-id --json`. A release that predates contract ids cannot answer: the script then writes
-# {"tag": "<tag>", "supported": false} to <canary-out-dir>/release-contract.json and exits 0.
+# {"tag": "<tag>", "supported": false} to <canary-out-dir>/release-contract.json and exits 0. An infrastructure
+# failure (checkout, no cargo, a build failure, no binary built) is not "unsupported": once the result path is
+# known the script writes {"tag": "<tag>", "error": "<reason>"} instead and exits 2, and the manifest writer keeps
+# the baseline's release-contract rows.
 #
 # Otherwise, for every probe work directory `--keep` left under <canary-out-dir>/work/<harness>-<version>-<n>/
 # (the highest <n> per harness and version), it copies the probe's capture into <canary-out-dir>/release-work/
@@ -19,7 +22,9 @@
 #    "probes": [{"harness", "version", "payloads": [{"event", "kind", "field"}]}]}
 # A payload the release tree's test did not classify (its canary_payloads predates classification) is recorded
 # with kind "unclassified", which never verifies and never breaks a row. The worktree is removed on exit.
-# Exit: 0 on a written release-contract.json (supported or not), 2 on bad arguments or an infrastructure error.
+# Three result forms: supported (above), {"tag", "supported": false}, {"tag", "error"}.
+# Exit: 0 on a written supported or unsupported release-contract.json, 2 on bad arguments or an infrastructure
+# error (an error document is written when the failure came after the result path was set).
 set -euo pipefail
 
 die() { echo "release_contract.sh: $*" >&2; exit 2; }
@@ -35,6 +40,14 @@ RUN_PY=$SCRIPT_DIR/run.py
 SRC=$OUT/release-src
 RESULT=$OUT/release-contract.json
 REAL_HOME=${HOME:-}
+
+# from here an infrastructure failure also leaves an error document, which the manifest writer treats as "says
+# nothing about the contract" (the baseline's release rows stay)
+die() {
+  echo "release_contract.sh: $*" >&2
+  python3 -c 'import json,sys; print(json.dumps({"tag": sys.argv[1], "error": sys.argv[2]}, indent=2))' "$TAG" "$*" > "$RESULT" 2>/dev/null || true
+  exit 2
+}
 
 cleanup() {
   if [ -d "$SRC" ]; then git -C "$ROOT" worktree remove --force "$SRC" >/dev/null 2>&1 || rm -rf "$SRC"; fi
@@ -55,9 +68,9 @@ CARGO_BIN=$(command -v cargo || true)
 TARGET=$OUT/release-target
 mkdir -p "$OUT/release-logs"
 (cd "$SRC" && CARGO_TARGET_DIR=$TARGET cargo build --locked >"$OUT/release-logs/build.out" 2>"$OUT/release-logs/build.err") \
-  || unsupported "build failed"
+  || die "build failed"
 BUILT=$TARGET/debug/herdr-threads
-[ -x "$BUILT" ] || unsupported "no binary was built"
+[ -x "$BUILT" ] || die "no binary was built"
 if ! IDS=$("$BUILT" contract-id --json 2>"$OUT/release-logs/contract-id.err"); then unsupported "contract-id failed"; fi
 printf '%s' "$IDS" | python3 -c 'import json, sys; d = json.load(sys.stdin); assert isinstance(d.get("claude"), str) and isinstance(d.get("codex"), str)' \
   2>/dev/null || unsupported "contract-id printed no ids"

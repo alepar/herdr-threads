@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Harness manifest writer for the canary (docs/superpowers/specs/2026-10-02-harness-version-evidence-design.md,
+"""Harness manifest writer for the canary (docs/design/herdr-threads/2026-10-02-harness-version-evidence-design.md,
 "Manifest" and "Canary and publishing"). Pure stdlib.
 
   manifest.py write --baseline PATH --report canary-report.json --binary HT_BIN [--release-results JSON]
@@ -12,7 +12,16 @@
 
 The canary writes schema-2 rows to the `harness-manifest` branch. Only payload-contract violations become
 `known_broken`; every other failing outcome (tier 0, fingerprint drift, infra, inconclusive, flaky) stays
-issue-only. Rows with `source: "manual"` are never modified by the canary.
+issue-only. A probe whose last attempt also failed a tier-0 check other than `t0.payload-parse` ran in a broken
+setup: its payload violation is issue-only too. Rows with `source: "manual"` are never modified by the canary.
+Release violations use that same source probe's final attempt, joined by normalized harness/version. Without
+one unambiguous source and its attempt, a release violation contributes no broken observation: the writer
+cannot establish setup eligibility. This may withhold a real violation until reliable source results exist;
+existing rows and release verified observations keep their usual behavior.
+
+The release results document has three forms: {"tag", "supported": true, "contract_id", "probes"}; {"tag",
+"supported": false} (the release cannot report a contract id); and {"tag", "error": "<reason>"} (an infrastructure
+failure: the release says nothing about its contract, so the baseline's rows of every contract id are kept).
 """
 import sys
 # scripts/canary/bisect.py would shadow the stdlib `bisect` (needed by random/tempfile) when this directory is
@@ -38,6 +47,7 @@ SOURCES = ("canary", "manual")
 X_Y_Z = re.compile(r"^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$")
 CONTRACT_ID = re.compile(r"^[0-9a-f]{16}$")
 TOOL_EVENT = "PreToolUse"
+PAYLOAD_CHECK = "t0.payload-parse"
 
 
 def _load_sibling(name):
@@ -205,6 +215,11 @@ def _outcome(payloads, passed):
     return None
 
 
+def _unrelated_tier0_failure(checks):
+    """True when a tier-0 check other than the payload parse failed: the probe ran in a broken setup."""
+    return any(c.get("status") == "fail" and c.get("id") != PAYLOAD_CHECK for c in checks or [])
+
+
 def main_observations(report, normalize):
     """(harness, version, outcome, first_bad) for each usable probe of the main contract."""
     out = []
@@ -221,16 +236,27 @@ def main_observations(report, normalize):
                 continue
             payloads = (attempts[-1].get("contract") or {}).get("payloads") or []
             oc = _outcome(payloads, probe.get("result") == "pass")
+            if oc and oc[0] == "broken" and _unrelated_tier0_failure(attempts[-1].get("checks")):
+                continue
             if oc:
                 out.append((h, v, oc, block.get("first_bad")))
     return out
 
 
-def release_observations(release, normalize):
+def release_observations(release, report, normalize):
     """(harness, version, outcome) per probe the latest release's contract ran over; none when unsupported."""
     out = []
     if not isinstance(release, dict) or not release.get("supported"):
         return out
+    sources = {}
+    for block in report.get("harnesses", []):
+        h = block.get("harness")
+        if h not in HARNESSES:
+            continue
+        for probe in block.get("probes", []):
+            v = normalize(h, probe.get("version", ""))
+            if v is not None:
+                sources.setdefault((h, v), []).append(probe)
     for probe in release.get("probes", []):
         h = probe.get("harness")
         if h not in HARNESSES:
@@ -239,6 +265,13 @@ def release_observations(release, normalize):
         if v is None:
             continue
         oc = _outcome(probe.get("payloads") or [], True)
+        if oc and oc[0] == "broken":
+            source = sources.get((h, v), [])
+            if len(source) != 1 or not source[0].get("attempts"):
+                warn(f"release violation for {h} {v} has no unique source attempt; keeping existing rows")
+                continue
+            if _unrelated_tier0_failure(source[0]["attempts"][-1].get("checks")):
+                continue
         if oc:
             out.append((h, v, oc))
     return out
@@ -260,6 +293,7 @@ def build(baseline, report, binary, release=None, latest_release=None, issue_url
     rel_ok = isinstance(release, dict) and release.get("supported")
     rel_id = release_ids(release) if rel_ok else {}
     live = {h: {main_id[h]} | ({rel_id[h]} if rel_ok and rel_id.get(h) else set()) for h in HARNESSES}
+    rel_error = isinstance(release, dict) and bool(release.get("error"))
     tag = (latest_release or baseline.get("latest_release") or None)
     tag = tag[1:] if isinstance(tag, str) and tag.startswith("v") else tag
     issue_urls = issue_urls or {}
@@ -268,11 +302,16 @@ def build(baseline, report, binary, release=None, latest_release=None, issue_url
     for r in baseline.get("rows", []):
         r = normalize_row(r)
         rows[row_key(r)] = r
+    if rel_error:  # an infrastructure failure says nothing about the release's contract: keep its rows
+        warn(f"release check failed ({release['error']}); keeping the baseline's release-contract rows")
+        for r in rows.values():
+            if r.get("contract_id"):
+                live[r["harness"]].add(r["contract_id"])
 
     obs = []  # (harness, version, contract_id, outcome, block first_bad or None)
     for h, v, oc, first_bad in main_observations(report, normalize):
         obs.append((h, v, main_id[h], oc, first_bad))
-    rel_obs = release_observations(release, normalize) if rel_ok else []
+    rel_obs = release_observations(release, report, normalize) if rel_ok else []
     if rel_ok:
         for h, v, oc in rel_obs:
             if rel_id.get(h) != main_id[h]:  # the same contract folds into the main probes' rows

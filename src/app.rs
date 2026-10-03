@@ -1265,12 +1265,14 @@ where
             let health = move |request: &CallBudget| {
                 let mut inputs = provider(request);
                 inputs.log_path = Some(log_path.clone());
-                // A store read failure degrades nothing here: it is logged
-                // (rate limited) and Health shows no version line.
-                match health_states.health_lines(request) {
-                    Ok(lines) => inputs.harness_version_lines = lines,
-                    Err(error) => health_log.record_harness_states_unavailable(&error.detail),
+                // A store read failure is logged (rate limited) and Health
+                // shows the evidence-unavailable limitation (degraded).
+                let answer = health_states.health_lines(request);
+                if let Err(error) = &answer {
+                    health_log.record_harness_states_unavailable(&error.detail);
                 }
+                inputs.harness_version_lines =
+                    crate::daemon::health::harness_version_lines(&answer);
                 inputs
             };
             let harness_evidence = Arc::new(

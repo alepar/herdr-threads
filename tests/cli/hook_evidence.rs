@@ -96,6 +96,14 @@ fn codex_tool(session: &str, transcript: &str) -> Vec<u8> {
     .unwrap()
 }
 
+fn codex_subagent(session: &str, transcript: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "hook_event_name": "SubagentStart", "session_id": session, "turn_id": "turn-1",
+        "cwd": "/tmp", "model": "gpt-5", "permission_mode": "default",
+        "agent_id": "agent-1", "agent_type": "default", "transcript_path": transcript}))
+    .unwrap()
+}
+
 /// Missing `tool_name`: a violation of the Codex PreToolUse contract.
 fn codex_broken_tool(session: &str, transcript: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
@@ -393,6 +401,61 @@ fn session_start_does_not_spend_the_first_tool_note_while_unverified() {
 }
 
 #[test]
+fn subagent_ok_does_not_spend_the_tool_slot() {
+    let fx = Fx::new("hev-subagent", DaemonVintage::Current);
+    let path = codex_rollout(&fx.iso, "0.160.0");
+    fx.hook_as(
+        Harness::Codex,
+        "SubagentStart",
+        &codex_subagent("s", &path),
+        NOW,
+    );
+    assert_eq!(
+        fx.hook_as(
+            Harness::Codex,
+            "PreToolUse",
+            &codex_tool("s", &path),
+            NOW + 1
+        ),
+        Delivery::Sent(Some(false)),
+        "a SubagentStart ok must not hold the PreToolUse ok back to the heartbeat"
+    );
+    assert_eq!(fx.gate("codex", "s").ok_sent_at_ms, Some(NOW + 1));
+}
+
+#[test]
+fn subagent_ok_is_only_a_heartbeat() {
+    let fx = Fx::new("hev-subagent-hb", DaemonVintage::Current);
+    let path = codex_rollout(&fx.iso, "0.160.0");
+    fx.hook_as(
+        Harness::Codex,
+        "SessionStart",
+        &codex_start("s", &path, "startup"),
+        NOW,
+    );
+    let connects = fx.connects();
+    assert_eq!(
+        fx.hook_as(
+            Harness::Codex,
+            "SubagentStart",
+            &codex_subagent("s", &path),
+            NOW + 1
+        ),
+        Delivery::Suppressed
+    );
+    assert_eq!(fx.connects(), connects, "no connect for a suppressed ok");
+    assert!(matches!(
+        fx.hook_as(
+            Harness::Codex,
+            "SubagentStart",
+            &codex_subagent("s", &path),
+            NOW + HEARTBEAT_MS
+        ),
+        Delivery::Sent(_)
+    ));
+}
+
+#[test]
 fn heartbeat_is_sent_after_an_hour_even_when_verified() {
     let fx = Fx::new("hev-heartbeat", DaemonVintage::Current);
     let path = transcript(&fx.iso, "2.1.286");
@@ -563,6 +626,61 @@ fn capability_absent_daemon_gets_nothing() {
     assert_eq!(fx.client.total_calls(), 0, "no call besides capabilities");
     assert_eq!(fx.gate_files(), 0, "no gate file written");
     assert!(!gate_dir(fx.iso.state_root()).exists());
+}
+
+// Kills: an evidence client built without connect()'s protocol check, which
+// would send a note a previous-protocol daemon drops at decode and so block
+// until the call cap.
+#[test]
+fn evidence_skips_a_previous_protocol_daemon() {
+    use crate::{
+        daemon::{
+            ownership::OwnerLock,
+            paths::{InstancePaths, RuntimeContext},
+        },
+        protocol::wire::PROTOCOL_VERSION,
+    };
+    let iso = TestIsolation::new("hev-skew");
+    let path = transcript(&iso, "2.1.286");
+    let args = HookArgs {
+        state_dir: Some(iso.state_root().to_path_buf()),
+        host_endpoint: Some(iso.state_root().join("host.sock")),
+        harness: Harness::Claude,
+        event: Some("SessionStart".into()),
+    };
+    let context = RuntimeContext::explicit(
+        iso.state_root().to_path_buf(),
+        iso.state_root().join("host.sock"),
+        None,
+    )
+    .unwrap();
+    let paths = InstancePaths::resolve(&context).unwrap();
+    let lock = OwnerLock::acquire(&paths).unwrap();
+    // Bound but never accepted: a client that sent anyway would block.
+    let listener = lock.bind_socket().unwrap();
+    lock.publish_endpoint(&listener, "0.0.1", PROTOCOL_VERSION - 1)
+        .unwrap();
+    let started = Instant::now();
+    report(
+        &args,
+        &start("s", &path),
+        Some(iso.state_root()),
+        started + Duration::from_secs(5),
+        CALL_CAP,
+        Arc::new(crate::app::SystemClock::new()),
+    );
+    assert!(
+        started.elapsed() < CALL_CAP / 2,
+        "evidence waited {:?} of its {CALL_CAP:?} cap",
+        started.elapsed()
+    );
+    assert_eq!(
+        std::fs::read_dir(gate_dir(iso.state_root())).map_or(0, |entries| entries.count()),
+        0,
+        "no gate file written"
+    );
+    drop(listener);
+    drop(lock);
 }
 
 #[test]

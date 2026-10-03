@@ -1895,16 +1895,31 @@ fn doctor_reports_the_claude_on_path_end_to_end() {
 /// every `--event` pair removed from the settings file and from the manifest's recorded groups,
 /// with consistent fingerprints.
 fn downgrade_claude_to_legacy(s: &Scratch) {
+    downgrade_to_legacy(s, "claude-user", &s.settings());
+}
+
+/// The same rewrite for any harness: `kind` selects the manifest, `file` is its hook file.
+fn downgrade_to_legacy(s: &Scratch, kind: &str, file: &Path) {
     use sha2::{Digest, Sha256};
     let manifest_path = fs::read_dir(s.state.join("setup"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
-        .find(|path| path.to_string_lossy().contains("claude-user"))
-        .expect("claude manifest");
+        .find(|path| {
+            path.extension().is_some_and(|ext| ext == "json")
+                && path.file_name().is_some_and(|name| {
+                    let name = name.to_string_lossy();
+                    name.starts_with(kind) && !name.ends_with(".created.json")
+                })
+        })
+        .expect("manifest");
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-    let mut settings = fs::read_to_string(s.settings()).unwrap();
-    for entry in manifest["owned"].as_array_mut().unwrap() {
+    let mut settings = fs::read_to_string(file).unwrap();
+    let shown = manifest.to_string();
+    for entry in manifest["owned"]
+        .as_array_mut()
+        .unwrap_or_else(|| panic!("no owned list in {manifest_path:?}: {shown}"))
+    {
         let pair = format!(" '--event' '{}'", entry["event"].as_str().unwrap());
         assert!(settings.contains(&pair), "{pair} missing from {settings}");
         settings = settings.replace(&pair, "");
@@ -1919,7 +1934,7 @@ fn downgrade_claude_to_legacy(s: &Scratch) {
         ));
     }
     assert!(!settings.contains("--event"));
-    fs::write(s.settings(), settings.as_bytes()).unwrap();
+    fs::write(file, settings.as_bytes()).unwrap();
     manifest["installed_fingerprint"] =
         serde_json::json!(format!("sha256:{:x}", Sha256::digest(settings.as_bytes())));
     fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
@@ -1936,8 +1951,13 @@ fn doctor_flags_legacy_event_registration_without_degrading() {
     s.harness("claude", "2.1.286 (Claude Code)");
     fs::create_dir_all(&s.claude_config).unwrap();
     fs::write(s.settings(), b"{}").unwrap();
-    let setup = s.run(&["--json", "setup", "claude"]);
+    let setup = s.run(&["setup", "claude"]);
     assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    assert!(
+        !text(&setup.stdout).contains("carry --event"),
+        "a fresh install warns about nothing: {}",
+        text(&setup.stdout)
+    );
 
     let current = json_doctor(&s);
     assert_eq!(current["hooks"]["claude"]["setup"]["installed"], true);
@@ -1964,8 +1984,18 @@ fn doctor_flags_legacy_event_registration_without_degrading() {
     assert!(text(&s.run(&["doctor"]).stdout).contains(line));
 
     // Re-running setup rewrites the hooks with --event: doctor is back to current.
-    let again = s.run(&["--json", "setup", "claude"]);
+    let again = s.run(&["setup", "claude"]);
     assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
+    assert!(
+        text(&again.stdout).contains(
+            "warning: the hook commands now carry --event; a herdr-threads build from \
+             before per-event registration rejects them, so to downgrade herdr-threads first \
+             run `herdr-threads unsetup claude` with this build\n"
+        ),
+        "{}",
+        text(&again.stdout)
+    );
+    assert!(!text(&again.stdout).contains("Codex trusts hooks by hash"));
     let after = json_doctor(&s);
     assert_eq!(after["hooks"]["claude"]["setup"]["installed"], true);
     assert_eq!(
@@ -2190,4 +2220,52 @@ fn prompt_suggestion_flags_are_refused_elsewhere() {
         "--keep-prompt-suggestions",
     ]);
     assert_eq!(both.status.code(), Some(2), "{}", text(&both.stderr));
+}
+
+/// Codex hooks installed before per-event registration: doctor's line adds the re-trust clause,
+/// and re-running `setup codex` prints both the downgrade and the re-trust warnings (a second
+/// re-run, now current, prints neither). Kills: a codex doctor line without the re-trust clause,
+/// the claude line gaining it, and a warning that repeats on an already-current install.
+#[test]
+fn codex_legacy_registration_rerun_warns_about_retrust() {
+    let s = Scratch::new();
+    s.harness("codex", "codex-cli 0.158.0");
+    fs::create_dir(&s.codex_home).unwrap();
+    let setup = s.run(&["setup", "codex"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    assert!(!text(&setup.stdout).contains("carry --event"));
+
+    downgrade_to_legacy(&s, "codex-user", &s.hooks());
+    let doctor = text(&s.run(&["doctor"]).stdout);
+    assert!(
+        doctor.contains(
+            "codex hooks predate per-event registration (no --event): re-run \
+             `herdr-threads setup codex`; Codex then asks to review (trust) the rewritten hooks \
+             again\n"
+        ),
+        "{doctor}"
+    );
+
+    let again = s.run(&["setup", "codex"]);
+    assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
+    let out = text(&again.stdout);
+    assert!(
+        out.contains(
+            "warning: the hook commands now carry --event; a herdr-threads build from \
+             before per-event registration rejects them, so to downgrade herdr-threads first \
+             run `herdr-threads unsetup codex` with this build\n"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "warning: Codex trusts hooks by hash: the rewritten hook commands need \
+             review again (the next interactive `codex` start, or /hooks) before Codex runs them\n"
+        ),
+        "{out}"
+    );
+
+    let third = text(&s.run(&["setup", "codex"]).stdout);
+    assert!(!third.contains("carry --event"), "{third}");
+    assert!(!third.contains("Codex trusts hooks by hash"), "{third}");
 }

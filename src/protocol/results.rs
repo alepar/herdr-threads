@@ -313,11 +313,11 @@ pub struct HarnessStatesReport {
 #[serde(deny_unknown_fields)]
 pub struct HarnessStateReport {
     pub harness: String,
-    /// The newest contract id the daemon has seen from this harness's hooks.
+    /// The contract id this harness's hooks send now (most recently seen).
     pub contract_id: Option<String>,
     /// The version on the daemon's `PATH`, with its verdict.
     pub detected: Option<DetectedVersion>,
-    /// Every row under the newest contract id, newest `last_seen_at` first,
+    /// Every row under that contract id, newest `last_seen_at` first,
     /// at most [`HARNESS_STATE_VERSIONS`].
     pub versions: Vec<VersionStateReport>,
     /// The latest reason a payload could not be attributed to a version.

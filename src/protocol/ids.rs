@@ -135,7 +135,8 @@ const BASE62: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop
 ///
 /// The entropy comes from the OS CSPRNG (via `uuid::Uuid::new_v4`): the 112
 /// bits of a v4 UUID outside its version and variant bytes (bytes 6 and 8 are
-/// skipped whole, so 4 random bits there are discarded) are reduced modulo
+/// skipped whole, so 10 random bits there are discarded: 4 beside the version
+/// nibble in byte 6 and 6 beside the variant bits in byte 8) are reduced modulo
 /// 62^8. 112 bits is 14 bytes x 8, and the bias is about 62^8 / 2^112 ≈ 2^-64,
 /// below 2^-56.
 pub fn public_id_suffix() -> String {

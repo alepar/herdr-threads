@@ -17,10 +17,17 @@ use herdr_threads::{harness::state::Ladder, test_support::spawn::SpawnOwned};
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::Write,
+    io::{Read, Write},
+    net::TcpListener,
     os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+        mpsc::{Sender, TryRecvError, channel},
+    },
+    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
@@ -64,6 +71,107 @@ fn wait_for<T>(what: &str, timeout: Duration, mut probe: impl FnMut() -> Option<
     }
 }
 
+/// Hold a local HTTP response until released. Dropping the server cancels
+/// its bounded accept/read/channel waits and joins the helper on panic too.
+struct GatedServer {
+    url: String,
+    accepted: Arc<AtomicUsize>,
+    go: Option<Sender<()>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl GatedServer {
+    const GIVE_UP: Duration = Duration::from_secs(30);
+
+    fn start(body: Vec<u8>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let (go, gate) = channel::<()>();
+        let seen = Arc::clone(&accepted);
+        let thread = std::thread::spawn(move || {
+            let deadline = Instant::now() + Self::GIVE_UP;
+            let stream = wait_for("the gated server's connection", Self::GIVE_UP, || {
+                if matches!(gate.try_recv(), Err(TryRecvError::Disconnected)) {
+                    return Some(None);
+                }
+                match listener.accept() {
+                    Ok((stream, _)) => Some(Some(stream)),
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => None,
+                    Err(_) => Some(None),
+                }
+            });
+            let Some(mut stream) = stream else {
+                return;
+            };
+            stream.set_nonblocking(false).unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 512];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() || matches!(gate.try_recv(), Err(TryRecvError::Disconnected))
+                {
+                    return;
+                }
+                stream
+                    .set_read_timeout(Some(remaining.min(Duration::from_millis(100))))
+                    .unwrap();
+                match stream.read(&mut chunk) {
+                    Ok(0) => return,
+                    Ok(n) => request.extend_from_slice(&chunk[..n]),
+                    Err(err)
+                        if matches!(
+                            err.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) => {}
+                    Err(_) => return,
+                }
+            }
+            seen.fetch_add(1, Ordering::SeqCst);
+            if gate
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .is_err()
+            {
+                return;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return;
+            }
+            stream.set_write_timeout(Some(remaining)).unwrap();
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: \"gated\"\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(head.as_bytes()).unwrap();
+            stream.write_all(&body).unwrap();
+        });
+        Self {
+            url,
+            accepted,
+            go: Some(go),
+            thread: Some(thread),
+        }
+    }
+
+    fn release_and_join(&mut self) {
+        self.go.take().unwrap().send(()).unwrap();
+        self.thread.take().unwrap().join().unwrap();
+    }
+}
+
+impl Drop for GatedServer {
+    fn drop(&mut self) {
+        // Disconnect first, so failure before accept, during read, or while
+        // held wakes the helper before we join it.
+        self.go.take();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 /// One isolated daemon instance plus the stand-in harness around it.
 struct Rig {
     root: PathBuf,
@@ -73,10 +181,9 @@ struct Rig {
     daemon_env: Vec<(String, String)>,
 }
 
-/// One hook run: its exit code, wall time and stdout.
+/// One hook run: its exit code and stdout.
 struct HookRun {
     code: Option<i32>,
-    elapsed: Duration,
     stdout: String,
 }
 
@@ -116,6 +223,41 @@ impl Rig {
         )
         .unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Resolve real curl before installing this scenario's wrapper. Curl's
+    /// last --max-time wins; exec preserves every other argument and output,
+    /// with a finite fetch budget matching the gated server's lifetime.
+    fn curl_with_test_timeout(&self) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let wrapper = self.bin.join("curl");
+        assert!(
+            !wrapper.exists(),
+            "resolve curl before installing its wrapper"
+        );
+        let command = self.command(&[], &[]);
+        let search = command
+            .get_envs()
+            .find_map(|(key, value)| (key == "PATH").then_some(value).flatten())
+            .unwrap();
+        let real = std::env::split_paths(search)
+            .map(|dir| dir.join("curl"))
+            .find(|path| {
+                fs::metadata(path)
+                    .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+            })
+            .expect("real curl is on the rig's PATH before the wrapper is installed");
+        let quoted = real.to_str().unwrap().replace('\'', "'\"'\"'");
+        fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nexec '{quoted}' \"$@\" --max-time {}\n",
+                GatedServer::GIVE_UP.as_secs()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+        wrapper
     }
 
     fn command(&self, args: &[&str], env: &[(String, String)]) -> Command {
@@ -222,7 +364,6 @@ impl Rig {
                 .env("HERDR_PANE_ID", "p_stand_in")
                 .env("HERDR_SOCKET_PATH", &self.host);
         }
-        let started = Instant::now();
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -233,7 +374,6 @@ impl Rig {
         let output = child.wait_with_output().unwrap();
         HookRun {
             code: output.status.code(),
-            elapsed: started.elapsed(),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         }
     }
@@ -322,10 +462,25 @@ impl Rig {
         );
     }
 
-    /// Let a fetch that was wrongly started finish, then assert none happened:
-    /// no cache file and no recorded attempt.
-    fn assert_no_fetch(&self) {
-        std::thread::sleep(Duration::from_millis(1500));
+    /// Wait until the daemon has logged the manifest policy it runs under
+    /// (`expected`, e.g. `off (settings.json)`), then assert nothing was
+    /// fetched: no cache file and no recorded attempt. The policy line is
+    /// written after election, before any fetch could start; `Off` never
+    /// fetches (`opt_out_never_fetches` in tests/harness/manifest.rs). No
+    /// sleep: the daemon log is the structural proof.
+    fn assert_policy_off(&self, expected: &str) {
+        let log = self.instance_dir().join("daemon.log");
+        let line = format!("harness manifest: {expected}");
+        wait_for(
+            "the daemon to log its manifest policy",
+            Duration::from_secs(15),
+            || {
+                fs::read_to_string(&log)
+                    .ok()
+                    .filter(|text| text.contains(&line))
+                    .map(|_| ())
+            },
+        );
         assert!(!self.cache_file().exists(), "a manifest was fetched");
         let attempts = self
             .cache_meta()
@@ -633,7 +788,7 @@ fn opt_out_and_offline_paths_fetch_nothing() {
     wait_for("the evidence row", Duration::from_secs(10), || {
         rig.version_state("claude", NEW_VERSION)
     });
-    rig.assert_no_fetch();
+    rig.assert_policy_off("off (settings.json)");
     assert_eq!(rig.version_lines(NEW_VERSION), Vec::<String>::new());
     let policy = &rig.doctor_json()["doctor"]["harness_manifest"];
     assert_eq!(
@@ -657,7 +812,7 @@ fn opt_out_and_offline_paths_fetch_nothing() {
     wait_for("the evidence row", Duration::from_secs(10), || {
         rig.version_state("claude", NEW_VERSION)
     });
-    rig.assert_no_fetch();
+    rig.assert_policy_off("off (HERDR_THREADS_OFFLINE=1)");
     assert_eq!(rig.version_lines(NEW_VERSION), Vec::<String>::new());
 }
 
@@ -750,8 +905,10 @@ fn malformed_only_version_with_canary_known_broken_is_broken() {
     assert_eq!(state["state"], "broken");
 }
 
-/// Kills: an unreachable manifest URL that delays a hook past its budget,
-/// loses the evidence, or shows up in Health.
+/// Kills: an unreachable manifest URL that loses the evidence, skips the
+/// fetch attempt, leaves a cache behind or shows up in Health. The hook's
+/// independence from the fetch is proven structurally by
+/// `hook_never_waits_for_the_manifest_fetch`, not by wall time here.
 #[test]
 fn unreachable_manifest_url_falls_back_quietly_within_budget() {
     if !tools_or_skip("unreachable_manifest_url_falls_back_quietly_within_budget") {
@@ -760,16 +917,10 @@ fn unreachable_manifest_url_falls_back_quietly_within_budget() {
     let mut rig = Rig::new(Some(NEW_VERSION));
     rig.start(&[("HT_TEST_MANIFEST_URL", "http://127.0.0.1:9/")]);
     let transcript = rig.transcript("s-unreach", NEW_VERSION);
-    let budget = herdr_threads::cli::hook::TOOL_BUDGET;
     for event in ["SessionStart", "PreToolUse"] {
         let payload = Rig::payload(event, &transcript, "s-unreach", &[]);
-        let run = rig.hook(Some(event), &payload, false, false);
+        let run = rig.hook(Some(event), &payload, false, true);
         assert_eq!(run.code, Some(0));
-        assert!(
-            run.elapsed < budget,
-            "{event} hook took {:?} (budget {budget:?})",
-            run.elapsed
-        );
     }
     let state = wait_for("the version to be working", Duration::from_secs(10), || {
         rig.version_state("claude", NEW_VERSION)
@@ -786,6 +937,110 @@ fn unreachable_manifest_url_falls_back_quietly_within_budget() {
     });
     assert!(!rig.cache_file().exists());
     assert_eq!(rig.version_lines(NEW_VERSION), Vec::<String>::new());
+}
+
+/// Kills: a test curl wrapper that leaves the short timeout active, loses
+/// fetch arguments or file paths, or fails to execute the real HTTP fetch.
+#[test]
+fn curl_wrapper_preserves_fetch_arguments_and_stretches_timeout() {
+    if !tools_or_skip("curl_wrapper_preserves_fetch_arguments_and_stretches_timeout") {
+        return;
+    }
+    let rig = Rig::new(None);
+    let wrapper = rig.curl_with_test_timeout();
+    let expected = b"a real curl response";
+    let mut server = GatedServer::start(expected.to_vec());
+    let body = rig.root.join("work/body with spaces");
+    let headers = rig.root.join("work/headers with spaces");
+    let mut command = herdr_threads::test_support::spawn::command(wrapper);
+    let mut curl = command
+        .env("HOME", rig.root.join("home"))
+        .args([
+            "-fsS",
+            "--max-time",
+            "0.001",
+            "--max-filesize",
+            "1024",
+            "-o",
+        ])
+        .arg(&body)
+        .arg("-D")
+        .arg(&headers)
+        .args(["-w", "%{http_code}", &server.url])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn_owned()
+        .unwrap();
+    wait_for("curl's HTTP request", Duration::from_secs(15), || {
+        assert!(
+            curl.try_wait().unwrap().is_none(),
+            "curl exited before the held response was released"
+        );
+        (server.accepted.load(Ordering::SeqCst) > 0).then_some(())
+    });
+    server.release_and_join();
+    let output = curl.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"200");
+    assert_eq!(fs::read(body).unwrap(), expected);
+    assert!(
+        fs::read_to_string(headers)
+            .unwrap()
+            .contains("ETag: \"gated\"")
+    );
+}
+
+/// Kills: a hook (or the daemon's reply to it) that waits for the manifest
+/// fetch. The fetch is held open by a gated server; the daemon has answered
+/// the hook, and the hook has written its gate, while the fetch is still
+/// held.
+#[test]
+fn hook_never_waits_for_the_manifest_fetch() {
+    if !tools_or_skip("hook_never_waits_for_the_manifest_fetch") {
+        return;
+    }
+    let mut rig = Rig::new(Some(NEW_VERSION));
+    rig.curl_with_test_timeout();
+    let manifest = rig.canary_manifest("gated", "2.1.900", &[NEW_VERSION]);
+    let mut server = GatedServer::start(fs::read(&manifest).unwrap());
+    rig.start(&[("HT_TEST_MANIFEST_URL", &server.url)]);
+    let transcript = rig.transcript("s-gated", NEW_VERSION);
+    let start = Rig::payload("SessionStart", &transcript, "s-gated", &[]);
+    let gate = herdr_threads::cli::hook_evidence::gate_path(
+        &herdr_threads::cli::hook_evidence::gate_dir(&rig.state),
+        "claude",
+        "s-gated",
+    );
+    // Resolve doctor-derived paths before the hook starts the held fetch.
+    let cache = rig.cache_file();
+    let run = rig.hook(Some("SessionStart"), &start, false, true);
+    assert_eq!(run.code, Some(0), "{}", run.stdout);
+    wait_for(
+        "the daemon's fetch to reach the server",
+        Duration::from_secs(15),
+        || (server.accepted.load(Ordering::SeqCst) > 0).then_some(()),
+    );
+    // The hook has exited and its gate is written only after the daemon's
+    // reply. The server still holds the response, so neither waited for it.
+    let stored: Value = serde_json::from_slice(&fs::read(&gate).unwrap()).unwrap();
+    assert!(
+        stored["heartbeat_at_ms"].is_number(),
+        "the gate holds no heartbeat: {stored}"
+    );
+    assert!(
+        !cache.exists(),
+        "the manifest landed before the fetch was released"
+    );
+    server.release_and_join();
+    wait_for(
+        "the manifest cache to be written",
+        Duration::from_secs(15),
+        || cache.exists().then_some(()),
+    );
 }
 
 /// Kills: the doctor's PATH-detected version and the attributed evidence row

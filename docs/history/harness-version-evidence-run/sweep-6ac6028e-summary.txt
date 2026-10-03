@@ -1,0 +1,2 @@
+run 1: green (689s); 1 consecutive
+GATE PASSED: 1 consecutive green runs; logs in target/full-suite-gate/20261002-221853

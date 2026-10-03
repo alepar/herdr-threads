@@ -7,6 +7,15 @@
 //! verified once a lifecycle payload and a tool payload both matched the
 //! contract; the first violation is sticky and only a different version or
 //! contract id (a different row) starts clean.
+//!
+//! Retention: a row may be pruned once its `last_seen_at` is older than
+//! [`EVIDENCE_RETENTION_MS`] (30 days; Health's window is 24 hours and doctor's
+//! history keeps a month). The newest [`EVIDENCE_KEEP_PER_HARNESS`] rows of
+//! each harness (by `last_seen_at`, across contract ids) are never pruned,
+//! whatever their age. Pruning runs inside `record()`'s write transaction and
+//! only when a row was created (the only time the table grows). [`all`] reads
+//! at most [`EVIDENCE_READ_CAP`] rows of one harness, the newest by
+//! `last_seen_at`.
 
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 
@@ -64,6 +73,13 @@ pub struct Recorded {
     pub row: EvidenceRow,
 }
 
+/// A row unseen for longer than this may be pruned (30 days).
+pub const EVIDENCE_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+/// The newest rows of each harness that pruning never removes.
+pub const EVIDENCE_KEEP_PER_HARNESS: i64 = 64;
+/// The most rows `all` returns for one harness.
+pub const EVIDENCE_READ_CAP: i64 = 256;
+
 const COLUMNS: &str = "harness, version, contract_id, first_seen_at, lifecycle_ok_at, tool_ok_at, \
      violation_at, violation_event, violation_field, last_seen_at";
 
@@ -115,6 +131,21 @@ pub fn record(
         )
         .map_err(store_error)?
         == 1;
+    if created {
+        tx.execute(
+            "DELETE FROM harness_version_evidence \
+              WHERE harness = ?1 AND last_seen_at < ?2 \
+                AND (harness, version, contract_id) NOT IN ( \
+                  SELECT harness, version, contract_id FROM harness_version_evidence \
+                   WHERE harness = ?1 ORDER BY last_seen_at DESC LIMIT ?3)",
+            params![
+                record.harness,
+                now.saturating_sub(EVIDENCE_RETENTION_MS),
+                EVIDENCE_KEEP_PER_HARNESS
+            ],
+        )
+        .map_err(store_error)?;
+    }
     let mut fresh_violation = false;
     tx.execute(
         "UPDATE harness_version_evidence SET last_seen_at = MAX(last_seen_at, ?4) \
@@ -210,15 +241,17 @@ pub fn since(db: &Connection, since_ms: u64) -> Result<Vec<EvidenceRow>, ApiErro
     )
 }
 
-/// Every row of one harness.
+/// The newest `EVIDENCE_READ_CAP` rows of one harness (by `last_seen_at`),
+/// ordered by `first_seen_at, version, contract_id`.
 pub fn all(db: &Connection, harness: &str) -> Result<Vec<EvidenceRow>, ApiError> {
     collect(
         db,
         &format!(
-            "SELECT {COLUMNS} FROM harness_version_evidence WHERE harness = ?1 \
+            "SELECT {COLUMNS} FROM (SELECT {COLUMNS} FROM harness_version_evidence \
+             WHERE harness = ?1 ORDER BY last_seen_at DESC LIMIT ?2) \
              ORDER BY first_seen_at, version, contract_id"
         ),
-        params![harness],
+        params![harness, EVIDENCE_READ_CAP],
     )
 }
 

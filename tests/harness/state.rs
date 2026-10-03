@@ -171,12 +171,12 @@ fn derive_table() {
                     "broken:violation"
                 } else if below_floor {
                     "broken:below-floor"
+                } else if recipe_broken {
+                    "broken:recipe"
                 } else if local_verified {
                     "working:local"
                 } else if manifest_status == Some(RowStatus::KnownBroken) {
                     "broken:manifest"
-                } else if recipe_broken {
-                    "broken:recipe"
                 } else if manifest_status == Some(RowStatus::Verified) {
                     "working:manifest"
                 } else if matches!(ladder, Ladder::Listed) {
@@ -198,9 +198,11 @@ fn derive_table() {
                         "local={local_name} ladder={ladder_name} manifest={manifest_name}"
                     );
                 }
-                // Notes appear exactly when local evidence overrides a break.
-                let expects_notes = expected == "working:local"
-                    && (manifest_status == Some(RowStatus::KnownBroken) || recipe_broken);
+                // Notes appear exactly when local evidence overrides a manifest
+                // break, or when a recipe break outranks local evidence.
+                let expects_notes = (expected == "working:local"
+                    && manifest_status == Some(RowStatus::KnownBroken))
+                    || (expected == "broken:recipe" && local_verified);
                 assert_eq!(
                     !derived.doctor_notes.is_empty(),
                     expects_notes,
@@ -355,10 +357,10 @@ fn report_action_falls_back_to_repo_issues_url() {
     );
 }
 
-/// Kills: a recipe known_broken range that beats local proof, and a missing
-/// doctor note.
+/// Kills: local proof that beats a recipe known_broken range (the hook's B6
+/// ladder refuses it), and a missing doctor note.
 #[test]
-fn recipe_known_broken_with_local_verified_is_working_with_note() {
+fn recipe_known_broken_with_local_verified_is_broken_with_note() {
     let local = verified("2.1.290");
     let derived = derive(&input(
         "2.1.290",
@@ -367,10 +369,22 @@ fn recipe_known_broken_with_local_verified_is_working_with_note() {
         None,
         &ReleasePointers::default(),
     ));
-    assert_eq!(derived.state, State::Working(WorkingSource::Local));
+    assert!(
+        matches!(
+            derived.state,
+            State::Broken(Broken {
+                cause: BrokenCause::RecipeKnownBroken { .. },
+                ..
+            })
+        ),
+        "{:?}",
+        derived.state
+    );
     assert_eq!(
         derived.doctor_notes,
-        vec!["known broken in >= 2.1.290, <= 2.1.291 per the recipe tables; it has worked here"]
+        vec![
+            "it has worked here, but the recipe tables mark >= 2.1.290, <= 2.1.291 known broken and the hook refuses it"
+        ]
     );
     let manifest = broken_manifest();
     let derived = derive(&input(
@@ -563,17 +577,23 @@ fn row_at(version: &str, contract: &str, first: u64, last: u64) -> EvidenceRow {
     row
 }
 
-/// Kills: the newest contract chosen by version, by last_seen_at or by the
-/// lexicographically first id; a tie that is not deterministic.
+/// Kills: choosing by first_seen (a downgrade keeps the newer contract
+/// deciding), by version or by the lexicographically first id.
 #[test]
-fn newest_contract_is_the_one_first_seen_latest() {
+fn newest_contract_is_the_one_seen_most_recently() {
     let rows = [
         row_at("2.1.286", "aaaa", 100, 9_000),
         row_at("2.1.285", "bbbb", 500, 600),
         row_at("2.1.287", "bbbb", 200, 700),
     ];
-    // aaaa first seen at 100; bbbb at min(500, 200) = 200.
-    assert_eq!(newest_contract(&rows), Some("bbbb"));
+    assert_eq!(newest_contract(&rows), Some("aaaa"));
+    // Downgrade: bbbb (newer contract, first seen later) was in use, then the
+    // older binary's hooks touched aaaa again.
+    let downgrade = [
+        row_at("2.1.286", "aaaa", 100, 5_000),
+        row_at("2.1.286", "bbbb", 1_000, 4_000),
+    ];
+    assert_eq!(newest_contract(&downgrade), Some("aaaa"));
     let tie = [
         row_at("2.1.286", "aaaa", 100, 1),
         row_at("2.1.286", "bbbb", 100, 1),
@@ -591,7 +611,7 @@ fn roll_up_evaluates_the_newest_contract_inside_the_window() {
     let mut recent_violation = violated(row_at("2.1.286", "new", 5 * day, now - 10));
     recent_violation.violation_at = Some(now - 10);
     let stale_violation = violated(row_at("2.1.285", "new", 5 * day, now - 2 * day));
-    let old_contract = violated(row_at("2.1.287", "old", day, now - 1));
+    let old_contract = violated(row_at("2.1.287", "old", day, now - 3 * day));
     let rollup = roll_up(
         HARNESS,
         &[recent_violation, stale_violation, old_contract],

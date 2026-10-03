@@ -1176,6 +1176,63 @@ fn pending_continuity_skips_vanished_unparsable_fifo_and_symlink_entries() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+// Kills: a hook stuck on a FIFO in the shared intents directory, or one
+// unparsable entry failing every scan.
+#[test]
+// The junk entries take the names of recorded intents because the allocator
+// (`counter`, used by `record_check_in`) rejects any other `.intent` name and
+// one ahead of its counter; the scans do not care.
+fn scans_skip_fifo_symlink_and_garbage_entries() {
+    use std::os::unix::{ffi::OsStrExt, fs::symlink};
+    let dir = temp();
+    let journal = Arc::new(Journal::open(&dir).unwrap());
+    let refs: Vec<_> = (1..=4)
+        .map(|n| journal.record(scope(), send(), n).unwrap())
+        .collect();
+    let real = refs[3].clone();
+    let (fifo_path, garbage_path, link_path) = (
+        journal.path(&refs[0]),
+        journal.path(&refs[1]),
+        journal.path(&refs[2]),
+    );
+    for path in [&fifo_path, &garbage_path, &link_path] {
+        std::fs::remove_file(path).unwrap();
+    }
+    let fifo = std::ffi::CString::new(fifo_path.as_os_str().as_bytes()).unwrap();
+    // SAFETY: `fifo` is a valid NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    std::fs::write(&garbage_path, "not json\n").unwrap();
+    symlink(journal.path(&real), &link_path).unwrap();
+
+    let cooperative = IntentScope::Cooperative {
+        instance: "i".into(),
+        seat: SeatId::new("legacy-fixture"),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = Arc::clone(&journal);
+    std::thread::spawn(move || {
+        let found = worker
+            .find_check_in(&cooperative, "evt")
+            .map(|found| found.is_none());
+        let completed = worker.complete_operation(&OperationId::new("unknown-operation"));
+        let recorded = worker
+            .record_check_in(cooperative, "evt", 2, || {
+                Ok((claim(), CheckInMode::Current))
+            })
+            .map(|_| ());
+        let _ = tx.send((found, completed, recorded));
+    });
+    let (found, completed, recorded) = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("a scan blocked on the FIFO");
+    assert!(found.unwrap(), "no check-in is pending");
+    completed.unwrap();
+    recorded.unwrap();
+    // The real intent is untouched by the skipped entries.
+    assert!(journal.path(&real).exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn send_relays_user_is_journaled_only_when_set_and_old_intents_still_load() {
     let relayed = match send() {

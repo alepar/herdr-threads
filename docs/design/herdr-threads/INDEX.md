@@ -25,6 +25,8 @@ verification layer is marked superseded rather than deleted. Decision record for
 | [Guarded native start disposition](guarded-native-start-disposition.md) | adopted (empty-shell path superseded) | §B4 |
 | [Seat resolution recovery clarification](seat-resolution-recovery-clarification.md) | adopted (allocation-guard text superseded) | §B4 |
 | [Herdr direct transport contract](herdr-direct-transport-contract.md) | adopted | source evidence for `src/host/native.rs` |
+| [B5 cooperative trust policy guards](2026-10-01-b5-trust-policy-guards-design.md) | implemented | epic ht-rzi; [TRUST-POLICY.md](../../../TRUST-POLICY.md); run record [docs/history/b5-trust-policy-guards-run](../../history/b5-trust-policy-guards-run/report.md) |
+| [Harness version evidence](2026-10-02-harness-version-evidence-design.md) | implemented | epic ht-xoc; run record [docs/history/harness-version-evidence-run](../../history/harness-version-evidence-run/report.md) |
 
 Mechanisms added by the 2026-10 remaining-findings run, each a section in the design named below with the nested spec as its decision record:
 

@@ -9,7 +9,7 @@ use super::*;
 fn cooperative_mode_label_only_for_cooperative() {
     let none: [String; 0] = [];
     assert_eq!(
-        claude_observed_text(HarnessState::Cooperative, &none, &none),
+        claude_observed_text(HarnessState::Cooperative, &none, &none, None),
         CLAUDE_NOT_OBSERVABLE
     );
     assert!(CLAUDE_NOT_OBSERVABLE.contains("(cooperative mode)"));
@@ -18,15 +18,15 @@ fn cooperative_mode_label_only_for_cooperative() {
         HarnessState::Supported,
         HarnessState::Unknown,
     ] {
-        let text = claude_observed_text(state, &none, &none);
+        let text = claude_observed_text(state, &none, &none, None);
         assert!(!text.contains("cooperative"), "{state:?}: {text}");
     }
     assert_eq!(
-        claude_observed_text(HarnessState::Supported, &none, &none),
+        claude_observed_text(HarnessState::Supported, &none, &none, None),
         "observed"
     );
     assert_eq!(
-        claude_observed_text(HarnessState::Unknown, &none, &none),
+        claude_observed_text(HarnessState::Unknown, &none, &none, None),
         "unknown"
     );
 }
@@ -41,21 +41,37 @@ fn unsupported_prints_its_own_reason() {
         "harness claude unsupported: claude 9.9.9: no recipe admits it".to_owned(),
     ];
     assert_eq!(
-        claude_observed_text(HarnessState::Unsupported, &refused, &[]),
+        claude_observed_text(HarnessState::Unsupported, &refused, &[], None),
         "not observable: claude 9.9.9: no recipe admits it"
     );
     let absent = vec![
         "harness claude not installed: no executable `claude` on the daemon's PATH".to_owned(),
     ];
     assert_eq!(
-        claude_observed_text(HarnessState::Unsupported, &[], &absent),
+        claude_observed_text(HarnessState::Unsupported, &[], &absent, None),
         "not observable: no executable `claude` on the daemon's PATH"
     );
     // The codex line must not be mistaken for claude's reason.
     let codex_only = vec!["harness codex unsupported: codex 1.0: refused".to_owned()];
     assert_eq!(
-        claude_observed_text(HarnessState::Unsupported, &codex_only, &[]),
-        "not observable: the daemon did not admit claude"
+        claude_observed_text(HarnessState::Unsupported, &codex_only, &[], None),
+        "not observable: the daemon refused the installed claude version (see its version verdict below)"
+    );
+}
+
+/// Kills: a VersionRefused claude (no Health line) that does not name the
+/// refusal from the version verdict, and a verdict that outranks a Health line.
+#[test]
+fn version_refused_names_the_refusal() {
+    let verdict = "claude 2.1.100 is below the supported floor 2.1.283; upgrade claude";
+    assert_eq!(
+        claude_observed_text(HarnessState::Unsupported, &[], &[], Some(verdict)),
+        format!("not observable: {verdict}")
+    );
+    let refused = vec!["harness claude unsupported: claude 9.9.9: no recipe admits it".to_owned()];
+    assert_eq!(
+        claude_observed_text(HarnessState::Unsupported, &refused, &[], Some(verdict)),
+        "not observable: claude 9.9.9: no recipe admits it"
     );
 }
 

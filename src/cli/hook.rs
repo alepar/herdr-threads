@@ -52,7 +52,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -1020,6 +1020,9 @@ fn report_parse_failure_to_daemon(
     let Ok(descriptor) = read_descriptor(&paths, instance) else {
         return;
     };
+    if crate::daemon::lifecycle::check_protocol(&descriptor).is_err() {
+        return;
+    }
     let client = LocalSocketClient::new(
         descriptor.endpoint,
         Arc::clone(&clock),
@@ -1284,6 +1287,7 @@ fn check_in(
         PaneSeat::Resolved(seat, generation) => match call.reattach_by_continuity(event, true) {
             Reattach::Done(done) => return Ok(*done),
             Reattach::Declined => (seat, generation),
+            Reattach::InstallFailed(detail) => return Err(install_failed(&detail)),
             Reattach::Pending => {
                 return Err(Failure::Unavailable(
                     "resumed session's pane mapping is not yet confirmed; retry".into(),
@@ -1292,6 +1296,7 @@ fn check_in(
         },
         absent => match call.reattach_by_continuity(event, false) {
             Reattach::Done(done) => return Ok(*done),
+            Reattach::InstallFailed(detail) => return Err(install_failed(&detail)),
             Reattach::Declined | Reattach::Pending => return Err(absent.refusal(pane)),
         },
     };
@@ -1330,17 +1335,29 @@ enum Reattach {
     /// definitively refused.
     Declined,
     /// Undecided: still retryable when the deadline passed (the intent is
-    /// kept), or the hook could not record or install it.
+    /// kept), or the hook could not record the intent.
     Pending,
+    /// The daemon committed the reattachment but the hook could not install the
+    /// pane context locally (the intent stays; the next resume installs it).
+    /// Carries the failure detail.
+    InstallFailed(String),
 }
 #[cfg(test)]
 impl Reattach {
     fn done(self) -> Option<CheckedIn> {
         match self {
             Self::Done(done) => Some(*done),
-            Self::Declined | Self::Pending => None,
+            Self::Declined | Self::Pending | Self::InstallFailed(_) => None,
         }
     }
+}
+
+/// The failure for a reattachment the daemon committed but the hook could not
+/// install locally; never the stale "pane seat mapping is Unresolved" refusal.
+fn install_failed(detail: &str) -> Failure {
+    Failure::Unavailable(format!(
+        "the daemon reattached this pane's seat ({detail}) but its local context could not be installed; the next resume installs it"
+    ))
 }
 
 /// First wait between submissions of a retryable continuity request; doubles
@@ -1434,7 +1451,9 @@ impl PaneCall<'_> {
     /// recorded when none is left. With `reuse` false every pending one is
     /// superseded: the pane still has a resolved seat, so an earlier
     /// reattachment's replay is never the recovery there (the ordinary
-    /// check-in is), and a stale one must not be installed.
+    /// check-in is), and a stale one must not be installed. The flag says
+    /// whether the intent is a reused one: its replay must then be confirmed
+    /// current before it is installed (`replay_is_current`).
     fn continuity_intent(
         &self,
         journal: &super::journal::Journal,
@@ -1442,7 +1461,7 @@ impl PaneCall<'_> {
         harness: crate::protocol::authority::Harness,
         session: &crate::protocol::ids::NativeSessionId,
         reuse: bool,
-    ) -> Option<(super::journal::IntentRef, uuid::Uuid)> {
+    ) -> Option<(super::journal::IntentRef, uuid::Uuid, bool)> {
         let instance = self.instance.to_string();
         while let Ok(Some(pending)) = journal.pending_continuity(&instance, self.target) {
             let reference = pending.header.reference.clone();
@@ -1457,7 +1476,7 @@ impl PaneCall<'_> {
                 && native_session == session
                 && let Ok(execution) = uuid::Uuid::parse_str(execution.as_str())
             {
-                return Some((reference, execution));
+                return Some((reference, execution, true));
             }
             if journal.complete(&reference).is_err() {
                 // Cannot clear it: leave it and record alongside.
@@ -1482,7 +1501,20 @@ impl PaneCall<'_> {
                 self.clock.utc_now().0,
             )
             .ok()?;
-        Some((reference, execution))
+        Some((reference, execution, false))
+    }
+
+    /// Whether a reattachment the daemon answered for a reused intent is the
+    /// pane's mapping now (ht-kqz): `None` when the lookup fails. A reused
+    /// intent is submitted only for a pane with no resolved seat, so the
+    /// replay is current exactly when the pane now resolves to its seat.
+    fn replay_is_current(&self, seat: &SeatId) -> Option<bool> {
+        let seats = super::collect_pane_seats(self.target, |command| {
+            self.client
+                .call(command, &budget(self.deadline, self.clock.as_ref()))
+        })
+        .ok()?;
+        Some(seats.resolved.len() == 1 && seats.resolved[0].seat == *seat)
     }
 
     /// C1 attempt: a top-level `resume` asks the daemon to reattach the
@@ -1496,8 +1528,13 @@ impl PaneCall<'_> {
     /// this pane is never consulted, the daemon's mapping locates the pane's
     /// seat) and presents the seat's pending attention. `Declined` when not
     /// applicable or refused, `Pending` for an elapsed retry window (intent
-    /// kept) or a local failure. It runs only on this resume path: tool events
-    /// never read or replay a continuity intent.
+    /// kept) or a local failure. A reused intent's replay carries no boot or
+    /// epoch, so it can be stale: it is installed only when the daemon's
+    /// pane-seat listing now resolves the pane to the replayed seat. A stale
+    /// replay is discarded and the resume submitted once more under a fresh
+    /// key; an unanswered lookup keeps the intent and installs nothing. It
+    /// runs only on this resume path: tool events never read or replay a
+    /// continuity intent.
     fn reattach_by_continuity(&self, event: &LifecycleEvent, pane_resolved: bool) -> Reattach {
         if event.role != Role::TopLevel || event.kind != EventKind::Resume {
             return Reattach::Declined;
@@ -1515,19 +1552,43 @@ impl PaneCall<'_> {
         let Some(journal) = self.journal() else {
             return Reattach::Pending;
         };
-        let Some((reference, execution)) =
+        let Some((mut reference, mut execution, reused)) =
             self.continuity_intent(&journal, event, harness, &session, !pane_resolved)
         else {
             return Reattach::Pending;
         };
-        let reattached = match self.submit_continuity(&journal, &reference) {
+        let mut reattached = match self.submit_continuity(&journal, &reference) {
             ContinuityOutcome::Reattached(reattached) => reattached,
             ContinuityOutcome::Refused => return Reattach::Declined,
             ContinuityOutcome::Kept => return Reattach::Pending,
         };
+        if reused {
+            match self.replay_is_current(&reattached.seat) {
+                Some(true) => {}
+                None => return Reattach::Pending,
+                Some(false) => {
+                    // A stale replay: drop it and ask once more under a fresh
+                    // key, which the daemon cannot answer from a replay.
+                    let _ = journal.complete(&reference);
+                    let Some((fresh, fresh_execution, _)) =
+                        self.continuity_intent(&journal, event, harness, &session, false)
+                    else {
+                        return Reattach::Pending;
+                    };
+                    reference = fresh;
+                    execution = fresh_execution;
+                    reattached = match self.submit_continuity(&journal, &reference) {
+                        ContinuityOutcome::Reattached(reattached) => reattached,
+                        ContinuityOutcome::Refused => return Reattach::Declined,
+                        ContinuityOutcome::Kept => return Reattach::Pending,
+                    };
+                }
+            }
+        }
         let seat = reattached.seat;
-        let Ok(contexts) = super::seat_contexts(self.paths, self.instance, &seat) else {
-            return Reattach::Pending;
+        let contexts = match super::seat_contexts(self.paths, self.instance, &seat) {
+            Ok(contexts) => contexts,
+            Err(error) => return Reattach::InstallFailed(format!("{}: {error:?}", seat.as_str())),
         };
         let context = OccupantContext {
             format_version: 1,
@@ -1542,8 +1603,9 @@ impl PaneCall<'_> {
         };
         // On a failed install the intent stays: the daemon replays the same
         // result on the next resume and the install is tried again.
-        let Ok(abandoned) = contexts.install_reattached(context) else {
-            return Reattach::Pending;
+        let abandoned = match contexts.install_reattached(context) {
+            Ok(abandoned) => abandoned,
+            Err(error) => return Reattach::InstallFailed(format!("{}: {error:?}", seat.as_str())),
         };
         if let Some(pending) = abandoned {
             // The replaced context's request is dead: its intent is spent.
@@ -2130,18 +2192,34 @@ pub fn run_process_with(
     mut input: impl Read + Send + 'static,
 ) -> i32 {
     let started = Instant::now();
+    // The watchdog is armed before any file-system call (a parse-failure
+    // drain, `same_endpoint`'s canonicalize, a foreign session's evidence
+    // work), so no path on this process can outlive the tool budget. It starts
+    // at the tool budget, so a stalled stdin cannot hold a tool hook past it;
+    // a parsed lifecycle event raises it to its own budget, still measured
+    // from process start. A test child of a loaded parallel suite stretches
+    // its wall-clock budgets (external_bound; production builds use them as
+    // is), so a starved scheduler does not turn into a fail-open hook.
+    let tool_budget = crate::protocol::time::external_bound(TOOL_BUDGET);
+    let deadline_ms = Arc::new(AtomicU64::new(tool_budget.as_millis() as u64));
+    // A foreign session must stay silent: when set, the watchdog exits 0
+    // without its "budget expired" line.
+    let quiet = Arc::new(AtomicBool::new(false));
+    spawn_watchdog(started, Arc::clone(&deadline_ms), Arc::clone(&quiet));
     // Not a pane of the installed Herdr instance: silent, before any probe.
     if let Err(detail) = &parsed
         && parse_failure_outcome(detail.clone(), env)
             .diagnostic
             .is_none()
     {
+        quiet.store(true, Ordering::SeqCst);
         drain_input(input, Duration::from_millis(200));
         return 0;
     }
     if let Ok(args) = &parsed
         && foreign_session(args, env, std::env::var_os("HERDR_SOCKET_PATH").as_deref()).is_some()
     {
+        quiet.store(true, Ordering::SeqCst);
         // Silent, but the payload is still evidence about the harness: a
         // bounded read, then a short best-effort note (never a version probe
         // or a daemon start).
@@ -2157,28 +2235,6 @@ pub fn run_process_with(
             );
         }
         return 0;
-    }
-    // The watchdog starts at the tool budget, so a stalled stdin cannot hold a
-    // tool hook past it; a parsed lifecycle event raises it to its own budget,
-    // still measured from process start.
-    // A test child of a loaded parallel suite stretches its wall-clock
-    // budgets (external_bound; production builds use them as is), so a
-    // starved scheduler does not turn into a fail-open hook.
-    let tool_budget = crate::protocol::time::external_bound(TOOL_BUDGET);
-    let deadline_ms = Arc::new(AtomicU64::new(tool_budget.as_millis() as u64));
-    {
-        let deadline_ms = Arc::clone(&deadline_ms);
-        std::thread::spawn(move || {
-            loop {
-                let limit = Duration::from_millis(deadline_ms.load(Ordering::SeqCst));
-                if started.elapsed() >= limit {
-                    let _guard = OUTPUT.lock().unwrap_or_else(|p| p.into_inner());
-                    let _ = writeln!(io::stderr(), "herdr-threads hook: budget expired");
-                    std::process::exit(0);
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        });
     }
     let args = match parsed {
         Ok(args) => args,
@@ -2196,81 +2252,134 @@ pub fn run_process_with(
         stdin.clear();
     }
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
-    // The evidence note goes first, whatever the version ladder will say: a
-    // refused, below-floor or known-broken version still reports what its
-    // payload looked like, and no `--version` is run on this path.
-    if read_ok {
-        super::hook_evidence::report(
-            &args,
-            &stdin,
-            hook_state_dir(&args).as_deref(),
-            started + tool_budget.saturating_sub(WATCHDOG_MARGIN),
-            super::hook_evidence::CALL_CAP,
-            Arc::clone(&clock),
-        );
-    }
-    let observe_budget = tool_budget
-        .saturating_sub(WATCHDOG_MARGIN)
-        .saturating_sub(started.elapsed());
-    let installed = match observe_harness_in(
-        args.harness,
-        std::env::var_os("PATH").as_deref(),
-        observe_budget,
-        hook_state_dir(&args).as_deref(),
-    ) {
-        Ok(installed) => installed,
-        Err(detail) => {
+    let state_dir = hook_state_dir(&args);
+    sequence(
+        started,
+        tool_budget,
+        |budget| {
+            observe_harness_in(
+                args.harness,
+                std::env::var_os("PATH").as_deref(),
+                budget,
+                state_dir.as_deref(),
+            )
+        },
+        |installed| {
+            let budget = parse_event(&installed, &stdin)
+                .map(|event| crate::protocol::time::external_bound(budget_for(&event)))
+                .unwrap_or(tool_budget);
+            deadline_ms.store(budget.as_millis() as u64, Ordering::SeqCst);
+            // Calls end slightly before the watchdog so failures can still be reported.
+            let deadline = started + budget.saturating_sub(WATCHDOG_MARGIN);
+            let executable = std::env::current_exe().ok();
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_hook(
+                    &args,
+                    &installed,
+                    &stdin,
+                    env,
+                    deadline,
+                    Arc::clone(&clock),
+                    executable.as_deref(),
+                )
+            }))
+            .unwrap_or_else(|_| HookOutcome {
+                stdout: Vec::new(),
+                diagnostic: Some("internal error".into()),
+                attention: None,
+            });
+            let HookOutcome {
+                stdout,
+                diagnostic,
+                attention,
+            } = outcome;
+            let delivered = emit(&HookOutcome {
+                stdout,
+                diagnostic,
+                attention: None,
+            });
+            if let (true, Some(attention)) = (delivered, attention)
+                && let Err(error) = attention.commit()
+            {
+                let _guard = OUTPUT.lock().unwrap_or_else(|p| p.into_inner());
+                let _ = writeln!(
+                    io::stderr(),
+                    "herdr-threads hook: attention mark not saved: {error:?}"
+                );
+            }
+            deadline
+        },
+        |detail| {
             emit(&HookOutcome {
                 stdout: Vec::new(),
                 diagnostic: Some(detail),
                 attention: None,
             });
-            return 0;
-        }
-    };
-    let budget = parse_event(&installed, &stdin)
-        .map(|event| crate::protocol::time::external_bound(budget_for(&event)))
-        .unwrap_or(tool_budget);
-    deadline_ms.store(budget.as_millis() as u64, Ordering::SeqCst);
-    // Calls end slightly before the watchdog so failures can still be reported.
-    let deadline = started + budget.saturating_sub(WATCHDOG_MARGIN);
-    let executable = std::env::current_exe().ok();
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_hook(
-            &args,
-            &installed,
-            &stdin,
-            env,
-            deadline,
-            clock,
-            executable.as_deref(),
-        )
-    }))
-    .unwrap_or_else(|_| HookOutcome {
-        stdout: Vec::new(),
-        diagnostic: Some("internal error".into()),
-        attention: None,
-    });
-    let HookOutcome {
-        stdout,
-        diagnostic,
-        attention,
-    } = outcome;
-    let delivered = emit(&HookOutcome {
-        stdout,
-        diagnostic,
-        attention: None,
-    });
-    if let (true, Some(attention)) = (delivered, attention)
-        && let Err(error) = attention.commit()
-    {
-        let _guard = OUTPUT.lock().unwrap_or_else(|p| p.into_inner());
-        let _ = writeln!(
-            io::stderr(),
-            "herdr-threads hook: attention mark not saved: {error:?}"
-        );
-    }
+        },
+        |deadline| {
+            if read_ok {
+                super::hook_evidence::report(
+                    &args,
+                    &stdin,
+                    state_dir.as_deref(),
+                    deadline,
+                    super::hook_evidence::CALL_CAP,
+                    Arc::clone(&clock),
+                );
+            }
+        },
+    );
     0
+}
+
+/// Enforce the end-to-end budget even if a call ignores its deadline. The
+/// limit is `deadline_ms` (milliseconds since `started`), which a parsed
+/// lifecycle event raises. `quiet` suppresses the stderr line (foreign
+/// sessions stay silent).
+fn spawn_watchdog(started: Instant, deadline_ms: Arc<AtomicU64>, quiet: Arc<AtomicBool>) {
+    std::thread::spawn(move || {
+        loop {
+            let limit = Duration::from_millis(deadline_ms.load(Ordering::SeqCst));
+            if started.elapsed() >= limit {
+                let _guard = OUTPUT.lock().unwrap_or_else(|p| p.into_inner());
+                if !quiet.load(Ordering::SeqCst) {
+                    let _ = writeln!(io::stderr(), "herdr-threads hook: budget expired");
+                }
+                std::process::exit(0);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    });
+}
+
+/// The in-pane hook after its payload is read (ht-rlv.1): the version probe
+/// gets the whole remaining tool budget, the check-in runs under the event's
+/// budget, and the evidence note goes last with whatever time is left before
+/// the watchdog. A refused probe sends the note right after its diagnostic.
+/// The note is advisory: it never delays the probe or the check-in, and a
+/// check-in that uses its whole budget leaves no time for it (the gate file
+/// is then unchanged, so the next event sends it).
+pub(crate) fn sequence(
+    started: Instant,
+    tool_budget: Duration,
+    observe: impl FnOnce(Duration) -> Result<InstalledHarness, String>,
+    check_in: impl FnOnce(InstalledHarness) -> Instant,
+    refused: impl FnOnce(String),
+    evidence: impl FnOnce(Instant),
+) {
+    let observe_budget = tool_budget
+        .saturating_sub(WATCHDOG_MARGIN)
+        .saturating_sub(started.elapsed());
+    match observe(observe_budget) {
+        Ok(installed) => {
+            let deadline = check_in(installed);
+            evidence(deadline);
+        }
+        Err(detail) => {
+            refused(detail);
+            evidence(started + tool_budget.saturating_sub(WATCHDOG_MARGIN));
+        }
+    }
 }
 
 #[cfg(test)]

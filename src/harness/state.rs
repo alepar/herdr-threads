@@ -8,17 +8,18 @@
 //!
 //! 1. a local violation: broken;
 //! 2. the version is below the recipe floor: broken (upgrade the harness);
-//! 3. local evidence verified it: working (a manifest or recipe `known_broken`
-//!    is a doctor note only: it has worked here);
-//! 4. the manifest reports it broken (same contract): broken;
-//! 5. the recipe tables report it broken: broken;
+//! 3. the recipe tables report it broken: broken, even when verified here (the
+//!    hook's B6 ladder refuses it, so "working" would be false; doctor notes it);
+//! 4. local evidence verified it: working (a manifest `known_broken` is a
+//!    doctor note only: it has worked here);
+//! 5. the manifest reports it broken (same contract): broken;
 //! 6. the manifest verified it (same contract): working;
 //! 7. a recipe lists it: working;
 //! 8. otherwise (optimistic, schema-matched, unlisted and not below the floor):
 //!    new, which adds nothing to Health.
 //!
 //! [`roll_up`] applies the function to every evidence row under the harness's
-//! newest contract id; Health shows the broken version seen most recently
+//! contract id the hooks send now; Health shows the broken version seen most recently
 //! within the last 24 hours.
 use super::{
     admission::{self, ISSUES_URL, Refusal, Row},
@@ -247,6 +248,15 @@ pub fn derive(input: &StateInput) -> Derived {
             cause: BrokenCause::BelowFloor { min: min.clone() },
             action: Action::UpgradeHarness,
         })
+    } else if let Ladder::RecipeKnownBroken { range, .. } = &input.ladder {
+        if input.local.is_some_and(EvidenceRow::verified) {
+            notes.push(format!(
+                "it has worked here, but the recipe tables mark {range} known broken and the hook refuses it"
+            ));
+        }
+        broken(BrokenCause::RecipeKnownBroken {
+            range: range.clone(),
+        })
     } else if input.local.is_some_and(EvidenceRow::verified) {
         if let Some(row) = manifest_broken {
             notes.push(format!(
@@ -259,11 +269,6 @@ pub fn derive(input: &StateInput) -> Derived {
                 row.broken_field.as_deref().unwrap_or("unknown"),
             ));
         }
-        if let Ladder::RecipeKnownBroken { range, .. } = &input.ladder {
-            notes.push(format!(
-                "known broken in {range} per the recipe tables; it has worked here"
-            ));
-        }
         State::Working(WorkingSource::Local)
     } else if let Some(row) = manifest_broken {
         broken(BrokenCause::ManifestKnownBroken {
@@ -271,10 +276,6 @@ pub fn derive(input: &StateInput) -> Derived {
             field: row.broken_field.clone().unwrap_or_default(),
             source: manifest_source(row),
             issue_url: row.issue_url.clone(),
-        })
-    } else if let Ladder::RecipeKnownBroken { range, .. } = &input.ladder {
-        broken(BrokenCause::RecipeKnownBroken {
-            range: range.clone(),
         })
     } else if let Some(row) = manifest_verified {
         State::Working(WorkingSource::Manifest {
@@ -396,10 +397,12 @@ pub struct VersionVerdict {
     pub in_health_window: bool,
 }
 
-/// Every version seen under a harness's newest contract id.
+/// Every version seen under the contract id the harness's hooks send now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HarnessRollup {
     pub harness: &'static str,
+    /// The contract id the hooks send now: the one whose most recent row was
+    /// seen last.
     pub contract_id: Option<String>,
     /// Newest `last_seen_at` first.
     pub versions: Vec<VersionVerdict>,
@@ -419,15 +422,16 @@ impl HarnessRollup {
     }
 }
 
-/// The contract id whose earliest row is the newest (ties: the greater id).
+/// The contract id the hooks send now: the one whose most recent row was seen
+/// last (ties: the greater id). After a herdr-threads downgrade the older
+/// contract's rows are touched again, so it decides (ht-rlv.2).
 pub fn newest_contract(rows: &[EvidenceRow]) -> Option<&str> {
-    let mut first: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+    let mut last: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
     for row in rows {
-        let entry = first.entry(row.contract_id.as_str()).or_insert(u64::MAX);
-        *entry = (*entry).min(row.first_seen_at);
+        let entry = last.entry(row.contract_id.as_str()).or_insert(0);
+        *entry = (*entry).max(row.last_seen_at);
     }
-    first
-        .into_iter()
+    last.into_iter()
         .max_by(|(id_a, at_a), (id_b, at_b)| at_a.cmp(at_b).then(id_a.cmp(id_b)))
         .map(|(id, _)| id)
 }
@@ -464,7 +468,7 @@ fn derive_for(
     })
 }
 
-/// Derives every row of `harness` under its newest contract id. `rows` are
+/// Derives every row of `harness` under the contract id its hooks send now. `rows` are
 /// all of the harness's evidence rows.
 pub fn roll_up(
     harness: &'static str,

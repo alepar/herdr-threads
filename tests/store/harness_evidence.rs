@@ -477,3 +477,91 @@ fn unattributed_reason_persists_and_records_no_row() {
         "an unattributed payload writes no evidence row"
     );
 }
+
+const DAY_MS: i64 = 24 * HOUR_MS;
+
+impl Fx {
+    /// A lifecycle-ok record for claude version `vN` under `CONTRACT`.
+    fn seen(&self, n: usize) -> Recorded {
+        self.record(
+            &format!("v{n:04}"),
+            CONTRACT,
+            "SessionStart",
+            EventClass::Lifecycle,
+            EvidenceOutcome::Ok,
+        )
+    }
+
+    fn all_claude(&self) -> Vec<EvidenceRow> {
+        self.store
+            .harness_evidence_all("claude", &budget())
+            .unwrap()
+    }
+}
+
+/// Kills: a table that grows forever, and a prune that drops the newest rows.
+#[test]
+fn rows_unseen_for_thirty_days_are_pruned_beyond_the_newest_64() {
+    let fx = Fx::new("he-prune");
+    for n in 0..70 {
+        fx.seen(n);
+        fx.advance(1);
+    }
+    fx.advance(31 * DAY_MS);
+    fx.seen(70);
+    let rows = fx.all_claude();
+    assert_eq!(rows.len(), 64);
+    let versions: Vec<_> = rows.iter().map(|r| r.version.clone()).collect();
+    let expected: Vec<_> = (7..71).map(|n| format!("v{n:04}")).collect();
+    assert_eq!(versions, expected, "the newest 64 by last_seen_at survive");
+}
+
+/// Kills: pruning by count alone (rows within retention removed).
+#[test]
+fn recent_rows_are_never_pruned() {
+    let fx = Fx::new("he-no-prune");
+    for n in 0..70 {
+        fx.seen(n);
+        fx.advance(1);
+    }
+    fx.advance(DAY_MS);
+    fx.seen(70);
+    assert_eq!(fx.all_claude().len(), 71);
+}
+
+/// Kills: pruning on every record instead of only when a row is created.
+#[test]
+fn pruning_happens_only_on_a_new_row() {
+    let fx = Fx::new("he-prune-new-only");
+    for n in 0..70 {
+        fx.seen(n);
+        fx.advance(1);
+    }
+    fx.advance(31 * DAY_MS);
+    // Touch an existing, now very old, row: no row is created.
+    let touched = fx.seen(69);
+    assert!(!touched.created);
+    assert_eq!(
+        fx.all_claude().len(),
+        70,
+        "nothing pruned without a new row"
+    );
+}
+
+/// Kills: Health reading every row of a harness.
+#[test]
+fn the_harness_read_is_bounded_to_the_newest_rows() {
+    let fx = Fx::new("he-read-cap");
+    for n in 0..300 {
+        fx.seen(n);
+        fx.advance(1);
+    }
+    let rows = fx.all_claude();
+    assert_eq!(rows.len(), EVIDENCE_READ_CAP as usize);
+    let versions: Vec<_> = rows.iter().map(|r| r.version.clone()).collect();
+    let expected: Vec<_> = (44..300).map(|n| format!("v{n:04}")).collect();
+    assert_eq!(
+        versions, expected,
+        "the newest 256, ordered by first_seen_at"
+    );
+}

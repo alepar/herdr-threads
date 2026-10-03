@@ -8,7 +8,14 @@
 //! whatever the version ladder says about the version: the evidence is exactly
 //! what lets an unlisted or refused version become verified.
 //!
-//! A per-session gate file keeps the hook from talking on every event. The
+//! In the in-pane hook the note is sent after the check-in, with the time left
+//! before the watchdog (ht-rlv.1): it never delays the version probe or the
+//! check-in, and a check-in that uses its whole budget skips it (the gate file
+//! is then unchanged, so the next event sends it).
+//!
+//! A per-session gate file keeps the hook from talking on every event. Only a
+//! tool-class `ok` spends the session's single `ok` slot; other `ok` events
+//! (Codex `SubagentStart`) ride on the hourly heartbeat. The
 //! decision is made from the gate file and the payload alone, before any
 //! socket I/O; only when it says "send" does the hook read the transcript for
 //! the version, connect to a daemon that is already running (never started
@@ -34,7 +41,7 @@ use crate::{
         attribution::{Attribution, attribute_payload},
         codex_evidence,
         context::Harness,
-        contract::{self, Classification},
+        contract::{self, Classification, EventClass},
     },
     ports::LocalClient,
     protocol::{
@@ -228,6 +235,7 @@ impl Evidence {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GateState {
     pub verified: bool,
+    /// When the session's tool-class `ok` was sent (ht-rlv.3).
     pub ok_sent_at_ms: Option<u64>,
     pub heartbeat_at_ms: Option<u64>,
     /// `<event>|<field or empty>` of every violation / malformed note sent.
@@ -246,8 +254,18 @@ fn sent_key(event: &str, outcome: &HarnessEvidenceOutcome) -> Option<String> {
     }
 }
 
+/// Only a tool event spends the session's single `ok` slot (ht-rlv.3): a
+/// lifecycle `ok` is always sent and an other-class `ok` (Codex
+/// `SubagentStart`) never completes verification, so it rides only on the
+/// hourly heartbeat.
+fn ok_class(event: &str) -> EventClass {
+    crate::daemon::harness_evidence::event_class(event)
+}
+
 impl GateState {
     /// Whether this payload's note is sent, from the gate and the payload alone.
+    /// `SessionStart` is always sent; a tool `ok` is sent once while the
+    /// session is unverified; any other `ok` only when the heartbeat is due.
     pub fn should_send(
         &self,
         event: &str,
@@ -261,11 +279,16 @@ impl GateState {
         match sent_key(event, outcome) {
             Some(key) => !has_session || !self.sent.contains(&key),
             None => {
+                let heartbeat = self
+                    .heartbeat_at_ms
+                    .is_some_and(|at| now_ms.saturating_sub(at) >= HEARTBEAT_MS);
                 has_session
-                    && ((self.ok_sent_at_ms.is_none() && !self.verified)
-                        || self
-                            .heartbeat_at_ms
-                            .is_some_and(|at| now_ms.saturating_sub(at) >= HEARTBEAT_MS))
+                    && match ok_class(event) {
+                        EventClass::Tool => {
+                            (self.ok_sent_at_ms.is_none() && !self.verified) || heartbeat
+                        }
+                        _ => heartbeat,
+                    }
             }
         }
     }
@@ -290,7 +313,7 @@ impl GateState {
             }
             None => {
                 self.heartbeat_at_ms = Some(now_ms);
-                if event != "SessionStart" {
+                if ok_class(event) == EventClass::Tool {
                     self.ok_sent_at_ms = Some(now_ms);
                 }
             }
@@ -476,6 +499,7 @@ fn connect_running(
     let paths = InstancePaths::resolve(&context).ok()?;
     let instance = read_existing_namespace(&paths).ok().flatten()?;
     let descriptor = read_descriptor(&paths, instance).ok()?;
+    crate::daemon::lifecycle::check_protocol(&descriptor).ok()?;
     let client = LocalSocketClient::new(
         descriptor.endpoint,
         Arc::clone(clock),
@@ -487,7 +511,9 @@ fn connect_running(
 }
 
 /// The hook's evidence step: best effort, within `call_cap` and the hook's
-/// remaining time, every error ignored.
+/// remaining time (`deadline`), every error ignored. The in-pane hook calls it
+/// last, after the check-in (`hook::sequence`), so it never cuts the probe's
+/// or the check-in's budget.
 pub fn report(
     args: &HookArgs,
     stdin: &[u8],

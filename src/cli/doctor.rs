@@ -227,11 +227,14 @@ pub const CLAUDE_NOT_OBSERVABLE: &str =
 
 /// What `hooks.claude.observed` says for the daemon's view of `claude`. Only a
 /// cooperative harness carries the "(cooperative mode)" label; an unsupported
-/// one (refused or not installed) prints the daemon's own reason.
+/// one (refused or not installed) prints the daemon's own reason: its Health
+/// line, else `verdict` (the daemon's version verdict line for claude), else a
+/// pointer to the verdict.
 pub fn claude_observed_text(
     state: HarnessState,
     limitations: &[String],
     notes: &[String],
+    verdict: Option<&str>,
 ) -> String {
     match state {
         HarnessState::Unknown => "unknown".into(),
@@ -245,10 +248,24 @@ pub fn claude_observed_text(
                     line.strip_prefix("harness claude unsupported: ")
                         .or_else(|| line.strip_prefix("harness claude not installed: "))
                 })
-                .unwrap_or("the daemon did not admit claude");
+                .or(verdict)
+                .unwrap_or(
+                    "the daemon refused the installed claude version (see its version verdict below)",
+                );
             format!("not observable: {reason}")
         }
     }
+}
+
+/// The daemon's version verdict line for claude: the `detected` line, else the
+/// newest version row's `line`.
+fn claude_verdict_line(states: Option<&HarnessStatesReport>) -> Option<String> {
+    let claude = states?.harnesses.iter().find(|h| h.harness == "claude")?;
+    claude
+        .detected
+        .as_ref()
+        .map(|detected| detected.line.clone())
+        .or_else(|| claude.versions.first().map(|row| row.line.clone()))
 }
 
 enum Daemon {
@@ -362,22 +379,41 @@ pub(crate) fn harness_manifest_report(
     offline_env: Option<&std::ffi::OsStr>,
 ) -> Value {
     use crate::harness::manifest::{
-        ManifestPolicy, OffReason, SUPPORTED_SCHEMA_VERSION, cache_dir, format_rfc3339_utc,
-        policy_from, read_meta,
+        SUPPORTED_SCHEMA_VERSION, cache_dir, format_rfc3339_utc, policy_from, policy_words,
+        read_meta,
     };
     let meta = read_meta(&cache_dir(instance_dir));
     let cache_fetched_at = meta.fetched_at_ms.map(format_rfc3339_utc);
-    let (policy, source, settings_error) = match crate::daemon::settings::load(instance_dir) {
-        Ok(settings) => {
-            let (policy, source) = match policy_from(&settings, offline_env) {
-                ManifestPolicy::Auto => ("auto", "default"),
-                ManifestPolicy::Off(OffReason::Settings) => ("off", "settings"),
-                ManifestPolicy::Off(OffReason::OfflineEnv) => ("off", "offline_env"),
-            };
-            (json!(policy), json!(source), Value::Null)
-        }
-        Err(error) => (Value::Null, Value::Null, json!(error.to_string())),
-    };
+    let (policy, source, settings_error, policy_from_who, policy_recorded_at) =
+        if let Some(recorded) = &meta.daemon_policy {
+            (
+                json!(recorded.policy),
+                json!(recorded.source),
+                Value::Null,
+                "daemon",
+                json!(format_rfc3339_utc(recorded.recorded_at_ms)),
+            )
+        } else {
+            match crate::daemon::settings::load(instance_dir) {
+                Ok(settings) => {
+                    let (policy, source) = policy_words(policy_from(&settings, offline_env));
+                    (
+                        json!(policy),
+                        json!(source),
+                        Value::Null,
+                        "this environment",
+                        Value::Null,
+                    )
+                }
+                Err(error) => (
+                    Value::Null,
+                    Value::Null,
+                    json!(error.to_string()),
+                    "this environment",
+                    Value::Null,
+                ),
+            }
+        };
     json!({
         "policy": policy,
         "source": source,
@@ -385,6 +421,8 @@ pub(crate) fn harness_manifest_report(
         "cache_fetched_at": cache_fetched_at,
         "cache_etag": meta.etag,
         "embedded_schema_version": SUPPORTED_SCHEMA_VERSION,
+        "policy_from": policy_from_who,
+        "policy_recorded_at": policy_recorded_at,
     })
 }
 
@@ -394,13 +432,25 @@ fn harness_manifest_text(manifest: &Value) -> String {
     if let Some(error) = manifest["settings_error"].as_str() {
         out.push_str(&format!("harness manifest: settings error: {error}\n"));
     } else {
-        match (manifest["policy"].as_str(), manifest["source"].as_str()) {
-            (Some("off"), Some("settings")) => {
+        let recorded = manifest["policy_recorded_at"]
+            .as_str()
+            .filter(|_| manifest["policy_from"] == "daemon");
+        match (manifest["policy"].as_str(), manifest["source"].as_str(), recorded) {
+            (Some("off"), Some("settings"), None) => {
                 out.push_str("harness manifest: off (settings.json)\n")
             }
-            (Some("off"), _) => out.push_str(
+            (Some("off"), Some("settings"), Some(at)) => out.push_str(&format!(
+                "harness manifest: off (settings.json; recorded at daemon start {at})\n"
+            )),
+            (Some("off"), _, None) => out.push_str(
                 "harness manifest: off (HERDR_THREADS_OFFLINE=1 in this environment; the daemon reads its own environment at start)\n",
             ),
+            (Some("off"), _, Some(at)) => out.push_str(&format!(
+                "harness manifest: off (HERDR_THREADS_OFFLINE=1 in the daemon's environment; recorded at daemon start {at})\n"
+            )),
+            (_, _, Some(at)) => out.push_str(&format!(
+                "harness manifest: auto (recorded at daemon start {at})\n"
+            )),
             _ => out.push_str("harness manifest: auto\n"),
         }
     }
@@ -594,6 +644,7 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
                     }
                 }
                 Ok(Daemon::Reachable(health, answered)) => {
+                    let verdict = claude_verdict_line(answered.as_ref().ok());
                     states = answered;
                     daemon_limitations = health.limitations.clone();
                     let version_matches = health.software_version == env!("CARGO_PKG_VERSION");
@@ -601,6 +652,7 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
                         health.harness.claude,
                         &health.limitations,
                         &health.notes,
+                        verdict.as_deref(),
                     );
                     report["daemon"] = json!({
                         "state": match health.state {
@@ -862,9 +914,14 @@ fn event_registration(legacy: bool) -> &'static str {
 /// the hooks work, so doctor does not turn `degraded` over it.
 fn legacy_registration_line(harness: &str, setup: &Value) -> Option<String> {
     (setup["event_registration"] == json!("legacy")).then(|| {
+        let retrust = if harness == "codex" {
+            "; Codex then asks to review (trust) the rewritten hooks again"
+        } else {
+            ""
+        };
         format!(
             "{harness} hooks predate per-event registration (no --event): re-run \
-             `herdr-threads setup {harness}`\n"
+             `herdr-threads setup {harness}`{retrust}\n"
         )
     })
 }

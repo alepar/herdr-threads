@@ -2328,6 +2328,53 @@ mod parse_failure_report {
         assert_eq!(refusing.calls(CallKind::HookParseFailure), 1);
     }
 
+    /// Kills: a parse-failure report that builds its own socket client without
+    /// connect()'s protocol check and so blocks on a daemon that would drop the
+    /// request at decode.
+    #[test]
+    fn parse_failure_report_skips_a_previous_protocol_daemon() {
+        use crate::daemon::{
+            ownership::OwnerLock,
+            paths::{InstancePaths, RuntimeContext},
+        };
+        use crate::protocol::wire::PROTOCOL_VERSION;
+        let root = private_root();
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(root.join("state"))
+            .unwrap();
+        let hook_args = args(&root);
+        let context = RuntimeContext::explicit(
+            hook_args.state_dir.clone().unwrap(),
+            hook_args.host_endpoint.clone().unwrap(),
+            None,
+        )
+        .unwrap();
+        let paths = InstancePaths::resolve(&context).unwrap();
+        let lock = OwnerLock::acquire(&paths).unwrap();
+        // Bound but never accepted: a client that sent anyway would block.
+        let listener = lock.bind_socket().unwrap();
+        lock.publish_endpoint(&listener, "0.0.1", PROTOCOL_VERSION - 1)
+            .unwrap();
+        let started = Instant::now();
+        report_parse_failure_to_daemon(
+            &hook_args,
+            &InstalledHarness::Claude("2.1.299".into()),
+            &ContextError::Invalid,
+            &herdr(),
+            started + TOOL_BUDGET,
+            clock(),
+        );
+        assert!(
+            started.elapsed() < TOOL_BUDGET / 2,
+            "report waited {:?} of its {TOOL_BUDGET:?} budget",
+            started.elapsed()
+        );
+        drop(listener);
+        drop(lock);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// Kills: a report naming a human occupant (no harness), and an optimistic
     /// check that is true for a listed Claude version.
     #[test]
@@ -2427,8 +2474,9 @@ mod continuity_gate {
     struct Daemon {
         replies: Mutex<VecDeque<Reply>>,
         seen: Mutex<Vec<Command>>,
-        /// Whether the pane's seat lookup answers (an empty pane) or fails.
-        lookup: bool,
+        /// The pane-seat lookups' scripted answers (the resolved seats of the
+        /// pane, one list per lookup, the last repeating). Empty: the lookup fails.
+        lookups: Mutex<VecDeque<Vec<&'static str>>>,
         /// The last scripted reply repeats once the script runs out.
         sticky: bool,
     }
@@ -2437,9 +2485,21 @@ mod continuity_gate {
             Self {
                 replies: Mutex::new(replies.into()),
                 seen: Mutex::new(Vec::new()),
-                lookup: false,
+                lookups: Mutex::new(VecDeque::new()),
                 sticky: false,
             }
+        }
+        fn with_lookups(self, lookups: Vec<Vec<&'static str>>) -> Self {
+            *self.lookups.lock().unwrap() = lookups.into();
+            self
+        }
+        fn lookup_count(&self) -> usize {
+            self.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|command| matches!(command, Command::Seats(_)))
+                .count()
         }
         fn repeating(mut self) -> Self {
             self.sticky = true;
@@ -2469,17 +2529,36 @@ mod continuity_gate {
         fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
             let seats = matches!(command, Command::Seats(_));
             self.seen.lock().unwrap().push(command);
-            if seats && self.lookup {
-                return Ok(CommandResult::Seats(crate::protocol::pagination::Page {
-                    items: vec![],
-                    next_cursor: None,
-                    next_argv: None,
-                    high_water_ordinal: 0,
-                    scope_revision: None,
-                    has_more: false,
-                    stop_reason: crate::protocol::pagination::StopReason::Complete,
-                    consistency: crate::protocol::pagination::Consistency::BoundedLive,
-                }));
+            if seats {
+                let mut lookups = self.lookups.lock().unwrap();
+                let resolved = if lookups.len() > 1 {
+                    lookups.pop_front()
+                } else {
+                    lookups.front().cloned()
+                };
+                if let Some(resolved) = resolved {
+                    let target = Some(HostTargetId::new("w1:p1"));
+                    return Ok(CommandResult::Seats(crate::protocol::pagination::Page {
+                        items: resolved
+                            .into_iter()
+                            .map(|seat| crate::protocol::results::SeatSummary {
+                                seat: SeatId::new(seat),
+                                continuity: crate::protocol::results::ContinuityStatus::Resolved,
+                                target: target.clone(),
+                                generation: 1,
+                                created_at: crate::protocol::time::UtcMillis(0),
+                                retired_at: None,
+                            })
+                            .collect(),
+                        next_cursor: None,
+                        next_argv: None,
+                        high_water_ordinal: 0,
+                        scope_revision: None,
+                        has_more: false,
+                        stop_reason: crate::protocol::pagination::StopReason::Complete,
+                        consistency: crate::protocol::pagination::Consistency::BoundedLive,
+                    }));
+                }
             }
             Err(rejection(ErrorCode::HostUnavailable))
         }
@@ -2715,6 +2794,28 @@ mod continuity_gate {
         assert!(pane.pending().is_none(), "no intent was recorded");
     }
 
+    // Kills: a committed reattachment whose local install fails reporting the
+    // stale Unresolved mapping (or a plain Pending) instead of the install
+    // failure, or one that drops the intent the next resume needs.
+    #[test]
+    fn a_committed_reattachment_whose_install_fails_says_so() {
+        let pane = Pane::new();
+        // A regular file where the seats' `contexts` directory must go.
+        std::fs::write(pane.paths.instance_dir.join("contexts"), b"in the way").unwrap();
+        let daemon = Daemon::new(vec![reattached("saved", 2)]);
+        let result = pane
+            .call(&daemon)
+            .reattach_by_continuity(&resume(Harness::Claude), false);
+        assert!(
+            matches!(result, Reattach::InstallFailed(_)),
+            "not InstallFailed"
+        );
+        assert!(
+            pane.pending().is_some(),
+            "the intent stays for the next resume"
+        );
+    }
+
     // Kills: a request that names a seat, drops the harness, session or source,
     // a follow-up lifecycle check-in, or a context not written from the reply.
     #[test]
@@ -2765,6 +2866,88 @@ mod continuity_gate {
             );
             assert!(pane.pending().is_none(), "the intent is completed");
         }
+    }
+
+    // Kills: installing the generation a reused intent's replay carries when
+    // the pane does not resolve to that seat (a stale ContinuityReattached).
+    #[test]
+    fn a_reused_intent_whose_replay_is_stale_is_discarded_and_resubmitted() {
+        let pane = Pane::new();
+        let (recorded, _) = pane.record("S-1");
+        let daemon = Daemon::new(vec![reattached("saved", 2), reattached("saved", 5)])
+            .with_lookups(vec![vec![], vec!["saved"]]);
+        assert!(
+            pane.call(&daemon)
+                .reattach_by_continuity(&resume(Harness::Claude), false)
+                .done()
+                .is_some()
+        );
+        let requests = daemon.continuity_requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].operation.as_str(), recorded.operation.as_str());
+        assert_ne!(
+            requests[1].operation.as_str(),
+            requests[0].operation.as_str()
+        );
+        let context = pane.saved_context("saved").expect("context installed");
+        assert_eq!(context.binding_generation, 5);
+        assert_eq!(
+            context.execution.to_string(),
+            requests[1].execution.as_str(),
+            "the context carries the execution of the intent that reattached"
+        );
+        assert!(pane.pending().is_none());
+    }
+
+    // Kills: a currency check that rejects a replay that is the pane's mapping.
+    #[test]
+    fn a_reused_intent_whose_replay_is_current_installs_it() {
+        let pane = Pane::new();
+        pane.record("S-1");
+        let daemon = Daemon::new(vec![reattached("saved", 2)]).with_lookups(vec![vec!["saved"]]);
+        assert!(
+            pane.call(&daemon)
+                .reattach_by_continuity(&resume(Harness::Claude), false)
+                .done()
+                .is_some()
+        );
+        assert_eq!(daemon.continuity_requests().len(), 1);
+        assert_eq!(pane.saved_context("saved").unwrap().binding_generation, 2);
+        assert!(pane.pending().is_none());
+    }
+
+    // Kills: installing or reporting success for a replay whose currency the
+    // daemon could not confirm, or dropping its intent.
+    #[test]
+    fn an_unconfirmed_replay_keeps_the_intent_and_installs_nothing() {
+        let pane = Pane::new();
+        let (recorded, _) = pane.record("S-1");
+        let daemon = Daemon::new(vec![reattached("saved", 2)]);
+        let result = pane
+            .call(&daemon)
+            .reattach_by_continuity(&resume(Harness::Claude), false);
+        assert!(!matches!(result, Reattach::Done(_)));
+        assert!(pane.saved_context("saved").is_none());
+        let pending = pane.pending().expect("intent kept");
+        assert_eq!(
+            pending.header.reference.operation.as_str(),
+            recorded.operation.as_str()
+        );
+    }
+
+    // Kills: a currency lookup for an intent recorded in this call.
+    #[test]
+    fn a_fresh_intent_is_not_rechecked() {
+        let pane = Pane::new();
+        let daemon = Daemon::new(vec![reattached("saved", 3)]);
+        assert!(
+            pane.call(&daemon)
+                .reattach_by_continuity(&resume(Harness::Claude), false)
+                .done()
+                .is_some()
+        );
+        assert_eq!(daemon.continuity_requests().len(), 1);
+        assert_eq!(daemon.lookup_count(), 0);
     }
 
     // Kills: a context install that keeps a saved context for another pane or
@@ -2946,7 +3129,7 @@ mod continuity_gate {
     fn a_resume_of_the_same_session_reuses_the_pending_intent() {
         let pane = Pane::new();
         let (reference, execution) = pane.record("S-1");
-        let daemon = Daemon::new(vec![reattached("saved", 2)]);
+        let daemon = Daemon::new(vec![reattached("saved", 2)]).with_lookups(vec![vec!["saved"]]);
         assert!(
             pane.call(&daemon)
                 .reattach_by_continuity(&resume(Harness::Claude), false)
@@ -3603,6 +3786,98 @@ fn hook_argv_accepts_an_optional_event_registration() {
         assert!(
             matches!(parse_hook_argv(&os(bad)), Some(Err(e)) if e.contains("--event NAME")),
             "{bad:?}"
+        );
+    }
+}
+
+mod hook_sequence {
+    use super::*;
+    use std::cell::RefCell;
+
+    fn claude() -> InstalledHarness {
+        InstalledHarness::Claude("2.1.286".into())
+    }
+
+    // Kills: evidence before the probe (the probe's budget is cut, or the
+    // order is not observe, check-in, evidence).
+    #[test]
+    fn observe_gets_the_whole_tool_budget_and_evidence_runs_last() {
+        let order = RefCell::new(Vec::new());
+        let seen = RefCell::new(Duration::ZERO);
+        let started = Instant::now();
+        sequence(
+            started,
+            TOOL_BUDGET,
+            |budget| {
+                order.borrow_mut().push("observe");
+                *seen.borrow_mut() = budget;
+                Ok(claude())
+            },
+            |_| {
+                order.borrow_mut().push("check_in");
+                started + TOOL_BUDGET - WATCHDOG_MARGIN
+            },
+            |_| order.borrow_mut().push("refused"),
+            |_| order.borrow_mut().push("evidence"),
+        );
+        assert!(*seen.borrow() >= TOOL_BUDGET - WATCHDOG_MARGIN - Duration::from_millis(50));
+        assert_eq!(*order.borrow(), ["observe", "check_in", "evidence"]);
+    }
+
+    // Kills: the old order, where a 500 ms evidence call cut the probe to
+    // about 850 ms and could miss the check-in.
+    #[test]
+    fn slow_daemon_cannot_cut_the_observe_budget_and_the_check_in_still_happens() {
+        let order = RefCell::new(Vec::new());
+        let seen = RefCell::new(Duration::ZERO);
+        let started = Instant::now();
+        sequence(
+            started,
+            TOOL_BUDGET,
+            |budget| {
+                order.borrow_mut().push("observe");
+                *seen.borrow_mut() = budget;
+                Ok(claude())
+            },
+            |_| {
+                order.borrow_mut().push("check_in");
+                started + TOOL_BUDGET - WATCHDOG_MARGIN
+            },
+            |_| order.borrow_mut().push("refused"),
+            |_| {
+                std::thread::sleep(crate::cli::hook_evidence::CALL_CAP);
+                order.borrow_mut().push("evidence");
+            },
+        );
+        assert!(*seen.borrow() >= TOOL_BUDGET - WATCHDOG_MARGIN - Duration::from_millis(50));
+        assert_eq!(*order.borrow(), ["observe", "check_in", "evidence"]);
+    }
+
+    // Kills: dropping the note on the refusal path, or sending it with a
+    // deadline other than the tool budget's.
+    #[test]
+    fn refused_probe_still_sends_evidence_with_the_tool_deadline() {
+        let order = RefCell::new(Vec::new());
+        let deadline = RefCell::new(None);
+        let started = Instant::now();
+        sequence(
+            started,
+            TOOL_BUDGET,
+            |_| {
+                order.borrow_mut().push("observe");
+                Err("no version".into())
+            },
+            |_| unreachable!("a refused probe never checks in"),
+            |_| order.borrow_mut().push("refused"),
+            |d| {
+                order.borrow_mut().push("evidence");
+                *deadline.borrow_mut() = Some(d);
+            },
+        );
+        assert_eq!(*order.borrow(), ["observe", "refused", "evidence"]);
+        assert_eq!(
+            *deadline.borrow(),
+            Some(started + TOOL_BUDGET - WATCHDOG_MARGIN)
         );
     }
 }

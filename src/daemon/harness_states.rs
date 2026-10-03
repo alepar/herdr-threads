@@ -75,7 +75,7 @@ impl HarnessStatesProvider {
     }
 
     /// Health's lines: at most one per harness (the broken version seen most
-    /// recently within 24 hours, under the harness's newest contract id).
+    /// recently within 24 hours, under the contract id the harness's hooks send now).
     pub fn health_lines(&self, budget: &CallBudget) -> Result<Vec<String>, ApiError> {
         let now = self.now_ms();
         let mut all = Vec::new();

@@ -27,7 +27,7 @@ use std::{
     process::Stdio,
     sync::{
         Arc,
-        atomic::{AtomicU8, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -3079,6 +3079,18 @@ fn claude_event_command(state: &Path, event: &str) -> String {
 /// The hook as a user-level hook runs it in a plain harness session: no
 /// Herdr pane environment, only the installed host endpoint.
 fn run_hook_outside_pane(command: &str, host: &Path, stdin: &[u8]) -> Hook {
+    run_hook_outside_pane_killed_after(command, host, stdin, None)
+}
+
+/// [`run_hook_outside_pane`] whose process group is SIGKILLed after `kill_after`
+/// (a hook that blocks must fail the test, not hang it). `Hook::code` is then
+/// `None` (killed by a signal).
+fn run_hook_outside_pane_killed_after(
+    command: &str,
+    host: &Path,
+    stdin: &[u8],
+    kill_after: Option<Duration>,
+) -> Hook {
     let started = Instant::now();
     let mut child = scrubbed_command("/bin/sh")
         .arg("-c")
@@ -3095,7 +3107,27 @@ fn run_hook_outside_pane(command: &str, host: &Path, stdin: &[u8]) -> Hook {
         .spawn_owned()
         .unwrap();
     child.stdin.take().unwrap().write_all(stdin).unwrap();
+    let finished = Arc::new(AtomicBool::new(false));
+    let killer = kill_after.map(|after| {
+        let group = child.id() as libc::pid_t;
+        let finished = Arc::clone(&finished);
+        std::thread::spawn(move || {
+            let until = Instant::now() + after;
+            while Instant::now() < until {
+                if finished.load(Ordering::SeqCst) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            // SAFETY: signals only the group the owned child leads.
+            unsafe { libc::killpg(group, libc::SIGKILL) };
+        })
+    });
     let output = child.wait_with_output().unwrap();
+    finished.store(true, Ordering::SeqCst);
+    if let Some(killer) = killer {
+        killer.join().unwrap();
+    }
     Hook {
         code: output.status.code(),
         stdout: output.stdout,
@@ -4533,6 +4565,50 @@ mod continuity {
                 "{harness}"
             );
         }
+    }
+}
+
+/// A foreign session whose `transcript_path` is a FIFO or a symlink exits 0,
+/// silent, well before the kill: the watchdog is armed before the evidence
+/// work and attribution never opens a non-regular file.
+/// Kills: the foreign path blocking on an open FIFO with no watchdog.
+#[test]
+fn foreign_session_with_fifo_transcript_exits_silently() {
+    use std::os::unix::ffi::OsStrExt;
+    let fx = Fixture::start();
+    let start_command = claude_event_command(&fx.state, "SessionStart");
+    let fifo = fx.root.join("t.fifo");
+    let c = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    let real = transcript_for(&fx, "2.1.286");
+    let link = fx.root.join("link.jsonl");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    for (name, path) in [("fifo", fifo), ("symlink", link)] {
+        let payload = Payload::session_start(&format!("sess-{name}"), "startup")
+            .with("transcript_path", path.to_str().unwrap().into())
+            .bytes();
+        let hook = run_hook_outside_pane_killed_after(
+            &start_command,
+            &fx.host,
+            &payload,
+            Some(Duration::from_secs(10)),
+        );
+        assert_eq!(
+            hook.code,
+            Some(0),
+            "{name}: killed or failed: {}",
+            hook.stderr
+        );
+        assert!(
+            hook.stdout.is_empty(),
+            "{name}: foreign sessions emit nothing"
+        );
+        assert!(hook.stderr.is_empty(), "{name}: stderr: {}", hook.stderr);
+        assert!(
+            hook.elapsed < Duration::from_secs(10),
+            "{name}: {:?}",
+            hook.elapsed
+        );
     }
 }
 

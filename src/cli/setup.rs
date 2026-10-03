@@ -1243,6 +1243,15 @@ fn recorded_command(manifest: &Path) -> Option<String> {
     shared_command(&read_settings_manifest(manifest).ok().flatten()?.owned)
 }
 
+/// Setup output when a recorded registration without `--event` is rewritten to the per-event form.
+const EVENT_DOWNGRADE_WARNING: &str = "the hook commands now carry --event; a herdr-threads build \
+     from before per-event registration rejects them, so to downgrade herdr-threads first run \
+     `herdr-threads unsetup <harness>` with this build";
+
+/// Codex trusts hooks by hash, so rewritten commands need review again.
+const CODEX_RETRUST_WARNING: &str = "Codex trusts hooks by hash: the rewritten hook commands need \
+     review again (the next interactive `codex` start, or /hooks) before Codex runs them";
+
 /// Install the owned hook groups into one user-level hook file.
 fn install_settings(
     kind: SettingsKind,
@@ -1258,9 +1267,18 @@ fn install_settings(
     let (path, manifest) = (file.path.clone(), file.manifest.clone());
     let map = |error| settings_error(error, verb, kind, &path, &manifest);
     let recorded = read_settings_manifest(&file.manifest).map_err(map)?;
-    let already = recorded.is_some()
-        && inspect_user_settings(kind, &file.path, &file.manifest, NativeObservation::Unknown)
-            .is_ok_and(|inspection| inspection.installed);
+    let before = recorded
+        .is_some()
+        .then(|| {
+            inspect_user_settings(kind, &file.path, &file.manifest, NativeObservation::Unknown).ok()
+        })
+        .flatten();
+    let already = before
+        .as_ref()
+        .is_some_and(|inspection| inspection.installed);
+    let legacy = before
+        .as_ref()
+        .is_some_and(|inspection| inspection.legacy_event_registration);
     if recorded.is_none() {
         file.prepare()?;
     }
@@ -1272,6 +1290,13 @@ fn install_settings(
     match install_user_settings(kind, &file.path, &file.manifest, &argv, &base) {
         Ok(installed) => {
             file.record(warnings);
+            if legacy {
+                let harness = kind.harness();
+                warnings.push(EVENT_DOWNGRADE_WARNING.replace("<harness>", harness));
+                if kind == SettingsKind::CodexUser {
+                    warnings.push(CODEX_RETRUST_WARNING.to_owned());
+                }
+            }
             // Adopted now: this run recorded another setup's groups in place, writing no hook.
             let adopted = recorded.is_none() && installed.adopted;
             if adopted {

@@ -152,19 +152,39 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # The canary keeps one manifest row per live contract: this tree's and the latest release's.
-          # A release that predates contract ids (or cannot be built) is recorded as unsupported.
+          # Only a release whose `contract-id` cannot answer is recorded as unsupported. An infrastructure
+          # failure (release lookup, tag fetch, checkout, build) writes {"tag", "error"}: the manifest keeps the
+          # baseline's release-contract rows and this step annotates a warning; it never fails the job.
           if [ ! -f "$CANARY_OUT/canary-report.json" ]; then exit 0; fi
-          tag=$(gh release view --json tagName -q .tagName 2>/dev/null || true)
+          write_error() {  # $1 tag or empty, $2 reason
+            python3 -c 'import json,sys; print(json.dumps({"tag": sys.argv[1] or None, "error": sys.argv[2]}, indent=2))' \
+              "$1" "$2" > "$CANARY_OUT/release-contract.json"
+          }
+          rc=0
+          tag=$(gh release view --json tagName -q .tagName 2>"$CANARY_OUT/gh-release.err") || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            tag=
+            if grep -qi 'release not found' "$CANARY_OUT/gh-release.err"; then
+              echo "::notice::no release yet; the manifest keeps one live contract"
+            else
+              reason="gh release view failed (exit $rc): $(tail -c 300 "$CANARY_OUT/gh-release.err" | tr '\n' ' ')"
+              echo "::warning::$reason; the manifest keeps the baseline's release-contract rows"
+              write_error "" "$reason"
+            fi
+            exit 0
+          fi
           echo "LATEST_RELEASE=$tag" >> "$GITHUB_ENV"
           if [ -z "$tag" ]; then
             echo "::notice::no release yet; the manifest keeps one live contract"
             exit 0
           fi
           if ! git fetch --depth 1 origin "refs/tags/$tag:refs/tags/$tag"; then
-            echo "::notice::cannot fetch release tag $tag; the manifest keeps one live contract"
+            echo "::warning::cannot fetch release tag $tag; the manifest keeps the baseline's release-contract rows"
+            write_error "$tag" "cannot fetch release tag $tag"
             exit 0
           fi
-          scripts/canary/release_contract.sh "$tag" "$CANARY_OUT"
+          scripts/canary/release_contract.sh "$tag" "$CANARY_OUT" \
+            || echo "::warning::release contract step failed (exit $?); the manifest keeps the baseline's release-contract rows"
       - name: Write the manifest
         if: always()
         run: |
@@ -175,9 +195,10 @@ jobs:
           args=(write --baseline "$BASELINE_JSON" --report "$CANARY_OUT/canary-report.json"
             --binary target/debug/herdr-threads --out "$CANARY_OUT/harness-versions.json")
           if [ -f "$CANARY_OUT/issues.json" ]; then args+=(--issue-urls "$CANARY_OUT/issues.json"); fi
-          if [ -f "$CANARY_OUT/release-contract.json" ] && [ -n "${LATEST_RELEASE:-}" ]; then
-            args+=(--release-results "$CANARY_OUT/release-contract.json" --latest-release "$LATEST_RELEASE")
+          if [ -f "$CANARY_OUT/release-contract.json" ]; then
+            args+=(--release-results "$CANARY_OUT/release-contract.json")
           fi
+          if [ -n "${LATEST_RELEASE:-}" ]; then args+=(--latest-release "$LATEST_RELEASE"); fi
           python3 scripts/canary/manifest.py "${args[@]}"
       - name: Upload the manifest
         if: always()

@@ -1,8 +1,8 @@
 use super::attribution::{
-    Attribution, INITIAL_WINDOW, MAX_WINDOW, Unattributed, attribute_payload, attribute_reader,
-    attribute_transcript,
+    Attribution, INITIAL_WINDOW, LINE_EXTENSION, MAX_WINDOW, Unattributed, attribute_payload,
+    attribute_reader, attribute_transcript, scan_tail_counted,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -88,6 +88,98 @@ fn versioned_claude_line(version: &str) -> String {
 fn versionless_lines(n: usize) -> String {
     let line = "{\"type\":\"mode\",\"mode\":\"default\"}\n";
     line.repeat(n / line.len() + 1)
+}
+
+/// Complete versionless JSON lines totalling exactly `n` bytes (`n >= 32`):
+/// 35-byte lines, the last one padded to absorb the remainder.
+fn filler(n: usize) -> String {
+    const LINE: usize = 35;
+    assert!(n >= 32, "filler needs at least one 32-byte line");
+    let line = |len: usize| {
+        let overhead = "{\"type\":\"mode\",\"pad\":\"\"}\n".len();
+        format!(
+            "{{\"type\":\"mode\",\"pad\":\"{}\"}}\n",
+            "p".repeat(len - overhead)
+        )
+    };
+    let mut out = String::with_capacity(n);
+    let mut left = n;
+    while left >= 32 + LINE {
+        out.push_str(&line(LINE));
+        left -= LINE;
+    }
+    out.push_str(&line(left));
+    assert_eq!(out.len(), n);
+    out
+}
+
+/// A versioned Claude line of exactly `n` bytes, padded by a `pad` field.
+fn versioned_line_of(version: &str, n: usize) -> String {
+    let bare = versioned_claude_line(version).len() + ",\"pad\":\"\"".len();
+    assert!(n >= bare);
+    let line = format!(
+        "{{\"type\":\"assistant\",\"version\":\"{version}\",\"cwd\":\"~/proj\",\"pad\":\"{}\"}}\n",
+        "p".repeat(n - bare)
+    );
+    assert_eq!(line.len(), n);
+    line
+}
+
+fn claude_version_of(entry: &Value) -> Option<&str> {
+    entry.get("version")?.as_str()
+}
+
+#[test]
+fn version_line_straddling_the_window_boundary_attributes() {
+    let body = format!(
+        "{}{}{}",
+        filler(4096),
+        versioned_line_of("2.1.286", 200),
+        filler(MAX_WINDOW as usize - 100)
+    );
+    let mut r = Counting::new(body.into_bytes());
+    let len = r.len();
+    assert_eq!(len, MAX_WINDOW + 4196);
+    assert_eq!(
+        attribute_reader("claude", &mut r, len),
+        attributed("claude", "2.1.286")
+    );
+}
+
+#[test]
+fn line_longer_than_the_extension_at_the_boundary_is_window_exceeded() {
+    let body = format!(
+        "{}{}{}",
+        filler(4096),
+        versioned_line_of("2.1.286", 200 * 1024),
+        filler(MAX_WINDOW as usize - 100)
+    );
+    let mut r = Counting::new(body.into_bytes());
+    let len = r.len();
+    assert_eq!(
+        attribute_reader("claude", &mut r, len),
+        unattributable(Unattributed::WindowExceeded)
+    );
+    assert!(r.read <= MAX_WINDOW + LINE_EXTENSION, "read {}", r.read);
+}
+
+#[test]
+fn each_line_is_parsed_once_across_growth_steps() {
+    let body = format!("{}{}", versioned_claude_line("2.1.286"), filler(900 * 1024));
+    let bytes = body.into_bytes();
+    let len = bytes.len() as u64;
+    let window = len.min(MAX_WINDOW) as usize;
+    let lines_in_window = bytes[bytes.len() - window..]
+        .iter()
+        .filter(|b| **b == b'\n')
+        .count();
+    let (found, parses) =
+        scan_tail_counted(&mut Cursor::new(bytes), len, claude_version_of).unwrap();
+    assert_eq!(found.as_deref(), Some("2.1.286"));
+    assert!(
+        parses <= lines_in_window + 2,
+        "{parses} parses for {lines_in_window} lines"
+    );
 }
 
 #[test]
@@ -411,7 +503,7 @@ fn read_is_capped() {
         attribute_reader("claude", &mut r, len),
         unattributable(Unattributed::WindowExceeded)
     );
-    assert!(r.read <= MAX_WINDOW, "read {}", r.read);
+    assert!(r.read <= MAX_WINDOW + LINE_EXTENSION, "read {}", r.read);
 }
 
 #[test]
@@ -465,4 +557,41 @@ fn reason_strings_are_pinned() {
     for (reason, text) in pinned {
         assert_eq!(reason.as_str(), text);
     }
+}
+
+/// Kills: a blocking `File::open` on a FIFO transcript_path (the hook would hang).
+#[test]
+fn fifo_transcript_is_unreadable_without_blocking() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = TestDir::new();
+    let fifo = dir.0.join("t.fifo");
+    let c = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let path = fifo.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(attribute_transcript("claude", &path));
+    });
+    let got = rx.recv_timeout(std::time::Duration::from_secs(5));
+    if got.is_err() {
+        // Unblock the stuck reader before failing so the thread ends.
+        let _ = std::fs::OpenOptions::new().write(true).open(&fifo);
+    }
+    assert_eq!(
+        got.expect("attribution blocked on a FIFO"),
+        unattributable(Unattributed::Unreadable)
+    );
+}
+
+/// Kills: following a symlinked transcript_path (only a regular file is read).
+#[test]
+fn symlinked_transcript_is_unreadable() {
+    let dir = TestDir::new();
+    let real = dir.write("real.jsonl", versioned_claude_line("2.1.286").as_bytes());
+    let link = dir.0.join("link.jsonl");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    assert_eq!(
+        attribute_transcript("claude", &link),
+        unattributable(Unattributed::Unreadable)
+    );
 }

@@ -4,7 +4,10 @@
 //! hook payload points at (`transcript_path`): Claude puts `version` on every
 //! conversation entry, Codex puts `cli_version` in `session_meta` records.
 //! Reading it is in-process and bounded: no exec, no process walk, no
-//! inode/mtime comparison, and at most [`MAX_WINDOW`] bytes of the file. The result is the canonical
+//! inode/mtime comparison, and at most [`MAX_WINDOW`] bytes of the file (plus at
+//! most [`LINE_EXTENSION`] to finish one line straddling the window's start). Only a
+//! regular file is opened, non-blocking and without following a symlink (a FIFO
+//! or a symlink is [`Unattributed::Unreadable`], never a hang). The result is the canonical
 //! [`normalize_version`] string, or a stable [`Unattributed`] reason.
 //!
 //! Evidence: `docs/compatibility/harness-transcript-version.md`. Claude reads
@@ -62,8 +65,12 @@ impl Unattributed {
 
 /// First tail window; it grows by this step.
 pub const INITIAL_WINDOW: u64 = 64 * 1024;
-/// Hard cap on the tail window.
+/// Hard cap on the tail window, plus at most [`LINE_EXTENSION`] to finish a
+/// line that straddles the window's start.
 pub const MAX_WINDOW: u64 = 1024 * 1024;
+/// Most bytes read before the window's start to find where a straddling line
+/// begins; a longer line is [`Unattributed::WindowExceeded`].
+pub const LINE_EXTENSION: u64 = INITIAL_WINDOW;
 /// Chunk size when reading a Codex head line.
 const HEAD_CHUNK: usize = 4096;
 
@@ -104,10 +111,24 @@ pub fn attribute_payload(harness: &str, payload: &Value) -> Attribution {
 
 /// Attribute the transcript file at `path`.
 pub fn attribute_transcript(harness: &str, path: &Path) -> Attribution {
+    use std::os::unix::fs::OpenOptionsExt;
     if known_harness(harness).is_none() {
         return unattributable(Unattributed::UnrecognizedVersion);
     }
-    let mut file = match std::fs::File::open(path) {
+    // Never open what is not a regular file: a FIFO, socket or device would
+    // block or misbehave, and a symlink is not followed (ht-rlv.1).
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return unattributable(Unattributed::Absent);
+        }
+        _ => return unattributable(Unattributed::Unreadable),
+    }
+    let mut file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(path)
+    {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return unattributable(Unattributed::Absent);
@@ -175,31 +196,92 @@ fn codex_version(entry: &Value) -> Option<&str> {
 }
 
 /// Newest complete line whose JSON `extract`s a string, reading the last
-/// `INITIAL_WINDOW` bytes and growing by that step up to `MAX_WINDOW`. Only
-/// the newly needed prefix is read on each growth, so total bytes read equal
-/// the final window.
+/// `INITIAL_WINDOW` bytes and growing by that step up to `MAX_WINDOW`. Each
+/// growth step reads only the newly needed prefix and parses only the lines
+/// that prefix completes, so every line is parsed at most once.
+///
+/// `head` is the bytes from the scanned region's start up to its first `\n`:
+/// a line that may begin earlier in the file. `head_ends` says a `\n` ends
+/// it; when false the region holds no newline yet and `head` is the file's
+/// unfinished trailing line, never parsed. At the window's start (`len -
+/// MAX_WINDOW`) `head` is the line straddling it: the scan reads back at most
+/// [`LINE_EXTENSION`] more to find its start and parses only that line.
+///
+/// Returns the found string and the number of JSON parses attempted.
+pub(crate) fn scan_tail_counted<R: Read + Seek>(
+    r: &mut R,
+    len: u64,
+    extract: fn(&Value) -> Option<&str>,
+) -> std::io::Result<(Option<String>, usize)> {
+    let floor = len.saturating_sub(MAX_WINDOW);
+    let hard_floor = floor.saturating_sub(LINE_EXTENSION);
+    let (mut start, mut head, mut head_ends, mut parses) = (len, Vec::new(), false, 0usize);
+    let parse = |line: &[u8], parses: &mut usize| -> Option<String> {
+        if line.is_empty() {
+            return None;
+        }
+        *parses += 1;
+        let value: Value = serde_json::from_slice(line).ok()?;
+        extract(&value).map(str::to_owned)
+    };
+    loop {
+        if start == 0 {
+            // `head` starts at offset 0: a whole line when a '\n' ends it.
+            let found = if head_ends {
+                parse(&head, &mut parses)
+            } else {
+                None
+            };
+            return Ok((found, parses));
+        }
+        let extending = start <= floor;
+        if extending && !head_ends {
+            return Ok((None, parses));
+        }
+        let bottom = if extending { hard_floor } else { floor };
+        let next = bottom.max(start.saturating_sub(INITIAL_WINDOW));
+        if next == start {
+            return Ok((None, parses)); // extension exhausted
+        }
+        let mut region = read_range(r, next, start - next)?;
+        region.extend_from_slice(&head);
+        start = next;
+        let Some(first) = region.iter().position(|b| *b == b'\n') else {
+            head = region; // still one unfinished (or cut) line
+            continue;
+        };
+        let mut pieces: Vec<&[u8]> = region[first + 1..].split(|b| *b == b'\n').collect();
+        // The last piece is the line after the region's last '\n'. It ends at
+        // the old head's newline only when `head_ends`; otherwise it is the
+        // file's unfinished trailing line.
+        let last = pieces.pop();
+        if extending {
+            // Only finish the straddling line (the old head), nothing older.
+            let line = last.filter(|_| head_ends);
+            return Ok((line.and_then(|l| parse(l, &mut parses)), parses));
+        }
+        if head_ends
+            && let Some(line) = last
+            && let Some(found) = parse(line, &mut parses)
+        {
+            return Ok((Some(found), parses));
+        }
+        for line in pieces.into_iter().rev() {
+            if let Some(found) = parse(line, &mut parses) {
+                return Ok((Some(found), parses));
+            }
+        }
+        head = region[..first].to_vec();
+        head_ends = true;
+    }
+}
+
 fn scan_tail<R: Read + Seek>(
     r: &mut R,
     len: u64,
     extract: fn(&Value) -> Option<&str>,
 ) -> std::io::Result<Option<String>> {
-    let cap = len.min(MAX_WINDOW);
-    let mut window = INITIAL_WINDOW.min(cap);
-    let mut buf = read_range(r, len - window, window)?;
-    loop {
-        let start = len - window;
-        if let Some(raw) = newest_in(&buf, start > 0, extract) {
-            return Ok(Some(raw));
-        }
-        if window >= cap {
-            return Ok(None);
-        }
-        let grown = (window + INITIAL_WINDOW).min(cap);
-        let mut next = read_range(r, len - grown, grown - window)?;
-        next.extend_from_slice(&buf);
-        buf = next;
-        window = grown;
-    }
+    scan_tail_counted(r, len, extract).map(|(found, _)| found)
 }
 
 fn read_range<R: Read + Seek>(r: &mut R, offset: u64, n: u64) -> std::io::Result<Vec<u8>> {
@@ -207,30 +289,6 @@ fn read_range<R: Read + Seek>(r: &mut R, offset: u64, n: u64) -> std::io::Result
     let mut buf = vec![0u8; n as usize];
     r.read_exact(&mut buf)?;
     Ok(buf)
-}
-
-/// Scan the complete lines of `buf` newest first. The last piece after the
-/// final `\n` is dropped (empty, or a line still being written) and so is the
-/// first when the buffer starts mid-file (it may be cut). Lines that are not
-/// JSON, or carry no field `extract` wants, are skipped.
-fn newest_in(
-    buf: &[u8],
-    starts_mid_file: bool,
-    extract: fn(&Value) -> Option<&str>,
-) -> Option<String> {
-    let mut pieces: Vec<&[u8]> = buf.split(|b| *b == b'\n').collect();
-    pieces.pop();
-    if starts_mid_file && !pieces.is_empty() {
-        pieces.remove(0);
-    }
-    pieces
-        .into_iter()
-        .rev()
-        .filter(|line| !line.is_empty())
-        .find_map(|line| {
-            let value: Value = serde_json::from_slice(line).ok()?;
-            extract(&value).map(str::to_owned)
-        })
 }
 
 enum Head {

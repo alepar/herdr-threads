@@ -65,7 +65,9 @@ def report(*blocks, harness="claude"):
     return {"schema_version": 1, "canary_commit": "1" * 40, "harnesses": out}
 
 
-def release(probes, cid=None, tag="v0.4.0", supported=True):
+def release(probes, cid=None, tag="v0.4.0", supported=True, error=None):
+    if error is not None:
+        return {"tag": tag, "error": error}
     if not supported:
         return {"tag": tag, "supported": False}
     return {"tag": tag, "supported": True, "contract_id": cid or dict(MAIN),
@@ -324,6 +326,114 @@ class Writer(Base):
         _, out = self.write(doc([]), rep)
         self.assertEqual({(r["harness"], r["contract_id"]) for r in out["rows"]},
                          {("claude", MAIN["claude"]), ("codex", MAIN["codex"])})
+
+
+class WriterInfra(Base):
+    REL = OTHER
+
+    def _baseline(self):
+        return doc([row("claude", "2.1.286"), row("claude", "2.1.285", cid=self.REL)])
+
+    def test_release_infra_error_keeps_baseline_release_rows(self):
+        cp, out = self.write(self._baseline(), report([]), release([], error="build failed"))
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        self.assertEqual(set(self.by_key(out)), {("claude", "2.1.286", MAIN["claude"]), ("claude", "2.1.285", self.REL)})
+        self.assertIn("build failed", cp.stderr)
+
+    def test_release_unsupported_still_drops_release_rows(self):
+        cp, out = self.write(self._baseline(), report([]), release([], supported=False))
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        self.assertEqual(set(self.by_key(out)), {("claude", "2.1.286", MAIN["claude"])})
+
+    def _tier0(self, failing):
+        checks = [{"id": i, "status": "fail", "detail": "x"} for i in failing]
+        _, out = self.write(doc([]), report([probe("2.1.287", [SESSION_OK, VIOLATION], result="fail", checks=checks)]))
+        return self.by_key(out)
+
+    def test_violation_with_unrelated_tier0_failure_writes_no_row(self):
+        rows = self._tier0(["t0.setup", "t0.payload-parse"])
+        self.assertNotIn(("claude", "2.1.287", MAIN["claude"]), rows)
+
+    def test_violation_with_only_payload_parse_failing_is_known_broken(self):
+        r = self._tier0(["t0.payload-parse"])[("claude", "2.1.287", MAIN["claude"])]
+        self.assertEqual((r["status"], r["broken_event"], r["broken_field"]), ("known_broken", "SessionStart", "session_id"))
+
+    def test_release_violation_with_unrelated_source_tier0_failure_writes_no_row(self):
+        checks = [{"id": "t0.setup", "status": "fail"}, {"id": "t0.payload-parse", "status": "fail"}]
+        rep = report([probe("2.1.287", [VIOLATION], result="fail", checks=checks)])
+        rel = release([("claude", "2.1.287", [VIOLATION])], cid={"claude": OTHER, "codex": MAIN["codex"]})
+        cp, out = self.write(doc([]), rep, rel)
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        self.assertEqual(out["rows"], [])
+
+    def test_release_violation_with_only_source_payload_parse_failing_breaks_both_contracts(self):
+        checks = [{"id": "t0.payload-parse", "status": "fail"}]
+        rep = report([probe("2.1.287 (Claude Code)", [VIOLATION], result="fail", checks=checks)])
+        rel = release([("claude", "2.1.287", [VIOLATION])], cid={"claude": OTHER, "codex": MAIN["codex"]})
+        cp, out = self.write(doc([]), rep, rel)
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        self.assertEqual({(r["contract_id"], r["status"], r["broken_event"], r["broken_field"]) for r in out["rows"]},
+                         {(MAIN["claude"], "known_broken", "SessionStart", "session_id"),
+                          (OTHER, "known_broken", "SessionStart", "session_id")})
+
+    def test_excluded_source_keeps_existing_broken_rows_for_both_live_contracts(self):
+        baseline = [row("claude", "2.1.287", "known_broken", cid=cid, last_working="2.1.280",
+                        broken_event="PreToolUse", broken_field="tool_input", issue_url="https://github.com/o/r/issues/9")
+                    for cid in (MAIN["claude"], OTHER)]
+        rep = report([probe("2.1.287", [VIOLATION], result="fail", checks=[{"id": "t0.setup", "status": "fail"}])])
+        rel = release([("claude", "2.1.287", [VIOLATION])], cid={"claude": OTHER, "codex": MAIN["codex"]})
+        cp, out = self.write(doc(baseline), rep, rel)
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        self.assertEqual(self.by_key(out), {(r["harness"], r["version"], r["contract_id"]): r for r in baseline})
+
+    def test_release_violation_without_source_attempt_writes_no_row(self):
+        rel = release([("claude", "2.1.287", [VIOLATION])], cid={"claude": OTHER, "codex": MAIN["codex"]})
+        no_attempts = probe("2.1.287", [])
+        no_attempts["attempts"] = []
+        for probes in ([], [no_attempts], [probe("2.1.288", [])]):
+            with self.subTest(probes=probes):
+                cp, out = self.write(doc([]), report(probes), rel)
+                self.assertEqual(cp.returncode, 0, cp.stderr)
+                self.assertEqual(out["rows"], [])
+
+    def test_release_violation_with_ambiguous_source_writes_no_row(self):
+        eligible = probe("2.1.287", [], result="fail", checks=[{"id": "t0.payload-parse", "status": "fail"}])
+        excluded = probe("2.1.287 (Claude Code)", [], result="fail", checks=[{"id": "t0.setup", "status": "fail"}])
+        rel = release([("claude", "2.1.287", [VIOLATION])], cid={"claude": OTHER, "codex": MAIN["codex"]})
+        for probes in ([eligible, excluded], [excluded, eligible], [eligible, copy.deepcopy(eligible)]):
+            with self.subTest(probes=probes):
+                cp, out = self.write(doc([]), report(probes), rel)
+                self.assertEqual(cp.returncode, 0, cp.stderr)
+                self.assertEqual(out["rows"], [])
+
+    def test_release_source_eligibility_uses_only_the_final_attempt(self):
+        first = probe("2.1.287", [VIOLATION], result="fail", checks=[{"id": "t0.setup", "status": "fail"}])
+        last = probe("2.1.287", [VIOLATION], result="fail", checks=[{"id": "t0.payload-parse", "status": "fail"}])
+        last["attempts"].insert(0, first["attempts"][0])
+        rel = release([("claude", "2.1.287", [VIOLATION])], cid={"claude": OTHER, "codex": MAIN["codex"]})
+        cp, out = self.write(doc([]), report([last]), rel)
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        self.assertEqual({r["contract_id"] for r in out["rows"]}, {MAIN["claude"], OTHER})
+
+
+class Contract(Base):
+    def test_contract_prints_the_stub_ids(self):
+        got = json.loads(self.cli("contract", "--binary", STUB, check=0).stdout)
+        self.assertEqual({h: got[h] for h in MAIN}, MAIN)
+
+    @unittest.skipUnless(os.access(ROOT / "target/debug/herdr-threads", os.X_OK), "herdr-threads is not built")
+    def test_contract_with_the_real_binary(self):
+        binary = str(ROOT / "target/debug/herdr-threads")
+        got = json.loads(self.cli("contract", "--binary", binary, check=0).stdout)
+        own = json.loads(subprocess.run([binary, "contract-id", "--json"], capture_output=True, text=True, check=True).stdout)
+        for h in MAIN:
+            self.assertRegex(got[h], r"^[0-9a-f]{16}$")
+            self.assertEqual(got[h], own[h])
+
+    def test_contract_fails_loudly_on_a_failing_binary(self):
+        cp = self.cli("contract", "--binary", "/usr/bin/false")
+        self.assertNotEqual(cp.returncode, 0)
+        self.assertIn("contract-id", cp.stderr)
 
 
 class Validate(Base):

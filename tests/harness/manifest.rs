@@ -5,7 +5,7 @@ use crate::harness::manifest::{
     CacheMeta, CurlFetcher, Decision, EMBEDDED, FETCH_INTERVAL, FetchError, FetchOutcome,
     FetchReason, Fetcher, MANIFEST_URL, MAX_MANIFEST_BYTES, Manifest, ManifestError,
     ManifestPolicy, ManifestService, OffReason, RowEvidence, RowSource, RowStatus, embedded,
-    format_rfc3339_utc, parse, policy_from, read_meta, should_fetch,
+    format_rfc3339_utc, parse, policy_from, prefer_newer, read_meta, should_fetch,
 };
 use crate::protocol::time::{Clock, MonoInstant, UtcMillis};
 use serde_json::{Value, json};
@@ -146,9 +146,13 @@ fn service(
 }
 
 fn doc(schema: u64, latest: &str, rows: Value) -> Vec<u8> {
+    doc_at(schema, latest, None, rows)
+}
+
+fn doc_at(schema: u64, latest: &str, generated_at: Option<&str>, rows: Value) -> Vec<u8> {
     serde_json::to_vec(&json!({
         "schema_version": schema,
-        "generated_at": null,
+        "generated_at": generated_at,
         "latest_release": latest,
         "contracts": {},
         "rows": rows,
@@ -836,7 +840,7 @@ impl Fetcher for UnreachableCurl {
 }
 
 #[test]
-fn single_flight() {
+fn concurrent_fetches_for_two_harnesses_are_both_recorded() {
     let dir = TestDir::new();
     let fetcher = FakeFetcher::gated(vec![body(doc(2, "1.0.0", json!([])), None)]);
     let (service, _) = service(
@@ -855,9 +859,59 @@ fn single_flight() {
     }
     fetcher.release();
     assert!(service.wait_idle(WAIT));
+    // Kills: a dropped call that left codex free to refetch at once, or an
+    // attempt that was never persisted. The third call is skipped: claude
+    // already attempted.
     assert_eq!(fetcher.calls().len(), 1);
-    // The skipped second call did not spend codex's budget.
-    assert!(!read_meta(&dir.cache()).attempts.contains_key("codex"));
+    let attempts = read_meta(&dir.cache()).attempts;
+    assert!(attempts.contains_key("claude"), "{attempts:?}");
+    assert!(attempts.contains_key("codex"), "{attempts:?}");
+}
+
+#[test]
+fn older_cache_yields_to_a_newer_embedded_copy() {
+    let cache = parse(&doc_at(2, "1.0.0", Some("2026-01-01T00:00:00Z"), json!([]))).unwrap();
+    let emb = parse(&doc_at(2, "2.0.0", Some("2026-06-01T00:00:00Z"), json!([]))).unwrap();
+    let picked = prefer_newer(Some(cache), &emb);
+    assert_eq!(picked.generated_at.as_deref(), Some("2026-06-01T00:00:00Z"));
+    assert_eq!(picked.latest_release.as_deref(), Some("2.0.0"));
+}
+
+#[test]
+fn newer_cache_wins() {
+    let cache = parse(&doc_at(2, "1.0.0", Some("2026-07-01T00:00:00Z"), json!([]))).unwrap();
+    let emb = parse(&doc_at(2, "2.0.0", Some("2026-06-01T00:00:00Z"), json!([]))).unwrap();
+    let picked = prefer_newer(Some(cache), &emb);
+    assert_eq!(picked.latest_release.as_deref(), Some("1.0.0"));
+}
+
+#[test]
+fn cache_without_generated_at_wins() {
+    let cache = parse(&doc_at(2, "1.0.0", None, json!([]))).unwrap();
+    let emb = parse(&doc_at(2, "2.0.0", Some("2026-06-01T00:00:00Z"), json!([]))).unwrap();
+    let picked = prefer_newer(Some(cache), &emb);
+    assert_eq!(picked.latest_release.as_deref(), Some("1.0.0"));
+}
+
+#[test]
+fn no_cache_yields_embedded() {
+    let emb = parse(&doc_at(2, "2.0.0", Some("2026-06-01T00:00:00Z"), json!([]))).unwrap();
+    assert_eq!(prefer_newer(None, &emb), emb);
+}
+
+#[test]
+fn service_records_its_policy_at_start() {
+    let dir = TestDir::new();
+    let (_service, _) = service(
+        &dir,
+        ManifestPolicy::Off(OffReason::Settings),
+        FakeFetcher::new(vec![]),
+        FakeClock::at(7 * DAY_MS),
+    );
+    let recorded = read_meta(&dir.cache()).daemon_policy.expect("recorded");
+    assert_eq!(recorded.policy, "off");
+    assert_eq!(recorded.source, "settings");
+    assert_eq!(recorded.recorded_at_ms, 7 * DAY_MS);
 }
 
 // -- curl -------------------------------------------------------------------

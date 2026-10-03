@@ -1,6 +1,6 @@
 //! Health is assembled from injected observations without scanning durable work.
 use crate::protocol::results::{
-    CapabilityState, ComponentState, ErrorClass, HarnessHealth, HarnessState, Health,
+    ApiError, CapabilityState, ComponentState, ErrorClass, HarnessHealth, HarnessState, Health,
     HealthComponent, HealthSettings, HealthState,
 };
 use crate::protocol::time::UtcMillis;
@@ -157,7 +157,22 @@ pub struct HealthInputs {
     pub transitions_refused: u64,
     /// The version verdict lines (`harness::state`): at most one per harness,
     /// a `broken` version seen in the last 24 hours. Each is a limitation.
+    /// When the evidence store could not be read this is the single
+    /// [`HARNESS_EVIDENCE_UNAVAILABLE_LINE`] (see [`harness_version_lines`]),
+    /// so Health is `degraded` rather than silently clean.
     pub harness_version_lines: Vec<String>,
+}
+
+/// The limitation shown while the harness version evidence cannot be read.
+pub const HARNESS_EVIDENCE_UNAVAILABLE_LINE: &str = "harness version evidence unavailable: the evidence store could not be read, so a broken harness version would not show here";
+
+/// Health's version lines from the provider's answer: the lines as read, or
+/// the one unavailable limitation when the evidence store could not be read.
+pub fn harness_version_lines(answer: &Result<Vec<String>, ApiError>) -> Vec<String> {
+    match answer {
+        Ok(lines) => lines.clone(),
+        Err(_) => vec![HARNESS_EVIDENCE_UNAVAILABLE_LINE.to_owned()],
+    }
 }
 
 fn bounded(text: &str, limit: usize) -> String {

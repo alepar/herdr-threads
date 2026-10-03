@@ -967,9 +967,14 @@ ensure_ht || echo "harness-canary.sh: warning: could not build herdr-threads; pr
 
 # main's per-harness contract ids ({"claude": ..., "codex": ...}); selection is scoped to them.
 MAIN_IDS=
-if [ -n "$HT_BIN" ] && MAIN_IDS=$("$HT_BIN" contract-id --json 2>/dev/null) && [ -n "$MAIN_IDS" ]; then :; else
-  MAIN_IDS=
-  echo "harness-canary.sh: warning: no contract id (herdr-threads unavailable); selection is contract-agnostic and nothing is re-probed" >&2
+if [ -z "$HT_BIN" ]; then
+  echo "harness-canary.sh: warning: no contract id (herdr-threads was not built); selection is contract-agnostic and nothing is re-probed" >&2
+else
+  mkdir -p "$OUT/work"
+  if ! MAIN_IDS=$(python3 "$SCRIPT_DIR/canary/manifest.py" contract --binary "$HT_BIN" 2>"$OUT/work/contract-id.err"); then
+    MAIN_IDS=
+    echo "harness-canary.sh: warning: \`herdr-threads contract-id --json\` failed: $(tail -c 300 "$OUT/work/contract-id.err" | tr '\n' ' '); selection is contract-agnostic and nothing is re-probed" >&2
+  fi
 fi
 main_id_for() {
   [ -n "$MAIN_IDS" ] || return 0

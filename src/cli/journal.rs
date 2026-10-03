@@ -706,7 +706,8 @@ impl Journal {
     ) -> io::Result<IntentRef> {
         self.record_check_in_as(scope, event_id, created_at_millis, false, factory)
     }
-    /// `record_check_in`, optionally flagged as the operator override.
+    /// `record_check_in`, optionally flagged as the operator override. The scope scan
+    /// reads headers through the hardened reader (see `pending_continuity`).
     pub fn record_check_in_as(
         &self,
         scope: IntentScope,
@@ -717,13 +718,14 @@ impl Journal {
     ) -> io::Result<IntentRef> {
         let _lock = self.lock()?;
         for entry in fs::read_dir(&self.root)? {
-            let path = entry?.path();
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) != Some("intent") {
                 continue;
             }
-            let mut line = String::new();
-            BufReader::new(File::open(&path)?).read_line(&mut line)?;
-            let header: IntentHeader = serde_json::from_str(&line)?;
+            let Some(header) = read_intent_header(&path) else {
+                continue;
+            };
             if header.scope != scope {
                 continue;
             }
@@ -747,7 +749,8 @@ impl Journal {
         let body = serde_json::to_vec(&semantic)?;
         self.record_locked(scope, semantic, created_at_millis, body)
     }
-    /// Look up an already published CheckIn without allocating a new key.
+    /// Look up an already published CheckIn without allocating a new key. The scan
+    /// reads headers through the hardened reader (see `pending_continuity`).
     pub fn find_check_in(
         &self,
         scope: &IntentScope,
@@ -755,13 +758,14 @@ impl Journal {
     ) -> io::Result<Option<PendingIntent>> {
         let _lock = self.lock()?;
         for entry in fs::read_dir(&self.root)? {
-            let path = entry?.path();
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) != Some("intent") {
                 continue;
             }
-            let mut line = String::new();
-            BufReader::new(File::open(&path)?).read_line(&mut line)?;
-            let header: IntentHeader = serde_json::from_str(&line)?;
+            let Some(header) = read_intent_header(&path) else {
+                continue;
+            };
             if &header.scope != scope {
                 continue;
             }
@@ -871,16 +875,18 @@ impl Journal {
         })
     }
     /// Idempotent hook completion after output flush, under the allocator lock.
+    /// The scan reads headers through the hardened reader (see `pending_continuity`).
     pub fn complete_operation(&self, operation: &OperationId) -> io::Result<()> {
         let _lock = self.lock()?;
         for entry in fs::read_dir(&self.root)? {
-            let path = entry?.path();
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) != Some("intent") {
                 continue;
             }
-            let mut line = String::new();
-            BufReader::new(File::open(path)?).read_line(&mut line)?;
-            let header: IntentHeader = serde_json::from_str(&line)?;
+            let Some(header) = read_intent_header(&path) else {
+                continue;
+            };
             if &header.reference.operation == operation {
                 self.load(&header.reference)?;
                 return self.complete(&header.reference);

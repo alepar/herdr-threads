@@ -466,6 +466,20 @@ fn newest_contract_row_decides_after_contract_change() {
     assert_eq!(version_lines(&fx.health()).len(), 1);
 }
 
+/// Kills: a downgrade that leaves the newer contract's rows deciding Health
+/// (contract choice by first_seen instead of most recent use).
+#[test]
+fn downgrade_back_to_an_older_contract_decides_health() {
+    let fx = Fx::new("hhs-downgrade");
+    let version = newer_version();
+    fx.verify("claude", &version, NEW_CONTRACT);
+    assert!(version_lines(&fx.health()).is_empty());
+    fx.advance(HOUR_MS);
+    // The older binary's hooks send the older contract again and it breaks.
+    fx.violate("claude", &version, CONTRACT);
+    assert_eq!(version_lines(&fx.health()).len(), 1);
+}
+
 /// Kills: a below-floor version that reaches Health only through the PATH
 /// observation (never end to end through evidence), a wrong floor, and the
 /// below-floor line losing its `upgrade <harness>` action.
@@ -711,4 +725,44 @@ fn report_carries_sources_unattributed_reason_and_caps_versions() {
         broken.issue_url.as_deref(),
         Some(crate::harness::admission::ISSUES_URL)
     );
+}
+
+/// Kills: a store read error leaving Health healthy and silent about the
+/// missing version evidence.
+#[test]
+fn failing_evidence_store_shows_the_unavailable_limitation() {
+    use crate::daemon::health::{HARNESS_EVIDENCE_UNAVAILABLE_LINE, harness_version_lines};
+    use crate::protocol::results::{ApiError, ErrorCode};
+
+    let lines = harness_version_lines(&Err(ApiError::new(ErrorCode::StoreBusy, "boom")));
+    assert_eq!(lines, vec![HARNESS_EVIDENCE_UNAVAILABLE_LINE.to_owned()]);
+    let mut inputs = ready_inputs();
+    inputs.harness_version_lines = lines;
+    let health = inputs.assemble();
+    assert!(
+        health
+            .limitations
+            .iter()
+            .any(|line| line == HARNESS_EVIDENCE_UNAVAILABLE_LINE),
+        "{:#?}",
+        health.limitations
+    );
+    assert_eq!(health.state, HealthState::Degraded);
+
+    // Provider level: a real store whose evidence table cannot be read.
+    let fx = Fx::new("hhs-unavailable");
+    fx.verify("claude", &listed_version(), CONTRACT);
+    let db = rusqlite::Connection::open(fx._iso.state_root().join("store.db")).unwrap();
+    db.execute_batch("DROP TABLE harness_version_evidence")
+        .unwrap();
+    let answer = fx.provider().health_lines(&budget());
+    assert!(answer.is_err(), "{answer:?}");
+    assert_eq!(
+        harness_version_lines(&answer),
+        vec![HARNESS_EVIDENCE_UNAVAILABLE_LINE.to_owned()]
+    );
+
+    // And a readable store passes its lines through unchanged.
+    let ok: Result<Vec<String>, ApiError> = Ok(vec!["x".into()]);
+    assert_eq!(harness_version_lines(&ok), vec!["x".to_owned()]);
 }

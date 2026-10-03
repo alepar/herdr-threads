@@ -312,7 +312,8 @@ fn doctor_reports_the_manifest_policy_and_cache() {
     assert_eq!(
         report,
         json!({"policy": "auto", "source": "default", "settings_error": null,
-               "cache_fetched_at": null, "cache_etag": null, "embedded_schema_version": 2})
+               "cache_fetched_at": null, "cache_etag": null, "embedded_schema_version": 2,
+               "policy_from": "this environment", "policy_recorded_at": null})
     );
     let text = harness_manifest_text(&report);
     assert_eq!(
@@ -380,6 +381,29 @@ fn doctor_reports_the_manifest_policy_and_cache() {
     let error = bad["settings_error"].as_str().unwrap();
     assert!(error.contains("settings.json"), "{error}");
     assert!(harness_manifest_text(&bad).starts_with("harness manifest: settings error: "));
+}
+
+/// Kills: doctor computing the policy from its own environment when the
+/// daemon recorded its effective policy at start.
+#[test]
+fn doctor_reports_the_daemon_recorded_policy() {
+    let case = manifest_case("daemon-policy");
+    let cache = case.dir.join("harness-manifest");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(
+        cache.join("meta.json"),
+        br#"{"attempts":{},"daemon_policy":{"policy":"off","source":"offline_env","recorded_at_ms":1790000123000}}"#,
+    )
+    .unwrap();
+    let report = harness_manifest_report(&case.dir, None);
+    assert_eq!(report["policy"], "off");
+    assert_eq!(report["source"], "offline_env");
+    assert_eq!(report["policy_from"], "daemon");
+    assert_eq!(report["policy_recorded_at"], "2026-09-21T14:15:23Z");
+    assert!(harness_manifest_text(&report).starts_with(
+        "harness manifest: off (HERDR_THREADS_OFFLINE=1 in the daemon's environment; \
+         recorded at daemon start 2026-09-21T14:15:23Z)\n"
+    ));
 }
 
 /// Kills: doctor rejecting the daemon's timing keys (one schema for both

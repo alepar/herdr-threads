@@ -1,7 +1,7 @@
 # Harness transcripts as the version source (ht-xoc.8)
 
 Evidence for the transcript-based attribution in
-`docs/superpowers/specs/2026-10-02-harness-version-evidence-design.md` (Attribution). Captured 2026-10-02.
+`docs/design/herdr-threads/2026-10-02-harness-version-evidence-design.md` (Attribution). Captured 2026-10-02.
 
 ## Claude Code (2.1.288, and 2.1.250 installed under a prefix)
 
