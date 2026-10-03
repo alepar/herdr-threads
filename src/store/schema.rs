@@ -39,8 +39,11 @@ const V10: &str = include_str!("../../migrations/0010_b5_trust_guards.sql");
 /// partial indexes to this migration. (Renumbered from v10 to v11 when main's
 /// B5 trust guards took v10.)
 const V11: &str = include_str!("../../migrations/0011_cooperative_only.sql");
+/// Harness version evidence (ht-xoc.4): `harness_version_evidence` and
+/// `harness_unattributed`.
+const V12: &str = include_str!("../../migrations/0012_harness_version_evidence.sql");
 /// The schema version this build writes and audits (the last migration).
-pub(crate) const LATEST_VERSION: i64 = 11;
+pub(crate) const LATEST_VERSION: i64 = 12;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -124,6 +127,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
                 .and_then(|_| conn.execute_batch(V9))
                 .and_then(|_| conn.execute_batch(V10))
                 .and_then(|_| conn.execute_batch(V11))
+                .and_then(|_| conn.execute_batch(V12))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -146,6 +150,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v8_to_v9(conn)?;
             migrate_v9_to_v10(conn)?;
             migrate_v10_to_v11(conn)?;
+            migrate_v11_to_v12(conn)?;
             verify_existing(conn)
         }
         2 => {
@@ -160,6 +165,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v8_to_v9(conn)?;
             migrate_v9_to_v10(conn)?;
             migrate_v10_to_v11(conn)?;
+            migrate_v11_to_v12(conn)?;
             verify_existing(conn)
         }
         3 => {
@@ -174,6 +180,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v8_to_v9(conn)?;
             migrate_v9_to_v10(conn)?;
             migrate_v10_to_v11(conn)?;
+            migrate_v11_to_v12(conn)?;
             verify_existing(conn)
         }
         4 => {
@@ -189,6 +196,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v8_to_v9(conn)?;
             migrate_v9_to_v10(conn)?;
             migrate_v10_to_v11(conn)?;
+            migrate_v11_to_v12(conn)?;
             verify_existing(conn)
         }
         5 => {
@@ -204,6 +212,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v8_to_v9(conn)?;
             migrate_v9_to_v10(conn)?;
             migrate_v10_to_v11(conn)?;
+            migrate_v11_to_v12(conn)?;
             verify_existing(conn)
         }
         6 => {
@@ -219,6 +228,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v8_to_v9(conn)?;
             migrate_v9_to_v10(conn)?;
             migrate_v10_to_v11(conn)?;
+            migrate_v11_to_v12(conn)?;
             verify_existing(conn)
         }
         7 => {
@@ -234,6 +244,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v8_to_v9(conn)?;
             migrate_v9_to_v10(conn)?;
             migrate_v10_to_v11(conn)?;
+            migrate_v11_to_v12(conn)?;
             verify_existing(conn)
         }
         8 => {
@@ -241,20 +252,28 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v8_to_v9(conn)?;
             migrate_v9_to_v10(conn)?;
             migrate_v10_to_v11(conn)?;
+            migrate_v11_to_v12(conn)?;
             verify_existing(conn)
         }
         9 => {
             verify_existing_v9_shape(conn)?;
             migrate_v9_to_v10(conn)?;
             migrate_v10_to_v11(conn)?;
+            migrate_v11_to_v12(conn)?;
             verify_existing(conn)
         }
         10 => {
             verify_existing_v10_shape(conn)?;
             migrate_v10_to_v11(conn)?;
+            migrate_v11_to_v12(conn)?;
             verify_existing(conn)
         }
-        11 => verify_existing(conn),
+        11 => {
+            verify_existing_v11_shape(conn)?;
+            migrate_v11_to_v12(conn)?;
+            verify_existing(conn)
+        }
+        12 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -360,12 +379,85 @@ pub(crate) fn binding_evidence_lacking(conn: &Connection, seat: &str) -> rusqlit
     )
 }
 
-/// The current (v11) shape audit: the v10 (B5 trust guards) shape plus the
-/// statements `0011_cooperative_only.sql` adds; later additions to that file
-/// extend this audit.
+/// The current (v12) shape audit: the v11 shape plus the harness version
+/// evidence tables.
 pub fn verify_existing(conn: &Connection) -> Result<(), ApiError> {
+    verify_existing_v11_shape(conn)?;
+    verify_v12_harness_evidence(conn)
+}
+
+/// The v11 shape audit: the v10 (B5 trust guards) shape plus the statements
+/// `0011_cooperative_only.sql` adds; later additions to that file extend this
+/// audit.
+fn verify_existing_v11_shape(conn: &Connection) -> Result<(), ApiError> {
     verify_existing_v10_shape(conn)?;
     verify_v11_b1(conn)
+}
+
+/// v12 (ht-xoc.4): both evidence tables and the `last_seen` index must exist as
+/// the migration wrote them (same whitespace/case normalization as v11).
+fn verify_v12_harness_evidence(conn: &Connection) -> Result<(), ApiError> {
+    let normalize = |sql: &str| {
+        sql.trim()
+            .trim_end_matches(';')
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase()
+    };
+    for statement in V12.split(';') {
+        let statement: String = statement
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("--"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let statement = statement.trim();
+        let Some(rest) = statement
+            .strip_prefix("CREATE TABLE ")
+            .map(|r| ("table", r))
+            .or_else(|| {
+                statement
+                    .strip_prefix("CREATE INDEX ")
+                    .map(|r| ("index", r))
+            })
+        else {
+            continue;
+        };
+        let (kind, rest) = rest;
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        let installed: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                [kind, name.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if installed.as_deref().map(normalize) != Some(normalize(statement)) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("incompatible v12 {kind} {name}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn migrate_v11_to_v12(conn: &Connection) -> Result<(), ApiError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    let result = conn
+        .execute_batch(V12)
+        .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(store_error(error))
+        }
+    }
 }
 
 /// Access paths ht-p03.12.5 probes with `INDEXED BY`; all pre-date v11 and are
@@ -539,7 +631,7 @@ fn migrate_v10_to_v11(conn: &Connection) -> Result<(), ApiError> {
     conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
     let result = conn
         .execute_batch(V11)
-        .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
+        .and_then(|_| conn.pragma_update(None, "user_version", 11));
     match result {
         Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
         Err(error) => {

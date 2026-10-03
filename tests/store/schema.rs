@@ -191,7 +191,7 @@ fn v5_upgrade_adds_index_for_failed_pending_retirements() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        11
+        12
     );
     let plan: Vec<String> = db.prepare(
         "EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM retirements r INDEXED BY retirements_failed_pending JOIN seats s ON s.id=r.seat_id WHERE r.status='pending' AND r.last_error IS NOT NULL AND s.instance_id='i')",
@@ -230,7 +230,7 @@ fn v6_upgrade_adds_seat_and_thread_leading_digest_indexes() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        11
+        12
     );
     assert_eq!(
         db.query_row(
@@ -326,7 +326,7 @@ fn v7_upgrade_backfills_only_pending_rows_into_the_digest_projections() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        11
+        12
     );
     assert_eq!(history(&db), before);
     let rows = |sql: &str| -> Vec<String> {
@@ -447,7 +447,7 @@ fn v1_history_migrates_once_with_native_and_builtin_authors_intact() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        11
+        12
     );
     assert_eq!(
         db.query_row("SELECT id FROM seats", [], |r| r.get::<_, String>(0))
@@ -843,7 +843,7 @@ fn startup_rejects_missing_or_weakened_acceptance_guard_without_history_changes(
         assert_eq!(
             db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            11
+            12
         );
         assert_eq!(
             db.query_row(
@@ -992,7 +992,7 @@ fn startup_rejects_missing_or_weakened_actor_presence_checks() {
         assert_eq!(
             db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            11
+            12
         );
         assert_eq!(
             db.query_row(
@@ -1261,7 +1261,7 @@ fn fresh_database_has_durable_settings_constraints_and_read_only_queries() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        11
+        12
     );
     assert!(db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('s', 'missing', 'resolved', 'native', 1, 0)", []).is_err());
     db.execute(
@@ -2541,7 +2541,7 @@ fn v2_database_migrates_to_additive_invitation_cancellations_and_voluntary_state
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        11
+        12
     );
     assert_eq!(
         db.query_row(
@@ -2585,7 +2585,7 @@ fn v4_database_adds_notification_schema_without_changing_existing_history() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        11
+        12
     );
     assert_eq!(
         db.query_row("SELECT event_json FROM messages WHERE id='old'", [], |r| {
@@ -2784,7 +2784,7 @@ fn v3_required_only_shadow_recovers_prior_left_only_from_exact_leave_audit() {
         recovered
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        11
+        12
     );
     assert_eq!(
         recovered
@@ -3012,7 +3012,7 @@ fn v8_upgrade_rebuilds_occupant_bindings_to_accept_a_human_occupant() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        11
+        12
     );
     assert_eq!(rows(&db), before);
     for index in [
@@ -3089,7 +3089,7 @@ fn v9_upgrade_to_v11_drops_removed_only_tables() {
     let version: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
     for dropped in DROPPED_IN_V11 {
         let exists: bool = db
             .query_row(
@@ -3127,6 +3127,100 @@ fn v9_upgrade_to_v11_drops_removed_only_tables() {
         .unwrap();
     assert_eq!(rows, 1);
     schema::initialize(&db).unwrap(); // second startup is a verified no-op
+}
+
+/// A v11 store (the previous release's shape) with rows in existing tables.
+fn v11_populated_database() -> Connection {
+    let db = v9_database();
+    db.execute_batch("\
+        INSERT INTO host_instances(id,created_at) VALUES ('i',0);\
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0);\
+        INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,'w1:p1','b',0,'claude','n1','e1','cooperative_top_level',1,1,'t','inc');\
+    ").unwrap();
+    schema::initialize(&db).unwrap();
+    db.execute_batch(
+        "DROP INDEX harness_version_evidence_seen; DROP TABLE harness_version_evidence; DROP TABLE harness_unattributed; PRAGMA user_version=11;",
+    )
+    .unwrap();
+    db
+}
+
+// ht-xoc.4: a populated v11 store upgrades to v12 keeping its rows and gaining
+// both evidence tables (empty, usable); a fresh store lands at v12 with them.
+// Kills: a missing 11 => upgrade arm, a v12 not stamped as 12, a migration that
+// loses existing rows, and an audit that does not check the new tables.
+#[test]
+fn migration_applies_on_a_populated_store() {
+    let db = v11_populated_database();
+    schema::initialize(&db).unwrap();
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 12);
+    let bindings: i64 = db
+        .query_row("SELECT count(*) FROM occupant_bindings", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(bindings, 1, "existing rows survive");
+    for table in ["harness_version_evidence", "harness_unattributed"] {
+        let rows: i64 = db
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "{table} starts empty");
+    }
+    db.execute(
+        "INSERT INTO harness_version_evidence(harness,version,contract_id,first_seen_at,last_seen_at) VALUES ('claude','2.1.286','0123456789abcdef',1,1)",
+        [],
+    )
+    .unwrap();
+    assert!(
+        db.execute(
+            "INSERT INTO harness_version_evidence(harness,version,contract_id,first_seen_at,last_seen_at) VALUES ('human','1.0.0','0123456789abcdef',1,1)",
+            [],
+        )
+        .is_err(),
+        "harness is constrained to claude and codex"
+    );
+    schema::initialize(&db).unwrap(); // second startup is a verified no-op
+}
+
+#[test]
+fn fresh_store_lands_at_v12_with_the_evidence_tables() {
+    let db = Connection::open_in_memory().unwrap();
+    schema::initialize(&db).unwrap();
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 12);
+    for table in ["harness_version_evidence", "harness_unattributed"] {
+        let present: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [table],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(present, "{table} missing");
+    }
+}
+
+#[test]
+fn v12_audit_rejects_a_missing_or_altered_evidence_table() {
+    let db = Connection::open_in_memory().unwrap();
+    schema::initialize(&db).unwrap();
+    db.execute_batch("DROP TABLE harness_unattributed").unwrap();
+    assert_eq!(
+        schema::verify_existing(&db).unwrap_err().code,
+        ErrorCode::IncompatibleSchema
+    );
+    db.execute_batch(
+        "CREATE TABLE harness_unattributed(harness TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL) WITHOUT ROWID",
+    )
+    .unwrap();
+    assert_eq!(
+        schema::verify_existing(&db).unwrap_err().code,
+        ErrorCode::IncompatibleSchema,
+        "a table without the harness CHECK is not the migration's table"
+    );
 }
 
 const B1_V11: &[(&str, &str)] = &[
@@ -3292,7 +3386,7 @@ fn v9_store_with_rows_migrates_to_v10_preserving_allocation_history() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        11
+        12
     );
     assert_eq!(rows(&db), before);
     let diagnostics: i64 = db
@@ -3392,7 +3486,7 @@ fn main_v10_store_upgrades_to_v11_with_both_migrations() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        11
+        12
     );
     let marker: (String, i64) = db
         .query_row(
@@ -3460,7 +3554,7 @@ fn fresh_and_main_v10_stores_share_the_v11_shape() {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            11
+            12
         );
     }
     let normalize =

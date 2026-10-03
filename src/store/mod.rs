@@ -3,6 +3,7 @@ pub mod attention;
 pub mod connection;
 pub mod control;
 pub mod effective;
+pub mod harness_evidence;
 pub mod invitation_due;
 pub mod materialization;
 pub mod messages;
@@ -1785,6 +1786,57 @@ impl StorePort for SqliteStore {
     }
     fn prune_retention(&self, budget: &CallBudget) -> Result<PruneProgress, ApiError> {
         retention::prune_once(self, budget)
+    }
+    fn record_harness_evidence(
+        &self,
+        record: &harness_evidence::EvidenceRecord<'_>,
+        budget: &CallBudget,
+    ) -> Result<harness_evidence::Recorded, ApiError> {
+        let mut writer = self.writer(budget)?;
+        harness_evidence::record(&self.context, &mut writer, record)
+    }
+    fn harness_evidence(
+        &self,
+        harness: &str,
+        version: &str,
+        contract_id: &str,
+        budget: &CallBudget,
+    ) -> Result<Option<harness_evidence::EvidenceRow>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        harness_evidence::get(&db, harness, version, contract_id)
+    }
+    fn harness_evidence_since(
+        &self,
+        since_ms: u64,
+        budget: &CallBudget,
+    ) -> Result<Vec<harness_evidence::EvidenceRow>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        harness_evidence::since(&db, since_ms)
+    }
+    fn harness_evidence_all(
+        &self,
+        harness: &str,
+        budget: &CallBudget,
+    ) -> Result<Vec<harness_evidence::EvidenceRow>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        harness_evidence::all(&db, harness)
+    }
+    fn record_unattributed(
+        &self,
+        harness: &str,
+        reason: &str,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        let mut writer = self.writer(budget)?;
+        harness_evidence::record_unattributed(&self.context, &mut writer, harness, reason)
+    }
+    fn last_unattributed(
+        &self,
+        harness: &str,
+        budget: &CallBudget,
+    ) -> Result<Option<(String, u64)>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        harness_evidence::last_unattributed(&db, harness)
     }
     fn saved_seats_page(
         &self,

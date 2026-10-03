@@ -68,10 +68,13 @@ pub struct ControlService<H, S> {
     health: H,
     domain: S,
     hook_parse_failures: Option<std::sync::Arc<crate::daemon::logs::HookParseFailures>>,
-    /// The harness version manifest (ht-xoc.4 calls `ensure_manifest` from
-    /// its evidence handler; ht-xoc.5 reads `current()`). Not called yet.
+    /// The harness version manifest (the evidence recorder calls
+    /// `ensure_manifest` through its own handle; ht-xoc.5 reads `current()`).
+    /// Not read here yet.
     #[allow(dead_code)]
     harness_manifest: Option<std::sync::Arc<crate::harness::manifest::ManifestService>>,
+    harness_evidence:
+        Option<std::sync::Arc<crate::daemon::harness_evidence::HarnessEvidenceRecorder>>,
 }
 
 impl<H, S> ControlService<H, S>
@@ -86,6 +89,7 @@ where
             domain,
             hook_parse_failures: None,
             harness_manifest: None,
+            harness_evidence: None,
         }
     }
 
@@ -96,6 +100,16 @@ where
         failures: std::sync::Arc<crate::daemon::logs::HookParseFailures>,
     ) -> Self {
         self.hook_parse_failures = Some(failures);
+        self
+    }
+
+    /// Where hook harness-evidence notes are recorded. Without it a note is
+    /// accepted and dropped (`verified: false`).
+    pub fn with_harness_evidence(
+        mut self,
+        recorder: std::sync::Arc<crate::daemon::harness_evidence::HarnessEvidenceRecorder>,
+    ) -> Self {
+        self.harness_evidence = Some(recorder);
         self
     }
 
@@ -219,6 +233,13 @@ where
                     failures.record(&report.harness, &report.detail);
                 }
                 Ok(CommandResult::HookParseFailureRecorded)
+            }
+            ApiCommand::HarnessEvidence(note) => {
+                let verified = match &self.harness_evidence {
+                    Some(recorder) => recorder.record(&note, budget)?,
+                    None => false,
+                };
+                Ok(CommandResult::HarnessEvidenceRecorded { verified })
             }
             ApiCommand::Stop(StopRequest { expected_boot }) => {
                 let boot = Uuid::parse_str(&expected_boot)

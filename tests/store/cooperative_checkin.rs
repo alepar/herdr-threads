@@ -639,7 +639,7 @@ fn legacy_v1_startup_adds_index_and_preserves_rows_for_bounded_execution_lookup(
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        11
+        12
     );
 }
 fn dispatch_check_in(

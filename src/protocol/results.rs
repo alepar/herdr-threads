@@ -9,6 +9,12 @@ pub enum CommandResult {
     Capabilities(CapabilityList),
     /// The daemon counted and logged a hook parse-failure report.
     HookParseFailureRecorded,
+    /// The daemon recorded a hook's harness evidence note (ht-xoc.4).
+    /// `verified` is the evidence row's state after recording; `false` when
+    /// the note carried no version.
+    HarnessEvidenceRecorded {
+        verified: bool,
+    },
     StopAccepted(StopAccepted),
     ServiceInspection(ServiceConnectionInspection),
     ServiceDisconnected(ServiceDisconnectResult),

@@ -4,6 +4,7 @@ pub mod doctor;
 pub mod exit;
 pub mod follow;
 pub mod hook;
+pub mod hook_evidence;
 pub mod human;
 pub mod input;
 pub mod instance;
