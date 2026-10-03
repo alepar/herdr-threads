@@ -677,7 +677,12 @@ fn prepared_removal_refuses_edited_owned_command() {
     );
     let manifest: OwnershipManifest =
         serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-    let mut value = json!({"other":1,"hooks":{"PreToolUse":[manifest.owned[0].group.clone()]}});
+    let pre_tool = manifest
+        .owned
+        .iter()
+        .find(|entry| entry.event == "PreToolUse")
+        .unwrap();
+    let mut value = json!({"other":1,"hooks":{"PreToolUse":[pre_tool.group.clone()]}});
     value["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"] = json!(99);
     let changed = serde_json::to_vec(&value).unwrap();
     fs::write(&config, &changed).unwrap();
@@ -791,7 +796,7 @@ fn owned_command_marker_keeps_shell_argv_unchanged() {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "a b'雪 $(touch should-not-run)\n"
+        "a b'雪 $(touch should-not-run) --event SessionStart\n"
     );
     fs::remove_dir_all(dir).unwrap();
 }
@@ -936,11 +941,11 @@ fn project_setup_installs_inspects_and_removes_every_declared_claude_hook() {
     let manifest = install_claude_user(&config, &manifest_path, &argv, original).unwrap();
     let declared = crate::harness::claude::declared_hooks_for_argv(&argv).unwrap();
     let declared = declared.as_object().unwrap();
-    let marked = manifest.owned[0].group["hooks"][0]["command"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    assert!(marked.contains("# herdr-threads-owner:"));
+    let marked = format!(
+        "{} # herdr-threads-owner:{}",
+        shell_command(&argv).unwrap(),
+        manifest.installation_id
+    );
     let owned_events: Vec<_> = manifest.owned.iter().map(|e| e.event.as_str()).collect();
     let mut declared_events: Vec<_> = declared.keys().map(String::as_str).collect();
     declared_events.sort();
@@ -949,7 +954,7 @@ fn project_setup_installs_inspects_and_removes_every_declared_claude_hook() {
     assert_eq!(sorted_owned, declared_events);
     let installed: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
     for (event, groups) in declared {
-        let expected = with_command(&groups[0], &marked);
+        let expected = with_command(&groups[0], &event_command(&marked, event));
         assert!(
             installed["hooks"][event]
                 .as_array()
@@ -1560,7 +1565,12 @@ fn interrupted_drift_upgrade_resumes_or_removes_from_each_real_boundary() {
 /// Marked hook group for an event the current declaration no longer owns (an earlier declaration
 /// that also installed a `Stop` hook), with the installation's own marked command.
 fn dropped_stop_entry(manifest: &OwnershipManifest) -> OwnedEntry {
-    let command = manifest.owned[0].group["hooks"][0]["command"].clone();
+    let first = &manifest.owned[0];
+    let base = first.group["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .replace(&format!(" '--event' '{}'", first.event), "");
+    let command = event_command(&base, "Stop");
     let group = json!({"hooks":[{"type":"command","command":command,"timeout":10}]});
     OwnedEntry {
         event: "Stop".into(),
@@ -2868,4 +2878,368 @@ fn upgrade_after_unrelated_edit_replaces_only_the_owned_export_rule() {
         assert_eq!(after, expected, "{name}");
         fs::remove_dir_all(dir).unwrap();
     }
+}
+
+// ---- per-event registration (`--event`) ----
+
+fn codex_scope() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let scope = dir.join(".codex");
+    fs::create_dir_all(&scope).unwrap();
+    (
+        dir.clone(),
+        scope.join("hooks.json"),
+        dir.join("manifest.json"),
+    )
+}
+
+fn command_of(entry: &OwnedEntry) -> String {
+    entry.group["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// Every owned group registers its own event: `'--event' '<event>'` sits after the harness word
+/// and before the owner marker.
+fn assert_event_per_group(entries: &[OwnedEntry], base: &str) {
+    assert!(!entries.is_empty());
+    for entry in entries {
+        let command = command_of(entry);
+        assert_eq!(
+            command,
+            event_command(base, &entry.event),
+            "{} group",
+            entry.event
+        );
+        assert!(
+            command.contains(&format!(
+                " '--event' '{}' # herdr-threads-owner:",
+                entry.event
+            )),
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn claude_setup_registers_event_per_group() {
+    let (dir, config, manifest_path) = claude_scope();
+    fs::write(&config, b"{}").unwrap();
+    let argv = vec!["/x/herdr-threads".into(), "hook".into(), "claude".into()];
+    let manifest = install_claude_user(&config, &manifest_path, &argv, b"{}").unwrap();
+    let base = format!(
+        "{} # herdr-threads-owner:{}",
+        shell_command(&argv).unwrap(),
+        manifest.installation_id
+    );
+    assert_eq!(manifest.owned.len(), 2);
+    assert_event_per_group(&manifest.owned, &base);
+    assert_eq!(
+        command_of(&manifest.owned[0]),
+        format!(
+            "'/x/herdr-threads' 'hook' 'claude' '--event' 'SessionStart' # herdr-threads-owner:{}",
+            manifest.installation_id
+        )
+    );
+    // The file carries exactly the recorded groups.
+    let installed: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    for entry in &manifest.owned {
+        assert_eq!(installed["hooks"][&entry.event], json!([entry.group]));
+    }
+    remove_claude_user(&config, &manifest_path).unwrap();
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn codex_setup_registers_event_per_group() {
+    let (dir, config, manifest_path) = codex_scope();
+    fs::write(&config, b"{}").unwrap();
+    let argv = vec!["/x/herdr-threads".into(), "hook".into(), "codex".into()];
+    let manifest = install_user_settings(
+        SettingsKind::CodexUser,
+        &config,
+        &manifest_path,
+        &argv,
+        b"{}",
+    )
+    .unwrap();
+    let base = format!(
+        "{} # herdr-threads-owner:{}",
+        shell_command(&argv).unwrap(),
+        manifest.installation_id
+    );
+    let events: Vec<&str> = manifest.owned.iter().map(|e| e.event.as_str()).collect();
+    assert_eq!(events, ["SessionStart", "SubagentStart", "PreToolUse"]);
+    assert_event_per_group(&manifest.owned, &base);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn codex_session_plan_registers_event_per_group() {
+    let argv: Vec<String> = vec!["/x/herdr-threads".into(), "hook".into(), "codex".into()];
+    let plan = plan_codex_for_version(&[], &argv, &pinned()).unwrap();
+    let base = shell_command(&argv).unwrap();
+    assert_eq!(plan.owned.len(), 3);
+    for entry in &plan.owned {
+        assert_eq!(command_of(entry), event_command(&base, &entry.event));
+        assert!(command_of(entry).ends_with(&format!(" '--event' '{}'", entry.event)));
+    }
+    // The session `-c` overrides carry the evented commands.
+    let flags = plan.session_config.join("\n");
+    for event in ["SessionStart", "SubagentStart", "PreToolUse"] {
+        assert!(
+            flags.contains(&format!("'hook' 'codex' '--event' '{event}'")),
+            "{event}: {flags}"
+        );
+    }
+}
+
+#[test]
+fn event_command_and_base_command_round_trip() {
+    let marker = " # herdr-threads-owner:0b5e8f3c-1111-4222-8333-444455556666";
+    let quoted = "'/x/it'\\''s here/herdr-threads' 'hook' 'claude'";
+    for base in [
+        "'/x/herdr-threads' 'hook' 'claude'".to_owned(),
+        quoted.to_owned(),
+        format!("'/x/herdr-threads' 'hook' 'codex'{marker}"),
+        format!("{quoted}{marker}"),
+    ] {
+        for event in ["SessionStart", "PreToolUse", "SubagentStart"] {
+            let evented = event_command(&base, event);
+            assert_ne!(evented, base);
+            assert_eq!(base_command(&evented, event), base.as_str(), "{evented}");
+            // The pair precedes the marker; the marker stays last.
+            if base.contains(marker) {
+                assert!(evented.ends_with(marker), "{evented}");
+                assert!(evented.contains(&format!("'--event' '{event}'{marker}")));
+            } else {
+                assert!(evented.ends_with(&format!("'--event' '{event}'")));
+            }
+            // A legacy command, or a pair for another event, is returned unchanged.
+            assert_eq!(base_command(&base, event), base.as_str());
+            assert_eq!(base_command(&evented, "Stop"), evented.as_str());
+        }
+    }
+}
+
+/// Rewrites a current installation into the form made before per-event registration: every
+/// `--event` pair removed from the settings and the manifest's recorded groups, with consistent
+/// fingerprints.
+fn downgrade_to_legacy_registration(config: &std::path::Path, manifest_path: &std::path::Path) {
+    let mut manifest = read_manifest_file(manifest_path);
+    let mut text = String::from_utf8(fs::read(config).unwrap()).unwrap();
+    for entry in &mut manifest.owned {
+        let pair = format!(" '--event' '{}'", entry.event);
+        assert!(
+            text.contains(&pair),
+            "{} not evented in the file",
+            entry.event
+        );
+        text = text.replace(&pair, "");
+        let command = command_of(entry).replace(&pair, "");
+        entry.group["hooks"][0]["command"] = json!(command);
+        entry.fingerprint = group_fingerprint(&entry.group);
+    }
+    assert!(!text.contains("--event"));
+    fs::write(config, text.as_bytes()).unwrap();
+    manifest.installed_fingerprint = format!("sha256:{:x}", sha2::Sha256::digest(text.as_bytes()));
+    fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+}
+
+#[test]
+fn legacy_install_is_installed_but_flagged() {
+    for (kind, harness_word) in [
+        (SettingsKind::ClaudeUser, "claude"),
+        (SettingsKind::CodexUser, "codex"),
+    ] {
+        let (dir, config, manifest_path) = if kind == SettingsKind::ClaudeUser {
+            claude_scope()
+        } else {
+            codex_scope()
+        };
+        fs::write(&config, b"{}").unwrap();
+        let argv = vec![
+            "/x/herdr-threads".into(),
+            "hook".into(),
+            harness_word.into(),
+        ];
+        install_user_settings(kind, &config, &manifest_path, &argv, b"{}").unwrap();
+        let current =
+            inspect_user_settings(kind, &config, &manifest_path, NativeObservation::Unknown)
+                .unwrap();
+        assert!(
+            current.installed && !current.legacy_event_registration,
+            "{harness_word}"
+        );
+
+        downgrade_to_legacy_registration(&config, &manifest_path);
+        let legacy =
+            inspect_user_settings(kind, &config, &manifest_path, NativeObservation::Unknown)
+                .unwrap();
+        assert!(
+            legacy.installed,
+            "{harness_word}: a legacy install still launches"
+        );
+        assert!(legacy.legacy_event_registration, "{harness_word}");
+        assert!(legacy.configured_hook.is_some());
+        // Removal of a legacy install trusts its recorded entries.
+        remove_user_settings(kind, &config, &manifest_path).unwrap();
+        assert_eq!(fs::read(&config).unwrap(), b"{}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn a_mixed_event_registration_is_neither_current_nor_legacy() {
+    let (dir, config, manifest_path) = claude_scope();
+    fs::write(&config, b"{}").unwrap();
+    let argv = vec!["/x/herdr-threads".into(), "hook".into(), "claude".into()];
+    install_claude_user(&config, &manifest_path, &argv, b"{}").unwrap();
+    // Strip the pair from the SessionStart group only.
+    let mut manifest = read_manifest_file(&manifest_path);
+    let mut text = String::from_utf8(fs::read(&config).unwrap()).unwrap();
+    let entry = &mut manifest.owned[0];
+    assert_eq!(entry.event, "SessionStart");
+    let pair = " '--event' 'SessionStart'";
+    text = text.replace(pair, "");
+    entry.group["hooks"][0]["command"] = json!(command_of(entry).replace(pair, ""));
+    entry.fingerprint = group_fingerprint(&entry.group);
+    fs::write(&config, text.as_bytes()).unwrap();
+    manifest.installed_fingerprint = format!("sha256:{:x}", sha2::Sha256::digest(text.as_bytes()));
+    fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let status = inspect_claude_user(&config, &manifest_path, NativeObservation::Unknown).unwrap();
+    assert!(!status.installed && !status.legacy_event_registration);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn setup_upgrades_legacy_registration() {
+    for (kind, harness_word, user_hooks) in [
+        (
+            SettingsKind::ClaudeUser,
+            "claude",
+            &br#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"user"}]}]},"other":1}"#[..],
+        ),
+        (SettingsKind::CodexUser, "codex", &br#"{"other":1}"#[..]),
+    ] {
+        let (dir, config, manifest_path) = if kind == SettingsKind::ClaudeUser {
+            claude_scope()
+        } else {
+            codex_scope()
+        };
+        fs::write(&config, user_hooks).unwrap();
+        let argv = vec![
+            "/x/herdr-threads".into(),
+            "hook".into(),
+            harness_word.into(),
+        ];
+        install_user_settings(kind, &config, &manifest_path, &argv, user_hooks).unwrap();
+        downgrade_to_legacy_registration(&config, &manifest_path);
+        let legacy_owned = read_manifest_file(&manifest_path).owned;
+
+        let upgraded =
+            install_user_settings(kind, &config, &manifest_path, &argv, user_hooks).unwrap();
+        assert_eq!(upgraded.phase, InstallPhase::Installed);
+        assert!(upgraded.superseded.is_empty());
+        let base = format!(
+            "{} # herdr-threads-owner:{}",
+            shell_command(&argv).unwrap(),
+            upgraded.installation_id
+        );
+        assert_event_per_group(&upgraded.owned, &base);
+        assert_ne!(upgraded.owned, legacy_owned);
+        // No legacy group is left behind: every owned group of each event is the evented one.
+        let value: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+        let text = String::from_utf8(fs::read(&config).unwrap()).unwrap();
+        for legacy in &legacy_owned {
+            let legacy_command = command_of(legacy);
+            let groups = value["hooks"][&legacy.event].as_array().unwrap();
+            assert!(
+                groups
+                    .iter()
+                    .all(|g| g["hooks"][0]["command"] != json!(legacy_command)),
+                "{} still has its legacy group",
+                legacy.event
+            );
+        }
+        assert_eq!(
+            text.matches("herdr-threads-owner:").count(),
+            upgraded.owned.len()
+        );
+        let status =
+            inspect_user_settings(kind, &config, &manifest_path, NativeObservation::Unknown)
+                .unwrap();
+        assert!(status.installed && !status.legacy_event_registration);
+        // The user's own hooks survive, and uninstall removes everything added.
+        remove_user_settings(kind, &config, &manifest_path).unwrap();
+        let after: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+        let before: Value = serde_json::from_slice(user_hooks).unwrap();
+        assert_eq!(after["other"], before["other"]);
+        assert_eq!(after["hooks"].get("Stop"), before["hooks"].get("Stop"));
+        assert!(
+            !fs::read_to_string(&config)
+                .unwrap()
+                .contains("herdr-threads")
+        );
+        assert!(!manifest_path.exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn adoption_finds_evented_marked_copy() {
+    let (dir, config, manifest_path) = codex_scope();
+    let (other_dir, other_config, other_manifest) = codex_scope();
+    fs::write(&config, b"{}").unwrap();
+    let argv: Vec<String> = vec!["/x/herdr-threads".into(), "hook".into(), "codex".into()];
+    let installed = install_user_settings(
+        SettingsKind::CodexUser,
+        &config,
+        &manifest_path,
+        &argv,
+        b"{}",
+    )
+    .unwrap();
+    // A second CODEX_HOME holding a byte copy of the hooks file (trust travels with it).
+    fs::copy(&config, &other_config).unwrap();
+    let adoptable = adoptable_user_settings(SettingsKind::CodexUser, &other_config, &argv)
+        .unwrap()
+        .expect("an exact evented marked copy is adoptable");
+    assert_eq!(adoptable.installation_id, installed.installation_id);
+    assert_event_per_group(
+        &adoptable.owned,
+        &format!(
+            "{} # herdr-threads-owner:{}",
+            shell_command(&argv).unwrap(),
+            installed.installation_id
+        ),
+    );
+    let before = fs::read(&other_config).unwrap();
+    let adopted = adopt_user_settings(
+        SettingsKind::CodexUser,
+        &other_config,
+        &other_manifest,
+        &argv,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(adopted.adopted);
+    assert_eq!(
+        fs::read(&other_config).unwrap(),
+        before,
+        "adoption never writes the hook file"
+    );
+    // A copy whose commands lost their `--event` (an unmarked-by-event copy) is not adopted.
+    let text = fs::read_to_string(&config)
+        .unwrap()
+        .replace(" '--event' 'SessionStart'", "");
+    fs::write(&other_config, text).unwrap();
+    assert!(
+        adoptable_user_settings(SettingsKind::CodexUser, &other_config, &argv)
+            .unwrap()
+            .is_none()
+    );
+    fs::remove_dir_all(dir).unwrap();
+    fs::remove_dir_all(other_dir).unwrap();
 }

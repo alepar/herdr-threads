@@ -73,6 +73,9 @@ pub struct HookArgs {
     pub state_dir: Option<PathBuf>,
     pub host_endpoint: Option<PathBuf>,
     pub harness: Harness,
+    /// The event this hook was registered for (`--event NAME` on the command
+    /// line), when setup wrote one; legacy registrations carry none.
+    pub event: Option<String>,
 }
 
 /// The exact argv setup installs as the native hook command. Pane agents do not
@@ -162,15 +165,29 @@ pub fn parse_hook_argv(args: &[OsString]) -> Option<Result<HookArgs, String>> {
         return Some(Err(conflict));
     }
     let rest = &args[index + 1..];
-    let harness = match rest.iter().map(|w| w.to_str()).collect::<Vec<_>>()[..] {
-        [Some("claude")] => Harness::Claude,
-        [Some("codex")] => Harness::Codex,
-        _ => return Some(Err("usage: herdr-threads hook claude|codex".into())),
+    const USAGE: &str = "usage: herdr-threads hook claude|codex [--event NAME]";
+    let words = rest.iter().map(|w| w.to_str()).collect::<Vec<_>>();
+    let (harness, event) = match words[..] {
+        [Some("claude")] => (Harness::Claude, None),
+        [Some("codex")] => (Harness::Codex, None),
+        [Some(h @ ("claude" | "codex")), Some("--event"), Some(name)]
+            if (1..=63).contains(&name.len())
+                && name.bytes().all(|b| b.is_ascii_alphanumeric()) =>
+        {
+            let harness = if h == "claude" {
+                Harness::Claude
+            } else {
+                Harness::Codex
+            };
+            (harness, Some(name.to_owned()))
+        }
+        _ => return Some(Err(USAGE.into())),
     };
     Some(Ok(HookArgs {
         state_dir,
         host_endpoint,
         harness,
+        event,
     }))
 }
 

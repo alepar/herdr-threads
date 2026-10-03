@@ -382,7 +382,7 @@ chk_t0_config_load() {
 # t0_py CMD ARGS...: small JSON/capture readers for the checks below; prints a result, exit 0 unless noted.
 t0_py() {
   python3 - "$@" <<'PY'
-import glob, json, os, sys
+import glob, json, os, re, sys
 
 cmd, args = sys.argv[1], sys.argv[2:]
 
@@ -407,14 +407,21 @@ def owned_groups(doc, event):
 
 
 def hook_captures(harness, capdir):
-    """(stdin path, parsed stdin or None) of every capture whose argv ends `hook <harness>`."""
+    """(stdin path, parsed stdin or None) of every capture whose argv ends `hook <harness>` or
+    `hook <harness> --event <NAME>` (setup registers each hook with its event)."""
     found = []
     for argv_path in sorted(glob.glob(os.path.join(capdir, "*.argv"))):
         try:
             argv = open(argv_path, encoding="utf-8", errors="replace").read().splitlines()
         except OSError:
             continue
-        if argv[-2:] != ["hook", harness]:
+        evented = (
+            len(argv) >= 4
+            and argv[-4:-2] == ["hook", harness]
+            and argv[-2] == "--event"
+            and re.fullmatch(r"[A-Za-z0-9]{1,63}", argv[-1]) is not None
+        )
+        if argv[-2:] != ["hook", harness] and not evented:
             continue
         stdin_path = argv_path[: -len(".argv")] + ".stdin"
         try:
@@ -627,7 +634,7 @@ chk_t0_payload_parse() {
   if [ "${HOOK_FIRES_RAN:-0}" = 1 ]; then
     captured=$(t0_py hook-capture-count "$H" "$P/capture/tier0")
     if [ "$captured" -eq 0 ]; then
-      CK_STATUS=fail; CK_DETAIL="t0.hook-fires ran but capture/tier0 holds no capture whose argv ends 'hook $H'"
+      CK_STATUS=fail; CK_DETAIL="t0.hook-fires ran but capture/tier0 holds no capture whose argv ends 'hook $H' (optionally followed by --event NAME)"
       return 0
     fi
   fi

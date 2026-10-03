@@ -50,7 +50,7 @@ use crate::{
             self as lib, AllowRuleInspection, AllowRuleOwnership, NativeObservation, SettingsKind,
             SetupError, adopt_user_settings, adoptable_user_settings, inspect_user_settings,
             inspect_user_settings_for, install_user_settings, read_settings_manifest,
-            remove_user_settings, shell_command,
+            remove_user_settings, shared_command, shell_command,
         },
     },
     protocol::{
@@ -108,8 +108,10 @@ HERDR_SOCKET_PATH (set inside Herdr), else Herdr's defaults when they exist
 ~/.config, then herdr/herdr.sock), else detected with the herdr CLI (`herdr plugin list`,
 `herdr status server`).
 Ambiguity is refused. The installed hook command is
-`<this executable> --state-dir <state> --host-endpoint <socket> hook <harness>`; in any
-session that is not a pane of that Herdr instance it exits 0 at once with no output.
+`<this executable> --state-dir <state> --host-endpoint <socket> hook <harness>`, registered
+for each event with `--event <EVENT>` appended (hooks installed before that keep working;
+`doctor` suggests re-running setup); in any session that is not a pane of that Herdr
+instance it exits 0 at once with no output.
 Each harness's ownership manifest lives in <state>/setup/.
 
 A hook file that already holds exactly this command's hook groups under another setup's
@@ -1152,15 +1154,10 @@ fn adopt_for_removal(
     adopt_user_settings(kind, file, manifest, &argv).map_err(map)
 }
 
+/// The recorded hook command shared by every owned group: the base command, without the
+/// `--event <event>` pair each group registers it with.
 fn recorded_command(manifest: &Path) -> Option<String> {
-    read_settings_manifest(manifest)
-        .ok()
-        .flatten()?
-        .owned
-        .first()?
-        .group["hooks"][0]["command"]
-        .as_str()
-        .map(str::to_owned)
+    shared_command(&read_settings_manifest(manifest).ok().flatten()?.owned)
 }
 
 /// Install the owned hook groups into one user-level hook file.
@@ -1298,12 +1295,7 @@ fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunEr
     )
     .ok()
     .and_then(|inspection| inspection.allow_rule);
-    let command = installed
-        .owned
-        .first()
-        .and_then(|entry| entry.group["hooks"][0]["command"].as_str())
-        .unwrap_or_default()
-        .to_owned();
+    let command = shared_command(&installed.owned).unwrap_or_default();
     Ok(json!({
         "action": if adopted { "adopted" } else if already { "already_installed" } else { "installed" },
         "adopted": installed.adopted.then(|| installed.installation_id.clone()),
@@ -1955,7 +1947,10 @@ fn codex_trust_json(paths: &CodexPaths, command: Option<&str>) -> Value {
             continue;
         };
         for (index, group) in groups.iter().enumerate() {
-            if group["hooks"][0]["command"].as_str() == Some(command) {
+            let registered = group["hooks"][0]["command"].as_str();
+            if registered == Some(command)
+                || registered == Some(lib::event_command(command, hook.event).as_str())
+            {
                 let key = format!("{path}:{}:{index}:0", snake(hook.event));
                 let recorded = state.as_ref().is_some_and(|doc| {
                     doc.get("hooks")
@@ -2181,11 +2176,7 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
             )),
         }
     }
-    let command = installed
-        .owned
-        .first()
-        .and_then(|entry| entry.group["hooks"][0]["command"].as_str())
-        .map(str::to_owned);
+    let command = shared_command(&installed.owned);
     let inspection = codex_config::inspect(&paths.config, &paths.config_manifest).ok();
     Ok(json!({
         "action": if adopted {
@@ -2262,18 +2253,15 @@ fn codex_remove(env: &SetupEnv) -> Result<Value, RunError> {
     if let Some(recorded) = &recorded {
         // Codex keys hook trust by group position: groups after ours under
         // the same event move up one and need review again.
-        if let Some(command) = recorded
-            .owned
-            .first()
-            .and_then(|entry| entry.group["hooks"][0]["command"].as_str())
-            && let Ok(bytes) = fs::read(&paths.hooks)
+        if let Ok(bytes) = fs::read(&paths.hooks)
             && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
         {
             for entry in &recorded.owned {
+                let command = entry.group["hooks"][0]["command"].as_str();
                 if let Some(groups) = value["hooks"][&entry.event].as_array()
                     && let Some(at) = groups
                         .iter()
-                        .position(|g| g["hooks"][0]["command"].as_str() == Some(command))
+                        .position(|g| g["hooks"][0]["command"].as_str() == command)
                     && at + 1 < groups.len()
                 {
                     warnings.push(format!(
@@ -2541,6 +2529,16 @@ mod tests {
             assert_eq!(parsed.state_dir.as_deref(), Some(Path::new("/s d")));
             assert_eq!(parsed.host_endpoint.as_deref(), Some(Path::new(&host)));
             assert_eq!(parsed.harness, harness);
+            assert_eq!(parsed.event, None);
+            // The registered per-event form: the installed argv plus `--event NAME`.
+            let mut evented = os.clone();
+            evented.extend([OsString::from("--event"), OsString::from("SessionStart")]);
+            let parsed = hook::parse_hook_argv(&evented)
+                .expect("selects the hook entrypoint")
+                .expect("valid evented hook argv");
+            assert_eq!(parsed.harness, harness);
+            assert_eq!(parsed.event.as_deref(), Some("SessionStart"));
+            assert_eq!(parsed.state_dir.as_deref(), Some(Path::new("/s d")));
         }
         assert!(env(None).hook_argv(Harness::Claude).is_err());
     }

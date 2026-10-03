@@ -56,6 +56,17 @@ pub enum CliAction {
     },
     /// Print the embedded agent skill (`skill` or `--skill`); local only.
     Skill,
+    /// `contract-id [--harness H]`: the native hook payload contract ids;
+    /// local only.
+    ContractId {
+        harness: Option<crate::harness::context::Harness>,
+    },
+    /// `harness-version normalize HARNESS RAW`: the canonical bare semver of a
+    /// raw `--version` string; local only.
+    HarnessVersionNormalize {
+        harness: crate::harness::context::Harness,
+        raw: String,
+    },
     /// Hidden `internal json-field PATH`: print a field of the JSON on stdin.
     InternalJsonField {
         path: String,
@@ -147,6 +158,8 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::Launch(_)
         | CliAction::MeInit { .. }
         | CliAction::Skill
+        | CliAction::ContractId { .. }
+        | CliAction::HarnessVersionNormalize { .. }
         | CliAction::InternalJsonField { .. }
         | CliAction::Follow(_) => {
             return Err(ApiError::unsupported(
@@ -506,11 +519,39 @@ enum Top {
     /// Also available as `--skill`. Local only; never contacts the daemon.
     #[command(long_flag = "skill")]
     Skill,
+    /// Print the contract id of each harness's native hook payload (the
+    /// declared event kinds, required fields and JSON types the hook parsers
+    /// consume). With `--json`: `{"claude": ID, "codex": ID, "normalize":
+    /// {...}}`. Local only; never contacts the daemon.
+    ContractId {
+        /// Print only this harness.
+        #[arg(long, value_parser = ["claude", "codex"])]
+        harness: Option<String>,
+    },
+    /// Harness version helpers shared with the compatibility canary. Local
+    /// only; never contacts the daemon.
+    HarnessVersion {
+        #[command(subcommand)]
+        command: HarnessVersionSub,
+    },
     /// Helpers for scripts/install.sh; not part of the public interface.
     #[command(hide = true)]
     Internal {
         #[command(subcommand)]
         command: InternalSub,
+    },
+}
+
+#[derive(Subcommand)]
+enum HarnessVersionSub {
+    /// Print the canonical bare `MAJOR.MINOR.PATCH` of a raw `--version`
+    /// string (for example `codex-cli 0.158.0` or `2.1.286 (Claude Code)`);
+    /// exits non-zero for a string it does not recognize.
+    Normalize {
+        #[arg(value_parser = ["claude", "codex"])]
+        harness: String,
+        #[arg(allow_hyphen_values = true)]
+        raw: String,
     },
 }
 
@@ -830,6 +871,15 @@ fn setup_action(verb: super::setup::SetupVerb, args: SetupArgs) -> Result<CliAct
         harness,
         harness_binary: args.harness_binary,
     }))
+}
+
+/// The harness named by a `claude|codex` value-parsed argument.
+fn harness_arg(name: &str) -> crate::harness::context::Harness {
+    if name == "codex" {
+        crate::harness::context::Harness::Codex
+    } else {
+        crate::harness::context::Harness::Claude
+    }
 }
 
 fn invalid(detail: impl Into<String>) -> ApiError {
@@ -1374,6 +1424,15 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
         }
         Top::PendingOps(args) => CliAction::PendingOps(page(args)?),
         Top::Skill => CliAction::Skill,
+        Top::ContractId { harness } => CliAction::ContractId {
+            harness: harness.as_deref().map(harness_arg),
+        },
+        Top::HarnessVersion {
+            command: HarnessVersionSub::Normalize { harness, raw },
+        } => CliAction::HarnessVersionNormalize {
+            harness: harness_arg(&harness),
+            raw,
+        },
         Top::Internal {
             command: InternalSub::JsonField { path },
         } => CliAction::InternalJsonField { path },
