@@ -83,6 +83,14 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
          at `lock_timeout`); not a daemon loop",
     ),
     (
+        "src/harness/manifest.rs",
+        "std::thread::sleep(Duration::from_millis(1))",
+        "test support only (ht-xoc.3): ManifestService::wait_idle, compiled \
+         only under cfg(test) / test-support, lets a test join the detached \
+         manifest fetch thread to a caller deadline; not daemon code and not \
+         a lane",
+    ),
+    (
         "src/daemon/control.rs",
         "thread::sleep(pause)",
         "the CLI's wait for a stopping daemon to release its lock, bounded by \
