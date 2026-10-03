@@ -264,6 +264,50 @@ pub enum CodexLaunchForm {
     ExecResume,
 }
 
+/// The explicit working directory whose project configuration a scoped
+/// sandbox probe can reproduce. An implicit pane cwd is not inferred from
+/// the coordinator process or saved pane paths.
+pub fn scoped_codex_cwd(argv: &[String]) -> Result<std::path::PathBuf, ApiError> {
+    let options_end = argv
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(argv.len());
+    let mut found = None;
+    let mut index = 0;
+    while index < options_end {
+        let arg = argv[index].as_str();
+        let cwd = if arg == "-C" || arg == "--cd" {
+            argv.get(index + 1).map(String::as_str)
+        } else {
+            arg.strip_prefix("--cd=")
+                .or_else(|| arg.strip_prefix("-C="))
+        };
+        if let Some(cwd) = cwd {
+            let path = std::path::PathBuf::from(cwd);
+            if found.is_some() || !path.is_absolute() {
+                return Err(error(
+                    ErrorCode::InvalidRequest,
+                    "scoped Codex sandbox validation needs one absolute -C directory",
+                ));
+            }
+            found = Some(path);
+            index += if arg == "-C" || arg == "--cd" { 2 } else { 1 };
+        } else {
+            index += if CODEX_VALUE_OPTIONS.contains(&arg) {
+                2
+            } else {
+                1
+            };
+        }
+    }
+    found.ok_or_else(|| {
+        error(
+            ErrorCode::InvalidRequest,
+            "scoped Codex sandbox validation needs an explicit -C /absolute/project/path to match project policy",
+        )
+    })
+}
+
 /// The next positional argument at or after `start`: its index and whether
 /// it follows `--` (and so is a prompt, never a subcommand).
 fn next_positional(argv: &[String], start: usize) -> Option<(usize, bool)> {
@@ -385,6 +429,9 @@ pub fn compose_native_argv_with(
     // Codex applies repeated `-c` values in order within the session layer,
     // so a caller hook override (a `hooks.*` key or the whole `hooks` table)
     // would silently replace the owned hook.
+    let scoped_socket_policy = owned
+        .iter()
+        .any(|arg| arg == "sandbox_workspace_write.network_access=true");
     let mut previous_is_config = false;
     let mut previous_takes_value = false;
     for arg in options {
@@ -401,6 +448,48 @@ pub fn compose_native_argv_with(
             return Err(error(
                 ErrorCode::InvalidRequest,
                 "caller Codex hooks override would replace the owned hook configuration",
+            ));
+        }
+        if scoped_socket_policy
+            && (value.is_some()
+                || (!previous_takes_value
+                    && matches!(
+                        arg.as_str(),
+                        "-c" | "--config"
+                            | "-p"
+                            | "--profile"
+                            | "-s"
+                            | "--sandbox"
+                            | "--enable"
+                            | "--disable"
+                            | "--add-dir"
+                            | "--remote"
+                            | "--remote-auth-token-env"
+                            | "--worktree"
+                            | "--approve-for-me"
+                            | "--dangerously-bypass-approvals-and-sandbox"
+                            | "--yolo"
+                            | "--dangerously-bypass-hook-trust"
+                            | "--full-auto"
+                            | "--search"
+                    ))
+                || (!previous_takes_value
+                    && [
+                        "--profile=",
+                        "--sandbox=",
+                        "--enable=",
+                        "--disable=",
+                        "--add-dir=",
+                        "--remote=",
+                        "--remote-auth-token-env=",
+                    ]
+                    .iter()
+                    .any(|prefix| arg.starts_with(prefix)))
+                || (!previous_takes_value && (arg.starts_with("-s") || arg.starts_with("-p"))))
+        {
+            return Err(error(
+                ErrorCode::InvalidRequest,
+                "caller Codex policy or profile override would differ from the measured scoped sandbox policy",
             ));
         }
         if !previous_takes_value && CODEX_MULTI_VALUE_OPTIONS.contains(&arg.as_str()) {

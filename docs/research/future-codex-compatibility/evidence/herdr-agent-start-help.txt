@@ -1,0 +1,11 @@
+Observed 2026-10-03 using `herdr agent start --help` in Herdr-managed pane w4:pBX:
+
+Start a supported interactive agent in an existing pane
+Usage: herdr agent start <NAME> --kind <KIND> --pane <ID> [OPTIONS] [-- [AGENT_ARG]...]
+--kind <KIND>  Supported agent kind and canonical executable
+--pane <ID>   Existing pane at an interactive shell prompt
+--timeout <MS> Wait for interactive readiness
+
+No absolute executable selector is listed. The target pane's shell can resolve
+`codex` differently from the CLI process running herdr-threads. This is a
+missing product witness, not evidence that Codex 0.160.0 is incompatible.

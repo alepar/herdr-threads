@@ -621,10 +621,17 @@ fn codex_launch_needs_the_user_installation_and_adds_only_no_daemon() {
     let text = fs::read_to_string(&config).unwrap();
     fs::write(&config, text.replace("\"allow\"", "\"deny\"")).unwrap();
     let host = FakeHost::new();
-    assert_eq!(
-        code(s.launch(&host, &seats, &handoff, request(ContextHarness::Codex, &[]))),
-        ErrorCode::Unsupported
-    );
+    let refusal = s
+        .launch(&host, &seats, &handoff, request(ContextHarness::Codex, &[]))
+        .unwrap_err();
+    let RunError::Api(refusal) = refusal else {
+        panic!("expected a missing-allowance refusal");
+    };
+    assert_eq!(refusal.code, ErrorCode::Conflict);
+    assert!(refusal.detail.contains("not installed in config.toml"));
+    assert!(refusal.detail.contains("setup codex"));
+    assert!(!refusal.detail.contains("transport_denied"));
+    assert!(!refusal.detail.contains("danger-full-access"));
     assert!(host.submitted().is_empty());
 }
 
@@ -734,10 +741,21 @@ fn codex_without_measured_allowance_needs_explicit_full_access() {
             .exists()
     );
     let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
-    assert_eq!(
-        code(s.launch(&host, &seats, &handoff, request(ContextHarness::Codex, &[]))),
-        ErrorCode::Unsupported
+    let refusal = s
+        .launch(&host, &seats, &handoff, request(ContextHarness::Codex, &[]))
+        .unwrap_err();
+    let RunError::Api(refusal) = refusal else {
+        panic!("expected a policy-validation refusal");
+    };
+    assert_eq!(refusal.code, ErrorCode::Conflict);
+    assert!(refusal.detail.contains("socket policy is unvalidated"));
+    assert!(
+        refusal
+            .detail
+            .contains("does not establish incompatibility")
     );
+    assert!(!refusal.detail.contains("transport_denied"));
+    assert!(!refusal.detail.contains("danger-full-access"));
     assert!(host.submitted().is_empty());
     let out = s
         .launch(
@@ -752,6 +770,35 @@ fn codex_without_measured_allowance_needs_explicit_full_access() {
         host.submitted()[0].argv,
         ["--no-daemon", "-s", "danger-full-access"]
     );
+}
+
+/// A schema-matched newer build passes hook admission but has no socket
+/// policy proof. The refusal must describe that missing proof, not condemn
+/// the Codex build or report an EPERM that was never observed.
+#[test]
+fn future_codex_launch_reports_unvalidated_socket_policy() {
+    let s = Scratch::new();
+    s.harness("codex", "codex-cli 0.160.0", &committed_codex_schemas());
+    let setup = s.setup(ContextHarness::Codex);
+    assert_eq!(setup["sandbox"]["validation"], "unvalidated", "{setup}");
+    let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
+    let refusal = s
+        .launch(&host, &seats, &handoff, request(ContextHarness::Codex, &[]))
+        .unwrap_err();
+    let RunError::Api(refusal) = refusal else {
+        panic!("expected a policy-validation refusal");
+    };
+    assert_eq!(refusal.code, ErrorCode::Conflict);
+    assert!(refusal.detail.contains("Codex 0.160.0"));
+    assert!(
+        refusal
+            .detail
+            .contains("does not establish incompatibility")
+    );
+    assert!(!refusal.detail.contains("transport_denied"));
+    assert!(!refusal.detail.contains("curl"));
+    assert!(!refusal.detail.contains("danger-full-access"));
+    assert!(host.submitted().is_empty());
 }
 
 /// Kills: letting a caller `-c hooks.*` override silently replace the owned

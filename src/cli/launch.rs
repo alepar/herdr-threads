@@ -392,24 +392,14 @@ impl SetupHookInspector {
                 Ok(Some(configuration))
             }
             Ok(socket) => Err(api(
-                ErrorCode::Unsupported,
+                ErrorCode::Conflict,
                 format!(
                     "the Codex sandbox allowance for {socket} (socket and writable roots) is not \
-                     installed in config.toml: run `herdr-threads setup codex` (or pass an explicit `-s \
-                     danger-full-access` after `--`). Under the default workspace-write sandbox \
-                     herdr-threads commands cannot reach the daemon (transport_denied), so \
-                     launch refuses"
+                     installed in config.toml: run `herdr-threads setup codex`. Managed launch \
+                     requires that allowance under the selected workspace-write policy"
                 ),
             )),
-            Err(reason) => Err(api(
-                ErrorCode::Unsupported,
-                format!(
-                    "the Codex sandbox socket allowance is unavailable: {reason}. Under the \
-                     default workspace-write sandbox herdr-threads commands cannot reach the \
-                     daemon (transport_denied), so launch refuses. Pass an explicit \
-                     `-s danger-full-access` after `--` to launch without it"
-                ),
-            )),
+            Err(reason) => Err(api(ErrorCode::Conflict, reason.to_string())),
         }
     }
 }

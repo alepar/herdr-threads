@@ -1391,12 +1391,16 @@ fn setup_codex_withholds_sandbox_allowance_on_unmeasured_versions() {
         assert!(sandbox["socket_path"].is_null(), "{label}: {sandbox}");
         let omitted = sandbox["omitted"].as_str().unwrap();
         assert!(
-            omitted.contains(&format!("unmeasured on Codex {version}"))
-                && omitted.contains("0.159.2"),
+            omitted.contains(&format!("Codex {version} socket policy is unvalidated"))
+                && omitted.contains("0.159.2")
+                && omitted.contains("does not establish incompatibility")
+                && !omitted.contains("curl https://example.com")
+                && !omitted.contains("danger-full-access"),
             "{label}: {omitted}"
         );
+        assert_eq!(sandbox["validation"], "unvalidated", "{label}: {sandbox}");
         assert!(
-            omitted.contains("controlled denied sockets"),
+            omitted.contains("controlled allow/deny evidence"),
             "{label}: {omitted}"
         );
         assert!(!omitted.contains("-- curl"), "{label}: {omitted}");

@@ -1055,6 +1055,91 @@ fn claude_argv_is_owned_then_caller() {
     );
 }
 
+/// A scoped policy must remain the policy the capability probe checked.
+#[test]
+fn scoped_codex_policy_refuses_caller_policy_overrides() {
+    let owned = vec![
+        "-c".into(),
+        "sandbox_workspace_write.network_access=true".into(),
+    ];
+    for caller in [
+        vec!["-c", "features.network_proxy.enabled=false", "exec", "P"],
+        vec!["-c", "model=\"other\"", "exec", "P"],
+        vec!["--config=sandbox_mode=\"danger-full-access\"", "exec", "P"],
+        vec!["--enable", "network_proxy", "exec", "P"],
+        vec!["-p", "other", "exec", "P"],
+        vec!["-sdanger-full-access", "exec", "P"],
+        vec!["--dangerously-bypass-approvals-and-sandbox", "exec", "P"],
+        vec!["--yolo", "exec", "P"],
+        vec!["--dangerously-bypass-hook-trust", "exec", "P"],
+        vec!["--remote=unix:///private/tmp/other.sock", "exec", "P"],
+        vec!["--worktree", "exec", "P"],
+        vec!["--search", "exec", "P"],
+    ] {
+        assert_eq!(
+            compose_native_argv(
+                Harness::Codex,
+                caller.into_iter().map(str::to_owned).collect(),
+                owned.clone(),
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::InvalidRequest
+        );
+    }
+    assert!(
+        compose_native_argv(
+            Harness::Codex,
+            vec![
+                "-c".into(),
+                "sandbox_workspace_write.network_access=false".into()
+            ],
+            vec!["-c".into(), "hooks.SessionStart=[owned]".into()],
+        )
+        .is_ok(),
+        "existing non-scoped launch policy remains caller-controlled"
+    );
+    assert!(
+        compose_native_argv(
+            Harness::Codex,
+            vec!["-c".into(), "model=\"other\"".into()],
+            vec![
+                "-c".into(),
+                "sandbox_workspace_write.network_access=false".into()
+            ],
+        )
+        .is_ok(),
+        "a network-disabled policy is not a scoped socket allowance"
+    );
+    assert!(
+        compose_native_argv(
+            Harness::Codex,
+            vec!["--yolo".into(), "exec".into(), "P".into()],
+            vec!["-c".into(), "hooks.SessionStart=[owned]".into()],
+        )
+        .is_ok(),
+        "the scoped guard does not change existing non-scoped launch behavior"
+    );
+}
+
+#[test]
+fn scoped_codex_policy_requires_one_explicit_absolute_cwd() {
+    assert_eq!(
+        scoped_codex_cwd(&["-C".into(), "/repo".into(), "exec".into(), "P".into()]).unwrap(),
+        std::path::PathBuf::from("/repo")
+    );
+    for argv in [
+        vec!["exec", "P"],
+        vec!["-C", "relative", "exec", "P"],
+        vec!["-C", "/one", "-C", "/two", "exec", "P"],
+        vec!["exec", "--", "-C", "/repo"],
+    ] {
+        assert!(
+            scoped_codex_cwd(&argv.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err()
+        );
+    }
+}
+
 /// A pane shell whose `codex` wrapper already passes `--no-daemon`: the
 /// composed argv carries none (owned, launch-added or the caller's own
 /// top-level one), and the owned configuration keeps its placement. Kills:

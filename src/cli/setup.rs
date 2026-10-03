@@ -2069,31 +2069,58 @@ pub(crate) fn codex_unmeasured_allowance_warning(
 /// The stable daemon socket of this state directory and host endpoint that
 /// the allowance names, or why it is withheld for this version. Computed
 /// only: nothing is created.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CodexSocketPolicyError {
+    /// Hook admission succeeded, but this build's effective socket policy has
+    /// no conclusive default-deny evidence. This is not a version refusal.
+    Unvalidated {
+        version: String,
+    },
+    Unavailable(String),
+}
+
+impl std::fmt::Display for CodexSocketPolicyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unvalidated { version } => write!(
+                f,
+                "Codex {version} socket policy is unvalidated for this installation (measured: \
+                 {}). No new global network allowance is authorized. This does not establish \
+                 incompatibility. Managed launch needs controlled allow/deny evidence bound to \
+                 the target executable and effective configuration; use a measured Codex build \
+                 for managed launch until that validation is available",
+                CODEX_SANDBOX_MEASURED_VERSIONS.join(", ")
+            ),
+            Self::Unavailable(reason) => write!(f, "socket path unavailable: {reason}"),
+        }
+    }
+}
+
 pub(crate) fn codex_sandbox_socket(
     env: &SetupEnv,
     witness: &codex::InstalledVersion,
-) -> Result<String, String> {
+) -> Result<String, CodexSocketPolicyError> {
     let version = witness.as_str();
     if !CODEX_SANDBOX_MEASURED_VERSIONS.contains(&version) {
-        return Err(format!(
-            "the network proxy's default-deny is unmeasured on Codex {version} (measured: {}); \
-             network_access=true could leave the sandbox with unrestricted networking there. \
-             Before adding an allowance by hand, validate the exact target executable and \
-             effective policy with an allowed socket plus controlled denied sockets returning \
-             EPERM; a failed curl alone does not prove default-deny",
-            CODEX_SANDBOX_MEASURED_VERSIONS.join(", ")
-        ));
+        return Err(CodexSocketPolicyError::Unvalidated {
+            version: version.to_owned(),
+        });
     }
-    let state = env.state_dir().map_err(|error| error.to_string())?;
-    let host = env.host_endpoint().map_err(|error| error.to_string())?;
-    let context = RuntimeContext::explicit(state.to_path_buf(), host, None)
-        .map_err(|error| format!("invalid host endpoint: {error}"))?;
-    let socket = stable_socket_path(&instance_dir(&context))
-        .map_err(|error| format!("daemon socket path: {error}"))?;
-    socket
-        .to_str()
-        .map(str::to_owned)
-        .ok_or_else(|| "the daemon socket path is not UTF-8".to_owned())
+    let state = env
+        .state_dir()
+        .map_err(|error| CodexSocketPolicyError::Unavailable(error.to_string()))?;
+    let host = env
+        .host_endpoint()
+        .map_err(|error| CodexSocketPolicyError::Unavailable(error.to_string()))?;
+    let context = RuntimeContext::explicit(state.to_path_buf(), host, None).map_err(|error| {
+        CodexSocketPolicyError::Unavailable(format!("invalid host endpoint: {error}"))
+    })?;
+    let socket = stable_socket_path(&instance_dir(&context)).map_err(|error| {
+        CodexSocketPolicyError::Unavailable(format!("daemon socket path: {error}"))
+    })?;
+    socket.to_str().map(str::to_owned).ok_or_else(|| {
+        CodexSocketPolicyError::Unavailable("the daemon socket path is not UTF-8".to_owned())
+    })
 }
 
 /// The client-side directories a sandboxed herdr-threads command writes, which the allowance
@@ -2346,7 +2373,7 @@ fn with_note(error: RunError, note: &str) -> RunError {
 }
 
 fn allowance_json(
-    socket: &Result<String, String>,
+    socket: &Result<String, CodexSocketPolicyError>,
     roots: &[String],
     inspection: Option<&codex_config::AllowanceInspection>,
 ) -> Value {
@@ -2378,7 +2405,12 @@ fn allowance_json(
         }),
         Err(reason) => json!({
             "socket_path": null,
-            "omitted": reason,
+            "omitted": reason.to_string(),
+            "validation": if matches!(reason, CodexSocketPolicyError::Unvalidated { .. }) {
+                "unvalidated"
+            } else {
+                "unavailable"
+            },
             "recorded": inspection.is_some_and(|i| i.recorded.is_some()),
         }),
     }
@@ -2504,11 +2536,7 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
             // The allowance from an earlier setup is still installed: saying
             // it was "not written" would hide that it is live.
             Some(warning) => warnings.push(warning.clone()),
-            None => warnings.push(format!(
-                "sandbox socket allowance not written: {reason}; under Codex's default \
-                 workspace-write sandbox herdr-threads commands cannot reach the daemon \
-                 (transport_denied)"
-            )),
+            None => warnings.push(format!("sandbox socket allowance not written: {reason}")),
         }
     }
     let command = shared_command(&installed.owned);
@@ -2663,7 +2691,9 @@ fn codex_status(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErro
             Some(witness.as_str().to_owned()),
         ),
         _ => (
-            Err("the installed Codex version is not admitted".into()),
+            Err(CodexSocketPolicyError::Unavailable(
+                "the installed Codex version was not admitted".into(),
+            )),
             None,
         ),
     };

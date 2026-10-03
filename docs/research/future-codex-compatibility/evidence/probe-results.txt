@@ -1,0 +1,19 @@
+2026-10-03, macOS arm64, Codex CLI 0.160.0
+Selected binary: <absolute path to the measured Codex CLI 0.160.0 executable>
+SHA-256: 112fae7a5a1223e673c8a1791d32338f37df8b527ff1159bb8adac6c4dbf1b4b
+No real CODEX_HOME, model service, shared Herdr daemon, or persistent permission change.
+
+Run 1: private CODEX_HOME, codex sandbox, owned AF_UNIX and loopback listeners.
+unsandboxed baseline rc 0: allow connected; other connected; loopback connected; external TCP connected
+three-key config rc 0, 49 ms: allow connected; other errno 1; loopback errno 1; external TCP errno 1; proxy variables present
+--allow-unix-socket with network_access=false rc 0, 48 ms: allow connected; other errno 1; loopback errno 1; external TCP errno 1; proxy variables absent
+no allowance rc 0, 47 ms: all four errno 1
+named permission profile, network.enabled=false, socket allow rc 0, 46 ms: all four errno 1
+The private listener accepted only the unsandboxed other-socket connect and three permitted allow-socket connects. Script removed its scratch directory and listeners.
+
+Run 2: native Codex exec and interactive TUI, private mock Responses provider, private CODEX_HOME, owned sockets and out-of-workspace writable-root fixture. Same session policy overrides, cwd=<isolated project directory>. No actual model request. The mock provider emitted one exec_command tool call containing the test script.
+exec rc 0, 610 ms: NATIVE_POLICY_RESULT {"allow":"connected","other":"errno:1","loopback":"errno:1","external":"errno:1","intent":"wrote","context":"wrote","sibling":"errno:1"}
+interactive TUI first run: the same tool command ran under the same session policy overrides; the 120-column viewport truncated the long JSON line.
+interactive TUI second run: native TUI tool result reached the private mock provider in 641 ms. Its function_call_output contained NATIVE_POLICY_RESULT {"allow":"connected","other":"errno:1","loopback":"errno:1","external":"errno:1","intent":"wrote","context":"wrote","sibling":"errno:1"}. Native exec repeated the same result in 567 ms. The mock provider was terminated, TUI process group terminated, all listeners closed, and owned scratch directories removed.
+
+Scope: measured selected binary and exact session overrides/cwd on this macOS host. Does not prove other config stacks, profile inheritance, Linux, a native real-model cooperative ACK, or promptless TUI wake.

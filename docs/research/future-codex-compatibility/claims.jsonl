@@ -1,0 +1,8 @@
+{"claim_id": "C01", "claim": "Launch refusal comes from socket-policy exact version gate rather than hook admission", "status": "supported", "evidence_ids": ["E01", "E02", "E03"]}
+{"claim_id": "C02", "claim": "Unknown/unseen hook version is not equivalent to known broken", "status": "supported", "evidence_ids": ["E03", "E04"]}
+{"claim_id": "C03", "claim": "Current proxy allowance needs network_access true and enforces explicit default-deny where working", "status": "supported", "evidence_ids": ["E05", "E06", "E07", "E12"]}
+{"claim_id": "C04", "claim": "Codex 0.160.0 native tool sandbox honored the tested scoped socket and writable-root policy on this macOS host", "status": "measured", "evidence_ids": ["E12", "E13"]}
+{"claim_id": "C05", "claim": "Named permission profile socket config was ineffective on tested 0.160.0 debug sandbox", "status": "measured", "evidence_ids": ["E08", "E14", "E12"]}
+{"claim_id": "C06", "claim": "A stdio MCP bridge is supported as a process surface but unvalidated for this product", "status": "partly_supported", "evidence_ids": ["E10", "E11"]}
+{"claim_id": "C07", "claim": "A binary/config/cwd-bound capability probe can replace exact version acceptance without broad network grants", "status": "design_inference", "evidence_ids": ["E05", "E07", "E12", "E13", "E14"]}
+{"claim_id": "C08", "claim": "The current guarded Herdr start API cannot pin the target shell to the probed absolute binary via its documented CLI options.", "status": "supported", "evidence_ids": ["E15"]}

@@ -1,0 +1,12 @@
+{
+  "date": "2026-10-03",
+  "mode": "deep",
+  "baseline_commit": "0d70765e",
+  "question": "Optimistic future Codex compatibility and constrained daemon IPC without widening sandbox network permissions",
+  "assumptions": [
+    "macOS arm64 measurements do not generalize to Linux",
+    "mock-provider native tool calls measure client sandbox behavior, not model receipt behavior"
+  ],
+  "selected_binary_sha256": "112fae7a5a1223e673c8a1791d32338f37df8b527ff1159bb8adac6c4dbf1b4b",
+  "provider": "official OpenAI documentation, upstream Codex source, repository source, local empirical probes"
+}

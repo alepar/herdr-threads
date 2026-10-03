@@ -1,0 +1,18 @@
+{"source_id": "S01", "title": "Local setup gate", "url": "../../../src/cli/setup.rs", "kind": "repository source"}
+{"source_id": "S02", "title": "Local launch preflight", "url": "../../../src/cli/launch.rs", "kind": "repository source"}
+{"source_id": "S03", "title": "Local Codex config writer", "url": "../../../src/harness/codex_config.rs", "kind": "repository source"}
+{"source_id": "S04", "title": "Local admission ladder", "url": "../../../src/harness/admission.rs", "kind": "repository source"}
+{"source_id": "S05", "title": "Local version state", "url": "../../../src/harness/state.rs", "kind": "repository source"}
+{"source_id": "S06", "title": "Prior Codex 0.159.3 probe", "url": "../../../docs/evidence/codex-1593-sandbox-probe/README.md", "kind": "repository evidence"}
+{"source_id": "S07", "title": "OpenAI Codex security", "url": "https://learn.chatgpt.com/docs/agent-approvals-security?trk=article-ssr-frontend-pulse_little-text-block", "kind": "official documentation"}
+{"source_id": "S08", "title": "OpenAI Codex configuration reference", "url": "https://learn.chatgpt.com/docs/config-file/config-reference", "kind": "official documentation"}
+{"source_id": "S09", "title": "OpenAI Codex configuration basics", "url": "https://learn.chatgpt.com/docs/config-file/config-basic", "kind": "official documentation"}
+{"source_id": "S10", "title": "Codex Seatbelt source", "url": "https://github.com/openai/codex/blob/main/codex-rs/sandboxing/src/seatbelt.rs", "kind": "upstream source"}
+{"source_id": "S11", "title": "Codex debug sandbox source", "url": "https://github.com/openai/codex/blob/main/codex-rs/cli/src/debug_sandbox.rs", "kind": "upstream source"}
+{"source_id": "S12", "title": "Mac permissions profile bug report", "url": "https://github.com/openai/codex/issues/25416", "kind": "upstream issue report"}
+{"source_id": "S13", "title": "Linux AF_UNIX bug report", "url": "https://github.com/openai/codex/issues/39140", "kind": "upstream issue report"}
+{"source_id": "S14", "title": "OpenAI MCP documentation", "url": "https://learn.chatgpt.com/docs/extend/mcp?surface=app&translationFallback=pt-BR", "kind": "official documentation"}
+{"source_id": "S15", "title": "Herdr-threads trust policy", "url": "../../../TRUST-POLICY.md", "kind": "repository policy"}
+{"source_id": "S16", "title": "0.160.0 debug and native probes", "url": "evidence/probe-results.txt", "kind": "original empirical evidence"}
+{"source_id": "S17", "title": "OpenAI permissions documentation", "url": "https://learn.chatgpt.com/docs/permissions?site_variant=chatgpt&translationFallback=zh-Hans", "kind": "official documentation"}
+{"source_id": "S18", "title": "Herdr agent start help observed 2026-10-03", "url": "evidence/herdr-agent-start-help.txt", "kind": "installed CLI evidence"}
