@@ -4,21 +4,16 @@
 //! hook payload points at (`transcript_path`): Claude puts `version` on every
 //! conversation entry, Codex puts `cli_version` in `session_meta` records.
 //! Reading it is in-process and bounded: no exec, no process walk, no
-//! inode/mtime comparison, and at most [`MAX_WINDOW`] bytes of the file (plus
-//! one head line for a capped Codex rollout). The result is the canonical
+//! inode/mtime comparison, and at most [`MAX_WINDOW`] bytes of the file. The result is the canonical
 //! [`normalize_version`] string, or a stable [`Unattributed`] reason.
 //!
-//! Evidence: `docs/compatibility/harness-transcript-version.md`. A resumed
-//! Claude session appends to the old file, so a `SessionStart` with source
-//! `resume` is never attributed from it ([`Unattributed::ResumeBeforeFirstEntry`]);
-//! the caller buffers it until the session's first attributed event. The
-//! note's Codex finding (a resumed rollout keeps the creator's `session_meta`)
-//! does not change this reader: it returns the newest `session_meta` it can
-//! see, and resume is excluded up front by the same payload rule. The note's
-//! kill criterion (a) (a newest `session_meta` beyond the 1 MB window) was not
-//! observed, so the backward tail scan is used, with a head-line fallback.
-//!
-//! Inert: nothing calls these functions yet (consumed by ht-xoc.4).
+//! Evidence: `docs/compatibility/harness-transcript-version.md`. Claude reads
+//! the newest versioned entry by a bounded backward scan. Codex reads only the
+//! rollout's head `session_meta` (its first line): a resumed Codex rollout
+//! keeps its creator's single `session_meta` (spike note), so a Codex session
+//! known to be resumed is never attributed (the hook's gate marks it;
+//! [`Unattributed::CodexResumed`]). A Claude resume `SessionStart` is
+//! [`Unattributed::ResumeBeforeFirstEntry`] and is buffered by the daemon.
 use super::contract::normalize_version;
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom};
@@ -42,6 +37,7 @@ pub enum Attribution {
 pub enum Unattributed {
     NoTranscriptPath,
     ResumeBeforeFirstEntry,
+    CodexResumed,
     Absent,
     Unreadable,
     NoVersionField,
@@ -54,6 +50,7 @@ impl Unattributed {
         match self {
             Self::NoTranscriptPath => "no transcript path in the payload",
             Self::ResumeBeforeFirstEntry => "resume before first entry",
+            Self::CodexResumed => "codex resume: rollout version is the creating CLI's",
             Self::Absent => "transcript not found",
             Self::Unreadable => "transcript unreadable",
             Self::NoVersionField => "no version field in the transcript",
@@ -83,7 +80,7 @@ fn known_harness(harness: &str) -> Option<&'static str> {
 }
 
 /// Attribute a hook payload: a `SessionStart` with source `resume` is never
-/// read; otherwise `transcript_path` must be a non-empty absolute path.
+/// read (per-harness reason); otherwise `transcript_path` must be a non-empty absolute path.
 pub fn attribute_payload(harness: &str, payload: &Value) -> Attribution {
     if known_harness(harness).is_none() {
         return unattributable(Unattributed::UnrecognizedVersion);
@@ -91,7 +88,11 @@ pub fn attribute_payload(harness: &str, payload: &Value) -> Attribution {
     let str_field = |k: &str| payload.get(k).and_then(Value::as_str);
     if str_field("hook_event_name") == Some("SessionStart") && str_field("source") == Some("resume")
     {
-        return unattributable(Unattributed::ResumeBeforeFirstEntry);
+        return unattributable(if harness == "codex" {
+            Unattributed::CodexResumed
+        } else {
+            Unattributed::ResumeBeforeFirstEntry
+        });
     }
     match str_field("transcript_path") {
         Some(p) if !p.is_empty() && Path::new(p).is_absolute() => {
@@ -126,17 +127,8 @@ pub fn attribute_reader<R: Read + Seek>(harness: &str, r: &mut R, len: u64) -> A
     let Some(name) = known_harness(harness) else {
         return unattributable(Unattributed::UnrecognizedVersion);
     };
-    let extract: fn(&Value) -> Option<&str> = match name {
-        "claude" => claude_version,
-        _ => codex_version,
-    };
-    let (found, reached_start) = match scan_tail(r, len, extract) {
-        Ok(v) => v,
-        Err(_) => return unattributable(Unattributed::Unreadable),
-    };
-    let raw = match found {
-        Some(raw) => raw,
-        None if name == "codex" && !reached_start => match read_head_line(r) {
+    let raw = if name == "codex" {
+        match read_head_line(r) {
             Ok(Head::Line(line)) => match serde_json::from_slice::<Value>(&line)
                 .ok()
                 .as_ref()
@@ -145,15 +137,21 @@ pub fn attribute_reader<R: Read + Seek>(harness: &str, r: &mut R, len: u64) -> A
                 Some(raw) => raw.to_owned(),
                 None => return unattributable(Unattributed::NoVersionField),
             },
+            Ok(Head::Incomplete) => return unattributable(Unattributed::NoVersionField),
             Ok(Head::TooLong) => return unattributable(Unattributed::WindowExceeded),
             Err(_) => return unattributable(Unattributed::Unreadable),
-        },
-        None => {
-            return unattributable(if len > MAX_WINDOW {
-                Unattributed::WindowExceeded
-            } else {
-                Unattributed::NoVersionField
-            });
+        }
+    } else {
+        match scan_tail(r, len, claude_version) {
+            Ok(Some(raw)) => raw,
+            Ok(None) => {
+                return unattributable(if len > MAX_WINDOW {
+                    Unattributed::WindowExceeded
+                } else {
+                    Unattributed::NoVersionField
+                });
+            }
+            Err(_) => return unattributable(Unattributed::Unreadable),
         }
     };
     match normalize_version(name, &raw) {
@@ -179,22 +177,22 @@ fn codex_version(entry: &Value) -> Option<&str> {
 /// Newest complete line whose JSON `extract`s a string, reading the last
 /// `INITIAL_WINDOW` bytes and growing by that step up to `MAX_WINDOW`. Only
 /// the newly needed prefix is read on each growth, so total bytes read equal
-/// the final window. The flag is true when the window reached offset 0.
+/// the final window.
 fn scan_tail<R: Read + Seek>(
     r: &mut R,
     len: u64,
     extract: fn(&Value) -> Option<&str>,
-) -> std::io::Result<(Option<String>, bool)> {
+) -> std::io::Result<Option<String>> {
     let cap = len.min(MAX_WINDOW);
     let mut window = INITIAL_WINDOW.min(cap);
     let mut buf = read_range(r, len - window, window)?;
     loop {
         let start = len - window;
         if let Some(raw) = newest_in(&buf, start > 0, extract) {
-            return Ok((Some(raw), start == 0));
+            return Ok(Some(raw));
         }
         if window >= cap {
-            return Ok((None, start == 0));
+            return Ok(None);
         }
         let grown = (window + INITIAL_WINDOW).min(cap);
         let mut next = read_range(r, len - grown, grown - window)?;
@@ -237,6 +235,8 @@ fn newest_in(
 
 enum Head {
     Line(Vec<u8>),
+    /// EOF before a newline: empty file, or a line still being written.
+    Incomplete,
     TooLong,
 }
 
@@ -248,7 +248,7 @@ fn read_head_line<R: Read + Seek>(r: &mut R) -> std::io::Result<Head> {
     while (line.len() as u64) < MAX_WINDOW {
         let n = r.read(&mut chunk)?;
         if n == 0 {
-            break;
+            return Ok(Head::Incomplete);
         }
         if let Some(i) = chunk[..n].iter().position(|b| *b == b'\n') {
             line.extend_from_slice(&chunk[..i]);

@@ -66,6 +66,45 @@ fn broken_tool(session: &str, transcript: &str) -> Vec<u8> {
     .unwrap()
 }
 
+/// A Codex rollout created by `creator`: one head `session_meta`, then
+/// turns with no version field (the spike's observed resumed shape).
+fn codex_rollout(iso: &TestIsolation, creator: &str) -> String {
+    let path = iso.path(format!("rollout-{creator}.jsonl"));
+    std::fs::write(
+        &path,
+        format!(
+            "{{\"timestamp\":\"2026-09-29T10:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019e0000-0000-7000-8000-000000000002\",\"cwd\":\"/tmp\",\"originator\":\"codex_cli_rs\",\"cli_version\":\"{creator}\",\"source\":\"cli\"}}}}\n\
+             {{\"timestamp\":\"2026-09-30T09:00:01.000Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[]}}}}\n"
+        ),
+    )
+    .unwrap();
+    path.to_str().unwrap().to_owned()
+}
+
+fn codex_start(session: &str, transcript: &str, source: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "hook_event_name": "SessionStart", "session_id": session, "source": source,
+        "transcript_path": transcript}))
+    .unwrap()
+}
+
+fn codex_tool(session: &str, transcript: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "hook_event_name": "PreToolUse", "session_id": session, "turn_id": "turn-1",
+        "tool_name": "Bash", "tool_use_id": "call_1", "tool_input": {"command": "ls"},
+        "transcript_path": transcript}))
+    .unwrap()
+}
+
+/// Missing `tool_name`: a violation of the Codex PreToolUse contract.
+fn codex_broken_tool(session: &str, transcript: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "hook_event_name": "PreToolUse", "session_id": session, "turn_id": "turn-1",
+        "tool_use_id": "call_1", "tool_input": {"command": "ls"},
+        "transcript_path": transcript}))
+    .unwrap()
+}
+
 // -- classification ---------------------------------------------------------
 
 #[test]
@@ -223,8 +262,12 @@ impl Fx {
     }
 
     fn hook(&self, event: &str, stdin: &[u8], now_ms: u64) -> Delivery {
+        self.hook_as(Harness::Claude, event, stdin, now_ms)
+    }
+
+    fn hook_as(&self, harness: Harness, event: &str, stdin: &[u8], now_ms: u64) -> Delivery {
         run(
-            Harness::Claude,
+            harness,
             Some(event),
             stdin,
             Some(self.iso.state_root()),
@@ -246,6 +289,11 @@ impl Fx {
 
     fn connects(&self) -> u32 {
         *self.connects.lock().unwrap()
+    }
+
+    fn gate(&self, harness: &str, session: &str) -> GateState {
+        let path = gate_path(&gate_dir(self.iso.state_root()), harness, session);
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
     }
 
     fn gate_files(&self) -> usize {
@@ -666,5 +714,213 @@ fn prune_removes_at_most_sixteen_files_older_than_a_day() {
         std::fs::read_dir(&dir).unwrap().count(),
         1,
         "the rest go on the next run, the fresh gate stays"
+    );
+}
+
+// -- Codex resume -------------------------------------------------------------
+
+const CODEX_RESUMED: &str = "codex resume: rollout version is the creating CLI's";
+
+#[test]
+fn codex_resume_marks_the_gate_and_every_later_note_is_unattributed() {
+    let fx = Fx::new("hev-codex-resume", DaemonVintage::Current);
+    let rollout = codex_rollout(&fx.iso, "0.159.3");
+    let delivered = fx.hook_as(
+        Harness::Codex,
+        "SessionStart",
+        &codex_start("s", &rollout, "resume"),
+        NOW,
+    );
+    assert!(matches!(delivered, Delivery::Sent(_)), "{delivered:?}");
+    assert!(fx.gate("codex", "s").resumed);
+    assert!(matches!(
+        fx.hook_as(
+            Harness::Codex,
+            "PreToolUse",
+            &codex_tool("s", &rollout),
+            NOW + 1
+        ),
+        Delivery::Sent(_)
+    ));
+    assert!(matches!(
+        fx.hook_as(
+            Harness::Codex,
+            "PreToolUse",
+            &codex_broken_tool("s", &rollout),
+            NOW + 2
+        ),
+        Delivery::Sent(_)
+    ));
+    let notes = fx.notes();
+    assert_eq!(notes.len(), 3);
+    for note in &notes {
+        assert_eq!(note.version, None, "{note:?}");
+        assert_eq!(note.unattributed_reason.as_deref(), Some(CODEX_RESUMED));
+    }
+}
+
+#[test]
+fn codex_resume_mark_is_written_without_a_daemon() {
+    let fx = Fx::new("hev-codex-nodaemon", DaemonVintage::Current);
+    let rollout = codex_rollout(&fx.iso, "0.159.3");
+    let delivery = run(
+        Harness::Codex,
+        Some("SessionStart"),
+        &codex_start("s", &rollout, "resume"),
+        Some(fx.iso.state_root()),
+        NOW,
+        &budget(),
+        |_| None,
+    );
+    assert_eq!(delivery, Delivery::Unavailable);
+    assert!(fx.gate("codex", "s").resumed);
+    assert!(matches!(
+        fx.hook_as(
+            Harness::Codex,
+            "PreToolUse",
+            &codex_tool("s", &rollout),
+            NOW + 1
+        ),
+        Delivery::Sent(_)
+    ));
+    let note = &fx.notes()[0];
+    assert_eq!(note.version, None);
+    assert_eq!(note.unattributed_reason.as_deref(), Some(CODEX_RESUMED));
+}
+
+#[test]
+fn codex_fresh_session_is_attributed_from_the_rollout_head() {
+    let fx = Fx::new("hev-codex-fresh", DaemonVintage::Current);
+    let rollout = codex_rollout(&fx.iso, "0.159.3");
+    fx.hook_as(
+        Harness::Codex,
+        "SessionStart",
+        &codex_start("s", &rollout, "startup"),
+        NOW,
+    );
+    fx.hook_as(
+        Harness::Codex,
+        "PreToolUse",
+        &codex_tool("s", &rollout),
+        NOW + 1,
+    );
+    let notes = fx.notes();
+    assert_eq!(notes.len(), 2);
+    for note in &notes {
+        assert_eq!(note.version.as_deref(), Some("0.159.3"), "{note:?}");
+    }
+    assert!(!fx.gate("codex", "s").resumed);
+}
+
+#[test]
+fn claude_resume_is_unchanged() {
+    let fx = Fx::new("hev-claude-resume", DaemonVintage::Current);
+    let path = transcript(&fx.iso, "2.1.286");
+    let resume = serde_json::to_vec(&serde_json::json!({
+        "hook_event_name": "SessionStart", "session_id": "s", "source": "resume",
+        "transcript_path": path}))
+    .unwrap();
+    assert_eq!(
+        fx.hook("SessionStart", &resume, NOW),
+        Delivery::Sent(Some(false))
+    );
+    assert_eq!(
+        fx.notes()[0].unattributed_reason.as_deref(),
+        Some("resume before first entry")
+    );
+    assert!(!fx.gate("claude", "s").resumed);
+    fx.hook("PreToolUse", &tool("s", &path), NOW + 1);
+    assert_eq!(fx.notes()[1].version.as_deref(), Some("2.1.286"));
+}
+
+#[test]
+fn gate_file_without_resumed_reads_as_not_resumed() {
+    let gate = serde_json::from_str::<GateState>(
+        r#"{"verified":false,"ok_sent_at_ms":null,"heartbeat_at_ms":null,"sent":[]}"#,
+    )
+    .unwrap();
+    assert!(!gate.resumed);
+}
+
+#[test]
+fn codex_session_resumed_after_an_upgrade_records_nothing_for_either_version() {
+    use crate::ports::StorePort as _;
+    let iso = TestIsolation::new("hev-codex-e2e");
+    let clock: Arc<dyn Clock> = Arc::new(crate::app::SystemClock::new());
+    let store = Arc::new(
+        crate::store::SqliteStore::new(
+            crate::store::connection::StoreContext::new(
+                iso.state_root().join("store.db"),
+                Arc::clone(&clock),
+            ),
+            "i",
+            crate::store::StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    let recorder = Arc::new(
+        crate::daemon::harness_evidence::HarnessEvidenceRecorder::new(
+            store.clone(),
+            None,
+            Arc::clone(&clock),
+        ),
+    );
+    let client = Arc::new(CountingLocalClient::scripted(
+        {
+            let recorder = Arc::clone(&recorder);
+            move |command| match command {
+                Command::HarnessEvidence(note) => recorder
+                    .record(note, &budget())
+                    .map(|verified| CommandResult::HarnessEvidenceRecorded { verified }),
+                other => panic!("unexpected command {other:?}"),
+            }
+        },
+        DaemonVintage::Current,
+    ));
+    // The rollout names the creator (0.159.3); the process now writing it is
+    // 0.160.0 and is visible nowhere.
+    let rollout = codex_rollout(&iso, "0.159.3");
+    let stdins = [
+        ("SessionStart", codex_start("s", &rollout, "resume"), NOW),
+        ("PreToolUse", codex_tool("s", &rollout), NOW + 1),
+        ("PreToolUse", codex_broken_tool("s", &rollout), NOW + 2),
+        (
+            "PreToolUse",
+            codex_tool("s", &rollout),
+            NOW + 1 + HEARTBEAT_MS,
+        ),
+    ];
+    for (event, stdin, now) in &stdins {
+        let delivery = run(
+            Harness::Codex,
+            Some(event),
+            stdin,
+            Some(iso.state_root()),
+            *now,
+            &budget(),
+            |_| {
+                let capabilities = client.capabilities();
+                Some((Arc::clone(&client) as Arc<dyn LocalClient>, capabilities))
+            },
+        );
+        assert!(
+            matches!(delivery, Delivery::Sent(_)),
+            "{event}: {delivery:?}"
+        );
+    }
+    assert!(
+        store
+            .harness_evidence_all("codex", &budget())
+            .unwrap()
+            .is_empty(),
+        "no row for 0.159.3 or 0.160.0: nothing verified, no violation"
+    );
+    assert_eq!(
+        store
+            .last_unattributed("codex", &budget())
+            .unwrap()
+            .map(|(reason, _)| reason)
+            .as_deref(),
+        Some(CODEX_RESUMED)
     );
 }

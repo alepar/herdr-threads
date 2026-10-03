@@ -13,8 +13,13 @@
 //! socket I/O; only when it says "send" does the hook read the transcript for
 //! the version, connect to a daemon that is already running (never started
 //! for this) and look for the `hook.harness_evidence` capability. A daemon
-//! without the capability gets nothing and the gate file is left alone. Every
-//! error is ignored: nothing here changes the hook's stdout or exit status.
+//! without the capability gets nothing and the gate file is otherwise left
+//! alone. A Codex `SessionStart` with source `resume` marks its session's gate
+//! as resumed at once (even with no daemon, before any socket I/O): a resumed
+//! rollout keeps the creating CLI's version, so every later note of that
+//! session goes out unattributed. A hook with no state directory, or a resumed
+//! session idle long enough for its gate file to be pruned, attributes from
+//! the rollout head again (accepted). Every error is ignored: nothing here changes the hook's stdout or exit status.
 //!
 //! Evidence is advisory data about the harness, never authority (see
 //! TRUST-POLICY.md): this module adds no caller attribution and no seat state.
@@ -154,9 +159,26 @@ pub fn classify_payload(
 }
 
 impl Classified {
+    /// Whether this is a Codex `SessionStart` with source `resume`.
+    fn starts_codex_resume(&self) -> bool {
+        self.harness == "codex"
+            && self.event == "SessionStart"
+            && self
+                .payload
+                .as_ref()
+                .and_then(|p| p.get("source"))
+                .and_then(Value::as_str)
+                == Some("resume")
+    }
+
     /// Reads the version from the payload's transcript (bounded, in-process).
-    pub fn attribute(self) -> Evidence {
+    /// A Codex session known to be `resumed` is never attributed and its
+    /// transcript is not opened.
+    pub fn attribute(self, resumed: bool) -> Evidence {
         let attribution = match &self.payload {
+            _ if resumed && self.harness == "codex" => Attribution::Unattributable {
+                reason: crate::harness::attribution::Unattributed::CodexResumed,
+            },
             Some(payload) => attribute_payload(self.harness, payload),
             None => Attribution::Unattributable {
                 reason: crate::harness::attribution::Unattributed::NoTranscriptPath,
@@ -184,7 +206,7 @@ pub fn evidence_for(
     registered_event: Option<&str>,
     stdin: &[u8],
 ) -> Option<Evidence> {
-    classify_payload(harness, registered_event, stdin).map(Classified::attribute)
+    classify_payload(harness, registered_event, stdin).map(|classified| classified.attribute(false))
 }
 
 impl Evidence {
@@ -210,6 +232,10 @@ pub struct GateState {
     pub heartbeat_at_ms: Option<u64>,
     /// `<event>|<field or empty>` of every violation / malformed note sent.
     pub sent: Vec<String>,
+    /// A Codex session that started with SessionStart source resume: its
+    /// rollout's version is the creator's, so nothing it sends is attributed.
+    #[serde(default)]
+    pub resumed: bool,
 }
 
 fn sent_key(event: &str, outcome: &HarnessEvidenceOutcome) -> Option<String> {
@@ -390,9 +416,15 @@ pub fn run(
                 gate_path(&gate_dir(state), classified.harness, session),
             )
         });
-    let gate = gate_file
+    let mut gate = gate_file
         .as_ref()
         .map_or_else(GateState::default, |(_, path)| read_gate(path));
+    if classified.starts_codex_resume() && !gate.resumed {
+        gate.resumed = true;
+        if let Some((state, path)) = &gate_file {
+            let _ = write_gate(state, path, &gate);
+        }
+    }
     if !gate.should_send(
         &classified.event,
         &classified.outcome,
@@ -409,7 +441,7 @@ pub fn run(
     }
     let event = classified.event.clone();
     let outcome = classified.outcome.clone();
-    let evidence = classified.attribute();
+    let evidence = classified.attribute(gate.resumed);
     let reply = client.call(Command::HarnessEvidence(evidence.message()), budget);
     let verified = match reply {
         Ok(CommandResult::HarnessEvidenceRecorded { verified }) => verified,
