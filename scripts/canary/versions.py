@@ -55,20 +55,30 @@ def _rows(doc, harness):
     return [r for r in doc["rows"] if r.get("harness") == harness]
 
 
-def verified_max(doc, harness):
-    """Greatest verified version of the harness, or None when it has no verified rows. A row counts when its
-    `status` is `verified` or absent (schema 1); a `known_broken` row never raises the baseline."""
+def applies(row, contract_id):
+    """Whether a row counts under `contract_id`: rows with a null contract (manual / recipe / schema 1) apply to
+    every contract, and `contract_id=None` (main's contract unknown) accepts every row."""
+    return contract_id is None or row.get("contract_id") is None or row["contract_id"] == contract_id
+
+
+def verified_max(doc, harness, contract_id=None):
+    """Greatest verified version of the harness under `contract_id`, or None when it has no verified rows. A row
+    counts when its `status` is `verified` or absent (schema 1); a `known_broken` row never raises the baseline."""
     vs = [r["version"] for r in _rows(doc, harness)
-          if r.get("status", "verified") == "verified"
+          if applies(r, contract_id)
+          and r.get("status", "verified") == "verified"
           and isinstance(r.get("version"), str) and STABLE.match(r["version"])]
     return max(vs, key=version_key) if vs else None
 
 
-def known_broken(doc, harness):
-    """Inclusive (min, max) ranges across the harness's rows; None = open end. Order-stable, de-duplicated.
-    A row with `status == "known_broken"` (a canary-written row) also yields `(version, version)`."""
+def known_broken(doc, harness, contract_id=None):
+    """Inclusive (min, max) ranges across the harness's rows that apply under `contract_id`; None = open end.
+    Order-stable, de-duplicated. A row with `status == "known_broken"` (a canary-written row) also yields
+    `(version, version)`."""
     out = []
     for r in _rows(doc, harness):
+        if not applies(r, contract_id):
+            continue
         if r.get("status") == "known_broken" and isinstance(r.get("version"), str):
             t = (r["version"], r["version"])
             if not STABLE.match(t[0]):
@@ -85,7 +95,7 @@ def known_broken(doc, harness):
     return out
 
 
-def candidates(npm_list, mode, doc, harness, explicit=None):
+def candidates(npm_list, mode, doc, harness, explicit=None, contract_id=None):
     """Ascending candidate versions from an `npm view <pkg> versions --json` list.
 
     latest = the greatest stable version; since-verified = every stable version above verified_max;
@@ -101,11 +111,23 @@ def candidates(npm_list, mode, doc, harness, explicit=None):
     if mode == "latest":
         return st[-1:]
     if mode == "since-verified":
-        vm = verified_max(doc, harness)
+        vm = verified_max(doc, harness, contract_id)
         if vm is None:
             return st
         return [v for v in st if version_key(v) > version_key(vm)]
     raise ValueError(f"unknown versions mode {mode!r}")
+
+
+def reprobe(npm_list, doc, harness, contract_id):
+    """Ascending stable, published versions that are `known_broken` under another (non-null) contract and not
+    under `contract_id`: they are re-probed so they can gain a row under main's contract. [] when main's
+    contract is unknown."""
+    if contract_id is None:
+        return []
+    rows = [r for r in _rows(doc, harness) if r.get("status") == "known_broken"]
+    other = {r["version"] for r in rows if r.get("contract_id") not in (None, contract_id)}
+    mine = {r["version"] for r in rows if applies(r, contract_id)}
+    return [v for v in stable(npm_list) if v in other and v not in mine]
 
 
 def in_range(v, rng):

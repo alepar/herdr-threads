@@ -48,8 +48,8 @@ def doc(rows, **kw):
     return d
 
 
-def probe(version, payloads=(SESSION_OK, TOOL_OK), result="pass", flaky=False, checks=None):
-    return {"version": version, "role": "newest", "result": result, "flaky": flaky,
+def probe(version, payloads=(SESSION_OK, TOOL_OK), result="pass", flaky=False, checks=None, role="newest"):
+    return {"version": version, "role": role, "result": result, "flaky": flaky,
             "attempts": [{"result": result, "tier1": False, "duration_ms": 1,
                           "checks": checks or [{"id": "t0.payload-parse", "status": "pass"}],
                           "contract": {"contract_id": MAIN["claude"], "payloads": list(payloads), "release": None}}]}
@@ -233,6 +233,28 @@ class Writer(Base):
         k = self.by_key(out)
         self.assertEqual(k[("claude", "2.1.286", MAIN["claude"])]["supported_since"], "0.3.0")  # existing value wins
         self.assertEqual(k[("claude", "2.1.288", MAIN["claude"])]["supported_since"], "0.4.0")
+
+    def test_reprobed_other_contract_known_broken_gains_main_row_with_supported_since(self):
+        base = doc([row("claude", "2.1.290", "known_broken", cid=OTHER)])
+        rep = report([probe("2.1.290", role="reprobe")])
+        rel = release([("claude", "2.1.290", [SESSION_OK, TOOL_OK])], tag="v0.5.0")  # C2 has shipped
+        _, out = self.write(base, rep, rel, tag="v0.5.0")
+        k = self.by_key(out)
+        main_row = k[("claude", "2.1.290", MAIN["claude"])]
+        self.assertEqual((main_row["status"], main_row["supported_since"]), ("verified", "0.5.0"))
+        self.assertNotIn(("claude", "2.1.290", OTHER), k)  # no longer a live contract
+        # the release still carries the other contract: a main row, but no supported_since, and the old row stays
+        rel = release([("claude", "2.1.290", [VIOLATION])], cid={"claude": OTHER, "codex": MAIN["codex"]}, tag="v0.5.0")
+        _, out = self.write(base, rep, rel, tag="v0.5.0")
+        k = self.by_key(out)
+        self.assertEqual(k[("claude", "2.1.290", MAIN["claude"])]["status"], "verified")
+        self.assertIsNone(k[("claude", "2.1.290", MAIN["claude"])]["supported_since"])
+        self.assertEqual(k[("claude", "2.1.290", OTHER)]["status"], "known_broken")
+        # so the next run re-probes again
+        vspec = importlib.util.spec_from_file_location("versions_under_test", HERE / "versions.py")
+        versions = importlib.util.module_from_spec(vspec)
+        vspec.loader.exec_module(versions)
+        self.assertEqual(versions.reprobe(["2.1.290"], out, "claude", MAIN["claude"]), ["2.1.290"])
 
     def test_supported_since_not_filled_when_the_release_contract_violates(self):
         rel = release([("claude", "2.1.288", [VIOLATION])], cid={"claude": OTHER, "codex": MAIN["codex"]})

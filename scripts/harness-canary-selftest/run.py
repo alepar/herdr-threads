@@ -207,6 +207,42 @@ class Cases(unittest.TestCase):
         self.assertIsNone(res["first_bad"])
         self.assertEqual(res["status"], "break")
 
+    def test_reprobe_runs_after_the_search_and_keeps_the_verdict(self):
+        src = HERE / "cases" / "all-pass.json"
+        case = json.loads(src.read_text())
+
+        def run_with(results, candidates, reprobe, name="c.json"):
+            with tempfile.TemporaryDirectory() as state:
+                cp = pathlib.Path(state) / name
+                cp.write_text(json.dumps(dict(case, results=results)))
+                os.environ["HT_SELFTEST_STATE"] = state
+                cmd = " ".join(shlex.quote(a) for a in (sys.executable, str(STUB), str(cp))) + " {version}"
+                return canary_bisect.run(candidates, "1.0.0", cmd, bisect=True, reprobe=reprobe)
+
+        res = run_with({"default": "pass"}, case["candidates"], ["0.9.5"])
+        self.assertEqual(res["status"], "all_pass")
+        self.assertEqual({k: res["probes"][-1][k] for k in ("version", "role")}, {"version": "0.9.5", "role": "reprobe"})
+        self.assertEqual(res["reprobed"], ["0.9.5"])
+        res = run_with({"default": "pass"}, [], ["0.9.5"])
+        self.assertEqual(res["status"], "no_candidates")
+        self.assertEqual([p["version"] for p in res["probes"]], ["0.9.5"])
+        # a re-probe version equal to the newest candidate is not probed twice
+        res = run_with({"default": "pass"}, case["candidates"], ["1.0.9"])
+        self.assertEqual([p["version"] for p in res["probes"]].count("1.0.9"), 1)
+        self.assertEqual(res["reprobed"], [])
+        # a failing re-probe changes neither the verdict nor the exit code
+        def exit_code(res):
+            block = report_mod.harness_block("claude", res, verified_max="1.0.0")
+            return report_mod.assemble([block], {"harness": "claude", "versions": "since-verified", "bisect": True,
+                                                 "model_tier": "auto"}, {"os": "linux", "arch": "x86_64"},
+                                       "0" * 40, "0.0.0", generated_at="2026-10-01T00:00:00Z")["exit_code"]
+        plain = run_with({"default": "pass"}, case["candidates"], [])
+        failing = run_with({"default": "pass", "0.9.5": "fail"}, case["candidates"], ["0.9.5"])
+        self.assertEqual(failing["probes"][-1]["result"], "fail")
+        for k in ("status", "first_bad", "last_good", "failing_checks", "signals"):
+            self.assertEqual(failing[k], plain[k], k)
+        self.assertEqual(exit_code(failing), exit_code(plain))
+
 
 class Helpers(unittest.TestCase):
     def test_codex_candidate_filtering(self):
@@ -224,6 +260,38 @@ class Helpers(unittest.TestCase):
         for bad in (["0.158.0-alpha.1"], ["9.9.9"]):
             with self.assertRaises(ValueError):
                 versions.candidates(npm, "list", doc, "codex", explicit=bad)
+
+    def test_selection_is_scoped_to_main_contract(self):
+        c1, c2 = "1111111111111111", "2222222222222222"
+
+        def row(version, status="verified", cid=None, **kw):
+            return dict({"harness": "claude", "version": version, "status": status, "contract_id": cid,
+                         "known_broken": []}, **kw)
+        doc = {"schema_version": 2, "rows": [
+            row("2.1.285"), row("2.1.300", cid=c1), row("2.1.290", "known_broken", c1), row("2.1.288", cid=c2),
+            row("2.1.280", known_broken=[{"min": "2.1.281", "max": "2.1.282"}])]}
+        npm = [f"2.1.{i}" for i in range(280, 303)] + ["2.1.303-beta.1"]
+        cands = lambda cid: versions.candidates(npm, "since-verified", doc, "claude", contract_id=cid)
+
+        self.assertEqual(versions.verified_max(doc, "claude", c2), "2.1.288")
+        self.assertEqual(versions.known_broken(doc, "claude", c2), [("2.1.281", "2.1.282")])
+        self.assertEqual(cands(c2)[0], "2.1.289")
+        self.assertIn("2.1.290", cands(c2))
+        self.assertEqual(versions.reprobe(npm, doc, "claude", c2), ["2.1.290"])
+
+        self.assertEqual(versions.verified_max(doc, "claude", c1), "2.1.300")
+        self.assertIn(("2.1.290", "2.1.290"), versions.known_broken(doc, "claude", c1))
+        self.assertEqual(cands(c1), ["2.1.301", "2.1.302"])
+        self.assertEqual(versions.reprobe(npm, doc, "claude", c1), [])
+
+        self.assertEqual(versions.verified_max(doc, "claude", None), "2.1.300")
+        self.assertCountEqual(versions.known_broken(doc, "claude", None), [("2.1.281", "2.1.282"), ("2.1.290", "2.1.290")])
+        self.assertEqual(versions.reprobe(npm, doc, "claude", None), [])
+        self.assertEqual(cands(None), cands(c1))
+
+        both = {"schema_version": 2, "rows": doc["rows"] + [row("2.1.290", "known_broken", c2)]}
+        self.assertEqual(versions.reprobe(npm, both, "claude", c2), [])  # broken under main too: stays excluded
+        self.assertEqual(versions.reprobe([v for v in npm if v != "2.1.290"], doc, "claude", c2), [])  # unpublished
 
     def test_schema_1_and_2_documents_give_the_same_answers(self):
         committed_path = HERE.parents[1] / "docs" / "compatibility" / "harness-versions.json"
