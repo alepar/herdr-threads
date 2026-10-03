@@ -452,3 +452,38 @@ fn doctor_report_and_text_carry_the_manifest_policy() {
         "{text}"
     );
 }
+
+/// Kills: a `harness_states` key that is missing when the daemon answers or
+/// not null with a reason when it cannot (ht-xoc.5).
+#[test]
+fn doctor_json_carries_harness_states_or_the_reason() {
+    use crate::protocol::results::{HarnessStateReport, HarnessStatesReport};
+    let state = HarnessStatesReport {
+        harnesses: vec![HarnessStateReport {
+            harness: "claude".into(),
+            contract_id: None,
+            detected: None,
+            versions: Vec::new(),
+            unattributed: None,
+            hook_parse_failures: 0,
+        }],
+    };
+    let value = serde_json::to_value(&state).unwrap();
+    assert_eq!(value["harnesses"][0]["harness"], "claude");
+    assert!(value["harnesses"][0]["contract_id"].is_null());
+    // No daemon in a scratch state dir: the report says why.
+    let case = manifest_case("states-none");
+    let state = case.dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let (report, _) = report(Some(state), Some(case.dir.join("herdr.sock")));
+    assert!(report["harness_states"].is_null(), "{report}");
+    assert_eq!(
+        report["harness_states_unavailable"], "the daemon is not running",
+        "{report}"
+    );
+    let text = render_text(&report);
+    assert!(
+        text.contains("harness states unavailable: the daemon is not running\n"),
+        "{text}"
+    );
+}

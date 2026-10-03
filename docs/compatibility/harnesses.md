@@ -107,6 +107,34 @@ Without a session id the hook cannot gate: `SessionStart`, violations and malfor
 
 **Capability.** The note is a daemon capability, `hook.harness_evidence`. A daemon that does not advertise it receives nothing and the hook leaves its gate file alone.
 
+### User-visible states
+
+Every (harness, version) the daemon has evidence for has one of three states, derived by one pure function (`harness::state::derive`, first match wins):
+
+1. a local violation (a payload broke the contract): **broken**;
+2. the version is older than every recipe's minimum (the ladder's "below the floor" row): **broken**, action `upgrade <harness>`;
+3. local evidence verified it (a lifecycle and a tool payload under the same contract): **working**. A manifest `known_broken` row or a recipe `known_broken` range does not override it; doctor notes that it has worked here;
+4. the manifest reports it `known_broken` for the same `contract_id` (canary or manual row): **broken**;
+5. it is inside a recipe's `known_broken` range: **broken**;
+6. the manifest has a `verified` row for it under the same `contract_id`: **working**;
+7. a recipe lists it: **working**;
+8. anything else (optimistic, schema-matched, unlisted and not below the floor): **new**. A new version is never refused and adds nothing to Health; it becomes working when a lifecycle and a tool payload verify it.
+
+A version newer than every recipe is therefore never `broken` just for being unlisted. Manual and canary manifest rows derive identically; doctor prints which one a verdict came from.
+
+**The action** on a broken verdict (except below the floor), first match: `upgrade herdr-threads to X (supports <harness> <version>)` when the manifest has a `verified` row for this version under another `contract_id` whose `supported_since` is newer than the running release (X is that `supported_since`); else `pin <harness> to <= Y`, Y being the newest version below this one verified on this machine (local evidence, same contract), else the manifest's `last_working`, else (a recipe range) the recipe's newest working version; else `report: <url>`, the row's `issue_url` or the repository's issues page.
+
+**What Health shows.** State is computed per attributed version under the newest `contract_id` the daemon has seen from that harness's hooks (the contract whose earliest row is the most recent). Health looks at the versions with a session in the last 24 hours (`last_seen_at`) and adds at most one line per harness, a limitation that makes Health `degraded`: the broken version seen most recently. Working and new versions add nothing; an old version with no session in 24 hours drops out. The line formats:
+
+- `harness <h> <v> broken: <event> payload field <field> is missing or has the wrong type; <action>`
+- `harness <h> <v> broken: the <canary|manual> manifest row reports <event> payload field <field>; <action>`
+- `harness <h> <v> broken: known broken in <range>; <action>`
+- `<h> <v> is below the supported floor <min>; upgrade <h>`
+
+The PATH-detected version of a harness (what the daemon's admission observer last saw) feeds doctor only, and only until the harness has an attributed row for it; Health never shows it. The earlier optimistic, schema-matched and refused-version Health lines are gone: an unobservable `--version` (which blocks the hook) is still a limitation.
+
+**What doctor shows.** When the daemon advertises `harness.states`, doctor asks it and prints one block per harness: `harness <h>: <state> <version> — <source>` for the newest row and `  <h> <v>: <state> — <source>` for each other row in the Health window, the verdict line of a broken one, each note, `issue: <url>`, `version evidence unavailable: <reason> (<time>)` when the latest unattributed reason is newer than the newest row, `hook payloads not understood: <n>` when non-zero, then the manifest policy and cache lines. The source is one of `local evidence (lifecycle + tool payloads)`, `local evidence: violation in <event>/<field>`, `canary manifest row (<evidence>)`, `manual manifest row`, `recipe tables`, `below the recipe floor`, `no evidence yet`. With `--json` the report has `harness_states` (or `null` with `harness_states_unavailable` when the daemon is absent or too old).
+
 ## Harness canary
 
 `scripts/harness-canary.sh` installs each newer Claude Code and Codex release into a throwaway home and checks that herdr-threads still works with it. It runs daily from `.github/workflows/harness-canary.yml` (cron `17 6 * * *`) and on manual dispatch. It never touches `~/.claude`, `~/.codex` or aisw profiles.

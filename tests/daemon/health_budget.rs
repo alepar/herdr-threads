@@ -45,7 +45,7 @@ pub(super) fn ready_inputs() -> HealthInputs {
 }
 
 /// Every source at its worst: all components degraded, both harnesses
-/// refused, no wake path, retirement pending and degraded, binding evidence
+/// refused, two harness broken lines, no wake path, retirement pending and degraded, binding evidence
 /// lacking, unresolved seats with a full sample, a refusal count, and every
 /// lane degraded with a retry suffix.
 pub(super) fn worst_case_inputs() -> HealthInputs {
@@ -78,6 +78,11 @@ pub(super) fn worst_case_inputs() -> HealthInputs {
             .collect(),
     });
     inputs.transitions_refused = u64::MAX;
+    // One broken line per harness, at the longest a verdict line can be.
+    inputs.harness_version_lines = ["claude", "codex"]
+        .into_iter()
+        .map(|harness| format!("harness {harness} 9.9.9 broken: {long}"))
+        .collect();
     inputs.degraded_lanes = [
         "deadline",
         "wake",
@@ -100,8 +105,8 @@ pub(super) fn worst_case_inputs() -> HealthInputs {
 /// budget that drops the notes' or limitations' tail silently.
 #[test]
 fn worst_case_health_fits_twelve_lines() {
-    // The optimistic-admission note and the hook-parse failure count render
-    // inside the headroom: see `health_optimistic`.
+    // The version verdict lines are limitations too: they sit ahead of the
+    // unresolved-seat samples and survive the fold (asserted below).
     let health = worst_case_inputs().assemble();
     assert!(
         health.limitations.len() <= HEALTH_LINE_BUDGET,
@@ -119,11 +124,30 @@ fn worst_case_health_fits_twelve_lines() {
     health.validate().expect("the wire cap still holds");
     // The budget cut the lowest-priority lines, not the leading ones.
     assert!(health.limitations[0].starts_with("database degraded: "));
+    for harness in ["claude", "codex"] {
+        assert!(
+            health
+                .limitations
+                .iter()
+                .any(|line| line.starts_with(&format!("harness {harness} 9.9.9 broken: "))),
+            "{:#?}",
+            health.limitations
+        );
+    }
+    // The unresolved-seat samples go first; then the tail folds into one line
+    // counting what it hides (with the two version lines the summary line
+    // itself no longer fits).
     assert!(
         health
             .limitations
             .iter()
-            .any(|line| line.starts_with("unresolved seats: ")),
+            .all(|line| !line.starts_with("unresolved seat ")),
+        "{:#?}",
+        health.limitations
+    );
+    assert!(
+        health.limitations.last().is_some_and(|line| line
+            .ends_with("more lines not shown; run `herdr-threads doctor` and see the daemon log")),
         "{:#?}",
         health.limitations
     );

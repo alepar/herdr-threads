@@ -19,6 +19,9 @@ pub enum Command {
     /// A hook reports what a payload showed about the harness that sent it
     /// (ht-xoc.4); sent only to a daemon advertising `hook.harness_evidence`.
     HarnessEvidence(HarnessEvidence),
+    /// Doctor asks for each harness's version verdicts (ht-xoc.5); sent only
+    /// to a daemon advertising `harness.states`.
+    HarnessStates,
     Stop(StopRequest),
     ServiceInspect,
     ServiceDisconnect(ServiceDisconnectRequest),

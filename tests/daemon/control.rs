@@ -782,9 +782,11 @@ fn production_health_builder_pins_every_elected_field() {
         log_path: _,
         degraded_lanes,
         transitions_refused,
-        hook_parse_failures,
+        harness_version_lines,
     } = health(&budget);
-    assert!(hook_parse_failures.is_empty());
+    // The version lines come from the production wiring (`run_elected`), not
+    // from the provider.
+    assert!(harness_version_lines.is_empty());
     assert!(degraded_lanes.is_empty());
     assert_eq!(transitions_refused, 0);
     assert_eq!(got_instance, instance_id);
@@ -982,15 +984,15 @@ fn health_without_provider_observations_stays_typed_unknown_and_degraded() {
     assert_eq!(health.retirement_pending, None);
 }
 
-/// Health carries the Codex admission line — a schema-matched,
-/// live-unverified one as one bounded limitation (it still counts as
-/// cooperative) — and the production provider forwards the daemon's boot
-/// observation slot.
-/// Kills: dropping the codex detail from Health, an unbounded detail line,
-/// demoting the schema-matched flag to a note, and a provider that ignores
-/// the observed admission.
+/// A schema-matched, live-unverified Codex admission still counts as
+/// cooperative but is no Health line any more (ht-xoc.5: a new version is not
+/// a problem; doctor carries the admission detail), and the production
+/// provider forwards the daemon's boot observation slot.
+/// Kills: a schema-matched admission that renders a limitation or a note
+/// (bounded or not), a state that is not cooperative, and a provider that
+/// ignores the observed admission.
 #[test]
-fn health_reports_the_codex_admission_detail_as_a_bounded_limitation() {
+fn schema_matched_codex_admission_adds_no_health_line_and_the_provider_forwards_it() {
     use crate::daemon::health::HarnessStatus;
     use crate::protocol::results::HarnessState;
     let line = "codex 0.159.2: schema-matched, live-unverified: recipe codex-hooks-v1 hook \
@@ -1006,9 +1008,12 @@ fn health_reports_the_codex_admission_detail_as_a_bounded_limitation() {
     assert!(
         health
             .limitations
-            .contains(&format!("harness codex: {line}")),
-        "{:?}",
-        health.limitations
+            .iter()
+            .chain(&health.notes)
+            .all(|line| !line.contains("schema-matched") && !line.starts_with("harness codex:")),
+        "{:?} {:?}",
+        health.limitations,
+        health.notes
     );
     let mut inputs = HealthInputs::unknown(Uuid::new_v4(), Uuid::new_v4());
     inputs.codex = HarnessStatus::Cooperative {
@@ -1018,13 +1023,6 @@ fn health_reports_the_codex_admission_detail_as_a_bounded_limitation() {
     let health = inputs.assemble();
     assert!(health.limitations.iter().all(|s| s.len() <= 256));
     assert!(health.validate().is_ok());
-    assert!(
-        !HealthInputs::unknown(Uuid::new_v4(), Uuid::new_v4())
-            .assemble()
-            .limitations
-            .iter()
-            .any(|s| s.starts_with("harness codex:"))
-    );
 
     use crate::ports::StorePort;
     use std::sync::Arc;
@@ -1538,11 +1536,11 @@ fn cooperative_inputs() -> HealthInputs {
 /// User report (ht-4is.8.16): a fully healthy cooperative install read
 /// `degraded`. The cooperative mode is the designed one: Health is
 /// `healthy`, the harnesses are `cooperative` (not `unsupported`), the
-/// cooperative receipt and wake facts are notes, and only the
-/// schema-matched Codex admission stays a limitation.
+/// cooperative receipt and wake facts are notes, and (ht-xoc.5) no admission
+/// version line is shown: the schema-matched Codex is not a limitation.
 /// Kills: requiring native-verified harnesses, native current execution or
 /// host receipt registration for `healthy`; reporting cooperative facts as
-/// limitations; dropping the schema-matched flag.
+/// limitations; a version admission line that returns to Health.
 #[test]
 fn cooperative_mode_is_healthy_with_notes() {
     use crate::daemon::health::{COOPERATIVE_WAKE_LINE, cooperative_receipt_line};
@@ -1552,20 +1550,10 @@ fn cooperative_mode_is_healthy_with_notes() {
     assert!(health.validate().is_ok());
     assert_eq!(health.harness.claude, HarnessState::Cooperative);
     assert_eq!(health.harness.codex, HarnessState::Cooperative);
-    assert_eq!(
-        health.limitations,
-        vec![
-            "harness codex: codex 0.159.3: schema-matched, live-unverified: recipe codex-hooks-v1"
-                .to_owned()
-        ]
-    );
+    assert!(health.limitations.is_empty(), "{:?}", health.limitations);
     assert_eq!(
         health.notes,
-        vec![
-            "harness claude: claude 2.1.286: listed: recipe claude-hooks-2.1.283".to_owned(),
-            cooperative_receipt_line(),
-            COOPERATIVE_WAKE_LINE.to_owned(),
-        ]
+        vec![cooperative_receipt_line(), COOPERATIVE_WAKE_LINE.to_owned(),]
     );
     assert!(cooperative_receipt_line().len() <= 256 && COOPERATIVE_WAKE_LINE.len() <= 256);
     let json = serde_json::to_value(&health).unwrap();
@@ -1674,9 +1662,12 @@ fn claude_observation_classifies_cooperative_refused_and_absent() {
         crate::app::claude_status(Some(Ok("2.1.286".into())), CapabilityState::Supported),
         HarnessStatus::Supported(_)
     ));
+    // A version verdict is not a Health limitation (it reaches Health through
+    // evidence); an unobservable binary is.
     assert!(matches!(
         crate::app::claude_status(Some(Err(VersionError::Unsupported("2.1.288".into()))), unsupported),
-        HarnessStatus::Refused(detail) if detail.starts_with("claude 2.1.288: no recipe admits it")
+        HarnessStatus::VersionRefused(detail)
+            if detail.starts_with("claude 2.1.288: no recipe admits it")
     ));
     assert!(matches!(
         crate::app::claude_status(Some(Err(VersionError::Unavailable)), unsupported),

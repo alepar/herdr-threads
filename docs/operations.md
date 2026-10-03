@@ -42,7 +42,7 @@ Full steps are in [install.md](install.md#harness-hooks); these are the operatio
 ## Daemon health and lifecycle
 
 - `daemon health` reports the running owner. It never starts a daemon, and exits 3 (`host_unavailable`) when none is running.
-- `doctor` is read-only. It reports the version, state directory safety, instance directory, daemon reachability and health, the Claude hook installation for the current project (`installed` separate from `observed`) both recipe registries (`hooks.claude.recipes`, `hooks.codex.recipes`), the admission of the `codex` on PATH (`hooks.codex.installed`: listed, schema-matched live-unverified, optimistic, refused or not found; `hooks.claude.installed` is the same object for the `claude` on PATH, with an optimistic or known-broken Claude shown as a `hooks.claude.warning:` line) and the admission evidence the latest Codex hook stored (`hooks.codex.last_hook`). `hooks.claude.observed` says whether native Claude hook runs are verified; in the cooperative mode it reads `not observable: Claude hook runs are not recorded (cooperative mode)`, which is not a failure. Doctor also checks the environment it runs in (the one the harnesses run in): a `claude` or `codex` on PATH whose hooks are not installed in the files this environment resolves (`$CLAUDE_CONFIG_DIR/settings.json`, `$CODEX_HOME/hooks.json`), a `codex` on PATH that is refused (no recipe admits it), or a Codex sandbox warning is printed as a `limitation:` line and makes the result `degraded`. `result: ok` means the daemon is `healthy` and doctor found no such problem. It exits 0 when the daemon is reachable (`ok` or `degraded`), 3 when it is not running, unreachable or a different version, and 2 for a missing or unsafe context (`result: unsafe_state_dir`, with no `daemon ensure` suggestion).
+- `doctor` is read-only. It reports the version, state directory safety, instance directory, daemon reachability and health, the Claude hook installation for the current project (`installed` separate from `observed`) both recipe registries (`hooks.claude.recipes`, `hooks.codex.recipes`), the admission of the `codex` on PATH (`hooks.codex.installed`: listed, schema-matched live-unverified, optimistic, refused or not found; `hooks.claude.installed` is the same object for the `claude` on PATH, with an optimistic or known-broken Claude shown as a `hooks.claude.warning:` line) and the admission evidence the latest Codex hook stored (`hooks.codex.last_hook`). With a daemon that answers `harness.states`, doctor also prints one block per harness with its version verdicts (see "Version verdicts" below); the PATH `claude`'s optimistic or known-broken warning is then the detected-version line of that block instead of `hooks.claude.warning:`. `hooks.claude.observed` says whether native Claude hook runs are verified; in the cooperative mode it reads `not observable: Claude hook runs are not recorded (cooperative mode)`, which is not a failure. Doctor also checks the environment it runs in (the one the harnesses run in): a `claude` or `codex` on PATH whose hooks are not installed in the files this environment resolves (`$CLAUDE_CONFIG_DIR/settings.json`, `$CODEX_HOME/hooks.json`), a `codex` on PATH that is refused (no recipe admits it), or a Codex sandbox warning is printed as a `limitation:` line and makes the result `degraded`. `result: ok` means the daemon is `healthy` and doctor found no such problem. It exits 0 when the daemon is reachable (`ok` or `degraded`), 3 when it is not running, unreachable or a different version, and 2 for a missing or unsafe context (`result: unsafe_state_dir`, with no `daemon ensure` suggestion).
 - `view --once` prints the compact operator view (health, thread directory, overdue obligations). The plugin's overlay pane repeats it on Enter and quits on `q`.
 - `daemon ensure` starts the daemon if none is running and waits up to five seconds for it to become ready.
 - `daemon stop` asks the daemon to cancel gracefully and waits for accepted work to drain. It deletes no state.
@@ -55,28 +55,40 @@ Health `state` is `healthy` in the designed cooperative mode: database and schem
 
 - `cooperative`: a recipe admits the installed version; model-issued accept/ACK is recorded as `cooperative_top_level` provenance, not as a native-verified receipt. This is the designed mode.
 - `supported`: native-verified model receipt. No recipe declares it in this build.
-- `unsupported`: not usable: no executable on the daemon's `PATH` (a note) or a version no recipe admits (a limitation).
+- `unsupported`: not usable: no executable on the daemon's `PATH` (a note), a `--version` that could not be observed or recognized (a limitation), or a version below the supported floor or inside a known-broken range (no Health line of its own: it reaches Health through the version verdicts below once a session has run with it).
 - `unknown`: the bounded boot observation has not finished yet.
 
 Hook installation is per harness environment, so `doctor` (run in that environment) checks it, not the daemon.
 
 `notes` are informational facts about the cooperative mode and never degrade Health:
 
-- `harness claude: claude X: listed: recipe ...`, the admitted Claude version;
 - `harness NAME not installed: no executable ... on the daemon's PATH`;
 - `receipt cooperative: harness cooperative means an admitted recipe without native-verified receipt; ...`, while a harness is `cooperative` (receipts are cooperative, demonstrated live only on Claude 2.1.285-2.1.286 and Codex 0.159.2, schema-matched, live-unverified);
 - `wake cooperative: ...`, while wakes use the cooperative safe prompt instead of native current execution.
 
 `limitations` are problems; a `degraded` state names at least one. Read them rather than the state word alone:
 
-- `harness codex: codex X: schema-matched, live-unverified: ...` for a Codex admitted only by schema fingerprint. It is still `cooperative` and does not by itself degrade Health;
-- `harness NAME unsupported: ...` for an installed version no recipe admits, and `harness NAME unknown: ...` before the boot observation finishes;
+- `harness NAME unsupported: ...` for an installed binary whose `--version` could not be observed or recognized (the hook cannot admit it), and `harness NAME unknown: ...` before the boot observation finishes;
+- a version verdict line (`harness NAME VERSION broken: ...` or `NAME VERSION is below the supported floor MIN; upgrade NAME`), at most one per harness: see "Version verdicts";
 - `host unavailable: ...` when the host socket is unreachable;
 - `wake unavailable: ...` when the host offers neither native current execution nor the safe cooperative prompt;
 - `scheduler degraded: ...` for a background worker failure (typed, redacted);
 - `retirement cleanup pending` / `retirement cleanup degraded`;
 - `unresolved seats: N; ...` followed by up to a few `unresolved seat SEAT on PANE (REASON)` lines, while any seat is unresolved (health also reports `unresolved_seats`);
 - `binding evidence: backfilled N at store startup, still lacking M now; ...` when older bindings lacked reconfirmation evidence at writer startup. The still-lacking count is rechecked on every health read.
+
+### Version verdicts
+
+A new or unlisted harness version is not a problem: Health says nothing about it, and it becomes *working* once a lifecycle payload and a tool payload both match the payload contract. Health only reports a version that is **broken**, and only one that had a session in the last 24 hours (the newest contract the daemon has seen from that harness decides). What the line asks of you depends on its ending:
+
+- `upgrade herdr-threads to X (supports NAME VERSION)`: this herdr-threads release's payload contract does not match NAME VERSION, but release X's does. Upgrade herdr-threads.
+- `pin NAME to <= Y`: Y is the newest version known to work (verified on this machine, else the manifest's last known working version). Downgrade NAME, or stop using VERSION.
+- `report: URL`: nothing newer is known to help. Follow the URL (the manifest row's issue, else the repository issues page) and report what you see.
+- `NAME VERSION is below the supported floor MIN; upgrade NAME`: the harness is older than every supported recipe; upgrade the harness.
+
+The wording before the action names the source: `payload field F is missing or has the wrong type` is local evidence (a hook on this machine saw it), `the canary|manual manifest row reports ...` is the published manifest, and `known broken in RANGE` is the compiled recipe tables. Local proof wins over a manifest or recipe `known_broken` verdict: a version that has worked here is `working`, with a doctor note.
+
+`doctor` prints the full picture when the daemon answers: per harness, `harness NAME: STATE VERSION — SOURCE` for the newest version (`local evidence (lifecycle + tool payloads)`, `local evidence: violation in EVENT/FIELD`, `canary manifest row (EVIDENCE)`, `manual manifest row`, `recipe tables`, `below the recipe floor` or `no evidence yet`), one indented line per other version seen in the last 24 hours, the notes and issue URL of a verdict, `version evidence unavailable: REASON (TIME)` when the newest payload could not be attributed to a version (for example a resumed Claude session before its first transcript entry), and `hook payloads not understood: N` for hook payloads the daemon counted as unparsable since boot (they add no Health line). The version found on the daemon's `PATH` that no session has used yet is evaluated the same way for doctor only (`new version, not yet seen working; verified on first use`). `--json` carries the same data as `harness_states`. The manifest that supplies the `canary` and `manual` verdicts is fetched at most once a day; to opt out set `"harness_manifest": "off"` in `settings.json` or `HERDR_THREADS_OFFLINE=1` (see docs/compatibility/harnesses.md, "Version manifest"); `doctor` prints the effective policy and the cache time right after the harness blocks.
 
 `last_scheduler_tick_at` is the completion time of the deadline scheduler's last error-free tick (at least every 5 s while the daemon runs, sooner after work is committed); `null` only until the first tick of this boot. `last_reconciliation_at` is the completion time of the last reconciliation over a verified coherent host publication.
 

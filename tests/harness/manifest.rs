@@ -382,6 +382,45 @@ fn mixed_contract_rows() {
     assert_eq!(none.latest_release.as_deref(), Some("0.9.0"));
 }
 
+/// Kills: an accessor that returns the own-contract row, a known_broken row, a
+/// null-contract row, or the first (not the greatest `supported_since`) row.
+#[test]
+fn other_contract_verified_picks_foreign_verified_row_with_greatest_supported_since() {
+    let manifest = parse(&doc(
+        2,
+        "0.9.0",
+        json!([
+            {"harness": "codex", "version": "0.170.0", "status": "verified",
+             "contract_id": "A", "supported_since": "9.9.9"},
+            {"harness": "codex", "version": "0.170.0", "status": "known_broken",
+             "contract_id": "B", "supported_since": "8.0.0"},
+            {"harness": "codex", "version": "0.170.0", "status": "verified",
+             "contract_id": null, "supported_since": "7.0.0"},
+            {"harness": "codex", "version": "0.170.0", "status": "verified",
+             "contract_id": "C", "supported_since": "0.3.0"},
+            {"harness": "codex", "version": "0.170.0", "status": "verified",
+             "contract_id": "D", "supported_since": "v0.12.0"},
+            {"harness": "claude", "version": "0.170.0", "status": "verified",
+             "contract_id": "E", "supported_since": "99.0.0"},
+        ]),
+    ))
+    .unwrap();
+    let found = manifest
+        .other_contract_verified("codex", "0.170.0", "A")
+        .unwrap();
+    assert_eq!(found.contract_id.as_deref(), Some("D"));
+    // Own contract excluded: from D's point of view the best other is C or A.
+    let from_d = manifest
+        .other_contract_verified("codex", "0.170.0", "D")
+        .unwrap();
+    assert_eq!(from_d.contract_id.as_deref(), Some("A"));
+    assert!(
+        manifest
+            .other_contract_verified("codex", "0.999.0", "A")
+            .is_none()
+    );
+}
+
 // -- policy -----------------------------------------------------------------
 
 fn settings(setting: HarnessManifestSetting) -> InstanceSettings {

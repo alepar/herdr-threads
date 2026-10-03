@@ -357,6 +357,7 @@ impl LocalService for DomainService {
             | Command::Capabilities
             | Command::HookParseFailure(_)
             | Command::HarnessEvidence(_)
+            | Command::HarnessStates
             | Command::Stop(_)
             | Command::ServiceInspect
             | Command::ServiceDisconnect(_)
