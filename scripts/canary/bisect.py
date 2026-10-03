@@ -95,9 +95,12 @@ def _attempt(probe_cmd, version, tier1):
     return attempt, failed_tier
 
 
-def run(candidates, baseline, probe_cmd, bisect=True, tier1=False, known_broken=()):
+def run(candidates, baseline, probe_cmd, bisect=True, tier1=False, known_broken=(), reprobe=()):
     """Search `candidates` (ascending, §D1) for the first failing version; returns the §D7/§D8 harness
-    result: status, first_bad, last_good, probes, excluded, ..."""
+    result: status, first_bad, last_good, probes, excluded, ...
+
+    `reprobe` versions are probed after the search, on every return path, with role "reprobe"; they never
+    change the verdict (they only add probes, so the manifest writer can record them)."""
     versions = _sibling("versions")
     cands = list(candidates)
     ranges = [tuple(r) for r in known_broken]
@@ -133,6 +136,17 @@ def run(candidates, baseline, probe_cmd, bisect=True, tier1=False, known_broken=
         res["signals"] = [{"id": c["id"], "detail": c.get("detail", "")} for c in last if c["status"] == "warn"]
 
     res["crossed_ranges"] = len([r for r in ranges if any(versions.in_range(v, r) for v in excluded)])
+    res["reprobed"] = []
+
+    status = _search(res, versions, kept, excluded, ranges, baseline, bisect, probe, finish, evidence)
+    for v in sorted(set(reprobe), key=versions.version_key):
+        if all(p["version"] != v for p in res["probes"]):
+            probe(v, "reprobe")
+            res["reprobed"].append(v)
+    return status
+
+
+def _search(res, versions, kept, excluded, ranges, baseline, bisect, probe, finish, evidence):
     if not kept:
         return finish("no_candidates")
 
@@ -213,11 +227,13 @@ def main(argv=None):
     ap.add_argument("--baseline", required=True, help="verified_max, assumed good")
     ap.add_argument("--bisect", action="store_true", help="binary search (default: probe every candidate)")
     ap.add_argument("--tier1", action="store_true", help="the probe command runs the model tier")
+    ap.add_argument("--reprobe", default="", help="comma-separated versions probed after the search (verdict-neutral)")
     ap.add_argument("--known-broken", default="[]", help='JSON [{"min":"a.b.c"|null,"max":"x.y.z"|null}]')
     args = ap.parse_args(argv)
     ranges = [(r.get("min"), r.get("max")) for r in json.loads(args.known_broken)]
     res = run([c for c in args.candidates.split(",") if c], args.baseline, args.probe_cmd,
-              bisect=args.bisect, tier1=args.tier1, known_broken=ranges)
+              bisect=args.bisect, tier1=args.tier1, known_broken=ranges,
+              reprobe=[v for v in args.reprobe.split(",") if v])
     print(json.dumps(res, indent=2))
     return _sibling("report").exit_code({"harnesses": [res]})
 
