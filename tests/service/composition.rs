@@ -1279,12 +1279,18 @@ fn elected_service_fixture(custom_settings: bool) {
         serde_json::from_value(serde_json::json!({"claim":{"instance":"unconfigured-fixture","seat":"s","binding_generation":0,"role":"top_level","harness":"codex","native_session":"s","execution":"e","target":"p"},"mode":{"kind":"current"},"operation":"op"})).unwrap()
     ), &budget()).unwrap_err();
     assert_eq!(error.code, ErrorCode::CallerUnverified);
+    // A liveness bound for the shutdown: the daemon is a subprocess, and a
+    // loaded machine can take longer than the 3 s request budget to stop it
+    // (ht-zo4: DeadlineExceeded at 1158 s suite load).
     herdr_threads::daemon::control::stop_and_wait(
         &client,
         &paths,
         &descriptor,
         clock.as_ref(),
-        &budget(),
+        &CallBudget {
+            deadline: MonoInstant(clock.monotonic_now().0 + 60_000),
+            cancellation: Cancellation::default(),
+        },
     )
     .unwrap();
     assert!(child.0.wait().unwrap().success());

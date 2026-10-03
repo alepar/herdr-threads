@@ -487,7 +487,18 @@ where
                 instance,
                 Some(descriptor.boot_id),
             );
-            stop_and_wait(&client, &paths, &descriptor, clock.as_ref(), &budget())?;
+            // The exit wait is an external wait (stretched in test children of
+            // a loaded suite, external_bound); production keeps 5 s.
+            let stop_budget = CallBudget {
+                deadline: MonoInstant(
+                    clock.monotonic_now().0.saturating_add(
+                        crate::protocol::time::external_bound(std::time::Duration::from_secs(5))
+                            .as_millis() as u64,
+                    ),
+                ),
+                cancellation: Cancellation::default(),
+            };
+            stop_and_wait(&client, &paths, &descriptor, clock.as_ref(), &stop_budget)?;
             CommandResult::StopAccepted(StopAccepted {
                 boot_id: descriptor.boot_id.to_string(),
             })

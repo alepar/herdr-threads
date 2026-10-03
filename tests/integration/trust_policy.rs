@@ -1425,8 +1425,14 @@ fn codex_reattachment_without_herdr_hint_then_wake() {
             )
             .ok()
     };
+    // Wait for the codex seat's row to record the delivered prompt: the stand-in
+    // Herdr records a prompt before the daemon commits that attempt's outcome,
+    // and an earlier attempt made before Herdr detected the codex agent may have
+    // left `unsafe` (ht-ddp, under load).
     world.wait_for("both wake attempts", |world| {
-        outcome(&x).is_some() && outcome(&y).is_some() && !world.herdr.prompts().is_empty()
+        outcome(&x).is_some()
+            && outcome(&y).as_deref() == Some("submitted")
+            && !world.herdr.prompts().is_empty()
     });
     let prompts = world.herdr.prompts();
     assert_eq!(prompts.len(), 1, "{prompts:?}");

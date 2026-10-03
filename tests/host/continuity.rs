@@ -467,8 +467,12 @@ fn fix1_withheld_readiness_returns_finite_timeout_and_cleans_child() {
     let mut owned = PrivateProcess::new(child);
     let started = Instant::now();
     let result = owned.wait_line("ready", started + Duration::from_millis(80));
+    // A wait that overran its deadline would have read the 'ready' line
+    // (printed at 250 ms) and returned Ok, which the assertion above refuses;
+    // the elapsed bound is only a hang guard (ht-p5v: wall-clock windows
+    // flake under load).
     assert_eq!(result, Err(WaitFailure::Timeout));
-    assert!(started.elapsed() < Duration::from_millis(200));
+    assert!(started.elapsed() < Duration::from_secs(10));
     let pid = owned.child.id();
     drop(owned);
     assert!(KernelProcessInfo.process_info(pid).is_err());
@@ -531,7 +535,16 @@ fn fix1_withheld_accepted_early_request_and_eof_reach_cleanup() {
             }
             owned.start_request(&endpoint.0, cancellation);
         }
-        let waited = owned.wait_line("accepted", Instant::now() + Duration::from_millis(100));
+        // Mode 0 asserts that nothing arrives (a short negative window that
+        // load cannot break); modes 1 and 2 wait for an event (the request
+        // finishing, stdout EOF), which a loaded machine may deliver late:
+        // there the deadline is only a hang guard (ht-p5v).
+        let window = if mode == 0 {
+            Duration::from_millis(100)
+        } else {
+            Duration::from_secs(10)
+        };
+        let waited = owned.wait_line("accepted", Instant::now() + window);
         assert_eq!(
             waited,
             Err(if mode == 0 {
@@ -548,8 +561,14 @@ fn fix1_withheld_accepted_early_request_and_eof_reach_cleanup() {
                 ErrorCode::Cancelled
             );
         }
+        // Cleanup kills the fixture rather than waiting out its 30 s sleep.
+        let cleanup = Instant::now();
         drop(owned);
-        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(
+            cleanup.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            cleanup.elapsed()
+        );
         assert!(KernelProcessInfo.process_info(pid).is_err());
         eprintln!(
             "fix1 failure cleanup mode={mode}, elapsed={:?}",

@@ -421,8 +421,11 @@ pub fn stop_and_wait(
     })?;
     request_stop(client, paths, descriptor, budget)?;
     let remaining_ms = budget.deadline.0.saturating_sub(clock.monotonic_now().0);
+    // The caller's budget bounds the exit wait (the CLI's `daemon stop` passes
+    // 5 s); a fixed 5 s cap here overrode callers that allow longer, such as a
+    // test's liveness bound on a loaded machine (ht-zo4).
     let wait = if descriptor.protocol_version == PROTOCOL_VERSION {
-        Duration::from_millis(remaining_ms).min(Duration::from_secs(5))
+        Duration::from_millis(remaining_ms)
     } else {
         SKEW_STOP_WAIT
     };
