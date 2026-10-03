@@ -213,9 +213,14 @@ fn probe_history_full_bodies() {
 fn capability_constants_are_stable() {
     assert_eq!(HISTORY_FULL_BODIES, "history.full_bodies");
     assert_eq!(HOOK_PARSE_FAILURE_REPORT, "hook.parse_failure_report");
+    assert_eq!(HARNESS_EVIDENCE, "hook.harness_evidence");
     assert_eq!(
         ADVERTISED,
-        &["history.full_bodies", "hook.parse_failure_report"]
+        &[
+            "history.full_bodies",
+            "hook.parse_failure_report",
+            "hook.harness_evidence"
+        ]
     );
 }
 
@@ -229,6 +234,7 @@ fn every_advertised_capability_has_a_handler() {
         match *name {
             HISTORY_FULL_BODIES => probe_history_full_bodies(),
             HOOK_PARSE_FAILURE_REPORT => probe_hook_parse_failure_report(),
+            HARNESS_EVIDENCE => probe_harness_evidence(),
             other => panic!("{other} is advertised but has no handler probe here"),
         }
     }
@@ -422,4 +428,234 @@ fn probe_hook_parse_failure_report() {
         serde_json::json!({"kind": "hook_parse_failure",
                            "args": {"harness": "codex", "detail": "Invalid"}})
     );
+}
+
+fn evidence_note(version: Option<&str>) -> crate::protocol::commands::HarnessEvidence {
+    use crate::protocol::commands::{HarnessEvidence, HarnessEvidenceOutcome};
+    HarnessEvidence {
+        harness: "claude".into(),
+        version: version.map(str::to_owned),
+        unattributed_reason: version.is_none().then(|| "transcript not found".into()),
+        contract_id: "0123456789abcdef".into(),
+        event: "SessionStart".into(),
+        outcome: HarnessEvidenceOutcome::Ok,
+        session_id: Some("s1".into()),
+    }
+}
+
+/// ht-xoc.4. Kills: a control route that drops a harness-evidence note or
+/// answers an error, a recorder that is not reached, and a `verified` reply
+/// that does not follow the row.
+fn probe_harness_evidence() {
+    use crate::{
+        daemon::harness_evidence::HarnessEvidenceRecorder,
+        ports::StorePort,
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+        test_support::isolation::TestIsolation,
+    };
+    let (instance, boot) = (Uuid::new_v4(), Uuid::new_v4());
+    let iso = TestIsolation::new("cap-harness-evidence");
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock);
+    let store = Arc::new(
+        SqliteStore::new(
+            StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
+            "i",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    let recorder = Arc::new(HarnessEvidenceRecorder::new(store.clone(), None, clock));
+    let handler = ControlService::new(
+        StopController::new(instance, boot, Cancellation::default()),
+        move |_: &CallBudget| HealthInputs::unknown(instance, boot),
+        NoDomain,
+    )
+    .with_harness_evidence(recorder);
+    let send = |note| {
+        handler
+            .handle(
+                Command::HarnessEvidence(note),
+                PeerIdentity::from_kernel(501),
+                &budget(),
+            )
+            .unwrap()
+    };
+    assert_eq!(
+        send(evidence_note(Some("2.1.286"))),
+        CommandResult::HarnessEvidenceRecorded { verified: false }
+    );
+    let row = store
+        .harness_evidence("claude", "2.1.286", "0123456789abcdef", &budget())
+        .unwrap();
+    assert!(row.is_some_and(|row| row.lifecycle_ok_at.is_some()));
+    assert_eq!(
+        send(evidence_note(None)),
+        CommandResult::HarnessEvidenceRecorded { verified: false }
+    );
+    assert!(
+        store
+            .last_unattributed("claude", &budget())
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn control_without_a_recorder_accepts_and_drops_evidence() {
+    let (instance, boot) = (Uuid::new_v4(), Uuid::new_v4());
+    let handler = ControlService::new(
+        StopController::new(instance, boot, Cancellation::default()),
+        move |_: &CallBudget| HealthInputs::unknown(instance, boot),
+        NoDomain,
+    );
+    let result = handler
+        .handle(
+            Command::HarnessEvidence(evidence_note(Some("2.1.286"))),
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap();
+    assert_eq!(
+        result,
+        CommandResult::HarnessEvidenceRecorded { verified: false }
+    );
+}
+
+#[test]
+fn harness_evidence_round_trips_on_the_wire() {
+    use crate::protocol::commands::HarnessEvidenceOutcome;
+    let mut note = evidence_note(Some("2.1.286"));
+    note.outcome = HarnessEvidenceOutcome::Violation {
+        field: "tool_input.command".into(),
+    };
+    let command = Command::HarnessEvidence(note);
+    assert!(command.validate().is_ok());
+    let json = serde_json::to_value(&command).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({"kind": "harness_evidence", "args": {
+            "harness": "claude", "version": "2.1.286", "unattributed_reason": null,
+            "contract_id": "0123456789abcdef", "event": "SessionStart",
+            "outcome": {"kind": "violation", "field": "tool_input.command"},
+            "session_id": "s1"}})
+    );
+    assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
+    let result = CommandResult::HarnessEvidenceRecorded { verified: true };
+    let encoded = serde_json::to_value(&result).unwrap();
+    assert_eq!(
+        encoded,
+        serde_json::json!({"kind": "harness_evidence_recorded", "data": {"verified": true}})
+    );
+    assert_eq!(
+        serde_json::from_value::<CommandResult>(encoded).unwrap(),
+        result
+    );
+    // deny_unknown_fields: an extra key is refused.
+    let extra = serde_json::json!({"kind": "harness_evidence", "args": {
+        "harness": "claude", "version": "2.1.286", "unattributed_reason": null,
+        "contract_id": "0123456789abcdef", "event": "SessionStart",
+        "outcome": {"kind": "ok"}, "session_id": null, "payload": "x"}});
+    assert!(serde_json::from_value::<Command>(extra).is_err());
+}
+
+#[test]
+fn harness_evidence_validation_bounds_every_field() {
+    use crate::protocol::commands::HarnessEvidenceOutcome;
+    let valid = || evidence_note(Some("2.1.286"));
+    assert!(valid().validate().is_ok());
+    assert!(evidence_note(None).validate().is_ok());
+    let rejected: Vec<(&str, crate::protocol::commands::HarnessEvidence)> = vec![
+        ("harness", {
+            let mut n = valid();
+            n.harness = "human".into();
+            n
+        }),
+        ("version not x.y.z", {
+            let mut n = valid();
+            n.version = Some("2.1".into());
+            n
+        }),
+        ("version pre-release", {
+            let mut n = valid();
+            n.version = Some("2.1.286-beta".into());
+            n
+        }),
+        ("both version and reason", {
+            let mut n = valid();
+            n.unattributed_reason = Some("x".into());
+            n
+        }),
+        ("neither version nor reason", {
+            let mut n = valid();
+            n.version = None;
+            n
+        }),
+        ("empty reason", {
+            let mut n = evidence_note(None);
+            n.unattributed_reason = Some(String::new());
+            n
+        }),
+        ("long reason", {
+            let mut n = evidence_note(None);
+            n.unattributed_reason = Some("r".repeat(129));
+            n
+        }),
+        ("short contract id", {
+            let mut n = valid();
+            n.contract_id = "0123".into();
+            n
+        }),
+        ("uppercase contract id", {
+            let mut n = valid();
+            n.contract_id = "0123456789ABCDEF".into();
+            n
+        }),
+        ("empty event", {
+            let mut n = valid();
+            n.event = String::new();
+            n
+        }),
+        ("long event", {
+            let mut n = valid();
+            n.event = "a".repeat(64);
+            n
+        }),
+        ("event with punctuation", {
+            let mut n = valid();
+            n.event = "Pre-Tool".into();
+            n
+        }),
+        ("long field", {
+            let mut n = valid();
+            n.outcome = HarnessEvidenceOutcome::Violation {
+                field: "f".repeat(129),
+            };
+            n
+        }),
+        ("empty field", {
+            let mut n = valid();
+            n.outcome = HarnessEvidenceOutcome::Violation {
+                field: String::new(),
+            };
+            n
+        }),
+        ("long session id", {
+            let mut n = valid();
+            n.session_id = Some("s".repeat(257));
+            n
+        }),
+    ];
+    for (what, note) in rejected {
+        assert!(
+            Command::HarnessEvidence(note).validate().is_err(),
+            "{what} must be rejected"
+        );
+    }
+    let mut edge = valid();
+    edge.event = "a".repeat(63);
+    edge.session_id = Some("s".repeat(256));
+    edge.outcome = HarnessEvidenceOutcome::Violation {
+        field: "f".repeat(128),
+    };
+    assert!(edge.validate().is_ok(), "the bounds are inclusive");
 }

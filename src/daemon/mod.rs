@@ -1,6 +1,7 @@
 //! Elected daemon diagnostics and runtime composition.
 pub mod control;
 pub mod diagnostics;
+pub mod harness_evidence;
 pub mod health;
 pub mod lifecycle;
 pub mod logs;

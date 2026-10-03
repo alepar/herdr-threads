@@ -16,6 +16,9 @@ pub enum Command {
     /// parse (ht-p03.23); sent only to a daemon advertising
     /// `hook.parse_failure_report`.
     HookParseFailure(HookParseFailure),
+    /// A hook reports what a payload showed about the harness that sent it
+    /// (ht-xoc.4); sent only to a daemon advertising `hook.harness_evidence`.
+    HarnessEvidence(HarnessEvidence),
     Stop(StopRequest),
     ServiceInspect,
     ServiceDisconnect(ServiceDisconnectRequest),
@@ -84,6 +87,91 @@ pub fn bounded_hook_detail(text: &str) -> String {
 pub struct HookParseFailure {
     pub harness: String,
     pub detail: String,
+}
+
+/// Longest `field` and `unattributed_reason` a [`HarnessEvidence`] may carry.
+pub const HARNESS_EVIDENCE_TEXT_BYTES: usize = 128;
+/// Longest `session_id` a [`HarnessEvidence`] may carry.
+pub const HARNESS_EVIDENCE_SESSION_BYTES: usize = 256;
+
+/// What one hook payload said about its harness version's contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HarnessEvidenceOutcome {
+    Ok,
+    Violation { field: String },
+    Malformed,
+}
+
+/// One hook's evidence note (ht-xoc.4): no payload content, only the harness,
+/// its attributed version (or why there is none), the hook's own contract id,
+/// the event, the outcome and the session id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HarnessEvidence {
+    /// `claude` or `codex`.
+    pub harness: String,
+    /// Canonical `X.Y.Z`; `None` when the payload could not be attributed.
+    pub version: Option<String>,
+    /// Why there is no version; present exactly when `version` is `None`.
+    pub unattributed_reason: Option<String>,
+    /// The hook's contract id: 16 lowercase hex.
+    pub contract_id: String,
+    /// The registered (or discriminator) event name: 1..=63 ASCII alphanumerics.
+    pub event: String,
+    pub outcome: HarnessEvidenceOutcome,
+    pub session_id: Option<String>,
+}
+
+impl HarnessEvidence {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        const BAD: &str = "invalid harness evidence";
+        if !matches!(self.harness.as_str(), "claude" | "codex") {
+            return Err(BAD);
+        }
+        match (&self.version, &self.unattributed_reason) {
+            (Some(version), None) => {
+                if crate::harness::contract::normalize_version(&self.harness, version).as_deref()
+                    != Some(version.as_str())
+                {
+                    return Err(BAD);
+                }
+            }
+            (None, Some(reason)) => {
+                if reason.is_empty() || reason.len() > HARNESS_EVIDENCE_TEXT_BYTES {
+                    return Err(BAD);
+                }
+            }
+            _ => return Err(BAD),
+        }
+        if self.contract_id.len() != 16
+            || !self
+                .contract_id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(BAD);
+        }
+        if self.event.is_empty()
+            || self.event.len() > 63
+            || !self.event.bytes().all(|b| b.is_ascii_alphanumeric())
+        {
+            return Err(BAD);
+        }
+        if let HarnessEvidenceOutcome::Violation { field } = &self.outcome
+            && (field.is_empty() || field.len() > HARNESS_EVIDENCE_TEXT_BYTES)
+        {
+            return Err(BAD);
+        }
+        if self
+            .session_id
+            .as_ref()
+            .is_some_and(|id| id.len() > HARNESS_EVIDENCE_SESSION_BYTES)
+        {
+            return Err(BAD);
+        }
+        Ok(())
+    }
 }
 
 /// Service control only. The envelope supplies the expected instance; the
@@ -539,6 +627,7 @@ impl Command {
             {
                 Err("invalid hook parse-failure report")
             }
+            Self::HarnessEvidence(evidence) => evidence.validate(),
             Self::History(query) if query.initial.is_some() && query.page.cursor.is_some() => {
                 Err("history selector conflicts with cursor")
             }

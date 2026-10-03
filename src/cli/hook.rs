@@ -966,7 +966,7 @@ fn report_parse_failure_to_daemon(
     report_parse_failure(&client, &capabilities, args.harness, error, &call_budget);
 }
 
-fn budget(deadline: Instant, clock: &dyn Clock) -> CallBudget {
+pub(super) fn budget(deadline: Instant, clock: &dyn Clock) -> CallBudget {
     let remaining = deadline.saturating_duration_since(Instant::now());
     CallBudget {
         deadline: MonoInstant(
@@ -1923,8 +1923,11 @@ fn same_endpoint(a: &Path, b: &Path) -> bool {
 /// alone (no file, process or socket I/O beyond resolving two directories):
 /// not a Herdr pane, or a pane of another Herdr instance than the installed
 /// `--host-endpoint`. A user-level hook runs in every harness session; in
-/// these it must exit 0 at once with no output, no version probe and no
-/// daemon start.
+/// these it must exit 0 with no output, no version probe and no daemon start.
+/// The one thing it still does is the harness evidence note
+/// ([`super::hook_evidence`]): a bounded read of the payload and, when the
+/// per-session gate says so, one short best-effort call to a daemon that is
+/// already running.
 pub fn foreign_session(
     args: &HookArgs,
     env: &HookEnv,
@@ -1957,6 +1960,21 @@ fn drain_input(input: impl Read + Send + 'static, bound: Duration) {
         let _ = sender.send(());
     });
     let _ = receiver.recv_timeout(bound);
+}
+
+/// The hook's payload, read for at most `bound` and at most `MAX_STDIN + 1`
+/// bytes. `None` when the writer stalls or the read fails: a partial payload
+/// must never become evidence.
+fn read_input_bounded(mut input: impl Read + Send + 'static, bound: Duration) -> Option<Vec<u8>> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let read = (&mut input)
+            .take(MAX_STDIN as u64 + 1)
+            .read_to_end(&mut bytes);
+        let _ = sender.send(read.ok().map(|_| bytes));
+    });
+    receiver.recv_timeout(bound).ok().flatten()
 }
 
 static OUTPUT: Mutex<()> = Mutex::new(());
@@ -2021,7 +2039,20 @@ pub fn run_process_with(
     if let Ok(args) = &parsed
         && foreign_session(args, env, std::env::var_os("HERDR_SOCKET_PATH").as_deref()).is_some()
     {
-        drain_input(input, Duration::from_millis(200));
+        // Silent, but the payload is still evidence about the harness: a
+        // bounded read, then a short best-effort note (never a version probe
+        // or a daemon start).
+        if let Some(stdin) = read_input_bounded(input, Duration::from_millis(200)) {
+            let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+            super::hook_evidence::report(
+                args,
+                &stdin,
+                hook_state_dir(args).as_deref(),
+                Instant::now() + super::hook_evidence::FOREIGN_CALL,
+                super::hook_evidence::FOREIGN_CALL,
+                clock,
+            );
+        }
         return 0;
     }
     // The watchdog starts at the tool budget, so a stalled stdin cannot hold a
@@ -2054,14 +2085,27 @@ pub fn run_process_with(
         }
     };
     let mut stdin = Vec::new();
-    if (&mut input)
+    let read_ok = (&mut input)
         .take(MAX_STDIN as u64 + 1)
         .read_to_end(&mut stdin)
-        .is_err()
-    {
+        .is_ok();
+    if !read_ok {
         stdin.clear();
     }
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+    // The evidence note goes first, whatever the version ladder will say: a
+    // refused, below-floor or known-broken version still reports what its
+    // payload looked like, and no `--version` is run on this path.
+    if read_ok {
+        super::hook_evidence::report(
+            &args,
+            &stdin,
+            hook_state_dir(&args).as_deref(),
+            started + tool_budget.saturating_sub(WATCHDOG_MARGIN),
+            super::hook_evidence::CALL_CAP,
+            Arc::clone(&clock),
+        );
+    }
     let observe_budget = tool_budget
         .saturating_sub(WATCHDOG_MARGIN)
         .saturating_sub(started.elapsed());

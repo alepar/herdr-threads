@@ -1062,6 +1062,7 @@ where
                 ],
             );
             let health_store = Arc::clone(&store);
+            let evidence_store = Arc::clone(&store);
             let health_clock = Arc::clone(&factory_clock);
             let domain = DomainService::with_identity(
                 instance.to_string(),
@@ -1116,9 +1117,18 @@ where
                     Arc::new(move |line: &str| log.write_line(line))
                 },
             ));
+            let harness_evidence = Arc::new(
+                crate::daemon::harness_evidence::HarnessEvidenceRecorder::new(
+                    evidence_store,
+                    Some(Arc::clone(&manifest)
+                        as Arc<dyn crate::daemon::harness_evidence::ManifestTrigger>),
+                    Arc::clone(&factory_clock),
+                ),
+            );
             Ok(Arc::new(
                 ControlService::new(stop, health, domain)
                     .with_hook_parse_failures(factory_parse_failures)
+                    .with_harness_evidence(harness_evidence)
                     .with_harness_manifest(manifest),
             ) as Arc<dyn LocalService>)
         },

@@ -5,10 +5,12 @@ use herdr_threads::test_support::spawn::SpawnOwned;
 use herdr_threads::{
     app::SystemClock,
     cli::hook::{LIFECYCLE_BUDGET, TOOL_BUDGET, installed_argv},
+    daemon::harness_evidence::{HarnessEvidenceRecorder, ManifestTrigger},
     daemon::{
         ownership::OwnerLock,
         paths::{InstancePaths, RuntimeContext},
     },
+    harness::manifest::{CurlFetcher, ManifestPolicy, ManifestService},
     harness::{context::Harness, setup::plan_claude},
     protocol::{
         commands::Command,
@@ -32,6 +34,24 @@ use std::{
 use uuid::Uuid;
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
+
+/// A real `curl` fetch of an unreachable loopback URL, whatever URL the
+/// manifest service asks for: the fetch fails after the recorder has already
+/// answered.
+struct UnreachableCurl(herdr_threads::harness::manifest::CurlFetcher);
+impl herdr_threads::harness::manifest::Fetcher for UnreachableCurl {
+    fn fetch(
+        &self,
+        _url: &str,
+        etag: Option<&str>,
+    ) -> Result<
+        herdr_threads::harness::manifest::FetchOutcome,
+        herdr_threads::harness::manifest::FetchError,
+    > {
+        self.0
+            .fetch("http://127.0.0.1:9/harness-versions.json", etag)
+    }
+}
 
 /// A spawned process with every inherited HERDR_/CLAUDE/CODEX variable removed
 /// (ht-p03.24); a test sets the variables it needs after this call.
@@ -480,6 +500,8 @@ impl Fixture {
             let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
             let service_clock = Arc::clone(&clock);
             let database = worker_paths.database_path.clone();
+            let manifest_dir =
+                herdr_threads::harness::manifest::cache_dir(&worker_paths.instance_dir);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -502,18 +524,36 @@ impl Fixture {
                             )
                             .map_err(|error| std::io::Error::other(error.detail))?,
                         );
+                        // The evidence recorder, with a manifest service whose
+                        // fetches go to an unreachable loopback port: a fetch
+                        // must never delay a hook (ht-xoc.4).
+                        let manifest = Arc::new(ManifestService::new(
+                            manifest_dir.clone(),
+                            ManifestPolicy::Auto,
+                            Arc::new(UnreachableCurl(CurlFetcher::new(manifest_dir))),
+                            Arc::clone(&service_clock),
+                            Arc::new(|_: &str| {}),
+                        ));
+                        let evidence = Arc::new(HarnessEvidenceRecorder::new(
+                            Arc::clone(&store),
+                            Some(manifest as Arc<dyn ManifestTrigger>),
+                            Arc::clone(&service_clock),
+                        ));
                         let domain = DomainService::new(instance.to_string(), store, service_clock)
                             .with_cooperative_owner(
                                 unsafe { libc::geteuid() },
                                 Arc::new(FairWriter::new(32)),
                             );
-                        let inner = Arc::new(ControlService::new(
-                            StopController::new(instance, boot, cancellation),
-                            move |_: &herdr_threads::protocol::time::CallBudget| {
-                                HealthInputs::unknown(instance, boot)
-                            },
-                            domain,
-                        )) as Arc<dyn LocalService>;
+                        let inner = Arc::new(
+                            ControlService::new(
+                                StopController::new(instance, boot, cancellation),
+                                move |_: &herdr_threads::protocol::time::CallBudget| {
+                                    HealthInputs::unknown(instance, boot)
+                                },
+                                domain,
+                            )
+                            .with_harness_evidence(evidence),
+                        ) as Arc<dyn LocalService>;
                         Ok(Arc::new(Counting {
                             inner,
                             check_ins: counted,
@@ -3022,6 +3062,184 @@ fn conflicting_globals_fail_the_cli_but_fail_open_only_for_hook() {
 // observes the fake harness, which proves the probe happens). Kills: a
 // user-level hook that is noisy or slow in unrelated sessions, ignores the
 // recorded instance, or starts a daemon for a foreign Herdr server.
+// -- harness version evidence (ht-xoc.4) ------------------------------------
+
+/// The Claude hook command setup installs for `event` (it names the event with
+/// `--event`).
+fn claude_event_command(state: &Path, event: &str) -> String {
+    let argv = installed_argv(BIN, Some(state.to_str().unwrap()), None, Harness::Claude);
+    let plan = plan_claude(b"{}", &argv).unwrap();
+    let settings: serde_json::Value = serde_json::from_slice(&plan.proposed_bytes).unwrap();
+    settings["hooks"][event][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no {event} hook installed"))
+        .to_owned()
+}
+
+/// The hook as a user-level hook runs it in a plain harness session: no
+/// Herdr pane environment, only the installed host endpoint.
+fn run_hook_outside_pane(command: &str, host: &Path, stdin: &[u8]) -> Hook {
+    let started = Instant::now();
+    let mut child = scrubbed_command("/bin/sh")
+        .arg("-c")
+        .arg(command)
+        .env("HERDR_SOCKET_PATH", host)
+        .env("PATH", harness_path(host))
+        .env_remove("HERDR_ENV")
+        .env_remove("HERDR_PANE_ID")
+        .env_remove("HERDR_PLUGIN_STATE_DIR")
+        .env_remove("HERDR_BIN_PATH")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn_owned()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    let output = child.wait_with_output().unwrap();
+    Hook {
+        code: output.status.code(),
+        stdout: output.stdout,
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        elapsed: started.elapsed(),
+    }
+}
+
+/// A Claude transcript whose entries say `version`.
+fn transcript_for(fx: &Fixture, version: &str) -> String {
+    let path = fx.root.join(format!("transcript-{version}.jsonl"));
+    fs::write(
+        &path,
+        format!(
+            "{{\"type\":\"user\",\"version\":\"{version}\",\"cwd\":\"/tmp\",\"message\":{{}}}}\n"
+        ),
+    )
+    .unwrap();
+    path.to_str().unwrap().to_owned()
+}
+
+fn evidence_rows(fx: &Fixture, version: &str, condition: &str) -> i64 {
+    fx.count(&format!(
+        "SELECT count(*) FROM harness_version_evidence WHERE harness='claude' AND version='{version}' AND {condition}"
+    ))
+}
+
+/// A lifecycle and a tool payload from a session outside any Herdr pane reach
+/// the daemon and verify the version; once verified the hook stops sending.
+/// Kills: evidence gated on a Herdr pane, a hook that never sends, a verified
+/// gate that keeps sending, and a stdout or exit status changed by the note.
+#[test]
+fn hook_evidence_reaches_the_daemon_and_verifies() {
+    let fx = Fixture::start();
+    let transcript = transcript_for(&fx, "2.1.286");
+    let start_command = claude_event_command(&fx.state, "SessionStart");
+    let tool_command = claude_event_command(&fx.state, "PreToolUse");
+    let start = Payload::session_start("sess-ev", "startup")
+        .with("transcript_path", transcript.clone().into())
+        .bytes();
+    let tool = Payload::pre_tool_use("sess-ev", "ls")
+        .with("transcript_path", transcript.into())
+        .bytes();
+
+    let hook = run_hook_outside_pane(&start_command, &fx.host, &start);
+    assert_eq!(hook.code, Some(0), "{}", hook.stderr);
+    assert!(hook.stdout.is_empty(), "foreign sessions emit nothing");
+    assert_eq!(
+        evidence_rows(
+            &fx,
+            "2.1.286",
+            "lifecycle_ok_at IS NOT NULL AND tool_ok_at IS NULL"
+        ),
+        1
+    );
+
+    let hook = run_hook_outside_pane(&tool_command, &fx.host, &tool);
+    assert_eq!(hook.code, Some(0), "{}", hook.stderr);
+    assert!(hook.stdout.is_empty());
+    assert_eq!(
+        evidence_rows(
+            &fx,
+            "2.1.286",
+            "lifecycle_ok_at IS NOT NULL AND tool_ok_at IS NOT NULL AND violation_at IS NULL"
+        ),
+        1,
+        "verified after one lifecycle and one tool payload"
+    );
+    let seen = |fx: &Fixture| {
+        fx.count("SELECT last_seen_at FROM harness_version_evidence WHERE version='2.1.286'")
+    };
+    let before = seen(&fx);
+    for _ in 0..2 {
+        let hook = run_hook_outside_pane(&tool_command, &fx.host, &tool);
+        assert_eq!(hook.code, Some(0));
+        assert!(hook.stdout.is_empty());
+    }
+    assert_eq!(seen(&fx), before, "a verified session sends no more notes");
+    let gates = fs::read_dir(fx.state.join("harness").join("evidence"))
+        .unwrap()
+        .count();
+    assert_eq!(gates, 1, "one private gate file for the session");
+}
+
+/// The recording path completes within the hook budget with the manifest
+/// fetch going nowhere (the fixture's manifest service points at an
+/// unreachable loopback port), and the evidence row still exists.
+#[test]
+fn hook_with_unreachable_manifest_url_stays_within_budget() {
+    let fx = Fixture::start();
+    let transcript = transcript_for(&fx, "2.1.290");
+    let tool = Payload::pre_tool_use("sess-unreachable", "ls")
+        .with("transcript_path", transcript.into())
+        .bytes();
+    // In a pane, through the whole hook with the production budgets.
+    let hook = run_hook_with(&fx.command, "w1:p1", &fx.host, &tool, false);
+    assert_eq!(hook.code, Some(0), "{}", hook.stderr);
+    assert!(
+        hook.elapsed < TOOL_BUDGET,
+        "the hook took {:?}",
+        hook.elapsed
+    );
+    assert_eq!(evidence_rows(&fx, "2.1.290", "tool_ok_at IS NOT NULL"), 1);
+}
+
+/// Evidence does not depend on the version ladder: a listed, an optimistic
+/// (unlisted newer) and a refused (older than any recipe) installed Claude all
+/// report what their payloads showed, and the refused one still emits nothing.
+/// Kills: evidence placed after admission, or gated on the optimistic tier.
+#[test]
+fn evidence_sent_for_listed_optimistic_and_refused_versions_alike() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fixture::start();
+    let bin = PathBuf::from(harness_path(&fx.host).split(':').next().unwrap());
+    for (stub, version) in [
+        ("2.1.283 (Claude Code)", "2.1.286"),
+        ("2.1.299 (Claude Code)", "2.1.287"),
+        ("1.0.0 (Claude Code)", "2.1.288"),
+    ] {
+        let claude = bin.join("claude");
+        fs::write(&claude, format!("#!/bin/sh\necho '{stub}'\n")).unwrap();
+        fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).unwrap();
+        let transcript = transcript_for(&fx, version);
+        let start = Payload::session_start(&format!("sess-{version}"), "startup")
+            .with("transcript_path", transcript.into())
+            .bytes();
+        let command = claude_event_command(&fx.state, "SessionStart");
+        let hook = run_hook(&command, "w1:p1", &fx.host, &start);
+        assert_eq!(hook.code, Some(0), "{stub}: {}", hook.stderr);
+        if stub.starts_with("1.0.0") {
+            assert!(
+                hook.stdout.is_empty(),
+                "a refused version emits no context: {}",
+                String::from_utf8_lossy(&hook.stdout)
+            );
+        }
+        assert_eq!(
+            evidence_rows(&fx, version, "lifecycle_ok_at IS NOT NULL"),
+            1,
+            "{stub}: evidence was recorded whatever the ladder said"
+        );
+    }
+}
+
 #[test]
 fn user_level_hook_is_silent_outside_its_herdr_instance() {
     let _serial = serialized();

@@ -323,7 +323,8 @@ impl Drop for FirstExceeding {
 }
 
 /// A content digest per table, so a send's writes are the tables whose digest
-/// changed (a count alone would miss an upsert).
+/// changed (a count alone would miss an upsert). Rows are ordered by their own
+/// content: a WITHOUT ROWID table (harness_version_evidence) has no rowid.
 fn table_digests(db: &rusqlite::Connection) -> BTreeMap<String, String> {
     let tables: Vec<String> = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
@@ -349,7 +350,7 @@ fn table_digests(db: &rusqlite::Connection) -> BTreeMap<String, String> {
                 .join("||'|'||");
             let digest: Option<String> = db
                 .query_row(
-                    &format!("SELECT group_concat(r, char(10)) FROM (SELECT {row} AS r FROM \"{table}\" ORDER BY rowid)"),
+                    &format!("SELECT group_concat(r, char(10)) FROM (SELECT {row} AS r FROM \"{table}\" ORDER BY r)"),
                     [],
                     |r| r.get(0),
                 )

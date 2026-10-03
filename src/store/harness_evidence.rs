@@ -1,0 +1,269 @@
+//! Harness version evidence (ht-xoc.4): what hook payloads showed about each
+//! (harness, version, contract id) and the latest reason a payload could not
+//! be attributed to a version.
+//!
+//! The rows are advisory data about the harness, never authority: the daemon
+//! writes them from its own process, with no seat or caller identity. A row is
+//! verified once a lifecycle payload and a tool payload both matched the
+//! contract; the first violation is sticky and only a different version or
+//! contract id (a different row) starts clean.
+
+use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
+
+use super::connection::{StoreContext, store_error};
+pub use crate::harness::contract::EventClass;
+use crate::protocol::{results::ApiError, time::UtcMillis};
+
+/// One evidence row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceRow {
+    pub harness: String,
+    pub version: String,
+    pub contract_id: String,
+    pub first_seen_at: u64,
+    pub lifecycle_ok_at: Option<u64>,
+    pub tool_ok_at: Option<u64>,
+    pub violation_at: Option<u64>,
+    pub violation_event: Option<String>,
+    pub violation_field: Option<String>,
+    pub last_seen_at: u64,
+}
+
+impl EvidenceRow {
+    /// A lifecycle payload and a tool payload both matched the contract.
+    pub fn verified(&self) -> bool {
+        self.lifecycle_ok_at.is_some() && self.tool_ok_at.is_some()
+    }
+}
+
+/// What one payload showed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EvidenceOutcome {
+    Ok,
+    Violation { field: String },
+    Malformed,
+}
+
+/// One payload's evidence for a (harness, version, contract id).
+#[derive(Debug, Clone, Copy)]
+pub struct EvidenceRecord<'a> {
+    pub harness: &'a str,
+    pub version: &'a str,
+    pub contract_id: &'a str,
+    pub event: &'a str,
+    pub class: EventClass,
+    pub outcome: &'a EvidenceOutcome,
+}
+
+/// The result of recording: whether the row is new, whether this call set its
+/// sticky violation, and the row afterwards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recorded {
+    pub created: bool,
+    pub fresh_violation: bool,
+    pub row: EvidenceRow,
+}
+
+const COLUMNS: &str = "harness, version, contract_id, first_seen_at, lifecycle_ok_at, tool_ok_at, \
+     violation_at, violation_event, violation_field, last_seen_at";
+
+fn ms(value: i64) -> u64 {
+    u64::try_from(value).unwrap_or(0)
+}
+
+fn opt_ms(value: Option<i64>) -> Option<u64> {
+    value.map(ms)
+}
+
+fn row_of(row: &Row<'_>) -> rusqlite::Result<EvidenceRow> {
+    Ok(EvidenceRow {
+        harness: row.get(0)?,
+        version: row.get(1)?,
+        contract_id: row.get(2)?,
+        first_seen_at: ms(row.get(3)?),
+        lifecycle_ok_at: opt_ms(row.get(4)?),
+        tool_ok_at: opt_ms(row.get(5)?),
+        violation_at: opt_ms(row.get(6)?),
+        violation_event: row.get(7)?,
+        violation_field: row.get(8)?,
+        last_seen_at: ms(row.get(9)?),
+    })
+}
+
+fn now_ms(context: &StoreContext) -> i64 {
+    let UtcMillis(now) = context.clock().utc_now();
+    now
+}
+
+/// Records one payload's evidence in one write transaction.
+pub fn record(
+    context: &StoreContext,
+    writer: &mut Connection,
+    record: &EvidenceRecord<'_>,
+) -> Result<Recorded, ApiError> {
+    let now = now_ms(context);
+    let tx = writer
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(store_error)?;
+    let key = params![record.harness, record.version, record.contract_id];
+    let created = tx
+        .execute(
+            "INSERT OR IGNORE INTO harness_version_evidence \
+             (harness, version, contract_id, first_seen_at, last_seen_at) \
+             VALUES (?1, ?2, ?3, ?4, ?4)",
+            params![record.harness, record.version, record.contract_id, now],
+        )
+        .map_err(store_error)?
+        == 1;
+    let mut fresh_violation = false;
+    tx.execute(
+        "UPDATE harness_version_evidence SET last_seen_at = MAX(last_seen_at, ?4) \
+         WHERE harness = ?1 AND version = ?2 AND contract_id = ?3",
+        params![record.harness, record.version, record.contract_id, now],
+    )
+    .map_err(store_error)?;
+    match record.outcome {
+        EvidenceOutcome::Ok => {
+            let column = match record.class {
+                EventClass::Lifecycle => Some("lifecycle_ok_at"),
+                EventClass::Tool => Some("tool_ok_at"),
+                EventClass::Other => None,
+            };
+            if let Some(column) = column {
+                tx.execute(
+                    &format!(
+                        "UPDATE harness_version_evidence SET {column} = COALESCE({column}, ?4) \
+                         WHERE harness = ?1 AND version = ?2 AND contract_id = ?3"
+                    ),
+                    params![record.harness, record.version, record.contract_id, now],
+                )
+                .map_err(store_error)?;
+            }
+        }
+        EvidenceOutcome::Violation { field } => {
+            fresh_violation = tx
+                .execute(
+                    "UPDATE harness_version_evidence \
+                     SET violation_at = ?4, violation_event = ?5, violation_field = ?6 \
+                     WHERE harness = ?1 AND version = ?2 AND contract_id = ?3 \
+                       AND violation_at IS NULL",
+                    params![
+                        record.harness,
+                        record.version,
+                        record.contract_id,
+                        now,
+                        record.event,
+                        field
+                    ],
+                )
+                .map_err(store_error)?
+                == 1;
+        }
+        EvidenceOutcome::Malformed => {}
+    }
+    let row = tx
+        .query_row(
+            &format!(
+                "SELECT {COLUMNS} FROM harness_version_evidence \
+                 WHERE harness = ?1 AND version = ?2 AND contract_id = ?3"
+            ),
+            key,
+            row_of,
+        )
+        .map_err(store_error)?;
+    tx.commit().map_err(store_error)?;
+    Ok(Recorded {
+        created,
+        fresh_violation,
+        row,
+    })
+}
+
+pub fn get(
+    db: &Connection,
+    harness: &str,
+    version: &str,
+    contract_id: &str,
+) -> Result<Option<EvidenceRow>, ApiError> {
+    db.query_row(
+        &format!(
+            "SELECT {COLUMNS} FROM harness_version_evidence \
+             WHERE harness = ?1 AND version = ?2 AND contract_id = ?3"
+        ),
+        params![harness, version, contract_id],
+        row_of,
+    )
+    .optional()
+    .map_err(store_error)
+}
+
+/// Rows of both harnesses with `last_seen_at >= since_ms`.
+pub fn since(db: &Connection, since_ms: u64) -> Result<Vec<EvidenceRow>, ApiError> {
+    let since = i64::try_from(since_ms).unwrap_or(i64::MAX);
+    collect(
+        db,
+        &format!(
+            "SELECT {COLUMNS} FROM harness_version_evidence WHERE last_seen_at >= ?1 \
+             ORDER BY harness, first_seen_at, version, contract_id"
+        ),
+        params![since],
+    )
+}
+
+/// Every row of one harness.
+pub fn all(db: &Connection, harness: &str) -> Result<Vec<EvidenceRow>, ApiError> {
+    collect(
+        db,
+        &format!(
+            "SELECT {COLUMNS} FROM harness_version_evidence WHERE harness = ?1 \
+             ORDER BY first_seen_at, version, contract_id"
+        ),
+        params![harness],
+    )
+}
+
+fn collect(
+    db: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<Vec<EvidenceRow>, ApiError> {
+    let mut stmt = db.prepare(sql).map_err(store_error)?;
+    stmt.query_map(params, row_of)
+        .map_err(store_error)?
+        .collect::<Result<_, _>>()
+        .map_err(store_error)
+}
+
+/// Keeps the newest reason a payload of `harness` could not be attributed.
+pub fn record_unattributed(
+    context: &StoreContext,
+    writer: &mut Connection,
+    harness: &str,
+    reason: &str,
+) -> Result<(), ApiError> {
+    writer
+        .execute(
+            "INSERT INTO harness_unattributed(harness, reason, at) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(harness) DO UPDATE SET reason = excluded.reason, at = excluded.at",
+            params![harness, reason, now_ms(context)],
+        )
+        .map_err(store_error)?;
+    Ok(())
+}
+
+pub fn last_unattributed(
+    db: &Connection,
+    harness: &str,
+) -> Result<Option<(String, u64)>, ApiError> {
+    db.query_row(
+        "SELECT reason, at FROM harness_unattributed WHERE harness = ?1",
+        [harness],
+        |row| Ok((row.get::<_, String>(0)?, ms(row.get(1)?))),
+    )
+    .optional()
+    .map_err(store_error)
+}
+
+#[cfg(test)]
+#[path = "../../tests/store/harness_evidence.rs"]
+mod tests;
