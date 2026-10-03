@@ -39,7 +39,7 @@ codeBuckets:
   parked:
   stalled: false
   review: NOT READY (fix-loop-1 final review: evidence step on the hook critical path before observe_harness_in (cuts --version probe budget); doctor 'working' for a verified recipe known_broken version (latent); Codex resume relies on uncaptured source=resume; minor gate slot / manifest freshness / downgrade notes; full-suite sweep outstanding)
-  sweep: SWEEP DEFERRED (caller-owned)
+  sweep: 6ac6028e — 2294 passed, 0 failed, 0 errors, 37 skipped; failing: none; command: nice scripts/full-suite-gate 1 @ 6ac6028e
   slowness: launch 1 drained on BLOCKED-AUTH spike (ht-xoc.8) — answered by session, relaunched
 roastCodeRound: 2
 roast-code: 2026-10-02-harness-version-evidence-roast-pr-1.md, 2026-10-02-harness-version-evidence-roast-pr-2.md
