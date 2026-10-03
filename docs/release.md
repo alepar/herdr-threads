@@ -1,5 +1,11 @@
 # Release evidence and checklist
 
+## Current release status
+
+v0.1.0 is published at [GitHub](https://github.com/alepar/herdr-threads/releases/tag/v0.1.0), with four archives and checksums. Its push CI, manually dispatched package lifecycle and release workflows passed; an isolated macOS install/reinstall/uninstall rehearsal passed. v0.2.0 is being prepared from the reviewed changes in [CHANGELOG.md](../CHANGELOG.md). Its integrated suite, exact-SHA CI/package gate and asset verification must pass before publication. Optimistic managed Codex launch (ht-8b4/ht-840), prompt-less managed Codex TUI wake/ACK and real Linux Herdr integration remain unvalidated.
+
+The following matrix and checklist retain the pre-v0.1.0 evidence baseline and historical follow-on plans; statements below about unpublished workflows or releases describe that baseline, not current publication status.
+
 The intended public home is `github.com/alepar/herdr-threads`, listed on [herdr.dev/plugins](https://herdr.dev/plugins/). **Nothing has been published.** Publishing, making the repository public and marketplace listing are follow-on steps that happen only after the implementation is reviewed and merged.
 
 ## Evidence matrix

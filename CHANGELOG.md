@@ -1,12 +1,19 @@
 # Changelog
 
-## Unreleased
+## v0.2.0
+
+- **One-command inbox.** Default text `inbox` prints bounded message bodies and ACKs only fully displayed pending agent receipts after output succeeds. Continuations handle larger output; an empty inbox prints `empty`. Machine/JSON and explicit-seat reads remain read-only.
+- **Less wake and warning churn.** Ordinary wakes batch for 30 seconds by default (`wake_batch_delay_ms: 0` disables batching). Persistent conditions notify once on open and once on clear; `warnings active THREAD` lists active conditions. Recovery and waiver closures drain through bounded durable work.
+- **Humans do not owe ACKs.** Human recipients receive messages without receipt expectations; previous obligations are waived without fabricating ACKs or erasing history. Later agent obligations remain intact.
+- **Clearer operator output.** Doctor leads with verdicts, moves inventory behind `--debug`, and provides bounded `doctor fix` repairs. Codex setup/trust stays manual; installer output highlights one-time hook trust. CLI help explains command purpose, and service recovery output renders locally.
+- **Seat history.** `seat list` shows workspace, tab and pane names, excludes retired seats by default, and paginates newest first. `--include-retired` includes history.
+- **Honest Codex diagnostics.** Unknown versions report unvalidated socket policy rather than incompatibility. Optimistic managed launch still requires executable/effective-policy binding; this release does not enable it.
 
 - **Compact public ID prefixes.** New seats and threads use `s` and `t` directly before eight base62 characters. Invitations, requirements, retirements, event messages, ordinary messages and service notifications use `i`, `q`, `r`, `e`, `m` and `n`; unavailable warnings use `w` before their deterministic UUID. Stored IDs with older prefixes are kept verbatim and accepted in commands. Scripts should copy complete IDs from output instead of constructing them from prefixes.
 
 ## v0.1.0
 
-First release. Not yet published: see [docs/release.md](docs/release.md) for the checklist and the post-merge follow-on steps.
+First release, published as [v0.1.0](https://github.com/alepar/herdr-threads/releases/tag/v0.1.0).
 
 Changes that matter to anyone who scripted against pre-release builds:
 
