@@ -2770,9 +2770,39 @@ fn three_thread_startup_keeps_the_overview_and_every_command() {
             peer.contains(&format!("\"thread\":\"{thread}\"")),
             "{thread}: {peer}"
         );
-        assert!(
-            peer.contains(&format!("\"topic_data\":\"{topic}\"")),
-            "{topic}: {peer}"
+        // Both the full offer and compact overview must retain the exact topic
+        // on its own thread row; JSON decoding also checks escaping.
+        let row = peer
+            .lines()
+            .filter_map(|line| {
+                serde_json::from_str::<serde_json::Value>(
+                    line.strip_prefix("item: ").unwrap_or(line),
+                )
+                .ok()
+            })
+            .find(|row| {
+                row["thread"] == thread.as_str()
+                    && (row.get("topic_data").is_some() || row.get("topic").is_some())
+            })
+            .unwrap_or_else(|| panic!("missing topic row for {thread}: {peer}"));
+        assert_eq!(
+            row.get("topic_data").or_else(|| row.get("topic")),
+            Some(&serde_json::Value::String(topic.clone())),
+            "{thread}: {peer}"
+        );
+        assert_eq!(
+            row.get("message_count")
+                .or_else(|| row.get("timeline_messages"))
+                .and_then(serde_json::Value::as_u64),
+            Some(3),
+            "{thread}: {row}"
+        );
+        assert_eq!(
+            row.get("joined_count")
+                .or_else(|| row.get("joined_nonretired_participants"))
+                .and_then(serde_json::Value::as_u64),
+            Some(1),
+            "{thread}: {row}"
         );
     }
     for label in ["\"age_millis_signed\":", "\"created_at", "\"joined_"] {

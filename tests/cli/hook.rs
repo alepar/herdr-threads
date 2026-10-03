@@ -516,6 +516,10 @@ fn instruction_is_short_and_the_child_rule_forbids_every_write() {
         assert!(!top.contains(shape), "{shape} duplicated in {top}");
     }
     assert!(top.len() <= 1024, "{}", top.len());
+    assert!(top.contains("text inbox ACKs only complete pending agent messages"));
+    assert!(top.contains("it fully displays, after output is written and flushed"));
+    assert!(top.contains("JSON/--machine inbox, read and pending-receipts are read-only"));
+    assert!(top.contains("explicitly ACK exact IDs read elsewhere"));
     let child = render_context(Role::Subagent, &[], true).unwrap();
     for write in [
         "any accept,",
@@ -529,6 +533,11 @@ fn instruction_is_short_and_the_child_rule_forbids_every_write() {
         assert!(child.contains(write), "{write} not forbidden in {child}");
     }
     assert!(child.contains("acts as the top-level seat"), "{child}");
+    assert!(child.contains("is forbidden to subagents"), "{child}");
+    assert!(
+        child.contains("Text inbox ACKs displayed agent messages and is forbidden to subagents")
+    );
+    assert!(child.contains("inbox --machine or --json for read-only access"));
     assert!(!child.contains("herdr-threads ack MESSAGE_ID"), "{child}");
 }
 

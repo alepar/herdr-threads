@@ -437,8 +437,9 @@ fn hook_emits_compact_instructions_without_ack_and_child_emits_only_summary_guid
     let mut out = vec![];
     run_hook_event(&j, &cj, &event, Some(&seed), 1, &client, &Clock, &mut out).unwrap();
     let text = String::from_utf8(out).unwrap();
-    assert!(text.contains("explicitly ACKs exact message IDs"));
-    assert!(text.contains("invitations"));
+    assert!(text.contains("text inbox ACKs only complete pending agent messages"));
+    assert!(text.contains("after output is written and flushed"));
+    assert!(text.contains("Accept invitations separately"));
     assert_eq!(client.calls.lock().unwrap().len(), 2);
     event.role = Role::Subagent;
     event.event_id = "child".into();
