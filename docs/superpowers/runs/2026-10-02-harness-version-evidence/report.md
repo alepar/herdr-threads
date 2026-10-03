@@ -1,5 +1,5 @@
 status: completed with 0 unresolved Blocking, 2 escalations [degraded: final review: NOT READY (fix-loop-1 final review: evidence step on the hook critical path before observe_harness_in (cuts --version probe budget); doctor 'working' for a verified recipe known_broken version (latent); Codex resume relies on uncaptured source=resume; minor gate slot / manifest freshness / downgrade notes; full-suite sweep outstanding)]
-metrics: parked draft docs/superpowers/runs/2026-10-02-harness-version-evidence/upstream-feedback-draft.md (not filed; awaiting user)
+metrics: sent to the superpowers maintainer pane (wB:p1) via Herdr: docs/superpowers/runs/2026-10-02-harness-version-evidence/upstream-feedback-draft.md
 
 ## Implemented
 - ht-xoc.1 Payload contract declarations, contract_id and contract-id CLI: commits 9795381..e174be5, review clean (ledger; bead closed)

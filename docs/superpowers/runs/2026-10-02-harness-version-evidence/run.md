@@ -62,3 +62,4 @@ fixLoop-launch-1: wf_a0cdda7f-a67 (super-code re-entry, deferSweep, beads ht-xoc
 fixLoop-launch-1 result: root-closed; 15 merges, 0 failed; final review NOT READY (see fixloop-1-final-review.json)
 - roast-code loop exit · converged at round 2 (Nit 1 confirmed [converged], 0 Blocking, 0 fix-regression Should-fix) · punch list: [Nit] integrations/claude/README.md:32 (stale foreign-session sentence) plus the 8 round-1 punch-listed Nits; round-2 'resolved' entries for punch-listed keys mean not re-surfaced, not fixed
 finish: merged into main at 522b47d8 (user pre-authorized); run worktree removed; branch deleted
+feedback: sent via Herdr to the superpowers pane wB:p1 (user's channel for upstream feedback), draft docs/superpowers/runs/2026-10-02-harness-version-evidence/upstream-feedback-draft.md, unscrubbed
