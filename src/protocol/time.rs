@@ -5,6 +5,29 @@ use std::sync::{
 };
 use std::time::Duration;
 
+/// The environment variable that scales [`external_bound`] in test-support
+/// builds; `test_support::spawn::tag` sets it on every test child.
+pub const TEST_TIMEOUT_SCALE_ENV: &str = "HT_TEST_TIMEOUT_SCALE";
+
+/// A wall-clock bound on waiting for something outside this process (a probed
+/// executable, the daemon over IPC, a daemon start). The production value is
+/// sized for a healthy machine; a test child of a loaded parallel suite is
+/// given `production * HT_TEST_TIMEOUT_SCALE` (an integer >= 1) so the bound
+/// stays a hang guard instead of a race against the scheduler. Ordinary
+/// builds ignore the variable. Tests that pin a bound itself run in-process
+/// without it.
+pub fn external_bound(production: Duration) -> Duration {
+    #[cfg(feature = "test-support")]
+    if let Some(scale) = std::env::var(TEST_TIMEOUT_SCALE_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|scale| *scale >= 1)
+    {
+        return production.saturating_mul(scale);
+    }
+    production
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct UtcMillis(pub i64);

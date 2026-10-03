@@ -885,7 +885,8 @@ fn elected_service_fixture(custom_settings: bool) {
     }
     // Elected composition of the observation worker's WorkerStatus: the
     // host socket never exists, so the real observation worker started by
-    // `app.rs` records `Invalidated(HostUnavailable)`. It must reach the
+    // `app.rs` records `Frozen(HostUnavailable)`: Herdr is unavailable, so
+    // nothing is invalidated (TRUST-POLICY C4, ht-yms). It must reach the
     // Health builder through the *same* shared WorkerStatus, rendered only
     // as its redacted class, with no private path text anywhere in Health.
     //
@@ -914,7 +915,10 @@ fn elected_service_fixture(custom_settings: bool) {
         // The lane Pacer's backoff suffix (`; retrying (attempt N, ...)`)
         // follows the redacted failure while the host stays down.
         if health.limitations.iter().any(|detail| {
-            detail.starts_with("scheduler degraded: host observation invalidated: HostUnavailable")
+            detail.starts_with(
+                "scheduler degraded: host unavailable (HostUnavailable): \
+                 seats and bindings frozen until Herdr answers",
+            )
         }) {
             break;
         }
@@ -2347,9 +2351,10 @@ fn elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log() {
         descriptor.instance_uuid,
         Some(descriptor.boot_id),
     );
-    // The observation lane captures at once and, host being absent, marks
-    // every saved seat unresolved (host invalidation) without a polling delay;
-    // wait for that marking to settle so Health is read in a steady state.
+    // The observation lane captures at once and, host being absent, freezes:
+    // Herdr unavailability writes no host invalidation (TRUST-POLICY C4,
+    // ht-yms), so the saved seats stay resolved. Wait for the lane's frozen
+    // outcome to reach Health so Health is read after that capture.
     let read_health = || {
         let CommandResult::Health(health) = herdr_threads::ports::LocalClient::call(
             &client,
@@ -2367,9 +2372,16 @@ fn elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log() {
     let settle_until = std::time::Instant::now() + Duration::from_secs(10);
     let health = loop {
         let health = read_health();
-        if health.unresolved_seats == Some(3) || std::time::Instant::now() > settle_until {
+        if health.limitations.iter().any(|line| {
+            line.contains("host unavailable (HostUnavailable): seats and bindings frozen")
+        }) {
             break health;
         }
+        assert!(
+            std::time::Instant::now() < settle_until,
+            "the absent host never froze the observation lane: {:?}",
+            health.limitations
+        );
         std::thread::sleep(Duration::from_millis(20));
     };
     let expected = "store startup binding evidence: backfilled 1, still lacking 1; those seats \
@@ -2384,8 +2396,20 @@ fn elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log() {
         health.limitations
     );
     assert_eq!(health.state, HealthState::Degraded);
-    // `stuck` plus the two seats the host invalidation marked unresolved.
-    assert_eq!(health.unresolved_seats, Some(3));
+    // Only `stuck`: the frozen capture marked neither bound seat unresolved.
+    assert_eq!(health.unresolved_seats, Some(1));
+    {
+        let db = rusqlite::Connection::open(&paths.database_path).unwrap();
+        db.busy_timeout(Duration::from_secs(2)).unwrap();
+        let resolved: i64 = db
+            .query_row(
+                "SELECT count(*) FROM seats WHERE id IN ('healable','noproof') AND state='resolved'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolved, 2, "host unavailability unresolved a bound seat");
+    }
     assert!(
         health
             .limitations
@@ -2397,10 +2421,8 @@ fn elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log() {
     // Wave-2 fix2 (b) / fix2 review N1: Health is recomputed when the
     // evidence changes, not frozen at boot. The lacking seat's agent
     // re-registers with evidence (its latest binding now carries terminal
-    // and incarnation) and the unresolved seats (including the two the host
-    // invalidation marked) are resolved again. The lane's repeated
-    // same-reason failures write no further invalidation, so nothing re-marks
-    // them.
+    // and incarnation) and `stuck` is resolved again. The lane's repeated
+    // unavailability failures write no invalidation, so nothing marks them.
     {
         let db = rusqlite::Connection::open(&paths.database_path).unwrap();
         db.busy_timeout(Duration::from_secs(2)).unwrap();
@@ -2413,7 +2435,7 @@ fn elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log() {
         db.execute("UPDATE seats SET generation=2 WHERE id='noproof'", [])
             .unwrap();
         db.execute(
-            "UPDATE seats SET state='resolved',unresolved_reason=NULL WHERE id IN ('stuck','healable','noproof')",
+            "UPDATE seats SET state='resolved',unresolved_reason=NULL WHERE id='stuck'",
             [],
         )
         .unwrap();

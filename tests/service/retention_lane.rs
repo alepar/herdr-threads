@@ -352,9 +352,11 @@ fn store_failure_backs_off_and_resets() {
     // Now the retry succeeds, resets the backoff and prunes.
     let due = fx.pacer.next_retry_at().unwrap().0 - fx.pacer.now().0;
     fx.advance(due);
-    wait_until("the retry to succeed", || fx.pacer.attempts() == 0);
+    // The worker resets the pacer before `record_success` clears Health.
+    wait_until("the retry to succeed and clear the failure", || {
+        fx.pacer.attempts() == 0 && fx.status.health().is_none()
+    });
     assert!(fx.status.retry().is_none());
-    assert!(fx.status.health().is_none(), "success clears the failure");
     wait_until("the pruned generation", || fx.generations() == 3);
 }
 
@@ -367,7 +369,11 @@ fn failure_reaches_lane_error_log_and_health_retry_suffix() {
     inject_failure(&fx.raw());
     fx.start();
     fx.wait_idle(1);
-    wait_until("the failure", || fx.pacer.attempts() == 1);
+    // The pacer counts the failure before `record_failure` publishes it to
+    // Health and then to the error log.
+    wait_until("the failure", || {
+        fx.pacer.attempts() == 1 && !log.0.lock().unwrap().is_empty()
+    });
     {
         let records = log.0.lock().unwrap();
         assert_eq!(records.len(), 1);
@@ -385,12 +391,12 @@ fn failure_reaches_lane_error_log_and_health_retry_suffix() {
     clear_failure(&fx.raw());
     let due = fx.pacer.next_retry_at().unwrap().0 - fx.pacer.now().0;
     fx.advance(due);
-    wait_until("the retry to succeed", || fx.pacer.attempts() == 0);
+    // `record_success` clears Health, then advances the tick, after the
+    // pacer reset; a success that skips either times this wait out.
+    wait_until("the retry to succeed", || {
+        fx.pacer.attempts() == 0 && fx.status.last_tick().is_some()
+    });
     assert!(fx.status.health().is_none());
-    assert!(
-        fx.status.last_tick().is_some(),
-        "record_success advances the tick"
-    );
 }
 
 #[test]

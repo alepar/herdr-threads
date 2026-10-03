@@ -450,10 +450,12 @@ pub fn stage_snapshot_targets(
             checked_host_number(target.observation_sequence)?,
         ));
     }
-    let started = context.clock().monotonic_now();
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(store_error)?;
+    // The quantum bounds how long this turn holds the writer, so it starts
+    // once the write lock is held: waiting for the lock is not holding it.
+    let started = context.clock().monotonic_now();
     let (_, boot, epoch, sequence, incarnation, expected, staged, status) =
         load_snapshot_stage(&tx, stage)?;
     if status != "building" || staged != offset || staged + targets.len() as i64 > expected {
@@ -462,13 +464,15 @@ pub fn stage_snapshot_targets(
             "snapshot slice is not contiguous",
         ));
     }
+    // A spent quantum ends the slice with its committed prefix (at least one
+    // target, so every turn progresses); the caller stages the rest in the
+    // next turn. A scheduling stall is not a failed capture: failing here
+    // would invalidate the host and end bindings on no host evidence.
+    let mut done = 0usize;
     for (target, (target_epoch, generation, target_sequence)) in targets.iter().zip(checked) {
         snapshot_budget(context, budget)?;
-        if context.clock().monotonic_now().0.saturating_sub(started.0) >= 5 {
-            return Err(api_error(
-                ErrorCode::DeadlineExceeded,
-                "snapshot quantum exceeded five milliseconds",
-            ));
+        if done > 0 && context.clock().monotonic_now().0.saturating_sub(started.0) >= 5 {
+            break;
         }
         if target.host_boot.as_str() != boot || target_epoch != epoch || target_sequence > sequence
         {
@@ -546,15 +550,9 @@ pub fn stage_snapshot_targets(
             }
             return Err(store_error(error));
         }
-        snapshot_budget(context, budget)?;
-        if context.clock().monotonic_now().0.saturating_sub(started.0) >= 5 {
-            return Err(api_error(
-                ErrorCode::DeadlineExceeded,
-                "snapshot quantum exceeded five milliseconds",
-            ));
-        }
+        done += 1;
     }
-    let staged = staged + targets.len() as i64;
+    let staged = staged + done as i64;
     tx.execute(
         "UPDATE snapshot_generations SET staged_targets=?1 WHERE id=?2 AND status='building'",
         params![staged, stage.as_str()],
@@ -563,7 +561,7 @@ pub fn stage_snapshot_targets(
     tx.commit().map_err(store_error)?;
     Ok(SnapshotStageProgress {
         stage: snapshot_stage(stage, expected, staged, "building"),
-        visited: targets.len() as u8,
+        visited: done as u8,
     })
 }
 
@@ -1425,10 +1423,10 @@ pub fn discard_snapshot_stage(
             "snapshot cleanup admission must be 1..16",
         ));
     }
-    let started = context.clock().monotonic_now();
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(store_error)?;
+    let started = context.clock().monotonic_now();
     let (instance, _, _, _, _, _, _, status) = load_snapshot_stage(&tx, stage)?;
     if status == "published" {
         let retained: bool = tx
@@ -1466,23 +1464,17 @@ pub fn discard_snapshot_stage(
         .collect::<Result<Vec<_>, _>>()
         .map_err(store_error)?
     };
+    // As in staging: a spent quantum ends the turn with its committed prefix
+    // (at least one row); `complete` stays false and cleanup resumes.
+    let mut deleted = 0usize;
     for ordinal in &ordinals {
         snapshot_budget(context, budget)?;
-        if context.clock().monotonic_now().0.saturating_sub(started.0) >= 5 {
-            return Err(api_error(
-                ErrorCode::DeadlineExceeded,
-                "snapshot cleanup quantum exceeded five milliseconds",
-            ));
+        if deleted > 0 && context.clock().monotonic_now().0.saturating_sub(started.0) >= 5 {
+            break;
         }
         tx.execute("DELETE FROM snapshot_targets WHERE ordinal=?1", [ordinal])
             .map_err(store_error)?;
-        snapshot_budget(context, budget)?;
-        if context.clock().monotonic_now().0.saturating_sub(started.0) >= 5 {
-            return Err(api_error(
-                ErrorCode::DeadlineExceeded,
-                "snapshot cleanup quantum exceeded five milliseconds",
-            ));
-        }
+        deleted += 1;
     }
     let remaining: bool = tx
         .query_row(
@@ -1494,7 +1486,7 @@ pub fn discard_snapshot_stage(
     tx.commit().map_err(store_error)?;
     Ok(SnapshotCleanupProgress {
         stage: stage.clone(),
-        visited: ordinals.len() as u8,
+        visited: deleted as u8,
         complete: !remaining,
     })
 }
@@ -2191,7 +2183,9 @@ pub fn apply_reconciliation_transition(
                         params![target.as_str(),target_generation,seat.as_str(),instance,checked_host_number(transition.expected_binding_generation)?],
                     ).map_err(store_error)?;
                     if changed != 1 { return Ok(ReconciliationOutcome::Stale); }
-                    carry_binding_forward(tx, instance, at.utc, seat, transition.expected_binding_generation, &transition.publication, target.as_str(), target_generation)?;
+                    // Nothing to carry: the invalidation that unresolved the
+                    // seat ended its bindings and bumped its generation, and no
+                    // check-in registers while it is unresolved (ht-0b8).
                     update_structural_proof(tx, seat, proof.as_ref().expect("validated structural proof"))?;
                     schema::bump_lifecycle_revision(tx, instance)?;
                     schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;

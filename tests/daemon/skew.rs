@@ -13,7 +13,7 @@ use herdr_threads::{
     client::local::LocalSocketClient,
     daemon::{
         control::request_stop,
-        lifecycle::ensure_running,
+        lifecycle::ensure_running_with_timeout,
         ownership::{OwnerLock, read_descriptor},
         paths::{InstancePaths, RuntimeContext},
         remedy::{RemedyContext, remedy},
@@ -208,7 +208,14 @@ fn ensure(
         .enable_all()
         .build()
         .unwrap()
-        .block_on(ensure_running(&scratch.context(), Path::new(BIN), clock()))
+        // A liveness bound: these tests are about version skew, and an
+        // in-process ensure's 5 s wait is unscaled under a loaded suite.
+        .block_on(ensure_running_with_timeout(
+            &scratch.context(),
+            Path::new(BIN),
+            clock(),
+            std::time::Duration::from_secs(60),
+        ))
 }
 
 fn lock_free(scratch: &Scratch) -> bool {

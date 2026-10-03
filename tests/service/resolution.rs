@@ -43,6 +43,10 @@ struct ResolutionHost {
     /// Error code a failing capture reports: 0 HostUnavailable, 1 NotFound,
     /// 2 StaleHostObservation.
     fail_code: AtomicU64,
+    /// A target read answers, but without verified structural proof (no
+    /// terminal): the evidence-based `CoherenceLost` invalidation, unlike a
+    /// failed read (Herdr unavailable), which freezes and writes nothing.
+    incoherent: AtomicBool,
     calls: AtomicU64,
     snapshots: AtomicU64,
     snapshot_mode: AtomicU64,
@@ -55,6 +59,10 @@ struct ResolutionHost {
     /// observation lane has two independent lanes, so overlap of their
     /// captures is expected there and is not a serialization failure.
     overlap_allowed: AtomicBool,
+    /// This many target reads each commit an unrelated seat decision's fence
+    /// (the instance lifecycle revision, as another agent's check-in does)
+    /// while in flight, superseding their own publication.
+    supersede_reads: AtomicU64,
 }
 struct ActiveCapture<'a>(&'a AtomicU64);
 impl Drop for ActiveCapture<'_> {
@@ -109,10 +117,11 @@ impl HostPort for ResolutionHost {
         let _capture = self.enter_capture();
         self.calls.fetch_add(1, Ordering::SeqCst);
         assert_eq!(target.as_str(), "pane");
+        // Before the first publication (first contact) nothing is expected.
         if let Some(boot) = context.expected_boot.as_ref() {
             assert_eq!(boot.as_str(), "host");
+            assert_eq!(context.expected_epoch, Some(1));
         }
-        assert_eq!(context.expected_epoch, Some(1));
         let db = rusqlite::Connection::open(&self.path).unwrap();
         db.busy_timeout(super::HOST_IO_WRITER_PROBE_WAIT).unwrap();
         db.execute_batch("BEGIN IMMEDIATE")
@@ -129,6 +138,14 @@ impl HostPort for ResolutionHost {
             "host read preceded store observation admission"
         );
         db.execute_batch("ROLLBACK").unwrap();
+        if self
+            .supersede_reads
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            db.execute_batch("UPDATE host_instances SET lifecycle_revision=lifecycle_revision+1")
+                .unwrap();
+        }
         let _ = self.entered.try_send(());
         while self.held_past_budget.load(Ordering::SeqCst)
             || (self.held.load(Ordering::SeqCst)
@@ -146,7 +163,11 @@ impl HostPort for ResolutionHost {
                 "controlled capture failed",
             ));
         }
-        Ok(self.observation(self.sequence.fetch_add(1, Ordering::SeqCst)))
+        let mut observation = self.observation(self.sequence.fetch_add(1, Ordering::SeqCst));
+        if self.incoherent.load(Ordering::SeqCst) {
+            observation.terminal = None;
+        }
+        Ok(observation)
     }
     fn enumerate_targets(&self, _: &HostCallContext) -> Result<HostSnapshot, ApiError> {
         let _capture = self.enter_capture();
@@ -317,6 +338,7 @@ impl Fixture {
             held_past_budget: AtomicBool::new(false),
             fail: AtomicBool::new(false),
             fail_code: AtomicU64::new(0),
+            incoherent: AtomicBool::new(false),
             calls: AtomicU64::new(0),
             snapshots: AtomicU64::new(0),
             snapshot_mode: AtomicU64::new(snapshot_mode),
@@ -324,6 +346,7 @@ impl Fixture {
             snapshot_writer_probe: AtomicBool::new(true),
             active_reads: AtomicU64::new(0),
             overlap_allowed: AtomicBool::new(false),
+            supersede_reads: AtomicU64::new(0),
         });
         if hold_baseline {
             let db = rusqlite::Connection::open(&paths.database_path).unwrap();
@@ -513,6 +536,103 @@ fn real_ipc_resolve_admits_host_read_then_commits_structural_seat_without_native
     let published: (i64,i64) = db.query_row("SELECT observation_sequence,(SELECT count(*) FROM allocation_decisions) FROM observed_targets WHERE target_id='pane'", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
     assert!(published.0 >= proof.2);
     assert_eq!(published.1, 1);
+}
+
+/// A concurrent seat decision (here: the instance lifecycle revision another
+/// agent's check-in bumps) that lands while a resolve's target read is in
+/// flight supersedes that read's publication. The daemon admits and reads
+/// again inside the request budget instead of refusing the caller with a
+/// transient `StaleHostObservation`. Kills: refusing on the first supersession
+/// (the parallel-suite flake ht-zo4.3: one agent's check-in failed another's
+/// resolve or send).
+#[test]
+fn superseded_target_read_is_admitted_again_within_the_request() {
+    let fixture = Fixture::new(false);
+    let calls = fixture.host.calls.load(Ordering::SeqCst);
+    fixture.host.supersede_reads.store(1, Ordering::SeqCst);
+    let result = fixture.resolve("superseded-once").unwrap();
+    assert!(
+        matches!(result, CommandResult::SeatResolved(_)),
+        "{result:?}"
+    );
+    assert_eq!(fixture.host.supersede_reads.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        fixture.host.calls.load(Ordering::SeqCst) - calls,
+        2,
+        "one superseded read, one fresh admission and read"
+    );
+}
+
+/// A view that keeps moving is refused after the bounded attempts, as the
+/// transient `StaleHostObservation` the caller may retry. Kills: an unbounded
+/// re-admission loop.
+#[test]
+fn persistently_superseded_target_read_is_refused_after_bounded_attempts() {
+    let fixture = Fixture::new(false);
+    let calls = fixture.host.calls.load(Ordering::SeqCst);
+    fixture
+        .host
+        .supersede_reads
+        .store(u64::MAX, Ordering::SeqCst);
+    let error = fixture.resolve("superseded-always").unwrap_err();
+    assert_eq!(error.code, ErrorCode::StaleHostObservation, "{error:?}");
+    assert_eq!(
+        fixture.host.calls.load(Ordering::SeqCst) - calls,
+        u64::from(herdr_threads::identity::repair::SUPERSEDED_READ_ATTEMPTS)
+    );
+}
+
+/// First contact: a resolve whose read finds no published snapshot yet (the
+/// daemon just started, or Herdr restarted) waits for the observation lane's
+/// capture and reads again inside its budget, instead of refusing the caller
+/// with a transient `StaleHostObservation`. Deterministic: lane captures fail
+/// until the resolve's own read is in flight, then succeed. Kills: refusing a
+/// first-contact read (the ht-zo4.3 flake: `seat resolve` right after
+/// `daemon ensure`), and waiting without re-reading.
+#[test]
+fn first_contact_read_waits_for_the_lane_capture_it_needs() {
+    let fixture = Fixture::start(false, false, 1);
+    fixture.host.held.store(true, Ordering::SeqCst);
+    let calls = fixture.host.calls.load(Ordering::SeqCst);
+    let client = fixture.client();
+    let budget = fixture.budget();
+    let request = HeldRequest {
+        host: fixture.host.clone(),
+        worker: Some(std::thread::spawn(move || {
+            LocalClient::call(
+                &client,
+                Command::ResolveSeat(ResolveSeat {
+                    target: HostTargetId::new("pane"),
+                    operation: OperationId::new("first-contact"),
+                }),
+                &budget,
+            )
+        })),
+    };
+    fixture
+        .entered
+        .recv_timeout(Duration::from_secs(30))
+        .expect("service did not admit target read");
+    let published: Option<String> = fixture
+        .db()
+        .query_row("SELECT active_snapshot_id FROM host_instances", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(published, None, "no snapshot is published before the read");
+    // The read holds the lane; the capture it asks for afterwards succeeds.
+    fixture.host.snapshot_mode.store(0, Ordering::SeqCst);
+    fixture.host.held.store(false, Ordering::SeqCst);
+    let result = request.join().unwrap().unwrap();
+    assert!(
+        matches!(result, CommandResult::SeatResolved(_)),
+        "{result:?}"
+    );
+    assert_eq!(
+        fixture.host.calls.load(Ordering::SeqCst) - calls,
+        2,
+        "the refused first-contact read, then one read after the capture"
+    );
 }
 
 #[test]
@@ -884,13 +1004,44 @@ fn real_ipc_late_target_read_cannot_publish_after_newer_invalidation_and_health_
     assert_eq!(counts, (0, 0));
 }
 
+/// A failed target read (Herdr unavailable) is missing evidence, not evidence
+/// of change (TRUST-POLICY C4, ht-yms): the request is refused as transient,
+/// nothing is invalidated, the published snapshot stays effective and nothing
+/// is allocated.
+/// Kills: `OrdinaryIdentity::invalidate` writing an invalidation for an
+/// unavailability reason (the revision moves to 1).
 #[test]
-fn real_ipc_failed_target_read_invalidates_effective_snapshot_without_allocating() {
+fn real_ipc_failed_target_read_freezes_effective_snapshot_without_allocating() {
     let fixture = Fixture::new(false);
     fixture.host.fail.store(true, Ordering::SeqCst);
     assert_eq!(
         fixture.resolve("failed-read").unwrap_err().code,
         ErrorCode::HostUnavailable
+    );
+    let db = fixture.db();
+    let frozen: (i64,i64) = db.query_row("SELECT invalidation_revision,(SELECT count(*) FROM allocation_decisions) FROM host_instances", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+    assert_eq!(frozen, (0, 0));
+    // The frozen view is still effective: once Herdr answers, the same target
+    // resolves against it.
+    fixture.host.fail.store(false, Ordering::SeqCst);
+    assert!(matches!(
+        fixture.resolve("after-freeze").unwrap(),
+        CommandResult::SeatResolved(_)
+    ));
+}
+
+/// An incoherent target read (an answer without verified structural proof)
+/// is evidence: it durably invalidates the effective snapshot
+/// (`CoherenceLost`) and allocates nothing.
+/// Kills: dropping the `CoherenceLost` invalidation from the target read, or
+/// treating it as unavailability (the revision stays 0).
+#[test]
+fn real_ipc_incoherent_target_read_invalidates_effective_snapshot_without_allocating() {
+    let fixture = Fixture::new(false);
+    fixture.host.incoherent.store(true, Ordering::SeqCst);
+    assert_eq!(
+        fixture.resolve("incoherent-read").unwrap_err().code,
+        ErrorCode::StaleHostObservation
     );
     let db = fixture.db();
     let invalidated: (i64,i64) = db.query_row("SELECT invalidation_revision,(SELECT count(*) FROM allocation_decisions) FROM host_instances", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
@@ -1579,22 +1730,12 @@ fn disconnected_short_budget_cannot_commit_queued_resolution_after_writer_unlock
         )
         .unwrap();
     assert_eq!(operations, 0);
-    // A refusal as `StaleHostObservation` means the observation lane
-    // republished meanwhile (a loaded host makes that likely): the retry,
-    // not the refusal, is the retry's measured behavior.
-    let retry_until = std::time::Instant::now() + Duration::from_secs(30);
-    let retried = loop {
-        match LocalClient::call(&fixture.client(), command.clone(), &fixture.budget()) {
-            Err(error)
-                if error.code == ErrorCode::StaleHostObservation
-                    && std::time::Instant::now() < retry_until =>
-            {
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            other => break other.unwrap(),
-        }
-    };
-    assert!(matches!(retried, CommandResult::SeatResolved(_)));
+    // The observation lane may republish meanwhile; the daemon re-admits a
+    // superseded read itself (SUPERSEDED_READ_ATTEMPTS), so one call resolves.
+    assert!(matches!(
+        LocalClient::call(&fixture.client(), command, &fixture.budget()).unwrap(),
+        CommandResult::SeatResolved(_)
+    ));
     let decisions: i64 = db
         .query_row("SELECT count(*) FROM allocation_decisions", [], |row| {
             row.get(0)
@@ -1937,6 +2078,13 @@ fn elected_snapshot_driver_establishes_baseline_before_real_ipc_resolution() {
     assert!(fixture.host.snapshots.load(Ordering::SeqCst) > 0);
 }
 
+/// No allocation baseline comes from a failed, partial or unknown capture.
+/// Mode 1 (capture unavailable) is Herdr unavailability: it freezes
+/// (TRUST-POLICY C4, ht-yms), so no invalidation is written and every saved
+/// seat stays resolved. Modes 2 (partial enumeration) and 3 (unknown
+/// incarnation) are evidence: they invalidate and the bounded continuation
+/// marks every saved seat unresolved. In every mode no baseline is
+/// established, resolution is refused and nothing is allocated or retired.
 #[test]
 fn elected_failed_partial_unknown_captures_cannot_create_allocation_baseline() {
     for mode in 1..=3 {
@@ -1952,24 +2100,58 @@ fn elected_failed_partial_unknown_captures_cannot_create_allocation_baseline() {
         }
         fixture.host.snapshot_mode.store(mode, Ordering::SeqCst);
         fixture.host.snapshot_held.store(false, Ordering::SeqCst);
-        loop {
-            let unresolved: i64 = db
-                .query_row(
-                    "SELECT count(*) FROM seats WHERE state='unresolved'",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            if unresolved == 17 {
-                break;
+        let unresolved = || -> i64 {
+            db.query_row(
+                "SELECT count(*) FROM seats WHERE state='unresolved'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        if mode == 1 {
+            // The frozen outcome reaches Health once the lane processed it.
+            loop {
+                let CommandResult::Health(health) =
+                    LocalClient::call(&fixture.client(), Command::Health, &fixture.budget())
+                        .unwrap()
+                else {
+                    panic!("missing health");
+                };
+                if health.limitations.iter().any(|line| {
+                    line.contains("host unavailable (HostUnavailable): seats and bindings frozen")
+                }) {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "unavailable capture never froze the lane: {:?}",
+                    health.limitations
+                );
+                std::thread::sleep(Duration::from_millis(10));
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "denied capture did not project its bounded continuation"
-            );
-            std::thread::sleep(Duration::from_millis(10));
+            assert_eq!(unresolved(), 0, "an unavailable capture unresolved seats");
+            assert_eq!(invalidation_revision(&fixture), 0);
+        } else {
+            while unresolved() != 17 {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "denied capture did not project its bounded continuation"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(invalidation_revision(&fixture) >= 1);
         }
         assert!(fixture.resolve("denied-baseline").is_err());
+        let baseline: Option<String> = db
+            .query_row(
+                "SELECT recovery_baseline_generation_id FROM host_instances",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap()
+            .flatten();
+        assert_eq!(baseline, None, "mode {mode} created an allocation baseline");
         let counts: (i64,i64) = db.query_row("SELECT (SELECT count(*) FROM allocation_decisions),(SELECT count(*) FROM seats WHERE state IN ('retiring','retired'))", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
         assert_eq!(counts, (0, 0));
     }
@@ -2193,21 +2375,29 @@ fn quiesced_identity(
     (Arc::new(identity), writer)
 }
 
-/// Starts a resolve whose host read is held until its own request budget is
-/// cancelled, so the failure is only discovered after request cancellation.
-fn cancelled_request_read(
+/// Starts a resolve whose target read answers incoherently (no verified
+/// structural proof: the evidence-based `CoherenceLost`, which still writes an
+/// invalidation; a failed read is unavailability and freezes instead,
+/// TRUST-POLICY C4). The read is held until the test holds `writer`, then
+/// released; the call returns once the read's compensation is queued behind
+/// that held writer turn, observed through `FairWriter::waiting`. The request
+/// budget is still live then, so the read passed its own budget check.
+fn queued_incoherent_compensation<'w>(
     fixture: &Fixture,
     identity: &Arc<herdr_threads::identity::OrdinaryIdentity>,
+    writer: &'w herdr_threads::service::fair_writer::FairWriter,
     operation: &str,
 ) -> (
     Cancellation,
     mpsc::Receiver<Result<SeatId, ApiError>>,
     std::thread::JoinHandle<()>,
+    herdr_threads::service::fair_writer::WriterGuard<'w>,
 ) {
+    fixture.host.incoherent.store(true, Ordering::SeqCst);
     fixture.host.held.store(true, Ordering::SeqCst);
     let request = Cancellation::default();
     let budget = CallBudget {
-        deadline: MonoInstant(fixture.clock.monotonic_now().0 + 5_000),
+        deadline: MonoInstant(fixture.clock.monotonic_now().0 + 30_000),
         cancellation: request.clone(),
     };
     let (done, result) = mpsc::channel();
@@ -2226,7 +2416,24 @@ fn cancelled_request_read(
         .entered
         .recv_timeout(Duration::from_secs(30))
         .expect("identity did not admit target read");
-    (request, result, worker)
+    // The admission's writer turn ended before the host read began.
+    let held = writer
+        .enter_foreground(&fixture.budget(), fixture.clock.as_ref())
+        .unwrap();
+    fixture.host.held.store(false, Ordering::SeqCst);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while writer.waiting().0 == 0 {
+        assert!(
+            result.try_recv().is_err(),
+            "the incoherent read returned before queuing its compensation"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "compensation never queued behind the held writer"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    (request, result, worker, held)
 }
 
 fn invalidation_revision(fixture: &Fixture) -> i64 {
@@ -2242,21 +2449,24 @@ fn invalidation_revision(fixture: &Fixture) -> i64 {
 
 /// Kills mutation "derive invalidation compensation from the request budget"
 /// (`let budget = request_budget.clone()` in `OrdinaryIdentity::invalidate`):
-/// the caller cancels while the host is held, the read then fails, and the
-/// known failure must still be recorded against the published target.
+/// an incoherent read queues its `CoherenceLost` compensation, the caller then
+/// cancels, and the known invalidation must still be recorded against the
+/// published target.
 #[test]
 fn identity_invalidation_compensation_completes_after_request_cancellation() {
     let mut fixture = Fixture::new(false);
-    let (identity, _writer) = quiesced_identity(&mut fixture, Cancellation::default());
+    let (identity, writer) = quiesced_identity(&mut fixture, Cancellation::default());
     // Stopping the fixture daemon may itself invalidate an in-flight capture.
     let baseline = invalidation_revision(&fixture);
-    let (request, result, worker) = cancelled_request_read(&fixture, &identity, "cancelled-read");
+    let (request, result, worker, held) =
+        queued_incoherent_compensation(&fixture, &identity, &writer, "cancelled-read");
     request.cancel();
+    drop(held);
     let outcome = result
         .recv_timeout(Duration::from_secs(30))
         .expect("resolve did not return after request cancellation");
     worker.join().unwrap();
-    assert_eq!(outcome.unwrap_err().code, ErrorCode::HostUnavailable);
+    assert_eq!(outcome.unwrap_err().code, ErrorCode::StaleHostObservation);
     assert_eq!(
         invalidation_revision(&fixture),
         baseline + 1,
@@ -2281,16 +2491,10 @@ fn identity_invalidation_compensation_does_not_hold_shutdown() {
     let shutdown = Cancellation::default();
     let (identity, writer) = quiesced_identity(&mut fixture, shutdown.clone());
     let baseline = invalidation_revision(&fixture);
-    let (request, result, worker) = cancelled_request_read(&fixture, &identity, "shutdown-read");
-    let held = writer
-        .enter_foreground(&fixture.budget(), fixture.clock.as_ref())
-        .unwrap();
+    let (request, result, worker, held) =
+        queued_incoherent_compensation(&fixture, &identity, &writer, "shutdown-read");
     request.cancel();
-    // The failed read is now queued for its compensation behind `held`.
-    assert!(
-        result.recv_timeout(Duration::from_millis(200)).is_err(),
-        "compensation did not wait for the writer"
-    );
+    // The incoherent read is queued for its compensation behind `held`.
     let stopped = std::time::Instant::now();
     shutdown.cancel();
     let outcome = result.recv_timeout(Duration::from_millis(600));
@@ -2314,10 +2518,8 @@ fn identity_invalidation_compensation_is_bounded_without_shutdown() {
     let mut fixture = Fixture::new(false);
     let (identity, writer) = quiesced_identity(&mut fixture, Cancellation::default());
     let baseline = invalidation_revision(&fixture);
-    let (request, result, worker) = cancelled_request_read(&fixture, &identity, "bounded-read");
-    let held = writer
-        .enter_foreground(&fixture.budget(), fixture.clock.as_ref())
-        .unwrap();
+    let (request, result, worker, held) =
+        queued_incoherent_compensation(&fixture, &identity, &writer, "bounded-read");
     let cancelled = std::time::Instant::now();
     request.cancel();
     let outcome = result.recv_timeout(Duration::from_millis(INVALIDATION_COMPENSATION_MS + 2_000));
@@ -2336,9 +2538,11 @@ fn identity_invalidation_compensation_is_bounded_without_shutdown() {
 
 /// Kills mutation "elected owner does not bind compensation to shutdown"
 /// (drop `.with_service_cancellation(cancellation.clone())` in `run_elected`):
-/// a real IPC read fails while an external SQLite writer blocks the daemon's
-/// compensation; stopping the owner must end the in-flight handler promptly
-/// instead of letting it wait out the 2 s compensation bound.
+/// a real IPC read answers incoherently (no verified structural proof, the
+/// evidence-based `CoherenceLost`; a failed read would freeze and write
+/// nothing) while an external SQLite writer blocks the daemon's compensation;
+/// stopping the owner must end the in-flight handler promptly instead of
+/// letting it wait out the 2 s compensation bound.
 ///
 /// Only the request handler is timed. The external SQLite writer also stalls
 /// the elected deadline worker, whose own join at teardown is a separate,
@@ -2370,9 +2574,10 @@ fn elected_shutdown_is_not_held_by_invalidation_compensation() {
         .expect("daemon did not admit target read");
     let external = fixture.db();
     external.execute_batch("BEGIN IMMEDIATE").unwrap();
-    fixture.host.fail.store(true, Ordering::SeqCst);
+    let baseline = invalidation_revision(&fixture);
+    fixture.host.incoherent.store(true, Ordering::SeqCst);
     fixture.host.held_past_budget.store(false, Ordering::SeqCst);
-    // The failed read is now in its compensation, blocked behind SQLite.
+    // The incoherent read is now in its compensation, blocked behind SQLite.
     assert!(
         answer.recv_timeout(Duration::from_millis(300)).is_err(),
         "compensation did not wait for the external SQLite writer"
@@ -2394,6 +2599,8 @@ fn elected_shutdown_is_not_held_by_invalidation_compensation() {
         "{code:?}"
     );
     assert!(waited < Duration::from_millis(1_000), "{waited:?}");
+    // Abandoned at shutdown: the compensation never committed.
+    assert_eq!(invalidation_revision(&fixture), baseline);
 }
 
 /// The launch-side Herdr adapter: an available shell on `pane` that records

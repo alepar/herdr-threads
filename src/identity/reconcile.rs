@@ -349,6 +349,14 @@ pub enum ObservationOutcome {
         reason: HostInvalidationReason,
         cause: Option<ApiError>,
     },
+    /// The capture failed for unavailability
+    /// ([`HostInvalidationReason::is_unavailability`]): nothing was written
+    /// and no continuation is armed; seats and bindings stay as they were
+    /// until a capture succeeds.
+    Frozen {
+        reason: HostInvalidationReason,
+        cause: Option<ApiError>,
+    },
 }
 
 /// Apply at most one saved-seat page. Each transition is a separate guarded
@@ -439,7 +447,12 @@ pub fn reconcile_invalidated_page(
     }
     let mut transitions = 0u8;
     for saved in &page.seats {
-        if saved.state == SeatState::Retired {
+        // A retired seat has nothing to fail closed, and an unresolved one
+        // already is (its reason, `other` or an earlier invalidation, is kept).
+        // Marking it again is refused as Stale, which used to abort the pass
+        // at the first such seat: the marker was never recorded, so every
+        // retry wrote a new invalidation, and seats past it were never marked.
+        if matches!(saved.state, SeatState::Retired | SeatState::Unresolved) {
             continue;
         }
         let result = store.mark_unresolved_from_invalidation(
@@ -558,6 +571,9 @@ fn invalidate_or_skip(
     cause: Option<ApiError>,
     maintenance_budget: &CallBudget,
 ) -> Result<ObservationOutcome, ApiError> {
+    if reason.is_unavailability() {
+        return Ok(ObservationOutcome::Frozen { reason, cause });
+    }
     if lane.skips_repeated_invalidation(reason) {
         return Ok(ObservationOutcome::InvalidationRepeated { reason, cause });
     }
@@ -593,16 +609,24 @@ fn publish_captured(
     let mut did_publish = false;
     let published = (|| {
         let mut offset = 0u64;
-        for targets in snapshot.targets.chunks(MAX_SAVED_SEATS_PER_PLAN) {
-            ensure_budget(store, budget)?;
-            let progress =
-                store.stage_snapshot_targets(&stage.id, offset, targets, admission, budget)?;
-            offset += targets.len() as u64;
-            if progress.stage.id != stage.id
-                || progress.stage.staged_targets != offset
-                || usize::from(progress.visited) != targets.len()
-            {
-                return Err(stale("snapshot staging did not advance exactly"));
+        for chunk in snapshot.targets.chunks(MAX_SAVED_SEATS_PER_PLAN) {
+            // A writer turn may stage a prefix of the chunk (its quantum ran
+            // out); stage the rest in the following turns.
+            let mut targets = chunk;
+            while !targets.is_empty() {
+                ensure_budget(store, budget)?;
+                let progress =
+                    store.stage_snapshot_targets(&stage.id, offset, targets, admission, budget)?;
+                let visited = usize::from(progress.visited);
+                offset += visited as u64;
+                if progress.stage.id != stage.id
+                    || progress.stage.staged_targets != offset
+                    || visited == 0
+                    || visited > targets.len()
+                {
+                    return Err(stale("snapshot staging did not advance exactly"));
+                }
+                targets = &targets[visited..];
             }
         }
         ensure_budget(store, budget)?;
@@ -715,6 +739,9 @@ pub struct ObservationLane {
     /// Failures answered without a durable invalidation since the last
     /// publication.
     repeat_failures: u32,
+    /// Lane captures that ran to an outcome; an explicit target read that
+    /// needs a capture waits for this to advance.
+    completed_captures: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -741,6 +768,14 @@ impl ObservationLane {
     /// failure backoff gate. Not evidence: availability is unchanged.
     pub fn request_explicit_capture(&mut self) {
         self.explicit_capture = true;
+    }
+
+    pub fn note_capture_completed(&mut self) {
+        self.completed_captures = self.completed_captures.wrapping_add(1);
+    }
+
+    pub fn completed_captures(&self) -> u64 {
+        self.completed_captures
     }
 
     pub fn snapshot_due(&self, now: MonoInstant) -> bool {

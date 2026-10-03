@@ -1438,6 +1438,10 @@ fn corrupt_or_unknown_schema_fails_explicitly_and_never_rewrites_history() {
 /// served.
 struct FlakyHost {
     connected: std::sync::atomic::AtomicBool,
+    /// Answers with an incomplete enumeration: evidence the host view is not
+    /// coherently known, so the capture still invalidates (unlike a denied
+    /// socket, which only freezes state, ht-yms).
+    partial: std::sync::atomic::AtomicBool,
     sequence: AtomicU64,
     /// Target address and, once an agent runs there, its execution.
     targets: Mutex<Vec<(String, Option<String>)>>,
@@ -1550,7 +1554,7 @@ impl crate::ports::HostPort for FlakyHost {
             boot: HostBootId::new("b"),
             epoch: 1,
             observation_sequence: sequence,
-            complete: true,
+            complete: !self.partial.load(Ordering::SeqCst),
             enumeration: EnumerationEvidence::CoherentVerified,
             incarnation: IncarnationEvidence::Verified {
                 identity: "inc".into(),
@@ -1700,6 +1704,7 @@ impl Matrix {
         use crate::protocol::commands::ResolveSeat;
         let host = Arc::new(FlakyHost {
             connected: std::sync::atomic::AtomicBool::new(true),
+            partial: std::sync::atomic::AtomicBool::new(false),
             sequence: AtomicU64::new(10),
             targets: Mutex::new(vec![("pane-s".into(), None), ("pane-r".into(), None)]),
             clock: self.clock.clone(),
@@ -1769,22 +1774,28 @@ impl Matrix {
             .unwrap()
     }
 
-    /// Socket denied at the next periodic capture (every event lost):
-    /// fail-closed invalidation that never retires or settles anything.
-    fn deny_host(&self, pair: &FlakyPair) {
-        self.deny_host_expecting(
+    /// An incomplete enumeration at the next periodic capture (every event
+    /// lost): fail-closed invalidation that never retires or settles anything.
+    fn invalidate_host(&self, pair: &FlakyPair) {
+        self.invalidate_host_expecting(
             pair,
             "unresolved:host_invalidation unresolved:host_invalidation",
         );
     }
 
-    fn deny_host_expecting(&self, pair: &FlakyPair, states: &str) {
+    fn invalidate_host_expecting(&self, pair: &FlakyPair, states: &str) {
         use crate::identity::reconcile::ObservationOutcome;
-        pair.host.connected.store(false, Ordering::SeqCst);
+        pair.host.partial.store(true, Ordering::SeqCst);
         self.clock.mono.fetch_add(5_000, Ordering::SeqCst);
         let (denied, retirements, error) = self.capture_and_reconcile(&pair.identity);
         assert!(
-            matches!(&denied, ObservationOutcome::Invalidated { cause: Some(e), .. } if e.code == ErrorCode::HostUnavailable),
+            matches!(
+                &denied,
+                ObservationOutcome::Invalidated {
+                    reason: crate::ports::HostInvalidationReason::PartialEnumeration,
+                    ..
+                }
+            ),
             "{denied:?}"
         );
         assert_eq!((retirements, error), (0, None));
@@ -1812,6 +1823,7 @@ impl Matrix {
     fn reconnect_and_capture(&self, pair: &FlakyPair, turns: usize) {
         use crate::identity::reconcile::ObservationOutcome;
         pair.host.connected.store(true, Ordering::SeqCst);
+        pair.host.partial.store(false, Ordering::SeqCst);
         for turn in 0..turns {
             self.clock.mono.fetch_add(5_000, Ordering::SeqCst);
             let (published, retirements, error) = self.capture_and_reconcile(&pair.identity);
@@ -1917,8 +1929,77 @@ fn cli_refusal(result: Result<Vec<u8>, crate::cli::RunError>) -> ApiError {
     }
 }
 
-/// Row 12. Boundary: host socket denied and lifecycle events lost, then
-/// reconnect, over a host double with the **production adapter's**
+/// ht-yms (TRUST-POLICY C4): Herdr not answering is missing evidence, not
+/// evidence of change. A denied socket writes no invalidation: both seats
+/// stay resolved at their generation with their bindings open, the
+/// recipient's pre-outage context still settles its receipt, and reconnect
+/// needs no repair. Kills: invalidating (unresolving seats, ending bindings)
+/// on a host that merely did not answer.
+#[test]
+fn socket_denial_freezes_seats_and_bindings_until_reconnect() {
+    use crate::identity::reconcile::ObservationOutcome;
+    let mut m = Matrix::with_uuid_instance();
+    let pair = m.flaky_pair(HostShape::ProductionAdapter);
+    let states = m.seat_states();
+    let generation = m.seat_generation(&pair.r.seat);
+    let open_bindings = || {
+        m.count(
+            "SELECT count(*) FROM occupant_bindings WHERE ended_at IS NULL",
+            [],
+        )
+    };
+    let bindings = open_bindings();
+    pair.host.connected.store(false, Ordering::SeqCst);
+    for _ in 0..2 {
+        m.clock.mono.fetch_add(5_000, Ordering::SeqCst);
+        let outcome = pair
+            .identity
+            .capture_if_due(&m.ports, &m.budget(), &m.budget())
+            .unwrap()
+            .expect("capture due");
+        assert!(
+            matches!(
+                &outcome,
+                ObservationOutcome::Frozen {
+                    reason: crate::ports::HostInvalidationReason::HostUnavailable,
+                    cause: Some(e),
+                } if e.code == ErrorCode::HostUnavailable
+            ),
+            "{outcome:?}"
+        );
+        assert_eq!(m.seat_states(), states);
+        assert_eq!(m.seat_generation(&pair.r.seat), generation);
+        assert_eq!(open_bindings(), bindings);
+        assert_eq!(
+            m.count("SELECT invalidation_revision FROM host_instances", []),
+            0
+        );
+    }
+    m.assert_nothing_retired_or_settled(&pair);
+    // Frozen, not unavailable: the pre-outage context still settles its
+    // receipt (a store decision that needs no host read).
+    assert_eq!(
+        m.ack(&pair.r, &[&pair.sent], "ack-during-outage")
+            .unwrap()
+            .acknowledged,
+        vec![pair.sent.clone()]
+    );
+    pair.host.connected.store(true, Ordering::SeqCst);
+    m.clock.mono.fetch_add(5_000, Ordering::SeqCst);
+    let (published, retirements, error) = m.capture_and_reconcile(&pair.identity);
+    assert!(
+        matches!(published, ObservationOutcome::Published(_)),
+        "{published:?}"
+    );
+    assert_eq!((retirements, error), (0, None));
+    assert_eq!(m.seat_states(), states);
+    assert_eq!(m.seat_generation(&pair.r.seat), generation);
+}
+
+/// Row 12. Boundary: an incomplete host capture (evidence the view is not
+/// coherently known; a denied socket only freezes, see
+/// `socket_denial_freezes_seats_and_bindings_until_reconnect`) and lifecycle
+/// events lost, then reconnect, over a host double with the **production adapter's**
 /// observation shape (occupant None; UI, occupancy and execution Unknown).
 /// Seats are allocated by production resolution over a real baseline; the
 /// recipient's agent registers through the shipped CLI (context gate plus
@@ -1932,7 +2013,7 @@ fn cli_refusal(result: Result<Vec<u8>, crate::cli::RunError>) -> ApiError {
 /// check-in after the invalidation's generation bump (fix1 S2), while it
 /// must still refuse a stale-context mutation.
 #[test]
-fn socket_denial_and_lost_events_recover_by_snapshot_without_retirement() {
+fn incomplete_capture_and_lost_events_recover_by_snapshot_without_retirement() {
     let mut m = Matrix::with_uuid_instance();
     let pair = m.flaky_pair(HostShape::ProductionAdapter);
     let cli = m.cli_seat(&pair.r);
@@ -1964,7 +2045,7 @@ fn socket_denial_and_lost_events_recover_by_snapshot_without_retirement() {
         )
     };
     let operator_before = operator_ops();
-    m.deny_host(&pair);
+    m.invalidate_host(&pair);
     let invalidated_generation = m.seat_generation(&pair.r.seat);
     assert!(invalidated_generation > r_before.binding_generation as i64);
     // Reconnect: the first complete production-shaped snapshot reconfirms
@@ -2021,10 +2102,10 @@ fn socket_denial_and_lost_events_recover_by_snapshot_without_retirement() {
 /// unchanged execution-evidence reconfirmation.
 /// Kills: the structural bridge displacing verified-execution reconfirmation.
 #[test]
-fn socket_denial_recovers_with_verified_occupant_host() {
+fn incomplete_capture_recovers_with_verified_occupant_host() {
     let mut m = Matrix::new();
     let pair = m.flaky_pair(HostShape::VerifiedOccupant);
-    m.deny_host(&pair);
+    m.invalidate_host(&pair);
     m.reconnect_and_capture(&pair, 1);
     assert_eq!(m.seat_states(), "resolved:- resolved:-");
     let mut next = pair.r.clone();
@@ -2071,7 +2152,7 @@ impl Matrix {
 fn legacy_unconfirmable_bindings_heal_after_writer_restart_backfill() {
     let mut m = Matrix::new();
     let pair = m.flaky_pair(HostShape::ProductionAdapter);
-    m.deny_host(&pair);
+    m.invalidate_host(&pair);
     m.strip_binding_evidence(None);
     m.reconnect_and_capture(&pair, 2);
     assert_eq!(
@@ -2120,7 +2201,7 @@ fn legacy_unconfirmable_bindings_heal_after_writer_restart_backfill() {
 fn unreconfirmable_seat_stays_unresolved_without_blocking_later_seats() {
     let mut m = Matrix::new();
     let pair = m.flaky_pair(HostShape::ProductionAdapter);
-    m.deny_host(&pair);
+    m.invalidate_host(&pair);
     m.strip_binding_evidence(Some("pane-s"));
     m.reconnect_and_capture(&pair, 3);
     assert_eq!(
@@ -2153,7 +2234,7 @@ fn operator_repair_invalidates_pre_repair_context() {
     m.cli(&cli, &["check-in", "--lifecycle-event", "hook-r-1"])
         .unwrap();
     let r_before = m.cli_context(&cli);
-    m.deny_host(&pair);
+    m.invalidate_host(&pair);
     m.strip_binding_evidence(Some("pane-r"));
     m.reconnect_and_capture(&pair, 1);
     assert_eq!(m.seat_states(), "unresolved:host_invalidation resolved:-");
@@ -2262,7 +2343,7 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
         )
     };
     let operator_before = operator_ops();
-    m.deny_host_expecting(
+    m.invalidate_host_expecting(
         &pair,
         "unresolved:host_invalidation unresolved:host_invalidation unresolved:host_invalidation",
     );
@@ -2358,7 +2439,7 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
     assert_eq!(operator_ops(), operator_before, "no operator repair");
     // Registered now: a further denial reconfirms it through its binding's
     // own evidence, and the same agent registers again by its next hook.
-    m.deny_host_expecting(
+    m.invalidate_host_expecting(
         &pair,
         "unresolved:host_invalidation unresolved:host_invalidation unresolved:host_invalidation",
     );
@@ -2386,7 +2467,7 @@ fn startup_evidence_health_recomputes_after_operator_repair_and_reregistration()
     use crate::ports::{BindingEvidenceStartup, StorePort};
     let mut m = Matrix::new();
     let pair = m.flaky_pair(HostShape::ProductionAdapter);
-    m.deny_host(&pair);
+    m.invalidate_host(&pair);
     m.strip_binding_evidence(Some("pane-s"));
     // The seat's structural proof no longer provably describes this binding
     // (another host epoch), so the restart cannot backfill it.

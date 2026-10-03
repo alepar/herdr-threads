@@ -108,7 +108,15 @@ impl TestIsolation {
 /// starts exits once this test process is gone. The
 /// `HT_TEST_OWNER` tag goes on too (`spawn::tag`, ht-p03.131).
 pub fn scrub_env(command: &mut Command) -> &mut Command {
-    for (key, _) in std::env::vars_os() {
+    scrub_inherited(command, std::env::vars_os().map(|(key, _)| key));
+    crate::test_support::spawn::tag(command);
+    command
+}
+
+/// The removal half of [`scrub_env`] over an explicit list of inherited
+/// keys, so it is testable without mutating this process's environment.
+fn scrub_inherited(command: &mut Command, inherited: impl IntoIterator<Item = std::ffi::OsString>) {
+    for key in inherited {
         if let Some(name) = key.to_str() {
             if SCRUBBED_PREFIXES.iter().any(|p| name.starts_with(p)) {
                 command.env_remove(&key);
@@ -122,8 +130,6 @@ pub fn scrub_env(command: &mut Command) -> &mut Command {
             }
         }
     }
-    crate::test_support::spawn::tag(command);
-    command
 }
 
 impl Drop for TestIsolation {
@@ -241,18 +247,33 @@ mod tests {
 
     #[test]
     fn scrub_env_removes_inherited_prefixed_vars() {
-        // Exercise scrub_env against a command that inherits a dirty parent
-        // environment: the command carries explicit env_remove entries for
-        // every prefixed inherited key.
-        let probe = format!("HERDR_SCRUB_PROBE_{}", uuid::Uuid::new_v4().simple());
-        // SAFETY: unique key, set and removed within this test only.
-        unsafe { std::env::set_var(&probe, "1") };
+        // A dirty inherited environment, given explicitly: mutating this
+        // process's environment would race every test thread that spawns a
+        // child or reads a variable (and is unsound; clippy.toml bans it).
+        let inherited = [
+            "HERDR_SCRUB_PROBE",
+            "CLAUDE_PROBE",
+            "CODEX_PROBE",
+            "PATH",
+            "HOME",
+        ];
         let mut cmd = Command::new("/usr/bin/env");
-        scrub_env(&mut cmd);
-        let out = cmd.output().unwrap();
-        unsafe { std::env::remove_var(&probe) };
-        let text = String::from_utf8(out.stdout).unwrap();
-        assert!(!text.contains(&probe), "inherited {probe} leaked");
+        scrub_inherited(&mut cmd, inherited.map(std::ffi::OsString::from));
+        let removed: Vec<_> = cmd
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect();
+        for key in ["HERDR_SCRUB_PROBE", "CLAUDE_PROBE", "CODEX_PROBE"] {
+            assert!(
+                removed.iter().any(|r| r == key),
+                "{key} not removed: {removed:?}"
+            );
+        }
+        assert!(
+            !removed.iter().any(|r| r == "PATH" || r == "HOME"),
+            "{removed:?}"
+        );
     }
 
     #[test]

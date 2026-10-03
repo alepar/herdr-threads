@@ -16,8 +16,13 @@ pub fn read_body(
     file: Option<String>,
     stdin: bool,
 ) -> Result<String, ApiError> {
-    let mut input = std::io::stdin().lock();
-    read_body_from(inline, file, stdin, &mut input)
+    // Touch process stdin (its process-wide lock) only when it is the source:
+    // an inline or file body must never wait on whoever holds stdin.
+    if stdin {
+        read_body_from(inline, file, stdin, &mut std::io::stdin().lock())
+    } else {
+        read_body_from(inline, file, stdin, &mut std::io::empty())
+    }
 }
 
 /// Injecting the stdin reader keeps byte and UTF-8 validation testable without

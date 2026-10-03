@@ -1,0 +1,9 @@
+# Process-global state is shared by every test thread of a test binary
+# (libtest runs tests as threads in one process), so mutating it makes tests
+# flaky under the parallel suite, and `set_var`/`remove_var` are unsound while
+# other threads read the environment or spawn processes (ht-zo4).
+disallowed-methods = [
+    { path = "std::env::set_var", reason = "process-global: pass the variable to the child with Command::env, or take the value as a parameter" },
+    { path = "std::env::remove_var", reason = "process-global: use Command::env_remove on the child, or take the value as a parameter" },
+    { path = "std::env::set_current_dir", reason = "process-global: use Command::current_dir on the child, or absolute paths" },
+]

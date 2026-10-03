@@ -22,6 +22,37 @@ use std::sync::Arc;
 /// budget (see [`OrdinaryIdentity::compensation_budget`]).
 pub const INVALIDATION_COMPENSATION_MS: u64 = 2_000;
 
+/// Attempts of one explicit current-target read whose publication another
+/// decision superseded (see [`OrdinaryIdentity::observe`]).
+pub const SUPERSEDED_READ_ATTEMPTS: u32 = 3;
+
+/// Longest an explicit target read waits for the lane capture it needs (no
+/// published snapshot yet, or the host moved to a new boot or epoch).
+const CAPTURE_WAIT_CAP: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// What an explicit current-target read produced.
+enum Observed {
+    Read(Box<(HostObservationAdmission, HostObservation)>),
+    /// The published snapshot is missing or behind the host's boot or epoch:
+    /// only the observation lane's capture can move it. Carries the refusal
+    /// the caller gets if waiting for that capture does not help.
+    NeedsCapture(ApiError),
+}
+
+/// One explicit current-target read attempt.
+enum ReadAttempt {
+    Published(Box<(HostObservationAdmission, HostObservation)>),
+    /// Another decision moved the admission's fences; nothing was written.
+    Superseded(HostObservationAdmission),
+    /// Refused because no snapshot is published or the host's boot or epoch
+    /// moved past the published one (refused at publication, or by the
+    /// adapter's own context check).
+    NeedsCapture(ApiError),
+    /// The host was invalidated, or its boot or epoch changed, since the
+    /// previous attempt.
+    HostMoved,
+}
+
 /// Own time budget of the C1 `agent.get` diagnostic read.
 const DIAGNOSTIC_READ_MILLIS: u64 = 750;
 
@@ -33,6 +64,8 @@ pub struct OrdinaryIdentity {
     writer: Arc<FairWriter>,
     reads: BoundedLane,
     lane: std::sync::Mutex<crate::identity::reconcile::ObservationLane>,
+    /// Signalled (with `lane`) whenever a lane capture completes.
+    lane_captured: std::sync::Condvar,
     /// Service-lifetime cancellation owned by the elected daemon. It bounds
     /// detached compensation at shutdown; it is never a request token.
     service: Cancellation,
@@ -56,6 +89,7 @@ impl OrdinaryIdentity {
             writer,
             reads: BoundedLane::new(1, 8),
             lane: std::sync::Mutex::new(crate::identity::reconcile::ObservationLane::default()),
+            lane_captured: std::sync::Condvar::new(),
             service: Cancellation::default(),
             observation_pacer: None,
         }
@@ -101,15 +135,18 @@ impl OrdinaryIdentity {
             expected_boot: None,
             expected_epoch: None,
         };
-        crate::identity::reconcile::observe_and_publish(
+        let outcome = crate::identity::reconcile::observe_and_publish(
             self.host.as_ref(),
             store,
             &mut lane,
             &self.instance,
             &context,
             maintenance,
-        )
-        .map(Some)
+        );
+        lane.note_capture_completed();
+        drop(lane);
+        self.lane_captured.notify_all();
+        outcome.map(Some)
     }
 
     /// Record that `published`'s saved-seat pass ended with no refused
@@ -169,6 +206,10 @@ impl OrdinaryIdentity {
             crate::identity::reconcile::ObservationOutcome::Superseded => {
                 Err(error(ErrorCode::CursorStale, "capture superseded"))
             }
+            crate::identity::reconcile::ObservationOutcome::Frozen { .. } => Err(error(
+                ErrorCode::CursorStale,
+                "a frozen capture has no pages",
+            )),
             crate::identity::reconcile::ObservationOutcome::InvalidationRepeated { .. } => Err(
                 error(ErrorCode::CursorStale, "repeated invalidation has no pages"),
             ),
@@ -355,45 +396,146 @@ impl OrdinaryIdentity {
         budget: &CallBudget,
         decide: impl FnOnce(HostObservationAdmission, HostObservation) -> Result<T, ApiError>,
     ) -> Result<T, ApiError> {
-        let _read = self.reads.enter(budget, self.clock.as_ref())?;
-        let mut lane = self.lane.lock().map_err(|_| {
+        let mut decide = Some(decide);
+        let mut waited = false;
+        loop {
+            let (result, captures) = {
+                let _read = self.reads.enter(budget, self.clock.as_ref())?;
+                let mut lane = self.lane.lock().map_err(|_| {
+                    error(
+                        ErrorCode::StoreCorrupt,
+                        "identity observation lane poisoned",
+                    )
+                })?;
+                let ticket = lane.begin_observation()?;
+                let result = match self.observe(target, budget) {
+                    Ok(Observed::Read(read)) => {
+                        let (admission, observation) = *read;
+                        let decide = decide.take().expect("one deciding read per request");
+                        Some(decide(admission, observation))
+                    }
+                    // First contact after a daemon start or a host restart:
+                    // wait (once) for the lane capture the read needs, with
+                    // the read slot and lane lock released.
+                    Ok(Observed::NeedsCapture(_))
+                        if !waited
+                            && self.observation_pacer.is_some()
+                            && !budget.is_exhausted(self.clock.as_ref()) =>
+                    {
+                        None
+                    }
+                    Ok(Observed::NeedsCapture(refusal)) => Some(Err(refusal)),
+                    Err(error) => Some(Err(error)),
+                };
+                if !matches!(result, Some(Ok(_))) {
+                    lane.mark_unavailable();
+                }
+                // An explicit target capture does not establish complete
+                // enumeration; leave that lane due for its separate
+                // snapshot/reconciliation driver and wake it (a kick never
+                // shortens an outstanding backoff).
+                lane.discard(ticket)?;
+                // Ask the lane for its own snapshot now, even inside a backoff
+                // wait (ht-p03.104): after a host restart this is the first
+                // contact, and the published boot only moves once the lane
+                // captures.
+                lane.request_explicit_capture();
+                if let Some(pacer) = &self.observation_pacer {
+                    pacer.kick_explicit();
+                }
+                (result, lane.completed_captures())
+            };
+            if let Some(result) = result {
+                return result;
+            }
+            waited = true;
+            self.wait_for_capture(captures, budget)?;
+        }
+    }
+
+    /// Block until the lane completes a capture after `seen`, the request
+    /// budget runs out, or [`CAPTURE_WAIT_CAP`] passes.
+    fn wait_for_capture(&self, seen: u64, budget: &CallBudget) -> Result<(), ApiError> {
+        let remaining = budget
+            .deadline
+            .0
+            .saturating_sub(self.clock.monotonic_now().0);
+        let wait = std::time::Duration::from_millis(remaining).min(CAPTURE_WAIT_CAP);
+        let lane = self.lane.lock().map_err(|_| {
             error(
                 ErrorCode::StoreCorrupt,
                 "identity observation lane poisoned",
             )
         })?;
-        let ticket = lane.begin_observation()?;
-        let result = self
-            .observe(target, budget)
-            .and_then(|(admission, observation)| decide(admission, observation));
-        if result.is_err() {
-            lane.mark_unavailable();
+        let _ = self
+            .lane_captured
+            .wait_timeout_while(lane, wait, |lane| {
+                lane.completed_captures() == seen && !budget.cancellation.is_cancelled()
+            })
+            .map_err(|_| {
+                error(
+                    ErrorCode::StoreCorrupt,
+                    "identity observation lane poisoned",
+                )
+            })?;
+        Ok(())
+    }
+
+    /// One explicit current-target read, admitted again (up to
+    /// [`SUPERSEDED_READ_ATTEMPTS`], inside the request budget) when its
+    /// publication was superseded. Supersession is not a failure of the read:
+    /// any concurrent seat decision (another agent's check-in bumps the
+    /// instance's lifecycle revision) or publication moves the fences the
+    /// admission captured. The superseded attempt wrote nothing and needs no
+    /// invalidation, and each retry is a whole new admission, read and
+    /// publication against the current canonical view (TRUST-POLICY A2), so
+    /// the caller is refused only when the view keeps moving or the budget
+    /// runs out. A host invalidation, boot or epoch change since the previous
+    /// attempt is not ordinary contention: the request is refused as before,
+    /// without another read.
+    fn observe(&self, target: &HostTargetId, budget: &CallBudget) -> Result<Observed, ApiError> {
+        let mut previous = None;
+        let mut attempt = 1;
+        loop {
+            match self.observe_once(target, budget, previous.as_ref())? {
+                ReadAttempt::Published(read) => return Ok(Observed::Read(read)),
+                ReadAttempt::NeedsCapture(refusal) => return Ok(Observed::NeedsCapture(refusal)),
+                ReadAttempt::Superseded(admission)
+                    if attempt < SUPERSEDED_READ_ATTEMPTS
+                        && !budget.is_exhausted(self.clock.as_ref()) =>
+                {
+                    previous = Some(admission);
+                    attempt += 1;
+                }
+                ReadAttempt::Superseded(_) | ReadAttempt::HostMoved => {
+                    return Err(error(
+                        ErrorCode::StaleHostObservation,
+                        "current-target observation was superseded",
+                    ));
+                }
+            }
         }
-        // An explicit target capture does not establish complete enumeration;
-        // leave that lane due for its separate snapshot/reconciliation driver
-        // and wake it (a kick never shortens an outstanding backoff).
-        lane.discard(ticket)?;
-        // Ask the lane for its own snapshot now, even inside a backoff wait
-        // (ht-p03.104): after a host restart this is the first contact, and
-        // the published boot only moves once the lane captures.
-        lane.request_explicit_capture();
-        if let Some(pacer) = &self.observation_pacer {
-            pacer.kick_explicit();
-        }
-        result
     }
 
     /// The store issues an ordering ticket before I/O. Publication validates
     /// the same durable baseline/fences afterward and never releases a hold.
-    fn observe(
+    fn observe_once(
         &self,
         target: &HostTargetId,
         budget: &CallBudget,
-    ) -> Result<(HostObservationAdmission, HostObservation), ApiError> {
+        previous: Option<&HostObservationAdmission>,
+    ) -> Result<ReadAttempt, ApiError> {
         let admission = {
             let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
             self.store.begin_host_observation(&self.instance, budget)?
         };
+        if let Some(previous) = previous
+            && (admission.invalidation_revision != previous.invalidation_revision
+                || admission.expected_boot != previous.expected_boot
+                || admission.expected_epoch != previous.expected_epoch)
+        {
+            return Ok(ReadAttempt::HostMoved);
+        }
         let context = HostCallContext {
             budget: budget.clone(),
             expected_boot: admission.expected_boot.clone(),
@@ -405,6 +547,13 @@ impl OrdinaryIdentity {
             // not host unavailability and must not unresolve other seats;
             // absence of a known terminal is decided by coherent snapshots.
             Err(error) if error.code == ErrorCode::NotFound => return Err(error),
+            // The adapter refused the published boot/epoch as behind the host
+            // (a restart): invalidate as before, and let the request wait for
+            // the lane capture that moves it.
+            Err(error) if error.code == ErrorCode::StaleHostObservation => {
+                self.invalidate(&admission, HostInvalidationReason::HostUnavailable)?;
+                return Ok(ReadAttempt::NeedsCapture(error));
+            }
             Err(error) => {
                 self.invalidate(&admission, HostInvalidationReason::HostUnavailable)?;
                 return Err(error);
@@ -437,12 +586,19 @@ impl OrdinaryIdentity {
             }
         };
         if !published {
-            return Err(error(
-                ErrorCode::StaleHostObservation,
-                "current-target observation was superseded",
-            ));
+            let host_moved = admission.expected_active.is_none()
+                || admission.expected_boot.as_ref() != Some(&observation.host_boot)
+                || admission.expected_epoch != observation.epoch;
+            return Ok(if host_moved {
+                ReadAttempt::NeedsCapture(error(
+                    ErrorCode::StaleHostObservation,
+                    "current-target observation was superseded",
+                ))
+            } else {
+                ReadAttempt::Superseded(admission)
+            });
         }
-        Ok((admission, observation))
+        Ok(ReadAttempt::Published(Box::new((admission, observation))))
     }
 
     /// Budget for compensating a failed/partial/unpublished target read.
@@ -484,6 +640,11 @@ impl OrdinaryIdentity {
         admission: &HostObservationAdmission,
         reason: HostInvalidationReason,
     ) -> Result<(), ApiError> {
+        // Unavailability is not evidence: the published view stays frozen and
+        // the failed read is simply refused (TRUST-POLICY C4).
+        if reason.is_unavailability() {
+            return Ok(());
+        }
         let budget = self.compensation_budget();
         let _turn = self.writer.enter_foreground(&budget, self.clock.as_ref())?;
         self.store

@@ -138,7 +138,19 @@ fn shared_server_is_untouched() {
         h.restart();
         assert_eq!(h.state(), HerdrState::Up);
     }
-    assert_eq!(shared_snapshot(), before);
+    // Every server that was running is still running, unrestarted (same start
+    // time), and the shared socket is the same file. A server that appeared
+    // meanwhile belongs to someone else on this machine (another project's
+    // run), not to this fixture, so it is not compared.
+    let after = shared_snapshot();
+    for (pid, started) in &before.0 {
+        assert_eq!(
+            after.0.get(pid),
+            Some(started),
+            "server {pid} was stopped or restarted"
+        );
+    }
+    assert_eq!(after.1, before.1, "the shared socket changed");
 }
 
 #[test]

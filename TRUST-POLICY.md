@@ -84,6 +84,12 @@ live seat, the refusal offers exactly two resolutions, each as ready argv:
 **C4. Availability ends only on evidence.** A joined seat stays available across a daemon restart when its
 mapping is structurally reconfirmed; the open cooperative or operator binding carries forward to the new host epoch (implemented; a native binding re-registers instead, and a send before the first reconciliation pass assumes the carry rather than warning). Availability ends when the mapping becomes
 unresolved, the seat retires, or a check-in replaces the binding.
+Herdr not answering (a timed-out or refused connection, a read that finishes past its budget) and a
+daemon-side failure to stage a capture are missing evidence, not evidence of change: they write no host
+invalidation, so seats, bindings and the published view stay **frozen** until Herdr answers (implemented,
+ht-yms). Meanwhile anything that needs a live Herdr read (current-target resolution, continuity, wake
+prompts) is refused as transient; store decisions that need no host read (sends, ACKs) proceed. Only
+evidence invalidates: an incomplete enumeration, an unknown or new incarnation (C2), an incoherent capture.
 
 **C5. Only producible evidence drives transitions.** The production Herdr adapter reports structure
 (terminal, incarnation, generation) but not occupancy or current execution. Code paths that need an observed
@@ -186,6 +192,7 @@ restart).
 | W6-C3 `codex resume` launch uncaptured | refuse until captured | Accepted limits |
 | P35 request crosses daemon boot | expected boot in the request envelope | A2 |
 | O1 unavailable after daemon restart | carry binding forward on structural reconfirm | C4 |
+| ht-yms Herdr timeout ended every binding | unavailability freezes state, writes no invalidation | C4 |
 | Wave 18 `me init` as `operator_human` | env-marker and Herdr-agent refusal | A3, A4 |
 | Wave 18 `me init` replaces agent binding | daemon refuses agent-to-human without `--operator` | A4 |
 | Wave 30 shared client directories | accepted, documented | A1, Accepted limits |

@@ -448,10 +448,12 @@ pub async fn ensure_running(
     executable: &Path,
     clock: Arc<dyn Clock>,
 ) -> Result<EndpointDescriptor, ApiError> {
-    ensure_running_with_timeout(context, executable, clock, ENSURE_WAIT).await
+    let wait = crate::protocol::time::external_bound(ENSURE_WAIT);
+    ensure_running_with_timeout(context, executable, clock, wait).await
 }
 
-async fn ensure_running_with_timeout(
+/// [`ensure_running`] waiting at most `timeout` for the daemon to become ready.
+pub async fn ensure_running_with_timeout(
     context: &RuntimeContext,
     executable: &Path,
     clock: Arc<dyn Clock>,

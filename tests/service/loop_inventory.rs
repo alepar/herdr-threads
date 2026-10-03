@@ -136,6 +136,13 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
          (ends at the call deadline); not a daemon loop",
     ),
     (
+        "src/identity/repair.rs",
+        ".wait_timeout_while(lane, wait, |lane| {",
+        "event-driven, not a loop (ht-zo4.3): one request-path wait on the \
+         lane_captured condvar the observation lane signals when a capture \
+         completes, bounded by the request budget and CAPTURE_WAIT_CAP",
+    ),
+    (
         "src/test_support/failpoints.rs",
         ".wait_timeout(state, remaining)",
         "test support: failpoint gate wait to a test deadline",

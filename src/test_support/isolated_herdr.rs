@@ -199,7 +199,17 @@ impl IsolatedHerdr {
 
 impl Drop for IsolatedHerdr {
     fn drop(&mut self) {
-        let out = self.run("ih_teardown", false);
+        // Flake diagnosis: a failing test with HT_KEEP_FAILED_ROOTS=1 keeps
+        // its root (daemon log, database, server output); processes still stop.
+        let keep = std::thread::panicking()
+            && std::env::var_os("HT_KEEP_FAILED_ROOTS").is_some_and(|v| v == "1");
+        let out = self.run(if keep { "ih_keep" } else { "ih_teardown" }, false);
+        if keep {
+            eprintln!(
+                "isolated-herdr: kept failed test root {}",
+                self.root.display()
+            );
+        }
         if !out.status.success() {
             eprintln!(
                 "isolated-herdr: teardown of {} failed: {}",

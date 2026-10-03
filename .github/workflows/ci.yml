@@ -112,17 +112,18 @@ jobs:
           set -euo pipefail
           tests/release/install_test.sh bin/herdr-threads 2>&1 | tee install_test.log
 
-      - name: Tests (serial)
-        # The suite runs with --test-threads=1; dropping the pin is release
-        # follow-on 6 (docs/release.md). --all-features enables `test-support`,
-        # which tests/hook_entrypoint.rs requires. The package suite runs
+      - name: Tests (parallel)
+        # Default test threads: every test isolates its own state (ht-zo4: 5
+        # consecutive green unpinned full-suite runs, scripts/full-suite-gate).
+        # --all-features enables `test-support`, which tests/hook_entrypoint.rs
+        # requires. The package suite runs
         # tests/service/check_failpoints_absent.sh (two extra release builds).
         # #[ignore] tests (package lifecycle gate, 10^5..10^6 scale tests) do
         # not run here. Herdr policy as above: provisioned, not skipped.
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --locked --all-targets --all-features -- --test-threads=1 2>&1 | tee test.log
+          cargo test --locked --all-targets --all-features 2>&1 | tee test.log
 
       - name: Python demo, validator and canary suites
         shell: bash

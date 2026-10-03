@@ -29,7 +29,7 @@ use std::{
 type Kicked = Arc<Mutex<Vec<(LaneSet, Option<Lane>)>>>;
 
 struct Lane5 {
-    _scratch: std::path::PathBuf,
+    scratch: std::path::PathBuf,
     store: Arc<SqliteStore>,
     pacer: Arc<Pacer>,
     status: Arc<WorkerStatus>,
@@ -86,7 +86,7 @@ impl Lane5 {
         )
         .unwrap();
         Self {
-            _scratch: scratch,
+            scratch,
             store,
             pacer,
             status,
@@ -98,6 +98,17 @@ impl Lane5 {
 
     fn commits(&self) -> u64 {
         self.store.commit_counts()["observation"]
+    }
+
+    fn invalidation_revision(&self) -> i64 {
+        rusqlite::Connection::open(self.scratch.join("store.db"))
+            .unwrap()
+            .query_row(
+                "SELECT invalidation_revision FROM host_instances",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
     }
 
     fn health(&self) -> String {
@@ -139,6 +150,14 @@ fn describe(kicks: &[(LaneSet, Option<Lane>)]) -> String {
     lines.join("; ")
 }
 
+/// Herdr stopped under the running lane is unavailability, not evidence
+/// (TRUST-POLICY C4, ht-yms): every failed capture, the first included, costs
+/// at most its admission commit; no invalidation is written, so nothing is
+/// marked and nothing is kicked, and Health shows the frozen state with the
+/// lane's capped retry.
+/// Kills: a frozen capture writing an invalidation or arming a marking
+/// continuation (the first step makes more than one commit, kicks lanes, or
+/// moves `invalidation_revision`), and the lane not backing off.
 #[test]
 fn herdr_stopped_costs_one_commit_per_backoff_step() {
     let Some(herdr) = IsolatedHerdr::new("herdr_stopped_costs_one_commit_per_backoff_step") else {
@@ -150,23 +169,17 @@ fn herdr_stopped_costs_one_commit_per_backoff_step() {
         lane.commits() >= 3 && lane.pacer.attempts() == 0 && lane.pacer.idle_events() >= 1
     });
     assert_eq!(lane.health(), "", "healthy while Herdr is up");
+    let revision = lane.invalidation_revision();
 
-    // Stop Herdr under the running lane. The first failure step is the
-    // admission, one invalidation and its unresolved-marking pages.
+    // Stop Herdr under the running lane. The first failure step is only the
+    // admission: the capture freezes, so no invalidation and no marking pages.
     herdr.stop();
     let first_failure_from = lane.commits();
     let kicks_before = lane.kicked.lock().unwrap().len();
     lane.wait("the first failed capture", Duration::from_secs(20), &|| {
         lane.pacer.attempts() >= 1
     });
-    // Let the first failure's marking pass finish: the lane is blocked in
-    // the backoff wait again.
-    let idle = lane.pacer.idle_events();
-    lane.wait(
-        "the marking pass to finish",
-        Duration::from_secs(10),
-        &|| lane.pacer.idle_events() > idle - 1 && lane.pacer.attempts() >= 1,
-    );
+    // Let the step's own commits land before sampling.
     std::thread::sleep(Duration::from_millis(50));
     let first_failure_commits = lane.commits() - first_failure_from;
     let first_kicks = lane.kicked.lock().unwrap()[kicks_before..].to_vec();
@@ -174,9 +187,23 @@ fn herdr_stopped_costs_one_commit_per_backoff_step() {
         "first failure step: {first_failure_commits} observation-origin commits; kicks: [{}]",
         describe(&first_kicks)
     );
+    assert!(
+        first_failure_commits <= 1,
+        "the first frozen capture made {first_failure_commits} durable commits"
+    );
+    assert!(
+        first_kicks.is_empty(),
+        "a frozen capture kicked lanes: [{}]",
+        describe(&first_kicks)
+    );
+    assert_eq!(
+        lane.invalidation_revision(),
+        revision,
+        "Herdr unavailability wrote an invalidation"
+    );
 
-    // Every further backoff step with the same reason makes <= 1 durable
-    // commit (the admission fence), until the 30 s cap.
+    // Every further backoff step makes <= 1 durable commit (the admission
+    // fence), until the 30 s cap.
     let mut per_step = Vec::new();
     let mut last_attempts = lane.pacer.attempts();
     let mut last_commits = lane.commits();
@@ -220,10 +247,12 @@ fn herdr_stopped_costs_one_commit_per_backoff_step() {
     }
     let health = lane.health();
     assert!(
-        health.contains("host observation invalidated: HostUnavailable")
-            && health.contains("retrying (attempt "),
+        health.contains(
+            "host unavailable (HostUnavailable): seats and bindings frozen until Herdr answers"
+        ) && health.contains("retrying (attempt "),
         "{health}"
     );
+    assert_eq!(lane.invalidation_revision(), revision);
 }
 
 #[test]

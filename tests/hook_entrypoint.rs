@@ -234,8 +234,18 @@ fn harness_path(host: &Path) -> String {
 }
 
 fn run_hook(command: &str, pane: &str, host: &Path, stdin: &[u8]) -> Hook {
+    run_hook_with(command, pane, host, stdin, true)
+}
+
+/// `scaled: false` runs the hook with the production wall-clock budgets
+/// (no HT_TEST_TIMEOUT_SCALE), for the tests that pin the watchdog itself.
+fn run_hook_with(command: &str, pane: &str, host: &Path, stdin: &[u8], scaled: bool) -> Hook {
     let started = Instant::now();
-    let mut child = scrubbed_command("/bin/sh")
+    let mut command_line = scrubbed_command("/bin/sh");
+    if !scaled {
+        command_line.env_remove(herdr_threads::protocol::time::TEST_TIMEOUT_SCALE_ENV);
+    }
+    let mut child = command_line
         .arg("-c")
         .arg(command)
         .env("HERDR_ENV", "1")
@@ -827,7 +837,8 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
 
     // 8. A hung daemon cannot hold the tool call past the 1.5 s budget.
     fx.mode.store(HANG, Ordering::SeqCst);
-    let hung = run_hook(&command, "w9:p1", &host, &tool("sess-2"));
+    // The production budgets: this pins how fast a hung read ends.
+    let hung = run_hook_with(&command, "w9:p1", &host, &tool("sess-2"), false);
     fx.mode.store(PASS, Ordering::SeqCst);
     assert_eq!(hung.code, Some(0), "{}", hung.stderr);
     assert!(hung.stdout.is_empty());
@@ -1331,6 +1342,8 @@ fn stalled_stdin_cannot_hold_a_hook_past_the_tool_budget() {
             "hook",
             "claude",
         ])
+        // The production budgets: this pins the stalled-stdin watchdog.
+        .env_remove(herdr_threads::protocol::time::TEST_TIMEOUT_SCALE_ENV)
         .env("HERDR_ENV", "1")
         .env("HERDR_PANE_ID", "w9:p1")
         .stdin(Stdio::piped())
@@ -1699,6 +1712,7 @@ impl Fixture {
 // `check-in: DeadlineExceeded`, the invitation is never shown and SessionStart
 // loses its digest line).
 #[test]
+#[ignore = "wall-clock tool budget at 2x10^4 sends in debug, flaky under load; run in release (store::attention flatness guards the same walks in the default suite)"]
 fn twenty_thousand_acked_receipts_stay_quiet_and_new_attention_is_emitted() {
     let fx = Fixture::start();
     fx.register("w9:p1", "sess-1");
@@ -1895,13 +1909,15 @@ fn production_history_stays_quiet_and_emits_new_attention(acked: u64) {
     }
 }
 
-// 10^4 production-shaped ACKed receipts and 10^4 settled invitations (the
-// default run). The release 10^5 case below kills the thread manifest receipt
+// 10^4 production-shaped ACKed receipts and 10^4 settled invitations
+// (ignored by default like the 10^5 case: the quadratic send writer makes
+// it minutes under load). The release 10^5 case below kills the thread manifest receipt
 // walk without the pending restriction (the emitting check-in visits every
 // ACKed manifest recipient in `hist`); at 10^4 in a debug build the old walks
 // still fit the tool budget, so this size is a regression guard, not a
 // mutation kill.
 #[test]
+#[ignore = "writes 10^4 sends through the real writers (60-180 s in debug under parallel load); run in release"]
 fn ten_thousand_production_acked_receipts_stay_quiet_and_emit_new_attention() {
     production_history_stays_quiet_and_emits_new_attention(10_000);
 }
@@ -2023,12 +2039,14 @@ fn settled_warnings_stay_quiet_and_emit_new_invitation(settled: u64) {
     }
 }
 
-// 10^4 settled warnings (the default run). In a debug build this size
+// 10^4 settled warnings (ignored by default like the 10^5 case: the
+// quadratic send writer makes it minutes under load). In a debug build this size
 // already kills M-count and M-inbox applied together (fix3's historical
 // warning walks in the check-in count and the inbox, see
 // `check_in_reads_are_flat_in_production_settled_warnings`): the emitting
 // call prints `check-in: UnknownOutcome` and the invitation is not shown.
 #[test]
+#[ignore = "writes 10^4 sends through the real writers (60-180 s in debug under parallel load); run in release"]
 fn ten_thousand_settled_warnings_stay_quiet_and_emit_new_invitation() {
     settled_warnings_stay_quiet_and_emit_new_invitation(10_000);
 }

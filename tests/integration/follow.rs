@@ -57,19 +57,7 @@ impl Plugin {
             ]);
         }
         command.args(args);
-        // A call that races the daemon's first observation publication may be
-        // refused `stale_host_observation`; that refusal is transient.
-        let until = Instant::now() + Duration::from_secs(10);
-        let output = loop {
-            let output = command.output().unwrap();
-            if output.status.success()
-                || !String::from_utf8_lossy(&output.stderr).contains("stale_host_observation")
-                || Instant::now() >= until
-            {
-                break output;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        };
+        let output = command.output().unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         assert!(
             output.status.success(),

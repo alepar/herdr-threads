@@ -896,6 +896,15 @@ pub enum HostInvalidationReason {
     /// a newer successful publication.
     PublicationFailed,
 }
+impl HostInvalidationReason {
+    /// Herdr did not answer (timeout, unreachable) or the daemon could not
+    /// stage what it captured: missing evidence, not evidence of change. Such
+    /// a failure writes no invalidation, so seats, bindings and the published
+    /// view stay frozen until Herdr answers (TRUST-POLICY C4).
+    pub fn is_unavailability(self) -> bool {
+        matches!(self, Self::HostUnavailable | Self::PublicationFailed)
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostInvalidationFence {
     pub(crate) admission: HostObservationAdmission,

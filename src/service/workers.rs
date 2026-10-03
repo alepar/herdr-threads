@@ -281,6 +281,8 @@ pub enum RedactedFailure {
     ObservationCapture(ErrorCode),
     /// A host observation was durably invalidated (fail-closed).
     ObservationInvalidated(HostInvalidationReason),
+    /// Herdr is unavailable: nothing was invalidated, state is frozen.
+    ObservationFrozen(HostInvalidationReason),
     ObservationReconciliation(ErrorCode),
     /// A lane reported a failed pass through `WorkerStatus::record_failure`.
     LaneFailure(&'static str, ErrorCode),
@@ -306,7 +308,10 @@ impl RedactedFailure {
             | Self::ObservationCapture(code)
             | Self::ObservationReconciliation(code)
             | Self::LaneFailure(_, code) => Some(code),
-            Self::ObservationInvalidated(_) | Self::LaneSpawn(_) | Self::StatusPoisoned => None,
+            Self::ObservationInvalidated(_)
+            | Self::ObservationFrozen(_)
+            | Self::LaneSpawn(_)
+            | Self::StatusPoisoned => None,
         }
     }
 
@@ -338,6 +343,11 @@ impl RedactedFailure {
             Self::ObservationCapture(code) => format!("host observation capture failed: {code:?}"),
             Self::ObservationInvalidated(reason) => {
                 format!("host observation invalidated: {reason:?}")
+            }
+            Self::ObservationFrozen(reason) => {
+                format!(
+                    "host unavailable ({reason:?}): seats and bindings frozen until Herdr answers"
+                )
             }
             Self::ObservationReconciliation(code) => {
                 format!("host observation reconciliation failed: {code:?}")
@@ -866,6 +876,16 @@ impl WorkerStatus {
         let failure = match result {
             Ok(None) => return,
             Ok(Some(ObservationOutcome::Published(_) | ObservationOutcome::Superseded)) => None,
+            Ok(Some(ObservationOutcome::Frozen { reason, cause })) => {
+                logged = Some(ApiError::new(
+                    ErrorCode::HostUnavailable,
+                    format!("capture frozen ({reason:?}): {cause:?}"),
+                ));
+                Some((
+                    RedactedFailure::ObservationFrozen(*reason),
+                    diagnostic(format!("capture {reason:?}: {cause:?}")),
+                ))
+            }
             Ok(Some(
                 ObservationOutcome::Invalidated { reason, cause, .. }
                 | ObservationOutcome::InvalidationRepeated { reason, cause },
@@ -1665,20 +1685,26 @@ where
                                 crate::identity::reconcile::ObservationOutcome::InvalidationRepeated {
                                     reason,
                                     cause,
+                                }
+                                | crate::identity::reconcile::ObservationOutcome::Frozen {
+                                    reason,
+                                    cause,
                                 } => {
                                     host_evidence.record_invalidated(*reason, cause.as_ref());
                                     pacer.on_failure();
                                 }
                                 crate::identity::reconcile::ObservationOutcome::Superseded => {}
                             }
-                            // A repeated invalidation arms no continuation: its
-                            // marking pass already completed.
+                            // A repeated invalidation arms no continuation (its
+                            // marking pass already completed), nor does a frozen
+                            // capture (nothing to mark).
                             if !matches!(
                                 outcome,
                                 crate::identity::reconcile::ObservationOutcome::Superseded
                                     | crate::identity::reconcile::ObservationOutcome::InvalidationRepeated {
                                         ..
                                     }
+                                    | crate::identity::reconcile::ObservationOutcome::Frozen { .. }
                             ) {
                                 host_evidence.begin_reconcile_pass();
                                 continuation = Some((outcome, 0, None, false));

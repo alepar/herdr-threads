@@ -320,8 +320,12 @@ fn history_and_health_stay_fast_under_a_party_with_a_slow_host() {
             while !stop.load(Ordering::SeqCst) {
                 round += 1;
                 let body = format!("round {round} from {i}");
+                // A fresh event id per turn, as real hooks send: a reused id
+                // only replays the recorded check-in, so a seat a host
+                // invalidation unbound could never register again.
+                let event = format!("turn-end-{}", uuid::Uuid::new_v4().simple());
                 let steps: [&[&str]; 2] = [
-                    &["check-in", "--lifecycle-event", "turn-end"],
+                    &["check-in", "--lifecycle-event", &event],
                     &["send", &thread, "--body", &body, "--require-ack", next],
                 ];
                 for args in steps {
@@ -380,22 +384,29 @@ fn history_and_health_stay_fast_under_a_party_with_a_slow_host() {
     );
     // A slow host can leave seats unresolved until a prompt snapshot
     // reconfirms them; that is the host lane's honest state, not latency.
-    let resend = Instant::now() + Duration::from_secs(90);
+    // Wait for the reconfirmation, then register again with a fresh event
+    // (as the agent's next hook would) and send once.
+    let reconfirmed = Instant::now() + Duration::from_secs(90);
     loop {
-        let (ok, value, stderr) = plugin.run(
-            Some(agent(0)),
-            &["send", &thread, "--body", "Off with their heads!"],
-        );
-        if ok {
+        let (_, health, _) = plugin.run(None, &["daemon", "health"]);
+        if health["data"]["unresolved_seats"] == 0 {
             break;
         }
-        assert!(Instant::now() < resend, "final send: {stderr}{value}");
-        let _ = plugin.run(
-            Some(agent(0)),
-            &["check-in", "--lifecycle-event", "turn-end"],
+        assert!(
+            Instant::now() < reconfirmed,
+            "seats never reconfirmed after the party: {health}"
         );
-        std::thread::sleep(Duration::from_millis(500));
+        std::thread::sleep(Duration::from_millis(100));
     }
+    let event = format!("restored-{}", uuid::Uuid::new_v4().simple());
+    let (ok, value, stderr) =
+        plugin.run(Some(agent(0)), &["check-in", "--lifecycle-event", &event]);
+    assert!(ok, "check-in after the party: {stderr}{value}");
+    let (ok, value, stderr) = plugin.run(
+        Some(agent(0)),
+        &["send", &thread, "--body", "Off with their heads!"],
+    );
+    assert!(ok, "final send: {stderr}{value}");
     let mut seen = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {

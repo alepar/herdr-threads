@@ -101,7 +101,8 @@ async fn next_frame(
         _ = shutdown.cancelled() => return Ok(None),
         _ = session_cancellation.cancelled() => return Ok(None),
     };
-    let expires = tokio::time::Instant::now() + ORDINARY_TIMEOUT;
+    let expires =
+        tokio::time::Instant::now() + crate::protocol::time::external_bound(ORDINARY_TIMEOUT);
     let frame = tokio::select! {
         result = tokio::time::timeout_at(expires, async {
             let mut rest = [0; 3];
