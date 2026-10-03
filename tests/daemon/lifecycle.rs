@@ -981,6 +981,38 @@ fn launcher(root: &std::path::Path) -> PathBuf {
     path
 }
 
+/// A launched daemon that exits cleanly (it lost an election, for example
+/// to another caller's lock probe) while nobody owns the instance is
+/// launched again: ensure converges instead of waiting out its deadline.
+/// Kills: never relaunching after a clean exit (the daemon_skew flake: the
+/// lost election left no owner and ensure timed out), and probing the lock
+/// while our own child is electing.
+#[tokio::test]
+async fn ensure_relaunches_after_a_lost_election_leaves_no_owner() {
+    use std::os::unix::fs::PermissionsExt;
+    let (root, context, _paths) = fixture();
+    let real = launcher(&root);
+    let first = root.join("first-launch-lost");
+    let lost = root.join("lose-once.sh");
+    std::fs::write(
+        &lost,
+        format!(
+            "#!/bin/sh\nif [ ! -e '{}' ]; then : > '{}'; exit 0; fi\nexec '{}' \"$@\"\n",
+            first.display(),
+            first.display(),
+            real.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&lost, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let descriptor = ensure_running_with_timeout(&context, &lost, Arc::new(TestClock), LIVENESS)
+        .await
+        .unwrap();
+    assert!(first.exists(), "the first launch lost its election");
+    assert!(descriptor.pid > 0);
+    std::fs::write(root.join("stop"), b"").unwrap();
+}
+
 #[test]
 #[ignore = "subprocess fixture invoked explicitly by environment test"]
 fn subprocess_resolved_environment_fixture() {

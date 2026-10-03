@@ -462,7 +462,7 @@ pub async fn ensure_running_with_timeout(
     let paths = InstancePaths::resolve(context).map_err(io_error)?;
     paths.prepare_instance_dir().map_err(io_error)?;
     let deadline = Instant::now() + timeout;
-    let attempt = StartAttempt::new();
+    let mut attempt = StartAttempt::new();
     let mut launched: Option<Launched> = None;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -504,36 +504,45 @@ pub async fn ensure_running_with_timeout(
         // be ready: report its own output now instead of waiting out the
         // deadline. A clean exit is a lost election; the winner's readiness is
         // what the loop is waiting for.
-        if let Some(launched) = launched.as_mut()
-            && let Ok(Some(status)) = launched.child.try_wait()
-            && !status.success()
+        if let Some(child) = launched.as_mut()
+            && let Ok(Some(status)) = child.child.try_wait()
         {
-            let remedy = remedy(
-                None,
-                &RemedyContext::StartupFailure {
-                    log: launched.remedy_log(&paths),
-                },
-            );
-            return Err(api_error(
-                ErrorCode::HostUnavailable,
-                startup_failure_text(
-                    &format!("daemon exited during startup ({status})"),
-                    &launched.tail_block(),
-                    &remedy,
-                ),
-            ));
+            if !status.success() {
+                let remedy = remedy(
+                    None,
+                    &RemedyContext::StartupFailure {
+                        log: child.remedy_log(&paths),
+                    },
+                );
+                return Err(api_error(
+                    ErrorCode::HostUnavailable,
+                    startup_failure_text(
+                        &format!("daemon exited during startup ({status})"),
+                        &child.tail_block(),
+                        &remedy,
+                    ),
+                ));
+            }
+            // A clean exit is a lost election. If its winner is real the
+            // handshake finds it; if the lock was only held briefly (another
+            // caller's probe below), nobody owns it now: launch again.
+            launched = None;
+            attempt = StartAttempt::new();
         }
-        match OwnerLock::acquire(&paths) {
-            Ok(lock) => {
-                drop(lock);
-                if launched.is_none() {
+        // Probe only while no launched child is starting: the probe holds the
+        // owner lock for a moment, and a child electing in that moment would
+        // lose to it and exit with nobody owning the instance.
+        if launched.is_none() {
+            match OwnerLock::acquire(&paths) {
+                Ok(lock) => {
+                    drop(lock);
                     launched = Some(
                         spawn_detached(executable, context, &paths, &attempt).map_err(io_error)?,
                     );
                 }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(io_error(error)),
             }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-            Err(error) => return Err(io_error(error)),
         }
         tokio::time::sleep(
             Duration::from_millis(25).min(deadline.saturating_duration_since(Instant::now())),
