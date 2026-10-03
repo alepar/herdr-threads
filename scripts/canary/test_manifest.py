@@ -147,11 +147,37 @@ class Writer(Base):
         self.assertEqual(r["last_working"], "2.1.287")  # newest verified below, from this run's output
         self.assertEqual(r["issue_url"], "https://github.com/o/r/issues/9")
 
-    def test_last_working_falls_back_to_baseline_verified_max(self):
+    def test_last_working_comes_from_a_same_contract_baseline_row_below(self):
         base = doc([row("claude", "2.1.286")])
         _, out = self.write(base, report({"status": "break", "first_bad": "2.1.287",
                                           "probes": [probe("2.1.287", [VIOLATION], result="fail")]}))
         self.assertEqual(self.by_key(out)[("claude", "2.1.287", MAIN["claude"])]["last_working"], "2.1.286")
+
+    def last_working(self, baseline_rows, broken):
+        rep = report({"status": "break", "first_bad": broken, "probes": [probe(broken, [VIOLATION], result="fail")]})
+        cp, out = self.write(doc(baseline_rows), rep)
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        self.assertEqual(manifest.validate_doc(out), [])
+        return self.by_key(out)[("claude", broken, MAIN["claude"])]["last_working"]
+
+    def test_last_working_never_names_the_broken_version(self):
+        self.assertIsNone(self.last_working([row("claude", "2.1.287", cid=OTHER)], "2.1.287"))
+
+    def test_last_working_below_the_baselines_greatest_verified_version(self):
+        base = [row("claude", "2.1.285"), row("claude", "2.1.290", cid=OTHER)]
+        self.assertEqual(self.last_working(base, "2.1.288"), "2.1.285")
+
+    def test_last_working_never_names_a_newer_version(self):
+        base = [row("claude", "2.1.290", cid=OTHER), row("claude", "2.1.289")]
+        self.assertIsNone(self.last_working(base, "2.1.287"))
+
+    def test_last_working_equal_version_under_the_same_contract_is_skipped(self):
+        base = [row("claude", "2.1.286"), row("claude", "2.1.287")]
+        self.assertEqual(self.last_working(base, "2.1.287"), "2.1.286")
+
+    def test_last_working_counts_a_null_contract_row(self):
+        base = [row("claude", "2.1.284", cid=None, source="manual")]
+        self.assertEqual(self.last_working(base, "2.1.287"), "2.1.284")
 
     def test_issue_only_outcomes_write_no_row(self):
         base = doc([row("claude", "2.1.286")])
