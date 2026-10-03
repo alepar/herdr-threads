@@ -1965,9 +1965,28 @@ fn actual_native_snapshot_cancellation_closes_peer_before_elected_worker_join_an
     }
     assert!(!fixture.peer_eof.load(Ordering::SeqCst));
     assert!(OwnerLock::acquire(&fixture.paths).is_err());
-    // Hold failure maintenance briefly so peer closure and the still-owned
-    // worker can be observed separately, before releasing its final decision.
-    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    // Frozen captures perform no SQLite maintenance. Hold the actual worker
+    // at its next idle boundary, after the cancelled NativeCli call returns.
+    // Declared after the fixture: panic releases the worker before teardown.
+    struct ReleaseIdle(Cancellation);
+    impl Drop for ReleaseIdle {
+        fn drop(&mut self) {
+            self.0.cancel();
+        }
+    }
+    let joined_pass = ReleaseIdle(Cancellation::default());
+    let release = joined_pass.0.clone();
+    let (arrived, checkpoint) = std::sync::mpsc::sync_channel(1);
+    fixture.lanes.set_registered_idle_hook(
+        herdr_threads::service::kicks::Lane::Observation,
+        Box::new(move |_| {
+            arrived.send(()).unwrap();
+            assert!(
+                release.wait_blocking(Duration::from_secs(30)),
+                "join checkpoint was not released"
+            );
+        }),
+    );
     assert!(matches!(
         herdr_threads::ports::LocalClient::call(
             &fixture.client(),
@@ -1979,6 +1998,10 @@ fn actual_native_snapshot_cancellation_closes_peer_before_elected_worker_join_an
         .unwrap(),
         CommandResult::StopAccepted(_)
     ));
+    assert!(
+        checkpoint.recv_timeout(Duration::from_secs(30)).is_ok(),
+        "cancelled snapshot pass did not reach the join checkpoint"
+    );
     let until = Instant::now() + Duration::from_secs(1);
     while !fixture.peer_eof.load(Ordering::SeqCst) {
         assert!(
@@ -1990,9 +2013,9 @@ fn actual_native_snapshot_cancellation_closes_peer_before_elected_worker_join_an
     assert!(!fixture.daemon.as_ref().unwrap().is_finished());
     assert!(
         OwnerLock::acquire(&fixture.paths).is_err(),
-        "owner released before joined failure maintenance"
+        "owner released before observation worker joined"
     );
-    db.execute_batch("ROLLBACK").unwrap();
+    joined_pass.0.cancel();
     assert!(fixture.daemon.take().unwrap().join().unwrap().unwrap());
     assert!(
         fixture.native.upgrade().is_none(),
@@ -2006,7 +2029,7 @@ fn actual_native_snapshot_cancellation_closes_peer_before_elected_worker_join_an
         .unwrap();
     assert!(active.is_none());
     eprintln!(
-        "actual NativeCli: peer EOF observed after StopAccepted; worker retained elected lease through failure maintenance; daemon joined; adapter dropped; owner reacquired"
+        "actual NativeCli: peer EOF observed after StopAccepted; worker retained elected lease through join checkpoint; daemon joined; adapter dropped; owner reacquired"
     );
 }
 

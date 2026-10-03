@@ -798,6 +798,15 @@ impl LaneProbe {
             .and_then(|kicks| kicks.pacer(lane))
             .map_or(0, |pacer| pacer.idle_events())
     }
+    /// Observe a completed pass before the registered worker evaluates its
+    /// next wait. The callback must not reenter or replace its own idle hook.
+    pub fn set_registered_idle_hook(&self, lane: Lane, hook: Box<dyn Fn(u64) + Send + Sync>) {
+        let registry = self.state().registry.clone();
+        let pacer = registry
+            .and_then(|kicks| kicks.pacer(lane))
+            .expect("registered lane");
+        pacer.set_idle_hook(hook);
+    }
     /// Kicks `lane` through the commit-kick registry, as a store commit does.
     pub fn kick_registered(&self, lane: Lane) {
         let registry = self.state().registry.clone();

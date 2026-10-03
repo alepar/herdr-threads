@@ -1275,7 +1275,9 @@ fn stop_completion_waits_for_real_owner_lock_after_socket_and_descriptor_disappe
         })),
     };
     let budget = CallBudget {
-        deadline: MonoInstant(500),
+        // This exercises owner-lock evidence, not deadline expiry. Give the
+        // fixture's synchronized stages a hang guard under CI scheduling.
+        deadline: MonoInstant(30_000),
         cancellation: Cancellation::default(),
     };
     let worker_paths = paths.clone();
@@ -1308,7 +1310,7 @@ fn stop_completion_waits_for_real_owner_lock_after_socket_and_descriptor_disappe
         "owner still retains the final lock lease"
     );
     drop(owner);
-    assert!(waiter.join().unwrap().is_ok());
+    waiter.join().unwrap().unwrap();
     fs::remove_dir_all(root).unwrap();
 }
 

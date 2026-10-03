@@ -36,19 +36,31 @@ fn cancel_during_blocking_wait_wakes_it() {
     assert!(woke.duration_since(cancelled_at) < Duration::from_millis(20));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn cancel_from_another_thread_wakes_async_waiter() {
+#[test]
+fn cancel_from_another_thread_wakes_async_waiter() {
+    use std::{
+        future::Future,
+        task::{Context, Poll, Wake, Waker},
+    };
+    struct CountWake(AtomicUsize);
+    impl Wake for CountWake {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
     let c = Cancellation::default();
     let c2 = c.clone();
-    let start = Instant::now();
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(30));
-        c2.cancel();
-    });
-    tokio::time::timeout(Duration::from_secs(2), c.cancelled())
-        .await
-        .expect("async waiter must wake");
-    assert!(start.elapsed() < Duration::from_millis(30 + 20));
+    let wakes = Arc::new(CountWake(AtomicUsize::new(0)));
+    let waker = Waker::from(wakes.clone());
+    let mut context = Context::from_waker(&waker);
+    let mut waiter = Box::pin(c.cancelled());
+    assert_eq!(waiter.as_mut().poll(&mut context), Poll::Pending);
+    std::thread::spawn(move || c2.cancel()).join().unwrap();
+    assert!(
+        wakes.0.load(Ordering::SeqCst) > 0,
+        "registered async waiter was not woken"
+    );
+    assert_eq!(waiter.as_mut().poll(&mut context), Poll::Ready(()));
 }
 
 #[test]

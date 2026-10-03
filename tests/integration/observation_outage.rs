@@ -9,7 +9,7 @@ use herdr_threads::{
     host::native::NativeCli,
     identity::repair::OrdinaryIdentity,
     ports::StorePort,
-    protocol::time::{Cancellation, Clock},
+    protocol::time::{Cancellation, Clock, MonoInstant, UtcMillis},
     service::{
         fair_writer::FairWriter,
         host_evidence::HostEvidenceStatus,
@@ -21,10 +21,23 @@ use herdr_threads::{
     test_support::isolated_herdr::IsolatedHerdr,
 };
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     thread::JoinHandle,
     time::{Duration, Instant},
 };
+
+struct StepClock(AtomicU64);
+impl Clock for StepClock {
+    fn utc_now(&self) -> UtcMillis {
+        UtcMillis(self.0.load(Ordering::SeqCst) as i64)
+    }
+    fn monotonic_now(&self) -> MonoInstant {
+        MonoInstant(self.0.load(Ordering::SeqCst))
+    }
+}
 
 type Kicked = Arc<Mutex<Vec<(LaneSet, Option<Lane>)>>>;
 
@@ -40,9 +53,12 @@ struct Lane5 {
 
 impl Lane5 {
     fn start(herdr: &IsolatedHerdr) -> Self {
+        Self::start_with_clock(herdr, Arc::new(SystemClock::new()))
+    }
+
+    fn start_with_clock(herdr: &IsolatedHerdr, clock: Arc<dyn Clock>) -> Self {
         let scratch = herdr.root().join("lane-state");
         std::fs::create_dir_all(&scratch).unwrap();
-        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let instance = uuid::Uuid::new_v4().to_string();
         let store = SqliteStore::new(
             StoreContext::new(scratch.join("store.db"), Arc::clone(&clock)),
@@ -165,87 +181,67 @@ fn herdr_stopped_costs_one_commit_per_backoff_step() {
         return;
     };
     herdr.start();
-    let lane = Lane5::start(&herdr);
+    let clock = Arc::new(StepClock(AtomicU64::new(10_000)));
+    let lane = Lane5::start_with_clock(&herdr, clock.clone());
     lane.wait("the first publication", Duration::from_secs(20), &|| {
-        lane.commits() >= 3 && lane.pacer.attempts() == 0 && lane.pacer.idle_events() >= 1
+        lane.commits() >= 3
+            && lane.pacer.attempts() == 0
+            && lane.pacer.idle_events() >= 1
+            && lane.pacer.idle_events() == lane.pacer.wakes() + 1
     });
     assert_eq!(lane.health(), "", "healthy while Herdr is up");
     let revision = lane.invalidation_revision();
-
-    // Stop Herdr under the running lane. The first failure step is only the
-    // admission: the capture freezes, so no invalidation and no marking pages.
     herdr.stop();
-    let first_failure_from = lane.commits();
     let kicks_before = lane.kicked.lock().unwrap().len();
-    lane.wait("the first failed capture", Duration::from_secs(20), &|| {
-        lane.pacer.attempts() >= 1
-    });
-    // Let the step's own commits land before sampling.
-    std::thread::sleep(Duration::from_millis(50));
-    let first_failure_commits = lane.commits() - first_failure_from;
-    let first_kicks = lane.kicked.lock().unwrap()[kicks_before..].to_vec();
-    println!(
-        "first failure step: {first_failure_commits} observation-origin commits; kicks: [{}]",
-        describe(&first_kicks)
-    );
-    assert!(
-        first_failure_commits <= 1,
-        "the first frozen capture made {first_failure_commits} durable commits"
-    );
-    assert!(
-        first_kicks.is_empty(),
-        "a frozen capture kicked lanes: [{}]",
-        describe(&first_kicks)
-    );
-    assert_eq!(
-        lane.invalidation_revision(),
-        revision,
-        "Herdr unavailability wrote an invalidation"
-    );
-
-    // Every further backoff step makes <= 1 durable commit (the admission
-    // fence), until the 30 s cap.
     let mut per_step = Vec::new();
-    let mut last_attempts = lane.pacer.attempts();
-    let mut last_commits = lane.commits();
-    let started = Instant::now();
-    let mut capped = false;
-    while !capped {
-        assert!(
-            started.elapsed() < Duration::from_secs(180),
-            "the lane never reached the 30 s cap: {per_step:?}; health {}",
-            lane.health()
+    for attempt in 1..=10 {
+        let before = lane.commits();
+        let idle = lane.pacer.idle_events();
+        let due = if attempt == 1 {
+            // The healthy observation cadence is 5 s. Time remains frozen
+            // throughout each pass so a sample cannot include another retry.
+            MonoInstant(clock.monotonic_now().0 + 5_000)
+        } else {
+            lane.pacer.next_retry_at().expect("retry pending")
+        };
+        clock.0.store(due.0, Ordering::SeqCst);
+        lane.pacer.clock_advanced();
+        lane.wait(
+            "one completed failed capture",
+            Duration::from_secs(30),
+            &|| {
+                lane.pacer.idle_events() > idle
+                    && lane.pacer.idle_events() == lane.pacer.wakes() + 1
+            },
         );
-        std::thread::sleep(Duration::from_millis(5));
-        let attempts = lane.pacer.attempts();
-        if attempts == last_attempts {
-            continue;
-        }
-        // Let the step's own commits land before sampling.
-        std::thread::sleep(Duration::from_millis(40));
-        let commits = lane.commits();
-        per_step.push((attempts, commits - last_commits));
-        last_attempts = lane.pacer.attempts();
-        last_commits = commits;
-        let health = lane.health();
-        if attempts >= 10 {
-            assert!(
-                health.contains("retrying (attempt "),
-                "Health shows the retry state: {health:?}"
-            );
-            let (_, next) = lane.status.retry().expect("retry pending");
-            let remaining = next.0.saturating_sub(lane.pacer.now().0);
-            assert!(remaining <= 30_000, "capped wait is <= 30 s: {remaining}");
-            capped = true;
-        }
-    }
-    println!("per-step observation commits (attempt, commits): {per_step:?}");
-    for (attempt, commits) in &per_step {
+        assert_eq!(
+            lane.pacer.idle_events(),
+            idle + 1,
+            "one pass per clock step"
+        );
+        assert_eq!(lane.pacer.attempts(), attempt);
+        let commits = lane.commits() - before;
+        per_step.push((attempt, commits));
         assert!(
-            *commits <= 1,
+            commits <= 1,
             "attempt {attempt} made {commits} durable commits: {per_step:?}"
         );
+        let kicks = lane.kicked.lock().unwrap()[kicks_before..].to_vec();
+        assert!(
+            kicks.is_empty(),
+            "a frozen capture kicked lanes: [{}]",
+            describe(&kicks)
+        );
+        assert_eq!(
+            lane.invalidation_revision(),
+            revision,
+            "Herdr unavailability wrote an invalidation"
+        );
     }
+    println!("per-step observation commits (attempt, commits): {per_step:?}");
+    let (_, next) = lane.status.retry().expect("retry pending");
+    let remaining = next.0.saturating_sub(lane.pacer.now().0);
+    assert!(remaining <= 30_000, "capped wait is <= 30 s: {remaining}");
     let health = lane.health();
     assert!(
         health.contains(

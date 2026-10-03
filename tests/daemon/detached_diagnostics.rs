@@ -368,10 +368,8 @@ fn continuous_owner_fixture() {
             crate::test_support::spawn::tag(&mut writer);
             #[allow(clippy::zombie_processes)]
             writer.spawn().unwrap(); // leak-guard: deliberately outlives its owner (detached writer fixture); tagged above
-            wait_until(Duration::from_secs(2), || {
-                root.join("writer-started").exists()
-            });
-            wait_until(Duration::from_secs(5), || root.join("stop-owner").exists());
+            wait_until(HANG_GUARD, || root.join("writer-started").exists());
+            wait_until(HANG_GUARD, || root.join("stop-owner").exists());
             ready_shutdown.cancel();
             Ok(())
         },
@@ -449,9 +447,7 @@ fn run_continuous_case(slow: bool, probe_drain: bool) {
         root: root.clone(),
         owner: owner_command.spawn_owned().unwrap(),
     };
-    wait_until(Duration::from_secs(5), || {
-        root.join("writer-started").exists()
-    });
+    wait_until(HANG_GUARD, || root.join("writer-started").exists());
     let loser = scrubbed_process(&executable)
         .arg("--ignored")
         .arg("--exact")
