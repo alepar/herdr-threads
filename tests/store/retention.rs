@@ -19,7 +19,7 @@ use std::{
     collections::BTreeSet,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -116,6 +116,7 @@ impl Fx {
             total.generations += pass.generations;
             total.targets += pass.targets;
             total.jobs += pass.jobs;
+            total.preparations += pass.preparations;
             if !pass.has_more {
                 return total;
             }
@@ -1098,4 +1099,204 @@ fn nothing_qualifying_opens_no_write_transaction() {
     publish(&fx.store, 3, 2);
     publish(&fx.store, 4, 2);
     assert_eq!(prune_once(&fx.store, &budget()).unwrap().generations, 1);
+}
+
+#[test]
+fn abandoned_preparations_expire_but_keep_exact_key_headers() {
+    let fx = Fx::new("preparation-retention");
+    let db = fx.db();
+    assert!(db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('send_preparations') WHERE name='prepared_at')", [], |r| r.get::<_, bool>(0)).unwrap(), "preparation progress must be persisted");
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
+    for (id, status) in [("building", "building"), ("sealed", "sealed")] {
+        db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,prepared_at) VALUES (?1,'i','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,?2,?3)", params![id,status,T0]).unwrap();
+    }
+    drop(db);
+    fx.advance(24 * HOUR_MS - 1);
+    fx.drain();
+    assert_eq!(
+        fx.count("work_jobs"),
+        0,
+        "within-window retry must remain resumable"
+    );
+    fx.advance(1);
+    fx.drain();
+    assert_eq!(
+        fx.count("send_preparations"),
+        2,
+        "digest headers are tombstones"
+    );
+    assert_eq!(fx.count("work_jobs"), 2);
+    assert_eq!(
+        fx.ids("SELECT id FROM send_preparations WHERE status='discarded'"),
+        BTreeSet::from(["building".into(), "sealed".into()])
+    );
+    fx.drain();
+    assert_eq!(fx.count("work_jobs"), 2, "cleanup markers are retained");
+}
+
+fn seed_preparation(db: &Connection, id: &str, at: i64) {
+    db.execute("INSERT OR IGNORE INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
+    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,prepared_at) VALUES (?1,'i','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,'sealed',?2)",params![id,at]).unwrap();
+}
+
+fn publish_preparation(db: &Connection, id: &str) {
+    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,event_offset) VALUES (?1,'i','t',1,'ordinary','body',0,1,0)", [id]).unwrap();
+    db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES (?1,?1,'i','t',1,0,1,0,0,0)", [id]).unwrap();
+}
+
+#[test]
+fn expiry_rechecks_progress_publication_generation_status_and_age() {
+    for race in ["progress", "publication", "generation", "status", "clock"] {
+        let fx = Fx::new("expiry-canonical-recheck");
+        let mut db = fx.db();
+        let at = T0 - PREPARATION_RETENTION_MS;
+        seed_preparation(&db, "p", at);
+        let found = preparation_candidates(&db, at).unwrap();
+        assert_eq!(found.len(), 1);
+        match race {
+            // Keep the replacement time old enough to qualify: equality itself
+            // must fence a quantum that raced the scan.
+            "progress" => {
+                db.execute("UPDATE send_preparations SET prepared_at=prepared_at-1", [])
+                    .unwrap();
+            }
+            "publication" => publish_preparation(&db, "p"),
+            "generation" => {
+                db.execute("UPDATE send_preparations SET id='successor'", [])
+                    .unwrap();
+            }
+            "status" => {
+                db.execute("UPDATE send_preparations SET status='building'", [])
+                    .unwrap();
+            }
+            "clock" => fx.advance(-1),
+            _ => unreachable!(),
+        }
+        let tx = db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        assert_eq!(
+            discard_expired_preparations(&tx, &found, fx.clock.as_ref(), &budget())
+                .unwrap()
+                .0,
+            0,
+            "{race}"
+        );
+        tx.rollback().unwrap();
+        drop(db);
+        assert_eq!(fx.count("work_jobs"), 0, "{race} must not enqueue cleanup");
+    }
+}
+
+#[test]
+fn expiry_batch_bounds_include_cleanup_enqueue_and_scan_uses_index() {
+    let fx = Fx::new("expiry-bounded-indexed");
+    let db = fx.db();
+    for n in 0..300 {
+        seed_preparation(&db, &format!("p{n}"), T0 - PREPARATION_RETENTION_MS);
+    }
+    let plan: String = db
+        .prepare(&format!("EXPLAIN QUERY PLAN {PREPARATION_CANDIDATES_SQL}"))
+        .unwrap()
+        .query_map(params![T0, 128], |r| r.get::<_, String>(3))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        .join("\n");
+    assert!(
+        plan.contains("USING INDEX send_preparations_retention"),
+        "{plan}"
+    );
+    let before = db.total_changes();
+    drop(db);
+    let pass = prune_once(&fx.store, &budget()).unwrap();
+    assert_eq!(pass.preparations, 128);
+    assert!(pass.has_more);
+    assert_eq!(fx.db().total_changes() - before, 256);
+    assert_eq!(fx.drain().preparations, 172);
+}
+
+#[test]
+fn preparation_expiry_stops_on_quantum_and_cancelled_decision() {
+    struct Tick(AtomicU64);
+    impl Clock for Tick {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(T0)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(self.0.fetch_add(1, Ordering::SeqCst))
+        }
+    }
+    let fx = Fx::new("expiry-quantum");
+    let mut db = fx.db();
+    for n in 0..10 {
+        seed_preparation(&db, &format!("p{n}"), T0 - PREPARATION_RETENTION_MS);
+    }
+    let found = preparation_candidates(&db, T0 - PREPARATION_RETENTION_MS).unwrap();
+    let tx = db.transaction().unwrap();
+    let (discarded, more) =
+        discard_expired_preparations(&tx, &found, &Tick(AtomicU64::new(0)), &budget()).unwrap();
+    assert!(discarded > 0 && discarded < 10);
+    assert!(more);
+    tx.rollback().unwrap();
+    let cancelled = budget();
+    cancelled.cancellation.cancel();
+    let tx = db.transaction().unwrap();
+    assert_eq!(
+        discard_expired_preparations(&tx, &found, fx.clock.as_ref(), &cancelled)
+            .unwrap_err()
+            .code,
+        crate::protocol::results::ErrorCode::Cancelled
+    );
+}
+
+#[test]
+fn discard_of_published_or_missing_generation_does_not_enqueue_cleanup() {
+    let fx = Fx::new("discard-published-fence");
+    let mut db = fx.db();
+    seed_preparation(&db, "p", T0 - PREPARATION_RETENTION_MS);
+    publish_preparation(&db, "p");
+    let tx = db.transaction().unwrap();
+    super::super::messages::discard_preparation(&tx, "p").unwrap();
+    super::super::messages::discard_preparation(&tx, "missing").unwrap();
+    assert_eq!(
+        tx.query_row("SELECT count(*) FROM work_jobs", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn idle_preparation_scan_cost_is_flat_with_retained_tombstones() {
+    fn measure(scale: usize) -> u64 {
+        let fx = Fx::new("preparation-index-cost");
+        let db = fx.db();
+        db.execute_batch("BEGIN").unwrap();
+        for n in 0..scale {
+            seed_preparation(&db, &format!("p{n}"), T0);
+        }
+        // Published preparations have NULL progress; discarded ones retain
+        // their digest and completion marker but leave the partial index.
+        db.execute("UPDATE send_preparations SET prepared_at=CASE WHEN rowid%2=0 THEN NULL ELSE prepared_at END,status=CASE WHEN rowid%2=0 THEN 'sealed' ELSE 'discarded' END",[]).unwrap();
+        seed_preparation(&db, "live", T0);
+        db.execute_batch("COMMIT").unwrap();
+        drop(db);
+        assert_eq!(fx.drain(), PruneProgress::default());
+        let counter = Arc::new(CostCounter::default());
+        fx.store.set_retention_cost_counter(Some(counter.clone()));
+        let before = fx.db().total_changes();
+        assert_eq!(
+            prune_once(&fx.store, &budget()).unwrap(),
+            PruneProgress::default()
+        );
+        assert_eq!(fx.db().total_changes(), before);
+        counter.units()
+    }
+    let small = measure(100);
+    let large = measure(1000);
+    assert!(small > 0);
+    assert!(
+        large <= small + 10,
+        "expiry scan grew with history: {small} -> {large}"
+    );
 }

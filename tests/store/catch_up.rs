@@ -35,7 +35,7 @@ const NOW: UtcMillis = UtcMillis(500);
 
 fn db() -> Connection {
     let db = Connection::open_in_memory().unwrap();
-    crate::store::schema::initialize(&db).unwrap();
+    crate::store::schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     db.execute_batch(
         "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,40);\
          INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','pane-s',1,1,0),('p','i','resolved','native','pane-p',1,1,0),('q','i','resolved','native','pane-q',1,1,0);\

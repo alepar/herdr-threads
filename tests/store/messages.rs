@@ -163,3 +163,72 @@ fn publish_rechecks_archive_state() {
         assert_eq!(rows, 0, "{table} must stay empty");
     }
 }
+
+#[test]
+fn native_preparation_quantum_refreshes_inactivity_and_sealed_retry_does_not() {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    struct ProgressClock(AtomicI64);
+    impl Clock for ProgressClock {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(self.0.load(Ordering::SeqCst))
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(100)
+        }
+    }
+    let iso = TestIsolation::new("native-preparation-progress");
+    let (_, mut db) = setup(&iso);
+    for seat in ["b", "c"] {
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','unresolved','native',0,0)", [seat]).unwrap();
+        db.execute(
+            "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'joined')",
+            [seat],
+        )
+        .unwrap();
+        db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t',?1,1,1)", [seat]).unwrap();
+    }
+    let clock = Arc::new(ProgressClock(AtomicI64::new(1000)));
+    let context = StoreContext::new(iso.path("store.db"), clock.clone());
+    let request = send_request();
+    let mut ready = false;
+    let mut last = 0;
+    for now in [2000, 3000, 4000] {
+        clock.0.store(now, Ordering::SeqCst);
+        let step = messages::prepare_send_step(
+            &context,
+            &mut db,
+            &request,
+            messages::MessageLimits::default(),
+            &budget(),
+            crate::ports::DurableWorkAdmission { max_units: 1 },
+        )
+        .unwrap();
+        last = db
+            .query_row("SELECT prepared_at FROM send_preparations", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap();
+        assert_eq!(last, now);
+        if matches!(step, crate::ports::SendPreparationProgress::Ready { .. }) {
+            ready = true;
+            break;
+        }
+    }
+    assert!(ready);
+    clock.0.store(5000, Ordering::SeqCst);
+    messages::prepare_send_step(
+        &context,
+        &mut db,
+        &request,
+        messages::MessageLimits::default(),
+        &budget(),
+        crate::ports::DurableWorkAdmission { max_units: 1 },
+    )
+    .unwrap();
+    assert_eq!(
+        db.query_row("SELECT prepared_at FROM send_preparations", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        last
+    );
+}

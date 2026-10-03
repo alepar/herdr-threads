@@ -314,7 +314,7 @@ const OLD: &str = "00000000-0000-0000-0000-000000000001";
 /// carry a settled (unreserved) wake_work row.
 fn with_history(history: u64) -> Connection {
     let db = Connection::open_in_memory().unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0)")
         .unwrap();
     db.execute_batch(&format!("\

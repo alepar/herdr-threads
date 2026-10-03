@@ -187,11 +187,11 @@ fn v5_upgrade_adds_index_for_failed_pending_retirements() {
         db.execute_batch(migration).unwrap();
     }
     db.pragma_update(None, "user_version", 5).unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        14
+        15
     );
     let plan: Vec<String> = db.prepare(
         "EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM retirements r INDEXED BY retirements_failed_pending JOIN seats s ON s.id=r.seat_id WHERE r.status='pending' AND r.last_error IS NOT NULL AND s.instance_id='i')",
@@ -226,11 +226,11 @@ fn v6_database() -> Connection {
 fn v6_upgrade_adds_seat_and_thread_leading_digest_indexes() {
     let db = v6_database();
     db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0); INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','s',1,1);").unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        14
+        15
     );
     assert_eq!(
         db.query_row(
@@ -254,7 +254,7 @@ fn v6_upgrade_adds_seat_and_thread_leading_digest_indexes() {
         "{plan:?}"
     );
     // A second startup is a verified no-op.
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
 }
 
 // Kills: accepting a v7 database whose digest index is missing or altered
@@ -267,9 +267,9 @@ fn startup_rejects_missing_or_altered_digest_index() {
         "DROP INDEX send_manifests_thread_warning; CREATE INDEX send_manifests_thread_warning ON send_manifests(thread_id, base_sequence)",
     ] {
         let db = v6_database();
-        schema::initialize(&db).unwrap();
+        schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
         db.execute_batch(tamper).unwrap();
-        let error = schema::initialize(&db).unwrap_err();
+        let error = schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap_err();
         assert_eq!(error.code, ErrorCode::IncompatibleSchema, "{tamper}");
         assert!(
             error.detail.contains("attention digest index"),
@@ -322,11 +322,11 @@ fn v7_upgrade_backfills_only_pending_rows_into_the_digest_projections() {
         .collect()
     };
     let before = history(&db);
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        14
+        15
     );
     assert_eq!(history(&db), before);
     let rows = |sql: &str| -> Vec<String> {
@@ -345,7 +345,7 @@ fn v7_upgrade_backfills_only_pending_rows_into_the_digest_projections() {
         rows("SELECT preparation_id FROM digest_pending_manifest_receipts"),
         ["p2"]
     );
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
 }
 
 // Wave-2 fix2 (a): upgrading carries each seat's existing offer state into
@@ -376,7 +376,7 @@ fn v6_upgrade_carries_the_current_occupant_offer_into_the_notice_frontier() {
         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at) VALUES ('s',1,'ps','b',1,'codex','ns','exec-s','fresh',0),('o',1,'po','b',1,'codex','no','exec-o','fresh',0);\
         INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) VALUES ('s',1,'exec-s',3),('o',1,'predecessor',5);\
     ").unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     let pending = |seat: &str| -> Vec<String> {
         crate::store::attention::seat_pending_warnings(&db, seat, &|| Ok(()))
             .unwrap()
@@ -417,9 +417,9 @@ fn startup_rejects_missing_or_altered_digest_projection() {
         "DROP TRIGGER digest_invitation_created; CREATE TRIGGER digest_invitation_created AFTER INSERT ON invitations BEGIN SELECT 1; END",
     ] {
         let db = v6_database();
-        schema::initialize(&db).unwrap();
+        schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
         db.execute_batch(tamper).unwrap();
-        let error = schema::initialize(&db).unwrap_err();
+        let error = schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap_err();
         assert_eq!(error.code, ErrorCode::IncompatibleSchema, "{tamper}");
         assert!(
             error.detail.contains("attention digest projection"),
@@ -443,11 +443,11 @@ fn v1_history_migrates_once_with_native_and_builtin_authors_intact() {
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,decision_seq,body,decision_at) VALUES ('native','i','t',1,'ordinary','s',1,'hello',1);\
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,decision_seq,event_json,decision_at) VALUES ('builtin','i','t',2,'info','old:event',2,'{}',2);\
     ").unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        14
+        15
     );
     assert_eq!(
         db.query_row("SELECT id FROM seats", [], |r| r.get::<_, String>(0))
@@ -492,7 +492,7 @@ fn v1_history_migrates_once_with_native_and_builtin_authors_intact() {
         crate::store::service_substrate::message_author(&db, &MessageId::new("builtin")).unwrap(),
         crate::protocol::service::EventAuthor::BuiltIn
     );
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     assert_eq!(
         db.query_row("SELECT count(*) FROM messages", [], |r| r.get::<_, i64>(0))
             .unwrap(),
@@ -837,13 +837,15 @@ fn startup_rejects_missing_or_weakened_acceptance_guard_without_history_changes(
         }
         let before: Option<String> = db.query_row("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='requirement_episodes_acceptance_provenance'", [], |row| row.get(0)).optional().unwrap();
         assert_eq!(
-            schema::initialize(&db).unwrap_err().code,
+            schema::initialize(&db, || crate::protocol::time::UtcMillis(0))
+                .unwrap_err()
+                .code,
             ErrorCode::IncompatibleSchema
         );
         assert_eq!(
             db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            14
+            15
         );
         assert_eq!(
             db.query_row(
@@ -879,7 +881,9 @@ fn startup_rejects_weakened_requirement_table_constraint() {
     .unwrap();
     db.execute_batch("PRAGMA writable_schema=OFF").unwrap();
     assert_eq!(
-        schema::initialize(&db).unwrap_err().code,
+        schema::initialize(&db, || crate::protocol::time::UtcMillis(0))
+            .unwrap_err()
+            .code,
         ErrorCode::IncompatibleSchema
     );
     assert_eq!(
@@ -961,7 +965,7 @@ fn startup_rejects_missing_or_weakened_actor_presence_checks() {
         ),
     ] {
         let db = pending_requirement_fixture();
-        schema::initialize(&db).unwrap();
+        schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
         let original: String = db
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='requirement_episodes'",
@@ -984,7 +988,9 @@ fn startup_rejects_missing_or_weakened_actor_presence_checks() {
         .unwrap();
         db.execute_batch("PRAGMA writable_schema=OFF").unwrap();
         assert_eq!(
-            schema::initialize(&db).unwrap_err().code,
+            schema::initialize(&db, || crate::protocol::time::UtcMillis(0))
+                .unwrap_err()
+                .code,
             ErrorCode::IncompatibleSchema
         );
         let after: (String, i64, Option<String>) = db.query_row("SELECT state,revision,accepted_by_seat_id FROM requirement_episodes WHERE id='req'", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
@@ -992,7 +998,7 @@ fn startup_rejects_missing_or_weakened_actor_presence_checks() {
         assert_eq!(
             db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            14
+            15
         );
         assert_eq!(
             db.query_row(
@@ -1261,7 +1267,7 @@ fn fresh_database_has_durable_settings_constraints_and_read_only_queries() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        14
+        15
     );
     assert!(db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('s', 'missing', 'resolved', 'native', 1, 0)", []).is_err());
     db.execute(
@@ -2537,11 +2543,11 @@ fn v2_database_migrates_to_additive_invitation_cancellations_and_voluntary_state
     )
     .unwrap();
     db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('old','t','s',1,'pending',1,10,100,110)",[]).unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        14
+        15
     );
     assert_eq!(
         db.query_row(
@@ -2560,7 +2566,7 @@ fn v2_database_migrates_to_additive_invitation_cancellations_and_voluntary_state
         .unwrap(),
         0
     );
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
 }
 
 #[test]
@@ -2581,11 +2587,11 @@ fn v4_database_adds_notification_schema_without_changing_existing_history() {
             VALUES ('old','i','t',1,'info','old',1,'{\"event\":\"old\"}',0);")
         .unwrap();
 
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        14
+        15
     );
     assert_eq!(
         db.query_row("SELECT event_json FROM messages WHERE id='old'", [], |r| {
@@ -2609,7 +2615,7 @@ fn v4_database_adds_notification_schema_without_changing_existing_history() {
             1
         );
     }
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
 }
 
 #[test]
@@ -2709,7 +2715,9 @@ fn v5_startup_rejects_missing_or_weakened_notification_objects_without_mutation(
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(
-            schema::initialize(&db).unwrap_err().code,
+            schema::initialize(&db, || crate::protocol::time::UtcMillis(0))
+                .unwrap_err()
+                .code,
             ErrorCode::IncompatibleSchema,
             "{name}"
         );
@@ -2762,7 +2770,9 @@ fn v3_required_only_shadow_recovers_prior_left_only_from_exact_leave_audit() {
     }
     let missing = legacy(false);
     assert_eq!(
-        schema::initialize(&missing).unwrap_err().code,
+        schema::initialize(&missing, || crate::protocol::time::UtcMillis(0))
+            .unwrap_err()
+            .code,
         ErrorCode::IncompatibleSchema
     );
     assert_eq!(
@@ -2779,12 +2789,12 @@ fn v3_required_only_shadow_recovers_prior_left_only_from_exact_leave_audit() {
         "invited"
     );
     let recovered = legacy(true);
-    schema::initialize(&recovered).unwrap();
+    schema::initialize(&recovered, || crate::protocol::time::UtcMillis(0)).unwrap();
     assert_eq!(
         recovered
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        14
+        15
     );
     assert_eq!(
         recovered
@@ -2801,7 +2811,7 @@ fn v3_required_only_shadow_recovers_prior_left_only_from_exact_leave_audit() {
             .unwrap(),
         130
     );
-    schema::initialize(&recovered).unwrap();
+    schema::initialize(&recovered, || crate::protocol::time::UtcMillis(0)).unwrap();
 }
 
 /// Kills: removing (or weakening) the writer-connection binding-evidence
@@ -3008,11 +3018,11 @@ fn v8_upgrade_rebuilds_occupant_bindings_to_accept_a_human_occupant() {
         .unwrap()
     };
     let before = rows(&db);
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        14
+        15
     );
     assert_eq!(rows(&db), before);
     for index in [
@@ -3055,7 +3065,7 @@ fn v8_upgrade_rebuilds_occupant_bindings_to_accept_a_human_occupant() {
         .is_err()
     );
     // A second startup is a verified no-op.
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
 }
 
 fn v9_database() -> Connection {
@@ -3085,12 +3095,12 @@ fn v9_upgrade_to_v11_drops_removed_only_tables() {
         INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0);\
         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,'w1:p1','b',0,'claude','n1','e1','cooperative_top_level',1,1,'t','inc');\
     ").unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     let version: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
     assert_eq!(
-        version, 14,
+        version, 15,
         "a v9 store upgrades all the way (v12: harness evidence; v13/v14: thread summaries)"
     );
     for dropped in DROPPED_IN_V11 {
@@ -3129,7 +3139,7 @@ fn v9_upgrade_to_v11_drops_removed_only_tables() {
         .query_row("SELECT count(*) FROM occupant_bindings", [], |r| r.get(0))
         .unwrap();
     assert_eq!(rows, 1);
-    schema::initialize(&db).unwrap(); // second startup is a verified no-op
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap(); // second startup is a verified no-op
 }
 
 /// A v11 store (the previous release's shape) with rows in existing tables.
@@ -3154,11 +3164,11 @@ fn v11_populated_database() -> Connection {
 #[test]
 fn migration_applies_on_a_populated_store() {
     let db = v11_populated_database();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     let version: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 14);
+    assert_eq!(version, 15);
     let bindings: i64 = db
         .query_row("SELECT count(*) FROM occupant_bindings", [], |r| r.get(0))
         .unwrap();
@@ -3182,17 +3192,17 @@ fn migration_applies_on_a_populated_store() {
         .is_err(),
         "harness is constrained to claude and codex"
     );
-    schema::initialize(&db).unwrap(); // second startup is a verified no-op
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap(); // second startup is a verified no-op
 }
 
 #[test]
 fn fresh_store_lands_at_latest_with_the_evidence_tables() {
     let db = Connection::open_in_memory().unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     let version: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 14);
+    assert_eq!(version, 15);
     for table in ["harness_version_evidence", "harness_unattributed"] {
         let present: bool = db
             .query_row(
@@ -3208,7 +3218,7 @@ fn fresh_store_lands_at_latest_with_the_evidence_tables() {
 #[test]
 fn v12_audit_rejects_a_missing_or_altered_evidence_table() {
     let db = Connection::open_in_memory().unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     db.execute_batch("DROP TABLE harness_unattributed").unwrap();
     assert_eq!(
         schema::verify_existing(&db).unwrap_err().code,
@@ -3264,7 +3274,7 @@ fn normalize_sql(sql: &str) -> String {
 fn v9_upgrade_creates_b1_indexes_and_completed_at() {
     let db = v9_database();
     db.execute_batch("INSERT INTO work_jobs(id,kind,subject_id,high_water,status) VALUES ('done','send_attention','p1',1,'complete'),('todo','send_attention','p2',1,'pending');").unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     for (name, sql) in B1_V11 {
         let installed: String = db
             .query_row(
@@ -3301,9 +3311,9 @@ fn v9_upgrade_creates_b1_indexes_and_completed_at() {
 #[test]
 fn startup_verification_rejects_a_tampered_b1_index() {
     let db = v9_database();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     db.execute_batch("DROP INDEX work_jobs_live; CREATE INDEX work_jobs_live ON work_jobs(ordinal) WHERE status='pending';").unwrap();
-    let error = schema::initialize(&db).unwrap_err();
+    let error = schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap_err();
     assert_eq!(error.code, ErrorCode::IncompatibleSchema);
     assert!(error.detail.contains("work_jobs_live"), "{}", error.detail);
 }
@@ -3314,7 +3324,7 @@ fn startup_verification_rejects_a_tampered_b1_index() {
 #[test]
 fn b1_indexes_are_usable_by_name() {
     let db = v9_database();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     for probe in [
         "SELECT ordinal FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND state!='retired' AND ordinal>?2 ORDER BY ordinal LIMIT 1",
         "SELECT ordinal FROM work_jobs INDEXED BY work_jobs_live WHERE status IN ('pending','failed') AND ordinal>?1 ORDER BY ordinal LIMIT 1",
@@ -3338,7 +3348,7 @@ fn b1_indexes_are_usable_by_name() {
 #[test]
 fn v11_survivors_recorded() {
     let db = v9_database();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     let mut statement = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE '%baseline%' OR name LIKE '%recovery%' OR name='allocation_decisions') ORDER BY name")
         .unwrap();
@@ -3384,11 +3394,11 @@ fn v9_store_with_rows_migrates_to_v10_preserving_allocation_history() {
     };
     let before = rows(&db);
     assert_eq!(before.len(), 2);
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        14
+        15
     );
     assert_eq!(rows(&db), before);
     let diagnostics: i64 = db
@@ -3428,13 +3438,13 @@ fn v9_store_with_rows_migrates_to_v10_preserving_allocation_history() {
         })
         .unwrap();
     assert_eq!(next, 8, "AUTOINCREMENT continues past the copied history");
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
 }
 
 #[test]
 fn v10_allocation_decisions_accepts_b5_kinds() {
     let db = v9_database();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     db.execute(
         "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
         [],
@@ -3509,11 +3519,11 @@ fn main_v10_store_upgrades_to_v11_with_both_migrations() {
         INSERT INTO allocation_decisions(ordinal,instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,continuity_diagnostic) VALUES (4,'i','w1:p1','s1','cooperative_continuity',10,'b',3,2,'match');\
         INSERT INTO work_jobs(id,kind,subject_id,high_water,status) VALUES ('done','send_attention','p1',1,'complete');\
     ").unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        14
+        15
     );
     let marker: (String, i64) = db
         .query_row(
@@ -3556,7 +3566,7 @@ fn main_v10_store_upgrades_to_v11_with_both_migrations() {
         )
         .unwrap();
     assert_eq!(stamped, 0, "pre-v11 completed rows keep NULL");
-    schema::initialize(&db).unwrap(); // second startup is a verified no-op
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap(); // second startup is a verified no-op
 }
 
 // A fresh store, a main-v10, a main-v11 and a main-v12 store end in the same
@@ -3577,18 +3587,18 @@ fn fresh_and_main_v10_stores_share_the_v11_shape() {
         .unwrap()
     };
     let fresh = Connection::open_in_memory().unwrap();
-    schema::initialize(&fresh).unwrap();
+    schema::initialize(&fresh, || crate::protocol::time::UtcMillis(0)).unwrap();
     let upgraded = v10_database();
-    schema::initialize(&upgraded).unwrap();
+    schema::initialize(&upgraded, || crate::protocol::time::UtcMillis(0)).unwrap();
     let upgraded_v11 = v11_database();
-    schema::initialize(&upgraded_v11).unwrap();
+    schema::initialize(&upgraded_v11, || crate::protocol::time::UtcMillis(0)).unwrap();
     let upgraded_v12 = v12_database();
-    schema::initialize(&upgraded_v12).unwrap();
+    schema::initialize(&upgraded_v12, || crate::protocol::time::UtcMillis(0)).unwrap();
     for db in [&fresh, &upgraded, &upgraded_v11, &upgraded_v12] {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            14
+            15
         );
     }
     let normalize =
@@ -3626,7 +3636,7 @@ fn fresh_database_has_thread_summary_schema() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        14
+        15
     );
     for table in [
         "summary_blocks",
@@ -3718,11 +3728,11 @@ fn v10_upgrade_backfills_author_role_from_the_covering_binding() {
          INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,decision_seq,body,decision_at,author_kind) VALUES ('i','m_after','t',9,'ordinary','sm',9,'b',7,'native');",
     )
     .unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        14
+        15
     );
     let rows: Vec<(String, Option<String>, i64, i64, String)> = db
         .prepare("SELECT id,author_role,relays_user,author_role_backfilled,author_kind FROM messages ORDER BY sequence")
@@ -3777,7 +3787,7 @@ fn v10_upgrade_backfills_author_role_from_the_covering_binding() {
     assert!(priority("m_before"));
     assert!(!priority("m_after"));
     // A second startup is a verified no-op.
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
 }
 
 #[test]
@@ -3913,7 +3923,7 @@ fn fresh_database_has_catch_up_release_column() {
 }
 
 #[test]
-fn v13_database_upgrades_to_v14_keeping_catch_up_rows() {
+fn v13_database_upgrades_keeping_catch_up_rows() {
     let db = v12_database();
     db.execute_batch(include_str!("../../migrations/0013_thread_summaries.sql"))
         .unwrap();
@@ -3927,11 +3937,11 @@ fn v13_database_upgrades_to_v14_keeping_catch_up_rows() {
          INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state) VALUES ('s','t',9,1,'e',0,'active');",
     )
     .unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        14
+        15
     );
     let (frontier, release): (i64, Option<i64>) = db
         .query_row(
@@ -3941,4 +3951,48 @@ fn v13_database_upgrades_to_v14_keeping_catch_up_rows() {
         )
         .unwrap();
     assert_eq!((frontier, release), (9, None));
+}
+
+#[test]
+fn v14_preparations_get_fresh_grace_once_and_retention_shape_is_audited() {
+    let db = v12_database();
+    db.execute_batch(include_str!("../../migrations/0013_thread_summaries.sql"))
+        .unwrap();
+    db.execute_batch(include_str!("../../migrations/0014_catch_up_release.sql"))
+        .unwrap();
+    db.pragma_update(None, "user_version", 14).unwrap();
+    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','t','g',0,0);").unwrap();
+    for (id, status) in [
+        ("building", "building"),
+        ("sealed", "sealed"),
+        ("discarded", "discarded"),
+        ("published", "sealed"),
+    ] {
+        db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES (?1,'i','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,?2)",params![id,status]).unwrap();
+    }
+    db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,event_offset) VALUES ('m','i','t',1,'ordinary','body',0,1,0); INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('published','m','i','t',1,0,1,0,0,0);").unwrap();
+    schema::initialize(&db, || UtcMillis(123456)).unwrap();
+    schema::initialize(&db, || UtcMillis(654321)).unwrap();
+    for (id, expected) in [
+        ("building", Some(123456)),
+        ("sealed", Some(123456)),
+        ("discarded", None),
+        ("published", None),
+    ] {
+        assert_eq!(
+            db.query_row(
+                "SELECT prepared_at FROM send_preparations WHERE id=?1",
+                [id],
+                |r| r.get::<_, Option<i64>>(0)
+            )
+            .unwrap(),
+            expected,
+            "{id}"
+        );
+    }
+    db.execute_batch("DROP INDEX send_preparations_retention; CREATE INDEX send_preparations_retention ON send_preparations(id);").unwrap();
+    assert_eq!(
+        schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
+        ErrorCode::IncompatibleSchema
+    );
 }

@@ -127,7 +127,7 @@ impl StoreContext {
             .map_err(store_error)?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(store_error)?;
-        schema::initialize(&conn)?;
+        schema::initialize(&conn, || self.clock.utc_now())?;
         #[cfg(test)]
         let journal_mode = if self
             .rollback_journal

@@ -1,7 +1,7 @@
 //! Retention (nested spec D3): bounded pruning of superseded snapshot
-//! generations and completed work jobs.
+//! generations, completed work jobs and abandoned send preparation bodies.
 //!
-//! One pass is one snapshot transaction then one work-job transaction, each
+//! One pass runs snapshot, work-job and unpublished-preparation transactions, each
 //! touching at most [`RETENTION_BATCH_ROWS`] rows and stopping early once
 //! [`RETENTION_QUANTUM_MS`] has elapsed. Candidates are found first on a query
 //! connection; a write transaction opens only when a row qualifies, so an idle
@@ -290,7 +290,91 @@ fn prune_jobs(store: &SqliteStore, budget: &CallBudget) -> Result<(u32, bool), A
     Ok((deleted as u32, has_more))
 }
 
-/// One snapshot transaction then one work-job transaction, each at most
+/// An unpublished preparation expires after a day without a successful quantum.
+pub const PREPARATION_RETENTION_MS: i64 = 24 * 60 * 60 * 1000;
+const PREPARATION_CANDIDATES_SQL: &str = "SELECT p.id,p.status,p.prepared_at FROM send_preparations p INDEXED BY send_preparations_retention WHERE p.prepared_at IS NOT NULL AND p.status IN ('building','sealed') AND p.prepared_at<=?1 AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=p.id) ORDER BY p.prepared_at,p.id LIMIT ?2";
+
+type PreparationCandidate = (String, String, i64);
+
+fn preparation_candidates(
+    conn: &Connection,
+    cutoff: i64,
+) -> Result<Vec<PreparationCandidate>, ApiError> {
+    let mut statement = conn
+        .prepare(PREPARATION_CANDIDATES_SQL)
+        .map_err(store_error)?;
+    statement
+        .query_map(params![cutoff, (RETENTION_BATCH_ROWS / 2) as i64], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .map_err(store_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(store_error)
+}
+
+fn discard_expired_preparations(
+    tx: &Transaction<'_>,
+    found: &[PreparationCandidate],
+    clock: &dyn Clock,
+    budget: &CallBudget,
+) -> Result<(u32, bool), ApiError> {
+    let started = clock.monotonic_now().0;
+    let mut discarded = 0;
+    let mut more = found.len() == RETENTION_BATCH_ROWS / 2;
+    for (id, status, progress) in found {
+        if budget.cancellation.is_cancelled() {
+            return Err(super::connection::api_error(
+                crate::protocol::results::ErrorCode::Cancelled,
+                "retention cancelled",
+            ));
+        }
+        if budget.deadline_passed(clock) {
+            return Err(super::connection::api_error(
+                crate::protocol::results::ErrorCode::DeadlineExceeded,
+                "retention deadline exceeded",
+            ));
+        }
+        if clock.monotonic_now().0.saturating_sub(started) >= RETENTION_QUANTUM_MS {
+            more = true;
+            break;
+        }
+        // The ID fences the generation. Status and progress fence publication,
+        // rebuilding and a successful quantum after the read-only scan.
+        let eligible: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM send_preparations p WHERE id=?1 AND status=?2 AND status IN ('building','sealed') AND prepared_at=?3 AND prepared_at<=?4 AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=p.id))",params![id,status,progress,clock.utc_now().0.saturating_sub(PREPARATION_RETENTION_MS)],|r|r.get(0)).map_err(store_error)?;
+        if eligible {
+            super::messages::discard_preparation(tx, id)?;
+            discarded += 1;
+        }
+    }
+    Ok((discarded, more))
+}
+
+fn prune_preparations(store: &SqliteStore, budget: &CallBudget) -> Result<(u32, bool), ApiError> {
+    let cutoff = store
+        .context
+        .clock()
+        .utc_now()
+        .0
+        .saturating_sub(PREPARATION_RETENTION_MS);
+    let found = store.retention_read(budget, |conn| preparation_candidates(conn, cutoff))?;
+    if found.is_empty() {
+        return Ok((0, false));
+    }
+    let mut turn = store.writer(budget)?;
+    let tx = turn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(store_error)?;
+    // Each candidate changes at most two rows: header + cleanup enqueue.
+    let batch = discard_expired_preparations(&tx, &found, store.context.clock(), budget)?;
+    if batch.0 == 0 {
+        tx.rollback().map_err(store_error)?;
+    } else {
+        tx.commit().map_err(store_error)?;
+    }
+    Ok(batch)
+}
+
+/// Snapshot, work-job and unpublished-preparation transactions, each at most
 /// [`RETENTION_BATCH_ROWS`] rows; no write transaction opens when no row
 /// qualifies.
 pub fn prune_once(store: &SqliteStore, budget: &CallBudget) -> Result<PruneProgress, ApiError> {
@@ -298,11 +382,14 @@ pub fn prune_once(store: &SqliteStore, budget: &CallBudget) -> Result<PruneProgr
     let snapshots = prune_snapshots(store, budget)?;
     store.live_budget(budget)?;
     let (jobs, jobs_more) = prune_jobs(store, budget)?;
+    store.live_budget(budget)?;
+    let (preparations, preparations_more) = prune_preparations(store, budget)?;
     Ok(PruneProgress {
+        preparations,
         generations: snapshots.generations,
         targets: snapshots.targets,
         jobs,
-        has_more: snapshots.has_more || jobs_more,
+        has_more: snapshots.has_more || jobs_more || preparations_more,
     })
 }
 

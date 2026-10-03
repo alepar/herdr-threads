@@ -33,7 +33,7 @@ fn wake_frontier(db: &Connection, seat: &str) -> LogicalAttentionFrontier {
 
 fn empty() -> Connection {
     let db = Connection::open_in_memory().unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     db.execute_batch("\
         INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,40);\
         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','pane-s',1,1,0);\

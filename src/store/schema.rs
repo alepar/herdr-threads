@@ -50,7 +50,8 @@ const V13: &str = include_str!("../../migrations/0013_thread_summaries.sql");
 /// Catch-up release key (epic ht-1ip; renumbered from v12 to v13, then v14).
 const V14: &str = include_str!("../../migrations/0014_catch_up_release.sql");
 /// The schema version this build writes and audits (the last migration).
-pub(crate) const LATEST_VERSION: i64 = 14;
+const V15: &str = include_str!("../../migrations/0015_preparation_retention.sql");
+pub(crate) const LATEST_VERSION: i64 = 15;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -101,7 +102,8 @@ fn decode_stored_result(json: &str) -> Result<CommandResult, ApiError> {
     })
 }
 
-pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
+/// The migration clock is sampled only when legacy preparations need fresh grace.
+pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<(), ApiError> {
     check_integrity(conn)?;
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
@@ -137,6 +139,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
                 .and_then(|_| conn.execute_batch(V12))
                 .and_then(|_| conn.execute_batch(V13))
                 .and_then(|_| conn.execute_batch(V14))
+                .and_then(|_| conn.execute_batch(V15))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -162,6 +165,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v11_to_v12(conn)?;
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
+            migrate_v14_to_v15(conn, now())?;
             verify_existing(conn)
         }
         2 => {
@@ -179,6 +183,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v11_to_v12(conn)?;
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
+            migrate_v14_to_v15(conn, now())?;
             verify_existing(conn)
         }
         3 => {
@@ -196,6 +201,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v11_to_v12(conn)?;
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
+            migrate_v14_to_v15(conn, now())?;
             verify_existing(conn)
         }
         4 => {
@@ -214,6 +220,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v11_to_v12(conn)?;
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
+            migrate_v14_to_v15(conn, now())?;
             verify_existing(conn)
         }
         5 => {
@@ -232,6 +239,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v11_to_v12(conn)?;
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
+            migrate_v14_to_v15(conn, now())?;
             verify_existing(conn)
         }
         6 => {
@@ -250,6 +258,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v11_to_v12(conn)?;
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
+            migrate_v14_to_v15(conn, now())?;
             verify_existing(conn)
         }
         7 => {
@@ -268,6 +277,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v11_to_v12(conn)?;
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
+            migrate_v14_to_v15(conn, now())?;
             verify_existing(conn)
         }
         8 => {
@@ -278,6 +288,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v11_to_v12(conn)?;
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
+            migrate_v14_to_v15(conn, now())?;
             verify_existing(conn)
         }
         9 => {
@@ -287,6 +298,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v11_to_v12(conn)?;
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
+            migrate_v14_to_v15(conn, now())?;
             verify_existing(conn)
         }
         10 => {
@@ -295,6 +307,7 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v11_to_v12(conn)?;
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
+            migrate_v14_to_v15(conn, now())?;
             verify_existing(conn)
         }
         11 => {
@@ -302,20 +315,29 @@ pub fn initialize(conn: &Connection) -> Result<(), ApiError> {
             migrate_v11_to_v12(conn)?;
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
+            migrate_v14_to_v15(conn, now())?;
             verify_existing(conn)
         }
         12 => {
             verify_existing_v12_shape(conn)?;
             migrate_v12_to_v13(conn)?;
             migrate_v13_to_v14(conn)?;
+            migrate_v14_to_v15(conn, now())?;
             verify_existing(conn)
         }
         13 => {
             verify_existing_v13_shape(conn)?;
             migrate_v13_to_v14(conn)?;
+            migrate_v14_to_v15(conn, now())?;
             verify_existing(conn)
         }
-        14 => verify_existing(conn),
+        14 => {
+            verify_existing_v13_shape(conn)?;
+            verify_existing_v14(conn)?;
+            migrate_v14_to_v15(conn, now())?;
+            verify_existing(conn)
+        }
+        15 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -427,7 +449,8 @@ pub(crate) fn binding_evidence_lacking(conn: &Connection, seat: &str) -> rusqlit
 /// thread summaries and the v14 catch-up release key.
 pub fn verify_existing(conn: &Connection) -> Result<(), ApiError> {
     verify_existing_v13_shape(conn)?;
-    verify_existing_v14(conn)
+    verify_existing_v14(conn)?;
+    verify_existing_v15(conn)
 }
 
 /// Audit of everything v1..v13 define; a v13 store is checked with this
@@ -643,6 +666,59 @@ fn migrate_v12_to_v13(conn: &Connection) -> Result<(), ApiError> {
             Err(store_error(error))
         }
     }
+}
+
+fn migrate_v14_to_v15(conn: &Connection, now: UtcMillis) -> Result<(), ApiError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    let result = (|| {
+        conn.execute_batch(V15)?;
+        conn.execute("UPDATE send_preparations SET prepared_at=?1 WHERE status IN ('building','sealed') AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=send_preparations.id)", [now.0])?;
+        conn.pragma_update(None, "user_version", 15)
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(store_error(error))
+        }
+    }
+}
+
+fn verify_existing_v15(conn: &Connection) -> Result<(), ApiError> {
+    let column: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('send_preparations') WHERE name='prepared_at' AND type='INTEGER')", [], |r| r.get(0)).map_err(store_error)?;
+    for (kind, name, expected) in [
+        (
+            "index",
+            "send_preparations_retention",
+            "CREATE INDEX send_preparations_retention ON send_preparations(prepared_at, id) WHERE prepared_at IS NOT NULL AND status IN ('building','sealed')",
+        ),
+        (
+            "trigger",
+            "send_manifest_preparation_published",
+            "CREATE TRIGGER send_manifest_preparation_published AFTER INSERT ON send_manifests BEGIN UPDATE send_preparations SET prepared_at=NULL WHERE id=NEW.preparation_id; END",
+        ),
+    ] {
+        let sql: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                [kind, name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        let normalize = |s: &str| {
+            s.split_whitespace()
+                .collect::<String>()
+                .to_ascii_lowercase()
+        };
+        if !column || sql.is_none_or(|s| normalize(&s) != normalize(expected)) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                "incompatible preparation retention schema",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn migrate_v13_to_v14(conn: &Connection) -> Result<(), ApiError> {

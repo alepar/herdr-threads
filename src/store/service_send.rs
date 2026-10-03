@@ -393,8 +393,8 @@ pub(crate) fn prepare_service_send_step(
             "no receipt recipients",
         ));
     }
-    tx.execute("UPDATE send_preparations SET recipient_cursor=?1,recipient_count=?2,warning_count=?3,status=?4 WHERE id=?5",
-        params![cursor,count,warning_count,if complete {"sealed"} else {"building"},prep_id]).map_err(store_error)?;
+    tx.execute("UPDATE send_preparations SET recipient_cursor=?1,recipient_count=?2,warning_count=?3,status=?4,prepared_at=?6 WHERE id=?5",
+        params![cursor,count,warning_count,if complete {"sealed"} else {"building"},prep_id,context.clock().utc_now().0]).map_err(store_error)?;
     decision.commit().map_err(store_error)?;
     Ok(SendPrepare::Step(if complete {
         SendStep::Ready {

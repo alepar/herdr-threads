@@ -142,7 +142,7 @@ fn inbox_capture_roundtrips_in_bounded_typed_cursor() {
 fn fixture() -> Connection {
     let db = Connection::open_in_memory().unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     db.execute_batch("\
         INSERT INTO host_instances(id, created_at, decision_seq) VALUES ('i', 0, 10);\
         INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('s', 'i', 'resolved', 'native', 1, 0);\

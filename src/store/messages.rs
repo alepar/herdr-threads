@@ -319,8 +319,8 @@ pub fn prepare_send_step(
             ));
         }
     };
-    tx.execute("UPDATE send_preparations SET recipient_cursor=?1,recipient_count=?2,warning_count=?3,status=?4 WHERE id=?5",
-        params![cursor,count,warning_count,if complete {"sealed"} else {"building"},prep_id]).map_err(store_error)?;
+    tx.execute("UPDATE send_preparations SET recipient_cursor=?1,recipient_count=?2,warning_count=?3,status=?4,prepared_at=?6 WHERE id=?5",
+        params![cursor,count,warning_count,if complete {"sealed"} else {"building"},prep_id,context.clock().utc_now().0]).map_err(store_error)?;
     tx.commit().map_err(store_error)?;
     Ok(if complete {
         SendPreparationProgress::Ready {
@@ -486,8 +486,10 @@ pub(super) fn walk_audience(
 }
 
 pub(super) fn discard_preparation(tx: &Transaction<'_>, prep_id: &str) -> Result<(), ApiError> {
-    tx.execute("UPDATE send_preparations SET status='discarded' WHERE id=?1 AND status IN ('building','sealed') AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=?1)",[prep_id]).map_err(store_error)?;
-    tx.execute("INSERT OR IGNORE INTO work_jobs(id,kind,subject_id,high_water) VALUES (?1,'preparation_cleanup',?2,0)",params![format!("work:cleanup:{prep_id}"),prep_id]).map_err(store_error)?;
+    let changed = tx.execute("UPDATE send_preparations SET status='discarded' WHERE id=?1 AND status IN ('building','sealed') AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=?1)",[prep_id]).map_err(store_error)?;
+    if changed != 0 {
+        tx.execute("INSERT OR IGNORE INTO work_jobs(id,kind,subject_id,high_water) VALUES (?1,'preparation_cleanup',?2,0)",params![format!("work:cleanup:{prep_id}"),prep_id]).map_err(store_error)?;
+    }
     Ok(())
 }
 

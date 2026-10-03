@@ -56,7 +56,7 @@ const AXES: [&str; 6] = [
 /// are idle) plus `history` of settled rows around them.
 fn fixture(live: u64, history: History) -> Connection {
     let db = Connection::open_in_memory().unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     db.pragma_update(None, "foreign_keys", "OFF").unwrap();
     // A CTE lives for one statement, so every statement gets its own.
     let each = |n: u64, statements: &[&str]| {
@@ -205,7 +205,7 @@ fn wake_discovery_scales_with_live_seats_only() {
 #[test]
 fn every_access_path_prepares_indexed_by() {
     let db = Connection::open_in_memory().unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     let plan = |sql: &str| -> String {
         let mut stmt = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
         let n = stmt.parameter_count();

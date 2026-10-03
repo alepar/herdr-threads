@@ -611,7 +611,7 @@ fn legacy_v1_startup_adds_index_and_preserves_rows_for_bounded_execution_lookup(
     // The accepted v1 database may predate the additive execution index.
     conn.execute_batch("DROP INDEX IF EXISTS occupant_bindings_execution")
         .unwrap();
-    schema::initialize(&conn).unwrap();
+    schema::initialize(&conn, || crate::protocol::time::UtcMillis(0)).unwrap();
     assert_eq!(
         conn.query_row("SELECT execution_id FROM occupant_bindings", [], |r| r
             .get::<_, String>(
@@ -640,7 +640,7 @@ fn legacy_v1_startup_adds_index_and_preserves_rows_for_bounded_execution_lookup(
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        14
+        crate::store::schema::LATEST_VERSION
     );
 }
 fn dispatch_check_in(
@@ -953,7 +953,9 @@ fn additive_index_wrong_shape_is_rejected_without_replacing_it() {
     let (_, conn, _) = fixture();
     conn.execute_batch("DROP INDEX occupant_bindings_execution; CREATE INDEX occupant_bindings_execution ON occupant_bindings(seat_id,ordinal)").unwrap();
     assert_eq!(
-        schema::initialize(&conn).unwrap_err().code,
+        schema::initialize(&conn, || crate::protocol::time::UtcMillis(0))
+            .unwrap_err()
+            .code,
         ErrorCode::IncompatibleSchema
     );
     let second_column: String = conn
@@ -1504,7 +1506,9 @@ fn execution_index_rejects_incompatible_key_metadata_without_replacing_it() {
             )
             .unwrap();
         assert_eq!(
-            schema::initialize(&conn).unwrap_err().code,
+            schema::initialize(&conn, || crate::protocol::time::UtcMillis(0))
+                .unwrap_err()
+                .code,
             ErrorCode::IncompatibleSchema,
             "{shape}"
         );
@@ -1526,7 +1530,9 @@ fn execution_index_rejects_incompatible_key_metadata_without_replacing_it() {
         conn.execute_batch(&format!("DROP INDEX occupant_bindings_execution; {sql}"))
             .unwrap();
         assert_eq!(
-            schema::initialize(&conn).unwrap_err().code,
+            schema::initialize(&conn, || crate::protocol::time::UtcMillis(0))
+                .unwrap_err()
+                .code,
             ErrorCode::IncompatibleSchema
         );
         assert_eq!(

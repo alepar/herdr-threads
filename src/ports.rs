@@ -1025,6 +1025,8 @@ pub struct SnapshotCleanupProgress {
 /// What one retention pass deleted (`store::retention::prune_once`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PruneProgress {
+    /// Unpublished preparations discarded and queued for cleanup.
+    pub preparations: u32,
     /// Snapshot generations deleted.
     pub generations: u32,
     /// Snapshot target rows deleted.

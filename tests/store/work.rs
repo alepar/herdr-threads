@@ -16,7 +16,7 @@ impl Clock for FixedClock {
 #[test]
 fn durable_work_cursor_commits_only_a_bounded_prefix() {
     let mut db = Connection::open_in_memory().unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     db.execute("INSERT INTO work_jobs(id, kind, subject_id, high_water) VALUES ('j', 'warning_attribution', 'warning', 40)", []).unwrap();
     let position = |db: &Connection| -> i64 {
         db.query_row("SELECT position FROM work_jobs WHERE id='j'", [], |r| {
@@ -43,7 +43,7 @@ fn durable_work_cursor_commits_only_a_bounded_prefix() {
 #[test]
 fn sparse_physical_ordinals_advance_without_counting_gaps_as_units() {
     let mut db = Connection::open_in_memory().unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     db.execute("INSERT INTO work_jobs(id, kind, subject_id, high_water) VALUES ('sparse', 'receipt_timer_materialization', 'seat', 1000)", []).unwrap();
     let tx = db.transaction().unwrap();
     let progress = commit_work_prefix(&tx, "sparse", 0, 2, 700, true, None, &FixedClock).unwrap();
@@ -57,7 +57,7 @@ fn sparse_physical_ordinals_advance_without_counting_gaps_as_units() {
 #[test]
 fn a_non_cursor_finalize_unit_can_commit_without_moving_physical_position() {
     let mut db = Connection::open_in_memory().unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     db.execute("INSERT INTO work_jobs(id, kind, subject_id, high_water) VALUES ('finalize', 'send_attention', 'prep', 2)", []).unwrap();
     let tx = db.transaction().unwrap();
     let progress = commit_work_prefix(&tx, "finalize", 0, 1, 0, true, None, &FixedClock).unwrap();
@@ -73,7 +73,7 @@ fn work_prefix_reports_units_committed_by_this_call_not_the_running_total() {
     // a work job's failure state), or reporting the cumulative
     // `completed_units` as this call's units.
     let mut db = Connection::open_in_memory().unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     db.execute("INSERT INTO work_jobs(id, kind, subject_id, high_water) VALUES ('j', 'warning_attribution', 'warning', 40)", []).unwrap();
     let tx = db.transaction().unwrap();
     let first = commit_work_prefix(&tx, "j", 0, 16, 16, true, None, &FixedClock).unwrap();
@@ -94,7 +94,7 @@ fn work_prefix_reports_units_committed_by_this_call_not_the_running_total() {
 #[test]
 fn completing_a_job_stamps_completed_at_from_the_clock() {
     let mut db = Connection::open_in_memory().unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     db.execute_batch("INSERT INTO work_jobs(id, kind, subject_id, high_water) VALUES ('p', 'warning_attribution', 'w1', 4), ('f', 'warning_attribution', 'w2', 4), ('c', 'warning_attribution', 'w3', 4);").unwrap();
     let tx = db.transaction().unwrap();
     commit_work_prefix(&tx, "p", 0, 1, 1, true, None, &FixedClock).unwrap();

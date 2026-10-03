@@ -22,7 +22,7 @@ fn budget() -> CallBudget {
 fn fixture() -> Connection {
     let db = Connection::open_in_memory().unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
-    schema::initialize(&db).unwrap();
+    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     db.execute_batch("\
         INSERT INTO host_instances(id,created_at) VALUES('i',0);\
         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0);\

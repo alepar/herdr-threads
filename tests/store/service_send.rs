@@ -1265,3 +1265,146 @@ fn service_author_never_in_receipt_tables() {
         0
     );
 }
+
+#[test]
+fn service_preparation_retention_preserves_resume_and_rebuild_fences() {
+    let f = Fixture::with_joined(&["s1", "s2", "s3"]);
+    let request = f.request("retention", "body", &[], None);
+    let step = |db: &mut Connection| {
+        prepare_service_send_step(
+            &f.store.context,
+            db,
+            &f.connection,
+            &f.gate,
+            &request,
+            MessageLimits::default(),
+            &budget(),
+            1,
+        )
+        .unwrap()
+    };
+    let mut db = f.db();
+    let SendPrepare::Step(SendStep::More {
+        preparation_id: original,
+        ..
+    }) = step(&mut db)
+    else {
+        panic!("must be partial");
+    };
+    assert_eq!(
+        db.query_row(
+            "SELECT prepared_at FROM send_preparations WHERE id=?1",
+            [&original],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        100
+    );
+    f.clock.0.store(200, Ordering::SeqCst);
+    let SendPrepare::Step(SendStep::More { preparation_id, .. }) = step(&mut db) else {
+        panic!("must resume");
+    };
+    assert_eq!(preparation_id, original);
+    assert_eq!(
+        db.query_row(
+            "SELECT prepared_at FROM send_preparations WHERE id=?1",
+            [&original],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        200
+    );
+    drop(db);
+    f.store.prune_retention(&budget()).unwrap();
+    let db = f.db();
+    assert_eq!(
+        db.query_row("SELECT status FROM send_preparations", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "building"
+    );
+    drop(db);
+    f.clock.0.store(
+        200 + crate::store::retention::PREPARATION_RETENTION_MS,
+        Ordering::SeqCst,
+    );
+    assert_eq!(f.store.prune_retention(&budget()).unwrap().preparations, 1);
+    let mut db = f.db();
+    assert!(matches!(step(&mut db), SendPrepare::CleanupPending { .. }));
+    let changed = f.request("retention", "different", &[], None);
+    assert_eq!(
+        prepare_service_send_step(
+            &f.store.context,
+            &mut db,
+            &f.connection,
+            &f.gate,
+            &changed,
+            MessageLimits::default(),
+            &budget(),
+            1
+        )
+        .err()
+        .expect("changed payload must fail")
+        .code,
+        ErrorCode::OperationPayloadMismatch
+    );
+    let job = format!("work:cleanup:{original}");
+    loop {
+        let progress = materialization::advance_work(
+            &mut db,
+            &job,
+            DurableWorkAdmission::new(16).unwrap(),
+            &budget(),
+            f.store.context.clock(),
+        )
+        .unwrap();
+        if !progress.has_more {
+            break;
+        }
+    }
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM prepared_recipients WHERE preparation_id=?1",
+            [&original],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    let SendPrepare::Step(SendStep::More {
+        preparation_id: rebuilt,
+        ..
+    }) = step(&mut db)
+    else {
+        panic!("must rebuild");
+    };
+    assert_ne!(rebuilt, original);
+    assert_eq!(
+        db.query_row("SELECT status FROM work_jobs WHERE id=?1", [&job], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap(),
+        "complete"
+    );
+    drop(db);
+    let published = f.sent("retention", "body", &[]);
+    assert!(!published.summary.message.as_str().is_empty());
+    f.clock.0.fetch_add(
+        2 * crate::store::retention::PREPARATION_RETENTION_MS,
+        Ordering::SeqCst,
+    );
+    assert_eq!(f.store.prune_retention(&budget()).unwrap().preparations, 0);
+    let db = f.db();
+    assert_eq!(
+        db.query_row("SELECT prepared_at FROM send_preparations", [], |r| r
+            .get::<_, Option<i64>>(0))
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM send_manifests", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}
