@@ -49,6 +49,7 @@ pub mod recipe;
 #[path = "../../tests/harness/recipe.rs"]
 mod recipe_tests;
 pub mod setup;
+pub mod state;
 #[cfg(test)]
 #[path = "../../tests/harness/stub_binaries.rs"]
 pub(crate) mod stub_binaries;

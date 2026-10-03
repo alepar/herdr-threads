@@ -2,6 +2,7 @@
 pub mod control;
 pub mod diagnostics;
 pub mod harness_evidence;
+pub mod harness_states;
 pub mod health;
 pub mod lifecycle;
 pub mod logs;

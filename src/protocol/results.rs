@@ -15,6 +15,8 @@ pub enum CommandResult {
     HarnessEvidenceRecorded {
         verified: bool,
     },
+    /// Each harness's version verdicts as the daemon derived them (ht-xoc.5).
+    HarnessStates(HarnessStatesReport),
     StopAccepted(StopAccepted),
     ServiceInspection(ServiceConnectionInspection),
     ServiceDisconnected(ServiceDisconnectResult),
@@ -170,6 +172,62 @@ pub struct ApiError {
     /// B3 class override; never on the wire (a decoded error carries its code's default).
     #[serde(skip)]
     class_override: Option<ErrorClass>,
+}
+
+/// The most version rows a [`HarnessStateReport`] carries.
+pub const HARNESS_STATE_VERSIONS: usize = 20;
+
+/// The `harness.states` answer: one block per harness (`claude`, `codex`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HarnessStatesReport {
+    pub harnesses: Vec<HarnessStateReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HarnessStateReport {
+    pub harness: String,
+    /// The newest contract id the daemon has seen from this harness's hooks.
+    pub contract_id: Option<String>,
+    /// The version on the daemon's `PATH`, with its verdict.
+    pub detected: Option<DetectedVersion>,
+    /// Every row under the newest contract id, newest `last_seen_at` first,
+    /// at most [`HARNESS_STATE_VERSIONS`].
+    pub versions: Vec<VersionStateReport>,
+    /// The latest reason a payload could not be attributed to a version.
+    pub unattributed: Option<UnattributedReport>,
+    pub hook_parse_failures: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DetectedVersion {
+    pub version: String,
+    /// `working`, `new` or `broken`.
+    pub state: String,
+    pub line: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnattributedReport {
+    pub reason: String,
+    pub at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VersionStateReport {
+    pub version: String,
+    /// `working`, `new` or `broken`.
+    pub state: String,
+    pub source: String,
+    pub line: String,
+    pub notes: Vec<String>,
+    pub issue_url: Option<String>,
+    pub last_seen_at: u64,
+    pub in_health_window: bool,
 }
 
 /// The wire form of the daemon's advertised capability names (ht-p03.43).

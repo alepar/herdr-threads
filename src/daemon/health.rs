@@ -27,9 +27,14 @@ pub enum HarnessStatus {
     Unknown,
     /// No executable on the daemon's `PATH`: a note, never a degradation.
     NotInstalled(String),
-    /// Present but not admitted (unobservable, unrecognized or a version no
-    /// recipe covers): a limitation that degrades Health.
+    /// Present but its `--version` could not be observed or recognized, which
+    /// blocks the hook: a limitation that degrades Health.
     Refused(String),
+    /// Present, observed, and its version is below the recipe floor or inside
+    /// a known-broken range. Whether that matters is the version verdict's
+    /// (`harness::state`, rendered from evidence and the manifest), so Health
+    /// shows nothing for it here; doctor shows the detected-version line.
+    VersionRefused(String),
     /// Admitted by a recipe whose receipts are cooperative
     /// (`cooperative_top_level`). `live_unverified` marks a schema-matched
     /// admission, which stays listed as a limitation.
@@ -51,7 +56,9 @@ impl HarnessStatus {
     pub fn state(&self) -> HarnessState {
         match self {
             Self::Unknown => HarnessState::Unknown,
-            Self::NotInstalled(_) | Self::Refused(_) => HarnessState::Unsupported,
+            Self::NotInstalled(_) | Self::Refused(_) | Self::VersionRefused(_) => {
+                HarnessState::Unsupported
+            }
             Self::Cooperative { .. } | Self::Optimistic(_) => HarnessState::Cooperative,
             Self::Supported(_) => HarnessState::Supported,
         }
@@ -63,6 +70,7 @@ impl HarnessStatus {
         matches!(
             self,
             Self::NotInstalled(_)
+                | Self::VersionRefused(_)
                 | Self::Cooperative { .. }
                 | Self::Supported(_)
                 | Self::Optimistic(_)
@@ -99,8 +107,7 @@ fn pointer_class(lanes: &[LaneDegradation]) -> Option<ErrorClass> {
 
 /// The most Health lines (limitations, and notes, each) the daemon itself
 /// assembles: the wire cap is 16 and the remaining 4 are headroom for lines
-/// a later producer adds (an optimistic-admission note, a hook-parse-failure
-/// count). Past it the lowest-priority lines are folded, never silently lost.
+/// a later producer adds. Past it the lowest-priority lines are folded, never silently lost.
 pub const HEALTH_LINE_BUDGET: usize = 12;
 
 /// More degraded lanes than this fold into one summary line.
@@ -148,15 +155,9 @@ pub struct HealthInputs {
     /// Guarded seat transitions the store refused during reconciliation since
     /// boot (skipped, never fatal).
     pub transitions_refused: u64,
-    /// Hook payloads each harness's hook reported as not understood while it
-    /// ran under an optimistic admission, since daemon boot (harness, count).
-    pub hook_parse_failures: Vec<(String, u64)>,
-}
-
-/// Health's informational line counting hook payloads the optimistically
-/// admitted recipe could not parse.
-pub fn hook_parse_failure_line(harness: &str, count: u64) -> String {
-    format!("{count} hook payloads not understood ({harness})")
+    /// The version verdict lines (`harness::state`): at most one per harness,
+    /// a `broken` version seen in the last 24 hours. Each is a limitation.
+    pub harness_version_lines: Vec<String>,
 }
 
 fn bounded(text: &str, limit: usize) -> String {
@@ -284,6 +285,26 @@ fn push(lines: &mut Vec<String>, line: String) {
 }
 
 /// The harness's limitation or note line.
+///
+/// Inventory of version-related emitters (ht-xoc.5). Every version verdict now
+/// comes from `harness::state::derive`, through `harness_version_lines` (one
+/// line for a broken version, nothing for working or new); doctor carries the
+/// rest.
+/// - Optimistic admission note: removed (a new version is not a problem).
+/// - `Cooperative { live_unverified: true }` (schema-matched) limitation:
+///   removed, same reason.
+/// - `Cooperative` / `Supported` admission notes: removed; doctor states the
+///   admission and its source.
+/// - `Refused` for a version verdict (known broken, older than supported, no
+///   recipe admits it): now `VersionRefused`, rendered by nothing here; a
+///   below-floor or known-broken version reaches Health through its evidence.
+/// - `Refused` for an unobservable or unrecognizable `--version`: stays a
+///   limitation (it blocks the hook).
+/// - `Unknown` and `NotInstalled`: unchanged.
+/// - `hook_parse_failure_line` note: moved to doctor (the counter and the
+///   rate-limited log line stay; malformed payloads add no Health line).
+/// - `cooperative_receipt_line`: stays; it states the receipt basis, not a
+///   version verdict.
 fn harness_line(
     name: &str,
     status: &HarnessStatus,
@@ -301,20 +322,10 @@ fn harness_line(
         HarnessStatus::Refused(detail) => {
             push(limitations, format!("harness {name} unsupported: {detail}"))
         }
-        HarnessStatus::Cooperative {
-            detail,
-            live_unverified,
-        } => {
-            let line = format!("harness {name}: {detail}");
-            if *live_unverified {
-                push(limitations, line);
-            } else {
-                push(notes, line);
-            }
-        }
-        HarnessStatus::Supported(detail) | HarnessStatus::Optimistic(detail) => {
-            push(notes, format!("harness {name}: {detail}"))
-        }
+        HarnessStatus::VersionRefused(_)
+        | HarnessStatus::Cooperative { .. }
+        | HarnessStatus::Supported(_)
+        | HarnessStatus::Optimistic(_) => {}
     }
 }
 
@@ -415,7 +426,7 @@ impl HealthInputs {
             log_path: None,
             degraded_lanes: Vec::new(),
             transitions_refused: 0,
-            hook_parse_failures: Vec::new(),
+            harness_version_lines: Vec::new(),
         }
     }
 
@@ -482,6 +493,9 @@ impl HealthInputs {
         for (name, status) in [("claude", &self.claude), ("codex", &self.codex)] {
             harness_line(name, status, &mut health.limitations, &mut health.notes);
         }
+        for line in &self.harness_version_lines {
+            push(&mut health.limitations, line.clone());
+        }
         let cooperative_harness = [&self.claude, &self.codex].iter().any(|status| {
             matches!(
                 status,
@@ -490,11 +504,6 @@ impl HealthInputs {
         });
         if cooperative_harness {
             push(&mut health.notes, cooperative_receipt_line());
-        }
-        for (harness, count) in &self.hook_parse_failures {
-            if *count > 0 {
-                push(&mut health.notes, hook_parse_failure_line(harness, *count));
-            }
         }
         let cooperative_wake = self.safe_prompt == CapabilityState::Supported
             && self.current_execution != CapabilityState::Supported;
@@ -578,6 +587,7 @@ impl HealthInputs {
             && !self.retirement.degraded
             && !lacking_evidence
             && !unresolved
+            && self.harness_version_lines.is_empty()
         {
             HealthState::Healthy
         } else {
@@ -590,6 +600,9 @@ impl HealthInputs {
 #[cfg(test)]
 #[path = "../../tests/daemon/health_budget.rs"]
 mod health_budget;
+#[cfg(test)]
+#[path = "../../tests/daemon/health_harness_state.rs"]
+mod health_harness_state;
 #[cfg(test)]
 #[path = "../../tests/daemon/health_optimistic.rs"]
 mod health_optimistic;

@@ -214,12 +214,14 @@ fn capability_constants_are_stable() {
     assert_eq!(HISTORY_FULL_BODIES, "history.full_bodies");
     assert_eq!(HOOK_PARSE_FAILURE_REPORT, "hook.parse_failure_report");
     assert_eq!(HARNESS_EVIDENCE, "hook.harness_evidence");
+    assert_eq!(HARNESS_STATES, "harness.states");
     assert_eq!(
         ADVERTISED,
         &[
             "history.full_bodies",
             "hook.parse_failure_report",
-            "hook.harness_evidence"
+            "hook.harness_evidence",
+            "harness.states"
         ]
     );
 }
@@ -235,6 +237,7 @@ fn every_advertised_capability_has_a_handler() {
             HISTORY_FULL_BODIES => probe_history_full_bodies(),
             HOOK_PARSE_FAILURE_REPORT => probe_hook_parse_failure_report(),
             HARNESS_EVIDENCE => probe_harness_evidence(),
+            HARNESS_STATES => probe_harness_states(),
             other => panic!("{other} is advertised but has no handler probe here"),
         }
     }
@@ -497,6 +500,121 @@ fn probe_harness_evidence() {
             .last_unattributed("claude", &budget())
             .unwrap()
             .is_some()
+    );
+}
+
+/// ht-xoc.5. Kills: a control route that drops `harness.states`, answers an
+/// error or another result, a provider that is not reached, and a report that
+/// does not follow the evidence rows.
+fn probe_harness_states() {
+    use crate::{
+        daemon::{
+            harness_evidence::HarnessEvidenceRecorder,
+            harness_states::{HarnessStatesProvider, embedded_source},
+        },
+        ports::StorePort,
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+        test_support::isolation::TestIsolation,
+    };
+    let (instance, boot) = (Uuid::new_v4(), Uuid::new_v4());
+    let iso = TestIsolation::new("cap-harness-states");
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock);
+    let store = Arc::new(
+        SqliteStore::new(
+            StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
+            "i",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    let recorder = HarnessEvidenceRecorder::new(store.clone(), None, clock.clone());
+    recorder
+        .record(&evidence_note(Some("2.1.286")), &budget())
+        .unwrap();
+    let provider = Arc::new(HarnessStatesProvider::new(
+        store.clone() as Arc<dyn StorePort>,
+        embedded_source(),
+        clock,
+        Box::new(|harness| (harness == "claude").then(|| "2.1.999".to_owned())),
+        None,
+    ));
+    let handler = ControlService::new(
+        StopController::new(instance, boot, Cancellation::default()),
+        move |_: &CallBudget| HealthInputs::unknown(instance, boot),
+        NoDomain,
+    )
+    .with_harness_states(provider);
+    let result = handler
+        .handle(
+            Command::HarnessStates,
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap();
+    let CommandResult::HarnessStates(report) = result else {
+        panic!("expected harness states, got {result:?}");
+    };
+    let names: Vec<&str> = report
+        .harnesses
+        .iter()
+        .map(|h| h.harness.as_str())
+        .collect();
+    assert_eq!(names, ["claude", "codex"]);
+    let claude = &report.harnesses[0];
+    assert_eq!(claude.contract_id.as_deref(), Some("0123456789abcdef"));
+    assert_eq!(claude.versions.len(), 1);
+    assert_eq!(claude.versions[0].version, "2.1.286");
+    assert_eq!(claude.versions[0].state, "working");
+    // The PATH version has no attributed row: it is evaluated for doctor.
+    assert_eq!(claude.detected.as_ref().unwrap().version, "2.1.999");
+    assert_eq!(claude.detected.as_ref().unwrap().state, "new");
+    assert!(report.harnesses[1].versions.is_empty());
+    assert!(report.harnesses[1].detected.is_none());
+}
+
+#[test]
+fn harness_states_round_trips_on_the_wire() {
+    use crate::protocol::results::{
+        DetectedVersion, HarnessStateReport, HarnessStatesReport, UnattributedReport,
+        VersionStateReport,
+    };
+    assert_eq!(
+        serde_json::to_value(Command::HarnessStates).unwrap(),
+        serde_json::json!({"kind": "harness_states"})
+    );
+    assert!(Command::HarnessStates.validate().is_ok());
+    let result = CommandResult::HarnessStates(HarnessStatesReport {
+        harnesses: vec![HarnessStateReport {
+            harness: "claude".into(),
+            contract_id: Some("0123456789abcdef".into()),
+            detected: Some(DetectedVersion {
+                version: "2.1.999".into(),
+                state: "new".into(),
+                line: "new version, not yet seen working; verified on first use".into(),
+            }),
+            versions: vec![VersionStateReport {
+                version: "2.1.286".into(),
+                state: "working".into(),
+                source: "recipe tables".into(),
+                line: "claude 2.1.286: working".into(),
+                notes: vec!["n".into()],
+                issue_url: None,
+                last_seen_at: 7,
+                in_health_window: true,
+            }],
+            unattributed: Some(UnattributedReport {
+                reason: "resume".into(),
+                at: 9,
+            }),
+            hook_parse_failures: 3,
+        }],
+    });
+    let encoded = serde_json::to_value(&result).unwrap();
+    assert_eq!(encoded["kind"], "harness_states");
+    assert_eq!(encoded["data"]["harnesses"][0]["hook_parse_failures"], 3);
+    assert_eq!(
+        serde_json::from_value::<CommandResult>(encoded).unwrap(),
+        result
     );
 }
 

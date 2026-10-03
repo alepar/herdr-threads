@@ -100,6 +100,17 @@ impl RateLimitedLaneLog {
         );
     }
 
+    /// Health could not read the harness version evidence; limited like lane
+    /// errors (Health is read often, the failure is the same each time).
+    pub fn record_harness_states_unavailable(&self, detail: &str) {
+        self.note(
+            "harness states".to_owned(),
+            "unavailable".to_owned(),
+            detail,
+            0,
+        );
+    }
+
     /// Writes one line as is: for rare events that need no rate limit (a
     /// harness binary changing under the running daemon).
     pub fn write_line(&self, line: &str) {

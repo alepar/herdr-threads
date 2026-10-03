@@ -263,6 +263,35 @@ impl Manifest {
         }
     }
 
+    /// A `verified` row for (harness, version) under a known contract id that
+    /// differs from `own_contract_id`: the version works with another
+    /// contract (another herdr-threads release). When several qualify, the one
+    /// with the greatest `supported_since` (a row without one ranks last).
+    pub fn other_contract_verified(
+        &self,
+        harness: &str,
+        version: &str,
+        own_contract_id: &str,
+    ) -> Option<&ManifestRow> {
+        let since = |row: &ManifestRow| {
+            row.supported_since
+                .as_deref()
+                .and_then(|text| super::recipe::Version::parse(text.trim_start_matches('v')))
+        };
+        self.rows
+            .iter()
+            .filter(|row| {
+                row.harness == harness
+                    && row.version == version
+                    && row.status == Some(RowStatus::Verified)
+                    && row
+                        .contract_id
+                        .as_deref()
+                        .is_some_and(|id| id != own_contract_id)
+            })
+            .max_by_key(|row| since(row))
+    }
+
     /// Any row for (harness, version), of any contract.
     pub fn has_row(&self, harness: &str, version: &str) -> bool {
         self.rows

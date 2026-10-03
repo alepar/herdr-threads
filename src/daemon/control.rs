@@ -68,13 +68,13 @@ pub struct ControlService<H, S> {
     health: H,
     domain: S,
     hook_parse_failures: Option<std::sync::Arc<crate::daemon::logs::HookParseFailures>>,
-    /// The harness version manifest (the evidence recorder calls
-    /// `ensure_manifest` through its own handle; ht-xoc.5 reads `current()`).
-    /// Not read here yet.
+    /// The harness version manifest (the evidence recorder and the version
+    /// states hold their own handles). Not read here.
     #[allow(dead_code)]
     harness_manifest: Option<std::sync::Arc<crate::harness::manifest::ManifestService>>,
     harness_evidence:
         Option<std::sync::Arc<crate::daemon::harness_evidence::HarnessEvidenceRecorder>>,
+    harness_states: Option<std::sync::Arc<crate::daemon::harness_states::HarnessStatesProvider>>,
 }
 
 impl<H, S> ControlService<H, S>
@@ -90,6 +90,7 @@ where
             hook_parse_failures: None,
             harness_manifest: None,
             harness_evidence: None,
+            harness_states: None,
         }
     }
 
@@ -110,6 +111,16 @@ where
         recorder: std::sync::Arc<crate::daemon::harness_evidence::HarnessEvidenceRecorder>,
     ) -> Self {
         self.harness_evidence = Some(recorder);
+        self
+    }
+
+    /// Where `harness.states` reads the version verdicts from. Without it the
+    /// report is empty.
+    pub fn with_harness_states(
+        mut self,
+        provider: std::sync::Arc<crate::daemon::harness_states::HarnessStatesProvider>,
+    ) -> Self {
+        self.harness_states = Some(provider);
         self
     }
 
@@ -240,6 +251,14 @@ where
                     None => false,
                 };
                 Ok(CommandResult::HarnessEvidenceRecorded { verified })
+            }
+            ApiCommand::HarnessStates => {
+                Ok(CommandResult::HarnessStates(match &self.harness_states {
+                    Some(provider) => provider.report(budget)?,
+                    None => crate::protocol::results::HarnessStatesReport {
+                        harnesses: Vec::new(),
+                    },
+                }))
             }
             ApiCommand::Stop(StopRequest { expected_boot }) => {
                 let boot = Uuid::parse_str(&expected_boot)
