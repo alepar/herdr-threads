@@ -387,6 +387,7 @@ fn mixed_contract_rows() {
 fn settings(setting: HarnessManifestSetting) -> InstanceSettings {
     InstanceSettings {
         harness_manifest: setting,
+        ..InstanceSettings::default()
     }
 }
 

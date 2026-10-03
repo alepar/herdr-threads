@@ -377,6 +377,41 @@ fn doctor_reports_the_manifest_policy_and_cache() {
     assert!(harness_manifest_text(&bad).starts_with("harness manifest: settings error: "));
 }
 
+/// Kills: doctor rejecting the daemon's timing keys (one schema for both
+/// readers) or accepting an out-of-range timing value.
+#[test]
+fn doctor_accepts_timing_keys_and_mixed_settings() {
+    let case = manifest_case("mixed");
+    let file = case.dir.join("settings.json");
+    std::fs::write(
+        &file,
+        br#"{"invitation_default_ms":120000,"receipt_default_ms":240000,"minimum_wake_delay_ms":45000}"#,
+    )
+    .unwrap();
+    let timing = harness_manifest_report(&case.dir, None);
+    assert_eq!(timing["settings_error"], Value::Null);
+    assert_eq!(timing["policy"], "auto");
+    assert_eq!(timing["source"], "default");
+
+    std::fs::write(
+        &file,
+        br#"{"invitation_default_ms":120000,"receipt_default_ms":240000,"minimum_wake_delay_ms":45000,"harness_manifest":"off"}"#,
+    )
+    .unwrap();
+    let mixed = harness_manifest_report(&case.dir, None);
+    assert_eq!(mixed["settings_error"], Value::Null);
+    assert_eq!(
+        (mixed["policy"].as_str(), mixed["source"].as_str()),
+        (Some("off"), Some("settings"))
+    );
+    assert!(harness_manifest_text(&mixed).starts_with("harness manifest: off (settings.json)\n"));
+
+    std::fs::write(&file, br#"{"minimum_wake_delay_ms":1}"#).unwrap();
+    let bad = harness_manifest_report(&case.dir, None);
+    let error = bad["settings_error"].as_str().unwrap();
+    assert!(error.contains("settings.json"), "{error}");
+}
+
 /// Kills: a report that computes the manifest object but never attaches it
 /// (or never prints it) in the full doctor output.
 #[test]

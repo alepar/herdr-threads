@@ -120,11 +120,12 @@ Per-operation deadlines use `--deadline SECONDS` on `invite` and `send`. The val
 Instance-wide defaults come from an optional `settings.json` in the instance directory (`STATE_DIR/instances/<digest>/settings.json`):
 
 ```json
-{"invitation_default_ms": 300000, "receipt_default_ms": 300000, "minimum_wake_delay_ms": 30000}
+{"invitation_default_ms": 300000, "receipt_default_ms": 300000, "minimum_wake_delay_ms": 30000, "harness_manifest": "auto"}
 ```
 
-- All keys are optional; unknown keys are rejected.
-- The file must be a regular file you own, mode 0600, at most 4096 bytes.
+- All keys are optional; unknown keys are rejected. One schema covers every key, so the same file may mix them freely.
+- The file must be a regular file you own, mode 0600, at most 4096 bytes. These rules apply to all keys.
+- `harness_manifest`: `auto` (default) or `off`; `off` stops the daemon fetching the harness version manifest ([docs/compatibility/harnesses.md](compatibility/harnesses.md), "Manifest").
 - Durations must be positive. `minimum_wake_delay_ms` must be at least 30000.
 - The daemon reads it at start. Edits apply after `daemon stop` then `daemon ensure`. `daemon health` prints the effective `settings`.
 - The chosen duration is frozen on each invitation and message when it is created.
