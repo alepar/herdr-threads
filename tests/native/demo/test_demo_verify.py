@@ -2369,7 +2369,9 @@ class ServiceSendVerdicts(ScenarioBase):
 
     def test_handoff_names_the_service_thread(self):
         text = self.driver.scenario_instructions("initial")
-        self.assertIn(f"Service request, thread {self.SVC}: accept-required it", text)
+        self.assertIn("Accept this thread's invitation (step 1)", text)
+        self.assertIn(f"service request, thread {self.SVC}: accept-required it", text)
+        self.assertIn("then ACK its service message by its exact ID", text)
 
 
 class ServiceWireTests(unittest.TestCase):

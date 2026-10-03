@@ -122,6 +122,13 @@ jobs:
           set -euo pipefail
           tests/release/install_test.sh bin/herdr-threads 2>&1 | tee install_test.log
 
+      - name: Build release proof fixture
+        # The ordinary release is already built for the installer. Prepare
+        # its test-support counterpart before the suite, just as Locked build
+        # prepares the debug tests. The package test still builds/checks both
+        # feature configurations and preserves each binary for its proof.
+        run: cargo build --locked --release --features test-support
+
       - name: Tests (parallel)
         # cargo-nextest, one process per test, every binary in one pool; the
         # serialized chains are test groups in .config/nextest.toml. Every test
@@ -134,7 +141,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          start=$(date +%s)
           cargo nextest run --locked --all-targets --all-features --profile ci 2>&1 | tee test.log
+          elapsed=$(( $(date +%s) - start ))
+          echo "Full suite wall time: ${elapsed}s (budget: under 300s)"
+          if [ "$elapsed" -ge 300 ]; then
+            echo "::error::Full suite exceeded the five-minute budget"
+            exit 1
+          fi
 
       - name: Python demo, validator and canary suites
         shell: bash
