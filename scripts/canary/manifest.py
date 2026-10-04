@@ -321,7 +321,12 @@ def qualified_results(results, root, report=None):
 def add_runtime(doc, baseline, registry, results, now, release=None):
     contracts = copy.deepcopy(baseline.get("runtime_contracts", {}))
     rows = {runtime_key(r): copy.deepcopy(r) for r in baseline.get("runtime_rows", [])}
-    has_complete = any(r["outcome"] == "complete" for _, r in results)
+    # Only the final indexed attempt of each exact identity contributes observations.
+    final = {}
+    for entry, result in results:
+        if result["identity"] is not None:
+            final[(entry["harness"], entry["identity_key"])] = (entry, result)
+    has_complete = any(r["outcome"] == "complete" for _, r in final.values())
     if registry is not None and has_complete:
         for a in registry["adapters"]:
             for c in a["contracts"]:
@@ -339,11 +344,6 @@ def add_runtime(doc, baseline, registry, results, now, release=None):
         raise ValueError("generated_at requires an RFC3339 UTC offset")
     timestamp = int(instant.timestamp() * 1000)
     adapters = {a["id"]: a for a in (registry or {}).get("adapters", [])}
-    # Only the final indexed attempt of each exact identity contributes observations.
-    final = {}
-    for entry, result in results:
-        if result["identity"] is not None:
-            final[(entry["harness"], entry["identity_key"])] = (entry, result)
     for entry, result in final.values():
         if result["outcome"] != "complete" or result["identity"] is None:
             continue

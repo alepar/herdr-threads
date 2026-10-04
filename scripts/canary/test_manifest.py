@@ -665,6 +665,47 @@ class RuntimeWriter(RuntimeFixtures):
         for collection in ('rows', 'contracts', 'runtime_rows', 'runtime_contracts'):
             self.assertEqual(kept[collection], baseline[collection])
 
+    def test_final_noncomplete_attempt_preserves_runtime_baseline_history(self):
+        # Superseded success must not merge descriptors or prune/reorder history.
+        cp, baseline = self.write_runtime()
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        seed = baseline['runtime_rows'][0]
+        baseline['runtime_contracts']['third'][0]['id'] = OTHER
+        history = []
+        for n in range(55):
+            old = copy.deepcopy(seed)
+            old.update(contract_id=OTHER, last_seen_at=n)
+            old['identity'] = {'key': f'release:1.0.{n}', 'release_version': f'1.0.{n}',
+                               'source': 'npm', 'base_version': None, 'derived_version': None,
+                               'commit': None, 'dirty': False, 'distance': None}
+            history.append(old)
+        baseline['runtime_rows'] = history
+        final_work = self.dir / 'work/third-try2'
+        final_work.mkdir()
+        final_entry = dict(self.index['attempts'][0], attempt='try2',
+                           result_path='work/third-try2/result.json')
+        self.index['attempts'].append(final_entry)
+        for outcome in ('infra_failure', 'inconclusive', 'unsupported', 'complete'):
+            with self.subTest(outcome=outcome):
+                final_result = dict(self.result, attempt='try2', outcome=outcome)
+                (final_work / 'result.json').write_text(json.dumps(final_result))
+                cp, kept = self.write_runtime(baseline)
+                self.assertEqual(cp.returncode, 0, cp.stdout + cp.stderr)
+                if outcome != 'complete':
+                    for collection in ('runtime_contracts', 'runtime_rows'):
+                        with self.subTest(collection=collection):
+                            self.assertEqual(kept[collection], baseline[collection])
+                else:
+                    # A final success still adds its descriptor and observation,
+                    # and applies the normal newest-50 unprotected retention.
+                    self.assertEqual(len(kept['runtime_rows']), 50)
+                    self.assertIn(self.adapter['contracts'][0], kept['runtime_contracts']['third'])
+                    current = [r for r in kept['runtime_rows']
+                               if r['identity'] == self.result['identity']]
+                    self.assertEqual(len(current), 1)
+                    self.assertEqual(current[0]['status'], 'verified')
+                    self.assertEqual(current[0]['evidence_stage'], 'no_model')
+
     def test_incomplete_capture_unsupported_and_bad_identity_cannot_verify(self):
         for change in ({'evidence_stage': 'source_captured'}, {'outcome': 'unsupported'},
                        {'outcome': 'inconclusive'}):
