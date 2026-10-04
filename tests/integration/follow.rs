@@ -73,8 +73,14 @@ impl Plugin {
             .to_owned()
     }
     fn follow(&self, args: &[&str]) -> Follower {
-        let mut child = self
-            .command()
+        self.follow_from(None, args)
+    }
+    fn follow_from(&self, pane: Option<&str>, args: &[&str]) -> Follower {
+        let mut command = self.command();
+        if let Some(pane) = pane {
+            command.env("HERDR_PANE_ID", pane);
+        }
+        let mut child = command
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -207,8 +213,24 @@ fn follow_prints_the_recent_tail_then_only_new_messages_irc_style() {
     plugin.ok(Some(hatter), &["accept", &thread]);
     plugin.send(alice, &thread, "Why is a raven like a writing-desk?");
 
-    // Human follower: the recent tail, oldest first, IRC style.
-    let mut human = plugin.follow(&["read", &thread, "--follow", "--human", "--recent", "5"]);
+    // Outside a pane, parent scopes must remain visible.
+    let mut outside = plugin.follow(&["read", &thread, "--follow", "--human", "--recent", "1"]);
+    outside.wait_for("raven");
+    assert!(
+        outside
+            .seen
+            .iter()
+            .any(|line| line.contains("<w1/w1:t1/alice·claude>")),
+        "{:?}",
+        outside.seen
+    );
+    outside.interrupt();
+
+    // In the same pane scope, local nicks omit workspace and tab parents.
+    let mut human = plugin.follow_from(
+        Some("w1:p1"),
+        &["read", &thread, "--follow", "--human", "--recent", "5"],
+    );
     human.wait_for("raven");
     assert!(
         human
@@ -321,9 +343,10 @@ fn follow_prints_the_recent_tail_then_only_new_messages_irc_style() {
         restarted.seen
     );
 
-    // Plain `read` for a person is the same IRC transcript, oldest first.
+    // Plain `read` from the same pane is the same IRC transcript, oldest first.
     let output = plugin
         .command()
+        .env("HERDR_PANE_ID", "w1:p1")
         .args(["read", &thread, "--human", "--recent", "3"])
         .output()
         .unwrap();

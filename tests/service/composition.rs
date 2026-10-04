@@ -406,10 +406,10 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
         [instance.to_string()],
     )
     .unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('seat',?1,'resolved','native','pane',1,0,0)", [instance.to_string()]).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'pane','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'pane','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient',?1,'resolved','native','other',1,0,0)", [instance.to_string()]).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'other','b',1,0,2,'fresh','unknown','unknown',0,0,'term-'||'other','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('seat',?1,'resolved','native','w1:p1',1,0,0)", [instance.to_string()]).unwrap();
+    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'w1:p1','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'w1:p1','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient',?1,'resolved','native','w1:p2',1,0,0)", [instance.to_string()]).unwrap();
+    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'w1:p2','b',1,0,2,'fresh','unknown','unknown',0,0,'term-'||'w1:p2','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
     drop(db);
     let stop = Cancellation::default();
     let worker_stop = stop.clone();
@@ -483,7 +483,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
         "--cooperative-seat",
         "seat",
         "--cooperative-target",
-        "pane",
+        "w1:p1",
         "--cooperative-harness",
         "codex",
         "--cooperative-role",
@@ -493,7 +493,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
         "launch-one",
     ];
     let mut wrong_target = args;
-    wrong_target[8] = "other";
+    wrong_target[8] = "w1:p2";
     let rejected = herdr_threads::cli::run(wrong_target, &mut Vec::new()).unwrap_err();
     assert!(
         matches!(rejected, herdr_threads::cli::RunError::Api(ref error) if error.code == ErrorCode::TargetUnresolved)
@@ -542,14 +542,14 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
         herdr_threads::cli::run(args, &mut out).unwrap();
         serde_json::from_slice(&out).unwrap()
     };
-    let created = invoke("seat", "pane", &["thread", "create", "--topic", "shared"]);
+    let created = invoke("seat", "w1:p1", &["thread", "create", "--topic", "shared"]);
     assert_eq!(created["result"]["kind"], "thread_created");
     let thread = created["result"]["data"].as_str().unwrap();
-    let invited = invoke("seat", "pane", &["invite", thread, "--seat", "recipient"]);
+    let invited = invoke("seat", "w1:p1", &["invite", thread, "--seat", "recipient"]);
     assert_eq!(invited["result"]["kind"], "invitation");
     let sent = invoke(
         "seat",
-        "pane",
+        "w1:p1",
         &[
             "send",
             thread,
@@ -566,25 +566,25 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
     assert_eq!(receipt_before, 1);
     let recipient_checkin = invoke(
         "recipient",
-        "other",
+        "w1:p2",
         &["check-in", "--lifecycle-event", "recipient-launch"],
     );
     assert_eq!(recipient_checkin["result"]["kind"], "checked_in");
     assert_eq!(
         invoke(
             "recipient",
-            "other",
+            "w1:p2",
             &["check-in", "--lifecycle-event", "recipient-launch"]
         ),
         recipient_checkin,
         "a repeated lifecycle event must replay its original context",
     );
-    let accepted = invoke("recipient", "other", &["accept", thread]);
+    let accepted = invoke("recipient", "w1:p2", &["accept", thread]);
     assert_eq!(accepted["result"]["kind"], "accepted");
     let receipt_after_accept: i64 = rusqlite::Connection::open(&paths.database_path).unwrap()
         .query_row("SELECT count(*) FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id WHERE sm.message_id=?1 AND pr.seat_id='recipient'", [message], |r| r.get(0)).unwrap();
     assert_eq!(receipt_after_accept, 1);
-    let acknowledged = invoke("recipient", "other", &["ack", message]);
+    let acknowledged = invoke("recipient", "w1:p2", &["ack", message]);
     assert_eq!(acknowledged["result"]["kind"], "acknowledged");
     let receipt_after_ack: i64 = rusqlite::Connection::open(&paths.database_path).unwrap()
         .query_row("SELECT count(*) FROM receipt_state WHERE message_id=?1 AND seat_id='recipient' AND state='acked' AND acked_at IS NOT NULL AND ack_generation=2", [message], |r| r.get(0)).unwrap();
@@ -593,7 +593,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
         serde_json::from_value(recipient_checkin["result"]["data"]["context"].clone()).unwrap();
     let successor = invoke(
         "recipient",
-        "other",
+        "w1:p2",
         &["check-in", "--lifecycle-event", "recipient-restart"],
     );
     assert_eq!(
@@ -645,7 +645,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
         "--cooperative-seat",
         "recipient",
         "--cooperative-target",
-        "other",
+        "w1:p2",
         "--cooperative-harness",
         "codex",
         "--cooperative-role",
@@ -756,7 +756,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
     assert!(matches!(herdr_threads::cli::run([
         "herdr-threads", "--json", "--state-dir", state.to_str().unwrap(),
         "--host-endpoint", host.to_str().unwrap(), "--cooperative-seat", "recipient",
-        "--cooperative-target", "other", "--cooperative-harness", "codex",
+        "--cooperative-target", "w1:p2", "--cooperative-harness", "codex",
         "--cooperative-role", "top-level", "ack", message,
     ], &mut Vec::new()), Err(herdr_threads::cli::RunError::Api(error)) if error.code == ErrorCode::TargetUnresolved));
     // Root decision (wave-2 fix1 (b)): a fresh lifecycle event is a

@@ -928,11 +928,13 @@ fn oversized_hint_fails_the_same_way_for_short_and_long_commands() {
 
 // Kills: removing the additionalContext budget check, or measuring the
 // context string before its JSON escaping in the envelope. The (4096, 1000)
-// and (2000, 500) cases fit unescaped but not once escaped into the envelope.
+// and (2200, 500) cases fit unescaped but not once escaped into the envelope.
+// Leave room for the fixed instructions and the lifecycle envelope as well
+// as the plain peer text; the tool budget only covers additionalContext.
 #[test]
 fn escape_inflation_is_budgeted_for_both_encoders() {
     let input = tool_input("echo ok");
-    for (budget, count) in [(4096usize, 1_900usize), (4096, 1_000), (2_000, 500)] {
+    for (budget, count) in [(4096usize, 1_900usize), (4096, 1_000), (2_200, 500)] {
         let quotes = "\"".repeat(count);
         let plain = "a".repeat(count);
         assert!(quotes.len() < budget && escaped_len(&quotes) > quotes.len());

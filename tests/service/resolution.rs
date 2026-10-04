@@ -82,7 +82,7 @@ impl ResolutionHost {
         let at = self.clock.monotonic_now();
         HostObservation {
             focused: false,
-            target: HostTargetId::new("pane"),
+            target: HostTargetId::new("w1:p1"),
             host_boot: HostBootId::new("host"),
             epoch: 1,
             generation: 1,
@@ -117,7 +117,7 @@ impl HostPort for ResolutionHost {
     ) -> Result<HostObservation, ApiError> {
         let _capture = self.enter_capture();
         self.calls.fetch_add(1, Ordering::SeqCst);
-        assert_eq!(target.as_str(), "pane");
+        assert_eq!(target.as_str(), "w1:p1");
         // Before the first publication (first contact) nothing is expected.
         if let Some(boot) = context.expected_boot.as_ref() {
             assert_eq!(boot.as_str(), "host");
@@ -488,7 +488,7 @@ impl Fixture {
         LocalClient::call(
             &self.client(),
             Command::ResolveSeat(ResolveSeat {
-                target: HostTargetId::new("pane"),
+                target: HostTargetId::new("w1:p1"),
                 operation: OperationId::new(operation),
             }),
             &self.budget(),
@@ -534,7 +534,7 @@ fn real_ipc_resolve_admits_host_read_then_commits_structural_seat_without_native
         .query_row("SELECT count(*) FROM occupant_bindings", [], |r| r.get(0))
         .unwrap();
     assert_eq!(bindings, 0);
-    let published: (i64,i64) = db.query_row("SELECT observation_sequence,(SELECT count(*) FROM allocation_decisions) FROM observed_targets WHERE target_id='pane'", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+    let published: (i64,i64) = db.query_row("SELECT observation_sequence,(SELECT count(*) FROM allocation_decisions) FROM observed_targets WHERE target_id='w1:p1'", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
     assert!(published.0 >= proof.2);
     assert_eq!(published.1, 1);
 }
@@ -603,7 +603,7 @@ fn first_contact_read_waits_for_the_lane_capture_it_needs() {
             LocalClient::call(
                 &client,
                 Command::ResolveSeat(ResolveSeat {
-                    target: HostTargetId::new("pane"),
+                    target: HostTargetId::new("w1:p1"),
                     operation: OperationId::new("first-contact"),
                 }),
                 &budget,
@@ -687,7 +687,7 @@ fn direct_socket_hook_keeps_selected_check_in_and_directory_continuations() {
         format_version: 1,
         instance: fixture.descriptor.instance_uuid,
         seat: seat.as_str().into(),
-        target: "pane".into(),
+        target: "w1:p1".into(),
         harness: Harness::Codex,
         binding_generation: 0,
         execution,
@@ -961,7 +961,7 @@ fn real_ipc_late_target_read_cannot_publish_after_newer_invalidation_and_health_
         LocalClient::call(
             &client,
             Command::ResolveSeat(ResolveSeat {
-                target: HostTargetId::new("pane"),
+                target: HostTargetId::new("w1:p1"),
                 operation: OperationId::new("late-read"),
             }),
             &budget,
@@ -1092,7 +1092,7 @@ fn real_ipc_exact_resolution_replay_after_retirement_and_hold_is_historical_with
     hold.execute("UPDATE host_instances SET baseline_hold_unclaimed=1", [])
         .unwrap();
     hold.execute(
-        "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,generation,created_at) SELECT 'still-unresolved',instance_id,'unresolved','other','native',1,0 FROM seats WHERE id=?1",
+        "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,generation,created_at) SELECT 'still-unresolved',instance_id,'unresolved','w1:p2','native',1,0 FROM seats WHERE id=?1",
         [first.as_str()],
     )
     .unwrap();
@@ -1132,7 +1132,7 @@ fn real_ipc_reused_resolution_key_for_different_target_rejects_before_host_read(
     let result = LocalClient::call(
         &fixture.client(),
         Command::ResolveSeat(ResolveSeat {
-            target: HostTargetId::new("other"),
+            target: HostTargetId::new("w1:p2"),
             operation: OperationId::new("same-key"),
         }),
         &fixture.budget(),
@@ -1176,7 +1176,7 @@ fn real_cli_resolve_journals_before_submission_and_exact_retry_survives_output_f
         "seat".into(),
         "resolve".into(),
         "--pane".into(),
-        "pane".into(),
+        "w1:p1".into(),
     ];
     let mut failed = FailedFlush(Vec::new());
     assert!(cli::run(argv, &mut failed).is_err());
@@ -1189,7 +1189,7 @@ fn real_cli_resolve_journals_before_submission_and_exact_retry_survives_output_f
         pending.header.scope,
         IntentScope::ServiceAllocation {
             instance: fixture.descriptor.instance_uuid.to_string(),
-            target: HostTargetId::new("pane")
+            target: HostTargetId::new("w1:p1")
         }
     );
     let db = fixture.db();
@@ -1280,7 +1280,7 @@ fn real_cli_resolve_discards_intent_only_after_correlated_definitive_rejection()
     ] {
         fixture.host.fail_code.store(mode, Ordering::SeqCst);
         let mut out = Vec::new();
-        let failure = cli::run(argv(&["seat", "resolve", "--pane", "pane"]), &mut out)
+        let failure = cli::run(argv(&["seat", "resolve", "--pane", "w1:p1"]), &mut out)
             .expect_err("rejected resolution reported success");
         let cli::RunError::Api(error) = failure else {
             panic!("expected a daemon rejection, got {failure:?}");
@@ -1308,7 +1308,7 @@ fn real_cli_resolve_discards_intent_only_after_correlated_definitive_rejection()
     while fixture.entered.try_recv().is_ok() {}
     fixture.host.held_past_budget.store(true, Ordering::SeqCst);
     let failure = cli::run(
-        argv(&["seat", "resolve", "--pane", "pane"]),
+        argv(&["seat", "resolve", "--pane", "w1:p1"]),
         &mut Vec::new(),
     )
     .expect_err("held resolution reported success");
@@ -1615,13 +1615,13 @@ fn committed_resolution_with_lost_wire_response_retains_exact_intent_for_explici
     let fixture = Fixture::new(false);
     let journal = Journal::open(fixture.paths.instance_dir.join("intents")).unwrap();
     let semantic = SemanticMutation::ResolveSeat {
-        target: HostTargetId::new("pane"),
+        target: HostTargetId::new("w1:p1"),
     };
     let reference = journal
         .record(
             IntentScope::ServiceAllocation {
                 instance: fixture.descriptor.instance_uuid.to_string(),
-                target: HostTargetId::new("pane"),
+                target: HostTargetId::new("w1:p1"),
             },
             semantic.clone(),
             fixture.clock.utc_now().0,
@@ -1702,7 +1702,7 @@ fn disconnected_short_budget_cannot_commit_queued_resolution_after_writer_unlock
     #[cfg(feature = "test-support")]
     let held_writer = HeldSqliteWriter(&db);
     let command = Command::ResolveSeat(ResolveSeat {
-        target: HostTargetId::new("pane"),
+        target: HostTargetId::new("w1:p1"),
         operation: OperationId::new("expired-queued-resolution"),
     });
     #[cfg(feature = "test-support")]
@@ -1797,7 +1797,7 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
         rusqlite::params![fixture.descriptor.instance_uuid.to_string(), successor_literal],
     ).unwrap();
     db.execute(
-        "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('checkin-seat',?1,'resolved','native','pane',0,1,0)",
+        "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('checkin-seat',?1,'resolved','native','w1:p1',0,1,0)",
         [fixture.descriptor.instance_uuid.to_string()],
     ).unwrap();
     db.execute(
@@ -1846,7 +1846,7 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
         harness: Harness::Codex,
         native_session: NativeSessionId::new("plugin_context:search-checkin"),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
-        target: HostTargetId::new("pane"),
+        target: HostTargetId::new("w1:p1"),
     };
     let check_in = Command::CheckIn(CheckIn {
         mode: CheckInMode::Lifecycle {
@@ -2020,7 +2020,7 @@ fn identity_final_currentness_check_uses_new_admitted_read_and_rejects_existing_
     fixture.host.overlap_allowed.store(true, Ordering::SeqCst);
     fixture.host.snapshot_held.store(true, Ordering::SeqCst);
     let request = ResolveSeat {
-        target: HostTargetId::new("pane"),
+        target: HostTargetId::new("w1:p1"),
         operation: OperationId::new("historical-resolve"),
     };
     let CommandResult::SeatResolved(seat) = fixture.resolve(request.operation.as_str()).unwrap()
@@ -2046,7 +2046,7 @@ fn identity_final_currentness_check_uses_new_admitted_read_and_rejects_existing_
         .unwrap();
     assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 2);
     let db = fixture.db();
-    db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES (?1,'pane','host',1,'repair')", [fixture.descriptor.instance_uuid.to_string()]).unwrap();
+    db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES (?1,'w1:p1','host',1,'repair')", [fixture.descriptor.instance_uuid.to_string()]).unwrap();
     // Exact resolution replay still returns historical data; the independent
     // check must reject the active hold without treating replay as authority.
     assert_eq!(
@@ -2266,7 +2266,7 @@ fn elected_snapshot_and_target_captures_share_one_lane_and_dirty_refresh() {
             LocalClient::call(
                 &client,
                 Command::ResolveSeat(ResolveSeat {
-                    target: HostTargetId::new("pane"),
+                    target: HostTargetId::new("w1:p1"),
                     operation: OperationId::new("ordered"),
                 }),
                 &budget,
@@ -2445,7 +2445,7 @@ fn queued_incoherent_compensation<'w>(
     let worker = std::thread::spawn(move || {
         let _ = done.send(identity.resolve(
             ResolveSeat {
-                target: HostTargetId::new("pane"),
+                target: HostTargetId::new("w1:p1"),
                 operation,
             },
             &budget,
@@ -2601,7 +2601,7 @@ fn elected_shutdown_is_not_held_by_invalidation_compensation() {
         let _ = answered.send(LocalClient::call(
             &client,
             Command::ResolveSeat(ResolveSeat {
-                target: HostTargetId::new("pane"),
+                target: HostTargetId::new("w1:p1"),
                 operation: OperationId::new("elected-shutdown-read"),
             }),
             &budget,
@@ -2654,7 +2654,7 @@ impl LaunchHost {
         let sequence = self.sequence.fetch_add(1, Ordering::SeqCst);
         HostObservation {
             focused: false,
-            target: HostTargetId::new("pane"),
+            target: HostTargetId::new("w1:p1"),
             host_boot: HostBootId::new("host"),
             epoch: 1,
             generation: 1,
@@ -2846,7 +2846,7 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
         };
         let out = execute(
             &LaunchRequest {
-                target: HostTargetId::new("pane"),
+                target: HostTargetId::new("w1:p1"),
                 harness: ContextHarness::Claude,
                 harness_binary: None,
                 argv: vec!["--model".into(), "haiku".into()],

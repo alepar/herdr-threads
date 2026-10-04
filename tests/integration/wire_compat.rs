@@ -8,8 +8,8 @@
 //! (`Command::Capabilities`, `Command::HookParseFailure`, or a `full_bodies`
 //! field under its deny_unknown_fields) and forwards the rest unchanged.
 //! "Old CLI" frames are frozen under `tests/fixtures/old_wire/`; they are
-//! protocol 1, two protocols behind this protocol-3 build (B5 moved to 2, thread
-//! summaries to 3), so they exercise the decodable skew reply.
+//! protocol 1, three protocols behind this protocol-4 build (B5 moved to 2, thread
+//! summaries to 3, human targets and durable handoff to 4), so they exercise the decodable skew reply.
 
 use super::sweep::{FakeHost, Scratch, pane};
 use herdr_threads::test_support::spawn::SpawnOwned;
@@ -428,12 +428,15 @@ fn skewed_protocol_version_still_yields_the_stop_then_ensure_report() {
     let proxy = Proxy::interpose(&paths, &world.plugin.root);
     let published: Value =
         serde_json::from_slice(&fs::read(&paths.descriptor_path).unwrap()).unwrap();
-    let software = published["software_version"].as_str().unwrap().to_owned();
+    let software = "0.2.1";
     let mut skewed = published.clone();
-    // The real release skew pair: a protocol-2 daemon (the last release, B5's
-    // ht-rzi.23) against this protocol-3 CLI (thread summaries, ht-1ip).
-    assert_eq!(PROTOCOL_VERSION, 3);
-    skewed["protocol_version"] = json!(PROTOCOL_VERSION - 1);
+    skewed["software_version"] = json!(software);
+    // Frozen v0.2.1 descriptor against this v0.2.2 CLI, rather than an
+    // arbitrary synthetic older version.
+    const OLD_PROTOCOL: u16 = 3;
+    assert_eq!(PROTOCOL_VERSION, 4);
+    assert_eq!(OLD_PROTOCOL, PROTOCOL_VERSION - 1);
+    skewed["protocol_version"] = json!(OLD_PROTOCOL);
     write_private(
         &paths.descriptor_path,
         &serde_json::to_vec(&skewed).unwrap(),
@@ -451,7 +454,7 @@ fn skewed_protocol_version_still_yields_the_stop_then_ensure_report() {
     let expected = remedy(
         Some(ErrorClass::VersionSkew),
         &RemedyContext::VersionSkew {
-            daemon: format!("{software} (protocol {})", PROTOCOL_VERSION - 1),
+            daemon: format!("{software} (protocol {OLD_PROTOCOL})"),
             cli: format!(
                 "{} (protocol {PROTOCOL_VERSION})",
                 env!("CARGO_PKG_VERSION")
@@ -489,8 +492,8 @@ fn skewed_protocol_version_still_yields_the_stop_then_ensure_report() {
     assert_eq!(ensured["data"]["protocol_version"], PROTOCOL_VERSION);
 }
 
-/// Kills: a protocol-1 CLI (the frozen pre-B5 frames, two protocols behind
-/// this protocol-3 daemon) that gets a closed socket or a reply
+/// Kills: a protocol-1 CLI (the frozen pre-B5 frames, three protocols behind
+/// this protocol-4 daemon) that gets a closed socket or a reply
 /// it cannot decode (a key outside its deny_unknown_fields types) instead of
 /// the decodable skew error naming the stop-then-ensure remedy; and a skewed
 /// request that reaches the service.

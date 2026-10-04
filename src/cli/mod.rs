@@ -770,23 +770,7 @@ where
     F: Fn() -> Result<(uuid::Uuid, C), RunError>,
     W: Write,
 {
-    let live_default = parsed
-        .caller_read_default
-        .then_some(parsed.pane_selector.as_ref())
-        .flatten()
-        .and_then(|selector| selector.pane.clone());
-    let selection = derive_caller(
-        &mut parsed,
-        live_default.as_deref().or(caller_pane),
-        context,
-        paths,
-        connection,
-        clock,
-    )?;
-    if parsed.caller_read_default {
-        parsed.pane_selector = None;
-    }
-
+    let selection = derive_caller(&mut parsed, caller_pane, context, paths, connection, clock)?;
     resolve_recipient_seats(&mut parsed, paths, connection, clock)?;
     if let Some(selection) = selection {
         let (instance, client) = connection.get()?;

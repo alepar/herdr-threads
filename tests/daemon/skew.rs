@@ -3,7 +3,7 @@
 //! real process holding the real owner lock, socket and descriptor) with a
 //! `daemon run --state-dir <state>` command line, which is what the skew-tolerant
 //! `daemon stop` identifies an owner by. "Old" is the real release skew pair:
-//! a protocol-2 daemon or CLI against this protocol-3 build; the protocol-1 CLI
+//! a protocol-3 daemon or CLI against this protocol-4 build; the protocol-1 CLI
 //! frame is still exercised by `old_cli_gets_a_decodable_skew_error` and by the
 //! frozen frames in `wire_compat`.
 //! Mounted from tests/integration.rs.
@@ -38,15 +38,15 @@ use std::{
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
 const FAKE_ENV: &str = "HT_FAKE_OTHER_VERSION_DAEMON";
-const FAKE_SOFTWARE: &str = "0.0.1";
-/// The protocol of the last release before this build's: B5 moved the wire to
-/// 2 (ht-rzi.23); thread summaries (ht-1ip) moved it to 3.
-const OLD_PROTOCOL: u16 = 2;
+const FAKE_SOFTWARE: &str = "0.2.1";
+/// Frozen v0.2.1 wire protocol: thread summaries moved it to 3.
+/// v0.2.2 moves to 4 for human targets and durable handoff.
+const OLD_PROTOCOL: u16 = 3;
 
 /// Kills: a protocol bump that leaves the skew tests on a synthetic pair.
 #[test]
 fn skew_tests_use_the_real_release_pair() {
-    assert_eq!(PROTOCOL_VERSION, 3);
+    assert_eq!(PROTOCOL_VERSION, 4);
     assert_eq!(OLD_PROTOCOL, PROTOCOL_VERSION - 1);
 }
 

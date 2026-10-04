@@ -646,3 +646,24 @@ fn topology_refuses_incoherent_parent_and_agent_rows() {
         );
     }
 }
+
+#[test]
+fn default_reads_use_daemon_caller_mapping_without_host_locator_reads() {
+    for argv in [
+        vec!["ht", "inbox"],
+        vec!["ht", "pending-receipts"],
+        vec!["ht", "diagnostics"],
+        vec!["ht", "warnings"],
+        vec!["ht", "thread", "list"],
+    ] {
+        let mut parsed = super::super::commands::parse_argv(argv).unwrap();
+        resolve_cli_targets(
+            &mut parsed,
+            || panic!("default caller reads do not need live topology"),
+            || panic!("default caller reads use HERDR_PANE_ID"),
+        )
+        .unwrap();
+        assert!(parsed.caller_read_default);
+        assert!(parsed.pane_selector.is_none());
+    }
+}

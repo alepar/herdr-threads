@@ -1484,8 +1484,10 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
             if seat.is_some() && selector.is_explicit() {
                 return Err(invalid("--seat conflicts with pane selectors"));
             }
-            (selector.is_explicit() || (caller_read_default && cooperative.is_none()))
-                .then(|| selector.clone())
+            // An omitted selector reads as the caller's seat through the daemon's
+            // canonical mapping, even when Herdr is unavailable (C4). Only an
+            // explicit human locator needs a live topology read.
+            selector.is_explicit().then(|| selector.clone())
         }
         Top::Send(args) => {
             if args.selector.pane.is_some() {

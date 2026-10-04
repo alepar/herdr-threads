@@ -193,7 +193,20 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
     plugin.ok(None, None, &["daemon", "ensure"]);
 
     // (b) --pane accepts a unique pane label and resolves it to the pane ID.
-    let agent = plugin.ok(None, None, &["seat", "resolve", "--pane", "try-target"])["data"]
+    let agent = plugin.ok(
+        None,
+        None,
+        &[
+            "seat",
+            "resolve",
+            "--space",
+            "w1",
+            "--tab",
+            "w1:t1",
+            "--pane",
+            "try-target",
+        ],
+    )["data"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -203,16 +216,30 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
         agent.as_str(),
         "name and ID name the same pane"
     );
-    let ambiguous = plugin.refused(None, &["seat", "resolve", "--pane", "dup"]);
+    let (code, _, ambiguous) = plugin.run(
+        None,
+        None,
+        &[
+            "seat", "resolve", "--space", "w1", "--tab", "w1:t1", "--pane", "dup",
+        ],
+    );
+    assert_eq!(code, 1, "an ambiguous locator is a conflict: {ambiguous}");
+    assert!(ambiguous.contains("(conflict)"), "{ambiguous}");
     assert!(ambiguous.contains("ambiguous"), "{ambiguous}");
     assert!(
         ambiguous.contains("w1:p3") && ambiguous.contains("w1:p4"),
         "{ambiguous}"
     );
     assert!(ambiguous.contains("herdr pane current"), "{ambiguous}");
-    let (code, _, missing) = plugin.run(None, None, &["seat", "resolve", "--pane", "nope"]);
+    let (code, _, missing) = plugin.run(
+        None,
+        None,
+        &[
+            "seat", "resolve", "--space", "w1", "--tab", "w1:t1", "--pane", "nope",
+        ],
+    );
     assert_eq!(code, 1, "an unknown pane is not found: {missing}");
-    assert!(missing.contains("`nope`"), "{missing}");
+    assert!(missing.contains("\"nope\""), "{missing}");
     assert!(missing.contains("herdr pane current"), "{missing}");
 
     // The stand-in agent registers as it would from its hook.

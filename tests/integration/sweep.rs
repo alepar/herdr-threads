@@ -57,7 +57,14 @@ pub(crate) fn host_reply(panes: &[Value], request: &Value) -> Value {
         }
         "session.snapshot" => json!({"id":id,"result":{"type":"session_snapshot",
                 "snapshot":{"version":"0.9.1","protocol":22,"panes":panes,
-                            "agents":[],"tabs":[],"workspaces":[],"layouts":[]}}}),
+                            "agents":[],"tabs":[{"tab_id":"w1:t1","workspace_id":"w1"}],"workspaces":[{"workspace_id":"w1"}],"layouts":[]}}}),
+        "pane.current" => match panes
+            .iter()
+            .find(|pane| pane["pane_id"] == request["params"]["caller_pane_id"])
+        {
+            Some(pane) => json!({"id":id,"result":{"type":"pane_current","pane":pane}}),
+            None => json!({"id":id,"error":{"code":"pane_not_found","message":"pane not found"}}),
+        },
         "pane.get" => match panes
             .iter()
             .find(|pane| pane["pane_id"] == request["params"]["pane_id"])
