@@ -32,7 +32,7 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn contracts(&self) -> &'static [ContractDescriptor];
     fn observe_install(&self, env: &InstallEnvironment, budget: &CallBudget)
         -> InstallObservation;
-    fn admit(&self, observation: &InstallObservation, budget: &CallBudget)
+    fn admit(&self, request: &AdmissionRequest, budget: &CallBudget)
         -> AdmissionDecision<Self::Admission>;
     fn version_ladder(&self, identity: &RuntimeIdentity) -> Ladder;
     fn classify(&self, input: &HookInput) -> ContractObservation;
@@ -58,6 +58,8 @@ pub trait HarnessAdapter: Send + Sync + 'static {
 `AdapterMetadata` declares a valid agent ID, display label, accepted legacy context spelling, executable lookup descriptor, Herdr host-kind aliases, supported setup scope and event-processing budget policy. Optional provider traits are shared capability types; authors implement only ones used. Their absence means a concrete unsupported diagnostic, never success.
 
 A generic registry registration constructor erases `Self::Admission` internally. An admitted handle binds the registration identity, recipe/capability result and opaque adapter state. The internal blanket wrapper invokes the same adapter with its own typed admission state; erasure/downcast, if used, occurs only in this generic wrapper, never in core consumers or brand switches. A handle for one registration cannot be used with another. Production handles cannot be manufactured from a version string. No cloning or serializing an installed witness into a client authority claim.
+
+`AdmissionRequest` carries the bounded installed observation and, for hook admission, the native/bridge input and optional runtime candidate. Claude/Codex preserve their installed-witness rules; an adapter such as Hermes can bind admission to the actual callback runtime instead of substituting an unrelated PATH installation. Candidate metadata is still a cooperative observation and grants no authority.
 
 `AdmissionDecision` represents listed/schema-matched/optimistic/refused with existing operator diagnostics and evidence meaning. `classify` is independent of admission, so refused or malformed native input can still report honestly classified violations. Classification cannot grant decoding capability. Native input capabilities and optional poke declarations remain recipe-bound; verified-by-use evidence never adds a capability.
 
