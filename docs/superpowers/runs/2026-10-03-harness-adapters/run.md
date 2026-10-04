@@ -7,6 +7,8 @@ resumeChange: 2026-10-03 · "Critical schema allocation update: user-added invit
 
 resumeChange: 2026-10-04 · Independent coordinator read-only source audit /private/tmp/herdr-hermes-readonly-boundary-review.md confirms no complete official nonmutating route on installed37daf85, including warm callbacks. Keep Unsupported; concrete Hermes acceptance UNMET. Practical dependency is genuine official structured readonly producer/effective-config and dispatcher timeout snapshot, or separately reviewed/measured equivalent boundary. Tempclone/changedHOME cannot qualify original; path-preserving COW is conditional/unavailable. Native negative timeout defaults30; zero disables; callbacks lack captured snapshot, so no raw-config/later-read inference. Existing safe Task11 reviewed/merged d3bd7eaf; preserve both review gates, exact source identity and evidence labels. No new run, native-source edits, external messages or experiments authorized.
 
+resumeChange: 2026-10-04 · Coordinator v0.2.3 targeted HOLD released; released main63d02b880f73ec3ba8a1cd89c1f5752bcfec10ee absorbed into isolated branch69b405d8 after fresh CLEAN staged-tree review and36 targeted/lint/default/scopedleak checks. Optional agent.name topology fix1676bf53 and parent-owned detached writer835f4706 preserved exactly; protocol4/schema21 unchanged, adapter22 retained. Coordinator integrated2927/2927 in247s and installer201/realupgrade/leaks are coordinator evidence, not this run full suite. No main writes; final integrated sweep/publication/cleanup remain coordinator-owned.
+
 phase: code
 codeMechanism: ordinary-subagents
 
