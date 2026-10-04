@@ -39,3 +39,12 @@ The native scenario used one shell call for each workflow. Claude-style chained 
 Verification before the frozen commit: `cargo fmt --check`, `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `nice scripts/check-default-features`, and focused inbox, warning, wake, migration, closure, attribution, and CLI flush/uncertain-ACK tests passed. A broad warning filter passed 82 tests in the sandbox; its one native scheduler test hit an OS permission denial there and passed when rerun alone with native process permission. A 256-condition focused case measured at most five foreground changed rows and one clear per worker admission. Independent read-only review approved the final code after the offer-frontier and bounded-closure fixes. The coordinator owns the single integrated full-suite sweep.
 
 The private sessions used deterministic stand-ins, so they measure CLI, daemon and host overhead rather than model inference. Wake prompts are generic attention markers and cannot each be attributed to one warning. The printed binary location and inherited PATH in shared captures are descriptive placeholders; their hashes, timestamps, decisions and measured output remain recorded.
+
+### 2026-10-03 — default batching disabled
+
+The user requested zero initial delivery delay by default. `wake_batch_delay_ms`
+now defaults to 0 in instance, service and store settings; explicit positive
+overrides remain supported. Retry spacing and batching semantics are unchanged.
+Per-message lazy/immediate delivery or a maximum allowed delay remains a future
+design direction, not an implemented option. The original 30-second default and
+its measurements above describe the initial implementation.

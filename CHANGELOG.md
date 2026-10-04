@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Immediate ordinary delivery by default.** The initial wake batching delay now defaults to zero. Explicit `wake_batch_delay_ms` values remain configurable per instance; wake retry spacing remains separate.
+
 ## v0.2.1
 
 - **Codex command approvals.** Managed launch accepts newer admitted Codex builds without a measured socket-policy version or sandbox network allowance. Hook and skill guidance uses CLI-only approved outside-sandbox execution, preserving native approval restrictions. Noninteractive exec uses a preapproved CLI rule with ordinary shell calls. Doctor and transport-denied remedies describe this path.

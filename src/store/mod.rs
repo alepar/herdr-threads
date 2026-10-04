@@ -84,7 +84,7 @@ impl Default for StoreSettings {
             message_limits: messages::MessageLimits::default(),
             daemon_boot: None,
             minimum_wake_delay_ms: 30_000,
-            wake_batch_delay_ms: 30_000,
+            wake_batch_delay_ms: 0,
             summary: crate::protocol::summary::SummarySettings::default(),
         }
     }

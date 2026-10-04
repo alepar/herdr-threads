@@ -411,6 +411,8 @@ pub struct HealthSettings {
     pub wake_batch_delay_ms: u64,
 }
 
+// Keep the established fallback for responses that omit this field.
+// Current daemons always send the resolved value, including zero.
 fn default_wake_batch_delay_ms() -> u64 {
     30_000
 }

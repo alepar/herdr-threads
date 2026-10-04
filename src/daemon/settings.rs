@@ -14,7 +14,7 @@
 //!   (default 300000): default invitation and receipt deadlines.
 //! - `"minimum_wake_delay_ms"` (default 30000, at least 30000): minimum
 //!   spacing between wake attempts.
-//! - `"wake_batch_delay_ms"` (default 30000, zero disables): initial
+//! - `"wake_batch_delay_ms"` (default 0, zero disables): initial
 //!   ordinary attention batching, separate from retry spacing.
 //! - `"summary"`: thread summary, catch-up and soft-deadline poke settings
 //!   (`crate::protocol::summary::SummarySettings`; every key optional,
@@ -36,7 +36,7 @@ pub enum HarnessManifestSetting {
 pub const DEFAULT_INVITATION_MS: u64 = 300_000;
 pub const DEFAULT_RECEIPT_MS: u64 = 300_000;
 pub const DEFAULT_MINIMUM_WAKE_DELAY_MS: u64 = 30_000;
-pub const DEFAULT_WAKE_BATCH_DELAY_MS: u64 = 30_000;
+pub const DEFAULT_WAKE_BATCH_DELAY_MS: u64 = 0;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -157,7 +157,10 @@ mod tests {
     #[test]
     fn wake_batch_delay_is_separate_and_zero_disables() {
         let defaults = load(dir_with(Some("{}")).path()).unwrap();
-        assert_eq!(defaults.wake_batch_delay_ms, 30_000);
+        assert_eq!(defaults.wake_batch_delay_ms, 0);
+        assert_eq!(load(dir_with(None).path()).unwrap().wake_batch_delay_ms, 0);
+        let batched = load(dir_with(Some(r#"{"wake_batch_delay_ms":15000}"#)).path()).unwrap();
+        assert_eq!(batched.wake_batch_delay_ms, 15_000);
         let settings = load(dir_with(Some(r#"{"wake_batch_delay_ms":0}"#)).path()).unwrap();
         assert_eq!(settings.wake_batch_delay_ms, 0);
         assert_eq!(settings.minimum_wake_delay_ms, 30_000);
