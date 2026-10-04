@@ -14,7 +14,8 @@ The canary writes schema-2 rows to the `harness-manifest` branch. Only payload-c
 `known_broken`; every other failing outcome (tier 0, fingerprint drift, infra, inconclusive, flaky) stays
 issue-only. A probe whose last attempt also failed a tier-0 check other than `t0.payload-parse` ran in a broken
 setup: its payload violation is issue-only too. Rows with `source: "manual"` are never modified by the canary.
-Release violations use that same source probe's final attempt, joined by normalized harness/version. Without
+Legacy release violations use that same source probe's final attempt, joined by normalized harness/version.
+Indexed release replay additionally requires the exact source identity/attempt/stage before any output. Without
 one unambiguous source and its attempt, a release violation contributes no broken observation: the writer
 cannot establish setup eligibility. This may withhold a real violation until reliable source results exist;
 existing rows and release verified observations keep their usual behavior.
@@ -30,7 +31,7 @@ _here = __import__("os").path.dirname(__import__("os").path.abspath(__file__))
 _saved_path = list(sys.path)
 sys.path[:] = [p for p in sys.path if p not in ("", _here)]
 
-import argparse, datetime, importlib.util, json, os, re, subprocess
+import argparse, copy, datetime, importlib.util, json, os, pathlib, re, subprocess
 
 sys.path[:] = _saved_path
 
@@ -180,6 +181,10 @@ def validate_doc(doc):
         if isinstance(h, str) and isinstance(v, str) and key in seen:
             errs.append(f"{where}: duplicate key {key} (first at rows[{seen[key]}])")
         seen.setdefault(key, i)
+    try:
+        validate_runtime(doc)
+    except (ValueError, KeyError, TypeError) as e:
+        errs.append(f"runtime collections: {e}")
     size = len(render(doc).encode("utf-8"))
     if size > CAP_BYTES:
         errs.append(f"manifest too large: {size} bytes > {CAP_BYTES}")
@@ -199,6 +204,343 @@ def write_atomic(path, text):
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
     os.replace(tmp, path)
+
+
+# Runtime history uses the discovery projection, not a fabricated contract hash.
+RUNTIME_KEYS = set("harness identity domain origin contract_id status evidence_stage source required_milestones successful_milestones broken_event broken_field supported_since issue_url last_seen_at".split())
+
+
+def runtime_key(row):
+    return (row["harness"], row["identity"]["key"], row["domain"], row["origin"], row["contract_id"])
+
+
+def validate_runtime(doc):
+    runner = _load_sibling("run")
+    contracts = doc.get("runtime_contracts", {})
+    rows = doc.get("runtime_rows", [])
+    if not isinstance(contracts, dict) or len(contracts) > 64 or not isinstance(rows, list):
+        raise ValueError("invalid collections")
+    descriptors = {}
+    for h, domains in contracts.items():
+        if not isinstance(domains, list):
+            raise ValueError("invalid descriptors")
+        for c in domains:
+            runner.validate_discovery({"schema_version": 1, "adapters": [{"id": h, "display_name": h,
+                "host_kinds": [], "setup_scopes": [], "legacy_contract_id": None,
+                "canary_strategy": None, "contracts": [c]}]})
+            key = (h, c["domain"], c["origin"], c["id"])
+            if key in descriptors or not c["required_milestones"]:
+                raise ValueError("duplicate or empty descriptor")
+            descriptors[key] = c
+    schema = json.loads((pathlib.Path(_here) / "companion_schema.json").read_text())
+    seen = set()
+    for r in rows:
+        if not isinstance(r, dict) or set(r) != RUNTIME_KEYS:
+            raise ValueError("invalid row fields")
+        runner._schema(r["identity"], schema["properties"]["identity"])
+        if r["identity"] is None:
+            raise ValueError("missing identity")
+        runner.validate_identity(r["identity"])
+        c = descriptors.get((r["harness"], r["domain"], r["origin"], r["contract_id"]))
+        if c is None or sorted(r["required_milestones"]) != sorted(c["required_milestones"]):
+            raise ValueError("row has no exact descriptor")
+        for field in ("required_milestones", "successful_milestones"):
+            runner._unique(r[field], 8)
+        milestones = {e["milestone"] for e in c["events"] if e["milestone"] is not None}
+        if set(r["successful_milestones"]) - milestones:
+            raise ValueError("undeclared milestone")
+        if r["source"] not in SOURCES or r["status"] not in STATUSES or r["evidence_stage"] not in ("source_captured", "no_model", "live"):
+            raise ValueError("invalid status/source/stage")
+        if type(r["last_seen_at"]) is not int or not 0 <= r["last_seen_at"] <= 2**63 - 1:
+            raise ValueError("last_seen_at must be nonnegative u64 milliseconds in the store range")
+        for field, limit in (("supported_since", 128), ("issue_url", 512)):
+            if r[field] is not None:
+                runner._text(r[field], r"[^\x00-\x1f\x7f]+", limit)
+        if r["status"] == "verified":
+            if (r["evidence_stage"] == "source_captured" or r["broken_event"] is not None
+                    or r["broken_field"] is not None or not set(c["required_milestones"]) <= set(r["successful_milestones"])):
+                raise ValueError("unqualified verified row")
+        else:
+            if r["broken_event"] not in {e["event"] for e in c["events"]}:
+                raise ValueError("undeclared violation event")
+            runner._text(r["broken_field"], r"[A-Za-z_][A-Za-z0-9_.]*", 64)
+        key = runtime_key(r)
+        if key in seen:
+            raise ValueError("duplicate runtime row")
+        seen.add(key)
+
+
+def discovery(binary):
+    runner = _load_sibling("run")
+    rc, stdout, _ = runner.bounded_capture([str(binary), "adapters", "--json"], timeout=60)
+    if rc != 0:
+        return None  # Explicit legacy fallback; never invent rich descriptors.
+    runner = _load_sibling("run")
+    doc = runner._json(stdout, 65536)
+    runner.validate_discovery(doc)
+    return doc
+
+
+def indexed_results(index_path, registry):
+    runner = _load_sibling("run")
+    root = pathlib.Path(index_path).parent
+    raw = runner._read_bounded(pathlib.Path(index_path), 262144)
+    index = runner.validate_index(raw, root, registry["adapters"])
+    adapters = {a["id"]: a for a in registry["adapters"]}
+    return [(entry, runner.validate_result(runner._read_bounded(root / entry["result_path"], 65536),
+                 adapters[entry["harness"]], entry["attempt"], entry["evidence_stage"])) for entry in index["attempts"]]
+
+
+def qualified_results(results, root, report=None):
+    """Retain artifacts, but suppress observations from flaky/failed legacy setup."""
+    runner = _load_sibling("run")
+    out = []
+    for entry, result in results:
+        excluded = False
+        work = pathlib.Path(root) / "work" / (entry["harness"] + "-" + entry["attempt"])
+        legacy = work / "legacy-probe.json"
+        if legacy.exists():
+            checked = runner._relative(pathlib.Path(root), str(legacy.relative_to(root)))
+            probe = runner._json(runner._read_bounded(checked, 65536), 65536)
+            excluded = probe.get("result") == "infra" or _unrelated_tier0_failure(probe.get("checks"))
+        identity = result["identity"]
+        if report is not None and identity is not None and identity["key"].startswith("release:"):
+            probes = [(b, p) for b in report.get("harnesses", []) if b.get("harness") == entry["harness"]
+                      for p in b.get("probes", []) if p.get("version") == identity["release_version"]]
+            if len(probes) > 1:
+                excluded = True
+            for block, probe in probes:
+                attempts = probe.get("attempts") or []
+                excluded |= (probe.get("flaky", False) or probe.get("result") == "infra"
+                             or block.get("status") in ("infra_error", "inconclusive")
+                             or (bool(attempts) and _unrelated_tier0_failure(attempts[-1].get("checks"))))
+        out.append((entry, dict(result, outcome="inconclusive") if excluded else result))
+    return out
+
+
+def add_runtime(doc, baseline, registry, results, now, release=None):
+    contracts = copy.deepcopy(baseline.get("runtime_contracts", {}))
+    rows = {runtime_key(r): copy.deepcopy(r) for r in baseline.get("runtime_rows", [])}
+    has_complete = any(r["outcome"] == "complete" for _, r in results)
+    if registry is not None and has_complete:
+        for a in registry["adapters"]:
+            for c in a["contracts"]:
+                if not c["required_milestones"]:
+                    continue
+                existing = contracts.setdefault(a["id"], [])
+                key = (c["domain"], c["origin"], c["id"])
+                old = next((d for d in existing if (d["domain"], d["origin"], d["id"]) == key), None)
+                if old is not None and old != c:
+                    raise ValueError("conflicting exact descriptor")
+                if old is None:
+                    existing.append(copy.deepcopy(c))
+    instant = datetime.datetime.fromisoformat(now.replace("Z", "+00:00"))
+    if instant.tzinfo is None:
+        raise ValueError("generated_at requires an RFC3339 UTC offset")
+    timestamp = int(instant.timestamp() * 1000)
+    adapters = {a["id"]: a for a in (registry or {}).get("adapters", [])}
+    # Only the final indexed attempt of each exact identity contributes observations.
+    final = {}
+    for entry, result in results:
+        if result["identity"] is not None:
+            final[(entry["harness"], entry["identity_key"])] = (entry, result)
+    for entry, result in final.values():
+        if result["outcome"] != "complete" or result["identity"] is None:
+            continue
+        descriptors = {c["domain"]: c for c in adapters[entry["harness"]]["contracts"]}
+        for d in result["domains"]:
+            c = descriptors[d["domain"]]
+            broken = d["outcome"] == "contract_violation" and d["violations"]
+            verified = (d["outcome"] == "compatible" and result["evidence_stage"] != "source_captured"
+                        and bool(c["required_milestones"]) and set(c["required_milestones"]) <= set(d["successful_milestones"]))
+            if not broken and not verified or not c["required_milestones"]:
+                continue
+            r = dict(harness=entry["harness"], identity=result["identity"], domain=d["domain"], origin=d["origin"],
+                     contract_id=d["contract_id"], status="known_broken" if broken else "verified",
+                     evidence_stage=result["evidence_stage"], source="canary", required_milestones=c["required_milestones"],
+                     successful_milestones=d["successful_milestones"], broken_event=d["violations"][0]["event"] if broken else None,
+                     broken_field=d["violations"][0]["field"] if broken else None, supported_since=None, issue_url=None, last_seen_at=timestamp)
+            key = runtime_key(r)
+            old = rows.get(key)
+            if old is not None and old["source"] == "manual":
+                continue
+            if old:
+                r.update(supported_since=old["supported_since"], issue_url=old["issue_url"])
+            if release and release.get("tag") and verified and not r["supported_since"]:
+                r["supported_since"] = release["tag"].removeprefix("v")
+            rows[key] = r
+    # Missing/infrastructure runs retain every baseline collection, without pruning.
+    if has_complete:
+        newest = {}
+        for r in rows.values():
+            newest.setdefault(r["harness"], {})[r["identity"]["key"]] = max(r["last_seen_at"], newest.get(r["harness"], {}).get(r["identity"]["key"], 0))
+        keep = {h: {key for key, _ in sorted(vs.items(), key=lambda v: (-v[1], v[0]))[:50]} for h, vs in newest.items()}
+        rows = {k: r for k, r in rows.items() if r["identity"]["key"] in keep[r["harness"]]
+                or r["source"] == "manual" or r["status"] == "known_broken"
+                or any(legacy.get("harness") == r["harness"] and legacy.get("recipe") is not None
+                       and r["identity"]["key"] == "release:" + legacy["version"]
+                       for legacy in baseline.get("rows", []))}
+    if "runtime_rows" in baseline or registry is not None:
+        doc["runtime_contracts"] = contracts
+        doc["runtime_rows"] = sorted(rows.values(), key=runtime_key) if has_complete else copy.deepcopy(baseline.get("runtime_rows", []))
+    return doc
+
+
+def replay_results(release, source_results):
+    """Release classifications may establish schema compatibility at the source stage."""
+    registry = release.get("discovery")
+    runner = _load_sibling("run")
+    if registry is not None:
+        runner.validate_discovery(registry)
+    adapters = {a["id"]: a for a in (registry or {}).get("adapters", [])}
+    sources = {(e["harness"], e["attempt"]): (e, r) for e, r in source_results}
+    final = {}
+    for e, r in source_results:
+        final[(e["harness"], e["identity_key"])] = e["attempt"]
+    results = []
+    seen = set()
+    for p in release.get("probes", []):
+        pair = p.get("harness"), p.get("attempt")
+        if pair not in sources or pair in seen:
+            raise ValueError("missing/ambiguous indexed release source")
+        seen.add(pair)
+        entry, source = sources[pair]
+        if (source["identity"] != p.get("identity") or source["evidence_stage"] != p.get("evidence_stage")
+                or final[(entry["harness"], entry["identity_key"])] != entry["attempt"]):
+            raise ValueError("release source identity/attempt/stage mismatch")
+        if source["outcome"] != "complete" or source["identity"] is None or pair[0] not in adapters:
+            continue
+        domains = []
+        for c in adapters[pair[0]]["contracts"]:
+            if c["origin"] != "native_payload" or not any(
+                    (d["domain"], d["origin"]) == (c["domain"], c["origin"]) for d in source["domains"]):
+                continue
+            payloads = p.get("payloads", [])
+            classified = [x for x in payloads if x.get("event") in {e["event"] for e in c["events"]}]
+            violations = [{"event": x["event"], "field": x.get("field")} for x in classified if x.get("kind") == "violation"]
+            passed = {x["event"] for x in classified if x.get("kind") == "ok"}
+            milestones = [e["milestone"] for e in c["events"] if e["event"] in passed and e["milestone"] is not None]
+            compatible = payloads and all(x.get("kind") == "ok" for x in payloads)
+            domains.append(dict(domain=c["domain"], origin=c["origin"], contract_id=c["id"],
+                                successful_milestones=sorted(set(milestones)), violations=violations,
+                                outcome="contract_violation" if violations else "compatible" if compatible else "inconclusive"))
+        # A release without a replay evaluator for every domain is inconclusive;
+        # it never credits native shape or bridge domains from legacy payloads.
+        result = dict(schema_version=1, harness=pair[0], attempt=pair[1], identity=source["identity"],
+                      evidence_stage=source["evidence_stage"], outcome="complete" if len(domains) == len(adapters[pair[0]]["contracts"])
+                      and all(d["outcome"] != "inconclusive" for d in domains) else "inconclusive", reason=None, domains=domains)
+        result = runner.validate_result(json.dumps(result).encode(), adapters[pair[0]], pair[1], p["evidence_stage"])
+        results.append((entry, result))
+    return registry, results
+
+
+def prepare_replay(root, release_registry, ids):
+    """Resolve kept captures solely through validated request/result/index metadata."""
+    runner = _load_sibling("run")
+    root = pathlib.Path(root)
+    index_path = root / "artifact-index.json"
+    index = runner._json(runner._read_bounded(index_path, 262144), 262144)
+    runner._schema(index, json.loads((pathlib.Path(_here) / "artifact_index_schema.json").read_text()))
+    source_adapters = {}
+    for entry in index["attempts"]:
+        work = root / "work" / (entry["harness"] + "-" + entry["attempt"])
+        request_path = runner._relative(work, "request.json")
+        request = runner._json(runner._read_bounded(request_path, 65536), 65536)
+        a = request["adapter"]
+        runner.validate_discovery({"schema_version": 1, "adapters": [a]})
+        if a["id"] != entry["harness"] or (a["id"] in source_adapters and source_adapters[a["id"]] != a):
+            raise ValueError("ambiguous source adapter")
+        source_adapters[a["id"]] = a
+    registry = {"schema_version": 1, "adapters": list(source_adapters.values())}
+    results = qualified_results(indexed_results(index_path, registry), root)
+    release_adapters = {a["id"]: a for a in (release_registry or {}).get("adapters", [])}
+    plan = {"contract_id": ids, "discovery": release_registry, "probes": [], "unsupported": []}
+    final = {}
+    for entry, result in results:
+        if result["identity"] is not None:
+            final[(entry["harness"], entry["identity_key"])] = (entry, result)
+    for entry, result in final.values():
+        h = entry["harness"]
+        identity = result["identity"]
+        declared = release_adapters.get(h, {}).get("contracts", [])
+        representable = (h in HARNESSES and identity["key"].startswith("release:") and ids.get(h))
+        payload_domains = [d for d in result["domains"] if d["origin"] == "native_payload"]
+        for d in result["domains"]:
+            if not representable or d not in payload_domains or (release_registry is not None and not any(
+                    (c["domain"], c["origin"]) == (d["domain"], d["origin"]) for c in declared)):
+                plan["unsupported"].append(dict(harness=h, identity_key=identity["key"], domain=d["domain"],
+                                             origin=d["origin"], attempt=entry["attempt"]))
+        if not representable or not payload_domains:
+            continue
+        paths = []
+        source_work = root / "work" / (h + "-" + entry["attempt"])
+        probe_path = None
+        for metadata_path in entry["capture_paths"]:
+            metadata = runner._json(runner._read_bounded(root / metadata_path, 65536), 65536)
+            if not any((d["domain"], d["origin"]) == (metadata["domain"], metadata["origin"]) for d in payload_domains):
+                continue
+            target = runner._relative(source_work, metadata["path"])
+            tier = "tier1" if target.suffix == ".json" else "tier0"
+            if tier == "tier1" and entry["evidence_stage"] != "live":
+                continue
+            if target.suffix not in (".json", ".stdin", ".argv"):
+                continue
+            destination = "capture/" + tier + "/" + target.name
+            if any(p[1] == destination for p in paths):
+                raise ValueError("ambiguous capture destination")
+            paths.append((target, destination))
+            for parent in target.parents:
+                if not parent.is_relative_to(source_work):
+                    break
+                candidate = parent / "canary-probe.json"
+                if candidate.is_file():
+                    if probe_path is not None and candidate != probe_path:
+                        raise ValueError("ambiguous legacy source probe")
+                    probe_path = candidate
+                    break
+        if not paths:
+            continue
+        replay_work = runner._relative(root, "release-work/" + h + "-" + entry["attempt"])
+        replay_work.mkdir(parents=True, exist_ok=True)
+        for target, destination in paths:
+            output = replay_work / destination
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(runner._read_bounded(target, 65536))
+        if probe_path is not None:
+            probe_path = runner._relative(source_work, str(probe_path.relative_to(source_work)))
+            probe = runner._json(runner._read_bounded(probe_path, 65536), 65536)
+            if (probe.get("harness"), probe.get("version")) != (h, identity["release_version"]):
+                raise ValueError("legacy source identity mismatch")
+            (replay_work / "canary-probe.json").write_text(json.dumps(probe))
+            for help_name in ("codex.txt", "codex-exec.txt"):
+                help_path = probe_path.parent / "help" / help_name
+                if help_path.is_file():
+                    checked = runner._relative(source_work, str(help_path.relative_to(source_work)))
+                    (replay_work / "help").mkdir(exist_ok=True)
+                    (replay_work / "help" / help_name).write_bytes(runner._read_bounded(checked, 65536))
+        plan["probes"].append(dict(harness=h, version=identity["release_version"], identity=identity,
+                                   attempt=entry["attempt"], evidence_stage=entry["evidence_stage"],
+                                   work_path=str(replay_work.relative_to(root)), source_outcome=result["outcome"]))
+    return plan
+
+
+def collect_replay(root, plan, tag):
+    runner = _load_sibling("run")
+    probes = []
+    for original in plan["probes"]:
+        work = pathlib.Path(root) / original["work_path"]
+        rust_path = work / "canary-rust.json"
+        if not rust_path.is_file():
+            continue
+        rust = runner._json(runner._read_bounded(rust_path, 262144), 262144)
+        payloads = []
+        for p in rust.get("payloads", []):
+            c = p.get("contract") if isinstance(p, dict) else None
+            payloads.append(c if isinstance(c, dict) and c.get("kind") in ("ok", "violation", "malformed")
+                            else {"event": None, "kind": "unclassified", "field": None})
+        probes.append(dict(original, payloads=payloads))
+    return dict(tag=tag, supported=True, contract_id=plan["contract_id"], discovery=plan["discovery"],
+                unsupported_domains=plan["unsupported"], probes=probes)
 
 
 # ---------------------------------------------------------------- write
@@ -265,6 +607,11 @@ def release_observations(release, report, normalize):
         if v is None:
             continue
         oc = _outcome(probe.get("payloads") or [], True)
+        if "evidence_stage" in probe:
+            if probe.get("source_outcome") != "complete" or probe["evidence_stage"] == "source_captured":
+                continue
+            if oc and oc[0] == "verified":
+                oc = ("verified", probe["evidence_stage"])
         if oc and oc[0] == "broken":
             source = sources.get((h, v), [])
             if len(source) != 1 or not source[0].get("attempts"):
@@ -388,6 +735,23 @@ def cmd_write(a):
         with open(a.issue_urls, encoding="utf-8") as f:
             urls = json.load(f)
     doc = build(baseline, report, a.binary, release, a.latest_release, urls, a.generated_at)
+    index_path = a.artifact_index or os.path.join(os.path.dirname(a.report), "artifact-index.json")
+    registry = discovery(a.binary) if os.path.exists(index_path) else None
+    results = qualified_results(indexed_results(index_path, registry), pathlib.Path(index_path).parent, report) if registry is not None else []
+    if os.path.exists(index_path) and registry is None:
+        raise ValueError("indexed runtime results require binary discovery")
+    doc = add_runtime(doc, baseline, registry, results, doc["generated_at"])
+    if release is not None and (release.get("discovery") is not None or any(
+            "attempt" in p for p in release.get("probes", []))):
+        release_registry, replays = replay_results(release, results)
+        if release_registry is not None:
+            doc = add_runtime(doc, doc, release_registry, replays, doc["generated_at"], release)
+    if (not any(b.get("status") not in ("infra_error", "inconclusive")
+                and any(p.get("attempts") and p.get("result") != "infra" and not p.get("flaky")
+                        and not _unrelated_tier0_failure(p["attempts"][-1].get("checks"))
+                        for p in b.get("probes", [])) for b in report.get("harnesses", [])) and (release is None or release.get("error"))):
+        doc["rows"] = copy.deepcopy(baseline["rows"])
+        doc["contracts"] = copy.deepcopy(baseline.get("contracts", {}))
     text = render(doc)
     size = len(text.encode("utf-8"))
     if size > CAP_BYTES:
@@ -440,6 +804,9 @@ def cmd_set(a):
     rows[row_key(row)] = normalize_row(row)
     out = build_doc(doc.get("generated_from"), doc.get("generated_at"), doc.get("latest_release"),
                     doc.get("contracts") or {}, list(rows.values()))
+    for collection in ("runtime_contracts", "runtime_rows"):
+        if collection in doc:
+            out[collection] = copy.deepcopy(doc[collection])
     errs = validate_doc(out)
     if errs:
         print("\n".join(errs))
@@ -537,6 +904,7 @@ def main(argv=None):
     w.add_argument("--report", required=True)
     w.add_argument("--binary", required=True)
     w.add_argument("--release-results")
+    w.add_argument("--artifact-index")
     w.add_argument("--latest-release")
     w.add_argument("--issue-urls")
     w.add_argument("--generated-at")
