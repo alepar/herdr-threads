@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # harness-canary.sh — native harness version canary (nested spec §D1–§D5, §D8).
 #
-#   harness-canary.sh [--harness claude|codex|both] [--versions latest|since-verified|V1,V2,...]
+#   harness-canary.sh [--harness all|both|ID] [--versions latest|since-verified|V1,V2,...]
 #                     [--bisect] [--model-tier auto|off|required] [--out DIR] [--baseline V]
-#                     [--herdr-threads PATH] [--versions-json PATH] [--baseline-json PATH] [--keep]
+#                     [--runtime-command-file PATH] [--herdr-threads PATH] [--versions-json PATH] [--baseline-json PATH] [--keep]
 #   harness-canary.sh --probe HARNESS VERSION [same options]   one probe; prints a probeResult JSON
 #   harness-canary.sh --self-test                              offline self-test (no network, npm, cargo)
 #   harness-canary.sh --write-probe-files P HARNESS VERSION BINARY
@@ -43,10 +43,8 @@ ROOT=$(cd "$SCRIPT_DIR/.." && pwd -P)
 CANARY=$ROOT/scripts/canary
 REAL_HOME=${HOME:-}
 # Tier-1 keys come only from the canary's own environment (§D6), never from aisw profiles or harness homes.
-KEY_ANTHROPIC=${ANTHROPIC_API_KEY:-}
-KEY_OPENAI=${OPENAI_API_KEY:-}
 
-HARNESS=both
+HARNESS=all
 VERSIONS=since-verified
 BISECT=0
 MODEL_TIER=auto
@@ -62,6 +60,8 @@ PROBE_HARNESS=
 PROBE_VERSION=
 WPF_ARGS=()
 CHECK_ARGS=()
+RUNTIME_COMMAND=
+EVIDENCE_STAGE=
 
 die() { echo "harness-canary.sh: $*" >&2; exit 2; }
 usage() { sed -n '2,13p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//' >&2; }
@@ -89,6 +89,8 @@ while [ $# -gt 0 ]; do
     --herdr-threads) [ $# -ge 2 ] || die "--herdr-threads needs a value"; HT_BIN=$2; shift 2 ;;
     --versions-json) [ $# -ge 2 ] || die "--versions-json needs a value"; VERSIONS_JSON=$2; shift 2 ;;
     --baseline-json) [ $# -ge 2 ] || die "--baseline-json needs a value"; BASELINE_JSON=$2; shift 2 ;;
+    --evidence-stage) [ $# -ge 2 ] || die "--evidence-stage needs a value"; EVIDENCE_STAGE=$2; shift 2 ;;
+    --runtime-command-file) [ $# -ge 2 ] || die "--runtime-command-file needs a path"; RUNTIME_COMMAND=$2; shift 2 ;;
     --keep) KEEP=1; shift ;;
     --self-test) MODE=self-test; shift ;;
     --probe)
@@ -105,7 +107,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-case $HARNESS in claude|codex|both) ;; *) die "--harness must be claude, codex or both" ;; esac
+[[ $HARNESS =~ ^[a-z][a-z0-9_-]{0,63}$ ]] || die "invalid harness selector"
 case $MODEL_TIER in auto|off|required) ;; *) die "--model-tier must be auto, off or required" ;; esac
 if [ -n "$BASELINE" ]; then
   [[ $BASELINE =~ ^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$ ]] || die "--baseline must be X.Y.Z"
@@ -285,12 +287,18 @@ fi
 
 # ---------------------------------------------------------------- tier-1 key gate (§D6)
 
-tier1_keyvar() { case $1 in claude) echo ANTHROPIC_API_KEY ;; codex) echo OPENAI_API_KEY ;; esac; }
-tier1_key() { case $1 in claude) printf '%s' "$KEY_ANTHROPIC" ;; codex) printf '%s' "$KEY_OPENAI" ;; esac; }
+load_probe_companion() {
+  local companion=${HT_CANARY_COMPANION:-$CANARY/adapters/${PROBE_HARNESS:-${H:-}}.py}
+  [ -f "$companion" ] || die "missing probe companion"
+  . <(python3 "$companion" --shell-functions)
+}
+
+# Compatibility --probe owns its backend/key policy; generic runs read discovery.
+if [ "$MODE" = probe ]; then load_probe_companion; fi
 # tier1_enabled HARNESS: tier 1 runs for it (not off, key present).
 tier1_enabled() { [ "$MODEL_TIER" != off ] && [ -n "$(tier1_key "$1")" ]; }
 
-if [ "$MODEL_TIER" = required ]; then
+if [ "$MODEL_TIER" = required ] && [ "$MODE" = probe ]; then
   case $MODE in probe) gate_harnesses=$PROBE_HARNESS ;; *) gate_harnesses=${HARNESS/both/claude codex} ;; esac
   for gh in $gate_harnesses; do
     [ -n "$(tier1_keyvar "$gh")" ] || continue
@@ -324,6 +332,22 @@ refuse_out() {
 }
 refuse_out "$OUT"
 mkdir -p "$OUT/work"
+
+if [ "$MODE" = run ] && [ -z "${HT_CANARY_SOURCE_ONLY:-}" ]; then
+  if [ -z "$HT_BIN" ]; then
+    (cd "$ROOT" && nice cargo build --locked >&2) || die "cannot build discovery binary"
+    HT_BIN=${CARGO_TARGET_DIR:-$ROOT/target}/debug/herdr-threads
+  fi
+  strategy_args=(strategy --binary "$HT_BIN" --out "$OUT" --harness "$HARNESS"
+    --versions "$VERSIONS" --model-tier "$MODEL_TIER" --baseline-json "$BJSON")
+  [ "$BISECT" -eq 0 ] || strategy_args+=(--bisect)
+  [ "$KEEP" -eq 0 ] || strategy_args+=(--keep)
+  [ -z "$BASELINE" ] || strategy_args+=(--baseline "$BASELINE")
+  [ -z "$VERSIONS_JSON" ] || strategy_args+=(--versions-json "$VERSIONS_JSON")
+  [ -z "$RUNTIME_COMMAND" ] || strategy_args+=(--runtime-command-file "$(abs_path "$RUNTIME_COMMAND")")
+  [ -z "$EVIDENCE_STAGE" ] || strategy_args+=(--evidence-stage "$EVIDENCE_STAGE")
+  exec python3 "$CANARY/run.py" "${strategy_args[@]}"
+fi
 
 NODE_BIN=$(command -v node || true)
 NPM_BIN=$(command -v npm || true)
@@ -812,6 +836,7 @@ chk_t0_isolation() {
 # run_tier1: the tier-1 call site (§D6). The planted failure and the key gate come first, so a planted or
 # skipped probe returns before tier1.sh is even sourced.
 run_tier1() {
+  load_probe_companion
   local id
   if [ -n "${HT_CANARY_PLANT_TIER1_FAIL:-}" ]; then
     local spec=${HT_CANARY_PLANT_TIER1_FAIL%%:*} count='' done_n=0
@@ -865,155 +890,21 @@ probe_finish() { # forced-result -> prints the probeResult, returns its exit cod
   printf '%s\n' "$doc"
 }
 
-probe_one() {
-  H=$1; V=$2
-  case $H in claude|codex) ;; *) die "unknown harness $H" ;; esac
-  [[ $V =~ ^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$ ]] || die "version must be X.Y.Z: $V"
-  local n=1
-  while [ -e "$ATTEMPT_FILE_DIR/$H-$V-$n" ]; do n=$((n + 1)); done
-  P=$ATTEMPT_FILE_DIR/$H-$V-$n
-  LOGS=$P/logs
-  mkdir -p "$P/proj" "$P/state" "$P/ht" "$P/capture/tier0" "$P/capture/tier1" "$P/help" "$LOGS"
-  : > "$P/checks.tsv"
-  INFRA=0
-  HOOK_FIRES_RAN=0; SCHEMA_RESULT=''; ADMISSION_OBSERVED=''; EXPECTED_ADMISSION=unasserted
-  build_env "$P"
-  python3 "$CANARY/isolation.py" snapshot "$P/isolation-before.json"
-
-  local pkg
-  if [ "$H" = claude ]; then pkg=@anthropic-ai/claude-code; else pkg=@openai/codex; fi
-  local install_rc=0
-  XRC=0
-  python3 "$RUN_PY" --timeout 900 -- "${ENVV[@]}" "npm_config_cache=$OUT/npm-cache" npm_config_update_notifier=false \
-    "$NPM_BIN" install --prefix "$P/npm" --no-audit --no-fund --no-save "$pkg@$V" \
-    >"$LOGS/npm-install.out" 2>"$LOGS/npm-install.err" </dev/null || install_rc=$?
-  local bin=
-  if [ "$install_rc" -ne 0 ]; then
-    record_check t0.install fail "npm install $pkg@$V exited $install_rc: $(tail_of "$LOGS/npm-install.err")"
-    probe_finish infra
-  else
-    if [ "$H" = claude ]; then
-      bin=$P/npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe
-      if [ ! -x "$bin" ] || ! "${ENVV[@]}" "$bin" --version >/dev/null 2>&1; then
-        # E2: the package ships a placeholder until `node install.cjs` copies the native binary in.
-        # shellcheck disable=SC2016  # $1 expands in the inner sh
-        xrun install-cjs 300 sh -c 'cd "$1" && exec node install.cjs' sh "$P/npm/node_modules/@anthropic-ai/claude-code"
-      fi
-    else
-      set -- "$P"/npm/node_modules/@openai/codex-*/vendor/*/bin/codex
-      if [ $# -eq 1 ] && [ -e "$1" ]; then bin=$1; fi
-    fi
-    if [ -z "$bin" ] || [ ! -e "$bin" ]; then
-      record_check t0.install fail "no $H binary found under $P/npm after install"
-      probe_finish infra
-    else
-      ln -s "$bin" "$P/bin/$H"
-      EXPECTED_ADMISSION=$(canary_py expected "$H" "$V" "$VJSON") || EXPECTED_ADMISSION=unasserted
-      write_canary_probe "$P" "$H" "$V" "$P/bin/$H" "$EXPECTED_ADMISSION"
-      if [ "$H" = codex ]; then
-        # help texts for launch-tables (§D5), produced under the isolated environment
-        xrun help-codex 30 "$P/bin/codex" --help
-        cat "$LOGS/help-codex.out" "$LOGS/help-codex.err" > "$P/help/codex.txt"
-        xrun help-codex-exec 30 "$P/bin/codex" exec --help
-        cat "$LOGS/help-codex-exec.out" "$LOGS/help-codex-exec.err" > "$P/help/codex-exec.txt"
-      fi
-      if ensure_ht; then
-        cp "$HT_BIN" "$P/ht/herdr-threads"
-      else
-        echo "harness-canary.sh: warning: herdr-threads under test is unavailable; tier-0 checks that need it will fail" >&2
-      fi
-      local id
-      for id in "${TIER0_CHECKS[@]}"; do run_check "$id"; done
-      run_tier1
-      run_check t0.isolation
-      if [ "$INFRA" -eq 1 ]; then probe_finish infra; else probe_finish auto; fi
-    fi
-  fi
-  [ "$KEEP" -eq 1 ] || rm -rf "$P"
-}
 
 # shellcheck disable=SC2317  # `exit` is reached when the file is executed rather than sourced
 if [ -n "${HT_CANARY_SOURCE_ONLY:-}" ]; then return 0 2>/dev/null || exit 0; fi
 
 if [ "$MODE" = probe ]; then
   P=; LOGS=; PROBE_RC=2
+  if [ -z "${HT_CANARY_PACKAGE:-}" ]; then
+    case $PROBE_HARNESS in
+      claude) HT_CANARY_PACKAGE=@anthropic-ai/claude-code ;;
+      codex) HT_CANARY_PACKAGE=@openai/codex ;;
+      *) die "no owned legacy probe for $PROBE_HARNESS" ;;
+    esac
+  fi
+  load_probe_companion
   probe_one "$PROBE_HARNESS" "$PROBE_VERSION"
   [ "$OUT_IS_TEMP" -eq 0 ] || [ "$KEEP" -eq 1 ] || rm -rf "$OUT"
   exit "$PROBE_RC"
 fi
-
-# ---------------------------------------------------------------- orchestration (§D1, §D7, §D8)
-
-case $HARNESS in both) HARNESSES=claude,codex ;; *) HARNESSES=$HARNESS ;; esac
-
-npm_versions() { # harness -> JSON list file; 3 attempts, 60 s each (§D1)
-  local pkg=$1 file=$2
-  [ "$pkg" = claude ] && pkg=@anthropic-ai/claude-code || pkg=@openai/codex
-  P=$OUT/work/_view; LOGS=$P/logs; mkdir -p "$LOGS"
-  build_env "$P"
-  for _ in 1 2 3; do
-    XRC=0
-    python3 "$RUN_PY" --timeout 60 -- "${ENVV[@]}" "npm_config_cache=$OUT/npm-cache" npm_config_update_notifier=false \
-      "$NPM_BIN" view "$pkg" versions --json >"$file" 2>"$LOGS/npm-view.err" </dev/null || XRC=$?
-    if [ "$XRC" -eq 0 ] && [ -s "$file" ]; then return 0; fi
-  done
-  return 1
-}
-
-explicit=
-case $VERSIONS in latest|since-verified) ;; *) explicit=$VERSIONS ;; esac
-
-ensure_ht || echo "harness-canary.sh: warning: could not build herdr-threads; probes will report it" >&2
-
-# main's per-harness contract ids ({"claude": ..., "codex": ...}); selection is scoped to them.
-MAIN_IDS=
-if [ -z "$HT_BIN" ]; then
-  echo "harness-canary.sh: warning: no contract id (herdr-threads was not built); selection is contract-agnostic and nothing is re-probed" >&2
-else
-  mkdir -p "$OUT/work"
-  if ! MAIN_IDS=$(python3 "$SCRIPT_DIR/canary/manifest.py" contract --binary "$HT_BIN" 2>"$OUT/work/contract-id.err"); then
-    MAIN_IDS=
-    echo "harness-canary.sh: warning: \`herdr-threads contract-id --json\` failed: $(tail -c 300 "$OUT/work/contract-id.err" | tr '\n' ' '); selection is contract-agnostic and nothing is re-probed" >&2
-  fi
-fi
-main_id_for() {
-  [ -n "$MAIN_IDS" ] || return 0
-  MAIN_IDS_JSON=$MAIN_IDS python3 -c 'import json,os,sys; print(json.loads(os.environ["MAIN_IDS_JSON"]).get(sys.argv[1]) or "")' "$1"
-}
-
-for h in ${HARNESSES//,/ }; do
-  listfile=$OUT/work/npm-$h-versions.json
-  npm_versions "$h" "$listfile" || { echo "harness-canary.sh: npm view failed for $h (see $OUT/work/_view/logs)" >&2; exit 2; }
-  mode=$VERSIONS; [ -z "$explicit" ] || mode=list
-  mid=$(main_id_for "$h") || exit 2
-  cands=$(canary_py candidates "$h" "$mode" "$BJSON" "$explicit" "$listfile" "$mid") || exit 2
-  vmax=$(canary_py verified-max "$h" "$BJSON" "$mid") || exit 2
-  base=${BASELINE:-${vmax:-0.0.0}}
-  kb=$(canary_py known-broken "$h" "$BJSON" "$mid") || exit 2
-  KEEP_FLAG=(); if [ "$KEEP" -eq 1 ]; then KEEP_FLAG=(--keep); fi
-  probe_cmd=$(printf '%q ' "$SCRIPT_PATH" --probe "$h" '{version}' --out "$OUT" --model-tier "$MODEL_TIER" \
-    ${HT_BIN:+--herdr-threads "$HT_BIN"} ${VERSIONS_JSON:+--versions-json "$VERSIONS_JSON"} \
-    ${KEEP_FLAG[@]+"${KEEP_FLAG[@]}"})
-  bisect_args=(--probe-cmd "$probe_cmd" --candidates "$cands" --baseline "$base" --known-broken "$kb")
-  if [ "$BISECT" -eq 1 ]; then bisect_args+=(--bisect); fi
-  if tier1_enabled "$h"; then bisect_args+=(--tier1); fi
-  rp=
-  if [ "$mode" = since-verified ]; then rp=$(canary_py reprobe "$h" "$BJSON" "$listfile" "$mid") || exit 2; fi
-  if [ -n "$rp" ]; then
-    bisect_args+=(--reprobe "$rp")
-    echo "harness-canary.sh: $h re-probing versions known_broken under another contract: $rp" >&2
-  fi
-  echo "harness-canary.sh: $h candidates: ${cands:-none} (baseline $base)" >&2
-  python3 "$CANARY/bisect.py" "${bisect_args[@]}" > "$OUT/bisect-$h.json" || true
-  [ -s "$OUT/bisect-$h.json" ] || { echo "harness-canary.sh: bisect produced no result for $h" >&2; exit 2; }
-done
-
-inputs=$(printf '{"harness":%s,"versions":%s,"bisect":%s,"model_tier":%s}' "$(json_str "$HARNESS")" \
-  "$(json_str "$VERSIONS")" "$([ "$BISECT" -eq 1 ] && echo true || echo false)" "$(json_str "$MODEL_TIER")")
-commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)
-htv=$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -n 1)
-code=$(canary_py report "$OUT" "$HARNESSES" "$inputs" "$commit" "${htv:-unknown}" \
-  "$(uname -s | tr '[:upper:]' '[:lower:]')" "$(uname -m)" "$BJSON" "$BASELINE" "$MAIN_IDS") || exit 2
-echo "harness-canary.sh: report in $OUT/canary-report.json and $OUT/summary.md (exit $code)" >&2
-if [ "$KEEP" -ne 1 ]; then rm -rf "$OUT/work" "$OUT/npm-cache"; fi
-exit "$code"

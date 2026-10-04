@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "adapters": [
+    {
+      "id": "claude",
+      "display_name": "claude",
+      "host_kinds": [],
+      "setup_scopes": [],
+      "legacy_contract_id": null,
+      "contracts": [
+        {
+          "domain": "native_shape",
+          "origin": "native_shape_observation",
+          "id": "0123456789abcdef",
+          "events": [
+            {
+              "event": "SessionStart",
+              "milestone": "session_start",
+              "always_send": true
+            },
+            {
+              "event": "TurnEnd",
+              "milestone": "turn_end",
+              "always_send": true
+            }
+          ],
+          "required_milestones": [
+            "session_start",
+            "turn_end"
+          ]
+        }
+      ],
+      "canary_strategy": {
+        "kind": "npm_release",
+        "candidate_kind": "stable_release",
+        "npm_package": "@example/third",
+        "model_key_env": null,
+        "companion": "scripts/canary/adapters/third.py",
+        "artifact_schema_version": 1
+      }
+    },
+    {
+      "id": "codex",
+      "display_name": "codex",
+      "host_kinds": [],
+      "setup_scopes": [],
+      "legacy_contract_id": null,
+      "contracts": [
+        {
+          "domain": "native_shape",
+          "origin": "native_shape_observation",
+          "id": "0123456789abcdef",
+          "events": [
+            {
+              "event": "SessionStart",
+              "milestone": "session_start",
+              "always_send": true
+            },
+            {
+              "event": "TurnEnd",
+              "milestone": "turn_end",
+              "always_send": true
+            }
+          ],
+          "required_milestones": [
+            "session_start",
+            "turn_end"
+          ]
+        }
+      ],
+      "canary_strategy": {
+        "kind": "npm_release",
+        "candidate_kind": "stable_release",
+        "npm_package": "@example/third",
+        "model_key_env": null,
+        "companion": "scripts/canary/adapters/third.py",
+        "artifact_schema_version": 1
+      }
+    },
+    {
+      "id": "third",
+      "display_name": "third",
+      "host_kinds": [],
+      "setup_scopes": [],
+      "legacy_contract_id": null,
+      "contracts": [
+        {
+          "domain": "native_shape",
+          "origin": "native_shape_observation",
+          "id": "0123456789abcdef",
+          "events": [
+            {
+              "event": "SessionStart",
+              "milestone": "session_start",
+              "always_send": true
+            },
+            {
+              "event": "TurnEnd",
+              "milestone": "turn_end",
+              "always_send": true
+            }
+          ],
+          "required_milestones": [
+            "session_start",
+            "turn_end"
+          ]
+        }
+      ],
+      "canary_strategy": {
+        "kind": "exact_runtime",
+        "candidate_kind": "exact_build",
+        "npm_package": null,
+        "model_key_env": null,
+        "companion": "scripts/canary/adapters/third.py",
+        "artifact_schema_version": 1
+      }
+    },
+    {
+      "id": "none",
+      "display_name": "none",
+      "host_kinds": [],
+      "setup_scopes": [],
+      "legacy_contract_id": null,
+      "contracts": [
+        {
+          "domain": "native_shape",
+          "origin": "native_shape_observation",
+          "id": "0123456789abcdef",
+          "events": [
+            {
+              "event": "SessionStart",
+              "milestone": "session_start",
+              "always_send": true
+            },
+            {
+              "event": "TurnEnd",
+              "milestone": "turn_end",
+              "always_send": true
+            }
+          ],
+          "required_milestones": [
+            "session_start",
+            "turn_end"
+          ]
+        }
+      ],
+      "canary_strategy": null
+    }
+  ]
+}
