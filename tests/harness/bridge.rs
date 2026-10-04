@@ -1947,3 +1947,475 @@ fn read_hot_threads_asks_for_the_seat_and_validates_the_answer() {
         ErrorCode::ReadBudgetExhausted
     );
 }
+
+// Break caught: treating every qualified turn as Startup rotates a registered execution.
+#[test]
+fn qualified_turn_replay_restart_and_stale_order_keep_exact_operation_execution() {
+    let (root, journal, contexts, seed, mut event) = fixture();
+    event.native_session = Some("opaque-native/session".into());
+    let turn = QualifiedTurn {
+        session: "opaque-native/session".into(),
+        event_key: event.event_id.clone(),
+        reset: None,
+        ordering: Some(ObservationOrder {
+            process_nonce: uuid::Uuid::from_u128(3),
+            sequence: 9,
+            observed_at_millis: 1,
+            callback_budget_millis: 1000,
+        }),
+    };
+    let first = prepare_qualified_turn(&journal, &contexts, &event, &turn, Some(&seed), 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.mode, CheckInMode::Lifecycle);
+    assert!(
+        contexts
+            .dispatch(&event.event_id, &mut |_: &PendingCheckIn| Err(
+                ContextError::Dispatch("response lost".into())
+            ))
+            .is_err()
+    );
+    let reopened = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT).unwrap();
+    assert_eq!(
+        prepare_qualified_turn(&journal, &reopened, &event, &turn, Some(&seed), 2)
+            .unwrap()
+            .unwrap(),
+        first
+    );
+    let response = reopened
+        .dispatch(&event.event_id, &mut |request: &PendingCheckIn| {
+            let mut context = request.context.clone();
+            context.binding_generation = 1;
+            Ok(CheckInResponse {
+                context,
+                historical: false,
+                output: b"immutable offer".to_vec(),
+            })
+        })
+        .unwrap();
+    assert_eq!(
+        prepare_qualified_turn(&journal, &reopened, &event, &turn, Some(&seed), 3)
+            .unwrap()
+            .unwrap(),
+        first
+    );
+    event.event_id = "next-turn".into();
+    let turn = QualifiedTurn {
+        event_key: event.event_id.clone(),
+        ordering: Some(ObservationOrder {
+            process_nonce: uuid::Uuid::from_u128(4),
+            sequence: 1,
+            observed_at_millis: 4,
+            callback_budget_millis: 1000,
+        }),
+        ..turn
+    };
+    let next = prepare_qualified_turn(&journal, &reopened, &event, &turn, None, 4)
+        .unwrap()
+        .unwrap();
+    assert_eq!(next.mode, CheckInMode::Current);
+    assert_eq!(next.context.execution, response.context.execution);
+    complete_turn(&reopened, &next);
+    event.event_id = "old-nonce-late".into();
+    let stale = QualifiedTurn {
+        event_key: event.event_id.clone(),
+        ordering: Some(ObservationOrder {
+            process_nonce: uuid::Uuid::from_u128(3),
+            sequence: 8,
+            observed_at_millis: 5,
+            callback_budget_millis: 1000,
+        }),
+        ..turn
+    };
+    assert_eq!(
+        prepare_qualified_turn(&journal, &reopened, &event, &stale, None, 5),
+        Err(ContextError::Conflict)
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn turn(event: &LifecycleEvent, nonce: u128, sequence: u64, at: i64, budget: u32) -> QualifiedTurn {
+    QualifiedTurn {
+        session: event.native_session.clone().unwrap(),
+        event_key: event.event_id.clone(),
+        reset: None,
+        ordering: Some(ObservationOrder {
+            process_nonce: uuid::Uuid::from_u128(nonce),
+            sequence,
+            observed_at_millis: at,
+            callback_budget_millis: budget,
+        }),
+    }
+}
+fn complete_turn(contexts: &ContextJournal, request: &PendingCheckIn) -> CheckInResponse {
+    contexts
+        .dispatch(&request.event_id, &mut |p: &PendingCheckIn| {
+            let mut context = p.context.clone();
+            if p.mode == CheckInMode::Lifecycle {
+                context.binding_generation += 1;
+            }
+            Ok(CheckInResponse {
+                context,
+                historical: false,
+                output: b"frozen offer".to_vec(),
+            })
+        })
+        .unwrap()
+}
+// Break caught: an unseen lower entry sequence may mutate after a newer callback.
+#[test]
+fn qualified_turn_known_stale_order_is_refused_before_intent_or_context_write() {
+    let (root, journal, contexts, seed, mut event) = fixture();
+    event.native_session = Some("opaque/not-sortable-z".into());
+    let first = prepare_qualified_turn(
+        &journal,
+        &contexts,
+        &event,
+        &turn(&event, 3, 9, 1000, 1000),
+        Some(&seed),
+        1000,
+    )
+    .unwrap()
+    .unwrap();
+    complete_turn(&contexts, &first);
+    let bytes = fs::read(root.join("context.json")).unwrap();
+    event.event_id = "unseen-late".into();
+    assert_eq!(
+        prepare_qualified_turn(
+            &journal,
+            &contexts,
+            &event,
+            &turn(&event, 3, 8, 1000, 1000),
+            None,
+            1001
+        ),
+        Err(ContextError::Conflict)
+    );
+    assert_eq!(fs::read(root.join("context.json")).unwrap(), bytes);
+    fs::remove_dir_all(root).unwrap();
+}
+// Break caught: malformed/future or expired callbacks may allocate an immutable operation.
+#[test]
+fn qualified_turn_deadline_refusal_leaves_no_request_or_watermark() {
+    for (at, budget, now, error) in [
+        (1000, 100, 1100, ContextError::Conflict),
+        (1001, 100, 1000, ContextError::Invalid),
+        (1000, 0, 1000, ContextError::Invalid),
+        (1000, 5001, 1000, ContextError::Invalid),
+    ] {
+        let (root, journal, contexts, seed, mut event) = fixture();
+        event.native_session = Some("native".into());
+        assert_eq!(
+            prepare_qualified_turn(
+                &journal,
+                &contexts,
+                &event,
+                &turn(&event, 3, 1, at, budget),
+                Some(&seed),
+                now
+            ),
+            Err(error)
+        );
+        assert!(contexts.pending().unwrap().is_none());
+        assert!(!root.join("context.json").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+// Break caught: an explicit new-session reset is refused or silently represented as Resume.
+#[test]
+fn qualified_turn_reset_requires_matching_prior_session_and_order_then_clears() {
+    let (root, journal, contexts, seed, mut event) = fixture();
+    event.native_session = Some("old".into());
+    let first = prepare_qualified_turn(
+        &journal,
+        &contexts,
+        &event,
+        &turn(&event, 3, 1, 1000, 1000),
+        Some(&seed),
+        1000,
+    )
+    .unwrap()
+    .unwrap();
+    let response = complete_turn(&contexts, &first);
+    event.event_id = "reset".into();
+    event.native_session = Some("new".into());
+    let mut reset = turn(&event, 3, 2, 1000, 1000);
+    reset.reset = Some(ResetObservation {
+        previous_session: "old".into(),
+    });
+    let request = prepare_qualified_turn(&journal, &contexts, &event, &reset, None, 1001)
+        .unwrap()
+        .unwrap();
+    assert_eq!(request.mode, CheckInMode::Lifecycle);
+    assert_ne!(request.context.execution, response.context.execution);
+    assert_eq!(
+        request.context.session,
+        SessionReference::Native("new".into())
+    );
+    assert_eq!(request.expected_generation, Some(1));
+    complete_turn(&contexts, &request);
+    let bytes = fs::read(root.join("context.json")).unwrap();
+    event.event_id = "mismatched-no-proof".into();
+    event.native_session = Some("history-unknown".into());
+    assert_eq!(
+        prepare_qualified_turn(
+            &journal,
+            &contexts,
+            &event,
+            &QualifiedTurn {
+                session: "history-unknown".into(),
+                event_key: event.event_id.clone(),
+                reset: None,
+                ordering: None
+            },
+            None,
+            1002
+        ),
+        Err(ContextError::Conflict)
+    );
+    assert_eq!(fs::read(root.join("context.json")).unwrap(), bytes);
+    fs::remove_dir_all(root).unwrap();
+}
+
+// Break caught: retiring an obsolete current hint makes immutable completed replay unavailable.
+#[test]
+fn qualified_turn_replays_completed_after_hint_retirement_before_selecting_startup() {
+    let (root, journal, contexts, seed, mut event) = fixture();
+    event.native_session = Some("same".into());
+    let observation = turn(&event, 3, 1, 1000, 1000);
+    let first =
+        prepare_qualified_turn(&journal, &contexts, &event, &observation, Some(&seed), 1000)
+            .unwrap()
+            .unwrap();
+    let response = complete_turn(&contexts, &first);
+    assert!(contexts.retire_current(&response.context).unwrap());
+    assert_eq!(
+        prepare_qualified_turn(&journal, &contexts, &event, &observation, None, 9000)
+            .unwrap()
+            .unwrap(),
+        first
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+// Break caught: the transport or startup overview extends a short observed callback budget.
+#[test]
+fn qualified_turn_dispatch_and_overview_are_clamped_to_observation_deadline() {
+    struct Bounded(Transport);
+    impl crate::ports::LocalClient for Bounded {
+        crate::default_output_local_client!();
+        fn call(
+            &self,
+            command: Command,
+            budget: &crate::protocol::time::CallBudget,
+        ) -> Result<crate::protocol::results::CommandResult, crate::protocol::results::ApiError>
+        {
+            assert!(
+                budget.deadline.0 <= 200,
+                "extended callback deadline: {}",
+                budget.deadline.0
+            );
+            crate::ports::LocalClient::call(&self.0, command, budget)
+        }
+    }
+    let (root, journal, contexts, seed, mut event) = fixture();
+    event.native_session = Some("same".into());
+    let observation = turn(&event, 3, 1, 100, 100);
+    let mut output = Vec::new();
+    run_qualified_hook_event_reporting_notices(
+        &journal,
+        &contexts,
+        &event,
+        &observation,
+        Some(&seed),
+        100,
+        &Bounded(Transport::new()),
+        &Clock,
+        &Default::default(),
+        &mut output,
+        &mut None,
+    )
+    .unwrap();
+    assert!(!output.is_empty());
+    assert!(contexts.current().unwrap().is_some());
+    fs::remove_dir_all(root).unwrap();
+}
+
+// Break caught: an output flush failure removes the pending intent or re-checks in on retry.
+#[test]
+fn qualified_turn_flush_loss_retains_exact_response_and_operation() {
+    struct Broken;
+    impl std::io::Write for Broken {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+    }
+    let (root, journal, contexts, seed, mut event) = fixture();
+    event.native_session = Some("same".into());
+    let observation = turn(&event, 3, 1, 100, 1000);
+    let client = Transport::new();
+    assert!(
+        run_qualified_hook_event_reporting_notices(
+            &journal,
+            &contexts,
+            &event,
+            &observation,
+            Some(&seed),
+            100,
+            &client,
+            &Clock,
+            &Default::default(),
+            &mut Broken,
+            &mut None
+        )
+        .is_err()
+    );
+    let cached = contexts
+        .completed_for_event(&event.event_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(journal.page(&Default::default()).unwrap().items.len(), 1);
+    drop(contexts);
+    let reopened = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT).unwrap();
+    let mut output = Vec::new();
+    run_qualified_hook_event_reporting_notices(
+        &journal,
+        &reopened,
+        &event,
+        &observation,
+        Some(&seed),
+        101,
+        &client,
+        &Clock,
+        &Default::default(),
+        &mut output,
+        &mut None,
+    )
+    .unwrap();
+    assert!(!output.is_empty());
+    assert_eq!(
+        reopened
+            .completed_for_event(&event.event_id)
+            .unwrap()
+            .unwrap(),
+        cached
+    );
+    assert_eq!(
+        client
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| matches!(c, Command::CheckIn(_)))
+            .count(),
+        1
+    );
+    assert!(journal.page(&Default::default()).unwrap().items.is_empty());
+    fs::remove_dir_all(root).unwrap();
+}
+// Break caught: restarting callback processes grows routing state without its bounded history scope.
+#[test]
+fn qualified_turn_watermarks_are_durable_and_bounded_across_many_nonces() {
+    let (root, journal, contexts, seed, mut event) = fixture();
+    event.native_session = Some("same".into());
+    for nonce in 1..=35 {
+        event.event_id = format!("entry-{nonce}");
+        let request = prepare_qualified_turn(
+            &journal,
+            &contexts,
+            &event,
+            &turn(&event, nonce, 1, 1000, 1000),
+            Some(&seed),
+            1000,
+        )
+        .unwrap()
+        .unwrap();
+        contexts.abandon_pending(&request.event_id).unwrap();
+    }
+    let state: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("context.json")).unwrap()).unwrap();
+    assert_eq!(
+        state["observation_watermarks"].as_array().unwrap().len(),
+        32
+    );
+    drop(contexts);
+    let reopened = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT).unwrap();
+    event.event_id = "retained-stale".into();
+    assert_eq!(
+        prepare_qualified_turn(
+            &journal,
+            &reopened,
+            &event,
+            &turn(&event, 35, 1, 1000, 1000),
+            Some(&seed),
+            1001
+        ),
+        Err(ContextError::Conflict)
+    );
+    assert!(reopened.pending().unwrap().is_none());
+    fs::remove_dir_all(root).unwrap();
+}
+
+// Break caught: an authoritative historical Current result is delivered while its rejected hint remains active.
+#[test]
+fn qualified_turn_historical_current_retires_only_rejected_hint_and_keeps_exact_history() {
+    let (root, journal, contexts, seed, mut event) = fixture();
+    event.native_session = Some("same".into());
+    let first = prepare_qualified_turn(
+        &journal,
+        &contexts,
+        &event,
+        &turn(&event, 3, 1, 100, 1000),
+        Some(&seed),
+        100,
+    )
+    .unwrap()
+    .unwrap();
+    complete_turn(&contexts, &first);
+    event.event_id = "historical-current".into();
+    let mut client = Transport::new();
+    client.historical = true;
+    let mut output = Vec::new();
+    assert!(matches!(
+        run_qualified_hook_event_reporting_notices(
+            &journal,
+            &contexts,
+            &event,
+            &turn(&event, 3, 2, 100, 1000),
+            None,
+            100,
+            &client,
+            &Clock,
+            &Default::default(),
+            &mut output,
+            &mut None
+        ),
+        Err(BridgeError::Context(ContextError::LifecycleRequired))
+    ));
+    assert!(output.is_empty());
+    assert!(contexts.current().unwrap().is_none());
+    let historical = contexts
+        .completed_for_event(&event.event_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(historical.0.mode, CheckInMode::Current);
+    assert!(historical.1.historical);
+    assert!(contexts.pending().unwrap().is_none());
+    assert_eq!(
+        prepare_qualified_turn(
+            &journal,
+            &contexts,
+            &event,
+            &turn(&event, 3, 2, 100, 1000),
+            None,
+            100
+        )
+        .unwrap()
+        .unwrap(),
+        historical.0
+    );
+    fs::remove_dir_all(root).unwrap();
+}

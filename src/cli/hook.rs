@@ -1257,14 +1257,21 @@ fn bridge_failure(error: bridge::BridgeError) -> Failure {
 }
 
 /// Composition over the existing daemon/client/bridge APIs. Returns bridge text.
+#[allow(clippy::too_many_arguments)]
 fn check_in(
     args: &HookArgs,
     event: &LifecycleEvent,
+    turn: Option<&crate::harness::context::QualifiedTurn>,
     env: &HookEnv,
     deadline: Instant,
     clock: Arc<dyn Clock>,
     ensure_executable: Option<&Path>,
 ) -> Result<CheckedIn, Failure> {
+    if let Some(order) = turn.and_then(|turn| turn.ordering.as_ref()) {
+        order
+            .validate_deadline(clock.utc_now().0)
+            .map_err(|e| Failure::Quiet(format!("observation: {e:?}")))?;
+    }
     if !env.herdr_env {
         return Err(Failure::Quiet("not running inside a Herdr pane".into()));
     }
@@ -1354,7 +1361,7 @@ fn check_in(
             Reattach::Declined | Reattach::Pending => return Err(absent.refusal(pane)),
         },
     };
-    call.check_in_seat(event, &seat, generation)
+    call.check_in_seat_with_turn(event, turn, &seat, generation)
 }
 
 /// One hook invocation's connection to the daemon for one pane.
@@ -1718,6 +1725,15 @@ impl PaneCall<'_> {
         seat: &SeatId,
         generation: u64,
     ) -> Result<CheckedIn, Failure> {
+        self.check_in_seat_with_turn(event, None, seat, generation)
+    }
+    fn check_in_seat_with_turn(
+        &self,
+        event: &LifecycleEvent,
+        turn: Option<&crate::harness::context::QualifiedTurn>,
+        seat: &SeatId,
+        generation: u64,
+    ) -> Result<CheckedIn, Failure> {
         let (context, paths, client, target) = (self.context, self.paths, self.client, self.target);
         let (instance, deadline) = (self.instance, self.deadline);
         let clock = Arc::clone(&self.clock);
@@ -1803,8 +1819,8 @@ impl PaneCall<'_> {
             });
         }
         let mut done = lifecycle_check_in(
-            event, contexts, paths, client, target, seat, generation, instance, &output, deadline,
-            clock, fallback, prefix,
+            event, turn, contexts, paths, client, target, seat, generation, instance, &output,
+            deadline, clock, fallback, prefix,
         )?;
         done.recovery = self.recovery_rows(event, seat);
         Ok(done)
@@ -1883,6 +1899,7 @@ fn abandon(
 #[allow(clippy::too_many_arguments)]
 fn lifecycle_check_in(
     event: &LifecycleEvent,
+    turn: Option<&crate::harness::context::QualifiedTurn>,
     contexts: crate::harness::context::ContextJournal,
     paths: &InstancePaths,
     client: &dyn LocalClient,
@@ -1909,6 +1926,21 @@ fn lifecycle_check_in(
                initial: Option<&OccupantContext>,
                writer: &mut Vec<u8>|
      -> Result<(), bridge::BridgeError> {
+        if let Some(turn) = turn.filter(|turn| event.event_id == turn.event_key) {
+            return bridge::run_qualified_hook_event_reporting_notices(
+                &journal,
+                contexts,
+                event,
+                turn,
+                initial,
+                clock.utc_now().0,
+                client,
+                clock.as_ref(),
+                output,
+                writer,
+                &mut carried.borrow_mut(),
+            );
+        }
         bridge::run_hook_event_reporting_notices(
             &journal,
             contexts,
@@ -2186,13 +2218,31 @@ pub fn run_admitted_hook(
     if let Err(error) = registration.validate_event(admitted, decoded) {
         return quiet_outcome(error.to_string());
     }
-    let lifecycle = matches!(decoded.intent, EventIntent::Lifecycle(_));
+    let lifecycle = matches!(
+        decoded.intent,
+        EventIntent::Lifecycle(_) | EventIntent::QualifiedTurn(_)
+    );
     let bound = crate::protocol::time::external_bound(event_budget(registration, lifecycle, None));
     let deadline = deadline.min(Instant::now() + bound);
     let deadline = decoded
         .metadata
         .callback_deadline
         .map_or(deadline, |native| native.min(deadline));
+    let deadline = if let EventIntent::QualifiedTurn(turn) = &decoded.intent {
+        if let Some(order) = &turn.ordering {
+            let now = clock.utc_now().0;
+            if let Err(error) = order.validate_deadline(now) {
+                return quiet_outcome(format!("observation: {error:?}"));
+            }
+            let remaining =
+                order.observed_at_millis + i64::from(order.callback_budget_millis) - now;
+            deadline.min(Instant::now() + Duration::from_millis(remaining as u64))
+        } else {
+            deadline
+        }
+    } else {
+        deadline
+    };
     if deadline <= Instant::now() {
         return quiet_outcome("hook callback budget expired".into());
     }
@@ -2243,7 +2293,11 @@ pub fn run_admitted_hook(
     let Some(event) = decoded.context_event() else {
         return HookOutcome::default();
     };
-    match check_in(args, &event, env, deadline, clock, ensure_executable) {
+    let turn = match &decoded.intent {
+        EventIntent::QualifiedTurn(turn) => Some(turn),
+        _ => None,
+    };
+    match check_in(args, &event, turn, env, deadline, clock, ensure_executable) {
         Ok(CheckedIn {
             text,
             fallback,
@@ -2546,7 +2600,10 @@ pub fn run_process_with(
                         return quiet_outcome(format!("unsupported hook payload: {error:?}"));
                     }
                 };
-                let lifecycle = matches!(event.intent, EventIntent::Lifecycle(_));
+                let lifecycle = matches!(
+                    event.intent,
+                    EventIntent::Lifecycle(_) | EventIntent::QualifiedTurn(_)
+                );
                 let event_bound = crate::protocol::time::external_bound(event_budget(
                     registration,
                     lifecycle,

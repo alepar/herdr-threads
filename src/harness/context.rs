@@ -133,6 +133,54 @@ impl OccupantContext {
         Ok(next)
     }
 }
+/// Adapter-qualified identity observation, not native attestation or continuity authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QualifiedTurn {
+    pub session: String,
+    pub event_key: String,
+    pub reset: Option<ResetObservation>,
+    pub ordering: Option<ObservationOrder>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResetObservation {
+    pub previous_session: String,
+}
+/// Synthesized callback-entry ordering. A nonce restart alone never rotates execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservationOrder {
+    pub process_nonce: Uuid,
+    pub sequence: u64,
+    pub observed_at_millis: i64,
+    pub callback_budget_millis: u32,
+}
+impl ObservationOrder {
+    pub fn validate_deadline(&self, now: i64) -> Result<(), ContextError> {
+        if self.process_nonce.is_nil()
+            || self.sequence == 0
+            || self.observed_at_millis < 0
+            || self.observed_at_millis > now
+            || !(1..=5000).contains(&self.callback_budget_millis)
+        {
+            return Err(ContextError::Invalid);
+        }
+        let deadline = self
+            .observed_at_millis
+            .checked_add(i64::from(self.callback_budget_millis))
+            .ok_or(ContextError::Invalid)?;
+        if now >= deadline {
+            return Err(ContextError::Conflict);
+        }
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ObservationWatermark {
+    harness: Harness,
+    process_nonce: Uuid,
+    sequence: u64,
+    observed_at_millis: i64,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CheckInMode {
     Current,
@@ -238,6 +286,8 @@ struct State {
     completed: Vec<Completed>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     abandoned: Vec<Abandoned>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    observation_watermarks: Vec<ObservationWatermark>,
 }
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
@@ -330,6 +380,7 @@ impl ContextJournal {
                 pending: None,
                 completed: Vec::new(),
                 abandoned: Vec::new(),
+                observation_watermarks: Vec::new(),
             });
         }
         private_metadata(&path, false)?;
@@ -352,6 +403,11 @@ impl ContextJournal {
             || state.seat != self.seat
             || state.completed.len() > MAX_HISTORY
             || state.abandoned.len() > MAX_HISTORY
+            || state.observation_watermarks.len() > RETAIN_COMPLETED
+            || state
+                .observation_watermarks
+                .iter()
+                .any(|w| w.process_nonce.is_nil() || w.sequence == 0 || w.observed_at_millis < 0)
         {
             return Err(ContextError::Corrupt);
         }
@@ -660,6 +716,110 @@ impl ContextJournal {
             return Err(ContextError::Conflict);
         }
         self.validate_request(&request)?;
+        self.prepare_locked(&mut state, request.clone())?;
+        Ok(request)
+    }
+    /// Exact replay wins; selection and the bounded ordering watermark are saved
+    /// together with the immutable request under the existing context lock.
+    pub fn get_or_prepare_qualified(
+        &self,
+        harness: Harness,
+        target: &str,
+        turn: &QualifiedTurn,
+        now: i64,
+        factory: impl FnOnce(
+            Option<&OccupantContext>,
+            EventKind,
+        ) -> Result<PendingCheckIn, ContextError>,
+    ) -> Result<PendingCheckIn, ContextError> {
+        if !valid_text(&turn.session)
+            || !valid_text(&turn.event_key)
+            || !valid_text(target)
+            || matches!(
+                harness.occupant(),
+                crate::harness::registry::OccupantHarness::Human
+            )
+            || turn.reset.as_ref().is_some_and(|r| {
+                !valid_text(&r.previous_session) || r.previous_session == turn.session
+            })
+        {
+            return Err(ContextError::Invalid);
+        }
+        let _lock = self.lock()?;
+        let mut state = self.load()?;
+        if let Some(request) = Self::request_in_state(&state, &turn.event_key) {
+            if request.context.harness != harness
+                || request.context.target != target
+                || request.context.session != SessionReference::Native(turn.session.clone())
+            {
+                return Err(ContextError::Conflict);
+            }
+            return Ok(request.clone());
+        }
+        if state.pending.is_some() || state.abandoned.iter().any(|a| a.event_id == turn.event_key) {
+            return Err(ContextError::Conflict);
+        }
+        if let Some(order) = &turn.ordering {
+            order.validate_deadline(now)?;
+            if state.observation_watermarks.iter().any(|w| {
+                w.harness == harness
+                    && w.process_nonce == order.process_nonce
+                    && order.sequence <= w.sequence
+            }) {
+                return Err(ContextError::Conflict);
+            }
+        }
+        let kind = match state.current.as_ref() {
+            None => EventKind::Startup,
+            Some(current) => {
+                if current.harness != harness || current.target != target {
+                    return Err(ContextError::Conflict);
+                }
+                if current.session == SessionReference::Native(turn.session.clone()) {
+                    if turn.reset.is_some() || current.binding_generation == 0 {
+                        return Err(ContextError::Conflict);
+                    }
+                    EventKind::Tool
+                } else if let Some(reset) = &turn.reset {
+                    if turn.ordering.is_none()
+                        || current.session
+                            != SessionReference::Native(reset.previous_session.clone())
+                    {
+                        return Err(ContextError::Conflict);
+                    }
+                    EventKind::Clear
+                } else {
+                    return Err(ContextError::Conflict);
+                }
+            }
+        };
+        let request = factory(state.current.as_ref(), kind)?;
+        if request.event_id != turn.event_key
+            || request.mode != kind.mode()
+            || request.context.harness != harness
+            || request.context.target != target
+            || request.context.session != SessionReference::Native(turn.session.clone())
+        {
+            return Err(ContextError::Conflict);
+        }
+        self.validate_request(&request)?;
+        if let Some(order) = &turn.ordering {
+            state.observation_watermarks.retain(|w| {
+                !(w.harness == harness && w.process_nonce == order.process_nonce)
+                    && now.saturating_sub(w.observed_at_millis) <= RETAIN_AGE_MILLIS
+            });
+            state.observation_watermarks.push(ObservationWatermark {
+                harness,
+                process_nonce: order.process_nonce,
+                sequence: order.sequence,
+                observed_at_millis: order.observed_at_millis,
+            });
+            let excess = state
+                .observation_watermarks
+                .len()
+                .saturating_sub(RETAIN_COMPLETED);
+            state.observation_watermarks.drain(..excess);
+        }
         self.prepare_locked(&mut state, request.clone())?;
         Ok(request)
     }
@@ -1093,6 +1253,7 @@ mod identity_tests {
             pending: None,
             completed: vec![],
             abandoned: vec![],
+            observation_watermarks: vec![],
         };
         let bytes = serde_json::to_string(&state)
             .unwrap()

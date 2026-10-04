@@ -400,6 +400,60 @@ pub fn prepare_event_as(
     validate_event(&request, event)?;
     Ok(Some(request))
 }
+/// Durable adapter-neutral observed turn. Selection does not imply resume or
+/// authorize a seat; the resulting ordinary command retains all daemon guards.
+pub fn prepare_qualified_turn(
+    journal: &Journal,
+    contexts: &ContextJournal,
+    event: &LifecycleEvent,
+    turn: &QualifiedTurn,
+    initial: Option<&OccupantContext>,
+    now: i64,
+) -> Result<Option<PendingCheckIn>, ContextError> {
+    if !event.can_check_in() {
+        return Ok(None);
+    }
+    if event.event_id != turn.event_key || event.native_session.as_deref() != Some(&turn.session) {
+        return Err(ContextError::Conflict);
+    }
+    let target = match initial {
+        Some(seed) => seed.target.clone(),
+        None => {
+            contexts
+                .request_for_event(&turn.event_key)?
+                .map(|p| p.context)
+                .or(contexts.current()?)
+                .ok_or(ContextError::LifecycleRequired)?
+                .target
+        }
+    };
+    let request =
+        contexts.get_or_prepare_qualified(event.harness, &target, turn, now, |current, kind| {
+            let seed = current.or(initial).ok_or(ContextError::LifecycleRequired)?;
+            if seed.harness != event.harness || seed.role != Role::TopLevel {
+                return Err(ContextError::Conflict);
+            }
+            let scope = IntentScope::Cooperative {
+                instance: seed.instance.to_string(),
+                seat: SeatId::parse(seed.seat.clone()).map_err(|_| ContextError::Invalid)?,
+            };
+            let reference =
+                journal.record_check_in_as(scope, &turn.event_key, now, false, || {
+                    let next = seed
+                        .for_event(kind, Uuid::new_v4(), Some(turn.session.clone()))
+                        .map_err(context_io)?;
+                    let mode = match kind.mode() {
+                        CheckInMode::Current => WireMode::Current,
+                        CheckInMode::Lifecycle => WireMode::Lifecycle {
+                            expected_binding_generation: seed.binding_generation,
+                        },
+                    };
+                    Ok((caller_claim(&next).map_err(context_io)?, mode))
+                })?;
+            pending_request(journal, &reference)
+        })?;
+    Ok(Some(request))
+}
 fn validate_event(request: &PendingCheckIn, event: &LifecycleEvent) -> Result<(), ContextError> {
     if request.event_id != event.event_id
         || request.context.harness != event.harness
@@ -455,8 +509,31 @@ fn context_io(error: ContextError) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}"))
 }
 
+fn observed_budget(
+    turn: Option<&QualifiedTurn>,
+    mode: CheckInMode,
+    clock: &dyn Clock,
+) -> Result<CallBudget, ContextError> {
+    let mut span = if turn.is_some() && mode == CheckInMode::Current {
+        1500
+    } else {
+        5000
+    };
+    if let Some(order) = turn.and_then(|turn| turn.ordering.as_ref()) {
+        let now = clock.utc_now().0;
+        order.validate_deadline(now)?;
+        let remaining = order.observed_at_millis + i64::from(order.callback_budget_millis) - now;
+        span = span.min(remaining as u64);
+    }
+    Ok(CallBudget {
+        deadline: MonoInstant(clock.monotonic_now().0.saturating_add(span)),
+        cancellation: Cancellation::default(),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cached_event<C: LocalClient + ?Sized>(
+    turn: Option<&QualifiedTurn>,
     journal: &Journal,
     contexts: &ContextJournal,
     event: &LifecycleEvent,
@@ -467,24 +544,29 @@ fn cached_event<C: LocalClient + ?Sized>(
     clock: &dyn Clock,
     output: &OutputSpec,
 ) -> Result<Option<(PendingCheckIn, CheckInResponse, CommandResult)>, BridgeError> {
-    let Some(request) = prepare_event_as(
-        journal,
-        contexts,
-        event,
-        initial,
-        created_at_millis,
-        operator,
-    )?
-    else {
+    let request = match turn {
+        Some(turn) => {
+            prepare_qualified_turn(journal, contexts, event, turn, initial, clock.utc_now().0)?
+        }
+        None => prepare_event_as(
+            journal,
+            contexts,
+            event,
+            initial,
+            created_at_millis,
+            operator,
+        )?,
+    };
+    let Some(request) = request else {
         return Ok(None);
     };
+    if let Some(order) = turn.and_then(|turn| turn.ordering.as_ref()) {
+        order.validate_deadline(clock.utc_now().0)?;
+    }
     let mut api_error = None;
     let response = contexts.dispatch(&event.event_id, &mut |pending: &PendingCheckIn| {
         let command = decode_request(pending)?;
-        let budget = CallBudget {
-            deadline: MonoInstant(clock.monotonic_now().0.saturating_add(5000)),
-            cancellation: Cancellation::default(),
-        };
+        let budget = observed_budget(turn, pending.mode, clock)?;
         let result = client
             .call_with_output(command, output, &budget)
             .map_err(|error| {
@@ -511,6 +593,13 @@ fn cached_event<C: LocalClient + ?Sized>(
             });
         }
     };
+    if turn.is_some() && response.historical {
+        // A canonical rejection is not a current offer. Retire only the exact
+        // rejected hint; a concurrently installed successor is never cleared.
+        contexts.retire_current(&request.context)?;
+        journal.complete_operation(&OperationId::new(request.operation_id.to_string()))?;
+        return Err(ContextError::LifecycleRequired.into());
+    }
     let result: CommandResult =
         serde_json::from_slice(&response.output).map_err(|_| ContextError::Corrupt)?;
     Ok(Some((request, response, result)))
@@ -561,6 +650,7 @@ pub fn run_event_as<C: LocalClient + ?Sized, W: Write>(
     writer: &mut W,
 ) -> Result<Option<CommandResult>, BridgeError> {
     let Some((request, _response, result)) = cached_event(
+        None,
         journal,
         contexts,
         event,
@@ -679,7 +769,70 @@ pub fn run_hook_event_reporting_notices<C: LocalClient + ?Sized, W: Write>(
     writer: &mut W,
     presented: &mut Option<Presented>,
 ) -> Result<(), BridgeError> {
-    let reason = if event.kind.mode() == CheckInMode::Lifecycle {
+    run_hook_event_reporting_inner(
+        journal,
+        contexts,
+        event,
+        None,
+        initial,
+        created_at_millis,
+        client,
+        clock,
+        output,
+        reason,
+        writer,
+        presented,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_qualified_hook_event_reporting_notices<C: LocalClient + ?Sized, W: Write>(
+    journal: &Journal,
+    contexts: &ContextJournal,
+    event: &LifecycleEvent,
+    turn: &QualifiedTurn,
+    initial: Option<&OccupantContext>,
+    created_at_millis: i64,
+    client: &C,
+    clock: &dyn Clock,
+    output: &OutputSpec,
+    writer: &mut W,
+    presented: &mut Option<Presented>,
+) -> Result<(), BridgeError> {
+    run_hook_event_reporting_inner(
+        journal,
+        contexts,
+        event,
+        Some(turn),
+        initial,
+        created_at_millis,
+        client,
+        clock,
+        output,
+        OverviewReason::None,
+        writer,
+        presented,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_hook_event_reporting_inner<C: LocalClient + ?Sized, W: Write>(
+    journal: &Journal,
+    contexts: &ContextJournal,
+    event: &LifecycleEvent,
+    turn: Option<&QualifiedTurn>,
+    initial: Option<&OccupantContext>,
+    created_at_millis: i64,
+    client: &C,
+    clock: &dyn Clock,
+    output: &OutputSpec,
+    reason: OverviewReason,
+    writer: &mut W,
+    presented: &mut Option<Presented>,
+) -> Result<(), BridgeError> {
+    let reason = if turn.is_some() {
+        OverviewReason::None
+    } else if event.kind.mode() == CheckInMode::Lifecycle {
         OverviewReason::Lifecycle
     } else {
         match reason {
@@ -703,6 +856,7 @@ pub fn run_hook_event_reporting_notices<C: LocalClient + ?Sized, W: Write>(
         return Ok(());
     }
     let Some((request, response, result)) = cached_event(
+        turn,
         journal,
         contexts,
         event,
@@ -716,6 +870,11 @@ pub fn run_hook_event_reporting_notices<C: LocalClient + ?Sized, W: Write>(
     else {
         return Ok(());
     };
+    let reason = if turn.is_some() && request.mode == CheckInMode::Lifecycle {
+        OverviewReason::Lifecycle
+    } else {
+        reason
+    };
     let CommandResult::CheckedIn(check) = &result else {
         return Err(ContextError::Invalid.into());
     };
@@ -725,7 +884,7 @@ pub fn run_hook_event_reporting_notices<C: LocalClient + ?Sized, W: Write>(
     });
     // The store always reports its offer frontier; with nothing to offer that
     // frontier alone is routine no-change output.
-    let quiet_current = event.kind.mode() == CheckInMode::Current
+    let quiet_current = request.mode == CheckInMode::Current
         && reason == OverviewReason::None
         && check.warning_count == 0
         && !check.warning_count_has_more
@@ -800,10 +959,7 @@ pub fn run_hook_event_reporting_notices<C: LocalClient + ?Sized, W: Write>(
                 max_bytes: share,
             },
         });
-        let budget = CallBudget {
-            deadline: MonoInstant(clock.monotonic_now().0.saturating_add(5000)),
-            cancellation: Cancellation::default(),
-        };
+        let budget = observed_budget(turn, request.mode, clock)?;
         match client.call_with_output(command, output, &budget) {
             Ok(result @ CommandResult::Directory(_)) => Some(result),
             Ok(_) => return Err(ContextError::Invalid.into()),
