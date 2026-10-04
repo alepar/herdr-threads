@@ -25,9 +25,11 @@ parked:
 - run.md · degraded-verdict · "Final integrated full-suite sweep, main merge, worktree cleanup and 0.3.0 release belong to threads-main w4:p1 by explicit user instruction; this run supplies focused checks and a frozen merge request."
 - design-roast-1 · escalation · "Material dissent — runtime identity snapshot after a live Hermes source-checkout change remains unresolved. Once-per-load capture does not establish unchanged source for later lazy imports; no confirmation/native PASS asserted. Full entry in design roast1 Escalations section; retained for final report."
 
-roast-design: 2026-10-03-harness-adapters-roast-design-1.md
-roastDesignRound: 1
+roast-design: 2026-10-03-harness-adapters-roast-design-1.md, 2026-10-03-harness-adapters-roast-design-2.md
+roastDesignRound: 2
 
 stepBackDesign-round-1: patch — independent registration context namespace and resolved-profile transaction ordering omissions; source-mutation escalation unresolved
 
 Design roast1 fixes applied inline: context spelling validation/reserved Human in root/.1/.7; shared resolved-profile transaction exclusion in Hermes/.6.2/.7. Changed design/data handling requires roast2 with prior report. Historical report remains unchanged.
+
+Design roast2 exit: clean [converged], all9scouts returned0raw; prior2confirmed resolved, runtime-source mutation escalation remains parked. Owned relay exit0/session44341 reaped. Parallelism pass next.
