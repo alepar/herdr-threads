@@ -18,3 +18,5 @@ approvals:
 
 parked:
 - run.md · degraded-verdict · "Final integrated full-suite sweep, main merge, worktree cleanup and 0.3.0 release belong to threads-main w4:p1 by explicit user instruction; this run supplies focused checks and a frozen merge request."
+
+coverage-round-1: requirements: 18 · mapped: 18 · unmapped: 0 · canonical list: coverage-round-1-requirements.md · C1/R18 applied to ht-3bi and ht-3bi.7 · two valid independent reviews
