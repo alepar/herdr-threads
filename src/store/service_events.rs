@@ -1912,6 +1912,7 @@ mod tests {
             &context,
             "i",
             &Command::Directory(DirectoryQuery {
+                recent: false,
                 membership: None,
                 membership_filter: DirectoryMembership::All,
                 topic_contains: None,

@@ -1,6 +1,6 @@
 # Installation and local setup
 
-> [v0.1.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v0.1.0); [v0.2.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v0.2.0); v0.2.1 adds approved outside-sandbox Codex CLI execution. Package lifecycle and a real GitHub install/reinstall/uninstall matrix passed against private Herdr 0.9.1 sessions. These rehearsals did not alter a shared, everyday Herdr session. Native support is summarized from the [validation report](validation/report.md) (verdict **PASS_WITH_GAPS**); see the [README support table](../README.md#supported-configurations).
+> [v0.1.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v0.1.0); [v0.2.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v0.2.0); v0.2.1 adds approved outside-sandbox Codex CLI execution. Package lifecycle and a real GitHub install/reinstall/uninstall matrix passed against private Herdr 0.9.1 sessions. These rehearsals did not alter a shared, everyday Herdr session. Native support is summarized from the [validation report](validation/report.md) (verdict **PASS_WITH_GAPS**); see the [README support table](../README.md#supported-harnesses).
 
 ## Prerequisites
 

@@ -91,6 +91,8 @@ fn participants() -> Page<Participant> {
 fn thread_details() -> ThreadDetails {
     ThreadDetails {
         summary: ThreadSummary {
+            last_activity: None,
+            name: None,
             thread: ThreadId::new("t1"),
             managed_owner: None,
             topic_data: "topic".into(),

@@ -260,6 +260,7 @@ impl Matrix {
     fn create_thread(&self, claim: &CallerClaim, op: &str) -> ThreadId {
         match self
             .handle(Command::CreateThread(CreateThread {
+                name: None,
                 topic: "topic".into(),
                 goal: "goal".into(),
                 operation: OperationId::new(op),

@@ -1,37 +1,259 @@
-//! `--pane` accepts a Herdr pane ID (`w4:p1`) or a unique pane name.
-//!
-//! A name is the pane's own label (`herdr pane rename`) or, for a tab that
-//! holds exactly one pane, that tab's label. The CLI resolves a name to the
-//! pane ID once, from one host snapshot, before it builds any request: the
-//! service, journals and seat mappings only ever see pane IDs. Names are a
-//! lookup aid, never identity evidence.
-//!
-//! Precedence ([`NAME_PRECEDENCE`]): an exact pane ID in the host's list, then
-//! a unique pane label, then the label of a single-pane tab. The first rule
-//! that matches wins, so a pane whose label looks like another pane's ID is
-//! still reached by its ID, never by the label.
-//!
-//! Compatibility: a value shaped like a Herdr pane ID is used as given with no
-//! host call. Any other value is first matched as an exact pane ID in the
-//! host's pane list; when that list cannot be read the value is passed on
-//! unchanged, exactly as before names were accepted, and the service reports
-//! what it finds.
+//! Command-local scoped human locators, frozen to canonical pane IDs before requests.
+//! Labels and live agent names are exact lookup aids, never seat continuity evidence.
 
 use super::commands::{CliAction, MutationSpec, ParsedCli};
-use crate::{
-    host::observation::PaneName,
-    protocol::{ids::HostTargetId, results::ApiError},
-};
+use crate::protocol::{ids::HostTargetId, results::ApiError};
+
+/// Command-local exact target locator. Parsed separately from canonical wire types.
+#[derive(Debug, Clone, Default, PartialEq, Eq, clap::Args)]
+pub struct PaneSelector {
+    /// Exact workspace ID or label; omitted inherits the caller's live workspace, never focus.
+    #[arg(long)]
+    pub space: Option<String>,
+    /// Exact tab ID or label in the selected workspace; a tab ID supplies its workspace.
+    #[arg(long)]
+    pub tab: Option<String>,
+    /// Exact pane ID, label or live agent name in the selected tab. Omitted parents
+    /// inherit the live caller; outside Herdr supply parents or a pane ID.
+    /// Qualify duplicate names with --space/--tab or use an ID; conflicts never pick a pane.
+    #[arg(long)]
+    pub pane: Option<String>,
+}
+
+impl PaneSelector {
+    pub fn is_explicit(&self) -> bool {
+        self.space.is_some() || self.tab.is_some() || self.pane.is_some()
+    }
+    pub fn direct_id(&self) -> Option<HostTargetId> {
+        self.pane
+            .as_ref()
+            .filter(|pane| looks_like_pane_id(pane) && self.space.is_none() && self.tab.is_none())
+            .and_then(|pane| HostTargetId::parse(pane).ok())
+    }
+}
+
+fn unique<'a, T>(
+    matches: Vec<&'a T>,
+    kind: &str,
+    describe: impl Fn(&T) -> String,
+) -> Result<&'a T, ApiError> {
+    match matches.as_slice() {
+        [one] => Ok(*one),
+        [] => Err(ApiError::not_found(format!(
+            "no matching {kind}; {NAME_PRECEDENCE}; {FIND_PANE_ID_HINT}"
+        ))),
+        many => Err(ApiError::new(
+            crate::protocol::results::ErrorCode::Conflict,
+            format!(
+                "ambiguous {kind}: {} matches ({} omitted): {}; qualify with --space SPACE --tab TAB --pane PANE; {FIND_PANE_ID_HINT}",
+                many.len(),
+                many.len().saturating_sub(8),
+                many.iter()
+                    .take(8)
+                    .map(|item| describe(item))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )),
+    }
+}
+
+/// Resolve exact IDs before names against one snapshot and a live caller ID.
+/// This pure locator never reads or allocates a durable seat.
+pub fn resolve_selector(
+    selector: &PaneSelector,
+    topology: &crate::host::observation::HostTopology,
+    caller: Option<&str>,
+) -> Result<HostTargetId, ApiError> {
+    let caller = caller.and_then(|id| {
+        topology
+            .panes
+            .iter()
+            .find(|pane| pane.target.as_str() == id)
+    });
+    let exact = selector.pane.as_ref().and_then(|id| {
+        topology
+            .panes
+            .iter()
+            .find(|pane| pane.target.as_str() == id)
+    });
+    if selector
+        .pane
+        .as_ref()
+        .is_some_and(|value| looks_like_pane_id(value))
+        && exact.is_none()
+    {
+        return Err(ApiError::not_found(
+            "the qualified pane ID is absent from the live topology",
+        ));
+    }
+    let explicit_tab_id = selector
+        .tab
+        .as_ref()
+        .and_then(|id| topology.tabs.iter().find(|tab| &tab.id == id));
+    if selector
+        .tab
+        .as_ref()
+        .is_some_and(|value| looks_like_tab_id(value))
+        && explicit_tab_id.is_none()
+    {
+        return Err(ApiError::not_found(
+            "the explicit tab ID is absent from the live topology",
+        ));
+    }
+    let space = if let Some(value) = &selector.space {
+        topology
+            .spaces
+            .iter()
+            .find(|space| &space.id == value)
+            .map(Ok)
+            .unwrap_or_else(|| {
+                unique(
+                    topology
+                        .spaces
+                        .iter()
+                        .filter(|space| space.label.as_ref() == Some(value))
+                        .collect(),
+                    "space",
+                    |space| format!("{:?} {:?}", space.id, space.label),
+                )
+            })?
+    } else {
+        let id = exact.map(|pane| &pane.space).or_else(|| explicit_tab_id.map(|tab| &tab.space))
+            .or_else(|| caller.map(|pane| &pane.space)).ok_or_else(|| invalid(
+                "outside Herdr, pass --space/--tab or a pane ID; caller pane is absent or stale".into()))?;
+        topology
+            .spaces
+            .iter()
+            .find(|space| &space.id == id)
+            .ok_or_else(|| ApiError::not_found("caller space disappeared"))?
+    };
+    let tab = if let Some(value) = &selector.tab {
+        if let Some(tab) = explicit_tab_id {
+            if tab.space != space.id {
+                return Err(invalid(
+                    "explicit tab does not belong to selected space".into(),
+                ));
+            }
+            tab
+        } else {
+            unique(
+                topology
+                    .tabs
+                    .iter()
+                    .filter(|tab| tab.space == space.id && tab.label.as_ref() == Some(value))
+                    .collect(),
+                "tab",
+                |tab| format!("{:?} {:?}", tab.id, tab.label),
+            )?
+        }
+    } else if let Some(pane) = exact {
+        topology
+            .tabs
+            .iter()
+            .find(|tab| tab.id == pane.tab && tab.space == space.id)
+            .ok_or_else(|| invalid("explicit pane does not belong to selected space".into()))?
+    } else if let Some(pane) = caller.filter(|pane| pane.space == space.id) {
+        topology
+            .tabs
+            .iter()
+            .find(|tab| tab.id == pane.tab)
+            .ok_or_else(|| ApiError::not_found("caller tab disappeared"))?
+    } else {
+        unique(
+            topology
+                .tabs
+                .iter()
+                .filter(|tab| tab.space == space.id)
+                .collect(),
+            "tab",
+            |tab| format!("{:?} {:?}", tab.id, tab.label),
+        )?
+    };
+    let scoped: Vec<_> = topology
+        .panes
+        .iter()
+        .filter(|pane| pane.space == space.id && pane.tab == tab.id)
+        .collect();
+    let describe = |pane: &crate::host::observation::TopologyPane| {
+        let kind = match selector.pane.as_ref() {
+            Some(value) => match (
+                pane.label.as_ref() == Some(value),
+                pane.agent_names.contains(value),
+            ) {
+                (true, true) => "pane label and live agent name",
+                (true, false) => "pane label",
+                (false, true) => "live agent name",
+                _ => "single-pane tab alias",
+            },
+            None => "child pane",
+        };
+        format!(
+            "space {:?} {:?}, tab {:?} {:?}, pane {:?} {:?} ({kind})",
+            space.id,
+            space.label,
+            tab.id,
+            tab.label,
+            pane.target.as_str(),
+            pane.label
+        )
+    };
+    if let Some(pane) = exact {
+        if pane.space != space.id || pane.tab != tab.id {
+            return Err(invalid(
+                "explicit pane does not belong to selected parents".into(),
+            ));
+        }
+        return Ok(pane.target.clone());
+    }
+    let matches = match &selector.pane {
+        Some(value) => {
+            let matches: Vec<_> = scoped
+                .iter()
+                .copied()
+                .filter(|pane| {
+                    pane.label.as_ref() == Some(value) || pane.agent_names.contains(value)
+                })
+                .collect();
+            if matches.is_empty() && scoped.len() == 1 && tab.label.as_ref() == Some(value) {
+                scoped
+            } else {
+                matches
+            }
+        }
+        None => {
+            if let Some(pane) = caller.filter(|pane| pane.space == space.id && pane.tab == tab.id) {
+                return Ok(pane.target.clone());
+            }
+            scoped
+        }
+    };
+    let kind = selector
+        .pane
+        .as_ref()
+        .map(|value| format!("pane {value:?}"))
+        .unwrap_or_else(|| "pane".into());
+    unique(matches, &kind, describe).map(|pane| pane.target.clone())
+}
 
 /// How a person finds a pane ID; part of every name-resolution error.
 pub const FIND_PANE_ID_HINT: &str =
     "run `herdr pane current` inside that pane (or `herdr pane list`) to get its pane ID";
 
-/// How a `--pane` name is matched, in order; named by the `not_found` error so
-/// a person can see why their name did not resolve. Documented in
-/// `docs/agent-usage.md`.
-pub const NAME_PRECEDENCE: &str = "names match in this order: an exact pane ID, then a unique pane \
-     label (`herdr pane rename`), then the label of a tab that holds exactly one pane";
+/// Exact locator matching and scope, included in missing-pane diagnostics.
+pub const NAME_PRECEDENCE: &str = "an exact pane ID wins; pane label and live agent name match together within the selected tab; a tab label is an alias only when that tab holds exactly one pane";
+
+/// Tab IDs have an unambiguous separator/prefix, unlike workspace labels such as `work`.
+fn looks_like_tab_id(value: &str) -> bool {
+    value.split_once(':').is_some_and(|(space, tab)| {
+        space.len() > 1
+            && space.starts_with('w')
+            && space[1..].bytes().all(|byte| byte.is_ascii_alphanumeric())
+            && tab.len() > 1
+            && tab.starts_with('t')
+            && tab[1..].bytes().all(|byte| byte.is_ascii_alphanumeric())
+    })
+}
 
 /// The Herdr 0.9.1 pane ID shape `w<workspace>:p<pane>`. Such a value is used
 /// as given, exactly as before names were accepted.
@@ -51,269 +273,97 @@ fn invalid(detail: String) -> ApiError {
     ApiError::invalid_request(detail)
 }
 
-fn ambiguous(value: &str, kind: &str, matches: &[&HostTargetId]) -> ApiError {
-    let ids = matches
-        .iter()
-        .take(8)
-        .map(|id| id.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    invalid(format!(
-        "pane name `{value}` is ambiguous: {count} panes match by {kind} ({ids}); pass the pane \
-         ID instead; {FIND_PANE_ID_HINT}",
-        count = matches.len(),
-    ))
-}
-
-/// Resolve one `--pane` value against the host's panes: an exact pane ID
-/// wins, then a unique pane label, then the label of a single-pane tab.
-/// Ambiguity and absence are refused with how to find the ID.
-pub fn resolve_pane_name(value: &str, panes: &[PaneName]) -> Result<HostTargetId, ApiError> {
-    if let Some(pane) = panes.iter().find(|pane| pane.target.as_str() == value) {
-        return Ok(pane.target.clone());
-    }
-    let by_label: Vec<&HostTargetId> = panes
-        .iter()
-        .filter(|pane| pane.label.as_deref() == Some(value))
-        .map(|pane| &pane.target)
-        .collect();
-    match by_label.as_slice() {
-        [one] => return Ok((*one).clone()),
-        [] => {}
-        many => return Err(ambiguous(value, "pane label", many)),
-    }
-    let by_tab: Vec<&HostTargetId> = panes
-        .iter()
-        .filter(|pane| pane.tab_label.as_deref() == Some(value))
-        .map(|pane| &pane.target)
-        .collect();
-    match by_tab.as_slice() {
-        [one]
-            if panes
-                .iter()
-                .any(|pane| &pane.target == *one && pane.tab_pane_count == 1) =>
-        {
-            Ok((*one).clone())
-        }
-        [] => Err(ApiError::not_found(format!(
-            "no Herdr pane has the ID or name `{value}` ({NAME_PRECEDENCE}); {FIND_PANE_ID_HINT}"
-        ))),
-        many => Err(ambiguous(value, "tab label", many)),
-    }
-}
-
-/// Every `--pane`-style argument of this invocation that is not already a
-/// pane ID. Empty for most commands, so no host call is made.
-fn pane_arguments(parsed: &mut ParsedCli) -> Vec<&mut HostTargetId> {
-    let mut found = Vec::new();
-    match &mut parsed.action {
-        CliAction::Mutation(
-            MutationSpec::Resolve(target)
-            | MutationSpec::FreshSeat(target)
-            | MutationSpec::Rebind { pane: target, .. }
-            | MutationSpec::Replace { pane: target, .. },
-        ) => found.push(target),
-        CliAction::Launch(request) => found.push(&mut request.target),
-        _ => {}
-    }
-    found.retain(|target| !looks_like_pane_id(target.as_str()));
-    found
-}
-
-/// Replace pane names with pane IDs in place. `panes` is called at most once,
-/// and only when some argument is not ID-shaped; if it fails, arguments are
-/// left unchanged (the pre-name behavior).
-pub fn resolve_pane_arguments(
-    parsed: &mut ParsedCli,
-    panes: impl FnOnce() -> Result<Vec<PaneName>, ApiError>,
-) -> Result<(), ApiError> {
-    let mut arguments = pane_arguments(parsed);
-    if arguments.is_empty() {
-        return Ok(());
-    }
-    let Ok(panes) = panes() else {
-        return Ok(());
-    };
-    for target in arguments.iter_mut() {
-        **target = resolve_pane_name(target.as_str(), &panes)?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 #[path = "../../tests/cli/panes_hint.rs"]
 mod panes_hint;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::protocol::results::ErrorCode;
-
-    fn pane(id: &str, label: Option<&str>, tab: Option<&str>, tab_panes: usize) -> PaneName {
-        PaneName {
-            target: HostTargetId::new(id),
-            label: label.map(str::to_owned),
-            tab_label: tab.map(str::to_owned),
-            tab_pane_count: tab_panes,
+/// Freeze all CLI target locators once, leaving canonical IDs for journaling.
+/// Explicit unqualified pane IDs retain their direct compatibility path.
+pub fn resolve_cli_targets(
+    parsed: &mut ParsedCli,
+    topology: impl FnOnce() -> Result<crate::host::observation::HostTopology, ApiError>,
+    live_caller: impl FnOnce() -> Result<Option<HostTargetId>, ApiError>,
+) -> Result<(), ApiError> {
+    let cooperative = parsed.cooperative_selector.clone();
+    let selectors: Vec<_> = parsed
+        .pane_selector
+        .iter()
+        .chain(parsed.require_ack_panes.iter())
+        .chain(cooperative.iter())
+        .collect();
+    let needs_topology = selectors
+        .iter()
+        .any(|selector| selector.direct_id().is_none());
+    let topology = if needs_topology {
+        Some(topology()?)
+    } else {
+        None
+    };
+    let needs_caller = selectors.iter().any(|selector| {
+        // Even fully specified parents need the live caller when the pane is
+        // omitted: the same tab defaults to own pane, a different tab to its
+        // sole child. An explicit pane has no such same-parent default.
+        if selector.pane.is_none() {
+            return true;
         }
+        let pane_id = selector
+            .pane
+            .as_ref()
+            .is_some_and(|pane| looks_like_pane_id(pane));
+        let qualified = selector.space.is_some() && selector.tab.is_some();
+        let tab_id = selector.tab.as_ref().is_some_and(|id| {
+            looks_like_tab_id(id)
+                || topology
+                    .as_ref()
+                    .is_some_and(|topology| topology.tabs.iter().any(|tab| &tab.id == id))
+        });
+        !(pane_id || qualified || tab_id)
+    });
+    let caller = if needs_caller { live_caller()? } else { None };
+    let resolve = |selector: &PaneSelector| -> Result<HostTargetId, ApiError> {
+        match selector.direct_id() {
+            Some(id) => Ok(id),
+            None => resolve_selector(
+                selector,
+                topology.as_ref().expect("topology requested"),
+                caller.as_ref().map(HostTargetId::as_str),
+            ),
+        }
+    };
+    if let Some(selector) = &parsed.pane_selector {
+        let target = resolve(selector)?;
+        match &mut parsed.action {
+            CliAction::Mutation(
+                MutationSpec::Resolve(pane)
+                | MutationSpec::FreshSeat(pane)
+                | MutationSpec::Rebind { pane, .. }
+                | MutationSpec::Replace { pane, .. },
+            ) => *pane = target.clone(),
+            CliAction::Launch(request) => request.target = target.clone(),
+            CliAction::Handoff(request) => request.launch.target = target.clone(),
+            _ => {}
+        }
+        parsed.pane_selector = Some(PaneSelector {
+            pane: Some(target.as_str().to_owned()),
+            ..Default::default()
+        });
     }
-
-    fn panes() -> Vec<PaneName> {
-        vec![
-            pane("w1:p1", Some("try-target"), Some("main"), 2),
-            pane("w1:p2", Some("dup"), Some("main"), 2),
-            pane("w1:p3", Some("dup"), Some("solo"), 1),
-            pane("w2:p1", None, Some("lonely"), 1),
-        ]
-    }
-
-    #[test]
-    fn snapshot_pane_and_tab_labels_are_read_from_herdr_0_9_1() {
-        let pane = |id: &str, terminal: &str, tab: &str, label: Option<&str>| {
-            let mut value = serde_json::json!({"pane_id":id,"terminal_id":terminal,
-                "workspace_id":"w4","tab_id":tab,"focused":false,"agent_status":"idle","revision":1});
-            if let Some(label) = label {
-                value["label"] = serde_json::json!(label);
-            }
-            value
+    for selector in &mut parsed.require_ack_panes {
+        *selector = PaneSelector {
+            pane: Some(resolve(selector)?.as_str().to_owned()),
+            ..Default::default()
         };
-        let raw = serde_json::json!({"id":"x","result":{"type":"session_snapshot","snapshot":{
-            "version":"0.9.1","protocol":22,"agents":[],"workspaces":[],"layouts":[],
-            "tabs":[{"tab_id":"w4:t1","label":"main","pane_count":2},
-                    {"tab_id":"w4:t2","label":"try","pane_count":1}],
-            "panes":[pane("w4:p1","term-1","w4:t1",Some("lead")),
-                     pane("w4:p2","term-2","w4:t1",None),
-                     pane("w4:p3","term-3","w4:t2",None)]}}})
-        .to_string();
-        let names = crate::host::observation::normalize_pane_names(&raw).unwrap();
-        assert_eq!(resolve_pane_name("lead", &names).unwrap().as_str(), "w4:p1");
-        assert_eq!(resolve_pane_name("try", &names).unwrap().as_str(), "w4:p3");
-        assert!(
-            resolve_pane_name("main", &names)
-                .unwrap_err()
-                .detail
-                .contains("ambiguous")
-        );
     }
-
-    #[test]
-    fn pane_id_shape_is_recognized_and_names_are_not() {
-        for id in ["w4:p1", "w4:pAB", "wB:p1"] {
-            assert!(looks_like_pane_id(id), "{id}");
-        }
-        for name in [
-            "try-target",
-            "w4",
-            "w4:",
-            "w4:x1",
-            "w:p",
-            "w4:p1:x",
-            "try:p1",
-        ] {
-            assert!(!looks_like_pane_id(name), "{name}");
-        }
+    let mut seen = std::collections::HashSet::new();
+    parsed
+        .require_ack_panes
+        .retain(|selector| seen.insert(selector.pane.clone()));
+    if let (Some(selector), Some(selection)) = (cooperative, &mut parsed.cooperative) {
+        selection.target = resolve(&selector)?;
+        parsed.cooperative_selector = Some(PaneSelector {
+            pane: Some(selection.target.as_str().to_owned()),
+            ..Default::default()
+        });
     }
-
-    #[test]
-    fn unique_pane_label_resolves_to_its_pane_id() {
-        assert_eq!(
-            resolve_pane_name("try-target", &panes()).unwrap().as_str(),
-            "w1:p1"
-        );
-        assert_eq!(
-            resolve_pane_name("w1:p2", &panes()).unwrap().as_str(),
-            "w1:p2"
-        );
-    }
-
-    #[test]
-    fn single_pane_tab_label_resolves_but_a_shared_tab_label_is_ambiguous() {
-        assert_eq!(
-            resolve_pane_name("lonely", &panes()).unwrap().as_str(),
-            "w2:p1"
-        );
-        assert_eq!(
-            resolve_pane_name("solo", &panes()).unwrap().as_str(),
-            "w1:p3"
-        );
-        let error = resolve_pane_name("main", &panes()).unwrap_err();
-        assert_eq!(error.code, ErrorCode::InvalidRequest);
-        assert!(error.detail.contains("ambiguous"), "{}", error.detail);
-        assert!(
-            error.detail.contains("herdr pane current"),
-            "{}",
-            error.detail
-        );
-    }
-
-    #[test]
-    fn ambiguous_pane_label_names_every_match_and_how_to_find_the_id() {
-        let error = resolve_pane_name("dup", &panes()).unwrap_err();
-        assert_eq!(error.code, ErrorCode::InvalidRequest);
-        assert!(error.detail.contains("ambiguous"), "{}", error.detail);
-        assert!(error.detail.contains("w1:p2") && error.detail.contains("w1:p3"));
-        assert!(
-            error.detail.contains("herdr pane current"),
-            "{}",
-            error.detail
-        );
-    }
-
-    #[test]
-    fn missing_name_says_how_to_find_the_pane_id() {
-        let error = resolve_pane_name("nope", &panes()).unwrap_err();
-        assert_eq!(error.code, ErrorCode::NotFound);
-        assert!(error.detail.contains("`nope`"), "{}", error.detail);
-        assert!(
-            error.detail.contains("herdr pane current"),
-            "{}",
-            error.detail
-        );
-    }
-
-    #[test]
-    fn only_name_arguments_consult_the_host_and_ids_pass_through() {
-        let mut parsed = super::super::commands::parse_argv([
-            "herdr-threads",
-            "seat",
-            "resolve",
-            "--pane",
-            "w9:p9",
-        ])
-        .unwrap();
-        resolve_pane_arguments(&mut parsed, || panic!("an ID needs no host lookup")).unwrap();
-        assert_eq!(
-            parsed.action,
-            CliAction::Mutation(MutationSpec::Resolve(HostTargetId::new("w9:p9")))
-        );
-        let mut parsed = super::super::commands::parse_argv([
-            "herdr-threads",
-            "seat",
-            "rebind",
-            "seat-1",
-            "--pane",
-            "try-target",
-            "--operator",
-        ])
-        .unwrap();
-        resolve_pane_arguments(&mut parsed, || Ok(panes())).unwrap();
-        assert!(matches!(
-            parsed.action,
-            CliAction::Mutation(MutationSpec::Rebind { ref pane, .. }) if pane.as_str() == "w1:p1"
-        ));
-        // Without the host's pane list an opaque value passes on unchanged.
-        let mut parsed = super::super::commands::parse_argv([
-            "herdr-threads",
-            "seat",
-            "resolve",
-            "--pane",
-            "other",
-        ])
-        .unwrap();
-        resolve_pane_arguments(&mut parsed, || Err(ApiError::host_unavailable("down"))).unwrap();
-        assert_eq!(
-            parsed.action,
-            CliAction::Mutation(MutationSpec::Resolve(HostTargetId::new("other")))
-        );
-    }
+    Ok(())
 }

@@ -1489,6 +1489,9 @@ impl StorePort for SqliteStore {
             PermitMutation::Leave(v) => {
                 control::leave(&self.context, &mut writer, budget, &v, permit)
             }
+            PermitMutation::SetThreadName(v) => {
+                control::set_thread_name(&self.context, &mut writer, budget, &v, permit)
+            }
             PermitMutation::SetTopic(v) => {
                 control::set_topic(&self.context, &mut writer, budget, &v, permit)
             }
@@ -2668,6 +2671,13 @@ pub fn cooperative_permit_request(
             v.operation.clone(),
             ObligationRef::Control(v.thread.clone()),
             control::cooperative_payload_hash("leave", v)?,
+            None,
+        ),
+        PermitMutation::SetThreadName(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::Control(v.thread.clone()),
+            control::cooperative_payload_hash("set_thread_name", v)?,
             None,
         ),
         PermitMutation::SetTopic(v) => (

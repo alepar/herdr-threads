@@ -36,6 +36,16 @@ const EVENT_IDS_SHOWN: usize = 3;
 pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String> {
     let mut out = String::new();
     match result {
+        CommandResult::ThreadName(value) => {
+            out.push_str(&format!(
+                "thread_name {}: {}\n",
+                value.thread.as_str(),
+                value
+                    .name
+                    .as_deref()
+                    .map_or_else(|| "unnamed".to_owned(), one_line)
+            ));
+        }
         CommandResult::History(page) => {
             out.push_str("history\n");
             for summary in &page.items {
@@ -613,6 +623,11 @@ fn thread(details: &ThreadDetails, out: &mut String) {
         out.push_str(&format!(" managed_by={}", owner.as_str()));
     }
     out.push('\n');
+    if let Some(name) = &summary.name {
+        out.push_str("name: ");
+        out.push_str(&one_line(name));
+        out.push('\n');
+    }
     out.push_str("topic: ");
     out.push_str(&one_line(&summary.topic_data));
     if summary.topic_omitted {

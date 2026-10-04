@@ -174,6 +174,8 @@ mod fixtures {
 
     pub fn thread_summary(thread: &str, topic: &str, omitted: bool) -> ThreadSummary {
         ThreadSummary {
+            last_activity: None,
+            name: None,
             thread: ThreadId::new(thread),
             managed_owner: None,
             topic_data: topic.to_owned(),

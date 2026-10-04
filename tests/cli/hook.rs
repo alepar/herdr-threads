@@ -920,6 +920,8 @@ fn startup_offer(
         items: threads
             .iter()
             .map(|thread| ThreadSummary {
+                last_activity: None,
+                name: None,
                 thread: ThreadId::new(thread.clone()),
                 managed_owner: None,
                 topic_data: format!(

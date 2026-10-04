@@ -32,7 +32,10 @@ use super::{
 use crate::{
     daemon::paths::{InstancePaths, RuntimeContext},
     harness::context::{ContextJournal, Harness},
-    host::{native::NativeCli, observation::PaneName},
+    host::{
+        native::NativeCli,
+        observation::{PaneName, SeatHostLabels},
+    },
     ports::LocalClient,
     protocol::{
         capabilities::HISTORY_FULL_BODIES,
@@ -169,9 +172,22 @@ type SeatBinding = (Option<HostTargetId>, u64);
 /// Where a [`NickCache`] reads host pane names from.
 pub(crate) trait PaneNameSource {
     fn pane_names(&self, budget: &CallBudget) -> Result<Vec<PaneName>, ApiError>;
+    fn current_pane(&self, caller: &str, _budget: &CallBudget) -> Result<HostTargetId, ApiError> {
+        Ok(HostTargetId::new(caller))
+    }
+    /// Older bounded fixtures can supply pane-only names; production supplies scope.
+    fn seat_labels(&self, _budget: &CallBudget) -> Result<Option<Vec<SeatHostLabels>>, ApiError> {
+        Ok(None)
+    }
 }
 
 impl PaneNameSource for NativeCli {
+    fn current_pane(&self, caller: &str, budget: &CallBudget) -> Result<HostTargetId, ApiError> {
+        NativeCli::current_pane(self, caller, budget)
+    }
+    fn seat_labels(&self, budget: &CallBudget) -> Result<Option<Vec<SeatHostLabels>>, ApiError> {
+        NativeCli::seat_labels(self, budget).map(Some)
+    }
     fn pane_names(&self, budget: &CallBudget) -> Result<Vec<PaneName>, ApiError> {
         NativeCli::pane_names(self, budget)
     }
@@ -187,6 +203,10 @@ pub(crate) struct NickCache {
     paths: InstancePaths,
     instance: uuid::Uuid,
     panes: Option<(Instant, Vec<PaneName>)>,
+    labels: Option<Vec<SeatHostLabels>>,
+    caller: Option<HostTargetId>,
+    /// Original inherited locator; a qualified live target can change on a move.
+    caller_hint: Option<String>,
     nicks: HashMap<SeatId, (Instant, Nick)>,
     /// The seats of each thread's last Participants page.
     participants: HashMap<ThreadId, (Instant, HashSet<SeatId>)>,
@@ -231,12 +251,31 @@ impl NickCache {
             paths: paths.clone(),
             instance,
             panes: None,
+            labels: None,
+            caller: None,
+            caller_hint: None,
             nicks: HashMap::new(),
             participants: HashMap::new(),
             mapped: None,
             page_panes_read: None,
             cancel: Cancellation::default(),
         }
+    }
+
+    /// Explicit/inherited invoking pane; never UI focus. Its live scope comes
+    /// from each refreshed host snapshot, so moves cannot be inferred from labels.
+    pub(crate) fn with_caller(mut self, caller: Option<&str>) -> Self {
+        let hint = caller
+            .filter(|caller| !caller.is_empty())
+            .map(str::to_owned);
+        if self.caller_hint != hint {
+            self.caller_hint = hint;
+            self.caller = None;
+            self.panes = None;
+            self.page_panes_read = None;
+            self.nicks.clear();
+        }
+        self
     }
 
     /// Make every call this cache issues give up when `cancel` fires.
@@ -270,23 +309,76 @@ impl NickCache {
         if self.page_panes_read.is_some() {
             self.page_panes_read = Some(true);
         }
-        if let Ok(panes) = self.host.pane_names(budget) {
-            self.panes = Some((Instant::now(), panes));
+        // Re-resolve only with a snapshot refresh, from the original explicit
+        // locator. A workspace move changes the qualified pane target; focus is
+        // never consulted. A failed lookup stays retryable at the next refresh.
+        let caller_budget = CallBudget {
+            deadline: MonoInstant(
+                budget
+                    .deadline
+                    .0
+                    .min(self.clock.monotonic_now().0.saturating_add(750)),
+            ),
+            cancellation: budget.cancellation.clone(),
+        };
+        let caller = self
+            .caller_hint
+            .as_deref()
+            .and_then(|hint| self.host.current_pane(hint, &caller_budget).ok());
+        if self.caller != caller {
+            self.caller = caller;
+            self.nicks.clear();
+        }
+        match self.host.seat_labels(budget) {
+            Ok(Some(labels)) => {
+                if self.labels.as_ref() != Some(&labels) {
+                    self.nicks.clear();
+                }
+                let panes = labels
+                    .iter()
+                    .map(|pane| PaneName {
+                        target: pane.target.clone(),
+                        label: pane.pane_label.clone(),
+                        tab_label: pane.tab_label.clone(),
+                        tab_pane_count: 0,
+                    })
+                    .collect();
+                self.labels = Some(labels);
+                self.panes = Some((Instant::now(), panes));
+            }
+            Ok(None) => {
+                if let Ok(panes) = self.host.pane_names(budget) {
+                    self.panes = Some((Instant::now(), panes));
+                }
+            }
+            Err(_) => {
+                // A host outage must not break durable history or retain stale
+                // parent omissions after a move. Seat/target IDs remain usable.
+                self.labels = None;
+                self.panes = Some((Instant::now(), Vec::new()));
+                self.nicks.clear();
+            }
         }
     }
 
     fn pane_label(&mut self, target: &str, budget: &CallBudget) -> Option<String> {
         self.refresh_panes([target], budget);
+        if let Some(labels) = &self.labels {
+            let pane = labels.iter().find(|pane| pane.target.as_str() == target)?;
+            let caller = self
+                .caller
+                .as_ref()
+                .and_then(|target| labels.iter().find(|pane| pane.target == *target));
+            return Some(irc::relative_pane_nick(pane, caller));
+        }
         let (_, panes) = self.panes.as_ref()?;
         let pane = panes.iter().find(|pane| pane.target.as_str() == target)?;
-        pane.label
-            .clone()
-            .filter(|label| !label.is_empty())
-            .or_else(|| {
-                pane.tab_label
-                    .clone()
-                    .filter(|label| !label.is_empty() && pane.tab_pane_count == 1)
-            })
+        Some(
+            pane.label
+                .clone()
+                .filter(|label| !label.is_empty())
+                .unwrap_or_else(|| target.to_owned()),
+        )
     }
 
     /// The harness of the seat's current binding, from its private local
@@ -337,6 +429,10 @@ impl NickCache {
         spec: &OutputSpec,
     ) {
         self.page_panes_read = Some(false);
+        self.refresh_panes(
+            std::iter::empty(),
+            &budget(self.clock.as_ref(), 2_000, &self.cancel),
+        );
         let mut missing: Vec<SeatId> = Vec::new();
         for summary in &page.items {
             let native = match &summary.event_author {
@@ -433,6 +529,10 @@ impl NickCache {
     }
 
     fn resolve(&mut self, client: &dyn LocalClient, seat: &SeatId, spec: &OutputSpec) -> Nick {
+        self.refresh_panes(
+            std::iter::empty(),
+            &budget(self.clock.as_ref(), 2_000, &self.cancel),
+        );
         if let Some(nick) = self.fresh_nick(seat) {
             return nick.clone();
         }
@@ -893,6 +993,7 @@ fn write_result(result: io::Result<()>) -> Result<bool, RunError> {
 /// disappearing.
 pub(crate) fn run(
     request: &super::commands::FollowRequest,
+    caller_pane: Option<&str>,
     spec: &OutputSpec,
     context: &RuntimeContext,
     paths: &InstancePaths,
@@ -908,7 +1009,13 @@ pub(crate) fn run(
         Form::Lines
     };
     let (instance, _, mut client) = connect(paths, clock)?;
-    let mut cache = NickCache::new(context, paths, instance, clock).cancelled_by(&cancel);
+    let mut cache = NickCache::new(context, paths, instance, clock)
+        .with_caller(if form == Form::Human {
+            caller_pane
+        } else {
+            None
+        })
+        .cancelled_by(&cancel);
     let mut stderr = io::stderr();
     let mut printer = Printer {
         form,

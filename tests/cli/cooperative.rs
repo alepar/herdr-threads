@@ -1698,3 +1698,824 @@ fn cli_command_against_previous_protocol_descriptor_is_refused_before_send() {
     drop(lock);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn foreign_pane_inbox_never_requests_display_ack_caller() {
+    let root = std::env::temp_dir().join(format!("ht-foreign-pane-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let runtime = crate::daemon::paths::RuntimeContext::explicit(
+        root.join("state"),
+        root.join("host.sock"),
+        None,
+    )
+    .unwrap();
+    let paths = crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
+    let parsed =
+        crate::cli::commands::parse_argv(["ht", "inbox", "--human", "--pane", "w1:p2"]).unwrap();
+    assert!(matches!(
+        crate::cli::caller_need(&parsed, &paths).unwrap(),
+        crate::cli::CallerNeed::None
+    ));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn recipient_panes_reads_do_not_allocate_and_invite_uses_guarded_resolution() {
+    use crate::protocol::{
+        pagination::{Consistency, Page, StopReason},
+        results::{ApiError, ContinuityStatus, SeatSummary},
+        time::Clock,
+    };
+    use std::sync::{Arc, Mutex};
+    struct Client {
+        calls: Mutex<Vec<Command>>,
+        empty: bool,
+    }
+    impl crate::ports::LocalClient for Client {
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+        fn call(
+            &self,
+            command: Command,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.calls.lock().unwrap().push(command.clone());
+            match command {
+                Command::Seats(query) => {
+                    assert_eq!(query.target, Some(HostTargetId::new("w1:p2")));
+                    Ok(CommandResult::Seats(Page {
+                        items: if self.empty {
+                            vec![]
+                        } else {
+                            vec![SeatSummary {
+                                seat: SeatId::new("recipient"),
+                                continuity: ContinuityStatus::Resolved,
+                                target: query.target,
+                                generation: 1,
+                                created_at: crate::protocol::time::UtcMillis(0),
+                                retired_at: None,
+                            }]
+                        },
+                        next_cursor: None,
+                        next_argv: None,
+                        high_water_ordinal: 0,
+                        scope_revision: None,
+                        has_more: false,
+                        stop_reason: StopReason::Complete,
+                        consistency: Consistency::BoundedLive,
+                    }))
+                }
+                Command::ResolveSeat(query) => {
+                    assert_eq!(query.target, HostTargetId::new("w1:p2"));
+                    Ok(CommandResult::SeatResolved(SeatId::new("recipient")))
+                }
+                _ => panic!("unexpected recipient command: {command:?}"),
+            }
+        }
+    }
+    let root = std::env::temp_dir().join(format!("ht-pane-recipient-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let runtime = crate::daemon::paths::RuntimeContext::explicit(
+        root.join("state"),
+        root.join("host.sock"),
+        None,
+    )
+    .unwrap();
+    let paths = crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
+    let clock: Arc<dyn Clock> = Arc::new(crate::cli::SystemClock::new());
+    for argv in [
+        vec!["ht", "inbox", "--pane", "w1:p2"],
+        vec!["ht", "invite", "t123", "--pane", "w1:p2"],
+        vec![
+            "ht",
+            "send",
+            "t123",
+            "--body",
+            "work",
+            "--require-ack",
+            "recipient",
+            "--require-ack-pane",
+            "w1:p2",
+            "--require-ack-pane",
+            "w1:p2",
+        ],
+    ] {
+        let is_read = argv[1] == "inbox";
+        let connection = crate::cli::LazyConnection::new(|| {
+            Ok((
+                uuid::Uuid::from_u128(1),
+                Client {
+                    calls: Mutex::new(vec![]),
+                    empty: !is_read,
+                },
+            ))
+        });
+        let mut parsed = crate::cli::commands::parse_argv(argv).unwrap();
+        crate::cli::panes::resolve_cli_targets(
+            &mut parsed,
+            || panic!("direct IDs"),
+            || panic!("direct IDs"),
+        )
+        .unwrap();
+        crate::cli::resolve_recipient_seats(&mut parsed, &paths, &connection, &clock).unwrap();
+        assert!(
+            parsed.cooperative.is_none(),
+            "recipient must not become caller"
+        );
+        let calls = connection.get().unwrap().1.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        if is_read {
+            assert!(matches!(calls[0], Command::Seats(_)));
+            assert!(
+                matches!(parsed.action, crate::cli::commands::CliAction::Wire(Command::Inbox(ref q)) if q.seat == Some(SeatId::new("recipient")))
+            );
+            assert!(
+                !paths.instance_dir.join("intents").exists(),
+                "reads must not journal allocations"
+            );
+        } else {
+            assert!(matches!(calls[0], Command::ResolveSeat(_)));
+            match parsed.action {
+                crate::cli::commands::CliAction::Mutation(
+                    crate::cli::commands::MutationSpec::Invite { seat, .. },
+                ) => assert_eq!(seat.as_str(), "recipient"),
+                crate::cli::commands::CliAction::Mutation(
+                    crate::cli::commands::MutationSpec::Send { require_ack, .. },
+                ) => assert_eq!(require_ack, vec![SeatId::new("recipient")]),
+                other => panic!("unexpected recipient action: {other:?}"),
+            }
+        }
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Exercise public runtime composition against isolated host/daemon socket fixtures.
+mod scoped_runtime {
+    use super::*;
+    use crate::{
+        daemon::{
+            ownership::OwnerLock,
+            paths::{InstancePaths, RuntimeContext},
+        },
+        protocol::{
+            pagination::{Consistency, Page, StopReason},
+            results::{ApiError, ContinuityStatus, ErrorCode, SeatSummary},
+            wire::{PROTOCOL_VERSION, WireRequest, WireResponse},
+        },
+    };
+    use serde_json::{Value, json};
+    use std::{
+        fs,
+        io::{BufRead, BufReader, Read, Write},
+        os::unix::net::{UnixListener, UnixStream},
+        path::PathBuf,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread,
+        time::Duration,
+    };
+
+    fn empty<T>() -> Page<T> {
+        Page {
+            items: vec![],
+            next_cursor: None,
+            next_argv: None,
+            high_water_ordinal: 0,
+            scope_revision: None,
+            has_more: false,
+            stop_reason: StopReason::Complete,
+            consistency: Consistency::BoundedLive,
+        }
+    }
+    fn snapshot() -> Value {
+        let p = |id: &str, tab: &str, label: &str| json!({"pane_id":id,"terminal_id":id,"workspace_id":"w1","tab_id":tab,"label":label,"focused":false,"agent_status":"idle","revision":1});
+        json!({"version":"0.9.1","protocol":22,"layouts":[],"workspaces":[{"workspace_id":"w1","label":"project"}],
+            "tabs":[{"tab_id":"w1:t1","workspace_id":"w1","label":"main"},{"tab_id":"w1:t2","workspace_id":"w1","label":"tryout"}],
+            "panes":[p("w1:p1","w1:t1","caller"),p("w1:p2","w1:t2","alice")],"agents":[]})
+    }
+    struct Runtime {
+        root: PathBuf,
+        paths: InstancePaths,
+        _lock: OwnerLock,
+        calls: Arc<Mutex<Vec<Command>>>,
+        host_calls: Arc<Mutex<Vec<Value>>>,
+        journals: Arc<Mutex<Vec<Value>>>,
+        stop: Arc<AtomicBool>,
+        workers: Vec<thread::JoinHandle<()>>,
+    }
+    impl Runtime {
+        fn new(snapshot: Value) -> Self {
+            let root = PathBuf::from("/tmp")
+                .canonicalize()
+                .unwrap()
+                .join(format!("htsr-{}", uuid::Uuid::new_v4()));
+            fs::create_dir(&root).unwrap();
+            let host = UnixListener::bind(root.join("host.sock")).unwrap();
+            let runtime =
+                RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
+            let paths = InstancePaths::resolve(&runtime).unwrap();
+            let lock = OwnerLock::acquire(&paths).unwrap();
+            let daemon = lock.bind_socket().unwrap();
+            let descriptor = lock
+                .publish_endpoint(&daemon, env!("CARGO_PKG_VERSION"), PROTOCOL_VERSION)
+                .unwrap();
+            let calls = Arc::new(Mutex::new(vec![]));
+            let host_calls = Arc::new(Mutex::new(vec![]));
+            let journals = Arc::new(Mutex::new(vec![]));
+            let stop = Arc::new(AtomicBool::new(false));
+            let host_stop = Arc::clone(&stop);
+            let host_seen = Arc::clone(&host_calls);
+            let host_worker = thread::spawn(move || {
+                loop {
+                    let (mut stream, _) = host.accept().unwrap();
+                    if host_stop.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut line = String::new();
+                    BufReader::new(&mut stream).read_line(&mut line).unwrap();
+                    let request: Value = serde_json::from_str(&line).unwrap();
+                    host_seen.lock().unwrap().push(request.clone());
+                    let result = match request["method"].as_str().unwrap() {
+                        "ping" => json!({"type":"pong","version":"0.9.1","protocol":22}),
+                        "session.snapshot" => {
+                            json!({"type":"session_snapshot","snapshot":snapshot})
+                        }
+                        "pane.current" => {
+                            assert!(request["params"]["caller_pane_id"].is_string());
+                            json!({"type":"pane_current","pane":{"pane_id":"w1:p2","focused":false}})
+                        }
+                        other => panic!("unexpected host method {other}"),
+                    };
+                    writeln!(stream, "{}", json!({"id":request["id"],"result":result})).unwrap();
+                }
+            });
+            let daemon_stop = Arc::clone(&stop);
+            let seen = Arc::clone(&calls);
+            let journal_seen = Arc::clone(&journals);
+            let intents = paths.instance_dir.join("intents");
+            let daemon_worker = thread::spawn(move || {
+                loop {
+                    let (mut stream, _) = daemon.accept().unwrap();
+                    if daemon_stop.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut length = [0; 4];
+                    stream.read_exact(&mut length).unwrap();
+                    let mut body = vec![0; u32::from_be_bytes(length) as usize];
+                    stream.read_exact(&mut body).unwrap();
+                    let request: WireRequest = serde_json::from_slice(&body).unwrap();
+                    seen.lock().unwrap().push(request.command.clone());
+                    for entry in fs::read_dir(&intents).into_iter().flatten().flatten() {
+                        if entry.path().extension().is_some_and(|ext| ext == "intent") {
+                            let text = fs::read_to_string(entry.path()).unwrap();
+                            let (header, semantic) = text.split_once('\n').unwrap();
+                            journal_seen.lock().unwrap().push(json!({"header":serde_json::from_str::<Value>(header).unwrap(),"semantic":serde_json::from_str::<Value>(semantic).unwrap()}));
+                        }
+                    }
+                    let result = match &request.command {
+                        Command::ResolveThread(query)
+                            if matches!(
+                                query.selector.as_str(),
+                                "t123" | "review" | "team café"
+                            ) =>
+                        {
+                            Ok(CommandResult::ThreadResolved(ThreadId::new("t123")))
+                        }
+                        Command::ThreadName(query) => Ok(CommandResult::ThreadName(
+                            crate::protocol::results::ThreadNameResult {
+                                thread: query.thread.clone(),
+                                name: Some("team café".into()),
+                            },
+                        )),
+                        Command::ResolveSeat(_) => {
+                            Ok(CommandResult::SeatResolved(SeatId::new("recipient")))
+                        }
+                        Command::OperatorOrphanInvite(_) => {
+                            Ok(CommandResult::OperatorInvited(InvitationId::new("i123")))
+                        }
+                        Command::OperatorRebind(_) | Command::OperatorFreshSeat(_) => {
+                            Err(ApiError::not_found("fixture refuses repair"))
+                        }
+                        Command::Seats(_) => Ok(CommandResult::Seats(Page {
+                            items: vec![SeatSummary {
+                                seat: SeatId::new("recipient"),
+                                target: Some(HostTargetId::new("w1:p2")),
+                                continuity: ContinuityStatus::Resolved,
+                                generation: 1,
+                                created_at: crate::protocol::time::UtcMillis(0),
+                                retired_at: None,
+                            }],
+                            ..empty()
+                        })),
+                        Command::SeatInspect(_) => Ok(CommandResult::SeatInspect(
+                            crate::protocol::results::SeatInspection {
+                                summary: SeatSummary {
+                                    seat: SeatId::new("recipient"),
+                                    target: Some(HostTargetId::new("w1:p2")),
+                                    continuity: ContinuityStatus::Resolved,
+                                    generation: 1,
+                                    created_at: crate::protocol::time::UtcMillis(0),
+                                    retired_at: None,
+                                },
+                                mapping: crate::protocol::results::MappingStatus {
+                                    state: ContinuityStatus::Resolved,
+                                    target: Some(HostTargetId::new("w1:p2")),
+                                    detail_argv: None,
+                                },
+                                hold: None,
+                                retirement: None,
+                                open_binding: None,
+                                history: empty(),
+                            },
+                        )),
+                        Command::Capabilities => Ok(CommandResult::Capabilities(
+                            crate::protocol::results::CapabilityList {
+                                capabilities: vec![
+                                    crate::protocol::capabilities::INBOX_BATCH.into(),
+                                ],
+                            },
+                        )),
+                        Command::InboxBatch(_) => Ok(CommandResult::InboxBatch(Page {
+                            items: vec![crate::protocol::results::InboxBatchItem::Message {
+                                thread: ThreadId::new("t123"),
+                                topic_data: "topic".into(),
+                                message: MessageId::new("m123"),
+                                sequence: 1,
+                                sender: Some(SeatId::new("sender")),
+                                body: "hello".into(),
+                                body_start: 0,
+                                body_end: 5,
+                                body_len: 5,
+                                ack_candidate: Some(MessageId::new("m123")),
+                            }],
+                            ..empty()
+                        })),
+                        Command::Ack(q) | Command::AckDisplayed(q) => Ok(
+                            CommandResult::Acknowledged(crate::protocol::results::AckResult {
+                                acknowledged: q.messages.clone(),
+                                already_acknowledged: vec![],
+                            }),
+                        ),
+                        Command::Directory(_) => Ok(CommandResult::Directory(empty())),
+                        Command::Warnings(_) => Ok(CommandResult::Warnings(empty())),
+                        Command::Diagnostics(_) => Ok(CommandResult::Diagnostics(empty())),
+                        Command::ActiveWarnings(_) => Ok(CommandResult::ActiveWarnings(empty())),
+                        Command::Inbox(_) => Ok(CommandResult::Inbox(empty())),
+                        Command::PendingReceipts(_) => Ok(CommandResult::PendingReceipts(empty())),
+                        other => Err(ApiError::invalid_request(format!(
+                            "unexpected fixture daemon command {other:?}"
+                        ))),
+                    };
+                    let response = WireResponse {
+                        version: PROTOCOL_VERSION,
+                        request_id: request.request_id,
+                        instance: descriptor.instance_uuid.to_string(),
+                        daemon_boot: descriptor.boot_id.to_string(),
+                        result,
+                    };
+                    let body = serde_json::to_vec(&response).unwrap();
+                    stream
+                        .write_all(&(body.len() as u32).to_be_bytes())
+                        .unwrap();
+                    stream.write_all(&body).unwrap();
+                }
+            });
+            Self {
+                root,
+                paths,
+                _lock: lock,
+                calls,
+                host_calls,
+                journals,
+                stop,
+                workers: vec![host_worker, daemon_worker],
+            }
+        }
+        fn install_context(&self, target: &str) {
+            let execution = uuid::Uuid::new_v4();
+            crate::cli::seat_contexts(
+                &self.paths,
+                self._lock.instance_uuid(),
+                &SeatId::new("recipient"),
+            )
+            .unwrap()
+            .install_reattached(crate::harness::context::OccupantContext {
+                format_version: 1,
+                instance: self._lock.instance_uuid(),
+                seat: "recipient".into(),
+                target: target.into(),
+                harness: crate::harness::context::Harness::Codex,
+                binding_generation: 1,
+                execution,
+                session: crate::harness::context::SessionReference::PluginContext(execution),
+                role: crate::harness::context::Role::TopLevel,
+            })
+            .unwrap();
+        }
+        fn run(&self, args: &[&str]) -> Result<(), crate::cli::RunError> {
+            self.run_mode(args, true)
+        }
+        fn run_mode(&self, args: &[&str], json: bool) -> Result<(), crate::cli::RunError> {
+            let state = self.root.join("state");
+            let host = self.root.join("host.sock");
+            let mut argv = vec![
+                "ht".to_owned(),
+                "--state-dir".into(),
+                state.to_str().unwrap().into(),
+                "--host-endpoint".into(),
+                host.to_str().unwrap().into(),
+            ];
+            if json {
+                argv.push("--json".into());
+            }
+            argv.extend(args.iter().map(|value| value.to_string()));
+            crate::cli::run_in_pane(argv, Some("w1:p99"), &mut Vec::new())
+        }
+    }
+    impl Drop for Runtime {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            let _ = UnixStream::connect(self.root.join("host.sock"));
+            let _ = UnixStream::connect(&self.paths.socket_path);
+            let joined = self
+                .workers
+                .drain(..)
+                .map(|worker| worker.join().is_ok())
+                .collect::<Vec<_>>();
+            fs::remove_dir_all(&self.root).unwrap();
+            assert!(
+                joined.iter().all(|success| *success) || thread::panicking(),
+                "runtime fixture worker failed"
+            );
+        }
+    }
+
+    #[test]
+    fn operator_pane_invite_runtime_freezes_guarded_seat_and_operator_journal() {
+        let runtime = Runtime::new(snapshot());
+        runtime
+            .run(&[
+                "invite",
+                "t123",
+                "--tab",
+                "tryout",
+                "--pane",
+                "alice",
+                "--operator",
+            ])
+            .unwrap();
+        let calls = runtime.calls.lock().unwrap();
+        assert!(matches!(calls.first(),Some(Command::ResolveThread(q)) if q.selector == "t123"));
+        assert!(
+            matches!(calls.get(1),Some(Command::ResolveSeat(q)) if q.target.as_str() == "w1:p2")
+        );
+        assert!(
+            matches!(calls.last(), Some(Command::OperatorOrphanInvite(q)) if q.seat.as_str() == "recipient")
+        );
+        let journals = runtime.journals.lock().unwrap();
+        assert!(
+            journals
+                .iter()
+                .any(|entry| entry["semantic"]["kind"] == "resolve_seat"
+                    && entry["header"]["scope"]["kind"] == "service_allocation"
+                    && entry["semantic"]["target"] == "w1:p2")
+        );
+        assert!(journals.iter().any(
+            |entry| entry["semantic"]["kind"] == "operator_orphan_invite"
+                && entry["header"]["scope"]["kind"] == "operator"
+                && entry["header"]["scope"]["local_user_uid"]
+                    == json!(crate::daemon::paths::effective_uid())
+        ));
+        assert!(journals.iter().any(
+            |entry| entry["semantic"]["kind"] == "operator_orphan_invite"
+                && entry["semantic"]["seat"] == "recipient"
+        ));
+        assert!(
+            !journals
+                .iter()
+                .any(|entry| entry.to_string().contains("pending-pane-selector"))
+        );
+    }
+
+    #[test]
+    fn omitted_runtime_reads_use_live_caller_mapping_without_allocation() {
+        for args in [
+            vec!["thread", "list"],
+            vec!["warnings"],
+            vec!["diagnostics"],
+            vec!["inbox"],
+            vec!["pending-receipts"],
+        ] {
+            let runtime = Runtime::new(snapshot());
+            runtime.run(&args).unwrap();
+            let calls = runtime.calls.lock().unwrap();
+            assert!(
+                matches!(calls.first(), Some(Command::Seats(q)) if q.target.as_ref().is_some_and(|target| target.as_str() == "w1:p2")),
+                "{args:?}: {calls:?}"
+            );
+            assert!(
+                matches!(calls.last(), Some(Command::Directory(q)) if q.membership.as_ref().is_some_and(|seat| seat.as_str() == "recipient"))
+                    || matches!(calls.last(), Some(Command::Warnings(q)) if q.seat.as_str() == "recipient")
+                    || matches!(calls.last(), Some(Command::Diagnostics(q)) if q.seat.as_ref().is_some_and(|seat| seat.as_str() == "recipient"))
+                    || matches!(calls.last(), Some(Command::Inbox(q)) if q.seat.as_ref().is_some_and(|seat| seat.as_str() == "recipient"))
+                    || matches!(calls.last(), Some(Command::PendingReceipts(q)) if q.seat.as_ref().is_some_and(|seat| seat.as_str() == "recipient")),
+                "{args:?}: {calls:?}"
+            );
+            assert!(
+                !calls
+                    .iter()
+                    .any(|command| matches!(command, Command::ResolveSeat(_)))
+            );
+            assert!(!runtime.paths.instance_dir.join("intents").exists());
+            assert!(
+                runtime
+                    .host_calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|request| request["method"] == "pane.current")
+            );
+        }
+    }
+
+    #[test]
+    fn absent_qualified_runtime_ids_never_retarget_labels_or_agents() {
+        for level in ["pane", "agent", "tab"] {
+            let mut host = snapshot();
+            let args = match level {
+                "pane" => {
+                    host["panes"][1]["label"] = json!("w1:p999");
+                    vec![
+                        "seat",
+                        "rebind",
+                        "s123",
+                        "--tab",
+                        "w1:t2",
+                        "--pane",
+                        "w1:p999",
+                        "--operator",
+                    ]
+                }
+                "agent" => {
+                    host["agents"] = json!([{"pane_id":"w1:p2","name":"w1:p999"}]);
+                    vec![
+                        "invite",
+                        "t123",
+                        "--tab",
+                        "w1:t2",
+                        "--pane",
+                        "w1:p999",
+                        "--operator",
+                    ]
+                }
+                _ => {
+                    host["tabs"][1]["label"] = json!("w1:t999");
+                    vec!["inbox", "--tab", "w1:t999", "--pane", "alice"]
+                }
+            };
+            let runtime = Runtime::new(host);
+            assert!(
+                matches!(runtime.run(&args), Err(crate::cli::RunError::Api(error)) if error.code == ErrorCode::NotFound),
+                "{level}"
+            );
+            assert!(
+                runtime.calls.lock().unwrap().is_empty(),
+                "{level} retargeted a daemon command"
+            );
+        }
+    }
+    #[test]
+    fn bounded_runtime_conflict_reports_total_and_omitted_candidates() {
+        let mut host = snapshot();
+        let template = host["panes"][1].clone();
+        for index in 3..=11 {
+            let mut pane = template.clone();
+            pane["pane_id"] = json!(format!("w1:p{index}"));
+            pane["terminal_id"] = json!(format!("term{index}"));
+            host["panes"].as_array_mut().unwrap().push(pane);
+        }
+        let runtime = Runtime::new(host);
+        match runtime.run(&["inbox", "--tab", "w1:t2", "--pane", "alice"]) {
+            Err(crate::cli::RunError::Api(error)) => {
+                assert_eq!(error.code, ErrorCode::Conflict);
+                assert!(error.detail.contains("10 matches"), "{}", error.detail);
+                assert!(error.detail.contains("2 omitted"), "{}", error.detail);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(runtime.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn thread_names_runtime_freezes_utf8_before_read_and_operator_intent() {
+        let runtime = Runtime::new(snapshot());
+        runtime.run(&["thread", "name", "team café"]).unwrap();
+        {
+            let calls = runtime.calls.lock().unwrap();
+            assert!(
+                matches!(calls.first(),Some(Command::ResolveThread(q)) if q.selector=="team café")
+            );
+            assert!(
+                matches!(calls.last(),Some(Command::ThreadName(q)) if q.thread.as_str()=="t123")
+            );
+            assert!(runtime.journals.lock().unwrap().is_empty());
+        }
+        runtime
+            .run(&[
+                "invite",
+                "review",
+                "--tab",
+                "tryout",
+                "--pane",
+                "alice",
+                "--operator",
+            ])
+            .unwrap();
+        let calls = runtime.calls.lock().unwrap();
+        assert!(
+            matches!(calls.last(),Some(Command::OperatorOrphanInvite(q)) if q.thread.as_str()=="t123" && q.seat.as_str()=="recipient")
+        );
+        let journals = runtime.journals.lock().unwrap();
+        assert!(journals.iter().any(
+            |entry| entry["semantic"]["kind"] == "operator_orphan_invite"
+                && entry["semantic"]["thread"] == "t123"
+        ));
+        assert!(
+            !journals
+                .iter()
+                .any(|entry| entry["semantic"]["thread"] == "review")
+        );
+    }
+
+    #[test]
+    fn deliberately_scoped_runtime_reads_preserve_their_filters() {
+        for args in [
+            vec!["thread", "list", "--all"],
+            vec!["warnings", "--active", "t123"],
+            vec!["diagnostics", "--thread", "t123"],
+            vec!["pending-receipts", "--thread", "t123"],
+            vec!["inbox", "--seat", "recipient"],
+        ] {
+            let runtime = Runtime::new(snapshot());
+            runtime.run(&args).unwrap();
+            let calls = runtime.calls.lock().unwrap();
+            let has_thread = args.contains(&"--thread") || args.contains(&"--active");
+            assert_eq!(
+                calls.len(),
+                if has_thread { 2 } else { 1 },
+                "{args:?}: {calls:?}"
+            );
+            if has_thread {
+                assert!(
+                    matches!(calls.first(),Some(Command::ResolveThread(q)) if q.selector=="t123")
+                );
+            }
+            assert!(
+                runtime.host_calls.lock().unwrap().is_empty(),
+                "{args:?} unnecessarily selects caller"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_workspace_ids_win_and_ordinary_workspace_labels_remain_valid() {
+        for name in ["w1", "work"] {
+            let mut host = snapshot();
+            host["workspaces"][0]["label"] = json!("work");
+            host["workspaces"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"workspace_id":"w2","label":"w1"}));
+            let runtime = Runtime::new(host);
+            runtime
+                .run(&[
+                    "inbox", "--space", name, "--tab", "tryout", "--pane", "alice",
+                ])
+                .unwrap();
+            assert!(
+                matches!(runtime.calls.lock().unwrap().first(), Some(Command::Seats(q)) if q.target == Some(HostTargetId::new("w1:p2")))
+            );
+        }
+    }
+    #[test]
+    fn own_live_inbox_runtime_remains_display_ack_eligible_and_foreign_inbox_does_not() {
+        for explicit in [false, true] {
+            let runtime = Runtime::new(snapshot());
+            runtime.install_context("w1:p2");
+            let args = if explicit {
+                vec!["inbox", "--human", "--pane", "w1:p2"]
+            } else {
+                vec!["inbox", "--human"]
+            };
+            runtime.run_mode(&args, false).unwrap();
+            let calls = runtime.calls.lock().unwrap();
+            assert_eq!(
+                calls
+                    .iter()
+                    .any(|command| matches!(command, Command::InboxBatch(_))),
+                !explicit
+            );
+            assert_eq!(calls.iter().any(|command| matches!(command, Command::AckDisplayed(q) if q.claim.seat.as_str() == "recipient" && q.messages == vec![MessageId::new("m123")])), !explicit);
+            assert!(
+                !calls
+                    .iter()
+                    .any(|command| matches!(command, Command::ResolveSeat(_)))
+            );
+        }
+    }
+
+    #[test]
+    fn stale_local_context_is_refused_after_live_inbox_mapping_and_never_acks() {
+        let runtime = Runtime::new(snapshot());
+        runtime.install_context("w1:p99");
+        assert!(runtime.run_mode(&["inbox", "--human"], false).is_err());
+        let calls = runtime.calls.lock().unwrap();
+        assert!(
+            matches!(calls.first(), Some(Command::Seats(q)) if q.target == Some(HostTargetId::new("w1:p2")))
+        );
+        assert!(!calls.iter().any(|command| matches!(
+            command,
+            Command::Ack(_)
+                | Command::AckDisplayed(_)
+                | Command::ResolveSeat(_)
+                | Command::InboxBatch(_)
+        )));
+    }
+
+    #[test]
+    fn explicit_cooperative_runtime_read_default_uses_claimed_seat_without_host_scope() {
+        for args in [
+            vec!["thread", "list"],
+            vec!["warnings"],
+            vec!["diagnostics"],
+            vec!["inbox"],
+            vec!["pending-receipts"],
+        ] {
+            let runtime = Runtime::new(snapshot());
+            runtime.install_context("w1:p2");
+            let mut selected = vec![
+                "--cooperative-seat",
+                "recipient",
+                "--cooperative-target",
+                "w1:p2",
+                "--cooperative-harness",
+                "codex",
+                "--cooperative-role",
+                "top-level",
+            ];
+            selected.extend(args);
+            runtime.run(&selected).unwrap();
+            assert!(runtime.host_calls.lock().unwrap().is_empty());
+            let calls = runtime.calls.lock().unwrap();
+            assert_eq!(calls.len(), 2, "{calls:?}");
+            assert!(matches!(calls.first(), Some(Command::SeatInspect(_))));
+            assert!(
+                !calls
+                    .iter()
+                    .any(|command| matches!(command, Command::ResolveSeat(_) | Command::Seats(_)))
+            );
+        }
+    }
+
+    #[test]
+    fn direct_runtime_pane_ids_stay_direct_and_qualified_parent_mismatch_is_refused() {
+        let runtime = Runtime::new(snapshot());
+        runtime
+            .run(&["seat", "resolve", "--pane", "w9:p999"])
+            .unwrap();
+        assert!(runtime.host_calls.lock().unwrap().is_empty());
+        assert!(
+            matches!(runtime.calls.lock().unwrap().last(), Some(Command::ResolveSeat(q)) if q.target.as_str() == "w9:p999")
+        );
+        runtime.calls.lock().unwrap().clear();
+        assert!(
+            runtime
+                .run(&[
+                    "seat",
+                    "rebind",
+                    "s123",
+                    "--tab",
+                    "w1:t2",
+                    "--pane",
+                    "w1:p1",
+                    "--operator"
+                ])
+                .is_err()
+        );
+        assert!(runtime.calls.lock().unwrap().is_empty());
+    }
+}

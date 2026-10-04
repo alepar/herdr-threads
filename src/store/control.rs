@@ -974,6 +974,95 @@ pub fn set_topic(
     )
 }
 
+pub fn set_thread_name(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &CallBudget,
+    command: &crate::protocol::commands::SetThreadName,
+    mut permit: MutationPermit,
+) -> Result<CommandResult, ApiError> {
+    if let Some(name) = &command.name {
+        crate::protocol::commands::validate_thread_name(name)
+            .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
+    }
+    let target = command.claim.target.as_str();
+    let caller = permit.seat_for_replay_scope().clone();
+    let scope = format!("seat:{}", caller.as_str());
+    let cooperative = permit.cooperative_metadata();
+    let digest = cooperative_payload_hash("set_thread_name", command)?;
+    let obligation = ObligationRef::Control(command.thread.clone());
+    schema::execute_accountable_transaction(
+        context,
+        conn,
+        budget,
+        cooperative,
+        &scope,
+        command.operation.as_str(),
+        digest,
+        |tx| {
+            validate_actor(tx, &caller, target)?;
+            if !joined_in_thread(tx, &command.thread, &caller)? {
+                return Err(api_error(ErrorCode::Unauthorized, "caller is not joined"));
+            }
+            if super::service_substrate::managed_owner(tx, &command.thread)?.is_some() {
+                return Err(api_error(
+                    ErrorCode::Unauthorized,
+                    "managed thread control belongs to service owner",
+                ));
+            }
+            Ok(())
+        },
+        |tx, at| {
+            decide_accountable(
+                tx,
+                at,
+                &mut permit,
+                &command.claim,
+                &caller,
+                &command.operation,
+                &obligation,
+                &digest,
+            )?;
+            let old: Option<String> = tx
+                .query_row(
+                    "SELECT name FROM threads WHERE id=?1",
+                    [command.thread.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            if old != command.name {
+                tx.execute(
+                    "UPDATE threads SET name=?1,updated_at=?2 WHERE id=?3",
+                    params![command.name, at.utc.0, command.thread.as_str()],
+                )
+                .map_err(store_error)?;
+                let payload=serde_json::json!({"action":"set_thread_name","actor_seat":caller.as_str(),"name":command.name}).to_string();
+                schema::append_event_once(
+                    tx,
+                    EventInput {
+                        thread: &command.thread,
+                        key: &format!("set_thread_name:{}", command.operation.as_str()),
+                        kind: "info",
+                        payload_json: &payload,
+                        decision_at: at.utc,
+                        source_message: None,
+                        source_invitation: None,
+                    },
+                )?;
+                let instance: String = tx
+                    .query_row(
+                        "SELECT instance_id FROM threads WHERE id=?1",
+                        [command.thread.as_str()],
+                        |r| r.get(0),
+                    )
+                    .map_err(store_error)?;
+                schema::bump_filter_revision(tx, &instance, "directory", "all")?;
+            }
+            Ok(CommandResult::ThreadNameChanged(command.thread.clone()))
+        },
+    )
+}
+
 /// A new thread is born with exactly one joined member and a creation audit.
 /// The caller-supplied claim only locates the durable seat; the permit is
 /// consumed against a decision-time fence before any write.
@@ -989,6 +1078,10 @@ pub fn create_thread(
             ErrorCode::InvalidRequest,
             "invalid thread topic or goal",
         ));
+    }
+    if let Some(name) = &command.name {
+        crate::protocol::commands::validate_thread_name(name)
+            .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
     }
     let target = command.claim.target.as_str();
     let seat = permit.seat_for_replay_scope().clone();
@@ -1032,8 +1125,8 @@ pub fn create_thread(
                 &[("threads", "id", prefix::THREAD)],
             )?);
             let joined_seq = schema::next_decision_seq(tx, &instance)?;
-            tx.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?5)",
-                params![thread.as_str(), instance, command.topic,command.goal,decision.utc.0]).map_err(store_error)?;
+            tx.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at, name) VALUES (?1,?2,?3,?4,?5,?5,?6)",
+                params![thread.as_str(), instance, command.topic,command.goal,decision.utc.0,command.name]).map_err(store_error)?;
             tx.execute("INSERT INTO memberships(thread_id, seat_id, state, joined_at) VALUES (?1,?2,'joined',?3)",
                 params![thread.as_str(), seat.as_str(), decision.utc.0]).map_err(store_error)?;
             tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,1,?3)",

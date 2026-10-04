@@ -36,6 +36,9 @@ pub enum Command {
     /// Bounded read-only active warning conditions for one thread.
     ActiveWarnings(ActiveWarningsQuery),
     Thread(ThreadQuery),
+    /// Indexed exact ID/name lookup across the selected instance.
+    ResolveThread(ResolveThreadQuery),
+    ThreadName(ThreadNameQuery),
     History(HistoryQuery),
     Participants(ParticipantsQuery),
     Recipients(RecipientsQuery),
@@ -78,6 +81,7 @@ pub enum Command {
     AckDisplayed(Ack),
     Leave(Leave),
     SetTopic(SetTopic),
+    SetThreadName(SetThreadName),
     Archive(ThreadMutation),
     Reopen(ThreadMutation),
     OperatorRebind(OperatorRebind),
@@ -216,6 +220,8 @@ pub struct ServiceDisconnectRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DirectoryQuery {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub recent: bool,
     pub membership: Option<SeatId>,
     pub membership_filter: DirectoryMembership,
     pub topic_contains: Option<String>,
@@ -502,6 +508,8 @@ pub enum CheckInMode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateThread {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub topic: String,
     pub goal: String,
     pub operation: OperationId,
@@ -608,6 +616,45 @@ pub struct SetTopic {
     pub operation: OperationId,
     pub claim: CallerClaim,
 }
+/// Names are exact, single-line UTF-8; size is measured in bytes.
+pub fn validate_thread_name(name: &str) -> Result<(), &'static str> {
+    if name.is_empty()
+        || name.len() > 128
+        || name
+            .chars()
+            .any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}'))
+    {
+        return Err("thread name must be 1..128 UTF-8 bytes with no control characters");
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadNameQuery {
+    pub thread: ThreadId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolveThreadQuery {
+    pub selector: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_target: Option<HostTargetId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<SeatId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetThreadName {
+    pub thread: ThreadId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub operation: OperationId,
+    pub claim: CallerClaim,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThreadMutation {
@@ -675,6 +722,7 @@ impl Command {
             Self::Ack(v) | Self::AckDisplayed(v) => Some(&v.claim),
             Self::Leave(v) => Some(&v.claim),
             Self::SetTopic(v) => Some(&v.claim),
+            Self::SetThreadName(v) => Some(&v.claim),
             Self::Archive(v) | Self::Reopen(v) => Some(&v.claim),
             _ => None,
         };
@@ -712,6 +760,13 @@ impl Command {
             Self::CreateThread(create) if create.goal.is_empty() || create.goal.len() > 1024 => {
                 Err("invalid thread goal byte bound")
             }
+            Self::CreateThread(create) => {
+                create.name.as_deref().map_or(Ok(()), validate_thread_name)
+            }
+            Self::SetThreadName(change) => {
+                change.name.as_deref().map_or(Ok(()), validate_thread_name)
+            }
+            Self::ResolveThread(query) => validate_thread_name(&query.selector),
             Self::Invite(invite) if invite.deadline_millis == Some(0) => {
                 Err("deadline must be positive")
             }
@@ -830,6 +885,7 @@ pub enum PermitMutation {
     AckDisplayed(Ack),
     Leave(Leave),
     SetTopic(SetTopic),
+    SetThreadName(SetThreadName),
     Archive(ThreadMutation),
     Reopen(ThreadMutation),
 }
@@ -847,6 +903,7 @@ impl TryFrom<Command> for PermitMutation {
             Command::AckDisplayed(v) => Ok(Self::AckDisplayed(v)),
             Command::Leave(v) => Ok(Self::Leave(v)),
             Command::SetTopic(v) => Ok(Self::SetTopic(v)),
+            Command::SetThreadName(v) => Ok(Self::SetThreadName(v)),
             Command::Archive(v) => Ok(Self::Archive(v)),
             Command::Reopen(v) => Ok(Self::Reopen(v)),
             other => Err(other),

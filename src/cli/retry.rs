@@ -366,6 +366,10 @@ fn matches_result(request: &SemanticMutation, result: &CommandResult) -> bool {
                 SemanticMutation::SetTopic { .. },
                 CommandResult::TopicChanged(_)
             )
+            | (
+                SemanticMutation::SetThreadName { .. },
+                CommandResult::ThreadNameChanged(_)
+            )
             | (SemanticMutation::Archive { .. }, CommandResult::Archived(_))
             | (SemanticMutation::Reopen { .. }, CommandResult::Reopened(_))
             | (

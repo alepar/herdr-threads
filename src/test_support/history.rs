@@ -576,6 +576,7 @@ pub fn write_pending_invitations(
     let mut invitations = Vec::with_capacity(count as usize);
     for n in 0..count {
         let create = CreateThread {
+            name: None,
             topic: format!("{tag} {n}"),
             goal: String::new(),
             operation: OperationId::new(format!("{tag}-thread-{n}")),

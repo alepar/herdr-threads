@@ -237,6 +237,8 @@ impl LocalService for DomainService {
             | Command::Warnings(_)
             | Command::ActiveWarnings(_)
             | Command::Thread(_)
+            | Command::ResolveThread(_)
+            | Command::ThreadName(_)
             | Command::History(_)
             | Command::Participants(_)
             | Command::Recipients(_)
@@ -261,6 +263,7 @@ impl LocalService for DomainService {
             | Command::AckDisplayed(_)
             | Command::Leave(_)
             | Command::SetTopic(_)
+            | Command::SetThreadName(_)
             | Command::Archive(_)
             | Command::Reopen(_)) => {
                 let mutation = PermitMutation::try_from(command).map_err(|_| {

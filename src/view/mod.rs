@@ -131,6 +131,7 @@ fn read_directory<R: ViewReader>(
 ) -> Result<Page<ThreadSummary>, ApiError> {
     match reader.read(
         Command::Directory(DirectoryQuery {
+            recent: false,
             membership: None,
             membership_filter: DirectoryMembership::All,
             topic_contains: None,

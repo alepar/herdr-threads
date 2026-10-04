@@ -64,6 +64,9 @@ pub enum CommandResult {
     Acknowledged(AckResult),
     Left(ThreadId),
     TopicChanged(ThreadId),
+    ThreadNameChanged(ThreadId),
+    ThreadResolved(ThreadId),
+    ThreadName(ThreadNameResult),
     Archived(ThreadId),
     Reopened(ThreadId),
     OperatorRebound(SeatId),
@@ -581,7 +584,19 @@ pub enum HealthState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ThreadNameResult {
+    pub thread: ThreadId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ThreadSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity: Option<UtcMillis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub thread: ThreadId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub managed_owner: Option<ServiceAuthorId>,
@@ -1063,6 +1078,7 @@ pub struct LocalIntent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IntentKind {
+    Handoff,
     ResolveSeat,
     CheckIn,
     CreateThread,
@@ -1072,6 +1088,7 @@ pub enum IntentKind {
     Ack,
     Leave,
     SetTopic,
+    SetThreadName,
     Archive,
     Reopen,
     OperatorRebind,

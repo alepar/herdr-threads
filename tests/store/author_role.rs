@@ -18,6 +18,7 @@ use super::super::cooperative_checkin_tests::{
 
 fn create_thread(store: &SqliteStore, context: &CallerClaim, key: &str) -> ThreadId {
     let create = CreateThread {
+        name: None,
         claim: context.clone(),
         topic: "topic".into(),
         goal: "goal".into(),

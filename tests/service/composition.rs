@@ -1094,6 +1094,7 @@ fn elected_service_fixture(custom_settings: bool) {
     let result = herdr_threads::ports::LocalClient::call(
         &client,
         Command::Directory(DirectoryQuery {
+            recent: false,
             membership: None,
             membership_filter: DirectoryMembership::All,
             topic_contains: None,
@@ -1117,6 +1118,7 @@ fn elected_service_fixture(custom_settings: bool) {
         },
     };
     let listing = Command::Directory(DirectoryQuery {
+        recent: false,
         membership: None,
         membership_filter: DirectoryMembership::All,
         topic_contains: None,
@@ -1178,6 +1180,7 @@ fn elected_service_fixture(custom_settings: bool) {
     let next_result = client
         .call_with_output(
             Command::Directory(DirectoryQuery {
+                recent: false,
                 membership: None,
                 membership_filter: DirectoryMembership::All,
                 topic_contains: None,

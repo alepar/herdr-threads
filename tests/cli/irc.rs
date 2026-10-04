@@ -374,3 +374,64 @@ fn follow_lines_mark_human_and_relayed_messages() {
         "[12:34] <alice·claude> plain\n"
     );
 }
+
+#[test]
+fn relative_nick_long_parents_keep_pane_component() {
+    let labels = crate::host::observation::SeatHostLabels {
+        target: crate::protocol::ids::HostTargetId::new("p"),
+        workspace_id: "w".into(),
+        workspace_label: Some("project".repeat(30)),
+        tab_id: "t".into(),
+        tab_label: Some("tryout".repeat(30)),
+        pane_label: Some("alice".into()),
+    };
+    let nick = Nick {
+        name: relative_pane_nick(&labels, None),
+        harness: None,
+    };
+    assert!(
+        nick.display().ends_with("/alice"),
+        "pane component must survive bounded display: {}",
+        nick.display()
+    );
+}
+
+#[test]
+fn relative_nick_expanded_escaped_parents_reserve_pane_budget() {
+    for (workspace, tab, pane) in [
+        ("\x1b".repeat(100), "\u{202e}".repeat(100), "alice".into()),
+        ("w".repeat(100), "t".repeat(100), "p".repeat(100)),
+    ] {
+        let labels = crate::host::observation::SeatHostLabels {
+            target: crate::protocol::ids::HostTargetId::new("pane"),
+            workspace_id: "workspace".into(),
+            workspace_label: Some(workspace),
+            tab_id: "tab".into(),
+            tab_label: Some(tab),
+            pane_label: Some(pane),
+        };
+        let formatted = relative_pane_nick(&labels, None);
+        let nick = Nick {
+            name: formatted.clone(),
+            harness: None,
+        }
+        .display();
+        assert!(
+            nick.ends_with(if labels.pane_label.as_deref() == Some("alice") {
+                "/alice"
+            } else {
+                "/pppppppppppppppppppppppppppppppp…"
+            }),
+            "pane needs its independent budget: {nick}"
+        );
+        assert_eq!(
+            nick, formatted,
+            "final nick clipping must not eat an already bounded component"
+        );
+        assert!(
+            nick.chars().count() <= 3 * (32 + 1) + 2,
+            "escaped path must be bounded: {nick}"
+        );
+        assert!(!nick.contains('\x1b') && !nick.contains('\u{202e}'));
+    }
+}

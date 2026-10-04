@@ -111,15 +111,27 @@ impl NativeCli {
     /// pane is at its interactive shell prompt before it starts the agent, and
     /// answers only after it detects the expected agent ready in the same
     /// terminal. `preflight` is this adapter's fresh witnessed read.
+    #[cfg(test)]
     fn guarded_start_cli(
         &self,
         request: &NativeLaunchRequest,
         context: &HostCallContext,
         preflight: &HostObservation,
     ) -> Result<NativeLaunchOutcome, ApiError> {
+        self.guarded_start_with_evidence(request, context, preflight)
+            .map_err(|failure| failure.error)
+    }
+    fn guarded_start_with_evidence(
+        &self,
+        request: &NativeLaunchRequest,
+        context: &HostCallContext,
+        preflight: &HostObservation,
+    ) -> Result<NativeLaunchOutcome, ports::NativeLaunchFailure> {
+        let before_start =
+            |code, detail| ports::NativeLaunchFailure::not_submitted(error(code, detail));
         request
             .validate()
-            .map_err(|detail| error(ErrorCode::InvalidRequest, detail))?;
+            .map_err(|detail| before_start(ErrorCode::InvalidRequest, detail))?;
         let current_epoch = self.epoch();
         if !preflight.is_fresh_structure()
             || preflight.target != request.target
@@ -132,7 +144,7 @@ impl NativeCli {
             || !matches!(&preflight.incarnation, IncarnationEvidence::Verified { identity, .. }
                 if identity == &request.expected_incarnation)
         {
-            return Err(error(
+            return Err(before_start(
                 ErrorCode::StaleHostObservation,
                 "native start preflight fence changed or unverified",
             ));
@@ -143,10 +155,13 @@ impl NativeCli {
                 HostUiState::ApprovalOrQuestion | HostUiState::HumanInput | HostUiState::ActiveTurn
             )
         {
-            return Err(error(ErrorCode::TargetUnsafe, "target is known busy"));
+            return Err(before_start(
+                ErrorCode::TargetUnsafe,
+                "target is known busy",
+            ));
         }
         if context.budget.cancellation.is_cancelled() {
-            return Err(error(
+            return Err(before_start(
                 ErrorCode::Cancelled,
                 "native start cancelled before submission",
             ));
@@ -155,7 +170,7 @@ impl NativeCli {
             Harness::Codex => "codex",
             Harness::Claude => "claude",
             Harness::Human => {
-                return Err(error(
+                return Err(before_start(
                     ErrorCode::InvalidRequest,
                     "a human occupant is never launched",
                 ));
@@ -175,7 +190,7 @@ impl NativeCli {
                 .min(30_000);
             if remaining <= 3_000 {
                 // Rejected before submission: nothing was started.
-                return Err(error(
+                return Err(before_start(
                     ErrorCode::InvalidBudget,
                     "insufficient native startup budget",
                 ));
@@ -234,7 +249,7 @@ impl NativeCli {
                 name = retry_name.clone();
                 continue;
             }
-            return Err(refusal);
+            return Err(ports::NativeLaunchFailure::not_submitted(refusal));
         };
         let result = match parsed.get("result") {
             Some(result) => result,
@@ -326,7 +341,8 @@ impl NativeCli {
                         "{kind} exited right after the start (the pane is back at its shell \
                          prompt); nothing is running. Last pane lines:\n{tail}"
                     ),
-                ));
+                )
+                .into());
             }
             std::thread::sleep(Duration::from_millis(START_POLL_MILLIS));
             let left = Duration::from_millis(remaining).saturating_sub(started.elapsed());
@@ -475,6 +491,29 @@ impl NativeCli {
         crate::host::observation::normalize_pane_names(&raw)
     }
 
+    /// One coherent topology for command-local target selection.
+    pub fn topology(
+        &self,
+        budget: &CallBudget,
+    ) -> Result<crate::host::observation::HostTopology, ApiError> {
+        let raw = self.run_unfenced(&["api", "snapshot"], budget, Duration::from_secs(2))?;
+        crate::host::observation::normalize_topology(&raw)
+    }
+
+    /// Resolve the invoking pane at this endpoint, never the focused pane.
+    pub fn current_pane(
+        &self,
+        caller: &str,
+        budget: &CallBudget,
+    ) -> Result<HostTargetId, ApiError> {
+        let raw = self.run_unfenced(
+            &["pane", "current", "--current", caller],
+            budget,
+            Duration::from_millis(750),
+        )?;
+        crate::host::observation::normalize_current_pane(&raw)
+    }
+
     /// Advisory labels for seat-list presentation, from one bounded snapshot.
     pub fn seat_labels(
         &self,
@@ -614,6 +653,9 @@ impl NativeCli {
             ));
         }
         let (method, params) = match args {
+            ["pane", "current", "--current", caller] => {
+                ("pane.current", serde_json::json!({"caller_pane_id":caller}))
+            }
             ["pane", "get", target] => ("pane.get", serde_json::json!({"pane_id":target})),
             ["api", "snapshot"] => ("session.snapshot", serde_json::json!({})),
             ["agent", "get", target] => ("agent.get", serde_json::json!({"target":target})),
@@ -1078,28 +1120,35 @@ impl HostPort for NativeCli {
         request: NativeLaunchRequest,
         context: &HostCallContext,
     ) -> Result<NativeLaunchOutcome, ApiError> {
+        self.launch_native_with_evidence(request, context)
+            .map_err(|failure| failure.error)
+    }
+    fn launch_native_with_evidence(
+        &self,
+        request: NativeLaunchRequest,
+        context: &HostCallContext,
+    ) -> Result<NativeLaunchOutcome, ports::NativeLaunchFailure> {
         if self.native_launch_capability() == NativeLaunchCapability::Unsupported {
-            return Err(error(
+            return Err(ports::NativeLaunchFailure::not_submitted(error(
                 ErrorCode::Unsupported,
                 "verified empty-pane preflight and native launch are unavailable",
-            ));
+            )));
         }
-        // One more fresh witnessed read immediately before submission. Any
-        // failure here is a confirmed pre-start rejection (nothing was sent),
-        // so it is reported as a stale observation, never as a lost start.
+        // This final witnessed observation happens before native input. Its
+        // failures carry explicit NotSubmitted evidence for compound retry.
         let preflight = self
             .observe_current_target(&request.target, context)
             .map_err(|failure| {
-                error(
+                ports::NativeLaunchFailure::not_submitted(error(
                     if failure.code == ErrorCode::NotFound {
                         ErrorCode::NotFound
                     } else {
                         ErrorCode::StaleHostObservation
                     },
                     format!("native start preflight failed: {}", failure.detail),
-                )
+                ))
             })?;
-        self.guarded_start_cli(&request, context, &preflight)
+        self.guarded_start_with_evidence(&request, context, &preflight)
     }
 
     fn resume_after_epoch(&self, persisted: u64) {
@@ -2084,6 +2133,30 @@ mod tests {
         );
         assert_epoch_untouched(&cli, 3);
     }
+    #[test]
+    fn current_caller_uses_explicit_inherited_id_and_returns_live_moved_target() {
+        let (socket, cli, worker) = fixture(|stream, request| {
+            assert_eq!(request["method"], "pane.current");
+            assert_eq!(request["params"], json!({"caller_pane_id":"w1:p1"}));
+            answer(
+                stream,
+                &request,
+                json!({"type":"pane_current", "pane":{
+                    "pane_id":"w2:p3", "tab_id":"w2:t1", "workspace_id":"w2", "focused":false
+                }}),
+            );
+        });
+        assert_eq!(
+            cli.current_pane("w1:p1", &pane_agent_context().budget)
+                .unwrap()
+                .as_str(),
+            "w2:p3"
+        );
+        assert_epoch_untouched(&cli, 3);
+        worker.join().unwrap();
+        fs::remove_file(socket).unwrap();
+    }
+
     #[test]
     fn pane_names_failure_never_bumps_the_connection_epoch() {
         let cli = absent_cli();
@@ -3704,6 +3777,19 @@ mod tests {
             "tab_id":"w4:t1","workspace_id":"w4"})
     }
 
+    #[test]
+    fn handoff_native_confirmed_refusal_has_not_submitted_evidence() {
+        let (request, context, observation) = launch_fixture();
+        let (socket, cli, worker) =
+            fixture(|stream, wire| refuse(stream, &wire, "agent_pane_busy"));
+        let failure = cli
+            .guarded_start_with_evidence(&request, &context, &observation)
+            .unwrap_err();
+        worker.join().unwrap();
+        fs::remove_file(socket).unwrap();
+        assert_eq!(failure.submission, ports::NativeSubmission::NotSubmitted);
+    }
+
     /// Live Herdr 0.9.1 (2026-10-01, stand-in `codex exec --no-daemon`
     /// exiting 2): the agent record stays `launch_pending` with no detected
     /// `agent` and the pane returns to its shell prompt. Kills: waiting out
@@ -3746,9 +3832,11 @@ mod tests {
                 }
                 other => panic!("unexpected {other}"),
             });
-        let refusal = cli
-            .guarded_start_cli(&request, &context, &observation)
+        let failure = cli
+            .guarded_start_with_evidence(&request, &context, &observation)
             .unwrap_err();
+        assert_eq!(failure.submission, ports::NativeSubmission::Possible);
+        let refusal = failure.error;
         assert_eq!(refusal.code, ErrorCode::InvalidRequest);
         assert!(
             refusal.detail.contains("codex exited"),

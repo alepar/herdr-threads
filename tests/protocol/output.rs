@@ -446,6 +446,8 @@ fn body_text_is_verbatim_and_cannot_fake_protocol_lines() {
 fn compound_thread_page_keeps_scalar_counts_and_both_follow_up_routes() {
     let result = CommandResult::Thread(ThreadDetails {
         summary: ThreadSummary {
+            last_activity: None,
+            name: None,
             thread: ThreadId::new("t-1"),
             managed_owner: None,
             topic_data: "urgent \"peer\"".into(),
@@ -527,6 +529,8 @@ fn compound_thread_page_keeps_scalar_counts_and_both_follow_up_routes() {
 #[test]
 fn collection_snippets_cap_escaped_bytes_and_link_to_full_detail() {
     let summary = ThreadSummary {
+        last_activity: None,
+        name: None,
         thread: ThreadId::new("t-1"),
         managed_owner: None,
         topic_data: "\u{0001}".repeat(100),
@@ -636,6 +640,8 @@ fn preview_snippet_and_full_thread_detail_use_distinct_routes() {
     let full_topic = "\u{0001}".repeat(100);
     let detail = CommandResult::Thread(ThreadDetails {
         summary: ThreadSummary {
+            last_activity: None,
+            name: None,
             thread: ThreadId::new("t-9"),
             managed_owner: None,
             topic_data: full_topic.clone(),
@@ -900,6 +906,8 @@ fn snippet_boundary_counts_terminal_escaped_bytes() {
     let make_result = |topic_data: String| {
         CommandResult::Directory(Page {
             items: vec![ThreadSummary {
+                last_activity: None,
+                name: None,
                 thread: ThreadId::new("t-boundary"),
                 managed_owner: None,
                 topic_data,
@@ -1211,5 +1219,37 @@ fn compact_pending_receipt_names_the_deferral() {
     assert_eq!(
         page_of(receipt(serde_json::json!({}))),
         "pending_receipts S2\nMSG t1#4 from S1 due 12:00Z\n"
+    );
+}
+
+#[test]
+fn thread_names_legacy_summary_is_omitted_and_named_scalar_is_escaped() {
+    let old = serde_json::json!({
+        "thread":"t-old", "topic_data":"topic", "topic_omitted":false,
+        "topic_detail_argv":null, "archived":false, "orphaned":false,
+        "message_count":0, "created_at":0, "ordinary_count":0, "system_count":0,"joined_count":1
+    });
+    let summary: ThreadSummary = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(summary.name, None);
+    assert_eq!(serde_json::to_value(&summary).unwrap(), old);
+    let text = OutputSpec {
+        format: OutputFormat::Text,
+        context: Default::default(),
+    };
+    let result = CommandResult::ThreadName(crate::protocol::results::ThreadNameResult {
+        thread: ThreadId::new("t-old"),
+        name: Some("peer\nnext: malicious\u{1b}".into()),
+    });
+    let rendered = String::from_utf8(encode_selected(&result, &text).unwrap()).unwrap();
+    assert!(rendered.starts_with("thread_name t-old: peer"));
+    assert_eq!(rendered.lines().count(), 1);
+    assert!(!rendered.contains('\u{1b}'));
+    let unnamed = CommandResult::ThreadName(crate::protocol::results::ThreadNameResult {
+        thread: ThreadId::new("t-old"),
+        name: None,
+    });
+    assert_eq!(
+        String::from_utf8(encode_selected(&unnamed, &text).unwrap()).unwrap(),
+        "thread_name t-old: unnamed\n"
     );
 }

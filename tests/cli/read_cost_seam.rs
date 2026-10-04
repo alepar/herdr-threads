@@ -120,6 +120,8 @@ fn message(sequence: u64, full_bodies: bool) -> MessageSummary {
 fn thread_details() -> ThreadDetails {
     ThreadDetails {
         summary: ThreadSummary {
+            last_activity: None,
+            name: None,
             thread: thread(),
             managed_owner: None,
             topic_data: "topic".into(),

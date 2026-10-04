@@ -54,7 +54,9 @@ const V15: &str = include_str!("../../migrations/0015_preparation_retention.sql"
 const V16: &str = include_str!("../../migrations/0016_human_receipt_waivers.sql");
 const V17: &str = include_str!("../../migrations/0017_wake_batches.sql");
 const V18: &str = include_str!("../../migrations/0018_warning_conditions.sql");
-pub(crate) const LATEST_VERSION: i64 = 18;
+const V19: &str = include_str!("../../migrations/0019_thread_names.sql");
+const V20: &str = include_str!("../../migrations/0020_recent_activity.sql");
+pub(crate) const LATEST_VERSION: i64 = 20;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -146,6 +148,8 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V16))
                 .and_then(|_| conn.execute_batch(V17))
                 .and_then(|_| conn.execute_batch(V18))
+                .and_then(|_| conn.execute_batch(V19))
+                .and_then(|_| conn.execute_batch(V20))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -386,7 +390,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18 => verify_existing(conn),
+        18..=20 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -395,7 +399,113 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
     if (1..=17).contains(&version) {
         migrate_v17_to_v18(conn)?;
     }
-    verify_existing_v18(conn)
+    verify_existing_v18(conn)?;
+    if (1..=18).contains(&version) {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V19)
+            .and_then(|_| conn.pragma_update(None, "user_version", 19));
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(store_error(error));
+            }
+        }
+    }
+    verify_existing_v19(conn)?;
+    if (1..=19).contains(&version) {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V20)
+            .and_then(|_| conn.pragma_update(None, "user_version", 20));
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(store_error(error));
+            }
+        }
+    }
+    verify_existing_v20(conn)
+}
+
+fn verify_existing_v20(conn: &Connection) -> Result<(), ApiError> {
+    let column: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('threads') WHERE name='last_activity' AND type='INTEGER' AND [notnull]=1 AND dflt_value='0')", [], |r|r.get(0)).map_err(store_error)?;
+    let actual: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name='threads_recent_activity'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let normalize = |s: &str| {
+        s.split_whitespace()
+            .collect::<String>()
+            .to_ascii_lowercase()
+    };
+    if !column
+        || actual.as_deref().map(normalize)
+            != Some(normalize(
+                "CREATE INDEX threads_recent_activity ON threads(instance_id, last_activity DESC, ordinal DESC)",
+            ))
+    {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "missing or altered recent activity schema",
+        ));
+    }
+    for name in ["threads_recent_insert", "threads_recent_update"] {
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?1",
+                [name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        let expected = V20
+            .split("CREATE TRIGGER ")
+            .find(|part| part.starts_with(name))
+            .map(|part| format!("CREATE TRIGGER {}", part.split("END;").next().unwrap()) + "END");
+        if actual.as_deref().map(normalize) != expected.as_deref().map(normalize) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                "missing or altered recent activity trigger",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_existing_v19(conn: &Connection) -> Result<(), ApiError> {
+    let normalize_ddl = |sql: &str| {
+        sql.split_whitespace()
+            .collect::<String>()
+            .to_ascii_lowercase()
+    };
+    let column: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('threads') WHERE name='name' AND type='TEXT' AND [notnull]=0)", [], |r| r.get(0)).map_err(store_error)?;
+    let index: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='threads_instance_name'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    if !column
+        || index.as_deref().map(normalize_ddl)
+            != Some(normalize_ddl(
+                "CREATE INDEX threads_instance_name ON threads(instance_id, name)",
+            ))
+    {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "missing or altered thread name schema",
+        ));
+    }
+    Ok(())
 }
 
 /// Writer-connection invariant: no occupant binding is registered without the

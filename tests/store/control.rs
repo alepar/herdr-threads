@@ -1544,6 +1544,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
     );
     let directory =
         crate::protocol::commands::Command::Directory(crate::protocol::commands::DirectoryQuery {
+            recent: false,
             membership: Some(SeatId::new("s2")),
             membership_filter: crate::protocol::commands::DirectoryMembership::Joined,
             topic_contains: None,
@@ -2770,6 +2771,7 @@ fn managed_release_cancels_only_required_invitation_and_replay_retains_history()
     );
     let native_directory =
         crate::protocol::commands::Command::Directory(crate::protocol::commands::DirectoryQuery {
+            recent: false,
             membership: Some(SeatId::new("s2")),
             membership_filter: crate::protocol::commands::DirectoryMembership::Invited,
             topic_contains: None,
@@ -3193,6 +3195,7 @@ fn retirement_cutover_makes_pending_requirement_terminal_before_bounded_cleanup(
 fn create_thread_persists_joined_creator_and_creation_audit() {
     let (context, mut conn, path, _) = bound_fixture(100);
     let command = CreateThread {
+        name: None,
         topic: "topic".into(),
         goal: "goal".into(),
         operation: OperationId::new("o1"),
@@ -3280,6 +3283,7 @@ fn create_thread_persists_joined_creator_and_creation_audit() {
     assert_eq!(replay, CommandResult::ThreadCreated(thread));
     assert_eq!(conn.query_row("SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind='inbox' AND scope_key='s1'",[],|r|r.get::<_,i64>(0)).unwrap(),inbox_revision);
     let changed = CreateThread {
+        name: None,
         topic: "changed".into(),
         ..command.clone()
     };
@@ -3337,6 +3341,7 @@ fn joined_member_changes_topic_with_scoped_revision_and_audit() {
     use crate::protocol::commands::SetTopic;
     let (context, mut conn, path, _) = bound_fixture(100);
     let create = CreateThread {
+        name: None,
         topic: "old".into(),
         goal: "goal".into(),
         operation: OperationId::new("create-topic"),
@@ -3415,6 +3420,7 @@ fn joined_member_changes_topic_with_scoped_revision_and_audit() {
 fn pending_reinvite_keeps_first_deadline_and_new_invites_use_precedence() {
     let (context, mut conn, path, _) = bound_fixture(100);
     let create = CreateThread {
+        name: None,
         topic: "topic".into(),
         goal: "goal".into(),
         operation: OperationId::new("create"),
@@ -3601,6 +3607,7 @@ fn operator_orphan_invite_uses_configured_duration_and_keeps_pending_deadline() 
 fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
     let (context, mut conn, path, clock) = bound_fixture(100);
     let create = CreateThread {
+        name: None,
         topic: "topic".into(),
         goal: "goal".into(),
         operation: OperationId::new("c"),
@@ -4669,6 +4676,7 @@ fn snapshot_rejects_nonrepresentable_host_numbers_without_changing_state() {
 fn inviting_directly_joined_creator_is_truthful_replayable_noop() {
     let (context, mut conn, path, _) = bound_fixture(100);
     let create = CreateThread {
+        name: None,
         topic: "topic".into(),
         goal: "goal".into(),
         operation: OperationId::new("create-creator"),
@@ -8550,6 +8558,220 @@ fn spent_snapshot_quantum_commits_its_prefix_and_staging_resumes() {
     seats::seal_snapshot_stage(&context, &mut conn, &stage.id, &budget).unwrap();
     let published = seats::publish_snapshot_stage(&context, &mut conn, &stage.id, &budget).unwrap();
     assert_eq!(published.target_count, 3);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn thread_names_create_rename_clear_and_replay_keep_topic_and_authority() {
+    let (context, mut conn, path, _) = bound_fixture(100);
+    let command: CreateThread = serde_json::from_value(serde_json::json!({
+        "topic":"topic", "goal":"goal", "name":"team café", "operation":"names-create", "claim":claim("s1")
+    })).expect("named create must decode");
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let hash = cooperative_payload_hash("create_thread", &command).unwrap();
+    let result = create_thread(
+        &context,
+        &mut conn,
+        &budget,
+        &command,
+        permit(
+            "s1",
+            "names-create",
+            ObligationRef::CheckIn(SeatId::new("s1")),
+            hash,
+            100,
+        ),
+    )
+    .unwrap();
+    let CommandResult::ThreadCreated(thread) = result else {
+        panic!("create")
+    };
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT name FROM threads WHERE id=?1",
+            [thread.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored.as_deref(), Some("team café"));
+    // All name writes exercise the same joined-caller rule as topic changes.
+    for (operation, name) in [("names-rename", Some("new name")), ("names-clear", None)] {
+        let wire: crate::protocol::commands::Command = serde_json::from_value(serde_json::json!({
+            "kind":"set_thread_name", "args":{"thread":thread,"name":name,"operation":operation,"claim":claim("s1")}
+        })).unwrap();
+        let crate::protocol::commands::Command::SetThreadName(command) = wire else {
+            panic!("name")
+        };
+        let hash = cooperative_payload_hash("set_thread_name", &command).unwrap();
+        for _ in 0..2 {
+            let result = set_thread_name(
+                &context,
+                &mut conn,
+                &budget,
+                &command,
+                permit(
+                    "s1",
+                    operation,
+                    ObligationRef::Control(thread.clone()),
+                    hash,
+                    100,
+                ),
+            )
+            .unwrap();
+            assert_eq!(result, CommandResult::ThreadNameChanged(thread.clone()));
+        }
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT name FROM threads WHERE id=?1",
+                [thread.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored.as_deref(), name);
+        let mut foreign = command.clone();
+        foreign.claim = claim("s2");
+        foreign.operation = OperationId::new(format!("foreign-{operation}"));
+        let hash = cooperative_payload_hash("set_thread_name", &foreign).unwrap();
+        assert_eq!(
+            set_thread_name(
+                &context,
+                &mut conn,
+                &budget,
+                &foreign,
+                permit(
+                    "s2",
+                    foreign.operation.as_str(),
+                    ObligationRef::Control(thread.clone()),
+                    hash,
+                    100
+                )
+            )
+            .unwrap_err()
+            .code,
+            crate::protocol::results::ErrorCode::Unauthorized
+        );
+    }
+    assert_eq!(
+        conn.query_row(
+            "SELECT topic || '/' || goal FROM threads WHERE id=?1",
+            [thread.as_str()],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "topic/goal"
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn thread_names_store_validates_before_writes_and_allows_duplicate_create() {
+    let (context, mut conn, path, _) = bound_fixture(100);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    for invalid in [
+        "".to_owned(),
+        "x".repeat(129),
+        "é".repeat(65),
+        "bad\nname".into(),
+        "bad\u{7f}".into(),
+    ] {
+        let invalid_create = CreateThread {
+            name: Some(invalid.clone()),
+            topic: "topic".into(),
+            goal: "goal".into(),
+            operation: OperationId::new("invalid-create-name"),
+            claim: claim("s1"),
+        };
+        let hash = cooperative_payload_hash("create_thread", &invalid_create).unwrap();
+        assert_eq!(
+            create_thread(
+                &context,
+                &mut conn,
+                &budget,
+                &invalid_create,
+                permit(
+                    "s1",
+                    "invalid-create-name",
+                    ObligationRef::CheckIn(SeatId::new("s1")),
+                    hash,
+                    100
+                )
+            )
+            .unwrap_err()
+            .code,
+            crate::protocol::results::ErrorCode::InvalidRequest
+        );
+        let invalid_change = crate::protocol::commands::SetThreadName {
+            thread: ThreadId::new("missing"),
+            name: Some(invalid),
+            operation: OperationId::new("invalid-set-name"),
+            claim: claim("s1"),
+        };
+        let hash = cooperative_payload_hash("set_thread_name", &invalid_change).unwrap();
+        assert_eq!(
+            set_thread_name(
+                &context,
+                &mut conn,
+                &budget,
+                &invalid_change,
+                permit(
+                    "s1",
+                    "invalid-set-name",
+                    ObligationRef::Control(ThreadId::new("missing")),
+                    hash,
+                    100
+                )
+            )
+            .unwrap_err()
+            .code,
+            crate::protocol::results::ErrorCode::InvalidRequest
+        );
+    }
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM threads", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    for operation in ["duplicate-one", "duplicate-two"] {
+        let command = CreateThread {
+            name: Some("é".repeat(64)),
+            topic: "topic".into(),
+            goal: "goal".into(),
+            operation: OperationId::new(operation),
+            claim: claim("s1"),
+        };
+        let hash = cooperative_payload_hash("create_thread", &command).unwrap();
+        create_thread(
+            &context,
+            &mut conn,
+            &budget,
+            &command,
+            permit(
+                "s1",
+                operation,
+                ObligationRef::CheckIn(SeatId::new("s1")),
+                hash,
+                100,
+            ),
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM threads WHERE name=?1",
+            ["é".repeat(64)],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
     drop(conn);
     let _ = std::fs::remove_file(path);
 }

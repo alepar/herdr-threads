@@ -137,6 +137,20 @@ pub fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String> {
         }
         CommandResult::Acknowledged(ack) => acknowledged(ack, &mut out),
         CommandResult::Left(thread) => out.push_str(&format!("Left thread {}.\n", thread.as_str())),
+        CommandResult::ThreadNameChanged(thread) => {
+            out.push_str(&format!("Changed name of thread {}.\n", thread.as_str()))
+        }
+        CommandResult::ThreadName(value) => out.push_str(&format!(
+            "Thread {} name: {}.\n",
+            value.thread.as_str(),
+            value.name.as_deref().map_or_else(
+                || "unnamed".to_owned(),
+                |name| one_line(name, false, usize::MAX)
+            )
+        )),
+        CommandResult::ThreadResolved(thread) => {
+            out.push_str(&format!("Thread {}.\n", thread.as_str()))
+        }
         CommandResult::TopicChanged(thread) => {
             out.push_str(&format!("Changed topic of thread {}.\n", thread.as_str()))
         }
@@ -381,17 +395,34 @@ fn directory(page: &Page<ThreadSummary>, out: &mut String) {
         .iter()
         .map(|summary| {
             vec![
-                summary.thread.as_str().to_owned(),
+                summary.name.as_ref().map_or_else(
+                    || summary.thread.as_str().to_owned(),
+                    |name| {
+                        format!(
+                            "{} ({})",
+                            summary.thread.as_str(),
+                            one_line(name, false, 128)
+                        )
+                    },
+                ),
                 thread_state(summary).to_owned(),
                 summary.message_count.to_string(),
                 summary.joined_count.to_string(),
-                timestamp(summary.created_at),
+                timestamp(summary.last_activity.unwrap_or(summary.created_at)),
                 one_line(&summary.topic_data, summary.topic_omitted, TOPIC_COLUMN),
             ]
         })
         .collect();
+    let activity = page.items.iter().any(|row| row.last_activity.is_some());
     table(
-        &["THREAD", "STATE", "MESSAGES", "JOINED", "CREATED", "TOPIC"],
+        &[
+            "THREAD",
+            "STATE",
+            "MESSAGES",
+            "JOINED",
+            if activity { "ACTIVITY" } else { "CREATED" },
+            "TOPIC",
+        ],
         &rows,
         out,
     );
@@ -454,6 +485,12 @@ fn thread(details: &ThreadDetails, out: &mut String) {
         summary.thread.as_str(),
         thread_state(summary)
     ));
+    if let Some(name) = &summary.name {
+        out.push_str(&format!(
+            "Name:     {}\n",
+            one_line(name, false, usize::MAX)
+        ));
+    }
     out.push_str(&format!(
         "Topic:    {}\n",
         one_line(&summary.topic_data, summary.topic_omitted, usize::MAX)
@@ -756,7 +793,7 @@ pub(crate) fn multi_line(text: &str) -> String {
 }
 
 /// `YYYY-MM-DD HH:MMZ` (UTC) for a Unix-millisecond timestamp.
-fn timestamp(at: UtcMillis) -> String {
+pub(super) fn timestamp(at: UtcMillis) -> String {
     let secs = at.0.div_euclid(1000);
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);

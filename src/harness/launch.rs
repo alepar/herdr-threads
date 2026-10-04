@@ -561,8 +561,15 @@ fn overrides_hooks(value: &str) -> bool {
     key == "hooks" || key.starts_with("hooks.")
 }
 
+/// Fully guarded preparation; must be submitted immediately after the durable gate.
+pub struct PreparedLaunch {
+    pub request: NativeLaunchRequest,
+    context: HostCallContext,
+    current: HostObservation,
+}
+
 /// Resolves the seat before direct native start. A successful return proves only
-/// host-observed startup; check-in and receipts remain separate verified operations.
+/// host-observed startup; check-in and receipts remain separate operations.
 pub fn launch_managed(
     host: &dyn HostPort,
     seats: &dyn LaunchSeatResolver,
@@ -571,6 +578,18 @@ pub fn launch_managed(
     request: ManagedLaunchRequest,
     caller_budget: &CallBudget,
 ) -> Result<NativeLaunchOutcome, ApiError> {
+    let prepared = prepare_managed(host, seats, hooks, clock, request, caller_budget)?;
+    submit_prepared(host, clock, prepared)
+}
+
+pub fn prepare_managed(
+    host: &dyn HostPort,
+    seats: &dyn LaunchSeatResolver,
+    hooks: &dyn LaunchHookInspector,
+    clock: &dyn Clock,
+    request: ManagedLaunchRequest,
+    caller_budget: &CallBudget,
+) -> Result<PreparedLaunch, ApiError> {
     if caller_budget.is_exhausted(clock) {
         return Err(error(
             ErrorCode::DeadlineExceeded,
@@ -709,19 +728,60 @@ pub fn launch_managed(
         expected_boot: Some(current.host_boot.clone()),
         expected_epoch: Some(current.epoch),
     };
-    let outcome = host.launch_native(native_request.clone(), &native_context);
-    // Once the host start call begins, a lost response or deadline cannot
-    // establish that no agent was started. Do not advertise a safe retry.
-    let outcome = match outcome {
-        Ok(outcome) => outcome,
-        Err(err)
+    Ok(PreparedLaunch {
+        request: native_request,
+        context: native_context,
+        current,
+    })
+}
+
+/// Called only after preparation and any caller's durable possible-start fence.
+pub fn submit_prepared(
+    host: &dyn HostPort,
+    clock: &dyn Clock,
+    prepared: PreparedLaunch,
+) -> Result<NativeLaunchOutcome, ApiError> {
+    match submit_prepared_with_evidence(host, clock, prepared) {
+        Err(failure)
             if matches!(
-                err.code,
+                failure.error.code,
                 ErrorCode::HostUnavailable
                     | ErrorCode::DeadlineExceeded
                     | ErrorCode::Cancelled
                     | ErrorCode::UnknownOutcome
             ) =>
+        {
+            Ok(NativeLaunchOutcome::OutcomeUnknown)
+        }
+        result => result.map_err(|failure| failure.error),
+    }
+}
+
+pub fn submit_prepared_with_evidence(
+    host: &dyn HostPort,
+    clock: &dyn Clock,
+    prepared: PreparedLaunch,
+) -> Result<NativeLaunchOutcome, crate::ports::NativeLaunchFailure> {
+    let PreparedLaunch {
+        request: native_request,
+        context: native_context,
+        current,
+    } = prepared;
+    let budget = &native_context.budget;
+    let outcome = host.launch_native_with_evidence(native_request.clone(), &native_context);
+    // Once the host start call begins, a lost response or deadline cannot
+    // establish that no agent was started. Do not advertise a safe retry.
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(err)
+            if err.submission == crate::ports::NativeSubmission::Possible
+                && matches!(
+                    err.error.code,
+                    ErrorCode::HostUnavailable
+                        | ErrorCode::DeadlineExceeded
+                        | ErrorCode::Cancelled
+                        | ErrorCode::UnknownOutcome
+                ) =>
         {
             return Ok(NativeLaunchOutcome::OutcomeUnknown);
         }

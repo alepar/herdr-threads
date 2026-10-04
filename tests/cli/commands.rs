@@ -135,7 +135,7 @@ fn overdue_uses_global_context_and_typed_diagnostics_read_without_operation_key(
     ])
     .unwrap();
     let mut stub = ReadStub(None);
-    dispatch(parsed, &mut stub, None, None).unwrap();
+    dispatch(freeze_thread_id(parsed), &mut stub, None, None).unwrap();
     let (command, output) = stub.0.unwrap();
     assert_eq!(
         output.context.state_dir.as_deref(),
@@ -455,9 +455,9 @@ fn documented_read_table_dispatches_to_stub_client() {
         }
     }
     let rows: &[(&[&str], &str)] = &[
-        (&["thread", "list"], "directory"),
+        (&["thread", "list", "--all"], "directory"),
         (&["thread", "show", "t1"], "thread"),
-        (&["inbox"], "inbox"),
+        (&["inbox", "--seat", "s1"], "inbox"),
         (&["warnings", "--seat", "s1"], "warnings"),
         (&["pending-receipts", "--seat", "s1"], "pending_receipts"),
         (&["read", "t1", "--after", "3"], "history"),
@@ -471,7 +471,7 @@ fn documented_read_table_dispatches_to_stub_client() {
     for &(args, expected) in rows {
         let parsed =
             parse_argv(std::iter::once("herdr-threads").chain(args.iter().copied())).unwrap();
-        dispatch(parsed, &mut stub, None, None).unwrap();
+        dispatch(freeze_thread_id(parsed), &mut stub, None, None).unwrap();
         let command = stub.0.last().unwrap();
         let value = serde_json::to_value(command).unwrap();
         assert_eq!(value["kind"], expected, "{args:?}");
@@ -479,9 +479,9 @@ fn documented_read_table_dispatches_to_stub_client() {
 }
 
 #[test]
-fn warnings_route_requires_seat_and_valid_page() {
+fn warnings_route_defaults_to_caller_and_requires_valid_page() {
     use crate::protocol::commands::Command;
-    assert!(parse_argv(["herdr-threads", "warnings"]).is_err());
+    assert!(parse_argv(["herdr-threads", "warnings"]).unwrap().caller_read_default);
     assert!(parse_argv(["herdr-threads", "warnings", "--seat", "s1", "--limit", "0"]).is_err());
     let parsed = parse_argv(["herdr-threads", "warnings", "--seat", "s1", "--limit", "7"]).unwrap();
     assert!(
@@ -607,7 +607,7 @@ fn mutation_is_not_submitted_without_durable_operation_key() {
         }
     }
     let parsed = parse_argv(["herdr-threads", "seat", "resolve", "--pane", "p1"]).unwrap();
-    assert!(dispatch(parsed, &mut Stub, None, None).is_err());
+    assert!(dispatch(freeze_thread_id(parsed), &mut Stub, None, None).is_err());
 }
 
 #[test]
@@ -786,7 +786,7 @@ fn local_recovery_reference_is_not_an_ack_id() {
 #[test]
 fn create_uses_supplied_topic_as_default_goal() {
     let parsed = parse_argv(["herdr-threads", "thread", "create", "--topic", "Orbit 雪"]).unwrap();
-    let CliAction::Mutation(MutationSpec::Create { topic, goal }) = parsed.action else {
+    let CliAction::Mutation(MutationSpec::Create { topic, goal, .. }) = parsed.action else {
         panic!("expected create")
     };
     assert_eq!(topic, "Orbit 雪");
@@ -827,9 +827,9 @@ fn documented_mutations_dispatch_exact_typed_command_to_stub() {
         (&["archive", "t1"], "archive"),
         (&["reopen", "t1"], "reopen"),
         (&["check-in"], "check_in"),
-        (&["seat", "resolve", "--pane", "p1"], "resolve_seat"),
+        (&["seat", "resolve", "--pane", "w1:p1"], "resolve_seat"),
         (
-            &["seat", "rebind", "s1", "--pane", "p1", "--operator"],
+            &["seat", "rebind", "s1", "--pane", "w1:p1", "--operator"],
             "operator_rebind",
         ),
         (
@@ -837,7 +837,7 @@ fn documented_mutations_dispatch_exact_typed_command_to_stub() {
                 "seat",
                 "resolve",
                 "--pane",
-                "p2",
+                "w1:p2",
                 "--new-seat",
                 "--operator",
             ],
@@ -853,7 +853,7 @@ fn documented_mutations_dispatch_exact_typed_command_to_stub() {
         ),
         (
             &[
-                "seat", "rebind", "s1", "--pane", "p1", "--replace", "s2", "--operator",
+                "seat", "rebind", "s1", "--pane", "w1:p1", "--replace", "s2", "--operator",
             ],
             "operator_replace",
         ),
@@ -864,7 +864,7 @@ fn documented_mutations_dispatch_exact_typed_command_to_stub() {
             parse_argv(std::iter::once("herdr-threads").chain(args.iter().copied())).unwrap();
         assert!(matches!(parsed.action, CliAction::Mutation(_)), "{args:?}");
         dispatch(
-            parsed,
+            freeze_thread_id(parsed),
             &mut stub,
             Some(claim()),
             Some(OperationId::new("op-row")),
@@ -1037,7 +1037,7 @@ fn local_command_table_uses_local_backend_without_wire_call() {
     for args in rows {
         let parsed =
             parse_argv(std::iter::once("herdr-threads").chain(args.iter().copied())).unwrap();
-        dispatch(parsed, &mut stub, None, None).unwrap();
+        dispatch(freeze_thread_id(parsed), &mut stub, None, None).unwrap();
     }
     assert_eq!(stub.0.len(), rows.len());
 }
@@ -1056,7 +1056,7 @@ fn local_composition_error_names_skill() {
         }
     }
     let parsed = parse_argv(["herdr-threads", "--skill"]).unwrap();
-    let err = dispatch(parsed, &mut Stub, None, None).unwrap_err();
+    let err = dispatch(freeze_thread_id(parsed), &mut Stub, None, None).unwrap_err();
     assert!(err.detail.contains("skill"), "{}", err.detail);
     assert!(err.detail.contains("launch") && err.detail.contains("setup"), "{}", err.detail);
 }
@@ -1121,8 +1121,14 @@ fn digest_item_form_is_refused_as_invalid_arguments_naming_the_bare_id() {
             "herdr-threads ack msg-1",
         ),
     ] {
-        let Err(error) = parse_argv(argv.clone()) else {
-            panic!("{argv:?} parsed")
+        let error = if argv[1] == "ack" {
+            parse_argv(argv.clone()).unwrap_err()
+        } else {
+            let mut parsed = parse_argv(argv.clone()).unwrap();
+            let selector = parsed.thread_selector.clone().unwrap();
+            crate::cli::threads::resolve_cli_threads(&mut parsed, |_| {
+                Err::<ThreadId,_>(crate::cli::threads::selector_error(ApiError::not_found("thread not found"), &selector))
+            }).unwrap_err()
         };
         assert_eq!(error.code, ErrorCode::InvalidRequest, "{argv:?}");
         assert!(error.detail.contains("attention digest item"), "{}", error.detail);
@@ -1432,4 +1438,114 @@ fn contract_id_runs_without_a_daemon_and_prints_exact_documents() {
         err.contains("unrecognized codex version: codex-cli 0.160.0-alpha.1"),
         "{err}"
     );
+}
+
+#[test]
+fn thread_names_public_create_and_selectors() {
+    let named = parse_argv(["ht", "thread", "create", "--topic", "Announcements", "--name", "team café"]);
+    assert!(named.is_ok(), "optional names must parse: {named:?}");
+    for argv in [
+        vec!["ht", "thread", "show", "team café"],
+        vec!["ht", "thread", "name", "team café"],
+        vec!["ht", "thread", "rename", "team café", "new name"],
+        vec!["ht", "read", "team café"],
+        vec!["ht", "summary", "team café"],
+    ] {
+        assert!(parse_argv(argv.clone()).is_ok(), "selector must parse: {argv:?}");
+    }
+}
+
+#[test]
+fn thread_names_every_selector_freezes_one_literal_id() {
+    use crate::cli::threads::{resolve_cli_threads, selector_mut};
+    let cases = [
+        vec!["ht","thread","show","review"], vec!["ht","thread","topic","review"],
+        vec!["ht","thread","topic","review","--set","topic"], vec!["ht","thread","participants","review"],
+        vec!["ht","participants","review"], vec!["ht","invite","review","--seat","s1"],
+        vec!["ht","accept","review"], vec!["ht","accept-required","review","--invitation","v1","--requirement","q1","--revision","1"],
+        vec!["ht","leave","review"], vec!["ht","send","review","--body","ready"],
+        vec!["ht","archive","review"], vec!["ht","reopen","review"], vec!["ht","read","review"],
+        vec!["ht","read","review","--follow"], vec!["ht","pending-receipts","--thread","review"],
+        vec!["ht","diagnostics","--thread","review"], vec!["ht","warnings","--active","review"],
+        vec!["ht","search","release","--thread","review"], vec!["ht","summary","review"],
+        vec!["ht","thread","name","review"], vec!["ht","thread","name","review","--set","new"],
+        vec!["ht","thread","name","review","--clear"], vec!["ht","thread","rename","review","new"],
+    ];
+    for argv in cases {
+        let mut parsed = parse_argv(argv.clone()).unwrap();
+        let mut calls = 0;
+        resolve_cli_threads(&mut parsed, |selector| {
+            assert_eq!(selector,"review", "{argv:?}"); calls += 1;
+            Ok::<_,ApiError>(ThreadId::new("tFREEZE01"))
+        }).unwrap();
+        assert_eq!(calls,1,"{argv:?}");
+        assert_eq!(selector_mut(&mut parsed.action).unwrap().as_str(),"tFREEZE01","{argv:?}");
+
+    }
+}
+
+#[test]
+fn thread_names_validate_bytes_controls_and_exact_spaces() {
+    for name in ["".to_owned(), "x".repeat(129), "é".repeat(65), "line\nname".into(), "tab\tname".into(), "delete\u{7f}".into(), "unicode\u{85}".into(), "line\u{2028}name".into(), "paragraph\u{2029}name".into()] {
+        assert!(parse_argv(["ht","thread","create","--topic","topic","--name",&name]).is_err(),"{name:?}");
+        assert!(parse_argv(["ht","thread","name","t1","--set",&name]).is_err(),"{name:?}");
+    }
+    for name in ["x".repeat(128), "é".repeat(64), "  exact spaces  ".into(), "m1@t1".into()] {
+        let parsed = parse_argv(["ht","thread","create","--topic","topic","--name",&name]).unwrap();
+        assert!(matches!(parsed.action,CliAction::Mutation(MutationSpec::Create {name:Some(value),..}) if value==name));
+        assert!(parse_argv(["ht","read",&name]).is_ok());
+    }
+    assert!(parse_argv(["ht","thread","name","t1","--set","x","--clear"]).is_err());
+}
+
+// Typed dispatch fixtures explicitly freeze exact IDs; runtime uses the daemon.
+fn freeze_thread_id(mut parsed: ParsedCli) -> ParsedCli {
+    crate::cli::threads::resolve_cli_threads(&mut parsed, |id| Ok::<_,ApiError>(ThreadId::new(id))).unwrap();
+    parsed
+}
+
+#[test]
+fn thread_names_unresolved_dispatch_refuses_before_any_backend_call() {
+    struct Never;
+    impl CliBackend for Never {
+        fn call(&mut self,_:WireCommand,_:&OutputSpec)->Result<CommandResult,ApiError> {panic!("unresolved selector must not dispatch")}
+    }
+    for selector in ["review","team café","tIDSHAPED"] {
+        let parsed = parse_argv(["ht","read",selector]).unwrap();
+        assert!(super::dispatch(parsed,&mut Never,None,None).is_err());
+    }
+}
+
+#[test]
+fn handoff_parser_requires_one_thread_explicit_pane_and_one_body() {
+    let base = ["ht", "handoff", "--new-thread", "--pane", "bob", "--kind", "codex"];
+    let mut good = base.to_vec();
+    good.extend(["--", "durable task"]);
+    assert!(parse_argv(good).is_ok());
+    for tail in [vec![], vec!["--", "one", "two"], vec!["--thread", "review", "--", "task"]] {
+        let mut args = base.to_vec(); args.extend(tail);
+        assert!(parse_argv(args).is_err());
+    }
+    assert!(parse_argv(["ht", "handoff", "--new-thread", "--kind", "codex", "--", "task"]).is_err());
+    for option in ["--thread-name", "--topic", "--goal"] {
+        assert!(parse_argv(["ht", "handoff", "--thread", "review", "--pane", "bob", "--kind", "codex", option, "value", "--", "task"]).is_err());
+    }
+}
+#[test]
+fn handoff_parser_preserves_native_elements_and_distinct_names() {
+    let parsed = parse_argv(["ht", "handoff", "--new-thread", "--thread-name", "review", "--name", "worker", "--pane", "bob", "--kind", "codex", "--agent-arg=-a", "--agent-arg=on-request", "--agent-arg=literal spaces", "--", "one durable body"]).unwrap();
+    let CliAction::Handoff(request) = parsed.action else { panic!("not handoff"); };
+    assert_eq!(request.launch.argv, ["-a", "on-request", "literal spaces"]);
+    assert_eq!(request.launch.name.as_deref(), Some("worker"));
+    assert_eq!(request.thread_name.as_deref(), Some("review"));
+    assert_eq!(request.body, "one durable body");
+}
+
+#[test]
+fn handoff_thread_name_uses_shared_canonical_resolution() {
+    let mut parsed=parse_argv(["ht","handoff","--thread","review channel","--pane","bob","--kind","codex","--","task"]).unwrap();
+    assert_eq!(parsed.thread_selector.as_deref(),Some("review channel"));
+    crate::cli::threads::resolve_cli_threads::<ApiError>(&mut parsed, |selector| { assert_eq!(selector,"review channel"); Ok(ThreadId::new("tFrozen")) }).unwrap();
+    assert!(parsed.thread_selector.is_none());
+    assert!(matches!(parsed.action,CliAction::Handoff(request) if request.thread.as_ref().unwrap().as_str()=="tFrozen"));
 }

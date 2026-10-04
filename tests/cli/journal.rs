@@ -1331,3 +1331,111 @@ fn send_relays_user_is_journaled_only_when_set_and_old_intents_still_load() {
     };
     assert!(sent.relays_user);
 }
+
+#[test]
+fn thread_names_legacy_create_semantics_omit_name_and_replay() {
+    let old = serde_json::json!({"kind":"create_thread","topic":"topic","goal":"goal"});
+    let semantic: SemanticMutation = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&semantic).unwrap(), old);
+    assert_eq!(
+        serde_json::to_vec(&semantic).unwrap(),
+        serde_json::to_vec(&SemanticMutation::CreateThread {
+            name: None,
+            topic: "topic".into(),
+            goal: "goal".into()
+        })
+        .unwrap()
+    );
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let reference = journal.record(scope(), semantic, 1).unwrap();
+    run_retry(
+        &journal,
+        &reference,
+        &scope(),
+        || Ok(claim()),
+        |command| {
+            let Command::CreateThread(create) = command else {
+                panic!("create")
+            };
+            assert_eq!(create.name, None);
+            assert!(serde_json::to_value(&create).unwrap().get("name").is_none());
+            Ok(CommandResult::ThreadCreated(ThreadId::new("tLEGACY01")))
+        },
+        |_| Ok(()),
+    )
+    .unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn thread_names_journal_retry_uses_frozen_id_after_rename() {
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let mut parsed =
+        crate::cli::commands::parse_argv(["ht", "thread", "rename", "team café", "new name"])
+            .unwrap();
+    crate::cli::threads::resolve_cli_threads(&mut parsed, |name| {
+        assert_eq!(name, "team café");
+        Ok::<_, ApiError>(ThreadId::new("tORIGINAL"))
+    })
+    .unwrap();
+    let crate::cli::commands::CliAction::Mutation(crate::cli::commands::MutationSpec::Name {
+        thread,
+        name,
+    }) = parsed.action
+    else {
+        panic!("name")
+    };
+    let semantic = SemanticMutation::SetThreadName { thread, name };
+    let reference = journal.record(scope(), semantic, 1).unwrap();
+    let loaded = journal.load(&reference).unwrap();
+    assert_eq!(loaded.header.thread, Some(ThreadId::new("tORIGINAL")));
+    // The daemon committed, but failed output preserves the keyed intent.
+    let result = run_retry(
+        &journal,
+        &reference,
+        &scope(),
+        || Ok(claim()),
+        |command| {
+            let Command::SetThreadName(change) = command else {
+                panic!("name")
+            };
+            assert_eq!(change.thread, ThreadId::new("tORIGINAL"));
+            assert_eq!(change.name.as_deref(), Some("new name"));
+            Ok(CommandResult::ThreadNameChanged(ThreadId::new("tORIGINAL")))
+        },
+        |_| {
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "output interrupted",
+            ))
+        },
+    );
+    assert!(result.is_err());
+    // A later name owner is irrelevant: replay sends the same canonical ID
+    // and operation key without performing any selector lookup.
+    run_retry(
+        &journal,
+        &reference,
+        &scope(),
+        || Ok(claim()),
+        |command| {
+            let Command::SetThreadName(change) = command else {
+                panic!("name")
+            };
+            assert_eq!(change.thread, ThreadId::new("tORIGINAL"));
+            assert_eq!(change.operation, reference.operation);
+            Ok(CommandResult::ThreadNameChanged(change.thread))
+        },
+        |bytes| {
+            assert_eq!(
+                bytes,
+                &CommandResult::ThreadNameChanged(ThreadId::new("tORIGINAL"))
+            );
+            Ok(())
+        },
+    )
+    .unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -662,6 +662,7 @@ fn rerunning_send_attention_producer_does_not_reenqueue() {
     let CommandResult::ThreadCreated(thread) = permitted(
         store,
         PermitMutation::CreateThread(CreateThread {
+            name: None,
             topic: "topic".into(),
             goal: "goal".into(),
             operation: OperationId::new("create"),

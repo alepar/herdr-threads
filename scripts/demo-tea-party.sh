@@ -2,15 +2,14 @@
 # demo-tea-party.sh: a reproducible herdr-threads demo for screen recording.
 #
 # A mad tea party where Claude and Codex agents talk to each other.
-# Creates a fresh Herdr workspace with two panes:
+# Creates a fresh Herdr workspace with a host, a coordinator and four guests:
 #   - a coordinator shell pane: `herdr-threads me init`, then a live IRC-style
 #     view of the tea-party thread (`herdr-threads read THREAD --follow`);
-#   - a host pane, where a Claude is launched with `herdr-threads launch` and
-#     told to host a tea party: it creates panes with `herdr pane split`,
-#     launches two Claude guests and two Codex guests into them with
-#     `herdr-threads launch`, creates a "tea party" thread, invites everyone
-#     (and the coordinator, as an observer) and runs a few rounds of chat in
-#     which each guest replies in character and ACKs, then wraps up.
+#   - a Claude host pane, launched with ordinary `herdr-threads launch` into
+#     its frozen pane ID. The script creates four guest panes; the host creates
+#     a named thread and uses `handoff` to invite each guest, store its persona
+#     assignment, and start two Claude guests and two Codex guests.
+#     The guests accept separately, exchange messages, and acknowledge receipt.
 #
 # It waits until the host posts the closing line or the time limit passes,
 # then (with --cleanup) closes the workspace, which also ends every agent in it.
@@ -26,9 +25,10 @@
 #
 # Sandboxes and approvals are never bypassed. The only permission the host
 # Claude gets beyond the user's settings is a scoped --allowedTools list for
-# the `herdr pane` / `herdr-threads` commands it must run (drop it with
+# the `herdr-threads` commands it must run (drop it with
 # --no-allowed-tools and approve each command by hand while recording).
-# Codex guests run with their normal sandbox and approval policy.
+# Native approvals remain independent; CLI socket access can require approval.
+# No network or full-access permission is granted by this script.
 #
 # Usage:
 #   scripts/demo-tea-party.sh [--dry-run] [--cleanup] [options]
@@ -54,11 +54,11 @@ Usage: demo-tea-party.sh [options]
   --codex-profile NAME  Codex config profile (-p) for the Codex guests
   --cwd DIR             working directory of the new tab (default: current)
   --label TEXT          tab label and pane-name prefix (default tea-HHMMSS)
-  --no-allowed-tools    do not pre-allow the host's herdr commands
+  --no-allowed-tools    omit the host's scoped Claude allowedTools argument
   -h, --help            show this help
 
-Internal: --watch [--label L] [--seat SEAT] runs the transcript view inside the
-coordinator pane, following the thread whose topic is "tea party L".
+Internal: --watch --thread NAME [--label L] runs the transcript view inside the
+coordinator pane, resolving --thread NAME uniquely before following its exact ID.
 EOF
 }
 
@@ -69,6 +69,7 @@ dry_run=0
 cleanup=0
 focus=0
 topic=
+thread_name=
 codex_home=
 time_limit=900
 rounds=3
@@ -81,7 +82,6 @@ cwd=$PWD
 label="tea-$(date +%H%M%S)"
 allowed_tools=1
 watch_mode=0
-watch_seat=
 closing_line="THE TEA PARTY IS OVER"
 
 while [ $# -gt 0 ]; do
@@ -101,8 +101,7 @@ while [ $# -gt 0 ]; do
         --label) [ $# -ge 2 ] || die "--label needs a value"; label=$2; shift 2 ;;
         --no-allowed-tools) allowed_tools=0; shift ;;
         --watch) watch_mode=1; shift ;;
-        --topic) [ $# -ge 2 ] || die "--topic needs a value"; topic=$2; shift 2 ;;
-        --seat) [ $# -ge 2 ] || die "--seat needs a value"; watch_seat=$2; shift 2 ;;
+        --thread) [ $# -ge 2 ] || die "--thread needs a value"; thread_name=$2; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) die "unknown argument: $1 (see --help)" ;;
     esac
@@ -111,44 +110,42 @@ done
 case $time_limit in ''|*[!0-9]*) die "--time-limit must be a whole number of seconds" ;; esac
 case $rounds in ''|*[!0-9]*) die "--rounds must be a whole number" ;; esac
 case $label in ''|*[!A-Za-z0-9_-]*) die "--label may use only letters, digits, - and _" ;; esac
-# The topic is unique per run (label plus start time), so a re-run with the
-# same --label never follows an earlier party's thread. --watch is handed the
-# exact topic by the launcher.
-[ -n "$topic" ] || topic="tea party $label $(date +%H%M%S)"
+# A run-specific exact name avoids an older party on ordinary reruns. Names
+# are still nonunique: the watcher must surface Conflict rather than choose one.
+[ -n "$thread_name" ] || thread_name="$label-$(date +%s)-$$"
+[ ${#thread_name} -le 128 ] || die "thread name exceeds 128 bytes; shorten --label"
+topic="tea party $label"
 
 # --- watch mode: runs inside the coordinator pane ---------------------------
-# Waits for the host to create the thread, then hands the pane to
-# `herdr-threads read --follow`: an IRC-style live view that prints the recent
-# messages and then each new one once, never clearing the screen. The
-# coordinator seat only reads; the follower never ACKs or accepts. Ctrl-C
-# stops it.
-# find_thread prints the ID of the thread whose topic is exactly $topic,
-# following every directory page. With --seat it lists only threads that seat
-# joined or was invited to.
+# Name lookup is the CLI's indexed all-instance resolver, not a directory search.
+# Successful ThreadDetails carries its canonical ID at data.summary.thread.
+# Only the exact NotFound code means creation may still be pending. Conflict,
+# host/protocol errors, and malformed output must stop visibly.
 find_thread() {
-    local selectors=(--search "$topic") cursor='' out id _
-    if [ -n "$watch_seat" ]; then selectors+=(--seat "$watch_seat"); else selectors+=(--all); fi
-    for _ in $(seq 1 200); do
-        if [ -n "$cursor" ]; then
-            out=$(herdr-threads --json thread list "${selectors[@]}" --cursor "$cursor" 2>/dev/null) || return 1
-        else
-            out=$(herdr-threads --json thread list "${selectors[@]}" 2>/dev/null) || return 1
-        fi
-        id=$(jq -r --arg t "$topic" 'first(.. | objects | select(.topic_data? == $t) | .thread) // empty' <<<"$out") || return 1
-        [ -n "$id" ] && { printf '%s\n' "$id"; return 0; }
-        cursor=$(jq -r 'first(.. | objects | select(has("items") and has("next_cursor")) | .next_cursor) // empty' <<<"$out") || return 1
-        [ -n "$cursor" ] || return 1
-    done
-    return 1
+    local out
+    if out=$(herdr-threads --json thread show "$thread_name" 2>&1); then
+        jq -er '.data.summary.thread | select(type == "string" and length > 0)' <<<"$out" || {
+            say "thread show returned no canonical thread ID"
+            return 2
+        }
+    else
+        case $out in
+            *' (not_found)') return 1 ;;
+            *) printf '%s\n' "$out" >&2; return 2 ;;
+        esac
+    fi
 }
 
 if [ "$watch_mode" = 1 ]; then
     deadline=$(( $(date +%s) + time_limit ))
-    printf '=== herdr-threads: waiting for the host to create the "%s" thread ===\n' "$topic"
+    printf '=== herdr-threads: waiting for the host to create the "%s" thread ===\n' "$thread_name"
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        if thread=$(find_thread) && [ -n "$thread" ]; then
+        if thread=$(find_thread); then
             printf '=== live thread: %s (Claude <-> Codex) ===\n\n' "$topic"
             exec herdr-threads read "$thread" --follow --human --recent 30
+        else
+            status=$?
+            [ "$status" -eq 1 ] || exit "$status"
         fi
         sleep 2
     done
@@ -170,26 +167,41 @@ claude_native=(--model "$claude_model")
 codex_native=(-c "model_reasoning_effort=\"$codex_effort\"")
 [ -n "$codex_model" ] && codex_native+=(-m "$codex_model")
 [ -n "$codex_profile" ] && codex_native+=(-p "$codex_profile")
-claude_guest_args=$(join_quoted "--allowedTools=Bash(herdr-threads *)" "${claude_native[@]}")
-codex_guest_args=$(join_quoted "${codex_native[@]}")
+# Each native element is a separate --agent-arg=VALUE, including option values.
+# Shell quoting keeps spaces/metacharacters within that single element.
+handoff_native() {
+    local args=() arg
+    for arg in "$@"; do args+=("--agent-arg=$arg"); done
+    join_quoted "${args[@]}"
+}
+claude_guest_args=$(handoff_native "--allowedTools=Bash(herdr-threads *)" "${claude_native[@]}")
+codex_guest_args=$(handoff_native "${codex_native[@]}")
+
+guest_assignment() {
+    printf '%s' "You are $1 ($2), $3. Read herdr-threads skill and this assignment from the thread, then accept the invitation if you intend to join. Start every message with [$1 · $2]. Reply briefly in character to addressed messages; request receipts with repeated --require-ack-pane, using the guest pane names in the roster. ACK only exact messages you read; default text inbox can ACK fully displayed receipts after flush. Use one plain herdr-threads command per tool call. Native approvals apply independently: follow the installed CLI approval guidance and report refused permission without bypassing policy or enabling networking. Stay for the closing toast."
+}
 
 host_prompt() {
-    local coordinator_seat=$1
     cat <<PROMPT
-You are the host of a MAD tea party in Herdr (as in Alice in Wonderland), and the point of the show is that Claude agents and Codex agents talk to each other through herdr-threads. Use herdr-threads for all conversation (run \`herdr-threads skill\` first if you have not read it). Keep every message short, absurd and charming. Start every message you send with "[Host · Claude] ".
+You are the host of a MAD tea party in Herdr (as in Alice in Wonderland). Claude agents and Codex agents converse through herdr-threads. Run herdr-threads skill first. Keep messages short, absurd and charming. Start every message you send with "[Host · Claude] ".
 
-1. The four guest panes already exist and are named: $guests. Run ONLY herdr-threads commands (no other shell commands, no herdr pane commands), exactly one plain herdr-threads command per tool call: never use pipes, &&, ;, variables, or \$(...) command substitution, and never prefix commands with cd or test. Copy IDs from earlier output by hand. Plain herdr-threads commands are pre-approved, so nothing will ask for permission.
-2. Launch the guests (two Codex, two Claude), each with a first prompt that gives its persona and these rules: answer herdr-threads messages in character; start EVERY message with its signature "[NAME · HARNESS] " (for example "[Mad Hatter · Codex] "); when asked to talk to another guest, send that guest a message with \`--require-ack\` naming the other guest's seat; ACK every message addressed to it; never leave early; run ONLY plain herdr-threads commands, one per call, with no pipes, &&, variables or \$(...) (they are pre-approved; never run other shell commands). Codex guests: herdr-threads commands work inside your normal sandbox, so never request escalated permissions for them.
-   - (Each PERSONA PROMPT must be a single line: no line breaks.)
-   - \`herdr-threads launch --pane $label-hatter-codex --kind codex -- $codex_guest_args "PERSONA PROMPT"\`: the Mad Hatter (Codex), riddles without answers, insists it is always six o'clock;
-   - \`herdr-threads launch --pane $label-hare-claude --kind claude -- $claude_guest_args "PERSONA PROMPT"\`: the March Hare (Claude), offers wine that does not exist, contradicts everyone;
-   - \`herdr-threads launch --pane $label-dormouse-codex --kind codex -- $codex_guest_args "PERSONA PROMPT"\`: the Dormouse (Codex), falls asleep mid-sentence, tells treacle-well stories;
-   - \`herdr-threads launch --pane $label-alice-claude --kind claude -- $claude_guest_args "PERSONA PROMPT"\`: Alice (Claude), polite, puzzled, keeps asking for an explanation.
-   Note the seat each launch prints.
-3. Create the thread: \`herdr-threads thread create --topic "$topic" --goal "A mad tea party where Claudes and Codexes talk to each other"\`. Invite the four guest seats (a person is watching the thread live; do not invite or address them). Then post a roster message listing every guest as NAME · HARNESS · SEAT, so guests can address each other.
-4. Run $rounds rounds. Every round is a cross-harness exchange: pair a Claude guest with a Codex guest (round 1: Alice (Claude) and the Mad Hatter (Codex); round 2: the March Hare (Claude) and the Dormouse (Codex); then any Claude/Codex pairing). Send one prompt to the thread with \`--require-ack\` naming both paired seats, telling the Claude guest to ask the Codex guest something (a riddle, a toast, a question about the time) by sending it a message, and the Codex guest to answer the Claude guest the same way. Wait until both have ACKed (\`herdr-threads pending-receipts --thread THREAD\`) and both have replied to each other, reading \`herdr-threads read THREAD --recent 20\`. Then have everyone shout "Move down! Clean cups!" and switch seats.
-5. Wrap up: send a short closing toast that names which Claudes talked to which Codexes, ending with the exact line: $closing_line
-Codex guests are slower than Claude guests (several minutes per reply is normal): before moving on or closing, wait until every paired guest has replied, checking every 30 seconds; send one short nudge after 4 minutes of silence and only give up on a guest after 8 minutes. Never close the party while a reply you asked for is still outstanding. Never ask the person watching any question and never wait for their input. Then stop. Do not close panes or tabs; the person running the demo does that.
+1. Four empty guest panes already exist in your tab: $guests. Run only herdr-threads commands, one plain command per tool call. Copy IDs from output by hand. Native permissions and approvals apply independently; follow the installed CLI approval guidance and report refused permission. Do not bypass policy or enable networking.
+2. Create the continuing named channel before assigning guests:
+   $(join_quoted herdr-threads thread create --name "$thread_name" --topic "$topic" --goal "A mad tea party where Claudes and Codexes talk to each other")
+3. Use these handoffs. Each final quoted argument is one durable persona assignment (1–1024 UTF-8 bytes; do not append this host prompt); native startup contains only the fixed inbox/thread bootstrap. Successful launch does not accept an invitation or ACK the assignment. Each recipient decides whether to join separately. Guest names resolve within your own live tab.
+   herdr-threads handoff --thread $(quote "$thread_name") --pane $(quote "$label-hatter-codex") --kind codex $codex_guest_args -- $(quote "$(guest_assignment 'Mad Hatter' Codex 'telling riddles without answers and insisting it is always six o clock')")
+   herdr-threads handoff --thread $(quote "$thread_name") --pane $(quote "$label-hare-claude") --kind claude $claude_guest_args -- $(quote "$(guest_assignment 'March Hare' Claude 'offering wine that does not exist and contradicting everyone')")
+   herdr-threads handoff --thread $(quote "$thread_name") --pane $(quote "$label-dormouse-codex") --kind codex $codex_guest_args -- $(quote "$(guest_assignment Dormouse Codex 'falling asleep mid sentence and telling treacle well stories')")
+   herdr-threads handoff --thread $(quote "$thread_name") --pane $(quote "$label-alice-claude") --kind claude $claude_guest_args -- $(quote "$(guest_assignment Alice Claude 'being polite, puzzled and asking for an explanation')")
+   If a handoff fails, preserve its committed work and follow its reported retry/inspect commands. Never repeat a possible native start. Post a roster with each guest's character, harness and exact pane name. A person watches without an invitation or receipt request.
+4. Run $rounds cross-harness rounds: first Alice and Mad Hatter, then March Hare and Dormouse, then any Claude/Codex pair. Ask each pair to exchange a riddle, toast or question by sending addressed messages to each other. For the first pair, use the recipient shape:
+   $(join_quoted herdr-threads send "$thread_name" --require-ack-pane "$label-alice-claude" --require-ack-pane "$label-hatter-codex" --body "Alice, ask the Mad Hatter a riddle; Hatter, answer Alice through this thread.")
+   Repeat --require-ack-pane for each intended recipient; never put multiple names in one argument. Check receipts and read replies:
+   $(join_quoted herdr-threads pending-receipts --thread "$thread_name")
+   $(join_quoted herdr-threads read "$thread_name" --recent 20)
+   Receipt is not completion: wait for both replies as well as receipts before moving on. Then ask everyone to shout "Move down! Clean cups!"; characters switch imagined seats, never actual panes.
+5. Send a closing toast naming which Claudes talked to which Codexes, ending with: $closing_line
+Allow several minutes for replies. Check periodically; send one nudge after four minutes and give up only after eight minutes of silence. Stop after the toast. Do not close panes, tabs or workspaces; the script operator controls cleanup.
 PROMPT
 }
 
@@ -210,17 +222,19 @@ if [ "$dry_run" = 1 ]; then
 herdr workspace create --label $(quote "$label") --cwd $(quote "$cwd") $(focus_flag)
 #   -> SPACE=.result.workspace.workspace_id  COORD=.result.root_pane.pane_id
 # split the root into: host (left, large), a 2x2 guest grid (right) and a short coordinator strip (bottom)
+#   -> HOST=frozen host pane ID; host and guests remain in this created tab
 # panes named: $(quote "$host_pane") $guests $(quote "$coord_pane")
+# Codex guest environment: $(quote "CODEX_HOME=$codex_home")
 herdr pane run "\$COORD" 'herdr-threads me init'
 herdr pane wait-output "\$COORD" --match 'You are seat' --timeout 30000
 #   -> COORDINATOR_SEAT read from the coordinator pane
-herdr-threads launch --pane $(quote "$host_pane") --kind claude -- $(join_quoted "${host_native[@]}") "\$HOST_PROMPT"
-herdr pane run "\$COORD" $(quote "$(quote "$self") --watch --label $label --seat COORDINATOR_SEAT --time-limit $time_limit")
+herdr-threads launch --pane "\$HOST" --kind claude -- $(join_quoted "${host_native[@]}") "\$HOST_PROMPT"
+herdr pane run "\$COORD" $(quote "$(join_quoted "$self" --watch --label "$label" --thread "$thread_name" --time-limit "$time_limit")")
 # wait until the coordinator pane shows "$closing_line" or $time_limit s pass
 EOF
     [ "$cleanup" = 1 ] && echo "herdr workspace close \"\$SPACE\""
     printf '\n# HOST_PROMPT:\n'
-    host_prompt "COORDINATOR_SEAT"
+    host_prompt
     exit 0
 fi
 
@@ -291,9 +305,9 @@ coordinator_seat=$(herdr pane read "$coord" --source recent-unwrapped --lines 40
 [ -n "$coordinator_seat" ] || die "could not read the coordinator seat"
 say "coordinator seat $coordinator_seat"
 
-herdr-threads launch --pane "$host_pane" --kind claude -- "${host_native[@]}" "$(host_prompt "$coordinator_seat" | tr '\n' ' ')"
+herdr-threads launch --pane "$host" --kind claude -- "${host_native[@]}" "$(host_prompt | tr '\n' ' ')"
 
-herdr pane run "$coord" "$(quote "$self") --watch --label $label --topic $(quote "$topic") --time-limit $time_limit" >/dev/null
+herdr pane run "$coord" "$(join_quoted "$self" --watch --label "$label" --thread "$thread_name" --time-limit "$time_limit")" >/dev/null
 
 deadline=$(( $(date +%s) + time_limit ))
 while [ "$(date +%s)" -lt "$deadline" ]; do

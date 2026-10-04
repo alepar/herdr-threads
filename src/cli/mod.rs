@@ -3,6 +3,7 @@ pub mod commands;
 pub mod doctor;
 pub mod exit;
 pub mod follow;
+pub mod handoff;
 pub mod hook;
 pub mod hook_evidence;
 pub mod human;
@@ -15,10 +16,12 @@ pub mod launch;
 pub mod me;
 pub mod output;
 pub mod panes;
+mod picker;
 pub mod retry;
 pub mod setup;
 pub mod skill;
 pub mod summary;
+pub mod threads;
 
 use crate::{
     app::SystemClock,
@@ -385,10 +388,43 @@ where
         deadline: MonoInstant(clock.monotonic_now().0.saturating_add(5_000)),
         cancellation: Cancellation::default(),
     };
-    // `--pane NAME` (a unique pane or single-pane tab label) becomes its pane ID.
-    panes::resolve_pane_arguments(&mut parsed, || {
-        crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(&clock))
-            .pane_names(&budget())
+    let host =
+        crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(&clock));
+    panes::resolve_cli_targets(
+        &mut parsed,
+        || host.topology(&budget()),
+        || {
+            caller_pane
+                .filter(|pane| !pane.is_empty())
+                .map(|pane| host.current_pane(pane, &budget()))
+                .transpose()
+        },
+    )?;
+    let connection = LazyConnection::new(|| {
+        connect(&paths, &clock).map(|(instance, _, client)| (instance, client))
+    });
+    let thread_caller = parsed
+        .cooperative
+        .as_ref()
+        .map(|selection| selection.seat.clone());
+    threads::resolve_cli_threads(&mut parsed, |selector| {
+        let (_, client) = connection.get()?;
+        let result = client
+            .call(
+                Command::ResolveThread(crate::protocol::commands::ResolveThreadQuery {
+                    selector: selector.to_owned(),
+                    caller: thread_caller.clone(),
+                    caller_target: caller_pane
+                        .filter(|pane| !pane.is_empty())
+                        .map(crate::protocol::ids::HostTargetId::new),
+                }),
+                &budget(),
+            )
+            .map_err(|error| threads::selector_error(error, selector))?;
+        match result {
+            CommandResult::ThreadResolved(thread) => Ok(thread),
+            _ => Err(invalid_request("unexpected thread resolution result")),
+        }
     })?;
     if let CliAction::MeInit { operator } = &parsed.action {
         let operator = *operator;
@@ -405,35 +441,69 @@ where
     if let CliAction::Launch(request) = &parsed.action {
         return run_launch(request, &parsed, &context, &paths, &clock, writer);
     }
+    if let CliAction::Picker(request) = &parsed.action {
+        picker::require_terminal(&parsed)?;
+        let (_, client) = connection.get()?;
+        let Some(thread) = picker::run(|page| {
+            let result = client.call(
+                Command::Directory(crate::protocol::commands::DirectoryQuery {
+                    recent: true,
+                    membership: None,
+                    membership_filter: crate::protocol::commands::DirectoryMembership::All,
+                    topic_contains: None,
+                    page,
+                }),
+                &budget(),
+            )?;
+            match result {
+                CommandResult::Directory(page) => Ok(page),
+                _ => Err(ApiError::invalid_request(
+                    "unexpected picker directory result",
+                )),
+            }
+        })?
+        else {
+            return Ok(());
+        };
+        parsed.action = request.selected(thread);
+    }
     if let CliAction::Follow(request) = &parsed.action {
-        return follow::run(request, &parsed.output, &context, &paths, &clock, writer);
+        return follow::run(
+            request,
+            caller_pane,
+            &parsed.output,
+            &context,
+            &paths,
+            &clock,
+            writer,
+        );
     }
     // A person reading a thread gets the IRC transcript with pane nicks and
     // full bodies; every other consumer keeps the selected machine encoding.
     if let CliAction::Wire(Command::History(query)) = &parsed.action
         && output::human_active()
-        && parsed.cooperative.is_none()
     {
         let (instance, _, client) = connect(&paths, &clock)?;
-        let mut cache = follow::NickCache::new(&context, &paths, instance, &clock);
+        let mut cache =
+            follow::NickCache::new(&context, &paths, instance, &clock).with_caller(caller_pane);
         return follow::render_history(&client, query.clone(), &parsed.output, &mut cache, writer);
     }
-    if let CliAction::Mutation(mutation) = &parsed.action
-        && let Some(semantic) = operator_semantic(mutation)
+    // Canonical thread and recipient selectors precede both caller composition
+    // and the operator branch's durable intent.
+    if matches!(&parsed.action, CliAction::Mutation(mutation) if operator_semantic(mutation).is_some())
     {
         if parsed.cooperative.is_some() {
             return Err(invalid_request(
-                "--operator cannot be combined with --cooperative-* caller selection: \
-                 operator repair is attributed to the local user, never to a seat",
+                "--operator cannot be combined with --cooperative-* caller selection: operator repair is attributed to the local user, never to a seat",
             ));
         }
+        resolve_recipient_seats(&mut parsed, &paths, &connection, &clock)?;
+        let CliAction::Mutation(mutation) = &parsed.action else {
+            unreachable!()
+        };
+        let semantic = operator_semantic(mutation).expect("operator mutation selected above");
         return run_operator(semantic, &parsed, &paths, &clock, writer);
     }
-    // One lazily opened connection serves the caller's seat lookup and the
-    // read or mutation itself.
-    let connection = LazyConnection::new(|| {
-        connect(&paths, &clock).map(|(instance, _, client)| (instance, client))
-    });
     let seat_labels =
         if matches!(&parsed.action, CliAction::Wire(Command::Seats(_))) && output::human_active() {
             crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(&clock))
@@ -616,8 +686,11 @@ where
         CliAction::InternalJsonField { .. } => {
             unreachable!("internal json-field is handled before context resolution")
         }
-        CliAction::Launch(_) => unreachable!("launch is handled after context resolution"),
+        CliAction::Launch(_) | CliAction::Handoff(_) => {
+            unreachable!("launch is handled after context resolution")
+        }
         CliAction::MeInit { .. } => unreachable!("me init is handled after context resolution"),
+        CliAction::Picker(_) => unreachable!("picker is handled after context resolution"),
         CliAction::Follow(_) => unreachable!("follow is handled after context resolution"),
         CliAction::Summary(_) => unreachable!("summary always derives a caller selection"),
         CliAction::View { once, page } => {
@@ -692,9 +765,25 @@ where
     F: Fn() -> Result<(uuid::Uuid, C), RunError>,
     W: Write,
 {
-    if let Some(selection) =
-        derive_caller(&mut parsed, caller_pane, context, paths, connection, clock)?
-    {
+    let live_default = parsed
+        .caller_read_default
+        .then_some(parsed.pane_selector.as_ref())
+        .flatten()
+        .and_then(|selector| selector.pane.clone());
+    let selection = derive_caller(
+        &mut parsed,
+        live_default.as_deref().or(caller_pane),
+        context,
+        paths,
+        connection,
+        clock,
+    )?;
+    if parsed.caller_read_default {
+        parsed.pane_selector = None;
+    }
+
+    resolve_recipient_seats(&mut parsed, paths, connection, clock)?;
+    if let Some(selection) = selection {
         let (instance, client) = connection.get()?;
         run_selected(
             parsed,
@@ -923,6 +1012,7 @@ fn inbox_topics<C: LocalClient + ?Sized>(
         pagination::{MAX_PAGE_BYTES, PageRequest},
     };
     let command = Command::Directory(DirectoryQuery {
+        recent: false,
         membership: Some(seat),
         membership_filter: DirectoryMembership::All,
         topic_contains: None,
@@ -1051,6 +1141,24 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
                 ));
             }
         }
+    }
+    let compound = match &parsed.action {
+        CliAction::Handoff(_) => true,
+        CliAction::Retry(recovery) => {
+            let reference = journal.resolve_recovery_ref(recovery.as_str())?;
+            handoff::is_handoff(&journal.load(&reference)?.semantic)
+        }
+        _ => false,
+    };
+    if compound {
+        if selection.role != crate::harness::context::Role::TopLevel {
+            return Err(unsupported("handoff requires the top-level caller"));
+        }
+        let saved = current
+            .as_ref()
+            .ok_or_else(|| caller_not_located("handoff requires lifecycle check-in"))?;
+        let claim = crate::harness::bridge::caller_claim(saved).map_err(context_run_error)?;
+        return handoff::run(parsed, claim, &journal, paths, writer);
     }
     let initial = if (current.is_none() || fresh_lifecycle) && lifecycle {
         let execution = uuid::Uuid::new_v4();
@@ -1318,6 +1426,15 @@ fn caller_need(
     parsed: &commands::ParsedCli,
     paths: &InstancePaths,
 ) -> Result<CallerNeed, RunError> {
+    if parsed.caller_read_default && !matches!(parsed.action, CliAction::Wire(Command::Inbox(_))) {
+        return Ok(CallerNeed::SeatDefault { required: true });
+    }
+    if !parsed.caller_read_default
+        && matches!(parsed.action, CliAction::Wire(_))
+        && parsed.pane_selector.is_some()
+    {
+        return Ok(CallerNeed::None);
+    }
     Ok(match &parsed.action {
         CliAction::Mutation(mutation) => {
             if matches!(
@@ -1334,7 +1451,9 @@ fn caller_need(
                 CallerNeed::Selection
             }
         }
-        CliAction::CachedCheckIn(_) | CliAction::Summary(_) => CallerNeed::Selection,
+        CliAction::CachedCheckIn(_) | CliAction::Summary(_) | CliAction::Handoff(_) => {
+            CallerNeed::Selection
+        }
         CliAction::Retry(recovery) => {
             // Retry needs the daemon; report it unavailable (exit 3, intent
             // kept) before inspecting the local journal.
@@ -1360,10 +1479,10 @@ fn caller_need(
         CliAction::Wire(Command::Inbox(query)) if query.seat.is_none() => {
             CallerNeed::SeatDefault { required: true }
         }
-        CliAction::Wire(Command::PendingReceipts(query)) if query.seat.is_none() => {
-            CallerNeed::SeatDefault {
-                required: query.thread.is_none(),
-            }
+        CliAction::Wire(Command::PendingReceipts(query))
+            if query.seat.is_none() && query.thread.is_none() =>
+        {
+            CallerNeed::SeatDefault { required: true }
         }
         CliAction::Wire(Command::Thread(_) | Command::Participants(_)) => CallerNeed::SelfMarker,
         _ => CallerNeed::None,
@@ -1374,10 +1493,96 @@ fn default_seat(action: &mut CliAction, seat: crate::protocol::ids::SeatId) {
     match action {
         CliAction::Wire(Command::Inbox(query)) => query.seat = Some(seat),
         CliAction::Wire(Command::PendingReceipts(query)) => query.seat = Some(seat),
+        CliAction::Wire(Command::Directory(query)) => query.membership = Some(seat),
+        CliAction::Wire(Command::Diagnostics(query)) => query.seat = Some(seat),
+        CliAction::Wire(Command::Warnings(query)) => query.seat = seat,
         CliAction::Wire(Command::Thread(query)) => query.caller = Some(seat),
         CliAction::Wire(Command::Participants(query)) => query.caller = Some(seat),
         _ => {}
     }
+}
+
+/// Recipient pane selection never changes the caller's cooperative claim.
+fn resolve_recipient_seats<C, F>(
+    parsed: &mut commands::ParsedCli,
+    paths: &InstancePaths,
+    connection: &LazyConnection<C, F>,
+    clock: &Arc<dyn Clock>,
+) -> Result<(), RunError>
+where
+    C: LocalClient,
+    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+{
+    let recipient = matches!(
+        parsed.action,
+        CliAction::Mutation(MutationSpec::Invite { .. }) | CliAction::Wire(_)
+    );
+    let selector = recipient.then(|| parsed.pane_selector.clone()).flatten();
+    if selector.is_none() && parsed.require_ack_panes.is_empty() {
+        return Ok(());
+    }
+    let (instance, client) = connection.get()?;
+    let allocate = |target: crate::protocol::ids::HostTargetId| -> Result<crate::protocol::ids::SeatId, RunError> {
+        let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
+        let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
+            &journal, IntentScope::ServiceAllocation { instance: instance.to_string(), target: target.clone() },
+            SemanticMutation::ResolveSeat { target }, clock.utc_now().0,
+            || Err(io::Error::new(io::ErrorKind::PermissionDenied, "recipient resolution has no caller claim")),
+            |command| client.call_definitive(command, &cooperative_budget(clock.as_ref())),
+            &parsed.output, &mut io::sink(),
+        ).map_err(retry_failure)?;
+        match result {
+            CommandResult::SeatResolved(seat) => Ok(seat),
+            _ => Err(mapping_error("service returned no resolved recipient seat")),
+        }
+    };
+    if let Some(selector) = selector {
+        let target = selector
+            .direct_id()
+            .ok_or_else(|| invalid_request("recipient pane was not frozen"))?;
+        let seat = if matches!(
+            parsed.action,
+            CliAction::Mutation(MutationSpec::Invite { .. })
+        ) {
+            allocate(target)?
+        } else {
+            pane_seat(client, &parsed.output, &target, clock.as_ref())?
+                .ok_or_else(|| no_seat_for_pane(&target))?
+        };
+        match &mut parsed.action {
+            CliAction::Mutation(MutationSpec::Invite {
+                seat: recipient, ..
+            }) => *recipient = seat,
+            CliAction::Wire(Command::Inbox(query)) => query.seat = Some(seat),
+            CliAction::Wire(Command::PendingReceipts(query)) => query.seat = Some(seat),
+            CliAction::Wire(Command::Diagnostics(query)) => query.seat = Some(seat),
+            CliAction::Wire(Command::Directory(query)) => query.membership = Some(seat),
+            CliAction::Wire(Command::Warnings(query)) => query.seat = seat,
+            _ => return Err(invalid_request("command has no recipient seat selector")),
+        }
+    }
+    if recipient {
+        parsed.pane_selector = None;
+    }
+    let mut seats = Vec::new();
+    for selector in &parsed.require_ack_panes {
+        let target = selector
+            .direct_id()
+            .ok_or_else(|| invalid_request("ACK recipient pane was not frozen"))?;
+        let seat = allocate(target)?;
+        if !seats.contains(&seat) {
+            seats.push(seat);
+        }
+    }
+    parsed.require_ack_panes.clear();
+    if let CliAction::Mutation(MutationSpec::Send { require_ack, .. }) = &mut parsed.action {
+        for seat in seats {
+            if !require_ack.contains(&seat) {
+                require_ack.push(seat);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The single caller derivation used by every CLI action. Explicit
@@ -1993,7 +2198,10 @@ fn bridge_run_error(error: crate::harness::bridge::BridgeError) -> RunError {
 }
 fn cooperative_semantic(mutation: MutationSpec) -> io::Result<SemanticMutation> {
     Ok(match mutation {
-        MutationSpec::Create { topic, goal } => SemanticMutation::CreateThread { topic, goal },
+        MutationSpec::Create { name, topic, goal } => {
+            SemanticMutation::CreateThread { name, topic, goal }
+        }
+        MutationSpec::Name { thread, name } => SemanticMutation::SetThreadName { thread, name },
         MutationSpec::Topic { thread, topic } => SemanticMutation::SetTopic { thread, topic },
         MutationSpec::Invite {
             thread,

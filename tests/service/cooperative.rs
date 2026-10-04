@@ -145,6 +145,7 @@ fn elected_owner_checks_in_and_uses_returned_context_without_native_evidence() {
         service
             .handle(
                 Command::CreateThread(CreateThread {
+                    name: None,
                     topic: "topic".into(),
                     goal: "goal".into(),
                     operation: OperationId::new("thread"),
@@ -213,6 +214,7 @@ fn explicit_send_accept_and_ack_are_separate_sqlite_decisions() {
     let created = service
         .handle(
             Command::CreateThread(CreateThread {
+                name: None,
                 topic: "topic".into(),
                 goal: "goal".into(),
                 operation: OperationId::new("thread"),
@@ -502,6 +504,7 @@ fn partial_send_preparation_survives_budget_expiry_and_resumes_exact_intent() {
     let CommandResult::ThreadCreated(thread) = service
         .handle(
             Command::CreateThread(CreateThread {
+                name: None,
                 topic: "topic".into(),
                 goal: "goal".into(),
                 operation: OperationId::new("thread"),
@@ -582,6 +585,7 @@ fn stale_sender_cannot_publish_a_prepared_message() {
     let CommandResult::ThreadCreated(thread) = service
         .handle(
             Command::CreateThread(CreateThread {
+                name: None,
                 topic: "topic".into(),
                 goal: "goal".into(),
                 operation: OperationId::new("thread"),
@@ -974,6 +978,7 @@ fn sends_succeed_after_host_outage_epoch_advance_and_reconfirmation() {
     let CommandResult::ThreadCreated(thread) = service
         .handle(
             Command::CreateThread(CreateThread {
+                name: None,
                 topic: "topic".into(),
                 goal: "goal".into(),
                 operation: OperationId::new("thread"),
@@ -1179,6 +1184,7 @@ fn send_before_first_pass_to_structurally_continuous_seat_has_no_warning() {
     let CommandResult::ThreadCreated(thread) = service
         .handle(
             Command::CreateThread(CreateThread {
+                name: None,
                 topic: "topic".into(),
                 goal: "goal".into(),
                 operation: OperationId::new("thread"),

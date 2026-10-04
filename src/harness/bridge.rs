@@ -796,6 +796,7 @@ pub fn run_hook_event_reporting_notices<C: LocalClient + ?Sized, W: Write>(
         let share = directory_share(&base, &request.context.seat)?;
         let retry_argv = directory_argv(output, &request.context.seat, share);
         let command = Command::Directory(DirectoryQuery {
+            recent: false,
             membership: Some(
                 SeatId::parse(request.context.seat.clone()).map_err(|_| ContextError::Invalid)?,
             ),

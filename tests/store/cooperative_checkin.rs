@@ -339,6 +339,7 @@ fn cooperative_send_uses_claim_context_and_keeps_exact_replay() {
     let (store, conn, _) = fixture();
     let result = check_in(&store, lifecycle(claim(), "initial")).unwrap();
     let create = CreateThread {
+        name: None,
         claim: result.context.clone(),
         topic: "topic".into(),
         goal: "goal".into(),
@@ -980,6 +981,7 @@ fn canonical_factory_matches_invite_topic_archive_reopen_and_leave_decisions() {
         store.mutate(mutation, permit, &budget()).unwrap()
     };
     let CommandResult::ThreadCreated(thread) = run(PermitMutation::CreateThread(CreateThread {
+        name: None,
         claim: first.context.clone(),
         topic: "topic".into(),
         goal: "goal".into(),
@@ -1342,6 +1344,7 @@ fn independent_current_and_issuance_budgets_stop_accountable_sqlite_waits() {
             obligations(&conn);
             let first = check_in(&store, lifecycle(claim(), "initial")).unwrap();
             let create = PermitMutation::CreateThread(CreateThread {
+                name: None,
                 claim: first.context.clone(),
                 topic: "topic".into(),
                 goal: "goal".into(),
@@ -1750,6 +1753,7 @@ fn historical_accountable_replay_obeys_its_independent_current_call_budget() {
     let (store, conn, _) = fixture();
     let first = check_in(&store, lifecycle(claim(), "initial")).unwrap();
     let mutation = PermitMutation::CreateThread(CreateThread {
+        name: None,
         claim: first.context.clone(),
         topic: "topic".into(),
         goal: "goal".into(),

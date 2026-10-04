@@ -1328,6 +1328,7 @@ fn public_facade_rejects_expired_permit() {
     drop(db);
     let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let command = CreateThread {
+        name: None,
         topic: "expired".into(),
         goal: "goal".into(),
         claim: fixture_claim("s", "p"),
@@ -1400,6 +1401,7 @@ fn public_facade_creates_thread_with_current_cooperative_permit() {
     drop(db);
     let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let command = CreateThread {
+        name: None,
         topic: "topic".into(),
         goal: "goal".into(),
         operation: OperationId::new("create"),
@@ -1517,6 +1519,7 @@ fn public_facade_creates_invites_sends_accepts_acks_and_archives_with_stable_ids
     drop(db);
     let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let create = CreateThread {
+        name: None,
         topic: "topic".into(),
         goal: "goal".into(),
         operation: OperationId::new("create"),
@@ -1633,6 +1636,7 @@ fn public_facade_routes_directory_through_real_query_connection() {
     drop(db);
     let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let command = Command::Directory(DirectoryQuery {
+        recent: false,
         membership: None,
         membership_filter: DirectoryMembership::All,
         topic_contains: None,
@@ -1673,6 +1677,7 @@ fn default_directory_and_inbox_resolve_only_the_trusted_selected_seat() {
     drop(db);
     let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let command = Command::Directory(DirectoryQuery {
+        recent: false,
         membership: None,
         membership_filter: DirectoryMembership::Default,
         topic_contains: None,
@@ -1745,6 +1750,7 @@ fn join_hint_fixture(
     };
     let store = SqliteStore::new(context, "i", settings).unwrap();
     let create = CreateThread {
+        name: None,
         topic: "topic".into(),
         goal: "goal".into(),
         operation: OperationId::new("create"),
