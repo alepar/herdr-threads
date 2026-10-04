@@ -523,6 +523,11 @@ pub fn normalize_topology(raw: &str) -> Result<HostTopology, ApiError> {
             .iter_mut()
             .find(|pane| pane.target.as_str() == target)
             .ok_or_else(|| invalid("agent names unknown pane"))?;
+        // Herdr lists detected agents even when no name was assigned. Such
+        // agents add no name alias but do not invalidate the live topology.
+        if matches!(agent.get("name"), None | Some(Value::Null)) {
+            continue;
+        }
         let name = field(agent, "name")?.to_owned();
         if !pane.agent_names.contains(&name) {
             pane.agent_names.push(name);

@@ -166,6 +166,63 @@ fn topology() -> crate::host::observation::HostTopology {
     crate::host::observation::normalize_topology(&topology_raw().to_string()).unwrap()
 }
 
+// Kills: requiring a name on every live agent, so an unrelated unnamed agent
+// prevents resolving a handoff's pane label anywhere in the session.
+#[test]
+fn handoff_names_ignore_unnamed_agents_in_other_spaces() {
+    for name in [None, Some(serde_json::Value::Null)] {
+        let mut raw = topology_raw();
+        let snapshot = &mut raw["result"]["snapshot"];
+        snapshot["workspaces"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"workspace_id":"w2","label":"other"}));
+        snapshot["tabs"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"tab_id":"w2:t1","workspace_id":"w2","label":"other"}));
+        snapshot["panes"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "pane_id":"w2:p1","terminal_id":"term_other","workspace_id":"w2",
+                "tab_id":"w2:t1","focused":false,"agent":"claude",
+                "agent_status":"idle","revision":1
+            }));
+        let mut unnamed = serde_json::json!({"pane_id":"w2:p1","agent":"claude"});
+        if let Some(name) = name {
+            unnamed["name"] = name;
+        }
+        snapshot["agents"].as_array_mut().unwrap().push(unnamed);
+        let mut parsed = super::super::commands::parse_argv([
+            "ht",
+            "handoff",
+            "--new-thread",
+            "--thread-name",
+            "review",
+            "--topic",
+            "Tabs or spaces?",
+            "--pane",
+            "alice",
+            "--kind",
+            "claude",
+            "--",
+            "Make the case for spaces.",
+        ])
+        .unwrap();
+        resolve_cli_targets(
+            &mut parsed,
+            || crate::host::observation::normalize_topology(&raw.to_string()),
+            || Ok(Some(HostTargetId::parse("w1:p1").unwrap())),
+        )
+        .unwrap();
+        let CliAction::Handoff(request) = parsed.action else {
+            panic!("expected handoff");
+        };
+        assert_eq!(request.launch.target.as_str(), "w1:p1");
+    }
+}
+
 #[test]
 fn selector_scopes_names_and_unions_live_agent_names() {
     let mut topology = topology();

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.2.3
+
+- **Pane-name lookup with unnamed agents.** Herdr agents do not need assigned names. An unnamed agent anywhere in the session no longer prevents resolving pane labels for handoff, launch, invitations and other commands. Named-agent aliases, ambiguity checks and structural validation remain intact.
+
 ## v0.2.2
 
 - **Human CLI targets.** Pane selectors accept workspace, tab and pane names, plus live agent names. Omitted parents use the caller's live context; ambiguous matches require more qualification or an exact ID.
