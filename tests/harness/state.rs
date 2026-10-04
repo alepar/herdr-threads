@@ -634,3 +634,31 @@ fn roll_up_evaluates_the_newest_contract_inside_the_window() {
         "{line}"
     );
 }
+
+#[test]
+fn exact_build_ladder_never_orders_informational_release_text() {
+    use crate::harness::{
+        registry::builtins,
+        runtime::{RuntimeDescriptor, RuntimeIdentity},
+    };
+    let registry = builtins();
+    for harness in ["claude", "codex"] {
+        let registration = registry.by_id(registry.agent(harness).unwrap()).unwrap();
+        let build = RuntimeIdentity::build(RuntimeDescriptor {
+            release_version: Some("0.0.1".into()),
+            source: "git".into(),
+            base_version: Some("0.0.1".into()),
+            derived_version: Some("0.0.1+dev".into()),
+            commit: None,
+            dirty: Some(true),
+            distance: Some(1),
+        })
+        .unwrap();
+        assert_eq!(registration.version_ladder(&build), Ladder::Admitted);
+        let release = RuntimeIdentity::stable_release("0.0.1", "native_transcript").unwrap();
+        assert!(matches!(
+            registration.version_ladder(&release),
+            Ladder::BelowFloor { .. }
+        ));
+    }
+}

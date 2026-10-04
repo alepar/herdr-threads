@@ -496,3 +496,62 @@ fn normalize_version_table() {
         );
     }
 }
+
+#[test]
+fn runtime_build_key_covers_exact_descriptor_and_domain_hash_preserves_legacy_ids() {
+    use crate::harness::{
+        adapter::HarnessAdapter,
+        runtime::{RuntimeDescriptor, RuntimeIdentity},
+    };
+    let descriptor = RuntimeDescriptor {
+        release_version: None,
+        source: "git".into(),
+        base_version: Some("0.21.5".into()),
+        derived_version: Some("0.21.5+3962.g37daf85".into()),
+        commit: Some("37daf85b2ad0ee50ed45d7234dc47b7fa24cec09".into()),
+        dirty: Some(false),
+        distance: Some(3962),
+    };
+    let identity = RuntimeIdentity::build(descriptor.clone()).unwrap();
+    assert_eq!(
+        identity.descriptor.canonical_json(),
+        r#"{"base_version":"0.21.5","commit":"37daf85b2ad0ee50ed45d7234dc47b7fa24cec09","derived_version":"0.21.5+3962.g37daf85","dirty":false,"distance":3962,"release_version":null,"schema_version":1,"source":"git"}"#
+    );
+    assert_eq!(
+        identity.key,
+        "build:013639f0250186e6516b34213a8fba3d64e5ce73f667e0a4feb471047d5507b0"
+    );
+    for change in 0..5 {
+        let mut d = descriptor.clone();
+        match change {
+            0 => d.commit = Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+            1 => d.dirty = Some(true),
+            2 => d.source = "native_runtime".into(),
+            3 => d.distance = Some(3963),
+            _ => d.derived_version = Some("0.21.5+3963".into()),
+        }
+        assert_ne!(RuntimeIdentity::build(d).unwrap().key, identity.key);
+    }
+    let descriptor = crate::harness::claude::ClaudeAdapter.contracts()[0];
+    assert_eq!(
+        descriptor.legacy_contract_id(),
+        contract_id(&crate::harness::claude::CONTRACT)
+    );
+    let id = descriptor.contract_id_v2().unwrap();
+    let mut changed = descriptor;
+    changed.domain_id = "different";
+    assert_ne!(changed.contract_id_v2().unwrap(), id);
+    changed = descriptor;
+    changed.origin = crate::harness::evidence::EvidenceOrigin::NativeShapeObservation;
+    assert_ne!(changed.contract_id_v2().unwrap(), id);
+    changed = descriptor;
+    changed.qualifications = &["qualified_runtime"];
+    assert_ne!(changed.contract_id_v2().unwrap(), id);
+    changed = descriptor;
+    changed.required_milestones = &["tool"];
+    assert_ne!(changed.contract_id_v2().unwrap(), id);
+    assert_eq!(
+        changed.legacy_contract_id(),
+        descriptor.legacy_contract_id()
+    );
+}

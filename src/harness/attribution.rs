@@ -316,3 +316,32 @@ fn read_head_line<R: Read + Seek>(r: &mut R) -> std::io::Result<Head> {
     }
     Ok(Head::TooLong)
 }
+
+/// Adapter-only native transcript attribution; installed probes are never substituted.
+pub(crate) fn attribute_native_runtime(
+    harness: &str,
+    input: &super::adapter::HookInput,
+) -> super::adapter::RuntimeAttribution {
+    use super::adapter::RuntimeAttribution;
+    if input.bytes.len() > super::contract::MAX_PAYLOAD {
+        return RuntimeAttribution::Unavailable {
+            diagnostic: "payload exceeds attribution bound".into(),
+        };
+    }
+    let Ok(payload) = serde_json::from_slice::<Value>(&input.bytes) else {
+        return RuntimeAttribution::Unavailable {
+            diagnostic: "malformed native payload".into(),
+        };
+    };
+    match attribute_payload(harness, &payload) {
+        Attribution::Attributed { version, .. } => {
+            match super::runtime::RuntimeIdentity::stable_release(&version, "native_transcript") {
+                Ok(identity) => RuntimeAttribution::Attributed(identity),
+                Err(diagnostic) => RuntimeAttribution::Unavailable { diagnostic },
+            }
+        }
+        Attribution::Unattributable { reason } => RuntimeAttribution::Unavailable {
+            diagnostic: reason.as_str().into(),
+        },
+    }
+}

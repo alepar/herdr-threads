@@ -74,6 +74,7 @@ impl<'de> Deserialize<'de> for OccupantHarness {
 #[derive(Debug, PartialEq, Eq)]
 pub enum RegistryError {
     InvalidId(String),
+    InvalidEvidenceMetadata(String),
     DuplicateId(String),
     DuplicateHostKind(String),
     InvalidContextSpelling(String),
@@ -104,6 +105,7 @@ impl std::fmt::Display for RegistryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (problem, value) = match self {
             Self::InvalidId(value) => ("invalid ID", value),
+            Self::InvalidEvidenceMetadata(value) => ("invalid evidence metadata", value),
             Self::DuplicateId(value) => ("duplicate ID", value),
             Self::DuplicateHostKind(value) => ("duplicate host kind", value),
             Self::InvalidContextSpelling(value) => ("invalid context spelling", value),
@@ -338,13 +340,61 @@ impl Registration {
         self.adapter.observe_install(env, budget)
     }
     pub fn version_ladder(&self, identity: &RuntimeIdentity) -> Ladder {
+        if identity.validate().is_err() {
+            return Ladder::Admitted;
+        }
         self.adapter.version_ladder(identity)
     }
     pub fn classify(&self, input: &HookInput) -> ContractObservation {
         self.adapter.classify(input)
     }
     pub fn attribute_runtime(&self, input: &HookInput, budget: &CallBudget) -> RuntimeAttribution {
-        self.adapter.attribute_runtime(input, budget)
+        match self.adapter.attribute_runtime(input, budget) {
+            RuntimeAttribution::Attributed(identity) => {
+                if let Err(diagnostic) = identity.validate() {
+                    return RuntimeAttribution::Unavailable { diagnostic };
+                }
+                if !self
+                    .metadata
+                    .runtime_sources
+                    .contains(&identity.source.as_str())
+                {
+                    return RuntimeAttribution::Unavailable {
+                        diagnostic: "undeclared runtime attribution source".into(),
+                    };
+                }
+                RuntimeAttribution::Attributed(identity)
+            }
+            RuntimeAttribution::Unavailable { diagnostic } => RuntimeAttribution::Unavailable {
+                diagnostic: diagnostic
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .scan(0, |bytes, c| {
+                        *bytes += c.len_utf8();
+                        (*bytes <= 128).then_some(c)
+                    })
+                    .collect(),
+            },
+        }
+    }
+    /// Sticky session resume state belongs to the caller's durable gate.
+    pub fn attribute_runtime_for_session(
+        &self,
+        input: &HookInput,
+        budget: &CallBudget,
+        resumed: bool,
+    ) -> RuntimeAttribution {
+        if resumed
+            && let Some(reason) = self
+                .contracts()
+                .iter()
+                .find_map(|descriptor| descriptor.resumed_unavailable_reason)
+        {
+            return RuntimeAttribution::Unavailable {
+                diagnostic: reason.into(),
+            };
+        }
+        self.attribute_runtime(input, budget)
     }
     pub fn setup(
         &self,
@@ -384,6 +434,27 @@ impl Registration {
                     self.metadata().id
                 ),
             });
+        }
+        let installed_identity = match &request.installed {
+            InstallObservation::Available { identity, .. } => Some(identity),
+            _ => None,
+        };
+        for identity in installed_identity
+            .into_iter()
+            .chain(request.runtime_candidate.as_ref())
+        {
+            identity
+                .validate()
+                .map_err(|diagnostic| AdmissionFailure { diagnostic })?;
+            if !self
+                .metadata
+                .runtime_sources
+                .contains(&identity.source.as_str())
+            {
+                return Err(AdmissionFailure {
+                    diagnostic: "undeclared runtime attribution source".into(),
+                });
+            }
         }
         let row = self.adapter.admit(request, budget)?;
         Ok(AdmittedHandle {
@@ -453,6 +524,28 @@ impl Registry {
                 || m.id == "human"
             {
                 return Err(RegistryError::InvalidId(m.id.into()));
+            }
+            if m.runtime_sources.len() > 8
+                || m.runtime_sources
+                    .iter()
+                    .any(|source| !super::runtime::token(source, 32))
+                || m.runtime_sources
+                    .iter()
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    != m.runtime_sources.len()
+            {
+                return Err(RegistryError::InvalidEvidenceMetadata(m.id.into()));
+            }
+            let mut domains = std::collections::HashSet::new();
+            if r.contracts().len() > 8
+                || r.contracts().iter().any(|descriptor| {
+                    descriptor.validate().is_err()
+                        || descriptor.contract.harness != m.id
+                        || !domains.insert(descriptor.domain_id)
+                })
+            {
+                return Err(RegistryError::InvalidEvidenceMetadata(m.id.into()));
             }
             if !ids.insert(m.id) {
                 return Err(RegistryError::DuplicateId(m.id.into()));
@@ -600,7 +693,7 @@ mod tests {
             }
         }
         fn version_ladder(&self, _: &RuntimeIdentity) -> Ladder {
-            Ladder { rows: vec![] }
+            Ladder::Admitted
         }
         fn classify(&self, input: &HookInput) -> ContractObservation {
             ContractObservation {
@@ -707,6 +800,7 @@ mod tests {
                 executable: ExecutableLookup::Unsupported,
                 host_kinds: kinds,
                 setup_scopes: &[],
+                runtime_sources: &[],
                 budget,
             })),
             calls: AtomicUsize::new(0),

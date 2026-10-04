@@ -60,6 +60,7 @@ pub struct AdapterMetadata {
     pub host_kinds: &'static [&'static str],
     pub setup_scopes: &'static [SetupScopeKind],
     pub budget: EventBudgetPolicy,
+    pub runtime_sources: &'static [&'static str],
 }
 pub enum ExecutableLookup {
     Path(&'static str),
@@ -92,17 +93,7 @@ pub enum InstallObservation {
     },
     Unsupported(UnsupportedOperation),
 }
-pub struct RuntimeIdentity {
-    pub release_version: Option<String>,
-    pub exact_key: Option<String>,
-    pub provenance: RuntimeIdentityProvenance,
-}
-pub enum RuntimeIdentityProvenance {
-    Unavailable,
-    NativeRuntime,
-    NativeTranscript,
-    InstalledProbe,
-}
+pub use super::runtime::RuntimeIdentity;
 pub struct AdmissionRequest {
     pub installed: InstallObservation,
     pub input: Option<HookInput>,
@@ -132,13 +123,7 @@ pub enum AdmissionKind {
     SchemaMatched,
     Optimistic,
 }
-pub struct Ladder {
-    pub rows: Vec<LadderEntry>,
-}
-pub struct LadderEntry {
-    pub recipe: &'static str,
-    pub diagnostic: String,
-}
+pub use super::state::Ladder;
 pub struct HookInput {
     pub bytes: Vec<u8>,
     pub registered_event: Option<String>,
@@ -148,7 +133,15 @@ pub enum ContractDomain {
     Native,
     Bridge,
 }
+#[derive(Debug, Clone, Copy)]
 pub struct ContractDescriptor {
+    pub domain_id: &'static str,
+    pub origin: super::evidence::EvidenceOrigin,
+    pub events: &'static [super::evidence::EvidenceEvent],
+    pub required_milestones: &'static [&'static str],
+    pub qualifications: &'static [&'static str],
+    pub holding: super::evidence::AttributionHolding,
+    pub resumed_unavailable_reason: Option<&'static str>,
     pub domain: ContractDomain,
     pub contract: &'static crate::harness::contract::HarnessContract,
 }
@@ -422,15 +415,11 @@ mod tests {
             assert!(registration.launch_policy().is_none());
             assert!(registration.composer_policy().is_none());
             assert!(registration.canary_strategy().is_none());
-            assert!(
-                registration
-                    .version_ladder(&RuntimeIdentity {
-                        release_version: Some("999.0.0".into()),
-                        exact_key: None,
-                        provenance: RuntimeIdentityProvenance::Unavailable
-                    })
-                    .rows
-                    .is_empty()
+            assert_eq!(
+                registration.version_ladder(
+                    &RuntimeIdentity::stable_release("999.0.0", "native_transcript").unwrap()
+                ),
+                Ladder::Admitted
             );
             let input = HookInput {
                 bytes: b"not json".to_vec(),

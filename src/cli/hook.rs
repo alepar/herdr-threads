@@ -338,14 +338,15 @@ pub fn parse_event(
 }
 fn installed_observation(installed: &InstalledHarness) -> InstallObservation {
     match installed {
-        InstalledHarness::Claude(version) => InstallObservation::Available {
-            binary: PathBuf::new(),
-            identity: RuntimeIdentity {
-                release_version: Some(version.clone()),
-                exact_key: None,
-                provenance: RuntimeIdentityProvenance::InstalledProbe,
-            },
-        },
+        InstalledHarness::Claude(version) => {
+            match RuntimeIdentity::stable_release(version, "installed_probe") {
+                Ok(identity) => InstallObservation::Available {
+                    binary: PathBuf::new(),
+                    identity,
+                },
+                Err(diagnostic) => InstallObservation::Unavailable { diagnostic },
+            }
+        }
         InstalledHarness::Codex(version) => InstallObservation::CodexWitness(version.clone()),
     }
 }
