@@ -4,6 +4,7 @@ Columns: date · title · relative link · one-line summary · status · tags.
 
 | Date | Title | Design | Summary | Status | Tags |
 |---|---|---|---|---|---|
+| 2026-10-03 | Adapter hook and runtime evidence | [Design](../runs/2026-10-03-harness-adapters/2026-10-03-harness-adapters--hooks-evidence-design.md) | Adapter-directed codecs, durable qualified turns and exact domain-scoped evidence with legacy compatibility. | draft | harness-adapters, ht-3bi.2 |
 | 2026-10-03 | Harness adapters and Hermes | [Design](../runs/2026-10-03-harness-adapters/2026-10-03-harness-adapters-design.md) | Static adapter author interface, compatibility-preserving discovery and bounded native Hermes Python bridge. | draft | harness-adapters, hermes, ht-3bi |
 | 2026-10-03 | Daily thread overhead | [Design](2026-10-03-thread-overhead-design.md) | Batched inbox display ACKs, wake batching, warning transitions, and measured native scenarios. | implemented | inbox, scheduler, warnings |
 | 2026-09-27 | Herdr persistent threads | [Root design](../../design/herdr-threads/2026-09-27-herdr-threads-design.md) | Pane-bound seats, prelaunch handoffs, explicit receipts and compact native delivery. | draft | herdr-threads, root |

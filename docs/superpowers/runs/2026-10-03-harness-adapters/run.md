@@ -1,6 +1,7 @@
 # super-auto run — 2026-10-03-harness-adapters
 
 flags: planOneShot=false skipPlanRoast=false skipCodeRoast=false autonomous=true
+resumeChange: User schema coordination: CLI owns v19 and any following migrations required for v0.2.2; adapter migration follows CLI final schema, prototype only clearly provisional, absorb main and renumber before freeze. Historical migrations immutable; exact Hermes identity/model-free labels preserved.
 phase: design
 codeMechanism: ordinary-subagents
 
