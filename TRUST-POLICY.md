@@ -151,13 +151,16 @@ record 0 and pre-migration rows are 0. Neither field authorizes anything; togeth
 - *Agent to human*: the daemon refuses a human lifecycle check-in while the open binding is
   `cooperative_top_level` or `managed_launch`, unless the request is `--operator` (implemented). `me init` additionally refuses
   when agent evidence is present: one of the three allowlisted environment markers (`CLAUDECODE`,
-  `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`), or Herdr reporting a Claude or Codex agent in the
-  pane. Other agent kinds are not evidence, and a failed Herdr read counts as no evidence. `--operator`
+  `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`), or Herdr reporting a registered adapter's recognized native host kind in the
+  pane. Registry metadata alone never establishes native recognition, continuity or caller authority.
+  Unregistered agent kinds are not evidence, and a failed Herdr read counts as no evidence. `--operator`
   overrides the refusal through a local per-execution mark set only after the daemon accepts the request
   (implemented, best effort, client-side).
 - *Second agent*: `launch` refuses to start an agent for a seat whose bound agent (`cooperative_top_level`
   or `managed_launch`) Herdr reports live in another pane (implemented).
-- *Wake*: a wake prompt goes only to an agent of the bound harness (implemented).
+- *Wake*: a wake prompt goes only to a native host kind declared by the bound registered adapter
+  (implemented). Recognized aliases do not change the binding or merge seats. A missing composer
+  provider permits ordinary idle/done wake, but soft poke and stash/restore send no keys.
 - *Poke*: a soft-deadline poke is the fixed reminder
   `herdr-threads: receipt due in <N>s on <thread-ids>; run herdr-threads inbox` (thread ids only),
   submitted through the wake dispatcher and its limits to the seat's bound native agent of the bound

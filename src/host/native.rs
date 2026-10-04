@@ -4,7 +4,9 @@ use super::continuity::LocalEndpointWitness;
 use super::observation::{
     NativePane, NativeSnapshot, normalize_pane, normalize_snapshot, structured_host_error,
 };
+use crate::harness::adapter::ComposerPolicy;
 use crate::harness::composer::{self, ComposerRead};
+use crate::harness::registry::{self, Registry};
 use crate::ports::{
     self, ComposerStash, CorrelatedStartup, EnumerationEvidence, EvidenceKind, ExecutionEvidence,
     HostCallContext, HostObservation, HostPort, HostSnapshot, HostUiState, IncarnationEvidence,
@@ -37,8 +39,6 @@ const START_POLL_MILLIS: u64 = 250;
 const EARLY_EXIT_CHECK_MILLIS: u64 = 1_000;
 /// Lines of the pane read for the early-exit check and quoted in its refusal.
 const EARLY_EXIT_PANE_LINES: usize = 12;
-/// Herdr agent kinds a wake prompt may reach.
-const WAKE_AGENTS: [&str; 2] = ["claude", "codex"];
 /// Herdr agent statuses that mean the agent awaits input.
 const WAKE_READY_STATUSES: [&str; 2] = ["idle", "done"];
 /// Ceiling of the fresh agent recheck immediately before a wake prompt.
@@ -49,9 +49,6 @@ const PROMPT_SUBMIT_MILLIS: u64 = 2_000;
 const MIN_PROMPT_MILLIS: u64 = 250;
 /// Ceiling of one composer read or composer key/text send.
 const COMPOSER_CALL_MILLIS: u64 = 750;
-/// The key that deletes the composer's text one row or line at a time
-/// (poke spike Q3).
-const COMPOSER_CLEAR_KEY: &str = "ctrl+u";
 /// Clears beyond one per composer line before a stash gives up.
 const COMPOSER_CLEAR_SLACK: usize = 2;
 /// Settle time before the composer is read back after a send, so the harness
@@ -62,6 +59,7 @@ const COMPOSER_SETTLE_MILLIS: u64 = 250;
 const COMPOSER_TAIL_LINES: usize = 4;
 
 pub struct NativeCli {
+    registry: &'static Registry,
     socket: PathBuf,
     clock: Arc<dyn Clock>,
     epoch: AtomicU64,
@@ -166,22 +164,34 @@ impl NativeCli {
                 "native start cancelled before submission",
             ));
         }
-        let kind = match request.harness {
-            Harness::Codex => "codex",
-            Harness::Claude => "claude",
-            Harness::Human => {
-                return Err(before_start(
-                    ErrorCode::InvalidRequest,
-                    "a human occupant is never launched",
-                ));
-            }
-            Harness::Agent(_) => {
-                return Err(before_start(
-                    ErrorCode::InvalidRequest,
-                    &format!("{}: native start is unsupported", request.harness.as_str()),
-                ));
-            }
+        let Harness::Agent(id) = request.harness else {
+            return Err(before_start(
+                ErrorCode::InvalidRequest,
+                "a human occupant is never launched",
+            ));
         };
+        let registration = self.registry.by_id(id).map_err(|_| {
+            before_start(
+                ErrorCode::UnsupportedHarness,
+                "native start adapter is unregistered",
+            )
+        })?;
+        let kinds = registration
+            .launch_policy()
+            .map(|policy| policy.expected_host_kinds())
+            .ok_or_else(|| {
+                before_start(ErrorCode::UnsupportedHarness, "native start is unsupported")
+            })?;
+        let kind = kinds
+            .iter()
+            .copied()
+            .find(|kind| registration.metadata().host_kinds.contains(kind))
+            .ok_or_else(|| {
+                before_start(
+                    ErrorCode::UnsupportedHarness,
+                    "native start has no registered host kind",
+                )
+            })?;
         // The readable name first; when Herdr refuses it as taken by another
         // live agent (checked before anything is typed), one retry with a
         // short seat suffix. Never more than these two submissions.
@@ -313,12 +323,17 @@ impl NativeCli {
                 == Some(true)
                 || matches!(status, Some("working" | "done")))
                 // Herdr reports the detected agent label as `agent`.
-                && current.get("agent").and_then(serde_json::Value::as_str) == Some(kind);
+                && current.get("agent").and_then(serde_json::Value::as_str) .is_some_and(|kind| kinds.contains(&kind) && registration.metadata().host_kinds.contains(&kind));
             // Herdr keeps `launch_pending` set until the agent is first
             // interactive_ready, so an agent already working on its initial
             // prompt (live demo: working, launch_pending true) is started too.
             let working = matches!(status, Some("working" | "done"))
-                && current.get("agent").and_then(serde_json::Value::as_str) == Some(kind);
+                && current
+                    .get("agent")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|kind| {
+                        kinds.contains(&kind) && registration.metadata().host_kinds.contains(&kind)
+                    });
             if (ready && !pending) || working {
                 break;
             }
@@ -444,7 +459,16 @@ impl NativeCli {
 
     /// `socket` is the explicit automation API endpoint, resolved by the caller.
     pub fn new(socket: PathBuf, clock: Arc<dyn Clock>) -> Self {
+        Self::with_registry(socket, clock, registry::builtins())
+    }
+
+    pub fn with_registry(
+        socket: PathBuf,
+        clock: Arc<dyn Clock>,
+        registry: &'static Registry,
+    ) -> Self {
         Self {
+            registry,
             socket,
             clock,
             epoch: AtomicU64::new(1),
@@ -992,6 +1016,18 @@ impl HostPort for NativeCli {
         text: &str,
         context: &HostCallContext,
     ) -> Result<ports::PromptOutcome, ApiError> {
+        if target
+            .bound_harness
+            .as_deref()
+            .and_then(|id| self.registry.agent(id).ok())
+            .and_then(|id| self.composer_policy(Harness::Agent(id)))
+            .is_none()
+        {
+            return Err(error(
+                ErrorCode::UnsupportedHarness,
+                "soft poke unsupported: no composer policy",
+            ));
+        }
         self.submit_prompt_mode(target, text, context, true)
     }
 
@@ -1008,9 +1044,19 @@ impl HostPort for NativeCli {
         context: &HostCallContext,
     ) -> Result<ComposerStash, ApiError> {
         self.composer_fence(target, context, "composer stash")?;
-        let Some(harness) = target.bound_harness.as_deref().and_then(bound_harness) else {
+        let Some(harness) = target
+            .bound_harness
+            .as_deref()
+            .and_then(|id| self.registry.agent(id).ok())
+            .map(Harness::Agent)
+        else {
             return Ok(ComposerStash::Failed("no bound harness".into()));
         };
+        if self.composer_policy(harness).is_none() {
+            return Ok(ComposerStash::Failed(
+                "composer stash unsupported: no composer policy".into(),
+            ));
+        }
         let first = match self.read_composer(&target.target, harness, context) {
             Ok(read) => read,
             Err(failure) if composer_call_aborts(&failure) => return Err(failure),
@@ -1046,8 +1092,26 @@ impl HostPort for NativeCli {
             return Ok(());
         }
         self.composer_fence(target, context, "composer restore")?;
+        let policy = target
+            .bound_harness
+            .as_deref()
+            .and_then(|id| self.registry.agent(id).ok())
+            .and_then(|id| self.composer_policy(Harness::Agent(id)))
+            .ok_or_else(|| {
+                error(
+                    ErrorCode::UnsupportedHarness,
+                    "composer restore unsupported: no composer policy",
+                )
+            })?;
+        let restored = policy.restore_text(saved);
+        if restored != saved {
+            return Err(error(
+                ErrorCode::TargetUnsafe,
+                "composer restore changed saved text",
+            ));
+        }
         self.composer_call(
-            &["pane", "send-text", target.target.as_str(), saved],
+            &["pane", "send-text", target.target.as_str(), &restored],
             context,
         )
         .map(|_| ())
@@ -1095,6 +1159,18 @@ impl HostPort for NativeCli {
         target: &SafeWakeTarget,
         context: &HostCallContext,
     ) -> Result<(), ApiError> {
+        if target
+            .bound_harness
+            .as_deref()
+            .and_then(|id| self.registry.agent(id).ok())
+            .and_then(|id| self.composer_policy(Harness::Agent(id)))
+            .is_none()
+        {
+            return Err(error(
+                ErrorCode::UnsupportedHarness,
+                "submit key unsupported: no composer policy",
+            ));
+        }
         let refuse = |detail: &str| {
             error(
                 ErrorCode::TargetUnsafe,
@@ -1215,6 +1291,7 @@ fn cooperative_wake_ready(
     agent: &serde_json::Value,
     target: &SafeWakeTarget,
     during_turn: bool,
+    registry: &Registry,
 ) -> Result<(), String> {
     let text = |name: &str| agent.get(name).and_then(serde_json::Value::as_str);
     if text("pane_id") != Some(target.target.as_str())
@@ -1223,14 +1300,27 @@ fn cooperative_wake_ready(
         return Err("agent is not in the target terminal".into());
     }
     let kind = text("agent");
-    if !kind.is_some_and(|kind| WAKE_AGENTS.contains(&kind)) {
+    if kind.is_none_or(|kind| registry.by_host_kind(kind).is_none()) {
         return Err(format!(
             "no recognized harness agent (agent {})",
             kind.unwrap_or("none").chars().take(32).collect::<String>()
         ));
     }
     match target.bound_harness.as_deref() {
-        Some(bound) if kind != Some(bound) => {
+        Some(bound)
+            if !registry
+                .agent(bound)
+                .ok()
+                .and_then(|id| registry.by_id(id).ok())
+                .is_some_and(|registration| {
+                    kind.is_some_and(|kind| {
+                        registration.metadata().host_kinds.contains(&kind)
+                            && registration
+                                .launch_policy()
+                                .is_none_or(|policy| policy.expected_host_kinds().contains(&kind))
+                    })
+                }) =>
+        {
             return Err(format!(
                 "agent kind {} differs from the bound harness {bound}",
                 kind.unwrap_or("none").chars().take(32).collect::<String>()
@@ -1327,7 +1417,7 @@ impl NativeCli {
             .ok()
             .and_then(|value| value.pointer("/result/agent").cloned())
             .ok_or_else(|| refuse("unreadable agent recheck"))?;
-        if let Err(detail) = cooperative_wake_ready(&agent, target, during_turn) {
+        if let Err(detail) = cooperative_wake_ready(&agent, target, during_turn, self.registry) {
             return Err(refuse(&detail));
         }
         if budget.cancellation.is_cancelled() {
@@ -1438,7 +1528,7 @@ impl NativeCli {
         let ui = if composer_ui {
             self.observed_ui(&pane, context)
         } else {
-            status_ui(&pane)
+            status_ui(&pane, self.registry)
         };
         let sequence = self.next_sequence();
         let mut observation = self.observation(
@@ -1458,7 +1548,13 @@ impl NativeCli {
     /// done or working claude/codex agent, a composer read. A failed or
     /// timed-out read never fails the observation; it yields `Unknown`.
     fn observed_ui(&self, pane: &NativePane, context: &HostCallContext) -> HostUiState {
-        let Some(harness) = pane.agent.as_deref().and_then(bound_harness) else {
+        let Some(harness) = pane
+            .agent
+            .as_deref()
+            .and_then(|kind| self.registry.by_host_kind(kind))
+            .and_then(|r| self.registry.agent(r.metadata().id).ok())
+            .map(Harness::Agent)
+        else {
             return HostUiState::Unknown;
         };
         let status = pane.status.as_str();
@@ -1472,6 +1568,13 @@ impl NativeCli {
         }
     }
 
+    fn composer_policy(&self, harness: Harness) -> Option<&dyn ComposerPolicy> {
+        let Harness::Agent(id) = harness else {
+            return None;
+        };
+        self.registry.by_id(id).ok()?.composer_policy()
+    }
+
     /// One bounded `agent read --source detection`, composer-parsed. The pane
     /// width is not in Herdr's pane record; Claude's rule length stands in.
     fn read_composer(
@@ -1480,6 +1583,9 @@ impl NativeCli {
         harness: Harness,
         context: &HostCallContext,
     ) -> Result<ComposerRead, ApiError> {
+        if self.composer_policy(harness).is_none() {
+            return Ok(ComposerRead::Unreadable);
+        }
         let limit = composer_limit(self, context)?;
         let started = Instant::now();
         let raw = self.run_unfenced(
@@ -1502,7 +1608,12 @@ impl NativeCli {
         let text = text("text")
             .ok_or_else(|| error(ErrorCode::InvalidRequest, "composer read has no text"))?;
         self.check_after_parse_unfenced(&context.budget, started, limit)?;
-        Ok(composer::read_composer(harness, text, None))
+        Ok(composer::read_composer_in(
+            self.registry,
+            harness,
+            text,
+            None,
+        ))
     }
 
     /// Clears the composer with a bounded `ctrl+u` loop until a read shows it
@@ -1515,16 +1626,22 @@ impl NativeCli {
         text: String,
         context: &HostCallContext,
     ) -> Result<ComposerStash, ApiError> {
+        let Some(policy) = self.composer_policy(harness) else {
+            return Ok(ComposerStash::Failed(
+                "composer stash unsupported: no composer policy".into(),
+            ));
+        };
+        let clear_key = policy.clear_key();
+        if clear_key != "ctrl+u" {
+            return Ok(ComposerStash::Failed(
+                "composer clear key unsupported".into(),
+            ));
+        }
         let attempts = text.lines().count() + COMPOSER_CLEAR_SLACK;
         for _ in 0..attempts {
             let cleared = self
                 .composer_call(
-                    &[
-                        "pane",
-                        "send-keys",
-                        target.target.as_str(),
-                        COMPOSER_CLEAR_KEY,
-                    ],
+                    &["pane", "send-keys", target.target.as_str(), clear_key],
                     context,
                 )
                 .and_then(|_| self.read_composer(&target.target, harness, context));
@@ -1705,22 +1822,18 @@ impl NativeCli {
     }
 }
 
-/// The harness a Herdr agent kind or a seat's bound harness names, when its
-/// composer is readable.
-fn bound_harness(kind: &str) -> Option<Harness> {
-    match kind {
-        "claude" => Some(Harness::Claude),
-        "codex" => Some(Harness::Codex),
-        _ => None,
-    }
-}
-
 /// The bound for one composer call: the ceiling or what the budget has left.
 /// The UI state Herdr's `agent_status` alone shows: an open approval or
 /// question is `blocked`; everything else is `Unknown`, as on every ordinary
 /// wake before the composer reader existed.
-fn status_ui(pane: &NativePane) -> HostUiState {
-    if pane.agent.as_deref().and_then(bound_harness).is_some() && pane.status == "blocked" {
+fn status_ui(pane: &NativePane, registry: &Registry) -> HostUiState {
+    if pane
+        .agent
+        .as_deref()
+        .and_then(|kind| registry.by_host_kind(kind))
+        .is_some()
+        && pane.status == "blocked"
+    {
         HostUiState::ApprovalOrQuestion
     } else {
         HostUiState::Unknown
@@ -2703,6 +2816,17 @@ mod tests {
         Result<ports::PromptOutcome, ApiError>,
         Arc<std::sync::Mutex<Vec<String>>>,
     ) {
+        cooperative_wake_in(registry::builtins(), rest, slot, tamper)
+    }
+    fn cooperative_wake_in(
+        registry: &'static Registry,
+        rest: Vec<Exchange>,
+        slot: Option<CliSlot>,
+        tamper: impl FnOnce(&mut SafeWakeTarget, &mut HostCallContext),
+    ) -> (
+        Result<ports::PromptOutcome, ApiError>,
+        Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
         let methods = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut exchanges = vec![pane_exchange()];
         exchanges.extend(rest);
@@ -2720,6 +2844,8 @@ mod tests {
             })
             .collect();
         let (socket, cli, worker) = serve_sequence(exchanges);
+        let mut cli = cli;
+        cli.registry = registry;
         let cli = Arc::new(cli);
         if let Some(slot) = slot {
             assert!(slot.set(Arc::clone(&cli)).is_ok());
@@ -2748,6 +2874,313 @@ mod tests {
         worker.join().unwrap();
         fs::remove_file(socket).unwrap();
         (result, methods)
+    }
+
+    use crate::harness::adapter::*;
+    struct FourthAdapter(bool, bool);
+    impl HarnessAdapter for FourthAdapter {
+        type Admission = String;
+        fn metadata(&self) -> &'static AdapterMetadata {
+            static META: AdapterMetadata = AdapterMetadata {
+                id: "fourth",
+                display_label: "Fourth",
+                context_spelling: "Fourth",
+                context_aliases: &[],
+                executable: ExecutableLookup::Unsupported,
+                host_kinds: &["fourth-native"],
+                setup_scopes: &[],
+                budget: EventBudgetPolicy {
+                    lifecycle_ms: 5,
+                    observer_ms: 2,
+                },
+                runtime_sources: &[],
+            };
+            static THIRD: AdapterMetadata = AdapterMetadata {
+                id: "third",
+                display_label: "Third",
+                context_spelling: "Third",
+                context_aliases: &[],
+                executable: ExecutableLookup::Unsupported,
+                host_kinds: &["third-native"],
+                setup_scopes: &[],
+                budget: EventBudgetPolicy {
+                    lifecycle_ms: 5,
+                    observer_ms: 2,
+                },
+                runtime_sources: &[],
+            };
+            if self.0 { &THIRD } else { &META }
+        }
+        fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
+            self.1.then_some(&FixtureComposer)
+        }
+        fn contracts(&self) -> &'static [ContractDescriptor] {
+            &[]
+        }
+        fn observe_install(
+            &self,
+            env: &InstallEnvironment,
+            budget: &CallBudget,
+        ) -> InstallObservation {
+            crate::harness::claude::ClaudeAdapter.observe_install(env, budget)
+        }
+        fn admit(
+            &self,
+            request: &AdmissionRequest,
+            budget: &CallBudget,
+        ) -> AdmissionDecision<String> {
+            crate::harness::claude::ClaudeAdapter.admit(request, budget)
+        }
+        fn version_ladder(&self, identity: &RuntimeIdentity) -> Ladder {
+            crate::harness::claude::ClaudeAdapter.version_ladder(identity)
+        }
+        fn classify(&self, input: &HookInput) -> ContractObservation {
+            crate::harness::claude::ClaudeAdapter.classify(input)
+        }
+        fn decode(
+            &self,
+            admitted: &String,
+            input: &HookInput,
+        ) -> Result<DecodedEvent, DecodeFailure> {
+            crate::harness::claude::ClaudeAdapter.decode(admitted, input)
+        }
+        fn encode(
+            &self,
+            admitted: &String,
+            event: &DecodedEvent,
+            offer: &NeutralOffer,
+        ) -> Result<EncodedOutput, EncodeFailure> {
+            crate::harness::claude::ClaudeAdapter.encode(admitted, event, offer)
+        }
+        fn attribute_runtime(&self, input: &HookInput, budget: &CallBudget) -> RuntimeAttribution {
+            crate::harness::claude::ClaudeAdapter.attribute_runtime(input, budget)
+        }
+        fn setup(
+            &self,
+            request: &SetupRequest,
+            budget: &CallBudget,
+        ) -> Result<SetupOutcome, SetupFailure> {
+            crate::harness::claude::ClaudeAdapter.setup(request, budget)
+        }
+        fn status(&self, request: &StatusRequest, budget: &CallBudget) -> SetupStatus {
+            crate::harness::claude::ClaudeAdapter.status(request, budget)
+        }
+        fn unsetup(
+            &self,
+            request: &UnsetupRequest,
+            budget: &CallBudget,
+        ) -> Result<RemovalOutcome, SetupFailure> {
+            crate::harness::claude::ClaudeAdapter.unsetup(request, budget)
+        }
+    }
+    struct FixtureComposer;
+    impl ComposerPolicy for FixtureComposer {
+        fn capabilities(&self, _: Option<&str>) -> crate::harness::recipe::PokeCapabilities {
+            crate::harness::recipe::PokeCapabilities::NONE
+        }
+        fn read(&self, text: &str, _: Option<u16>) -> ComposerRead {
+            match text {
+                "fixture empty" => ComposerRead::Empty,
+                "fixture draft: unfinished" => ComposerRead::Text("unfinished".into()),
+                _ => ComposerRead::Unreadable,
+            }
+        }
+        fn clear_key(&self) -> &'static str {
+            "ctrl+u"
+        }
+        fn restore_text(&self, saved: &str) -> String {
+            saved.into()
+        }
+    }
+    fn fourth_registry() -> &'static Registry {
+        fourth_registry_with_composer(false)
+    }
+    fn fourth_registry_with_composer(composer: bool) -> &'static Registry {
+        let fourth = Box::leak(Box::new(FourthAdapter(false, composer)));
+        Box::leak(Box::new(
+            Registry::new(Box::leak(
+                vec![
+                    registry::Registration::new(&crate::harness::claude::ClaudeAdapter),
+                    registry::Registration::new(&crate::harness::codex::CodexAdapter),
+                    registry::Registration::new(&FourthAdapter(true, false)),
+                    registry::Registration::new(fourth),
+                ]
+                .into_boxed_slice(),
+            ))
+            .unwrap(),
+        ))
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn injected_registry_alias_reaches_actual_wake_submission_and_refuses_busy_or_mismatch() {
+        for status in ["idle", "done"] {
+            let prompt = Box::new(|stream: &mut UnixStream, request: Value| {
+                assert_eq!(request["method"], "agent.prompt");
+                assert_eq!(
+                    request["params"],
+                    json!({"target":"w4:p1","text":"wake marker"})
+                );
+                answer(
+                    stream,
+                    &request,
+                    json!({"type":"agent_prompted","agent":wake_agent("idle", Some("fourth-native"), "term_1")}),
+                );
+            });
+            let (result, methods) = cooperative_wake_in(
+                fourth_registry(),
+                vec![
+                    recheck_exchange(wake_agent(status, Some("fourth-native"), "term_1")),
+                    prompt,
+                ],
+                None,
+                |target, _| target.bound_harness = Some("fourth".into()),
+            );
+            assert_eq!(result.unwrap(), ports::PromptOutcome::Submitted);
+            assert_eq!(
+                *methods.lock().unwrap(),
+                ["pane.get", "agent.get", "agent.prompt"]
+            );
+        }
+        for (status, kind) in [
+            ("working", "fourth-native"),
+            ("blocked", "fourth-native"),
+            ("idle", "claude"),
+            ("idle", "unknown"),
+        ] {
+            let (result, methods) = cooperative_wake_in(
+                fourth_registry(),
+                vec![recheck_exchange(wake_agent(status, Some(kind), "term_1"))],
+                None,
+                |target, _| target.bound_harness = Some("fourth".into()),
+            );
+            assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+            assert_eq!(*methods.lock().unwrap(), ["pane.get", "agent.get"]);
+        }
+    }
+
+    // Kills a composer consumer that ignores its injected registry or switches on legacy IDs.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn injected_fourth_composer_reads_clears_and_restores_without_submitting_a_draft() {
+        let (saved, methods) = poke_session_in(
+            fourth_registry_with_composer(true),
+            vec![
+                detection_exchange("fixture draft: unfinished"),
+                clear_exchange(),
+                detection_exchange("fixture empty"),
+                retype_exchange("unfinished", true),
+            ],
+            |cli, target, context| {
+                let mut target = target.clone();
+                target.bound_harness = Some("fourth".into());
+                let ComposerStash::Saved(saved) = cli.stash_composer(&target, context).unwrap()
+                else {
+                    panic!("the injected composer's draft must be saved");
+                };
+                assert_eq!(saved, "unfinished");
+                cli.restore_composer(&target, &saved, context).unwrap();
+                saved
+            },
+        );
+        assert_eq!(saved, "unfinished");
+        assert_eq!(
+            methods,
+            [
+                "pane.get",
+                "agent.read",
+                "pane.send_keys",
+                "agent.read",
+                "pane.send_text"
+            ]
+        );
+    }
+
+    // Catches a hard-coded host-kind list: a registered fourth adapter's
+    // native alias must reach the real wake recheck, without changing the binding.
+    #[test]
+    fn registry_host_kind_and_absent_composer_preserve_wake_fences_and_send_no_keys() {
+        let mut target = composer_target();
+        target.bound_harness = Some("fourth".into());
+        assert!(
+            cooperative_wake_ready(
+                &wake_agent("idle", Some("fourth-native"), "term_1"),
+                &target,
+                false,
+                fourth_registry(),
+            )
+            .is_ok(),
+            "a registered native alias must match its bound adapter ID"
+        );
+        let registry = fourth_registry();
+        for status in ["done", "idle"] {
+            assert!(
+                cooperative_wake_ready(
+                    &wake_agent(status, Some("fourth-native"), "term_1"),
+                    &target,
+                    false,
+                    registry
+                )
+                .is_ok()
+            );
+        }
+        for (status, kind) in [
+            ("working", "fourth-native"),
+            ("blocked", "fourth-native"),
+            ("unknown", "fourth-native"),
+            ("idle", "unknown"),
+            ("idle", "claude"),
+        ] {
+            assert!(
+                cooperative_wake_ready(
+                    &wake_agent(status, Some(kind), "term_1"),
+                    &target,
+                    false,
+                    registry
+                )
+                .is_err(),
+                "{status}/{kind}"
+            );
+        }
+        let cli = NativeCli::with_registry(
+            PathBuf::from("/missing/no-keys.sock"),
+            Arc::new(TestClock(Instant::now())),
+            registry,
+        );
+        cli.epoch.store(3, Ordering::Release);
+        let context = composer_context(&TestClock(Instant::now()));
+        assert_eq!(
+            cli.read_composer(
+                &target.target,
+                Harness::Agent(registry.agent("fourth").unwrap()),
+                &context
+            )
+            .unwrap(),
+            ComposerRead::Unreadable
+        );
+        assert_eq!(
+            cli.submit_prompt_during_turn(&target, "poke", &context)
+                .unwrap_err()
+                .code,
+            ErrorCode::UnsupportedHarness
+        );
+        assert_eq!(
+            cli.send_submit_key(&target, &context).unwrap_err().code,
+            ErrorCode::UnsupportedHarness
+        );
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(
+                cli.stash_composer(&target, &context).unwrap(),
+                ComposerStash::Failed("composer stash unsupported: no composer policy".into())
+            );
+            assert_eq!(
+                cli.restore_composer(&target, "saved draft", &context)
+                    .unwrap_err()
+                    .code,
+                ErrorCode::UnsupportedHarness
+            );
+        }
     }
 
     /// Idle and done agents of a recognized harness are prompted only after
@@ -3357,6 +3790,14 @@ mod tests {
         rest: Vec<Exchange>,
         act: impl FnOnce(&NativeCli, &SafeWakeTarget, &HostCallContext) -> T,
     ) -> (T, Vec<String>) {
+        poke_session_in(registry::builtins(), rest, act)
+    }
+    #[cfg(target_os = "macos")]
+    fn poke_session_in<T>(
+        registry: &'static Registry,
+        rest: Vec<Exchange>,
+        act: impl FnOnce(&NativeCli, &SafeWakeTarget, &HostCallContext) -> T,
+    ) -> (T, Vec<String>) {
         let methods = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut exchanges = vec![pane_exchange()];
         exchanges.extend(rest);
@@ -3373,7 +3814,8 @@ mod tests {
                 }) as Exchange
             })
             .collect();
-        let (socket, cli, worker) = serve_sequence(exchanges);
+        let (socket, mut cli, worker) = serve_sequence(exchanges);
+        cli.registry = registry;
         let base = HostCallContext {
             budget: CallBudget {
                 deadline: MonoInstant(10_000),

@@ -578,7 +578,12 @@ pub trait LaunchPolicy: Send + Sync {
     fn expected_host_kinds(&self) -> &'static [&'static str];
 }
 pub trait ComposerPolicy: Send + Sync {
-    fn capabilities(&self) -> super::recipe::PokeCapabilities;
+    /// Recipe declarations for the observed installed version; evidence never adds support.
+    fn capabilities(&self, installed: Option<&str>) -> super::recipe::PokeCapabilities;
+    fn read(&self, detection: &str, pane_width: Option<u16>) -> super::composer::ComposerRead;
+    fn clear_key(&self) -> &'static str;
+    /// Retyped text only: restoring a draft must never submit it.
+    fn restore_text(&self, saved: &str) -> String;
 }
 /// Pure local metadata. Providers must not observe installations or invoke native code.
 pub trait CanaryStrategy: Send + Sync {
@@ -897,8 +902,12 @@ mod tests {
                     )
                     .is_err()
             );
-            assert!(registration.launch_policy().is_none());
-            assert!(registration.composer_policy().is_none());
+            // Providers exist independently of admission: an unobserved
+            // installed recipe must still declare no poke capability.
+            assert_eq!(
+                registration.composer_policy().unwrap().capabilities(None),
+                crate::harness::recipe::PokeCapabilities::NONE,
+            );
             assert!(registration.canary_strategy().is_some());
             assert_eq!(
                 registration.version_ladder(
