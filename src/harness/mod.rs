@@ -39,6 +39,7 @@ mod contract_tests;
 #[path = "../../tests/harness/cooperative.rs"]
 mod cooperative;
 pub mod evidence;
+pub mod hermes;
 pub mod launch;
 pub mod manifest;
 #[cfg(test)]
