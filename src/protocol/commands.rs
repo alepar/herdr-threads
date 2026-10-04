@@ -24,6 +24,7 @@ pub enum Command {
     /// Doctor asks for each harness's version verdicts (ht-xoc.5); sent only
     /// to a daemon advertising `harness.states`.
     HarnessStates,
+    HarnessHealthV2,
     Stop(StopRequest),
     ServiceInspect,
     ServiceDisconnect(ServiceDisconnectRequest),

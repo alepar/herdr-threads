@@ -1240,6 +1240,39 @@ impl super::adapter::CanaryStrategy for CodexCanary {
     }
 }
 impl HarnessAdapter for CodexAdapter {
+    fn receipt_admission_summary(&self) -> Option<String> {
+        Some(
+            RECIPES
+                .iter()
+                .map(|recipe| recipe.versions.to_string())
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    }
+    fn observation_fingerprint(&self, env: &InstallEnvironment) -> Option<String> {
+        super::adapter::executable_observation_fingerprint(env, "codex")
+    }
+    fn observe_daemon(
+        &self,
+        env: &InstallEnvironment,
+        budget: &CallBudget,
+    ) -> super::adapter::DaemonObservation {
+        let (status, version) = observe_daemon_install(
+            env.path.as_deref(),
+            super::adapter::adapter_timeout(env, budget),
+            &budget.cancellation,
+        );
+        super::adapter::DaemonObservation {
+            status,
+            identity: version
+                .and_then(|v| RuntimeIdentity::stable_release(&v, "installed_probe").ok()),
+            receipt_basis: Some(
+                crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE.into(),
+            ),
+            ..Default::default()
+        }
+    }
+
     type Admission = InstalledVersion;
     fn metadata(&self) -> &'static AdapterMetadata {
         static METADATA: AdapterMetadata = AdapterMetadata {
@@ -1402,4 +1435,30 @@ impl HarnessAdapter for CodexAdapter {
     ) -> Result<RemovalOutcome, SetupFailure> {
         crate::cli::setup::legacy_adapter_unsetup(super::context::Harness::Codex, request)
     }
+}
+
+fn observe_daemon_install(
+    path: Option<&std::ffi::OsStr>,
+    timeout: std::time::Duration,
+    cancel: &crate::protocol::time::Cancellation,
+) -> (super::adapter::HarnessStatus, Option<String>) {
+    use crate::harness::codex::{InstalledRefusal, VersionError};
+    let admission = crate::harness::codex::InstalledAdmission::observe_on_path_cancellable(
+        path, timeout, cancel,
+    );
+    let version = match &admission.result {
+        Ok(version) => Some(version.as_str()),
+        Err(InstalledRefusal::Refused(
+            VersionError::Unsupported(version) | VersionError::KnownBroken { version, .. },
+        )) => Some(version.as_str()),
+        Err(_) => None,
+    };
+    let version = version.and_then(|raw| crate::harness::contract::normalize_version("codex", raw));
+    (
+        crate::app::codex_status(
+            &admission,
+            crate::harness::codex::DECLARATION.health_capability(),
+        ),
+        version,
+    )
 }

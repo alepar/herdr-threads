@@ -133,15 +133,8 @@ pub(crate) struct ElectedHostEvidence {
 /// The daemon's boot observation of each installed harness.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct HarnessObservations {
-    pub(crate) claude: HarnessStatus,
-    pub(crate) codex: HarnessStatus,
-    /// The canonical `X.Y.Z` each binary on `PATH` reported (`None` when it
-    /// reported none), also for a version refused as below the floor or known
-    /// broken: what doctor's detected-version line is about. Poke
-    /// capabilities follow the recipe of exactly this version, and only while
-    /// the matching status admits it (see [`ObservedPokeCapabilities`]).
-    pub(crate) claude_version: Option<String>,
-    pub(crate) codex_version: Option<String>,
+    pub(crate) entries:
+        std::collections::BTreeMap<String, crate::harness::adapter::DaemonObservation>,
 }
 
 /// Soft-deadline poke capabilities (spec §10) from the installed harness
@@ -165,15 +158,14 @@ impl crate::ports::PokeCapabilitySource for ObservedPokeCapabilities {
         // the floor or known broken) so doctor can name it; a refused
         // version never declares poke capabilities.
         let version = observed.as_deref().and_then(|observed| {
-            let (status, version) = match harness {
-                Harness::Claude => (&observed.claude, observed.claude_version.as_deref()),
-                Harness::Codex => (&observed.codex, observed.codex_version.as_deref()),
-                Harness::Human => return None,
-                Harness::Agent(_) => return None,
-            };
-            match status {
-                HarnessStatus::Refused(_) | HarnessStatus::VersionRefused(_) => None,
-                _ => version,
+            let entry = observed.entries.get(harness.as_str())?;
+            if matches!(
+                entry.status,
+                HarnessStatus::Refused(_) | HarnessStatus::VersionRefused(_)
+            ) {
+                None
+            } else {
+                entry.identity.as_ref()?.release()
             }
         });
         crate::harness::recipe::poke_capabilities(harness, version)
@@ -181,13 +173,19 @@ impl crate::ports::PokeCapabilitySource for ObservedPokeCapabilities {
 }
 
 impl HarnessObservations {
+    pub(crate) fn status(&self, harness: &str) -> HarnessStatus {
+        self.entries
+            .get(harness)
+            .map(|entry| entry.status.clone())
+            .unwrap_or_default()
+    }
+
     /// The detected version of `harness` (`claude` or `codex`).
     pub(crate) fn detected_version(&self, harness: &str) -> Option<String> {
-        match harness {
-            "claude" => self.claude_version.clone(),
-            "codex" => self.codex_version.clone(),
-            _ => None,
-        }
+        self.entries
+            .get(harness)
+            .and_then(|entry| entry.identity.as_ref())
+            .and_then(|identity| identity.release().map(str::to_owned))
     }
 }
 
@@ -255,8 +253,14 @@ impl ElectedHealth {
         inputs.transitions_refused = self.host.status.transitions_refused();
         inputs.last_scheduler_tick_at = self.workers.first().and_then(|status| status.last_tick());
         if let Ok(observed) = self.host.harnesses.lock() {
-            inputs.claude = observed.claude.clone();
-            inputs.codex = observed.codex.clone();
+            inputs.claude = observed.status("claude");
+            inputs.codex = observed.status("codex");
+            inputs.additional_harnesses = crate::harness::registry::builtins()
+                .registrations()
+                .iter()
+                .filter(|r| !matches!(r.metadata().id, "claude" | "codex"))
+                .map(|r| (r.metadata().id.into(), observed.status(r.metadata().id)))
+                .collect();
         }
         inputs
     }
@@ -425,59 +429,9 @@ pub(crate) fn claude_status_in(
 /// [`AdmissionReobserver::pass`] on its Pacer; Health never waits for it.
 /// The `--version` the installed harness reported travels with its status:
 /// poke capabilities follow the recipe of exactly that version.
-fn observe_claude(
-    path: Option<&std::ffi::OsStr>,
-    timeout: Duration,
-    cancel: &Cancellation,
-) -> (HarnessStatus, Option<String>) {
-    let observed = crate::cli::hook::resolve_on_path("claude", path).map(|binary| {
-        crate::harness::claude::observe_installed_version_cancellable(&binary, timeout, cancel)
-    });
-    let version = observed.as_ref().and_then(|observed| match observed {
-        Ok(version) => Some(version.as_str()),
-        Err(crate::harness::codex::VersionError::Unsupported(version)) => Some(version.as_str()),
-        Err(crate::harness::codex::VersionError::KnownBroken { version, .. }) => {
-            Some(version.as_str())
-        }
-        Err(_) => None,
-    });
-    let version =
-        version.and_then(|raw| crate::harness::contract::normalize_version("claude", raw));
-    (
-        claude_status(observed, crate::harness::claude::health_capability()),
-        version,
-    )
-}
-
-fn observe_codex(
-    path: Option<&std::ffi::OsStr>,
-    timeout: Duration,
-    cancel: &Cancellation,
-) -> (HarnessStatus, Option<String>) {
-    use crate::harness::codex::{InstalledRefusal, VersionError};
-    let admission = crate::harness::codex::InstalledAdmission::observe_on_path_cancellable(
-        path, timeout, cancel,
-    );
-    let version = match &admission.result {
-        Ok(version) => Some(version.as_str()),
-        Err(InstalledRefusal::Refused(
-            VersionError::Unsupported(version) | VersionError::KnownBroken { version, .. },
-        )) => Some(version.as_str()),
-        Err(_) => None,
-    };
-    let version = version.and_then(|raw| crate::harness::contract::normalize_version("codex", raw));
-    (
-        codex_status(
-            &admission,
-            crate::harness::codex::DECLARATION.health_capability(),
-        ),
-        version,
-    )
-}
-
 impl HarnessStatus {
     /// The admission word a binary-change log line states.
-    fn admission_word(&self) -> &'static str {
+    pub(crate) fn admission_word(&self) -> &'static str {
         match self {
             HarnessStatus::Unknown => "unknown",
             HarnessStatus::NotInstalled(_) => "not_found",
@@ -494,7 +448,7 @@ impl HarnessStatus {
     /// An observation a later pass may reuse while the binary is unchanged:
     /// an admitted harness (a refusal or an unknown may have been a transient
     /// failure to run `--version`, so it is observed again).
-    fn reusable(&self) -> bool {
+    pub(crate) fn reusable(&self) -> bool {
         matches!(
             self,
             HarnessStatus::Cooperative { .. }
@@ -504,118 +458,156 @@ impl HarnessStatus {
     }
 }
 
-/// One harness's last observation and the binary it was observed from.
-#[derive(Default)]
+#[derive(Clone)]
 struct ObservedBinary {
-    identity: Option<crate::harness::BinaryIdentity>,
-    status: HarnessStatus,
-    /// The `--version` the binary reported, reused with `status`.
-    version: Option<String>,
+    fingerprint: Option<String>,
+    binary: Option<crate::harness::BinaryIdentity>,
+    observation: crate::harness::adapter::DaemonObservation,
 }
-
-/// The admission-observer pass with re-observation (root spec B6 D3, Wave
-/// 25): each pass resolves the harness binaries on `PATH` and compares their
-/// identity (canonical path, inode, size, mtime). An admitted harness whose
-/// binary is unchanged keeps its observation without another `--version` run;
-/// a changed, new or vanished binary is observed again and the change is
-/// logged. The pass returns the whole pair, which the lane stores in its slot
-/// in one replacement, so Health never reads a half-updated pair.
+fn observation_snapshot(
+    rows: &Option<std::collections::BTreeMap<String, ObservedBinary>>,
+) -> HarnessObservations {
+    HarnessObservations {
+        entries: rows
+            .as_ref()
+            .into_iter()
+            .flat_map(|rows| rows.iter())
+            .map(|(id, row)| (id.clone(), row.observation.clone()))
+            .collect(),
+    }
+}
+/// An atomic registry snapshot. Cancellation never publishes part of a pass.
 pub(crate) struct AdmissionReobserver {
-    path: Option<std::ffi::OsString>,
+    registry: &'static crate::harness::registry::Registry,
+    environment: crate::harness::adapter::InstallEnvironment,
     timeout: Duration,
     log: Arc<dyn Fn(&str) + Send + Sync>,
-    previous: Mutex<Option<[ObservedBinary; 2]>>,
+    previous: Mutex<Option<std::collections::BTreeMap<String, ObservedBinary>>>,
 }
-
 impl AdmissionReobserver {
     pub(crate) fn new(
         path: Option<std::ffi::OsString>,
         timeout: Duration,
         log: Arc<dyn Fn(&str) + Send + Sync>,
     ) -> Self {
+        Self::with_registry(
+            crate::harness::registry::builtins(),
+            crate::harness::adapter::InstallEnvironment {
+                clock: Arc::new(SystemClock::new()),
+                path,
+                config_root: None,
+                state_dir: None,
+            },
+            timeout,
+            log,
+        )
+    }
+    pub(crate) fn with_registry(
+        registry: &'static crate::harness::registry::Registry,
+        environment: crate::harness::adapter::InstallEnvironment,
+        timeout: Duration,
+        log: Arc<dyn Fn(&str) + Send + Sync>,
+    ) -> Self {
         Self {
-            path,
+            registry,
+            environment,
             timeout,
             log,
             previous: Mutex::new(None),
         }
     }
-
-    /// One pass over both harnesses. Once `cancel` fires the in-flight
-    /// `--version` run is killed, no further harness is observed, and the
-    /// previous observations are kept (a half-observed pair is never stored);
-    /// the caller discards the returned value.
     pub(crate) fn pass(&self, cancel: &Cancellation) -> HarnessObservations {
-        let path = self.path.clone();
-        let timeout = self.timeout;
-        let mut slot = self.previous.lock().unwrap_or_else(|e| e.into_inner());
-        let first = slot.is_none();
-        let mut previous = slot.take().unwrap_or_default();
-        let mut next: [ObservedBinary; 2] = Default::default();
-        let mut reused = [false; 2];
-        for (index, name) in ["claude", "codex"].into_iter().enumerate() {
+        let mut previous = self.previous.lock().unwrap_or_else(|e| e.into_inner());
+        let mut next = std::collections::BTreeMap::new();
+        let mut messages = Vec::new();
+        for registration in self.registry.registrations() {
             if cancel.is_cancelled() {
-                break;
+                return observation_snapshot(&previous);
             }
-            let identity = crate::cli::hook::resolve_on_path(name, path.as_deref())
-                .and_then(|binary| crate::harness::BinaryIdentity::observe(&binary));
-            let before = &mut previous[index];
-            let unchanged = identity.is_some() && identity == before.identity;
-            let (status, version) = if unchanged && before.status.reusable() {
-                reused[index] = true;
-                (
-                    std::mem::take(&mut before.status),
-                    std::mem::take(&mut before.version),
-                )
-            } else {
-                let (status, version) = match index {
-                    0 => observe_claude(path.as_deref(), timeout, cancel),
-                    _ => observe_codex(path.as_deref(), timeout, cancel),
-                };
-                if cancel.is_cancelled() {
-                    // The run was cut short: its refusal is not an observation.
-                    break;
+            let id = registration.metadata().id;
+            let fingerprint = |registration: &crate::harness::registry::Registration| {
+                registration
+                    .observation_fingerprint(&self.environment)
+                    .filter(|s| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control))
+            };
+            let before = fingerprint(registration);
+            let binary = match registration.metadata().executable {
+                crate::harness::adapter::ExecutableLookup::Path(name) => {
+                    crate::cli::hook::resolve_on_path(name, self.environment.path.as_deref())
+                        .and_then(|p| crate::harness::BinaryIdentity::observe(&p))
                 }
-                if !first && identity != before.identity {
-                    let describe = |identity: &Option<crate::harness::BinaryIdentity>| {
-                        identity.as_ref().map_or_else(
-                            || "none".to_owned(),
-                            |identity| identity.path().display().to_string(),
-                        )
+                crate::harness::adapter::ExecutableLookup::Unsupported => None,
+            };
+            let old = previous.as_ref().and_then(|rows| rows.get(id));
+            let reused = old.is_some_and(|old| {
+                before.is_some() && before == old.fingerprint && old.observation.status.reusable()
+            });
+            let mut entry = if reused {
+                old.expect("checked prior observation").observation.clone()
+            } else {
+                let budget = CallBudget {
+                    deadline: crate::protocol::time::MonoInstant(
+                        self.environment.clock.monotonic_now().0.saturating_add(
+                            self.timeout.as_millis().try_into().unwrap_or(u64::MAX),
+                        ),
+                    ),
+                    cancellation: cancel.clone(),
+                };
+                registration.observe_daemon(&self.environment, &budget)
+            };
+            if cancel.is_cancelled() {
+                return observation_snapshot(&previous);
+            }
+            let after = fingerprint(registration);
+            let stable = before == after;
+            if !stable {
+                entry = crate::harness::adapter::DaemonObservation {
+                    status: HarnessStatus::Refused(
+                        "observation inputs changed during the pass; retry required".into(),
+                    ),
+                    ..Default::default()
+                };
+            }
+            if let Some(old) = old
+                && !reused
+                && old.fingerprint != before
+            {
+                if old.binary != binary {
+                    let describe = |i: &Option<crate::harness::BinaryIdentity>| {
+                        i.as_ref()
+                            .map_or_else(|| "none".into(), |i| i.path().display().to_string())
                     };
-                    (self.log)(&format!(
-                        "{name} binary changed: {} \u{2192} {}; admission {}",
-                        describe(&before.identity),
-                        describe(&identity),
-                        status.admission_word()
+                    messages.push(format!(
+                        "{id} binary changed: {} → {}; admission {}",
+                        describe(&old.binary),
+                        describe(&binary),
+                        entry.status.admission_word()
+                    ));
+                } else {
+                    messages.push(format!(
+                        "{id} observation inputs changed; admission {}",
+                        entry.status.admission_word()
                     ));
                 }
-                (status, version)
-            };
-            next[index] = ObservedBinary {
-                identity,
-                status,
-                version,
-            };
+            }
+            next.insert(
+                id.into(),
+                ObservedBinary {
+                    fingerprint: stable.then_some(after).flatten(),
+                    binary,
+                    observation: entry,
+                },
+            );
         }
         if cancel.is_cancelled() {
-            for index in 0..2 {
-                if reused[index] {
-                    previous[index].status = std::mem::take(&mut next[index].status);
-                    previous[index].version = std::mem::take(&mut next[index].version);
-                }
-            }
-            *slot = (!first).then_some(previous);
-            return HarnessObservations::default();
+            return observation_snapshot(&previous);
         }
-        let observations = HarnessObservations {
-            claude: next[0].status.clone(),
-            codex: next[1].status.clone(),
-            claude_version: next[0].version.clone(),
-            codex_version: next[1].version.clone(),
-        };
-        *slot = Some(next);
-        observations
+        *previous = Some(next);
+        let snapshot = observation_snapshot(&previous);
+        for message in messages {
+            (self.log)(&message);
+        }
+        snapshot
     }
 }
 
@@ -1186,8 +1178,8 @@ where
                             observer_manifest.as_ref(),
                             &observer_manifest.current(),
                             &[
-                                ("claude", observed.claude_version.clone()),
-                                ("codex", observed.codex_version.clone()),
+                                ("claude", observed.detected_version("claude")),
+                                ("codex", observed.detected_version("codex")),
                             ],
                             budget,
                         );
@@ -1258,18 +1250,32 @@ where
                 },
             );
             let log_path = factory_log_path.clone();
-            let states = Arc::new(crate::daemon::harness_states::HarnessStatesProvider::new(
-                states_store,
-                crate::daemon::harness_states::service_source(Arc::clone(&manifest)),
-                Arc::clone(&factory_clock),
-                Box::new(move |harness: &str| {
-                    states_harnesses
+            let health_harnesses = Arc::clone(&states_harnesses);
+            let states = Arc::new(
+                crate::daemon::harness_states::HarnessStatesProvider::new(
+                    states_store,
+                    crate::daemon::harness_states::service_source(Arc::clone(&manifest)),
+                    Arc::clone(&factory_clock),
+                    Box::new(move |harness: &str| {
+                        states_harnesses
+                            .lock()
+                            .ok()
+                            .and_then(|observed| observed.detected_version(harness))
+                    }),
+                    Some(Arc::clone(&factory_parse_failures)),
+                )
+                .with_observations(Box::new(move || {
+                    health_harnesses
                         .lock()
-                        .ok()
-                        .and_then(|observed| observed.detected_version(harness))
-                }),
-                Some(Arc::clone(&factory_parse_failures)),
-            ));
+                        .map(|snapshot| snapshot.entries.clone())
+                        .map_err(|_| {
+                            crate::protocol::results::ApiError::new(
+                                crate::protocol::results::ErrorCode::StoreBusy,
+                                "cached harness observation unavailable",
+                            )
+                        })
+                })),
+            );
             let health_states = Arc::clone(&states);
             let health_log = Arc::clone(&rate_limited_log);
             let health = move |request: &CallBudget| {
@@ -1309,6 +1315,7 @@ where
                     .with_hook_parse_failures(factory_parse_failures)
                     .with_harness_evidence(harness_evidence)
                     .with_harness_evidence_v2(harness_evidence_v2)
+                    .with_harness_health_v2(Arc::clone(&states))
                     .with_harness_states(states)
                     .with_harness_manifest(manifest),
             ) as Arc<dyn LocalService>)
@@ -1435,9 +1442,24 @@ mod poke_capability_source_tests {
 
     fn source(claude: Option<&str>, codex: Option<&str>) -> ObservedPokeCapabilities {
         ObservedPokeCapabilities::new(Arc::new(Mutex::new(HarnessObservations {
-            claude_version: claude.map(str::to_owned),
-            codex_version: codex.map(str::to_owned),
-            ..Default::default()
+            entries: [("claude", claude), ("codex", codex)]
+                .into_iter()
+                .map(|(name, version)| {
+                    (
+                        name.into(),
+                        crate::harness::adapter::DaemonObservation {
+                            identity: version.map(|v| {
+                                crate::harness::runtime::RuntimeIdentity::stable_release(
+                                    v,
+                                    "installed_probe",
+                                )
+                                .unwrap()
+                            }),
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
         })))
     }
 
@@ -1470,7 +1492,19 @@ mod poke_capability_source_tests {
         let slot = Arc::new(Mutex::new(HarnessObservations::default()));
         let late = ObservedPokeCapabilities::new(Arc::clone(&slot));
         assert_eq!(late.capabilities(Harness::Claude), PokeCapabilities::NONE);
-        slot.lock().unwrap().claude_version = Some("2.1.287".into());
+        slot.lock().unwrap().entries.insert(
+            "claude".into(),
+            crate::harness::adapter::DaemonObservation {
+                identity: Some(
+                    crate::harness::runtime::RuntimeIdentity::stable_release(
+                        "2.1.287",
+                        "installed_probe",
+                    )
+                    .unwrap(),
+                ),
+                ..Default::default()
+            },
+        );
         assert_eq!(late.capabilities(Harness::Claude), declared);
     }
 
@@ -1484,14 +1518,320 @@ mod poke_capability_source_tests {
         ] {
             let refused =
                 ObservedPokeCapabilities::new(Arc::new(Mutex::new(HarnessObservations {
-                    claude: status,
-                    claude_version: Some("2.1.287".into()),
-                    ..Default::default()
+                    entries: [(
+                        "claude".into(),
+                        crate::harness::adapter::DaemonObservation {
+                            status,
+                            identity: Some(
+                                crate::harness::runtime::RuntimeIdentity::stable_release(
+                                    "2.1.287",
+                                    "installed_probe",
+                                )
+                                .unwrap(),
+                            ),
+                            ..Default::default()
+                        },
+                    )]
+                    .into(),
                 })));
             assert_eq!(
                 refused.capabilities(Harness::Claude),
                 PokeCapabilities::NONE
             );
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod health_v2_observer_tests {
+    use super::*;
+
+    use crate::harness::adapter::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    pub(crate) struct CountingAdapter {
+        metadata: &'static AdapterMetadata,
+        pub(crate) calls: AtomicUsize,
+        contracts: &'static [ContractDescriptor],
+        input: AtomicUsize,
+        refuse: AtomicBool,
+        fingerprint: AtomicBool,
+        mutate: AtomicBool,
+        cancel: Mutex<Option<Cancellation>>,
+    }
+    impl HarnessAdapter for CountingAdapter {
+        type Admission = ();
+        fn metadata(&self) -> &'static AdapterMetadata {
+            self.metadata
+        }
+        fn contracts(&self) -> &'static [ContractDescriptor] {
+            self.contracts
+        }
+        fn observation_fingerprint(&self, _: &InstallEnvironment) -> Option<String> {
+            self.fingerprint.load(Ordering::SeqCst).then(|| {
+                format!(
+                    "same-binary:profile-assets-{}",
+                    self.input.load(Ordering::SeqCst)
+                )
+            })
+        }
+        fn observe_daemon(&self, _: &InstallEnvironment, _: &CallBudget) -> DaemonObservation {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.mutate.swap(false, Ordering::SeqCst) {
+                self.input.fetch_add(1, Ordering::SeqCst);
+            }
+            if let Some(cancel) = self.cancel.lock().unwrap().take() {
+                cancel.cancel();
+            }
+            DaemonObservation {
+                status: if self.refuse.load(Ordering::SeqCst) {
+                    HarnessStatus::Refused("transient fixture".into())
+                } else {
+                    HarnessStatus::Cooperative {
+                        detail: format!("assets {}", self.input.load(Ordering::SeqCst)),
+                        live_unverified: false,
+                    }
+                },
+                ..Default::default()
+            }
+        }
+        fn observe_install(&self, _: &InstallEnvironment, _: &CallBudget) -> InstallObservation {
+            panic!("health may only use owned observation")
+        }
+        fn admit(&self, _: &AdmissionRequest, _: &CallBudget) -> AdmissionDecision<()> {
+            panic!("unused")
+        }
+        fn version_ladder(&self, _: &RuntimeIdentity) -> Ladder {
+            Ladder::Listed
+        }
+        fn classify(&self, _: &HookInput) -> ContractObservation {
+            panic!("unused")
+        }
+        fn decode(&self, _: &(), _: &HookInput) -> Result<DecodedEvent, DecodeFailure> {
+            panic!("unused")
+        }
+        fn encode(
+            &self,
+            _: &(),
+            _: &DecodedEvent,
+            _: &NeutralOffer,
+        ) -> Result<EncodedOutput, EncodeFailure> {
+            panic!("unused")
+        }
+        fn attribute_runtime(&self, _: &HookInput, _: &CallBudget) -> RuntimeAttribution {
+            panic!("unused")
+        }
+        fn setup(&self, _: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
+            panic!("unused")
+        }
+        fn status(&self, _: &StatusRequest, _: &CallBudget) -> SetupStatus {
+            panic!("unused")
+        }
+        fn unsetup(
+            &self,
+            _: &UnsetupRequest,
+            _: &CallBudget,
+        ) -> Result<RemovalOutcome, SetupFailure> {
+            panic!("unused")
+        }
+    }
+    pub(crate) fn counting(id: &'static str) -> &'static CountingAdapter {
+        counting_with_contracts(id, &[])
+    }
+    pub(crate) fn counting_with_contracts(
+        id: &'static str,
+        contracts: &'static [ContractDescriptor],
+    ) -> &'static CountingAdapter {
+        Box::leak(Box::new(CountingAdapter {
+            metadata: Box::leak(Box::new(AdapterMetadata {
+                id,
+                display_label: id,
+                context_spelling: id,
+                context_aliases: &[],
+                executable: ExecutableLookup::Unsupported,
+                host_kinds: Box::leak(vec![id].into_boxed_slice()),
+                setup_scopes: &[SetupScopeKind::Profile],
+                budget: EventBudgetPolicy {
+                    lifecycle_ms: 10,
+                    observer_ms: 10,
+                },
+                runtime_sources: &["fixture"],
+            })),
+            contracts,
+            calls: AtomicUsize::new(0),
+            input: AtomicUsize::new(0),
+            refuse: AtomicBool::new(false),
+            fingerprint: AtomicBool::new(true),
+            mutate: AtomicBool::new(false),
+            cancel: Mutex::new(None),
+        }))
+    }
+    fn counting_observer(adapters: &[&'static CountingAdapter]) -> AdmissionReobserver {
+        let registrations = Box::leak(
+            adapters
+                .iter()
+                .map(|a| crate::harness::registry::Registration::new(*a))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
+        let registry = Box::leak(Box::new(
+            crate::harness::registry::Registry::new(registrations).unwrap(),
+        ));
+        AdmissionReobserver::with_registry(
+            registry,
+            InstallEnvironment {
+                clock: Arc::new(SystemClock::new()),
+                path: None,
+                config_root: None,
+                state_dir: None,
+            },
+            Duration::from_millis(50),
+            Arc::new(|_| {}),
+        )
+    }
+    // Catches binary-only caching, ignored registry entries and transient refusal reuse.
+    #[test]
+    fn health_v2_adapter_fingerprint_reuses_only_unchanged_declared_inputs() {
+        let first = counting("first");
+        let extra = counting("third");
+        let observer = counting_observer(&[first, extra]);
+        let snapshot = observer.pass(&Cancellation::default());
+        assert_eq!(
+            snapshot
+                .entries
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["first", "third"]
+        );
+        observer.pass(&Cancellation::default());
+        assert_eq!(
+            extra.calls.load(Ordering::SeqCst),
+            1,
+            "unchanged reusable adapter must not be probed again"
+        );
+        extra.input.store(1, Ordering::SeqCst);
+        observer.pass(&Cancellation::default());
+        assert_eq!(
+            extra.calls.load(Ordering::SeqCst),
+            2,
+            "changed assets on the same binary require observation"
+        );
+        extra.refuse.store(true, Ordering::SeqCst);
+        extra.input.store(2, Ordering::SeqCst);
+        observer.pass(&Cancellation::default());
+        observer.pass(&Cancellation::default());
+        assert_eq!(
+            extra.calls.load(Ordering::SeqCst),
+            4,
+            "unchanged transient refusals must retry"
+        );
+        extra.refuse.store(false, Ordering::SeqCst);
+        extra.fingerprint.store(false, Ordering::SeqCst);
+        observer.pass(&Cancellation::default());
+        observer.pass(&Cancellation::default());
+        assert_eq!(
+            extra.calls.load(Ordering::SeqCst),
+            6,
+            "None fingerprint must never permit reuse"
+        );
+    }
+    // Catches caching a probe under inputs that changed during the probe.
+    #[test]
+    fn health_v2_changed_inputs_during_probe_are_unavailable_and_not_reused() {
+        let adapter = counting("racy");
+        adapter.mutate.store(true, Ordering::SeqCst);
+        let observer = counting_observer(&[adapter]);
+        let snapshot = observer.pass(&Cancellation::default());
+        assert!(
+            matches!(snapshot.status("racy"), HarnessStatus::Refused(_)),
+            "changed input pass was trusted"
+        );
+        observer.pass(&Cancellation::default());
+        assert_eq!(adapter.calls.load(Ordering::SeqCst), 2);
+    }
+    // Catches partial publication after a reused entry and a later cancelled probe.
+    #[test]
+    fn health_v2_cancel_after_reuse_preserves_every_registry_entry() {
+        let first = counting("first");
+        let second = counting("second");
+        let observer = counting_observer(&[first, second]);
+        let before = observer.pass(&Cancellation::default());
+        second.input.store(1, Ordering::SeqCst);
+        let cancel = Cancellation::default();
+        *second.cancel.lock().unwrap() = Some(cancel.clone());
+        assert_eq!(observer.pass(&cancel), before);
+        assert_eq!(
+            first.calls.load(Ordering::SeqCst),
+            1,
+            "first unchanged entry should have been reused"
+        );
+        assert_eq!(
+            observer.pass(&Cancellation::default()).status("first"),
+            before.status("first")
+        );
+        assert_eq!(
+            second.calls.load(Ordering::SeqCst),
+            3,
+            "cancelled replacement must not enter the cache"
+        );
+    }
+
+    // Catches fixed-brand rendering or false admission/native-receipt claims for an injected adapter.
+    #[test]
+    fn health_wording_uses_supplied_registry_and_unknown_optional_metadata() {
+        let adapter = counting("fourth");
+        let registrations = Box::leak(
+            vec![crate::harness::registry::Registration::new(adapter)].into_boxed_slice(),
+        );
+        let registry = crate::harness::registry::Registry::new(registrations).unwrap();
+        let receipt = crate::daemon::health::cooperative_receipt_line_for(&registry);
+        assert!(
+            receipt.contains("fourth admission unknown"),
+            "missing honest adapter metadata: {receipt}"
+        );
+        assert!(!receipt.contains("admitted: claude"));
+        let wake = crate::daemon::health::cooperative_wake_line_for(&registry);
+        assert!(
+            wake.contains("idle/done fourth agent"),
+            "missing supplied registered host kind: {wake}"
+        );
+        assert!(!wake.contains("during a turn"));
+        assert_eq!(
+            crate::daemon::health::cooperative_wake_line_for(crate::harness::registry::builtins()),
+            crate::daemon::health::COOPERATIVE_WAKE_LINE
+        );
+    }
+
+    // Catches cancellation erasing a successful snapshot rather than retaining it whole.
+    #[test]
+    fn health_v2_registry_snapshot_atomic_cancel_and_frozen_legacy_projection() {
+        let iso = crate::test_support::isolation::TestIsolation::new("health-v2-cancel");
+        crate::harness::stub_binaries::write_stub_harness(iso.state_root(), "claude", "2.1.286");
+        let observer = AdmissionReobserver::new(
+            Some(iso.state_root().as_os_str().to_owned()),
+            Duration::from_secs(2),
+            Arc::new(|_| {}),
+        );
+        let before = observer.pass(&Cancellation::default());
+        assert!(matches!(
+            before.status("claude"),
+            HarnessStatus::Cooperative { .. }
+        ));
+        let cancel = Cancellation::default();
+        cancel.cancel();
+        assert_eq!(
+            observer.pass(&cancel),
+            before,
+            "cancelled pass must preserve the entire last snapshot"
+        );
+        assert_eq!(observer.pass(&Cancellation::default()), before);
+        let legacy = crate::protocol::results::HarnessHealth {
+            claude: before.status("claude").state(),
+            codex: before.status("codex").state(),
+        };
+        assert_eq!(
+            serde_json::to_string(&legacy).unwrap(),
+            r#"{"codex":"unsupported","claude":"cooperative"}"#
+        );
     }
 }

@@ -172,10 +172,13 @@ struct ErasedAdmission {
     state: Box<dyn Any + Send + Sync>,
 }
 trait ErasedAdapter: Send + Sync {
+    fn receipt_admission_summary(&self) -> Option<String>;
     fn output_policy(&self) -> OutputPolicy;
     fn legacy_contract_id(&self) -> Option<String>;
     fn contracts(&self) -> &'static [ContractDescriptor];
     fn observe_install(&self, env: &InstallEnvironment, budget: &CallBudget) -> InstallObservation;
+    fn observation_fingerprint(&self, env: &InstallEnvironment) -> Option<String>;
+    fn observe_daemon(&self, env: &InstallEnvironment, budget: &CallBudget) -> DaemonObservation;
     fn admit(
         &self,
         request: &AdmissionRequest,
@@ -226,6 +229,16 @@ trait ErasedAdapter: Send + Sync {
 }
 struct TypedAdapter<A: HarnessAdapter>(&'static A);
 impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
+    fn receipt_admission_summary(&self) -> Option<String> {
+        self.0.receipt_admission_summary()
+    }
+    fn observation_fingerprint(&self, env: &InstallEnvironment) -> Option<String> {
+        self.0.observation_fingerprint(env)
+    }
+    fn observe_daemon(&self, env: &InstallEnvironment, budget: &CallBudget) -> DaemonObservation {
+        self.0.observe_daemon(env, budget)
+    }
+
     fn legacy_contract_id(&self) -> Option<String> {
         self.0.legacy_contract_id()
     }
@@ -357,6 +370,20 @@ pub struct Registration {
     identity: OnceLock<AgentHarnessId>,
 }
 impl Registration {
+    pub fn receipt_admission_summary(&self) -> Option<String> {
+        self.adapter.receipt_admission_summary()
+    }
+    pub fn observation_fingerprint(&self, env: &InstallEnvironment) -> Option<String> {
+        self.adapter.observation_fingerprint(env)
+    }
+    pub fn observe_daemon(
+        &self,
+        env: &InstallEnvironment,
+        budget: &CallBudget,
+    ) -> DaemonObservation {
+        self.adapter.observe_daemon(env, budget)
+    }
+
     pub fn new<A: HarnessAdapter>(adapter: &'static A) -> Self {
         Self {
             metadata: adapter.metadata(),

@@ -5,6 +5,9 @@ use std::ffi::OsString;
 pub trait HarnessAdapter: Send + Sync + 'static {
     type Admission: Send + Sync + 'static;
     fn metadata(&self) -> &'static AdapterMetadata;
+    fn receipt_admission_summary(&self) -> Option<String> {
+        None
+    }
     fn output_policy(&self) -> OutputPolicy {
         OutputPolicy::default()
     }
@@ -14,6 +17,55 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     }
     fn contracts(&self) -> &'static [ContractDescriptor];
     fn observe_install(&self, env: &InstallEnvironment, budget: &CallBudget) -> InstallObservation;
+    /// None means observation reuse is unsafe. Implementers include every observed
+    /// input (profile/config/assets as applicable), not merely the executable.
+    fn observation_fingerprint(&self, _: &InstallEnvironment) -> Option<String> {
+        None
+    }
+    fn observe_daemon(&self, env: &InstallEnvironment, budget: &CallBudget) -> DaemonObservation {
+        let installed = self.observe_install(env, budget);
+        let identity = match &installed {
+            InstallObservation::Available { identity, .. } => Some(identity.clone()),
+            InstallObservation::CodexWitness(version) => {
+                RuntimeIdentity::stable_release(version.as_str(), "installed_probe").ok()
+            }
+            _ => None,
+        };
+        let status = match &installed {
+            InstallObservation::Unavailable { diagnostic } => {
+                HarnessStatus::Refused(diagnostic.clone())
+            }
+            InstallObservation::Unsupported(operation) => {
+                HarnessStatus::Refused(operation.to_string())
+            }
+            _ => match self.admit(
+                &AdmissionRequest {
+                    installed,
+                    input: None,
+                    runtime_candidate: None,
+                },
+                budget,
+            ) {
+                AdmissionDecision::Listed { recipe, .. } => HarnessStatus::Cooperative {
+                    detail: recipe.into(),
+                    live_unverified: false,
+                },
+                AdmissionDecision::SchemaMatched { recipe, .. } => HarnessStatus::Cooperative {
+                    detail: recipe.into(),
+                    live_unverified: true,
+                },
+                AdmissionDecision::Optimistic { diagnostic, .. } => {
+                    HarnessStatus::Optimistic(diagnostic)
+                }
+                AdmissionDecision::Refused { diagnostic } => HarnessStatus::Refused(diagnostic),
+            },
+        };
+        DaemonObservation {
+            status,
+            identity,
+            ..Default::default()
+        }
+    }
     fn admit(
         &self,
         request: &AdmissionRequest,
@@ -929,4 +981,60 @@ pub(crate) fn adapter_timeout(
             .0
             .saturating_sub(env.clock.monotonic_now().0),
     )
+}
+
+/// One harness as the daemon observed it on its own `PATH` (the bounded
+/// boot observation). Hook installation is per harness environment
+/// (`$CLAUDE_CONFIG_DIR`, `$CODEX_HOME`), so `doctor`, run in that
+/// environment, checks it; the daemon does not.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum HarnessStatus {
+    /// The observation has not completed.
+    #[default]
+    Unknown,
+    /// No executable on the daemon's `PATH`: a note, never a degradation.
+    NotInstalled(String),
+    /// Present but its `--version` could not be observed or recognized, which
+    /// blocks the hook: a limitation that degrades Health.
+    Refused(String),
+    /// Present, observed, and its version is below the recipe floor or inside
+    /// a known-broken range. Whether that matters is the version verdict's
+    /// (`harness::state`, rendered from evidence and the manifest), so Health
+    /// shows nothing for it here; doctor shows the detected-version line.
+    VersionRefused(String),
+    /// Admitted by a recipe whose receipts are cooperative
+    /// (`cooperative_top_level`). `live_unverified` marks a schema-matched
+    /// admission, which stays listed as a limitation.
+    Cooperative {
+        detail: String,
+        live_unverified: bool,
+    },
+    /// Admitted by a recipe that declares native-verified receipt: a listed
+    /// version whose recipe proves native receipt, never an unlisted one.
+    Supported(String),
+    /// Unlisted but admitted by the ladder's optimistic rows, parsed under an
+    /// assumed recipe, live-unverified. The detail is the operator-facing
+    /// label (`crate::harness::optimistic_label`); Health renders it as an
+    /// informational note, never a limitation or a degradation.
+    Optimistic(String),
+}
+
+/// Cached install facts only. Runtime rows cannot change these scope-local axes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DaemonObservation {
+    pub status: HarnessStatus,
+    pub identity: Option<RuntimeIdentity>,
+    pub enablement: crate::protocol::results::HealthAxis<crate::protocol::results::EnablementState>,
+    pub callback_observation:
+        crate::protocol::results::HealthAxis<crate::protocol::results::CallbackObservationState>,
+    pub receipt_basis: Option<String>,
+}
+pub fn executable_observation_fingerprint(env: &InstallEnvironment, name: &str) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let binary = crate::cli::hook::resolve_on_path(name, env.path.as_deref())?;
+    let identity = super::BinaryIdentity::observe(&binary)?;
+    Some(format!(
+        "{:x}",
+        Sha256::digest(format!("{identity:?}").as_bytes())
+    ))
 }

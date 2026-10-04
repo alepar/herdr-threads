@@ -578,3 +578,187 @@ pub fn detected_line(harness: &str, version: &str, derived: &Derived) -> String 
 #[cfg(test)]
 #[path = "../../tests/harness/state.rs"]
 mod tests;
+
+/// Exact-domain derivation shared by negotiated health and future local tooling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeDerived {
+    pub state: crate::protocol::results::RuntimeEvidenceState,
+    pub source: String,
+    pub line: String,
+    pub notes: Vec<String>,
+    pub issue_url: Option<String>,
+}
+#[allow(clippy::too_many_arguments)]
+pub fn derive_runtime(
+    registration: &crate::harness::registry::Registration,
+    identity: &super::runtime::RuntimeIdentity,
+    domain: &str,
+    origin: super::evidence::EvidenceOrigin,
+    contract: &str,
+    local: Option<&crate::store::harness_evidence::EvidenceRowV2>,
+    manifest: &Manifest,
+) -> RuntimeDerived {
+    use crate::protocol::results::RuntimeEvidenceState as Verdict;
+    let verdict = |state, source: String, explanation: String, notes: Vec<String>, issue_url| {
+        RuntimeDerived {
+            state,
+            line: format!(
+                "{} {} {domain}: {explanation}",
+                registration.metadata().id,
+                identity.key
+            ),
+            source,
+            notes,
+            issue_url,
+        }
+    };
+    let unavailable = || {
+        verdict(
+            Verdict::Unavailable,
+            "unavailable".into(),
+            "current runtime contract descriptor unavailable".into(),
+            vec![],
+            None,
+        )
+    };
+    if identity.validate().is_err() {
+        return unavailable();
+    }
+    let Some(descriptor) = registration.contracts().iter().find(|d| {
+        d.domain_id == domain
+            && d.origin == origin
+            && d.contract_id_v2().ok().as_deref() == Some(contract)
+            && !d.required_milestones.is_empty()
+    }) else {
+        return unavailable();
+    };
+    let local = local.filter(|row| {
+        row.harness == registration.metadata().id
+            && &row.identity == identity
+            && row.domain == domain
+            && row.origin == origin
+            && row.contract_id == contract
+    });
+    if let Some(row) = local.filter(|row| row.violation_at.is_some()) {
+        return verdict(
+            Verdict::Broken,
+            "local callback violation (model stage unclassified)".into(),
+            format!(
+                "broken: {}/{} violated this exact contract",
+                row.violation_event.as_deref().unwrap_or("unknown"),
+                row.violation_field.as_deref().unwrap_or("unknown")
+            ),
+            vec![],
+            Some(ISSUES_URL.into()),
+        );
+    }
+    let ladder = if identity.release().is_some() {
+        registration.version_ladder(identity)
+    } else {
+        Ladder::Admitted
+    };
+    match &ladder {
+        Ladder::BelowFloor { min } => {
+            return verdict(
+                Verdict::Broken,
+                "recipe floor".into(),
+                format!(
+                    "broken: below supported floor {min}; upgrade {}",
+                    registration.metadata().id
+                ),
+                vec![],
+                None,
+            );
+        }
+        Ladder::RecipeKnownBroken {
+            range,
+            newest_working,
+        } => {
+            return verdict(
+                Verdict::Broken,
+                "recipe known broken".into(),
+                format!(
+                    "broken: recipe range {range}; newest working {}",
+                    newest_working.as_deref().unwrap_or("unknown")
+                ),
+                vec![],
+                Some(ISSUES_URL.into()),
+            );
+        }
+        _ => {}
+    }
+    let known = manifest.runtime_row(registration.metadata().id, identity, descriptor);
+    let manifest_source = |row: &super::manifest::RuntimeRow| {
+        format!(
+            "manifest {} ({})",
+            match row.source {
+                super::manifest::RuntimeSource::Canary => "canary",
+                super::manifest::RuntimeSource::Manual => "manual",
+            },
+            match row.evidence_stage {
+                super::manifest::RuntimeStage::SourceCaptured => "source_captured",
+                super::manifest::RuntimeStage::NoModel => "no_model",
+                super::manifest::RuntimeStage::Live => "live",
+            }
+        )
+    };
+    if local.is_some_and(|row| row.verified(descriptor)) {
+        let notes = known
+            .filter(|row| row.status == super::manifest::RuntimeStatus::KnownBroken)
+            .map(|row| {
+                vec![format!(
+                    "{} reports a violation; this exact domain worked locally",
+                    manifest_source(row)
+                )]
+            })
+            .unwrap_or_default();
+        return verdict(
+            Verdict::Working,
+            "local callback evidence (model stage unclassified)".into(),
+            "working from all exact-domain milestones; receipt remains cooperative".into(),
+            notes,
+            None,
+        );
+    }
+    if let Some(row) = known {
+        let source = manifest_source(row);
+        return match row.status {
+            super::manifest::RuntimeStatus::KnownBroken => verdict(
+                Verdict::Broken,
+                source,
+                format!(
+                    "broken: manifest reports {}/{}",
+                    row.broken_event.as_deref().unwrap_or("unknown"),
+                    row.broken_field.as_deref().unwrap_or("unknown")
+                ),
+                vec![],
+                row.issue_url.clone(),
+            ),
+            super::manifest::RuntimeStatus::Verified => verdict(
+                Verdict::Working,
+                source,
+                "working under this exact domain; evidence stage does not prove native receipt"
+                    .into(),
+                vec![],
+                row.issue_url.clone(),
+            ),
+        };
+    }
+    if ladder == Ladder::Listed {
+        verdict(
+            Verdict::Working,
+            "recipe".into(),
+            "working: listed stable release recipe".into(),
+            vec![],
+            None,
+        )
+    } else {
+        verdict(
+            Verdict::New,
+            "unverified exact domain".into(),
+            "new: exact-domain milestones not complete".into(),
+            vec![],
+            None,
+        )
+    }
+}

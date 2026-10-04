@@ -2233,3 +2233,239 @@ fn v2_evidence_recorded_result_rejects_unknown_fields() {
         "strict v2 result cannot acquire native proof fields"
     );
 }
+
+// Catches an unregistered health-v2 command, acceptance of arguments, or changed old bytes.
+#[test]
+fn health_v2_command_is_strict_and_preserves_frozen_health_commands() {
+    let parsed = serde_json::from_str::<herdr_threads::protocol::commands::Command>(
+        r#"{"kind":"harness_health_v2"}"#,
+    );
+    assert!(
+        parsed.is_ok(),
+        "implemented negotiated health command is missing: {parsed:?}"
+    );
+    assert_eq!(
+        serde_json::to_string(&parsed.unwrap()).unwrap(),
+        r#"{"kind":"harness_health_v2"}"#
+    );
+    for bad in [
+        r#"{"kind":"harness_health_v2","args":null}"#,
+        r#"{"kind":"harness_health_v2","args":{"unexpected":true}}"#,
+        r#"{"kind":"harness_health_v2","args":{}}"#,
+        r#"{"kind":"harness_health_v2","extra":true}"#,
+    ] {
+        let request = format!(
+            r#"{{"version":{},"request_id":"health-v2","expected_instance":"00000000-0000-4000-8000-000000000001","command":{bad}}}"#,
+            herdr_threads::protocol::wire::PROTOCOL_VERSION
+        );
+        assert!(
+            herdr_threads::protocol::wire::WireRequest::decode(request.as_bytes()).is_err(),
+            "accepted {bad}"
+        );
+    }
+    assert_eq!(
+        serde_json::to_string(&herdr_threads::protocol::commands::Command::Health).unwrap(),
+        r#"{"kind":"health"}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&herdr_threads::protocol::commands::Command::HarnessStates).unwrap(),
+        r#"{"kind":"harness_states"}"#
+    );
+}
+
+fn health_v2_fixture() -> serde_json::Value {
+    serde_json::json!({"kind":"harness_health_v2","data":{"harnesses":{"claude":{
+        "scope":{"kind":"daemon_default","profile":null},
+        "installation":{"state":"present","detail":null},
+        "enablement":{"state":"unknown","detail":null},
+        "admission":{"state":"listed","detail":null},
+        "callback_observation":{"state":"unknown","detail":null},
+        "receipt_basis":"cooperative_top_level", "limitations":[], "notes":[],
+        "runtime_evidence":[], "unattributed":[], "hook_parse_failures":0
+    }}}})
+}
+
+// Catches absent report decoding and silently defaulted required-nullable fields.
+#[test]
+fn health_v2_report_requires_every_axis_and_explicit_null() {
+    let fixture = health_v2_fixture();
+    let parsed =
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(fixture.clone());
+    assert!(parsed.is_ok(), "health-v2 report missing: {parsed:?}");
+    assert_eq!(serde_json::to_value(parsed.unwrap()).unwrap(), fixture);
+    for path in [
+        "scope",
+        "installation",
+        "enablement",
+        "admission",
+        "callback_observation",
+    ] {
+        let field = if path == "scope" { "profile" } else { "detail" };
+        let mut bad = fixture.clone();
+        bad["data"]["harnesses"]["claude"][path]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(
+            serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err(),
+            "missing {path}.{field} accepted"
+        );
+    }
+}
+
+// Catches successful decoding of unbounded text/maps and undeclared nested fields.
+#[test]
+fn health_v2_report_rejects_unbounded_or_unknown_nested_values() {
+    let fixture = health_v2_fixture();
+    assert!(
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(fixture.clone())
+            .is_ok(),
+        "missing report decoder"
+    );
+    for path in [
+        "scope",
+        "installation",
+        "enablement",
+        "admission",
+        "callback_observation",
+    ] {
+        let mut bad = fixture.clone();
+        bad["data"]["harnesses"]["claude"][path]["body"] = serde_json::json!("native content");
+        assert!(
+            serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err(),
+            "unknown {path} field accepted"
+        );
+    }
+    for field in ["limitations", "notes"] {
+        for value in [
+            serde_json::json!(["x".repeat(257)]),
+            serde_json::json!(vec!["note"; 17]),
+        ] {
+            let mut bad = fixture.clone();
+            bad["data"]["harnesses"]["claude"][field] = value;
+            assert!(
+                serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad)
+                    .is_err(),
+                "unbounded {field} accepted"
+            );
+        }
+    }
+    let mut bad = fixture.clone();
+    bad["data"]["harnesses"]["claude"]["installation"]["detail"] =
+        serde_json::json!("x".repeat(257));
+    assert!(
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err()
+    );
+    let mut bad = fixture.clone();
+    bad["data"]["harnesses"]["Bad/ID"] = fixture["data"]["harnesses"]["claude"].clone();
+    assert!(
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err(),
+        "invalid map key accepted"
+    );
+}
+
+fn rich_runtime_wire_fixture() -> serde_json::Value {
+    let mut fixture = health_v2_fixture();
+    let identity = herdr_threads::harness::runtime::RuntimeIdentity::build(
+        herdr_threads::harness::runtime::RuntimeDescriptor {
+            release_version: Some("2.1.286".into()),
+            source: "fixture".into(),
+            base_version: None,
+            derived_version: None,
+            commit: None,
+            dirty: None,
+            distance: None,
+        },
+    )
+    .unwrap();
+    fixture["data"]["harnesses"]["claude"]["runtime_evidence"] = serde_json::json!([{"identity":identity,"domain":"native_payload","origin":"native_payload","contract_id":"0123456789abcdef","state":"new","source":"unverified exact domain","line":"new exact runtime","notes":[],"issue_url":null,"last_seen_at":1,"in_health_window":true,"scope":{"kind":"runtime_evidence_all_scopes","profile":null}}]);
+    fixture
+}
+
+// Catches omitted identity nulls, scope conflation, raw bodies and vector/text overflow.
+#[test]
+fn health_v2_runtime_rows_are_strict_required_nullable_and_bounded() {
+    let fixture = rich_runtime_wire_fixture();
+    assert!(
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(fixture.clone())
+            .is_ok()
+    );
+    for field in [
+        "release_version",
+        "base_version",
+        "derived_version",
+        "commit",
+        "dirty",
+        "distance",
+    ] {
+        let mut bad = fixture.clone();
+        bad["data"]["harnesses"]["claude"]["runtime_evidence"][0]["identity"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(
+            serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err(),
+            "missing identity {field} accepted"
+        );
+    }
+    for field in ["issue_url", "scope"] {
+        let mut bad = fixture.clone();
+        bad["data"]["harnesses"]["claude"]["runtime_evidence"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(
+            serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err()
+        );
+    }
+    let mut bad = fixture.clone();
+    bad["data"]["harnesses"]["claude"]["runtime_evidence"][0]["scope"]["kind"] =
+        serde_json::json!("daemon_default");
+    assert!(
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err()
+    );
+    let mut bad = fixture.clone();
+    bad["data"]["harnesses"]["claude"]["runtime_evidence"][0]["body"] =
+        serde_json::json!("native payload");
+    assert!(
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err()
+    );
+    let mut bad = fixture.clone();
+    bad["data"]["harnesses"]["claude"]["runtime_evidence"] =
+        serde_json::json!(
+            vec![fixture["data"]["harnesses"]["claude"]["runtime_evidence"][0].clone(); 21]
+        );
+    assert!(
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err()
+    );
+    let mut bad = fixture.clone();
+    bad["data"]["harnesses"]["claude"]["unattributed"] = serde_json::json!(vec![
+        serde_json::json!({"domain":"native_payload","origin":"native_payload","reason":"missing attribution","at":1});
+        9
+    ]);
+    assert!(
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err()
+    );
+    let mut bad = fixture.clone();
+    bad["data"]["harnesses"]["claude"]["runtime_evidence"][0]["line"] =
+        serde_json::json!("x".repeat(257));
+    assert!(
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err()
+    );
+}
+
+// Catches Value normalization hiding duplicate fields in the new strict identity boundary.
+#[test]
+fn health_v2_runtime_identity_rejects_duplicate_fields() {
+    let valid = serde_json::to_string(&rich_runtime_wire_fixture()).unwrap();
+    let duplicate = valid.replace("\"dirty\":null", "\"dirty\":null,\"dirty\":null");
+    assert_ne!(
+        duplicate, valid,
+        "fixture must actually contain duplicate identity fields"
+    );
+    assert!(
+        serde_json::from_str::<herdr_threads::protocol::results::CommandResult>(&duplicate)
+            .is_err(),
+        "strict health identity accepted duplicate fields"
+    );
+}

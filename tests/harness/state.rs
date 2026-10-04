@@ -662,3 +662,73 @@ fn exact_build_ladder_never_orders_informational_release_text() {
         ));
     }
 }
+
+// Catches stale descriptor credit, semver promotion of build metadata and loss of sticky violation.
+#[test]
+fn exact_runtime_verdict_requires_current_descriptor_and_never_collapses_build() {
+    use crate::{
+        harness::{
+            registry,
+            runtime::{RuntimeDescriptor, RuntimeIdentity},
+        },
+        protocol::results::RuntimeEvidenceState,
+        store::harness_evidence::EvidenceRowV2,
+    };
+    let registration = registry::builtins()
+        .by_id(registry::builtins().agent("claude").unwrap())
+        .unwrap();
+    let descriptor = &registration.contracts()[0];
+    let identity = RuntimeIdentity::build(RuntimeDescriptor {
+        release_version: None,
+        source: "fixture".into(),
+        base_version: Some("2.1.286".into()),
+        derived_version: Some("2.1.286+7.gabcdef0".into()),
+        commit: Some("a".repeat(40)),
+        dirty: Some(false),
+        distance: Some(7),
+    })
+    .unwrap();
+    let mut row = EvidenceRowV2 {
+        harness: "claude".into(),
+        identity: identity.clone(),
+        domain: descriptor.domain_id.into(),
+        origin: descriptor.origin,
+        contract_id: descriptor.contract_id_v2().unwrap(),
+        first_seen_at: 1,
+        last_seen_at: 2,
+        milestones: Default::default(),
+        violation_at: None,
+        violation_event: None,
+        violation_field: None,
+    };
+    let derive = |row: &EvidenceRowV2| {
+        derive_runtime(
+            registration,
+            &identity,
+            &row.domain,
+            row.origin,
+            &row.contract_id,
+            Some(row),
+            &Manifest::default(),
+        )
+    };
+    assert_eq!(
+        derive(&row).state,
+        RuntimeEvidenceState::New,
+        "build base version must not earn recipe Working"
+    );
+    for milestone in descriptor.required_milestones {
+        row.milestones.insert((*milestone).into(), 1);
+    }
+    assert_eq!(derive(&row).state, RuntimeEvidenceState::Working);
+    row.violation_at = Some(2);
+    row.violation_event = Some("PreToolUse".into());
+    row.violation_field = Some("tool_input".into());
+    assert_eq!(derive(&row).state, RuntimeEvidenceState::Broken);
+    row.contract_id = "0000000000000000".into();
+    assert_eq!(
+        derive(&row).state,
+        RuntimeEvidenceState::Unavailable,
+        "historical contract must not become a current verdict"
+    );
+}

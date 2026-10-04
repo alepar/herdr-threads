@@ -86,14 +86,14 @@ fn swapping_the_binary_reobserves_on_the_next_tick() {
     wait_until("the first pass", || pacer.idle_events() >= 1);
     assert!(
         matches!(
-            slot.lock().unwrap().claude,
+            slot.lock().unwrap().status("claude"),
             HarnessStatus::Cooperative {
                 live_unverified: false,
                 ..
             }
         ),
         "{:?}",
-        slot.lock().unwrap().claude
+        slot.lock().unwrap().status("claude")
     );
 
     // Unchanged binary, next tick: no change line.
@@ -113,7 +113,7 @@ fn swapping_the_binary_reobserves_on_the_next_tick() {
     let _ = std::fs::remove_dir_all(&staging);
     advance(&pacer);
     wait_until("the third pass", || pacer.idle_events() >= 3);
-    let observed = slot.lock().unwrap().claude.clone();
+    let observed = slot.lock().unwrap().status("claude").clone();
     let HarnessStatus::Optimistic(detail) = &observed else {
         panic!("the swapped binary must be re-observed as optimistic: {observed:?}");
     };
@@ -207,11 +207,11 @@ fn cancelling_the_lane_kills_a_hung_harness_and_ends_the_pass() {
     assert!(!alive, "hung claude child {} outlived the lane", pid.trim());
     let stored = slot.lock().unwrap();
     assert!(
-        matches!(stored.claude, HarnessStatus::Unknown)
-            && matches!(stored.codex, HarnessStatus::Unknown),
+        matches!(stored.status("claude"), HarnessStatus::Unknown)
+            && matches!(stored.status("codex"), HarnessStatus::Unknown),
         "a cancelled pass was stored: {:?} / {:?}",
-        stored.claude,
-        stored.codex
+        stored.status("claude"),
+        stored.status("codex")
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
