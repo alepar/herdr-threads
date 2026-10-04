@@ -349,6 +349,13 @@ where
         writer.flush()?;
         return Ok(());
     }
+    if let Some(document) =
+        commands::adapter_discovery_output(&parsed, crate::harness::registry::builtins())?
+    {
+        writer.write_all(document.as_bytes())?;
+        writer.flush()?;
+        return Ok(());
+    }
     if let CliAction::ContractId { harness } = &parsed.action {
         let name = harness.map(harness_name);
         let json = parsed.output.format == OutputFormat::Json;
@@ -685,7 +692,9 @@ where
             unreachable!("setup is handled before context resolution")
         }
         CliAction::Skill => unreachable!("skill is handled before context resolution"),
-        CliAction::ContractId { .. } | CliAction::HarnessVersionNormalize { .. } => {
+        CliAction::Adapters
+        | CliAction::ContractId { .. }
+        | CliAction::HarnessVersionNormalize { .. } => {
             unreachable!("contract-id and harness-version are handled before context resolution")
         }
         CliAction::InternalJsonField { .. } => {

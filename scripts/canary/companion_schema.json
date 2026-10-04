@@ -1,0 +1,316 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "harness",
+    "attempt",
+    "identity",
+    "evidence_stage",
+    "outcome",
+    "reason",
+    "domains"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "harness": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_-]*$(?![\\s\\S])"
+    },
+    "attempt": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$(?![\\s\\S])"
+    },
+    "identity": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "key",
+            "release_version",
+            "source",
+            "base_version",
+            "derived_version",
+            "commit",
+            "dirty",
+            "distance"
+          ],
+          "properties": {
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^(release:(0|[1-9][0-9]{0,5})\\.(0|[1-9][0-9]{0,5})\\.(0|[1-9][0-9]{0,5})|build:[a-f0-9]{64})$(?![\\s\\S])"
+            },
+            "release_version": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[^\\x00-\\x1f\\x7f]+$(?![\\s\\S])"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32,
+              "pattern": "^[a-z][a-z0-9_]*$(?![\\s\\S])"
+            },
+            "base_version": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[^\\x00-\\x1f\\x7f]+$(?![\\s\\S])"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "derived_version": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[^\\x00-\\x1f\\x7f]+$(?![\\s\\S])"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "commit": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40,
+                  "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "dirty": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "distance": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "evidence_stage": {
+      "enum": [
+        "source_captured",
+        "no_model",
+        "live"
+      ]
+    },
+    "outcome": {
+      "enum": [
+        "complete",
+        "inconclusive",
+        "unsupported",
+        "infra_failure"
+      ]
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$(?![\\s\\S])"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "domains": {
+      "type": "array",
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "domain",
+          "origin",
+          "contract_id",
+          "successful_milestones",
+          "violations",
+          "outcome"
+        ],
+        "properties": {
+          "domain": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[a-z][a-z0-9_]*$(?![\\s\\S])"
+          },
+          "origin": {
+            "enum": [
+              "native_payload",
+              "native_shape_observation",
+              "bridge_envelope"
+            ]
+          },
+          "contract_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16,
+            "pattern": "^[a-f0-9]{16}$(?![\\s\\S])"
+          },
+          "successful_milestones": {
+            "type": "array",
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32,
+              "pattern": "^[a-z][a-z0-9_]*$(?![\\s\\S])"
+            }
+          },
+          "violations": {
+            "type": "array",
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "event",
+                "field"
+              ],
+              "properties": {
+                "event": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 63,
+                  "pattern": "^[A-Za-z][A-Za-z0-9_]*$(?![\\s\\S])"
+                },
+                "field": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_.]*$(?![\\s\\S])"
+                }
+              }
+            }
+          },
+          "outcome": {
+            "enum": [
+              "compatible",
+              "contract_violation",
+              "inconclusive"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "compatible"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "violations": {
+                  "maxItems": 0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "contract_violation"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "violations": {
+                  "minItems": 1
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "herdr-threads/canary/companion_schema.json",
+  "title": "Adapter companion result schema 1",
+  "x-max-stdout-bytes": 65536,
+  "x-max-stderr-bytes": 8192,
+  "x-stdout-framing": "Exactly one UTF-8 JSON object; only trailing whitespace is permitted. Stderr is sanitized separately.",
+  "x-companion-argv": [
+    "--harness",
+    "ID",
+    "--attempt",
+    "TOKEN",
+    "--stage",
+    "STAGE",
+    "--work-dir",
+    "ABS",
+    "--binary",
+    "ABS"
+  ],
+  "x-optional-companion-argv": [
+    "--runtime-command-file",
+    "ABS"
+  ],
+  "x-consumer-validation": [
+    "Require the caller-issued harness, attempt and requested/measured evidence stage; never promote source_captured or no_model to live.",
+    "Validate identity using the canonical runtime descriptor/key algorithm; null identity never creates a verified runtime row.",
+    "Resolve every domain/origin/contract_id against exact binary discovery, with no duplicate domains and no more domains than its descriptor count.",
+    "Require unique declared successful milestones and declared violation events with bounded field identifiers; outcome and milestone inconsistencies are inconclusive.",
+    "compatible alone does not verify: require every exact-domain required milestone; never credit bridge success to native-shape evidence.",
+    "Enforce encoded byte caps, not only JSON Schema character limits; invalid results are inconclusive, never PASS.",
+    "Invoke separate argv without a shell. Only descriptor-named model-key environment material may be inherited; never put secrets in argv or artifacts."
+  ]
+}

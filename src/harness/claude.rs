@@ -697,6 +697,19 @@ pub fn declared_hooks_for_argv(argv: &[String]) -> Result<Value, super::setup::S
 
 pub(crate) struct ClaudeAdapter;
 
+struct ClaudeCanary;
+impl super::adapter::CanaryStrategy for ClaudeCanary {
+    fn descriptor(&self) -> super::adapter::CanaryDescriptor {
+        super::adapter::CanaryDescriptor {
+            kind: super::adapter::CanaryKind::NpmRelease,
+            candidate_kind: super::adapter::CandidateKind::StableRelease,
+            npm_package: Some("@anthropic-ai/claude-code".into()),
+            model_key_env: Some("ANTHROPIC_API_KEY".into()),
+            companion: "scripts/canary/adapters/claude.py".into(),
+            artifact_schema_version: 1,
+        }
+    }
+}
 impl HarnessAdapter for ClaudeAdapter {
     type Admission = String;
     fn metadata(&self) -> &'static AdapterMetadata {
@@ -715,6 +728,12 @@ impl HarnessAdapter for ClaudeAdapter {
             },
         };
         &METADATA
+    }
+    fn legacy_contract_id(&self) -> Option<String> {
+        Some(super::contract::contract_id(&CONTRACT))
+    }
+    fn canary_strategy(&self) -> Option<&dyn super::adapter::CanaryStrategy> {
+        Some(&ClaudeCanary)
     }
     fn contracts(&self) -> &'static [ContractDescriptor] {
         static CONTRACTS: [ContractDescriptor; 1] = [ContractDescriptor {

@@ -555,3 +555,39 @@ fn runtime_build_key_covers_exact_descriptor_and_domain_hash_preserves_legacy_id
         descriptor.legacy_contract_id()
     );
 }
+
+// New discovery must not change the historical public command's exact bytes.
+#[test]
+fn adapters_local_dispatch_keeps_legacy_contract_id_bytes() {
+    let mut legacy = Vec::new();
+    crate::cli::run_in_pane(
+        ["herdr-threads", "contract-id", "--json"],
+        None,
+        &mut legacy,
+    )
+    .unwrap();
+    assert_eq!(
+        String::from_utf8(legacy).unwrap(),
+        "{\"claude\":\"3f860645de4c3363\",\"codex\":\"d3b98d74f26f7e2c\",\"normalize\":{\"claude\":{\"2.1.286 (Claude Code)\":\"2.1.286\"},\"codex\":{\"codex-cli 0.158.0\":\"0.158.0\"}}}\n"
+    );
+    let mut output = Vec::new();
+    crate::cli::run_in_pane(["herdr-threads", "adapters", "--json"], None, &mut output).unwrap();
+    let discovery = crate::harness::discovery::Discovery::parse(&output).unwrap();
+    assert_eq!(
+        discovery
+            .adapters
+            .iter()
+            .map(|a| a.id.as_str())
+            .collect::<Vec<_>>(),
+        ["claude", "codex"]
+    );
+    assert_eq!(
+        discovery.adapters[0].legacy_contract_id.as_deref(),
+        Some("3f860645de4c3363")
+    );
+    assert_eq!(
+        discovery.adapters[1].legacy_contract_id.as_deref(),
+        Some("d3b98d74f26f7e2c")
+    );
+    assert_ne!(discovery.adapters[0].contracts[0].id, "3f860645de4c3363");
+}
