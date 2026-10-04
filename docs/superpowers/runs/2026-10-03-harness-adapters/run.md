@@ -5,7 +5,7 @@ resumeChange: User confirmed schema allocation: CLI v19 thread names, v20 recent
 resumeChange: User reports main 021ac1ec with wake_batch_delay_ms default 0 in InstanceSettings/StoreSettings, explicit batching overrides and retry spacing retained, legacy HealthSettings absent-field fallback preserved. Absorb main before freeze and preserve this behavior/opt-in fixtures; no migration or immediate rebase required.
 resumeChange: 2026-10-03 · "Critical schema allocation update: user-added invitation rejection belongs to the next v0.2.2 release and requires an additive immutable rejection-overlay table. CLI retains v19 thread names/v20 activity; invitation rejection receives v21. Your later v0.3.0 adapter/runtime-evidence migration must therefore be v22, after absorbing those merged changes. No historical migrations edited. Preserve invitation effective-state helpers when integrating this seam. No immediate status response/rebase needed; report only a blocker." · supersedes earlier v21 adapter allocation; active specs/bead4 use v22, invitation effective-state behavior preserved.
 
-phase: roast-design
+phase: code
 codeMechanism: ordinary-subagents
 
 idea: Own the harness adapter architecture and Hermes feature; ideally adding a new harness is as easy as implementing the new interface. Audit Claude/Codex seams and authoritative Hermes integration docs, preview and approve the architecture, then implement and review in an isolated worktree for coordinator-owned integration into main. Approved scope includes a built-in registry in the same binary and the Hermes Python bridge, for the later 0.3.0 release.
@@ -33,3 +33,5 @@ stepBackDesign-round-1: patch — independent registration context namespace and
 Design roast1 fixes applied inline: context spelling validation/reserved Human in root/.1/.7; shared resolved-profile transaction exclusion in Hermes/.6.2/.7. Changed design/data handling requires roast2 with prior report. Historical report remains unchanged.
 
 Design roast2 exit: clean [converged], all9scouts returned0raw; prior2confirmed resolved, runtime-source mutation escalation remains parked. Owned relay exit0/session44341 reaped. Parallelism pass next.
+
+graph-pass: depth 11→11 · width 2.5→2.5 · applied 0 · parked 1
