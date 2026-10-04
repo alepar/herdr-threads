@@ -722,6 +722,7 @@ struct ProfileDoctorAdapter {
     requests: std::sync::Mutex<Vec<ResolvedSetupScope>>,
     setup_deadlines: std::sync::Mutex<Vec<u64>>,
     safe: bool,
+    captured_scope: Option<ResolvedSetupScope>,
 }
 impl HarnessAdapter for ProfileDoctorAdapter {
     type Admission = ();
@@ -809,11 +810,18 @@ impl HarnessAdapter for ProfileDoctorAdapter {
         &self,
         request: &StatusRequest,
         _: &Value,
-        _: &CallBudget,
+        budget: &CallBudget,
     ) -> Option<DoctorProjection> {
+        let status = self.captured_scope.as_ref().map(|scope| {
+            let SetupStatus::Detailed(mut status) = self.status(request, budget) else {
+                unreachable!("profile fixture always returns detailed status")
+            };
+            status.scope = scope.clone();
+            SetupStatus::Detailed(status)
+        });
         Some(DoctorProjection {
-            status: None,
-            hooks: json!({"owned": profile_root(&request.scope).join("owned").exists()}),
+            status,
+            hooks: json!({"owned": profile_root(&request.scope).join("owned").exists(), "captured_profile": self.captured_scope.as_ref().map(|scope| match scope { ResolvedSetupScope::Profile { name, .. } => name.as_str(), _ => "default" })}),
             limitations: vec![],
             manual_repairs: vec![
                 json!({"action": "native enablement", "outcome": "manual", "detail": "Enable manually"}),
@@ -868,6 +876,7 @@ fn doctor_actual_registered_profile_status_and_safe_owned_repair() {
         requests: Default::default(),
         setup_deadlines: Default::default(),
         safe: true,
+        captured_scope: None,
     }));
     let registry = Registry::new(Box::leak(
         vec![
@@ -960,6 +969,7 @@ fn doctor_actual_registered_profile_status_and_safe_owned_repair() {
         requests: Default::default(),
         setup_deadlines: Default::default(),
         safe: false,
+        captured_scope: None,
     }));
     let registry = Registry::new(Box::leak(
         vec![Registration::new(manual)].into_boxed_slice(),
@@ -971,6 +981,97 @@ fn doctor_actual_registered_profile_status_and_safe_owned_repair() {
     );
 }
 
+/// Kills using rejected captured hooks to authorize writes in the selected profile.
+#[test]
+fn doctor_actual_fix_discards_wrong_scope_capture_and_owned_repair() {
+    use crate::harness::registry::{Registration, Registry};
+    // Matched capture is a positive control through the same actual doctor fix route.
+    for captured_profile in ["work", "foreign"] {
+        let case = PathCase::new(&format!("captured-scope-{captured_profile}"));
+        let profiles = case.dir.join("profiles");
+        let adapter = Box::leak(Box::new(ProfileDoctorAdapter {
+            requests: Default::default(),
+            setup_deadlines: Default::default(),
+            safe: true,
+            captured_scope: Some(ResolvedSetupScope::Profile {
+                name: captured_profile.into(),
+                home: profiles.join(captured_profile),
+            }),
+        }));
+        let registry = Registry::new(Box::leak(
+            vec![Registration::new(adapter)].into_boxed_slice(),
+        ))
+        .unwrap();
+        let state = case.dir.join("state");
+        let host = case.dir.join("herdr.sock");
+        let parsed = super::super::commands::parse_argv_in_registry(
+            [
+                std::ffi::OsString::from("herdr-threads"),
+                "doctor".into(),
+                "--json".into(),
+                "--harness".into(),
+                "fourth".into(),
+                "--profile".into(),
+                "work".into(),
+                "--state-dir".into(),
+                state.clone().into_os_string(),
+                "--host-endpoint".into(),
+                host.clone().into_os_string(),
+                "fix".into(),
+            ],
+            &registry,
+        )
+        .unwrap();
+        let environment = SetupEnvironment {
+            config_roots: [("fourth".into(), profiles.clone())].into_iter().collect(),
+            declared: [("PROFILE_INPUT".into(), "frozen-value".into())]
+                .into_iter()
+                .collect(),
+            path: Some("/no-native-doctor-path".into()),
+            state_dir: Some(state),
+            host_endpoint: Some(host),
+            executable: PathBuf::from("/isolated/herdr-threads"),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        assert!(matches!(
+            run_registered(&parsed, &registry, Some(&environment), &mut out),
+            Err(RunError::Exit(exit::EXIT_UNAVAILABLE))
+        ));
+        let doc = &serde_json::from_slice::<Value>(&out).unwrap()["doctor"];
+        let measured = (
+            doc["hooks"]["fourth"]["captured_profile"].as_str(),
+            profiles.join("work/owned").exists(),
+            adapter.setup_deadlines.lock().unwrap().len(),
+        );
+        assert_eq!(
+            measured,
+            if captured_profile == "work" {
+                (Some("work"), true, 1)
+            } else {
+                (None, false, 0)
+            },
+            "capture={captured_profile}: {doc}"
+        );
+        assert_eq!(doc["local_harnesses"]["fourth"]["scope"]["profile"], "work");
+        if captured_profile == "foreign" {
+            assert_eq!(doc["local_harnesses"]["fourth"]["installed"], Value::Null);
+            assert_eq!(
+                doc["local_harnesses"]["fourth"]["diagnostics"][0]["text"],
+                "adapter returned status for a different local scope"
+            );
+            assert!(
+                doc["repairs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|row| row["action"] != "setup fourth")
+            );
+        }
+        assert!(!profiles.join("foreign/owned").exists());
+    }
+}
+
 /// Kills bypassing the adapter's declared setup options at automatic repair.
 #[test]
 fn doctor_owned_repair_refuses_undeclared_options_before_writes() {
@@ -980,6 +1081,7 @@ fn doctor_owned_repair_refuses_undeclared_options_before_writes() {
         requests: Default::default(),
         setup_deadlines: Default::default(),
         safe: true,
+        captured_scope: None,
     }));
     let registry = Registry::new(Box::leak(
         vec![Registration::new(adapter)].into_boxed_slice(),

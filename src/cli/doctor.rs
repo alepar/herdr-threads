@@ -1116,8 +1116,10 @@ fn collect_local_with_budget(
                     json!([{"text": diagnostic.chars().take(1024).collect::<String>()}]);
             }
             SetupStatus::Detailed(_) => {
+                // A rejected capture cannot project hooks or authorize selected-scope repair.
+                projection = None;
                 local["diagnostics"] =
-                    json!([{"text": "adapter returned status for a different local scope"}])
+                    json!([{"text": "adapter returned status for a different local scope"}]);
             }
             SetupStatus::Failed(error) => {
                 local["diagnostics"] =
