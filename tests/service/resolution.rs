@@ -1092,7 +1092,7 @@ fn real_ipc_exact_resolution_replay_after_retirement_and_hold_is_historical_with
     hold.execute("UPDATE host_instances SET baseline_hold_unclaimed=1", [])
         .unwrap();
     hold.execute(
-        "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,generation,created_at) SELECT 'still-unresolved',instance_id,'unresolved','w1:p2','native',1,0 FROM seats WHERE id=?1",
+        "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,generation,created_at) SELECT 'still-unresolved',instance_id,'unresolved','other','native',1,0 FROM seats WHERE id=?1",
         [first.as_str()],
     )
     .unwrap();

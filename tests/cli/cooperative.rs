@@ -2010,7 +2010,7 @@ mod scoped_runtime {
                         Command::OperatorRebind(_) | Command::OperatorFreshSeat(_) => {
                             Err(ApiError::not_found("fixture refuses repair"))
                         }
-                        Command::Seats(_) => Ok(CommandResult::Seats(Page {
+                        Command::Seats(query) => Ok(CommandResult::Seats(Page {
                             items: vec![SeatSummary {
                                 seat: SeatId::new("recipient"),
                                 target: Some(HostTargetId::new("w1:p2")),
@@ -2018,7 +2018,15 @@ mod scoped_runtime {
                                 generation: 1,
                                 created_at: crate::protocol::time::UtcMillis(0),
                                 retired_at: None,
-                            }],
+                            }]
+                            .into_iter()
+                            .filter(|seat| {
+                                query
+                                    .target
+                                    .as_ref()
+                                    .is_none_or(|target| seat.target.as_ref() == Some(target))
+                            })
+                            .collect(),
                             ..empty()
                         })),
                         Command::SeatInspect(_) => Ok(CommandResult::SeatInspect(
@@ -2130,6 +2138,14 @@ mod scoped_runtime {
             self.run_mode(args, true)
         }
         fn run_mode(&self, args: &[&str], json: bool) -> Result<(), crate::cli::RunError> {
+            self.run_mode_in_pane(args, json, "w1:p99")
+        }
+        fn run_mode_in_pane(
+            &self,
+            args: &[&str],
+            json: bool,
+            caller: &str,
+        ) -> Result<(), crate::cli::RunError> {
             let state = self.root.join("state");
             let host = self.root.join("host.sock");
             let mut argv = vec![
@@ -2143,7 +2159,7 @@ mod scoped_runtime {
                 argv.push("--json".into());
             }
             argv.extend(args.iter().map(|value| value.to_string()));
-            crate::cli::run_in_pane(argv, Some("w1:p99"), &mut Vec::new())
+            crate::cli::run_in_pane(argv, Some(caller), &mut Vec::new())
         }
     }
     impl Drop for Runtime {
@@ -2212,7 +2228,7 @@ mod scoped_runtime {
     }
 
     #[test]
-    fn omitted_runtime_reads_use_live_caller_mapping_without_allocation() {
+    fn omitted_runtime_reads_use_canonical_caller_mapping_without_host_or_allocation() {
         for args in [
             vec!["thread", "list"],
             vec!["warnings"],
@@ -2221,7 +2237,7 @@ mod scoped_runtime {
             vec!["pending-receipts"],
         ] {
             let runtime = Runtime::new(snapshot());
-            runtime.run(&args).unwrap();
+            runtime.run_mode_in_pane(&args, true, "w1:p2").unwrap();
             let calls = runtime.calls.lock().unwrap();
             assert!(
                 matches!(calls.first(), Some(Command::Seats(q)) if q.target.as_ref().is_some_and(|target| target.as_str() == "w1:p2")),
@@ -2241,14 +2257,7 @@ mod scoped_runtime {
                     .any(|command| matches!(command, Command::ResolveSeat(_)))
             );
             assert!(!runtime.paths.instance_dir.join("intents").exists());
-            assert!(
-                runtime
-                    .host_calls
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .any(|request| request["method"] == "pane.current")
-            );
+            assert!(runtime.host_calls.lock().unwrap().is_empty());
         }
     }
 
@@ -2412,7 +2421,7 @@ mod scoped_runtime {
         }
     }
     #[test]
-    fn own_live_inbox_runtime_remains_display_ack_eligible_and_foreign_inbox_does_not() {
+    fn own_canonical_inbox_runtime_remains_display_ack_eligible_and_foreign_inbox_does_not() {
         for explicit in [false, true] {
             let runtime = Runtime::new(snapshot());
             runtime.install_context("w1:p2");
@@ -2421,7 +2430,9 @@ mod scoped_runtime {
             } else {
                 vec!["inbox", "--human"]
             };
-            runtime.run_mode(&args, false).unwrap();
+            let caller = if explicit { "w1:p1" } else { "w1:p2" };
+            runtime.run_mode_in_pane(&args, false, caller).unwrap();
+            assert!(runtime.host_calls.lock().unwrap().is_empty());
             let calls = runtime.calls.lock().unwrap();
             assert_eq!(
                 calls
@@ -2439,10 +2450,15 @@ mod scoped_runtime {
     }
 
     #[test]
-    fn stale_local_context_is_refused_after_live_inbox_mapping_and_never_acks() {
+    fn stale_local_context_is_refused_after_canonical_inbox_mapping_and_never_acks() {
         let runtime = Runtime::new(snapshot());
         runtime.install_context("w1:p99");
-        assert!(runtime.run_mode(&["inbox", "--human"], false).is_err());
+        let error = runtime
+            .run_mode_in_pane(&["inbox", "--human"], false, "w1:p2")
+            .unwrap_err();
+        assert!(matches!(error, crate::cli::RunError::Api(ref error)
+            if error.code == ErrorCode::TargetUnresolved && error.detail == "local context differs from current service mapping"));
+        assert!(runtime.host_calls.lock().unwrap().is_empty());
         let calls = runtime.calls.lock().unwrap();
         assert!(
             matches!(calls.first(), Some(Command::Seats(q)) if q.target == Some(HostTargetId::new("w1:p2")))
@@ -2454,6 +2470,22 @@ mod scoped_runtime {
                 | Command::ResolveSeat(_)
                 | Command::InboxBatch(_)
         )));
+    }
+
+    #[test]
+    fn unmapped_canonical_caller_is_refused_without_host_retarget_or_ack() {
+        let runtime = Runtime::new(snapshot());
+        runtime.install_context("w1:p2");
+        let error = runtime.run_mode(&["inbox", "--human"], false).unwrap_err();
+        assert!(
+            matches!(error, crate::cli::RunError::Api(ref error) if error.code == ErrorCode::InvalidRequest)
+        );
+        let calls = runtime.calls.lock().unwrap();
+        assert!(
+            matches!(calls.as_slice(), [Command::Seats(q)] if q.target == Some(HostTargetId::new("w1:p99")))
+        );
+        assert!(runtime.host_calls.lock().unwrap().is_empty());
+        assert!(!runtime.paths.instance_dir.join("intents").exists());
     }
 
     #[test]

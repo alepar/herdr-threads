@@ -49,8 +49,10 @@ targets. Space means Herdr workspace. No implicit search across spaces or tabs.
    Conflict with candidates. For tabs, sole child means one live pane; for spaces,
    it means one live tab, then the same pane rule.
 4. With all selectors omitted, ordinary resolution and recipient/read selection
-   use the caller's own pane. `launch`, `handoff`, `seat rebind`, and fresh-seat
-   repair require an explicit pane selector: these actions need target intent.
+   use the caller's own pane. Omitted read selectors use `HERDR_PANE_ID` and the
+   daemon's canonical mapping without requiring a live Herdr read (TRUST-POLICY A1/C4).
+   Explicit names or parents still use live locator scope. `launch`, `handoff`,
+   `seat rebind`, and fresh-seat repair require an explicit pane selector: these actions need target intent.
    `me init` remains exclusively the caller's own identity declaration.
 5. Pane names match the union of exact pane labels and exact live agent names
    inside the selected tab, deduplicated by pane ID. If they name different panes,
