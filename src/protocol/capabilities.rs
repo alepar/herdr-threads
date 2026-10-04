@@ -10,6 +10,7 @@ pub const HOOK_PARSE_FAILURE_REPORT: &str = "hook.parse_failure_report";
 pub const SERVICE_SEND_V1: &str = "service.send_v1";
 pub const HARNESS_EVIDENCE_V2: &str = "hook.harness_evidence_v2";
 pub const HARNESS_EVIDENCE: &str = "hook.harness_evidence";
+pub const HARNESS_HEALTH_V2: &str = "harness.health_v2";
 pub const HARNESS_STATES: &str = "harness.states";
 pub const SEAT_MANAGED_LAUNCH: &str = "seat.managed_launch";
 pub const PARTICIPANT_LOCATIONS: &str = "participants.locations_v1";
@@ -33,6 +34,7 @@ pub const ADVERTISED: &[&str] = &[
     HARNESS_EVIDENCE,
     HARNESS_EVIDENCE_V2,
     HARNESS_STATES,
+    HARNESS_HEALTH_V2,
     SEAT_MANAGED_LAUNCH,
     INBOX_BATCH,
     INVITATION_REJECT,

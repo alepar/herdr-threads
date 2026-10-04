@@ -16,41 +16,7 @@ pub enum ComponentStatus {
     Unavailable(String),
 }
 
-/// One harness as the daemon observed it on its own `PATH` (the bounded
-/// boot observation). Hook installation is per harness environment
-/// (`$CLAUDE_CONFIG_DIR`, `$CODEX_HOME`), so `doctor`, run in that
-/// environment, checks it; the daemon does not.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum HarnessStatus {
-    /// The observation has not completed.
-    #[default]
-    Unknown,
-    /// No executable on the daemon's `PATH`: a note, never a degradation.
-    NotInstalled(String),
-    /// Present but its `--version` could not be observed or recognized, which
-    /// blocks the hook: a limitation that degrades Health.
-    Refused(String),
-    /// Present, observed, and its version is below the recipe floor or inside
-    /// a known-broken range. Whether that matters is the version verdict's
-    /// (`harness::state`, rendered from evidence and the manifest), so Health
-    /// shows nothing for it here; doctor shows the detected-version line.
-    VersionRefused(String),
-    /// Admitted by a recipe whose receipts are cooperative
-    /// (`cooperative_top_level`). `live_unverified` marks a schema-matched
-    /// admission, which stays listed as a limitation.
-    Cooperative {
-        detail: String,
-        live_unverified: bool,
-    },
-    /// Admitted by a recipe that declares native-verified receipt: a listed
-    /// version whose recipe proves native receipt, never an unlisted one.
-    Supported(String),
-    /// Unlisted but admitted by the ladder's optimistic rows, parsed under an
-    /// assumed recipe, live-unverified. The detail is the operator-facing
-    /// label (`crate::harness::optimistic_label`); Health renders it as an
-    /// informational note, never a limitation or a degradation.
-    Optimistic(String),
-}
+pub use crate::harness::adapter::HarnessStatus;
 
 impl HarnessStatus {
     pub fn state(&self) -> HarnessState {
@@ -133,6 +99,7 @@ pub struct HealthInputs {
     pub codex: HarnessStatus,
     /// The installed `claude` on the daemon's `PATH` and its admission.
     pub claude: HarnessStatus,
+    pub additional_harnesses: Vec<(String, HarnessStatus)>,
     pub retirement: RetirementHealth,
     pub settings: Option<HealthSettings>,
     /// Completion time of the last reconciliation pass over a verified
@@ -204,23 +171,55 @@ pub const COOPERATIVE_WAKE_LINE: &str = "wake cooperative: prompts only Herdr's 
 /// versions are derived from the recipe tables (never written here); live
 /// demonstrations are recorded in docs/validation/report.md.
 pub fn cooperative_receipt_line() -> String {
-    use crate::harness::{claude, codex};
-    format!(
-        "receipt cooperative: an admitted recipe without native-verified receipt; accept/ACK is \
-         recorded as cooperative_top_level; admitted: claude {}, codex {}; live runs: \
-         docs/validation/report.md",
-        versions_of(claude::RECIPES),
-        versions_of(codex::RECIPES),
+    cooperative_receipt_line_for(crate::harness::registry::builtins())
+}
+
+pub fn cooperative_receipt_line_for(registry: &crate::harness::registry::Registry) -> String {
+    let admissions = registry
+        .registrations()
+        .iter()
+        .map(|registration| {
+            format!(
+                "{} {}",
+                registration.metadata().id,
+                registration
+                    .receipt_admission_summary()
+                    .unwrap_or_else(|| "admission unknown".into())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    bounded(
+        &format!(
+            "receipt cooperative: an admitted recipe without native-verified receipt; accept/ACK is recorded as cooperative_top_level; admitted: {admissions}; live runs: docs/validation/report.md"
+        ),
+        256,
     )
 }
 
-/// The recipes' version sets, `; `-joined in table order.
-fn versions_of<P>(table: &[crate::harness::recipe::Recipe<P>]) -> String {
-    table
+pub fn cooperative_wake_line_for(registry: &crate::harness::registry::Registry) -> String {
+    let ids: Vec<_> = registry
+        .registrations()
         .iter()
-        .map(|recipe| recipe.versions.to_string())
-        .collect::<Vec<_>>()
-        .join("; ")
+        .filter(|registration| !registration.metadata().host_kinds.is_empty())
+        .map(|registration| registration.metadata().id)
+        .collect();
+    let kinds = match ids.as_slice() {
+        [] => "agent kind unavailable".to_owned(),
+        [id] => (*id).to_owned(),
+        [first, last] => format!("{first} or {last}"),
+        many => format!(
+            "{} or {}",
+            many[..many.len() - 1].join(", "),
+            many[many.len() - 1]
+        ),
+    };
+    bounded(
+        &format!(
+            "wake cooperative: prompts only Herdr's detected idle/done {kinds} agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified"
+        ),
+        256,
+    )
 }
 
 /// Health's limitation when the host offers neither native current-execution
@@ -433,6 +432,7 @@ impl HealthInputs {
             last_scheduler_tick_at: None,
             codex: HarnessStatus::Unknown,
             claude: HarnessStatus::Unknown,
+            additional_harnesses: Vec::new(),
             retirement: RetirementHealth::default(),
             settings: None,
             last_reconciliation_at: None,
@@ -505,25 +505,38 @@ impl HealthInputs {
             codex: self.codex.state(),
             claude: self.claude.state(),
         };
-        for (name, status) in [("claude", &self.claude), ("codex", &self.codex)] {
+        for (name, status) in [("claude", &self.claude), ("codex", &self.codex)]
+            .into_iter()
+            .chain(
+                self.additional_harnesses
+                    .iter()
+                    .map(|(id, status)| (id.as_str(), status)),
+            )
+        {
             harness_line(name, status, &mut health.limitations, &mut health.notes);
         }
         for line in &self.harness_version_lines {
             push(&mut health.limitations, line.clone());
         }
-        let cooperative_harness = [&self.claude, &self.codex].iter().any(|status| {
-            matches!(
-                status,
-                HarnessStatus::Cooperative { .. } | HarnessStatus::Optimistic(_)
-            )
-        });
+        let cooperative_harness = [&self.claude, &self.codex]
+            .into_iter()
+            .chain(self.additional_harnesses.iter().map(|(_, status)| status))
+            .any(|status| {
+                matches!(
+                    status,
+                    HarnessStatus::Cooperative { .. } | HarnessStatus::Optimistic(_)
+                )
+            });
         if cooperative_harness {
             push(&mut health.notes, cooperative_receipt_line());
         }
         let cooperative_wake = self.safe_prompt == CapabilityState::Supported
             && self.current_execution != CapabilityState::Supported;
         if cooperative_wake {
-            push(&mut health.notes, COOPERATIVE_WAKE_LINE.into());
+            push(
+                &mut health.notes,
+                cooperative_wake_line_for(crate::harness::registry::builtins()),
+            );
         }
         let wake_available = self.safe_prompt == CapabilityState::Supported
             || self.current_execution == CapabilityState::Supported;
@@ -598,6 +611,10 @@ impl HealthInputs {
             && wake_available
             && self.claude.acceptable()
             && self.codex.acceptable()
+            && self
+                .additional_harnesses
+                .iter()
+                .all(|(_, status)| status.acceptable())
             && !self.retirement.pending
             && !self.retirement.degraded
             && !lacking_evidence

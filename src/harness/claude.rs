@@ -711,6 +711,39 @@ impl super::adapter::CanaryStrategy for ClaudeCanary {
     }
 }
 impl HarnessAdapter for ClaudeAdapter {
+    fn receipt_admission_summary(&self) -> Option<String> {
+        Some(
+            RECIPES
+                .iter()
+                .map(|recipe| recipe.versions.to_string())
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    }
+    fn observation_fingerprint(&self, env: &InstallEnvironment) -> Option<String> {
+        super::adapter::executable_observation_fingerprint(env, "claude")
+    }
+    fn observe_daemon(
+        &self,
+        env: &InstallEnvironment,
+        budget: &CallBudget,
+    ) -> super::adapter::DaemonObservation {
+        let (status, version) = observe_daemon_install(
+            env.path.as_deref(),
+            super::adapter::adapter_timeout(env, budget),
+            &budget.cancellation,
+        );
+        super::adapter::DaemonObservation {
+            status,
+            identity: version
+                .and_then(|v| RuntimeIdentity::stable_release(&v, "installed_probe").ok()),
+            receipt_basis: Some(
+                crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE.into(),
+            ),
+            ..Default::default()
+        }
+    }
+
     type Admission = String;
     fn metadata(&self) -> &'static AdapterMetadata {
         static METADATA: AdapterMetadata = AdapterMetadata {
@@ -877,4 +910,28 @@ impl HarnessAdapter for ClaudeAdapter {
     ) -> Result<RemovalOutcome, SetupFailure> {
         crate::cli::setup::legacy_adapter_unsetup(super::context::Harness::Claude, request)
     }
+}
+
+fn observe_daemon_install(
+    path: Option<&std::ffi::OsStr>,
+    timeout: std::time::Duration,
+    cancel: &crate::protocol::time::Cancellation,
+) -> (super::adapter::HarnessStatus, Option<String>) {
+    let observed = crate::cli::hook::resolve_on_path("claude", path).map(|binary| {
+        crate::harness::claude::observe_installed_version_cancellable(&binary, timeout, cancel)
+    });
+    let version = observed.as_ref().and_then(|observed| match observed {
+        Ok(version) => Some(version.as_str()),
+        Err(crate::harness::codex::VersionError::Unsupported(version)) => Some(version.as_str()),
+        Err(crate::harness::codex::VersionError::KnownBroken { version, .. }) => {
+            Some(version.as_str())
+        }
+        Err(_) => None,
+    });
+    let version =
+        version.and_then(|raw| crate::harness::contract::normalize_version("claude", raw));
+    (
+        crate::app::claude_status(observed, crate::harness::claude::health_capability()),
+        version,
+    )
 }

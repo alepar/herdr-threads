@@ -26,6 +26,7 @@ pub enum CommandResult {
     HarnessEvidenceV2Recorded(HarnessEvidenceV2Recorded),
     /// Each harness's version verdicts as the daemon derived them (ht-xoc.5).
     HarnessStates(HarnessStatesReport),
+    HarnessHealthV2(HarnessHealthV2Report),
     StopAccepted(StopAccepted),
     ServiceInspection(ServiceConnectionInspection),
     ServiceDisconnected(ServiceDisconnectResult),
@@ -381,6 +382,177 @@ pub struct VersionStateReport {
     pub issue_url: Option<String>,
     pub last_seen_at: u64,
     pub in_health_window: bool,
+}
+
+fn health_required_nullable<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> Result<Option<T>, D::Error> {
+    Option::<T>::deserialize(d)
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallationState {
+    #[default]
+    Unknown,
+    NotFound,
+    Present,
+    Unavailable,
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnablementState {
+    #[default]
+    Unknown,
+    NotApplicable,
+    Disabled,
+    Enabled,
+    Unavailable,
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionState {
+    #[default]
+    Unknown,
+    Listed,
+    SchemaMatched,
+    Optimistic,
+    Refused,
+    Unsupported,
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallbackObservationState {
+    #[default]
+    Unknown,
+    NotObserved,
+    Observed,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeEvidenceState {
+    Working,
+    New,
+    Broken,
+    Unavailable,
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HealthAxis<S> {
+    pub state: S,
+    #[serde(deserialize_with = "health_required_nullable")]
+    pub detail: Option<String>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessHealthScopeKind {
+    DaemonDefault,
+    RuntimeEvidenceAllScopes,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HarnessHealthScope {
+    pub kind: HarnessHealthScopeKind,
+    #[serde(deserialize_with = "health_required_nullable")]
+    pub profile: Option<String>,
+}
+impl HarnessHealthScope {
+    pub fn daemon_default() -> Self {
+        Self {
+            kind: HarnessHealthScopeKind::DaemonDefault,
+            profile: None,
+        }
+    }
+    pub fn all_runtime_scopes() -> Self {
+        Self {
+            kind: HarnessHealthScopeKind::RuntimeEvidenceAllScopes,
+            profile: None,
+        }
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeEvidenceHealth {
+    #[serde(deserialize_with = "health_runtime_identity")]
+    pub identity: crate::harness::runtime::RuntimeIdentity,
+    pub domain: String,
+    pub origin: crate::harness::evidence::EvidenceOrigin,
+    pub contract_id: String,
+    pub state: RuntimeEvidenceState,
+    pub source: String,
+    pub line: String,
+    pub notes: Vec<String>,
+    #[serde(deserialize_with = "health_required_nullable")]
+    pub issue_url: Option<String>,
+    pub last_seen_at: u64,
+    pub in_health_window: bool,
+    pub scope: HarnessHealthScope,
+}
+fn health_runtime_identity<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<crate::harness::runtime::RuntimeIdentity, D::Error> {
+    use crate::harness::runtime::{RuntimeDescriptor, RuntimeIdentity};
+    // Decode directly so duplicate fields remain visible to serde. Nullable fields
+    // are still required on this new boundary; historical identity decoding stays unchanged.
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Wire {
+        key: String,
+        #[serde(deserialize_with = "health_required_nullable")]
+        release_version: Option<String>,
+        source: String,
+        #[serde(deserialize_with = "health_required_nullable")]
+        base_version: Option<String>,
+        #[serde(deserialize_with = "health_required_nullable")]
+        derived_version: Option<String>,
+        #[serde(deserialize_with = "health_required_nullable")]
+        commit: Option<String>,
+        #[serde(deserialize_with = "health_required_nullable")]
+        dirty: Option<bool>,
+        #[serde(deserialize_with = "health_required_nullable")]
+        distance: Option<u64>,
+    }
+    let w = Wire::deserialize(d)?;
+    let identity = RuntimeIdentity {
+        key: w.key,
+        descriptor: RuntimeDescriptor {
+            release_version: w.release_version,
+            source: w.source,
+            base_version: w.base_version,
+            derived_version: w.derived_version,
+            commit: w.commit,
+            dirty: w.dirty,
+            distance: w.distance,
+        },
+    };
+    identity.validate().map_err(serde::de::Error::custom)?;
+    Ok(identity)
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnattributedHealthV2 {
+    pub domain: String,
+    pub origin: crate::harness::evidence::EvidenceOrigin,
+    pub reason: String,
+    pub at: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdapterHealthV2Report {
+    pub scope: HarnessHealthScope,
+    pub installation: HealthAxis<InstallationState>,
+    pub enablement: HealthAxis<EnablementState>,
+    pub admission: HealthAxis<AdmissionState>,
+    pub callback_observation: HealthAxis<CallbackObservationState>,
+    pub receipt_basis: String,
+    pub limitations: Vec<String>,
+    pub notes: Vec<String>,
+    pub runtime_evidence: Vec<RuntimeEvidenceHealth>,
+    pub unattributed: Vec<UnattributedHealthV2>,
+    pub hook_parse_failures: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HarnessHealthV2Report {
+    pub harnesses: std::collections::BTreeMap<String, AdapterHealthV2Report>,
 }
 
 /// The wire form of the daemon's advertised capability names (ht-p03.43).
@@ -1454,3 +1626,91 @@ api_error_constructors! {
 #[cfg(test)]
 #[path = "../../tests/protocol/error_class.rs"]
 mod error_class_tests;
+
+impl<'de> Deserialize<'de> for HarnessHealthV2Report {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Raw {
+            harnesses: std::collections::BTreeMap<String, AdapterHealthV2Report>,
+        }
+        let raw = Raw::deserialize(d)?;
+        let report = Self {
+            harnesses: raw.harnesses,
+        };
+        report.validate().map_err(serde::de::Error::custom)?;
+        Ok(report)
+    }
+}
+impl HarnessHealthV2Report {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let text = |s: &str, max: usize| s.len() <= max && !s.chars().any(char::is_control);
+        let lines = |lines: &[String]| lines.len() <= 16 && lines.iter().all(|s| text(s, 256));
+        if self.harnesses.len() > 64 {
+            return Err("too many harness health entries");
+        }
+        for (id, entry) in &self.harnesses {
+            if id.is_empty()
+                || id.len() > 64
+                || !id.as_bytes()[0].is_ascii_lowercase()
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+                || id == "human"
+            {
+                return Err("invalid harness health ID");
+            }
+            if entry.scope != HarnessHealthScope::daemon_default() {
+                return Err("invalid daemon health scope");
+            }
+            for detail in [
+                &entry.installation.detail,
+                &entry.enablement.detail,
+                &entry.admission.detail,
+                &entry.callback_observation.detail,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if !text(detail, 256) {
+                    return Err("unbounded health axis detail");
+                }
+            }
+            if entry.receipt_basis.is_empty()
+                || !text(&entry.receipt_basis, 128)
+                || !lines(&entry.notes)
+                || !lines(&entry.limitations)
+                || entry.runtime_evidence.len() > 20
+                || entry.unattributed.len() > 8
+            {
+                return Err("unbounded adapter health entry");
+            }
+            for row in &entry.runtime_evidence {
+                if row.identity.validate().is_err()
+                    || !crate::harness::evidence::valid_name(&row.domain)
+                    || row.contract_id.len() != 16
+                    || !row
+                        .contract_id
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    || !text(&row.source, 256)
+                    || !text(&row.line, 256)
+                    || !lines(&row.notes)
+                    || row.issue_url.as_ref().is_some_and(|s| !text(s, 256))
+                    || row.scope != HarnessHealthScope::all_runtime_scopes()
+                {
+                    return Err("invalid runtime health row");
+                }
+            }
+            for row in &entry.unattributed {
+                if !crate::harness::evidence::valid_name(&row.domain)
+                    || row.reason.is_empty()
+                    || !text(&row.reason, 256)
+                {
+                    return Err("invalid unattributed health row");
+                }
+            }
+        }
+        Ok(())
+    }
+}

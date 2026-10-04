@@ -21,15 +21,23 @@ use crate::{
     store::harness_evidence::EvidenceRow,
 };
 
-pub const HARNESSES: [&str; 2] = ["claude", "codex"];
-
 /// The version of `harness` found on the daemon's `PATH` (canonical `X.Y.Z`),
 /// as the admission observer last observed it.
 pub type DetectedVersions = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 /// The manifest verdicts are derived against, read on every call (a fetch
 /// may replace it).
+pub type CachedHarnessObservations = Box<
+    dyn Fn() -> Result<
+            std::collections::BTreeMap<String, crate::harness::adapter::DaemonObservation>,
+            ApiError,
+        > + Send
+        + Sync,
+>;
+
 pub type ManifestSource = Box<dyn Fn() -> Arc<Manifest> + Send + Sync>;
+
+type BrokenRuntimeRollup = std::collections::BTreeMap<String, (u64, String)>;
 
 /// The daemon's manifest service as a [`ManifestSource`].
 pub fn service_source(service: Arc<ManifestService>) -> ManifestSource {
@@ -47,6 +55,8 @@ pub struct HarnessStatesProvider {
     clock: Arc<dyn Clock>,
     detected: DetectedVersions,
     parse_failures: Option<Arc<HookParseFailures>>,
+    registry: &'static crate::harness::registry::Registry,
+    observations: Option<CachedHarnessObservations>,
 }
 
 impl HarnessStatesProvider {
@@ -63,7 +73,253 @@ impl HarnessStatesProvider {
             clock,
             detected,
             parse_failures,
+            registry: crate::harness::registry::builtins(),
+            observations: None,
         }
+    }
+
+    pub fn with_registry(mut self, registry: &'static crate::harness::registry::Registry) -> Self {
+        self.registry = registry;
+        self
+    }
+    pub fn with_observations(mut self, observations: CachedHarnessObservations) -> Self {
+        self.observations = Some(observations);
+        self
+    }
+    pub fn has_observations(&self) -> bool {
+        self.observations.is_some()
+    }
+    /// Reads only cached installation facts and bounded store/manifest data.
+    /// It never calls an adapter observation/status method or native process.
+    pub fn report_v2(
+        &self,
+        budget: &CallBudget,
+    ) -> Result<crate::protocol::results::HarnessHealthV2Report, ApiError> {
+        self.report_v2_with_broken_rollup(budget)
+            .map(|(report, _)| report)
+    }
+
+    fn report_v2_with_broken_rollup(
+        &self,
+        budget: &CallBudget,
+    ) -> Result<
+        (
+            crate::protocol::results::HarnessHealthV2Report,
+            BrokenRuntimeRollup,
+        ),
+        ApiError,
+    > {
+        use crate::daemon::health::HarnessStatus;
+        use crate::protocol::results::*;
+        use std::collections::BTreeMap;
+        let observations = self.observations.as_ref().ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::Unsupported,
+                "harness health observations unavailable",
+            )
+        })?;
+        let cached = observations()?;
+        let manifest = (self.manifest)();
+        let now = self.now_ms();
+        let counts = self
+            .parse_failures
+            .as_ref()
+            .map(|f| f.snapshot())
+            .unwrap_or_default();
+        let mut harnesses = BTreeMap::new();
+        let mut broken_rollup = BTreeMap::new();
+        for registration in self.registry.registrations() {
+            if budget.cancellation.is_cancelled() {
+                return Err(ApiError::cancelled("harness health cancelled"));
+            }
+            if self.clock.monotonic_now() >= budget.deadline {
+                return Err(ApiError::new(
+                    ErrorCode::DeadlineExceeded,
+                    "harness health budget expired",
+                ));
+            }
+            let id = registration.metadata().id;
+            let observed = cached.get(id).cloned().unwrap_or_default();
+            let mut limitations = Vec::new();
+            let mut notes = Vec::new();
+            let detail = match &observed.status {
+                HarnessStatus::Unknown => None,
+                HarnessStatus::Cooperative { detail, .. }
+                | HarnessStatus::NotInstalled(detail)
+                | HarnessStatus::Refused(detail)
+                | HarnessStatus::VersionRefused(detail)
+                | HarnessStatus::Supported(detail)
+                | HarnessStatus::Optimistic(detail) => Some(health_text(detail, 256)),
+            };
+            let (installation, admission) = match &observed.status {
+                HarnessStatus::Unknown => {
+                    limitations.push("installed runtime has not been observed".into());
+                    (InstallationState::Unknown, AdmissionState::Unknown)
+                }
+                HarnessStatus::NotInstalled(_) => {
+                    notes.push("executable not found in the daemon environment".into());
+                    (InstallationState::NotFound, AdmissionState::Unsupported)
+                }
+                HarnessStatus::Refused(_) => {
+                    limitations.push(
+                        detail
+                            .clone()
+                            .unwrap_or_else(|| "installed runtime unavailable".into()),
+                    );
+                    (InstallationState::Unavailable, AdmissionState::Refused)
+                }
+                HarnessStatus::VersionRefused(_) => {
+                    (InstallationState::Present, AdmissionState::Refused)
+                }
+                HarnessStatus::Cooperative {
+                    live_unverified: true,
+                    ..
+                } => (InstallationState::Present, AdmissionState::SchemaMatched),
+                HarnessStatus::Cooperative { .. } | HarnessStatus::Supported(_) => {
+                    (InstallationState::Present, AdmissionState::Listed)
+                }
+                HarnessStatus::Optimistic(_) => {
+                    (InstallationState::Present, AdmissionState::Optimistic)
+                }
+            };
+            let rows = self.store.harness_evidence_v2_all(id, 0, budget)?;
+            // The historical collection supplies candidate identity/timestamps only.
+            // derive_runtime gates usable facts with current exact descriptors.
+            let mut candidates: BTreeMap<_, RuntimeCandidate> = BTreeMap::new();
+            for row in manifest
+                .runtime_rows()
+                .iter()
+                .filter(|row| row.harness == id)
+            {
+                let candidate = RuntimeCandidate {
+                    identity: row.identity.clone(),
+                    domain: row.domain.clone(),
+                    origin: row.origin,
+                    contract: row.contract_id.clone(),
+                    at: row.last_seen_at,
+                    local: None,
+                };
+                candidates.insert(candidate.key(), candidate);
+            }
+            for row in rows {
+                let candidate = RuntimeCandidate {
+                    identity: row.identity.clone(),
+                    domain: row.domain.clone(),
+                    origin: row.origin,
+                    contract: row.contract_id.clone(),
+                    at: row.last_seen_at,
+                    local: Some(row),
+                };
+                let key = candidate.key();
+                let at = candidates
+                    .get(&key)
+                    .map_or(candidate.at, |old| old.at.max(candidate.at));
+                candidates.insert(key, RuntimeCandidate { at, ..candidate });
+            }
+            let mut candidates: Vec<_> = candidates.into_values().collect();
+            candidates.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| a.key().cmp(&b.key())));
+            let runtime_evidence = candidates
+                .into_iter()
+                .map(|candidate| {
+                    let derived = state::derive_runtime(
+                        registration,
+                        &candidate.identity,
+                        &candidate.domain,
+                        candidate.origin,
+                        &candidate.contract,
+                        candidate.local.as_ref(),
+                        &manifest,
+                    );
+                    RuntimeEvidenceHealth {
+                        identity: candidate.identity,
+                        domain: candidate.domain,
+                        origin: candidate.origin,
+                        contract_id: candidate.contract,
+                        state: derived.state,
+                        source: health_text(&derived.source, 256),
+                        line: health_text(&derived.line, 256),
+                        notes: derived
+                            .notes
+                            .iter()
+                            .take(16)
+                            .map(|s| health_text(s, 256))
+                            .collect(),
+                        issue_url: derived.issue_url.as_deref().map(|s| health_text(s, 256)),
+                        last_seen_at: candidate.at,
+                        in_health_window: now.saturating_sub(candidate.at)
+                            <= state::HEALTH_WINDOW_MS,
+                        scope: HarnessHealthScope::all_runtime_scopes(),
+                    }
+                })
+                .collect::<Vec<_>>();
+            // The bounded diagnostic input must retain its newest broken row
+            // even when newer non-broken rows exhaust the public display cap.
+            if let Some(row) = runtime_evidence
+                .iter()
+                .find(|row| row.in_health_window && row.state == RuntimeEvidenceState::Broken)
+            {
+                broken_rollup.insert(id.into(), (row.last_seen_at, row.line.clone()));
+            }
+            let runtime_evidence = runtime_evidence.into_iter().take(20).collect();
+            let mut unattributed = Vec::new();
+            for descriptor in registration.contracts() {
+                if let Some((reason, at)) = self.store.last_unattributed_v2(
+                    id,
+                    descriptor.domain_id,
+                    descriptor.origin,
+                    budget,
+                )? {
+                    unattributed.push(UnattributedHealthV2 {
+                        domain: descriptor.domain_id.into(),
+                        origin: descriptor.origin,
+                        reason: health_text(&reason, 256),
+                        at,
+                    });
+                }
+            }
+            let mut enablement = observed.enablement;
+            enablement.detail = enablement.detail.as_deref().map(|s| health_text(s, 256));
+            let mut callback_observation = observed.callback_observation;
+            callback_observation.detail = callback_observation
+                .detail
+                .as_deref()
+                .map(|s| health_text(s, 256));
+            harnesses.insert(
+                id.into(),
+                AdapterHealthV2Report {
+                    scope: HarnessHealthScope::daemon_default(),
+                    installation: HealthAxis {
+                        state: installation,
+                        detail: detail.clone(),
+                    },
+                    admission: HealthAxis {
+                        state: admission,
+                        detail,
+                    },
+                    enablement,
+                    callback_observation,
+                    receipt_basis: observed
+                        .receipt_basis
+                        .as_deref()
+                        .map(|s| health_text(s, 128))
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "unknown".into()),
+                    limitations,
+                    notes,
+                    runtime_evidence,
+                    unattributed,
+                    hook_parse_failures: counts
+                        .iter()
+                        .find(|(name, _)| name == id)
+                        .map_or(0, |(_, n)| *n),
+                },
+            );
+        }
+        let report = HarnessHealthV2Report { harnesses };
+        report
+            .validate()
+            .map_err(|reason| ApiError::new(ErrorCode::InvalidRequest, reason))?;
+        Ok((report, broken_rollup))
     }
 
     fn now_ms(&self) -> u64 {
@@ -79,25 +335,58 @@ impl HarnessStatesProvider {
     pub fn health_lines(&self, budget: &CallBudget) -> Result<Vec<String>, ApiError> {
         let now = self.now_ms();
         let mut all = Vec::new();
-        for harness in HARNESSES {
-            all.push((harness, self.store.harness_evidence_all(harness, budget)?));
+        for registration in self.registry.registrations() {
+            let harness = registration.metadata().id;
+            if registration.legacy_contract_id().is_some() {
+                all.push((harness, self.store.harness_evidence_all(harness, budget)?));
+            }
         }
-        Ok(self.with_manifest(|manifest| {
+        let mut lines: BrokenRuntimeRollup = self.with_manifest(|manifest| {
             all.iter()
                 .filter_map(|(harness, rows)| {
-                    state::roll_up(harness, rows, manifest, env!("CARGO_PKG_VERSION"), now)
-                        .health_line()
+                    let rollup =
+                        state::roll_up(harness, rows, manifest, env!("CARGO_PKG_VERSION"), now);
+                    let line = rollup.health_line()?;
+                    let at = rollup
+                        .versions
+                        .iter()
+                        .filter(|v| {
+                            v.in_health_window && matches!(v.derived.state, state::State::Broken(_))
+                        })
+                        .map(|v| v.last_seen_at)
+                        .max()
+                        .unwrap_or(0);
+                    Some(((*harness).into(), (at, line)))
                 })
                 .collect()
-        }))
+        });
+        if self.has_observations() {
+            for (id, (at, line)) in self.report_v2_with_broken_rollup(budget)?.1 {
+                if lines.get(&id).is_none_or(|(old_at, _)| at >= *old_at) {
+                    lines.insert(id, (at, line));
+                }
+            }
+        }
+        Ok(self
+            .registry
+            .registrations()
+            .iter()
+            .filter_map(|r| lines.remove(r.metadata().id).map(|(_, line)| line))
+            .collect())
     }
 
     /// The `harness.states` report.
     pub fn report(&self, budget: &CallBudget) -> Result<HarnessStatesReport, ApiError> {
         let now = self.now_ms();
         let mut harnesses = Vec::new();
-        for harness in HARNESSES {
-            let rows = self.store.harness_evidence_all(harness, budget)?;
+        for registration in self.registry.registrations() {
+            let harness = registration.metadata().id;
+            let legacy = registration.legacy_contract_id().is_some();
+            let rows = if legacy {
+                self.store.harness_evidence_all(harness, budget)?
+            } else {
+                vec![]
+            };
             let unattributed = self
                 .store
                 .last_unattributed(harness, budget)?
@@ -110,8 +399,21 @@ impl HarnessStatesProvider {
                 .into_iter()
                 .find(|(name, _)| name == harness)
                 .map_or(0, |(_, count)| count);
-            let detected =
-                (self.detected)(harness).and_then(|raw| normalize_version(harness, &raw));
+            let detected = legacy
+                .then(|| (self.detected)(harness))
+                .flatten()
+                .and_then(|raw| normalize_version(harness, &raw));
+            if !legacy {
+                harnesses.push(HarnessStateReport {
+                    harness: harness.into(),
+                    contract_id: None,
+                    detected: None,
+                    versions: vec![],
+                    unattributed,
+                    hook_parse_failures: failures,
+                });
+                continue;
+            }
             harnesses.push(self.with_manifest(|manifest| {
                 harness_report(
                     harness,
@@ -125,6 +427,37 @@ impl HarnessStatesProvider {
             }));
         }
         Ok(HarnessStatesReport { harnesses })
+    }
+}
+
+/// Sanitizes diagnostic facts; no native payload is retained here.
+fn health_text(text: &str, limit: usize) -> String {
+    let clean: String = text.chars().filter(|c| !c.is_control()).collect();
+    if clean.len() <= limit {
+        return clean;
+    }
+    let mut end = limit.saturating_sub('…'.len_utf8());
+    while !clean.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &clean[..end])
+}
+struct RuntimeCandidate {
+    identity: crate::harness::runtime::RuntimeIdentity,
+    domain: String,
+    origin: crate::harness::evidence::EvidenceOrigin,
+    contract: String,
+    at: u64,
+    local: Option<crate::store::harness_evidence::EvidenceRowV2>,
+}
+impl RuntimeCandidate {
+    fn key(&self) -> (String, String, String, String) {
+        (
+            self.identity.key.clone(),
+            self.domain.clone(),
+            format!("{:?}", self.origin),
+            self.contract.clone(),
+        )
     }
 }
 

@@ -273,6 +273,7 @@ fn capability_constants_are_stable() {
             "hook.harness_evidence",
             "hook.harness_evidence_v2",
             "harness.states",
+            "harness.health_v2",
             "seat.managed_launch",
             "inbox.batch_v1",
             "invitation.reject_v1",
@@ -295,6 +296,7 @@ fn every_advertised_capability_has_a_handler() {
             HARNESS_EVIDENCE => probe_harness_evidence(),
             HARNESS_EVIDENCE_V2 => v2_capability_is_negotiated_only_with_recorder(),
             HARNESS_STATES => probe_harness_states(),
+            HARNESS_HEALTH_V2 => health_v2_capability_is_negotiated_only_with_cached_provider(),
             SEAT_MANAGED_LAUNCH => probe_seat_managed_launch(),
             INBOX_BATCH => probe_inbox_batch(),
             INVITATION_REJECT => probe_invitation_reject(),
@@ -1064,7 +1066,14 @@ fn v2_capability_is_negotiated_only_with_recorder() {
             .iter()
             .any(|v| v == "hook.harness_evidence_v2")
     );
-    assert_eq!(caps.capabilities, ADVERTISED);
+    assert_eq!(
+        caps.capabilities,
+        ADVERTISED
+            .iter()
+            .filter(|name| **name != HARNESS_HEALTH_V2)
+            .copied()
+            .collect::<Vec<_>>()
+    );
     let d = crate::harness::claude::ClaudeAdapter.contracts()[0];
     let note = crate::protocol::commands::HarnessEvidenceV2 {
         harness: "claude".into(),
@@ -1112,5 +1121,96 @@ fn v2_capability_is_negotiated_only_with_recorder() {
             .unwrap()
             .len(),
         1
+    );
+}
+
+// Catches advertising v2 without cached observation/store handling or sending it to domain mutation.
+#[test]
+fn health_v2_capability_is_negotiated_only_with_cached_provider() {
+    use crate::{
+        daemon::harness_states::{HarnessStatesProvider, embedded_source},
+        ports::StorePort,
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+        test_support::isolation::TestIsolation,
+    };
+    let instance = Uuid::new_v4();
+    let boot = Uuid::new_v4();
+    let bare = daemon_handler(instance, boot);
+    let CommandResult::Capabilities(caps) = bare
+        .handle(
+            Command::Capabilities,
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("wrong capability response")
+    };
+    assert!(!caps.capabilities.iter().any(|c| c == "harness.health_v2"));
+    assert_eq!(
+        bare.handle(
+            Command::HarnessHealthV2,
+            PeerIdentity::from_kernel(501),
+            &budget()
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::Unsupported
+    );
+    let iso = TestIsolation::new("health-v2-cap");
+    let clock = Arc::new(FixedClock);
+    let store = Arc::new(
+        SqliteStore::new(
+            StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
+            "i",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    let provider = Arc::new(
+        HarnessStatesProvider::new(
+            store as Arc<dyn StorePort>,
+            embedded_source(),
+            clock,
+            Box::new(|_| None),
+            None,
+        )
+        .with_observations(Box::new(|| Ok(Default::default()))),
+    );
+    let handler = ControlService::new(
+        StopController::new(instance, boot, Cancellation::default()),
+        move |_: &CallBudget| HealthInputs::unknown(instance, boot),
+        NoDomain,
+    )
+    .with_harness_health_v2(provider);
+    let CommandResult::Capabilities(caps) = handler
+        .handle(
+            Command::Capabilities,
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("wrong capability response")
+    };
+    assert!(
+        caps.capabilities.iter().any(|c| c == "harness.health_v2"),
+        "implemented handler must advertise capability"
+    );
+    let result = handler
+        .handle(
+            Command::HarnessHealthV2,
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .expect("v2 must use cached/store handler, never NoDomain");
+    let CommandResult::HarnessHealthV2(report) = &result else {
+        panic!("wrong v2 response")
+    };
+    assert_eq!(report.harnesses.len(), 2);
+    assert!(report.validate().is_ok());
+    assert_eq!(
+        serde_json::from_value::<CommandResult>(serde_json::to_value(&result).unwrap()).unwrap(),
+        result
     );
 }

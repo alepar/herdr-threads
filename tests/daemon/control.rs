@@ -783,7 +783,9 @@ fn production_health_builder_pins_every_elected_field() {
         degraded_lanes,
         transitions_refused,
         harness_version_lines,
+        additional_harnesses,
     } = health(&budget);
+    assert!(additional_harnesses.is_empty());
     // The version lines come from the production wiring (`run_elected`), not
     // from the provider.
     assert!(harness_version_lines.is_empty());
@@ -1059,8 +1061,20 @@ fn schema_matched_codex_admission_adds_no_health_line_and_the_provider_forwards_
         detail: line.into(),
         live_unverified: true,
     };
-    slot.lock().unwrap().codex = observed.clone();
-    slot.lock().unwrap().claude = HarnessStatus::NotInstalled("absent".into());
+    slot.lock().unwrap().entries.insert(
+        "codex".into(),
+        crate::harness::adapter::DaemonObservation {
+            status: observed.clone(),
+            ..Default::default()
+        },
+    );
+    slot.lock().unwrap().entries.insert(
+        "claude".into(),
+        crate::harness::adapter::DaemonObservation {
+            status: HarnessStatus::NotInstalled("absent".into()),
+            ..Default::default()
+        },
+    );
     assert_eq!(provider(&budget).codex, observed);
     assert_eq!(
         provider(&budget).claude,

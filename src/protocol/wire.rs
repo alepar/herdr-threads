@@ -80,6 +80,13 @@ impl<'de> Deserialize<'de> for WireRequest {
         if !fields.contains_key("kind") || fields.keys().any(|key| key != "kind" && key != "args") {
             return Err(serde::de::Error::custom("unknown command envelope field"));
         }
+        if fields.get("kind").and_then(serde_json::Value::as_str) == Some("harness_health_v2")
+            && fields.contains_key("args")
+        {
+            return Err(serde::de::Error::custom(
+                "harness health v2 takes no arguments",
+            ));
+        }
         let command: Command =
             serde_json::from_value(raw.command).map_err(serde::de::Error::custom)?;
         command.validate().map_err(serde::de::Error::custom)?;
