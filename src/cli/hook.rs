@@ -1264,6 +1264,7 @@ fn check_in(
     turn: Option<&crate::harness::context::QualifiedTurn>,
     env: &HookEnv,
     deadline: Instant,
+    current_deadline: CurrentDeadline,
     clock: Arc<dyn Clock>,
     ensure_executable: Option<&Path>,
 ) -> Result<CheckedIn, Failure> {
@@ -1326,6 +1327,7 @@ fn check_in(
         instance,
         target: &target,
         deadline,
+        current_deadline,
         clock: Arc::clone(&clock),
         retry: Arc::new(HookDeadline(deadline)),
     };
@@ -1372,6 +1374,7 @@ struct PaneCall<'a> {
     instance: uuid::Uuid,
     target: &'a HostTargetId,
     deadline: Instant,
+    current_deadline: CurrentDeadline,
     clock: Arc<dyn Clock>,
     /// Paces retries of a continuity submission (the hook deadline in production).
     retry: Arc<dyn RetryWindow>,
@@ -1819,8 +1822,21 @@ impl PaneCall<'_> {
             });
         }
         let mut done = lifecycle_check_in(
-            event, turn, contexts, paths, client, target, seat, generation, instance, &output,
-            deadline, clock, fallback, prefix,
+            event,
+            turn,
+            contexts,
+            paths,
+            client,
+            target,
+            seat,
+            generation,
+            instance,
+            &output,
+            deadline,
+            &self.current_deadline,
+            clock,
+            fallback,
+            prefix,
         )?;
         done.recovery = self.recovery_rows(event, seat);
         Ok(done)
@@ -1894,6 +1910,60 @@ fn abandon(
     Ok(())
 }
 
+/// One absolute invocation deadline also fences bridge calls whose local
+/// per-call budget would otherwise start afresh after a digest or replay.
+struct CurrentDeadline {
+    at: Instant,
+    /// Milliseconds from the same production invocation anchor as `at`.
+    watchdog: Option<(Arc<AtomicU64>, u64)>,
+}
+struct DeadlineClient<'a> {
+    inner: &'a dyn LocalClient,
+    deadline: AtomicU64,
+    clock: &'a dyn Clock,
+}
+impl DeadlineClient<'_> {
+    fn shorten(&self, current: &CurrentDeadline) {
+        self.deadline
+            .fetch_min(budget(current.at, self.clock).deadline.0, Ordering::SeqCst);
+        if let Some((watchdog, since_start_ms)) = &current.watchdog {
+            watchdog.fetch_min(*since_start_ms, Ordering::SeqCst);
+        }
+    }
+    fn capped(&self, requested: &CallBudget) -> Result<CallBudget, ApiError> {
+        let mut capped = requested.clone();
+        capped.deadline.0 = capped.deadline.0.min(self.deadline.load(Ordering::SeqCst));
+        if capped.is_exhausted(self.clock) {
+            return Err(ApiError::new(
+                ErrorCode::DeadlineExceeded,
+                "hook callback budget expired",
+            ));
+        }
+        Ok(capped)
+    }
+}
+impl LocalClient for DeadlineClient<'_> {
+    fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
+        self.inner.call(command, &self.capped(budget)?)
+    }
+    fn call_with_output(
+        &self,
+        command: Command,
+        output: &OutputSpec,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.inner
+            .call_with_output(command, output, &self.capped(budget)?)
+    }
+    fn call_definitive(
+        &self,
+        command: Command,
+        budget: &CallBudget,
+    ) -> Result<Result<CommandResult, ApiError>, ApiError> {
+        self.inner.call_definitive(command, &self.capped(budget)?)
+    }
+}
+
 /// Lifecycle class (startup, clear, resume): the durable Lifecycle CheckIn
 /// through the context journal, with exact replay on response loss.
 #[allow(clippy::too_many_arguments)]
@@ -1909,6 +1979,7 @@ fn lifecycle_check_in(
     instance: uuid::Uuid,
     output: &OutputSpec,
     deadline: Instant,
+    current_deadline: &CurrentDeadline,
     clock: Arc<dyn Clock>,
     fallback: Vec<String>,
     prefix: Vec<String>,
@@ -1917,6 +1988,35 @@ fn lifecycle_check_in(
         .map_err(|e| Failure::Unavailable(format!("intent journal: {:?}", e.kind())))?;
     let owned = contexts;
     let contexts = &owned;
+    let bounded = DeadlineClient {
+        inner: client,
+        deadline: AtomicU64::new(budget(deadline, clock.as_ref()).deadline.0),
+        clock: clock.as_ref(),
+    };
+    if let Some(turn) = turn {
+        // Hints only shorten timing. Locked preparation below and the daemon
+        // still select and authorize the immutable ordinary request.
+        let replay = contexts
+            .request_for_event(&turn.event_key)
+            .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))?;
+        let matching = contexts
+            .current()
+            .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))?
+            .is_some_and(|saved| {
+                saved.harness == event.harness
+                    && saved.target == target.as_str()
+                    && saved.binding_generation > 0
+                    && saved.binding_generation == generation
+                    && saved.session == SessionReference::Native(turn.session.clone())
+                    && turn.reset.is_none()
+            });
+        if replay.as_ref().map_or(matching, |request| {
+            request.mode == crate::harness::context::CheckInMode::Current
+        }) {
+            bounded.shorten(current_deadline);
+        }
+    }
+    let client: &dyn LocalClient = if turn.is_some() { &bounded } else { client };
     // What the latest offer presented: the notice page it carried (and so
     // settled), shown on the `offered notices:` line that survives the hook's
     // oversize fallback, and the directory overview rows the fallback trims
@@ -2032,6 +2132,22 @@ fn lifecycle_check_in(
             role: Role::TopLevel,
         }
     });
+    if let Some(turn) = turn {
+        let request = bridge::prepare_qualified_turn(
+            &journal,
+            contexts,
+            event,
+            turn,
+            initial.as_ref(),
+            clock.utc_now().0,
+        )
+        .map_err(|e| bridge_failure(e.into()))?;
+        if request
+            .is_some_and(|request| request.mode == crate::harness::context::CheckInMode::Current)
+        {
+            bounded.shorten(current_deadline);
+        }
+    }
     let mut text = Vec::new();
     // The lifecycle offer and the tool boundary share one producer: the digest
     // read strictly before the fresh lifecycle CheckIn seeds the mark (joined
@@ -2215,6 +2331,32 @@ pub fn run_admitted_hook(
     clock: Arc<dyn Clock>,
     ensure_executable: Option<&Path>,
 ) -> HookOutcome {
+    run_admitted_hook_since(
+        args,
+        registration,
+        admitted,
+        decoded,
+        env,
+        deadline,
+        Instant::now(),
+        None,
+        clock,
+        ensure_executable,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn run_admitted_hook_since(
+    args: &HookArgs,
+    registration: &'static Registration,
+    admitted: &AdmittedHandle,
+    decoded: &DecodedEvent,
+    env: &HookEnv,
+    deadline: Instant,
+    started: Instant,
+    watchdog: Option<Arc<AtomicU64>>,
+    clock: Arc<dyn Clock>,
+    ensure_executable: Option<&Path>,
+) -> HookOutcome {
     if let Err(error) = registration.validate_event(admitted, decoded) {
         return quiet_outcome(error.to_string());
     }
@@ -2297,7 +2439,27 @@ pub fn run_admitted_hook(
         EventIntent::QualifiedTurn(turn) => Some(turn),
         _ => None,
     };
-    match check_in(args, &event, turn, env, deadline, clock, ensure_executable) {
+    match check_in(
+        args,
+        &event,
+        turn,
+        env,
+        deadline,
+        CurrentDeadline {
+            at: deadline.min(started + TOOL_BUDGET),
+            watchdog: watchdog.map(|watchdog| {
+                (
+                    watchdog,
+                    deadline
+                        .min(started + TOOL_BUDGET)
+                        .saturating_duration_since(started)
+                        .as_millis() as u64,
+                )
+            }),
+        },
+        clock,
+        ensure_executable,
+    ) {
         Ok(CheckedIn {
             text,
             fallback,
@@ -2619,13 +2781,15 @@ pub fn run_process_with(
                 deadline = started + event_bound.saturating_sub(WATCHDOG_MARGIN);
                 let executable = std::env::current_exe().ok();
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_admitted_hook(
+                    run_admitted_hook_since(
                         &args,
                         registration,
                         &admitted,
                         &event,
                         env,
                         deadline,
+                        started,
+                        Some(Arc::clone(&deadline_ms)),
                         Arc::clone(&clock),
                         executable.as_deref(),
                     )

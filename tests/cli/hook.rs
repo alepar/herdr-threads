@@ -2667,6 +2667,10 @@ mod continuity_gate {
                 instance: self.instance,
                 target: &self.target,
                 deadline: Instant::now() + Duration::from_secs(5),
+                current_deadline: CurrentDeadline {
+                    at: Instant::now() + Duration::from_millis(1500),
+                    watchdog: None,
+                },
                 clock: clock(),
                 retry,
             }
@@ -2738,6 +2742,163 @@ mod continuity_gate {
             role,
             event_id: uuid::Uuid::new_v4().to_string(),
             capability: Capability::ObservedInput,
+        }
+    }
+    // Kills: choosing a lifecycle digest budget for matching Current, or
+    // granting dispatch a fresh budget after the slow pre-dispatch digest.
+    struct SlowDigest {
+        delay: Duration,
+        clock: Arc<dyn Clock>,
+        seen: Mutex<Vec<(bool, u64, u64)>>,
+    }
+    impl LocalClient for SlowDigest {
+        fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
+            let digest = matches!(command, Command::AttentionDigest(_));
+            assert!(
+                digest || matches!(command, Command::CheckIn(_)),
+                "{command:?}"
+            );
+            self.seen.lock().unwrap().push((
+                digest,
+                budget.deadline.0,
+                self.clock.monotonic_now().0,
+            ));
+            if digest {
+                std::thread::sleep(self.delay);
+            }
+            Err(rejection(ErrorCode::DeadlineExceeded))
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+    }
+    fn qualified_slow_digest(
+        reset: bool,
+        registered: bool,
+        current_budget_ms: u64,
+    ) -> Vec<(bool, u64, u64)> {
+        let pane = Pane::new();
+        let seat = SeatId::new("saved");
+        let contexts = crate::cli::seat_contexts(&pane.paths, pane.instance, &seat).unwrap();
+        if registered {
+            contexts
+                .install_reattached(OccupantContext {
+                    format_version: 1,
+                    instance: pane.instance,
+                    seat: "saved".into(),
+                    target: pane.target.as_str().into(),
+                    harness: Harness::Claude,
+                    binding_generation: 1,
+                    execution: uuid::Uuid::new_v4(),
+                    session: SessionReference::Native("S-1".into()),
+                    role: Role::TopLevel,
+                })
+                .unwrap();
+        }
+        let ev = event(
+            Harness::Claude,
+            EventKind::Startup,
+            Role::TopLevel,
+            Some(if reset { "S-2" } else { "S-1" }),
+        );
+        let mut call_clock = clock();
+        let turn = crate::harness::context::QualifiedTurn {
+            session: ev.native_session.clone().unwrap(),
+            event_key: ev.event_id.clone(),
+            reset: reset.then(|| crate::harness::context::ResetObservation {
+                previous_session: "S-1".into(),
+            }),
+            ordering: Some(crate::harness::context::ObservationOrder {
+                process_nonce: uuid::Uuid::new_v4(),
+                sequence: 1,
+                observed_at_millis: call_clock.utc_now().0,
+                callback_budget_millis: 5000,
+            }),
+        };
+        let client = SlowDigest {
+            delay: Duration::from_millis(if current_budget_ms < 1500 { 600 } else { 100 }),
+            clock: Arc::clone(&call_clock),
+            seen: Mutex::new(vec![]),
+        };
+        let mut call = pane.call(&client);
+        let watchdog = Arc::new(AtomicU64::new(5000));
+        call.current_deadline = CurrentDeadline {
+            at: Instant::now() + Duration::from_millis(current_budget_ms),
+            watchdog: Some((Arc::clone(&watchdog), current_budget_ms)),
+        };
+        std::mem::swap(&mut call.clock, &mut call_clock);
+        assert!(
+            call.check_in_seat_with_turn(&ev, Some(&turn), &seat, if registered { 1 } else { 0 })
+                .is_err()
+        );
+        assert_eq!(
+            watchdog.load(Ordering::SeqCst),
+            if registered && !reset {
+                current_budget_ms
+            } else {
+                5000
+            },
+            "selected mode did not update process watchdog"
+        );
+        let request = contexts.pending().unwrap().unwrap();
+        assert_eq!(
+            request.mode,
+            if registered && !reset {
+                crate::harness::context::CheckInMode::Current
+            } else {
+                crate::harness::context::CheckInMode::Lifecycle
+            }
+        );
+        assert_eq!(
+            request.context.session,
+            SessionReference::Native(turn.session)
+        );
+        client.seen.into_inner().unwrap()
+    }
+    #[test]
+    fn qualified_current_coordinator_slow_digest_shares_one_tool_deadline() {
+        let seen = qualified_slow_digest(false, true, 1500);
+        assert_eq!(seen.len(), 2);
+        assert!(seen[0].0 && !seen[1].0);
+        assert!(
+            seen[0].1 - seen[0].2 <= 1500,
+            "digest was given lifecycle budget: {seen:?}"
+        );
+        assert!(
+            seen[1].1 <= seen[0].1 + 2,
+            "dispatch extended the digest deadline: {seen:?}"
+        );
+        assert!(
+            seen[1].1 - seen[1].2 < 1450,
+            "slow digest did not consume dispatch budget: {seen:?}"
+        );
+    }
+    // A digest that overruns the enclosing callback deadline must not send
+    // the durable Current request with a newly started transport window.
+    #[test]
+    fn qualified_current_coordinator_expired_digest_never_dispatches() {
+        let seen = qualified_slow_digest(false, true, 500);
+        assert_eq!(seen.len(), 1, "expired callback still dispatched: {seen:?}");
+        assert!(seen[0].0);
+    }
+    #[test]
+    fn qualified_startup_and_clear_coordinator_retain_lifecycle_deadline() {
+        for (reset, registered) in [(false, false), (true, true)] {
+            let seen = qualified_slow_digest(reset, registered, 1500);
+            assert_eq!(seen.len(), 2);
+            assert!(
+                seen[0].1 - seen[0].2 > 4000,
+                "lifecycle budget was shortened: {seen:?}"
+            );
+            assert!(
+                seen[1].1 <= seen[0].1 + 2,
+                "dispatch extended lifecycle deadline: {seen:?}"
+            );
         }
     }
     fn resume(harness: Harness) -> LifecycleEvent {
