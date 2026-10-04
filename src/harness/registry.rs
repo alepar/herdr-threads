@@ -205,6 +205,20 @@ trait ErasedAdapter: Send + Sync {
         request: &UnsetupRequest,
         budget: &CallBudget,
     ) -> Result<RemovalOutcome, SetupFailure>;
+    fn setup_options(&self) -> &'static [SetupOption];
+    fn setup_environment_inputs(&self) -> &'static [&'static str];
+    fn resolve_setup_scope(
+        &self,
+        request: &SetupScopeRequest,
+        environment: &SetupEnvironment,
+    ) -> Result<ResolvedSetupScope, SetupFailure>;
+    fn settle_setup_consent(
+        &self,
+        environment: &SetupEnvironment,
+        projection: &mut serde_json::Value,
+        reader: &mut dyn std::io::BufRead,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), SetupFailure>;
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy>;
     fn composer_policy(&self) -> Option<&dyn ComposerPolicy>;
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy>;
@@ -299,6 +313,29 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
         budget: &CallBudget,
     ) -> Result<RemovalOutcome, SetupFailure> {
         self.0.unsetup(request, budget)
+    }
+    fn setup_options(&self) -> &'static [SetupOption] {
+        self.0.setup_options()
+    }
+    fn setup_environment_inputs(&self) -> &'static [&'static str] {
+        self.0.setup_environment_inputs()
+    }
+    fn resolve_setup_scope(
+        &self,
+        request: &SetupScopeRequest,
+        environment: &SetupEnvironment,
+    ) -> Result<ResolvedSetupScope, SetupFailure> {
+        self.0.resolve_setup_scope(request, environment)
+    }
+    fn settle_setup_consent(
+        &self,
+        environment: &SetupEnvironment,
+        projection: &mut serde_json::Value,
+        reader: &mut dyn std::io::BufRead,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), SetupFailure> {
+        self.0
+            .settle_setup_consent(environment, projection, reader, writer)
     }
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
         self.0.launch_policy()
@@ -419,6 +456,29 @@ impl Registration {
         budget: &CallBudget,
     ) -> Result<RemovalOutcome, SetupFailure> {
         self.adapter.unsetup(request, budget)
+    }
+    pub fn setup_options(&self) -> &'static [SetupOption] {
+        self.adapter.setup_options()
+    }
+    pub fn setup_environment_inputs(&self) -> &'static [&'static str] {
+        self.adapter.setup_environment_inputs()
+    }
+    pub fn resolve_setup_scope(
+        &self,
+        request: &SetupScopeRequest,
+        environment: &SetupEnvironment,
+    ) -> Result<ResolvedSetupScope, SetupFailure> {
+        self.adapter.resolve_setup_scope(request, environment)
+    }
+    pub fn settle_setup_consent(
+        &self,
+        environment: &SetupEnvironment,
+        projection: &mut serde_json::Value,
+        reader: &mut dyn std::io::BufRead,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), SetupFailure> {
+        self.adapter
+            .settle_setup_consent(environment, projection, reader, writer)
     }
     pub fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
         self.adapter.launch_policy()
@@ -754,25 +814,307 @@ mod tests {
                 diagnostic: input.registered_event.as_deref().unwrap_or("test").into(),
             }
         }
-        fn setup(&self, _: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
-            Err(SetupFailure::Unsupported(unsupported(
-                self.metadata.id,
-                "setup",
-            )))
+        fn setup_environment_inputs(&self) -> &'static [&'static str] {
+            &["LOCAL_INPUT"]
         }
-        fn status(&self, _: &StatusRequest, _: &CallBudget) -> SetupStatus {
-            SetupStatus::Unsupported(unsupported(self.metadata.id, "status"))
+        fn setup_options(&self) -> &'static [SetupOption] {
+            &[
+                SetupOption {
+                    name: "toggle",
+                    conflicts: &["other"],
+                },
+                SetupOption {
+                    name: "other",
+                    conflicts: &["toggle"],
+                },
+            ]
+        }
+        fn resolve_setup_scope(
+            &self,
+            scope: &SetupScopeRequest,
+            environment: &SetupEnvironment,
+        ) -> Result<ResolvedSetupScope, SetupFailure> {
+            let root = environment.config_roots.get(self.metadata.id).unwrap();
+            Ok(match scope {
+                SetupScopeRequest::Default => ResolvedSetupScope::ConfigRoot(root.clone()),
+                SetupScopeRequest::Profile(name) => ResolvedSetupScope::Profile {
+                    name: name.clone(),
+                    home: root.join(name),
+                },
+            })
+        }
+        fn setup(
+            &self,
+            request: &SetupRequest,
+            _: &CallBudget,
+        ) -> Result<SetupOutcome, SetupFailure> {
+            let root = local_root(&request.scope);
+            std::fs::create_dir_all(root).map_err(SetupFailure::Io)?;
+            let bytes = request
+                .environment
+                .declared
+                .get("LOCAL_INPUT")
+                .unwrap()
+                .as_encoded_bytes();
+            std::fs::write(root.join("owned"), bytes).map_err(SetupFailure::Io)?;
+            Ok(SetupOutcome {
+                actions: vec![SetupAction::InstalledOwned],
+                diagnostic: String::new(),
+                diagnostics: vec![],
+                projection: serde_json::json!({"action":"installed", "executable":request.executable, "native_binary":request.native_binary, "toggle":request.options.get("toggle"), "cwd_bytes":request.environment.cwd.as_os_str().as_encoded_bytes(), "path_bytes":request.environment.path.as_ref().map(|path| path.as_encoded_bytes()), "home_bytes":request.environment.home.as_ref().map(|home| home.as_encoded_bytes())}),
+            })
+        }
+        fn status(&self, request: &StatusRequest, _: &CallBudget) -> SetupStatus {
+            let root = local_root(&request.scope);
+            if root.is_file() {
+                return SetupStatus::Failed(match std::fs::read_to_string(root) {
+                    Ok(_) => {
+                        SetupFailure::Api(crate::protocol::results::ApiError::invalid_request(
+                            "config root is a file",
+                        ))
+                    }
+                    Err(error) => SetupFailure::Io(error),
+                });
+            }
+            SetupStatus::Detailed(Box::new(LocalSetupStatus {
+                scope: request.scope.clone(),
+                installed: root.join("owned").is_file(),
+                enabled: None,
+                admitted: None,
+                observed: None,
+                configured_hook: None,
+                fingerprint: None,
+                diagnostics: vec![],
+                repairs: vec![],
+                projection: serde_json::json!({"action":"status", "installed":root.join("owned").is_file()}),
+            }))
         }
         fn unsetup(
             &self,
-            _: &UnsetupRequest,
+            request: &UnsetupRequest,
             _: &CallBudget,
         ) -> Result<RemovalOutcome, SetupFailure> {
-            Err(SetupFailure::Unsupported(unsupported(
-                self.metadata.id,
-                "unsetup",
-            )))
+            std::fs::remove_file(local_root(&request.scope).join("owned"))
+                .map_err(SetupFailure::Io)?;
+            Ok(RemovalOutcome {
+                actions: vec![SetupAction::RemovedOwned],
+                diagnostic: String::new(),
+                residue: vec![],
+                diagnostics: vec![],
+                projection: serde_json::json!({"action":"removed"}),
+            })
         }
+    }
+    fn local_root(scope: &ResolvedSetupScope) -> &std::path::Path {
+        match scope {
+            ResolvedSetupScope::ConfigRoot(root) => root,
+            ResolvedSetupScope::Profile { home, .. } => home,
+        }
+    }
+    #[test]
+    fn local_setup_refuses_relative_owned_executable_before_backend() {
+        use crate::cli::setup::{SetupVerb, execute_registered};
+        let adapter = fixture("relative", "Relative", &[], &["relative"]);
+        let registry = registry(&[adapter]).unwrap();
+        let registration = registry.by_id(registry.agent("relative").unwrap()).unwrap();
+        let root = std::env::temp_dir().join(format!("adapter-relative-{}", uuid::Uuid::new_v4()));
+        let mut snapshot = SetupEnvironment {
+            executable: "relative-plugin".into(),
+            ..Default::default()
+        };
+        snapshot
+            .config_roots
+            .insert("relative".into(), root.clone());
+        snapshot
+            .declared
+            .insert("LOCAL_INPUT".into(), "snapshot".into());
+        let result = execute_registered(
+            registration,
+            SetupVerb::Install,
+            &Default::default(),
+            None,
+            Default::default(),
+            &snapshot,
+        );
+        let wrote = root.exists();
+        if wrote {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        assert!(result.is_err(), "relative owned executable must be refused");
+        assert!(!wrote, "refusal must precede backend writes");
+    }
+
+    #[test]
+    fn injected_local_adapter_dispatch_preserves_snapshot_profiles_options_and_removal() {
+        use crate::cli::setup::{SetupVerb, execute_registered};
+        let adapter = fixture("local", "Local", &[], &["local"]);
+        let registry = registry(&[adapter]).unwrap();
+        let registration = registry.by_id(registry.agent("local").unwrap()).unwrap();
+        let root = std::env::temp_dir().join(format!("adapter-local-{}", uuid::Uuid::new_v4()));
+        let mut live = SetupEnvironment {
+            executable: root.join("plugin"),
+            cwd: root.join("cwd"),
+            path: Some("original-path".into()),
+            ..Default::default()
+        };
+        live.config_roots.insert("local".into(), root.clone());
+        live.declared
+            .insert("LOCAL_INPUT".into(), "from snapshot".into());
+        use std::os::unix::ffi::OsStringExt;
+        live.cwd = std::path::PathBuf::from(std::ffi::OsString::from_vec(b"/cwd-\xff".to_vec()));
+        live.path = Some(std::ffi::OsString::from_vec(b"/path-\xff".to_vec()));
+        live.home = Some(std::ffi::OsString::from_vec(b"/home-\xff".to_vec()));
+        let snapshot = live.clone();
+        live.declared
+            .insert("LOCAL_INPUT".into(), "changed later".into());
+        live.executable = root.join("other-plugin");
+        live.cwd = root.join("changed-cwd");
+        live.path = Some("changed-path".into());
+        live.home = Some("changed-home".into());
+        let scope = SetupScopeRequest::Profile("work".into());
+        assert_eq!(
+            execute_registered(
+                registration,
+                SetupVerb::Status,
+                &scope,
+                None,
+                Default::default(),
+                &snapshot
+            )
+            .unwrap()["installed"],
+            false
+        );
+        assert!(!root.exists());
+        let invalid = [("unknown".into(), true)].into_iter().collect();
+        assert!(
+            execute_registered(
+                registration,
+                SetupVerb::Install,
+                &scope,
+                None,
+                invalid,
+                &snapshot
+            )
+            .is_err()
+        );
+        let conflict = [("toggle".into(), true), ("other".into(), true)]
+            .into_iter()
+            .collect();
+        assert!(
+            execute_registered(
+                registration,
+                SetupVerb::Install,
+                &scope,
+                None,
+                conflict,
+                &snapshot
+            )
+            .is_err()
+        );
+        assert!(!root.exists());
+        let options = [("toggle".into(), true)].into_iter().collect();
+        let native = root.join("native");
+        let report = execute_registered(
+            registration,
+            SetupVerb::Install,
+            &scope,
+            Some(&native),
+            options,
+            &snapshot,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(root.join("work/owned")).unwrap(),
+            b"from snapshot"
+        );
+        assert_eq!(report["executable"], serde_json::json!(root.join("plugin")));
+        assert_eq!(report["native_binary"], serde_json::json!(native));
+        assert_eq!(report["toggle"], true);
+        assert_eq!(
+            report["cwd_bytes"],
+            serde_json::json!([47, 99, 119, 100, 45, 255])
+        );
+        assert_eq!(
+            report["path_bytes"],
+            serde_json::json!([47, 112, 97, 116, 104, 45, 255])
+        );
+        assert_eq!(
+            report["home_bytes"],
+            serde_json::json!([47, 104, 111, 109, 101, 45, 255])
+        );
+        assert_eq!(
+            execute_registered(
+                registration,
+                SetupVerb::Status,
+                &scope,
+                None,
+                Default::default(),
+                &snapshot
+            )
+            .unwrap()["installed"],
+            true
+        );
+        execute_registered(
+            registration,
+            SetupVerb::Remove,
+            &scope,
+            None,
+            Default::default(),
+            &snapshot,
+        )
+        .unwrap();
+        assert!(!root.join("work/owned").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn injected_local_aggregate_keeps_order_continues_after_error_and_preserves_first_exit() {
+        use crate::cli::setup::{PromptSuggestionPolicy, SetupVerb, execute_all_registered};
+        let first = fixture("first", "First", &[], &["first"]);
+        let second = fixture("second", "Second", &[], &["second"]);
+        let third = fixture("third", "Third", &[], &["third"]);
+        let registry = registry(&[first, second, third]).unwrap();
+        let root = std::env::temp_dir().join(format!("adapter-aggregate-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("first"), "invalid config root").unwrap();
+        std::fs::write(root.join("second"), [255]).unwrap();
+        let mut environment = SetupEnvironment::default();
+        environment
+            .config_roots
+            .insert("first".into(), root.join("first"));
+        environment
+            .config_roots
+            .insert("second".into(), root.join("second"));
+        environment
+            .config_roots
+            .insert("third".into(), root.join("third"));
+        let report = execute_all_registered(
+            &registry,
+            SetupVerb::Status,
+            PromptSuggestionPolicy::Ask,
+            &environment,
+        )
+        .unwrap();
+        assert_eq!(report["exit_status"], 2);
+        assert_eq!(report["harnesses"][0]["harness"], "first");
+        assert_eq!(report["harnesses"][0]["outcome"], "failed");
+        assert_eq!(report["harnesses"][1]["harness"], "second");
+        assert_eq!(report["harnesses"][1]["outcome"], "failed");
+        assert_eq!(report["harnesses"][1]["exit_status"], 1);
+        assert_eq!(report["harnesses"][2]["harness"], "third");
+        assert_eq!(report["harnesses"][2]["outcome"], "status");
+        assert!(!root.join("third").exists());
+        let skipped = execute_all_registered(
+            &registry,
+            SetupVerb::Install,
+            PromptSuggestionPolicy::Ask,
+            &environment,
+        )
+        .unwrap();
+        assert_eq!(skipped["exit_status"], 0);
+        assert_eq!(skipped["harnesses"][0]["outcome"], "skipped");
+        assert_eq!(skipped["harnesses"][1]["outcome"], "skipped");
+        assert_eq!(skipped["harnesses"][2]["outcome"], "skipped");
+        std::fs::remove_dir_all(root).unwrap();
     }
     fn fixture(
         id: &'static str,
@@ -806,7 +1148,7 @@ mod tests {
                 context_aliases: aliases,
                 executable: ExecutableLookup::Unsupported,
                 host_kinds: kinds,
-                setup_scopes: &[],
+                setup_scopes: &[SetupScopeKind::ConfigRoot, SetupScopeKind::Profile],
                 runtime_sources: &[],
                 budget,
             })),

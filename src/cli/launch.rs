@@ -769,6 +769,7 @@ pub fn execute(request: &LaunchRequest, parts: &LaunchParts<'_>) -> Result<Launc
     };
     // 1. Installed-version recipe gate.
     let setup_request = SetupRequest {
+        scope: Default::default(),
         verb: SetupVerb::Status,
         harness: request.harness,
         harness_binary: request.harness_binary.clone(),

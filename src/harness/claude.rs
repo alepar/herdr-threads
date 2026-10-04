@@ -696,9 +696,7 @@ pub fn declared_hooks_for_argv(argv: &[String]) -> Result<Value, super::setup::S
 }
 
 pub(crate) struct ClaudeAdapter;
-fn unsupported(adapter: &'static str, operation: &'static str) -> UnsupportedOperation {
-    UnsupportedOperation { adapter, operation }
-}
+
 impl HarnessAdapter for ClaudeAdapter {
     type Admission = String;
     fn metadata(&self) -> &'static AdapterMetadata {
@@ -817,13 +815,47 @@ impl HarnessAdapter for ClaudeAdapter {
     fn attribute_runtime(&self, input: &HookInput, _: &CallBudget) -> RuntimeAttribution {
         super::attribution::attribute_native_runtime("claude", input)
     }
-    fn setup(&self, _: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
-        Err(SetupFailure::Unsupported(unsupported("claude", "setup")))
+    fn setup_options(&self) -> &'static [SetupOption] {
+        &[
+            SetupOption {
+                name: "disable-prompt-suggestions",
+                conflicts: &["keep-prompt-suggestions"],
+            },
+            SetupOption {
+                name: "keep-prompt-suggestions",
+                conflicts: &["disable-prompt-suggestions"],
+            },
+        ]
     }
-    fn status(&self, _: &StatusRequest, _: &CallBudget) -> SetupStatus {
-        SetupStatus::Unsupported(unsupported("claude", "status"))
+    fn setup_environment_inputs(&self) -> &'static [&'static str] {
+        &["CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"]
     }
-    fn unsetup(&self, _: &UnsetupRequest, _: &CallBudget) -> Result<RemovalOutcome, SetupFailure> {
-        Err(SetupFailure::Unsupported(unsupported("claude", "unsetup")))
+    fn settle_setup_consent(
+        &self,
+        environment: &SetupEnvironment,
+        projection: &mut serde_json::Value,
+        reader: &mut dyn std::io::BufRead,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), SetupFailure> {
+        crate::cli::setup::settle_prompt_suggestions(
+            &crate::cli::setup::SetupEnv::from_snapshot(environment),
+            projection,
+            reader,
+            writer,
+        )
+        .map_err(crate::cli::setup::adapter_failure)
+    }
+    fn setup(&self, request: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
+        crate::cli::setup::legacy_adapter_setup(super::context::Harness::Claude, request)
+    }
+    fn status(&self, request: &StatusRequest, _: &CallBudget) -> SetupStatus {
+        crate::cli::setup::legacy_adapter_status(super::context::Harness::Claude, request)
+    }
+    fn unsetup(
+        &self,
+        request: &UnsetupRequest,
+        _: &CallBudget,
+    ) -> Result<RemovalOutcome, SetupFailure> {
+        crate::cli::setup::legacy_adapter_unsetup(super::context::Harness::Claude, request)
     }
 }

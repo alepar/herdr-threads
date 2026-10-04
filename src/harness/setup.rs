@@ -1855,6 +1855,63 @@ pub fn verify_codex_base(plan: &CodexSetupPlan, current: &[EventGroups]) -> Resu
     }
 }
 
+/// Validate local selectors before any adapter resolver or filesystem write.
+pub fn validate_local_request(
+    registration: Option<&super::registry::Registration>,
+    install: bool,
+    scope: &super::adapter::SetupScopeRequest,
+    options: &super::adapter::SetupOptions,
+) -> Result<(), super::adapter::SetupFailure> {
+    use super::adapter::*;
+    if let SetupScopeRequest::Profile(name) = scope {
+        let registration = registration.ok_or_else(|| {
+            SetupFailure::Invalid("--profile requires an explicitly selected adapter".into())
+        })?;
+        if name.is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
+            return Err(SetupFailure::Invalid("invalid profile name".into()));
+        }
+        if !registration
+            .metadata()
+            .setup_scopes
+            .iter()
+            .any(|scope| matches!(scope, SetupScopeKind::Profile))
+        {
+            return Err(SetupFailure::Invalid(format!(
+                "{}: named profile is unsupported",
+                registration.metadata().id
+            )));
+        }
+    }
+    for (name, enabled) in options {
+        if !install {
+            return Err(SetupFailure::Invalid(
+                "adapter options apply to setup only".into(),
+            ));
+        }
+        let descriptor = registration
+            .and_then(|registration| {
+                registration
+                    .setup_options()
+                    .iter()
+                    .find(|option| option.name == name)
+            })
+            .ok_or_else(|| SetupFailure::Invalid(format!("undeclared adapter option: {name}")))?;
+        if !enabled {
+            continue;
+        }
+        if descriptor
+            .conflicts
+            .iter()
+            .any(|name| options.get(*name) == Some(&true))
+        {
+            return Err(SetupFailure::Invalid(format!(
+                "conflicting adapter option: {name}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod adoption_tests {
     use super::*;

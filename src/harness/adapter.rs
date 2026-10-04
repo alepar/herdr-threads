@@ -40,6 +40,44 @@ pub trait HarnessAdapter: Send + Sync + 'static {
         request: &UnsetupRequest,
         budget: &CallBudget,
     ) -> Result<RemovalOutcome, SetupFailure>;
+    fn setup_options(&self) -> &'static [SetupOption] {
+        &[]
+    }
+    fn setup_environment_inputs(&self) -> &'static [&'static str] {
+        &[]
+    }
+    fn resolve_setup_scope(
+        &self,
+        request: &SetupScopeRequest,
+        environment: &SetupEnvironment,
+    ) -> Result<ResolvedSetupScope, SetupFailure> {
+        match request {
+            SetupScopeRequest::Default => environment
+                .config_roots
+                .get(self.metadata().id)
+                .cloned()
+                .map(ResolvedSetupScope::ConfigRoot)
+                .ok_or_else(|| {
+                    SetupFailure::Invalid(format!(
+                        "{}: config root unavailable",
+                        self.metadata().id
+                    ))
+                }),
+            SetupScopeRequest::Profile(_) => Err(SetupFailure::Invalid(format!(
+                "{}: named profile is unsupported",
+                self.metadata().id
+            ))),
+        }
+    }
+    fn settle_setup_consent(
+        &self,
+        _: &SetupEnvironment,
+        _: &mut serde_json::Value,
+        _: &mut dyn std::io::BufRead,
+        _: &mut dyn std::io::Write,
+    ) -> Result<(), SetupFailure> {
+        Ok(())
+    }
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
         None
     }
@@ -198,6 +236,7 @@ pub enum EncodedOutput {
     ContextBearing { bytes: Vec<u8> },
     ObserverOnly { bytes: Vec<u8> },
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolvedSetupScope {
     ConfigRoot(std::path::PathBuf),
     Profile {
@@ -205,24 +244,166 @@ pub enum ResolvedSetupScope {
         home: std::path::PathBuf,
     },
 }
+/// Local inputs captured once; paths never pass through UTF-8 conversion.
+#[derive(Clone)]
+pub struct SetupEnvironment {
+    /// Monotonic epoch shared by local requests and their CallBudget.
+    pub clock: std::sync::Arc<dyn crate::protocol::time::Clock>,
+    pub home: Option<OsString>,
+    pub path: Option<OsString>,
+    pub cwd: std::path::PathBuf,
+    pub executable: std::path::PathBuf,
+    pub state_dir: Option<std::path::PathBuf>,
+    pub host_endpoint: Option<std::path::PathBuf>,
+    pub instance_source: serde_json::Value,
+    pub config_roots: std::collections::BTreeMap<String, std::path::PathBuf>,
+    pub declared: std::collections::BTreeMap<String, OsString>,
+}
+impl Default for SetupEnvironment {
+    fn default() -> Self {
+        Self {
+            clock: std::sync::Arc::new(crate::app::SystemClock::new()),
+            home: None,
+            path: None,
+            cwd: Default::default(),
+            executable: Default::default(),
+            state_dir: None,
+            host_endpoint: None,
+            instance_source: serde_json::Value::Null,
+            config_roots: Default::default(),
+            declared: Default::default(),
+        }
+    }
+}
+impl std::fmt::Debug for SetupEnvironment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SetupEnvironment")
+            .field("cwd", &self.cwd)
+            .field("executable", &self.executable)
+            .field("state_dir", &self.state_dir)
+            .field("host_endpoint", &self.host_endpoint)
+            .field("config_roots", &self.config_roots)
+            .finish_non_exhaustive()
+    }
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum SetupScopeRequest {
+    #[default]
+    Default,
+    Profile(String),
+}
+#[derive(Debug, Clone, Copy)]
+pub struct SetupOption {
+    pub name: &'static str,
+    pub conflicts: &'static [&'static str],
+}
+pub type SetupOptions = std::collections::BTreeMap<String, bool>;
+#[derive(Debug, Clone)]
 pub struct SetupRequest {
     pub scope: ResolvedSetupScope,
     pub executable: std::path::PathBuf,
+    pub environment: SetupEnvironment,
+    pub native_binary: Option<std::path::PathBuf>,
+    pub options: SetupOptions,
 }
+#[derive(Debug, Clone)]
 pub struct StatusRequest {
     pub scope: ResolvedSetupScope,
+    pub environment: SetupEnvironment,
+    pub native_binary: Option<std::path::PathBuf>,
 }
+#[derive(Debug, Clone)]
 pub struct UnsetupRequest {
     pub scope: ResolvedSetupScope,
+    pub environment: SetupEnvironment,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticSeverity {
+    Info,
+    Warning,
+    Error,
+}
+#[derive(Debug, Clone)]
+pub struct SetupDiagnostic {
+    pub code: String,
+    pub severity: DiagnosticSeverity,
+    pub text: String,
+    manual_argv: Option<Vec<OsString>>,
+}
+impl SetupDiagnostic {
+    pub fn new(code: &str, severity: DiagnosticSeverity, text: &str) -> Self {
+        Self {
+            code: code.chars().take(64).collect(),
+            severity,
+            text: text.chars().take(1024).collect(),
+            manual_argv: None,
+        }
+    }
+    pub fn manual_argv(&self) -> Option<&[OsString]> {
+        self.manual_argv.as_deref()
+    }
+    pub fn with_manual_argv(mut self, argv: Vec<OsString>) -> Result<Self, SetupFailure> {
+        if argv.is_empty()
+            || argv.len() > 32
+            || argv.iter().any(|word| {
+                word.is_empty()
+                    || word.len() > 4096
+                    || word
+                        .as_encoded_bytes()
+                        .iter()
+                        .any(|byte| *byte < 32 || *byte == 127)
+            })
+        {
+            return Err(SetupFailure::Invalid(
+                "manual argv exceeds the local instruction bounds".into(),
+            ));
+        }
+        self.manual_argv = Some(argv);
+        Ok(self)
+    }
+}
+#[derive(Debug, Clone)]
+pub enum LocalRepair {
+    InstallOwned,
+    RepairOwned,
+    RemoveOwned,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Top-level local installation action; concrete projection retains substeps.
+pub enum SetupAction {
+    InstalledOwned,
+    AdoptedOwned,
+    RemovedOwned,
+    Unchanged,
 }
 pub struct SetupOutcome {
+    pub actions: Vec<SetupAction>,
     pub diagnostic: String,
+    pub projection: serde_json::Value,
+    pub diagnostics: Vec<SetupDiagnostic>,
 }
 pub struct RemovalOutcome {
+    pub actions: Vec<SetupAction>,
     pub diagnostic: String,
     pub residue: Vec<std::path::PathBuf>,
+    pub projection: serde_json::Value,
+    pub diagnostics: Vec<SetupDiagnostic>,
+}
+pub struct LocalSetupStatus {
+    pub scope: ResolvedSetupScope,
+    pub installed: bool,
+    pub enabled: Option<bool>,
+    pub admitted: Option<bool>,
+    pub observed: Option<bool>,
+    pub configured_hook: Option<crate::ports::ConfiguredHook>,
+    pub fingerprint: Option<String>,
+    pub diagnostics: Vec<SetupDiagnostic>,
+    pub repairs: Vec<LocalRepair>,
+    pub projection: serde_json::Value,
 }
 pub enum SetupStatus {
+    Detailed(Box<LocalSetupStatus>),
+    Failed(SetupFailure),
     Unsupported(UnsupportedOperation),
     Available {
         installed: bool,
@@ -248,6 +429,8 @@ pub enum EncodeFailure {
 }
 #[derive(Debug)]
 pub enum SetupFailure {
+    Api(crate::protocol::results::ApiError),
+    Io(std::io::Error),
     Unsupported(UnsupportedOperation),
     Invalid(String),
 }
@@ -319,7 +502,21 @@ impl std::fmt::Display for DecodeFailure {
 impl std::error::Error for DecodeFailure {}
 
 failure!(EncodeFailure, "encode", RegistrationMismatch);
-failure!(SetupFailure, "setup",);
+impl std::fmt::Display for SetupFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Api(e) => f.write_str(&e.detail),
+            Self::Io(e) => e.fmt(f),
+            Self::Invalid(e) => write!(
+                f,
+                "setup: invalid adapter input: {}",
+                e.chars().take(256).collect::<String>()
+            ),
+            Self::Unsupported(e) => e.fmt(f),
+        }
+    }
+}
+impl std::error::Error for SetupFailure {}
 
 impl DecodedEvent {
     pub fn can_check_in(&self) -> bool {
@@ -335,6 +532,145 @@ impl DecodedEvent {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    #[test]
+    fn local_manual_diagnostics_refuse_unbounded_argv() {
+        let diagnostic = SetupDiagnostic::new(
+            "manual_native_enable",
+            DiagnosticSeverity::Info,
+            "Enable explicitly in the native CLI",
+        );
+        for argv in [
+            vec![],
+            vec!["word".into(); 33],
+            vec!["x".repeat(4097).into()],
+            vec!["line\nbreak".into()],
+            vec!["".into()],
+        ] {
+            assert!(
+                diagnostic.clone().with_manual_argv(argv).is_err(),
+                "manual instructions must retain the shared argv bounds"
+            );
+        }
+        use std::os::unix::ffi::OsStringExt;
+        let diagnostic = diagnostic
+            .with_manual_argv(vec![
+                "native".into(),
+                OsString::from_vec(b"/profile-\xff".to_vec()),
+            ])
+            .unwrap();
+        assert_eq!(diagnostic.manual_argv().unwrap()[0], "native");
+        assert_eq!(
+            diagnostic.manual_argv().unwrap()[1].as_encoded_bytes(),
+            b"/profile-\xff"
+        );
+    }
+
+    #[test]
+    fn local_options_reject_undeclared_disabled_flag_before_writes() {
+        let registry = super::super::registry::builtins();
+        let registration = registry.by_id(registry.agent("claude").unwrap()).unwrap();
+        let options = [("invented".into(), false)].into_iter().collect();
+        assert!(
+            super::super::setup::validate_local_request(
+                Some(registration),
+                true,
+                &SetupScopeRequest::Default,
+                &options
+            )
+            .is_err(),
+            "unknown options cannot bypass metadata validation by being disabled"
+        );
+    }
+
+    #[test]
+    fn setup_registry_dispatch_freezes_environment_and_rejects_ambiguous_profile() {
+        let budget = CallBudget {
+            deadline: crate::protocol::time::MonoInstant(100),
+            cancellation: Default::default(),
+        };
+        let registry = super::super::registry::builtins();
+        let registration = registry.by_id(registry.agent("claude").unwrap()).unwrap();
+        let root = std::env::temp_dir().join(format!("local-status-{}", uuid::Uuid::new_v4()));
+        let mut environment = SetupEnvironment {
+            executable: root.join("plugin"),
+            state_dir: Some(root.join("state")),
+            cwd: root.clone(),
+            host_endpoint: Some(root.join("herdr.sock")),
+            ..Default::default()
+        };
+        environment
+            .config_roots
+            .insert("claude".into(), root.join("claude"));
+        environment
+            .declared
+            .insert("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION".into(), "0".into());
+        let scope = registration
+            .resolve_setup_scope(&SetupScopeRequest::Default, &environment)
+            .unwrap();
+        let status = registration.status(
+            &StatusRequest {
+                scope,
+                environment: environment.clone(),
+                native_binary: None,
+            },
+            &budget,
+        );
+        let SetupStatus::Detailed(status) = status else {
+            panic!("registered local status must dispatch to its backend")
+        };
+        assert!(!status.installed);
+        assert_eq!(status.enabled, None);
+        assert_eq!(status.observed, None);
+        assert_eq!(
+            status.projection["prompt_suggestions"]["env_override"],
+            "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0"
+        );
+        assert!(
+            !root.exists(),
+            "status created config, state, or daemon directories"
+        );
+        let profile = SetupScopeRequest::Profile("work".into());
+        assert!(
+            super::super::setup::validate_local_request(None, true, &profile, &Default::default())
+                .is_err()
+        );
+        assert!(
+            super::super::setup::validate_local_request(
+                Some(registration),
+                true,
+                &profile,
+                &Default::default()
+            )
+            .is_err()
+        );
+        assert!(!root.exists(), "profile refusal must precede writes");
+        let options = [
+            ("disable-prompt-suggestions".into(), true),
+            ("keep-prompt-suggestions".into(), true),
+        ]
+        .into_iter()
+        .collect();
+        assert!(
+            super::super::setup::validate_local_request(
+                Some(registration),
+                true,
+                &SetupScopeRequest::Default,
+                &options
+            )
+            .is_err()
+        );
+        let options = [("invented".into(), true)].into_iter().collect();
+        assert!(
+            super::super::setup::validate_local_request(
+                Some(registration),
+                true,
+                &SetupScopeRequest::Default,
+                &options
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn only_top_level_lifecycle_and_current_can_check_in() {
         let mut event = DecodedEvent {
@@ -385,18 +721,23 @@ mod tests {
             assert!(matches!(
                 registration.status(
                     &StatusRequest {
-                        scope: ResolvedSetupScope::ConfigRoot(PathBuf::from("unused"))
+                        scope: ResolvedSetupScope::ConfigRoot(PathBuf::from("unused")),
+                        environment: SetupEnvironment::default(),
+                        native_binary: None
                     },
                     &budget
                 ),
-                SetupStatus::Unsupported(_)
+                SetupStatus::Detailed(_)
             ));
             assert!(
                 registration
                     .setup(
                         &SetupRequest {
                             scope: ResolvedSetupScope::ConfigRoot(PathBuf::from("unused")),
-                            executable: PathBuf::from("unused")
+                            environment: SetupEnvironment::default(),
+                            native_binary: None,
+                            executable: PathBuf::from("unused"),
+                            options: Default::default()
                         },
                         &budget
                     )
@@ -406,7 +747,8 @@ mod tests {
                 registration
                     .unsetup(
                         &UnsetupRequest {
-                            scope: ResolvedSetupScope::ConfigRoot(PathBuf::from("unused"))
+                            scope: ResolvedSetupScope::ConfigRoot(PathBuf::from("unused")),
+                            environment: SetupEnvironment::default()
                         },
                         &budget
                     )

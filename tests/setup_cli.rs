@@ -2410,3 +2410,51 @@ fn codex_legacy_registration_rerun_warns_about_retrust() {
     assert!(!third.contains("carry --event"), "{third}");
     assert!(!third.contains("Codex trusts hooks by hash"), "{third}");
 }
+
+/// Scope refusals happen during argument validation, and status is read-only
+/// even when every local native directory and daemon instance is absent.
+#[test]
+fn local_profile_refusals_and_status_leave_native_and_instance_directories_absent() {
+    let s = Scratch::new();
+    for args in [
+        vec!["setup", "--profile", "work"],
+        vec!["setup", "claude", "--profile", "work"],
+        vec!["unsetup", "codex", "--profile", "work"],
+        vec!["doctor", "--profile", "work"],
+        vec!["doctor", "--harness", "codex", "--profile", "work"],
+    ] {
+        let mut command = s.command(&s.root);
+        command
+            .arg("--state-dir")
+            .arg(&s.state)
+            .arg("--host-endpoint")
+            .arg(s.host())
+            .args(args);
+        herdr_threads::test_support::spawn::tag(&mut command);
+        let out = command.output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
+        assert!(!s.state.exists());
+        assert!(!s.claude_config.exists());
+        assert!(!s.codex_home.exists());
+    }
+    let mut command = s.command(&s.root);
+    command
+        .arg("--state-dir")
+        .arg(&s.state)
+        .arg("--host-endpoint")
+        .arg(s.host())
+        .args(["--json", "setup-status"]);
+    herdr_threads::test_support::spawn::tag(&mut command);
+    let out = command.output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let report = json(&out);
+    assert_eq!(report["harnesses"][0]["report"]["harness"], "claude");
+    assert_eq!(report["harnesses"][1]["report"]["harness"], "codex");
+    assert_eq!(report["harnesses"][0]["report"]["installed"], false);
+    assert_eq!(report["harnesses"][1]["report"]["installed"], false);
+    assert_eq!(report["harnesses"][0]["report"]["observed"], "unknown");
+    assert_eq!(report["harnesses"][1]["report"]["observed"], "unknown");
+    assert!(!s.state.exists());
+    assert!(!s.claude_config.exists());
+    assert!(!s.codex_home.exists());
+}

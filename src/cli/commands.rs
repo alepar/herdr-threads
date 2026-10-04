@@ -519,6 +519,11 @@ enum Top {
     },
     /// Check daemon, harness hooks and local state; lead with judgments and fixes.
     Doctor {
+        /// Explicit adapter for a named local profile.
+        #[arg(long, global = true)]
+        harness: Option<String>,
+        #[arg(long, global = true)]
+        profile: Option<String>,
         /// Print the full diagnostic inventory.
         #[arg(long, global = true)]
         debug: bool,
@@ -942,8 +947,10 @@ struct SearchArgs {
 struct SetupArgs {
     /// Harness whose hooks to manage. Omitted: every harness (setup: each
     /// one found on PATH; unsetup and setup-status: both).
-    #[arg(value_parser = ["claude", "codex"])]
     harness: Option<String>,
+    /// Existing named profile, supported only by the explicitly selected adapter.
+    #[arg(long, value_name = "NAME")]
+    profile: Option<String>,
     /// Absolute harness executable whose `--version` is observed (default:
     /// the first `claude`/`codex` executable on PATH, as the hook observes).
     #[arg(long, value_name = "PATH")]
@@ -991,7 +998,6 @@ struct ViewArgs {
 
 fn setup_action(verb: super::setup::SetupVerb, args: SetupArgs) -> Result<CliAction, ApiError> {
     use super::setup::PromptSuggestionPolicy;
-    use crate::harness::context::Harness;
     let prompt_suggestions = if args.disable_prompt_suggestions {
         PromptSuggestionPolicy::Disable
     } else if args.keep_prompt_suggestions {
@@ -999,14 +1005,49 @@ fn setup_action(verb: super::setup::SetupVerb, args: SetupArgs) -> Result<CliAct
     } else {
         PromptSuggestionPolicy::Ask
     };
-    if prompt_suggestions != PromptSuggestionPolicy::Ask
-        && (verb != super::setup::SetupVerb::Install || args.harness.as_deref() == Some("codex"))
-    {
-        return Err(invalid(
-            "--disable-prompt-suggestions and --keep-prompt-suggestions apply to `setup` and \
-             `setup claude` only (unsetup reverts what setup set)",
-        ));
+    let registry = crate::harness::registry::builtins();
+    let registration = args
+        .harness
+        .as_deref()
+        .map(|name| registry.agent(name).and_then(|id| registry.by_id(id)))
+        .transpose()
+        .map_err(|error| invalid(error.to_string()))?;
+    let scope = args
+        .profile
+        .map(crate::harness::adapter::SetupScopeRequest::Profile)
+        .unwrap_or_default();
+    let mut options = crate::harness::adapter::SetupOptions::new();
+    if args.disable_prompt_suggestions {
+        options.insert("disable-prompt-suggestions".into(), true);
     }
+    if args.keep_prompt_suggestions {
+        options.insert("keep-prompt-suggestions".into(), true);
+    }
+    // Bare compatibility flags apply to adapters declaring these options.
+    let option_registration = registration.or_else(|| {
+        registry.registrations().iter().find(|registration| {
+            options.keys().all(|name| {
+                registration
+                    .setup_options()
+                    .iter()
+                    .any(|option| option.name == name)
+            })
+        })
+    });
+    crate::harness::setup::validate_local_request(
+        registration,
+        verb == super::setup::SetupVerb::Install,
+        &scope,
+        &Default::default(),
+    )
+    .map_err(|error| invalid(error.to_string()))?;
+    crate::harness::setup::validate_local_request(
+        option_registration,
+        verb == super::setup::SetupVerb::Install,
+        &Default::default(),
+        &options,
+    )
+    .map_err(|_| invalid("--disable-prompt-suggestions and --keep-prompt-suggestions apply to `setup` and `setup claude` only (unsetup reverts what setup set)"))?;
     let Some(harness) = args.harness else {
         if args.harness_binary.is_some() {
             return Err(invalid(
@@ -1015,17 +1056,19 @@ fn setup_action(verb: super::setup::SetupVerb, args: SetupArgs) -> Result<CliAct
         }
         return Ok(CliAction::SetupAll(verb, prompt_suggestions));
     };
-    let harness = if harness == "codex" {
-        Harness::Codex
-    } else {
-        Harness::Claude
-    };
+    let harness = crate::harness::registry::OccupantHarness::Agent(
+        registry
+            .agent(&harness)
+            .map_err(|error| invalid(error.to_string()))?,
+    )
+    .into();
     if verb == super::setup::SetupVerb::Remove && args.harness_binary.is_some() {
         return Err(invalid(
             "--harness-binary is not used by unsetup: removal never depends on the harness version",
         ));
     }
     Ok(CliAction::Setup(super::setup::SetupRequest {
+        scope,
         verb,
         harness,
         harness_binary: args.harness_binary,
@@ -1566,10 +1609,33 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
                 expected_generation,
             }),
         }),
-        Top::Doctor { debug, command } => CliAction::Doctor {
+        Top::Doctor {
             debug,
-            fix: matches!(command, Some(DoctorSub::Fix)),
-        },
+            command,
+            harness,
+            profile,
+        } => {
+            let registry = crate::harness::registry::builtins();
+            let registration = harness
+                .as_deref()
+                .map(|name| registry.agent(name).and_then(|id| registry.by_id(id)))
+                .transpose()
+                .map_err(|error| invalid(error.to_string()))?;
+            let scope = profile
+                .map(crate::harness::adapter::SetupScopeRequest::Profile)
+                .unwrap_or_default();
+            crate::harness::setup::validate_local_request(
+                registration,
+                false,
+                &scope,
+                &Default::default(),
+            )
+            .map_err(|error| invalid(error.to_string()))?;
+            CliAction::Doctor {
+                debug,
+                fix: matches!(command, Some(DoctorSub::Fix)),
+            }
+        }
         Top::Setup(args) => setup_action(super::setup::SetupVerb::Install, args)?,
         Top::Unsetup(args) => setup_action(super::setup::SetupVerb::Remove, args)?,
         Top::SetupStatus(args) => setup_action(super::setup::SetupVerb::Status, args)?,

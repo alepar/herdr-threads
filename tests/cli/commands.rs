@@ -1433,3 +1433,26 @@ fn contract_id_runs_without_a_daemon_and_prints_exact_documents() {
         "{err}"
     );
 }
+
+/// A local selector cannot silently choose an adapter, use a native launch
+/// profile, or pass through unsupported scope/option metadata.
+#[test]
+fn local_profile_and_options_are_validated_before_dispatch() {
+    for command in ["setup", "unsetup", "setup-status"] {
+        let bare = parse_argv(["herdr-threads", command, "--profile", "work"]).unwrap_err();
+        assert!(bare.detail.contains("explicitly selected adapter"));
+        for harness in ["claude", "codex"] {
+            let named = parse_argv(["herdr-threads", command, harness, "--profile", "work"]).unwrap_err();
+            assert!(named.detail.contains("named profile is unsupported"));
+        }
+    }
+    let doctor = parse_argv(["herdr-threads", "doctor", "--profile", "work"]).unwrap_err();
+    assert!(doctor.detail.contains("explicitly selected adapter"));
+    let doctor = parse_argv(["herdr-threads", "doctor", "--harness", "codex", "--profile", "work"]).unwrap_err();
+    assert!(doctor.detail.contains("named profile is unsupported"));
+    assert!(parse_argv(["herdr-threads", "setup", "unknown"]).is_err());
+    assert!(parse_argv(["herdr-threads", "setup", "codex", "--disable-prompt-suggestions"]).is_err());
+    assert!(parse_argv(["herdr-threads", "setup", "claude", "--disable-prompt-suggestions", "--keep-prompt-suggestions"]).is_err());
+    let bare = parse_argv(["herdr-threads", "setup", "--disable-prompt-suggestions"]).unwrap();
+    assert!(matches!(bare.action, CliAction::SetupAll(_, crate::cli::setup::PromptSuggestionPolicy::Disable)));
+}

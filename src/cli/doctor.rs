@@ -1482,6 +1482,7 @@ pub(crate) fn run<W: Write>(parsed: &ParsedCli, writer: &mut W) -> Result<(), Ru
                         .and_then(|env| {
                             super::setup::execute(
                                 &super::setup::SetupRequest {
+                                    scope: Default::default(),
                                     verb: super::setup::SetupVerb::Install,
                                     harness,
                                     harness_binary: None,
