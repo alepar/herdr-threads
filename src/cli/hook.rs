@@ -2213,7 +2213,20 @@ pub fn run_admitted_hook(
         let guidance = if matches!(decoded.role, EventRole::Subagent)
             && matches!(decoded.intent, EventIntent::Lifecycle(_))
         {
-            render_context(Role::Subagent, &[], true).unwrap_or_default()
+            decoded.context_event().map_or_else(String::new, |event| {
+                let text = render_context(Role::Subagent, &[], true).unwrap_or_default();
+                compose_context(
+                    &event,
+                    &registration.output_policy(),
+                    decoded.metadata.skill_pointer,
+                    text.as_bytes(),
+                    &[],
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            })
         } else {
             String::new()
         };

@@ -4042,3 +4042,115 @@ fn adapter_budget_caps_and_encoding_delivery_are_conservative() {
     );
     assert!(!output_bytes(Err(EncodeFailure::Invalid("test".into()))).1);
 }
+
+// Catches child output bypassing policy composition and entering canonical work.
+fn child_lifecycle_context(harness: Harness, native_event: &str) -> String {
+    use crate::daemon::ownership::OwnerLock;
+    use crate::protocol::wire::PROTOCOL_VERSION;
+    let root = private_root();
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(root.join("state"))
+        .unwrap();
+    let mut hook_args = args(&root);
+    hook_args.harness = harness;
+    let runtime = RuntimeContext::explicit(
+        hook_args.state_dir.clone().unwrap(),
+        hook_args.host_endpoint.clone().unwrap(),
+        None,
+    )
+    .unwrap();
+    let paths = InstancePaths::resolve(&runtime).unwrap();
+    let lock = OwnerLock::acquire(&paths).unwrap();
+    let listener = lock.bind_socket().unwrap();
+    lock.publish_endpoint(&listener, env!("CARGO_PKG_VERSION"), PROTOCOL_VERSION)
+        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let listener = {
+        let _guard = runtime.enter();
+        listener.into_async().unwrap()
+    };
+    let installed = match harness {
+        Harness::Claude => claude(),
+        Harness::Codex => {
+            InstalledHarness::Codex(crate::harness::codex::InstalledVersion::pinned_for_test())
+        }
+        _ => unreachable!(),
+    };
+    let payload = serde_json::json!({
+        "hook_event_name": native_event, "session_id": "child-session",
+        "source": "startup", "agent_id": "child", "agent_type": "worker",
+        "turn_id": "child-turn", "cwd": "/tmp", "model": "test",
+        "permission_mode": "default", "transcript_path": null,
+    });
+    let outcome = run_hook(
+        &hook_args,
+        &installed,
+        &serde_json::to_vec(&payload).unwrap(),
+        &herdr(),
+        Instant::now() + LIFECYCLE_BUDGET,
+        clock(),
+        None,
+    );
+    assert_eq!(outcome.diagnostic, None);
+    assert!(outcome.attention.is_none(), "child must not own attention");
+    assert!(
+        runtime
+            .block_on(async {
+                tokio::time::timeout(Duration::from_millis(1), listener.accept()).await
+            })
+            .is_err(),
+        "child must not connect for canonical work"
+    );
+    let value: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+    assert_eq!(value["hookSpecificOutput"]["hookEventName"], native_event);
+    let context = value["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(context.contains("is forbidden to subagents"), "{context}");
+    assert!(context.len() <= MAX_CONTEXT);
+    drop(listener);
+    drop(lock);
+    std::fs::remove_dir_all(root).unwrap();
+    context
+}
+
+#[test]
+fn child_lifecycle_claude_sessionstart_keeps_skill_pointer() {
+    let context = child_lifecycle_context(Harness::Claude, "SessionStart");
+    assert!(
+        context.contains(crate::cli::skill::HOOK_SKILL_HINT),
+        "{context}"
+    );
+    assert!(!context.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE));
+}
+
+#[test]
+fn child_lifecycle_codex_sessionstart_keeps_guidance_and_skill_pointer() {
+    let context = child_lifecycle_context(Harness::Codex, "SessionStart");
+    assert!(
+        context.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE),
+        "{context}"
+    );
+    assert!(
+        context.contains(crate::cli::skill::HOOK_SKILL_HINT),
+        "{context}"
+    );
+}
+
+#[test]
+fn child_lifecycle_codex_subagentstart_keeps_guidance_without_skill_pointer() {
+    let context = child_lifecycle_context(Harness::Codex, "SubagentStart");
+    assert!(
+        context.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE),
+        "{context}"
+    );
+    assert!(
+        !context.contains(crate::cli::skill::HOOK_SKILL_HINT),
+        "{context}"
+    );
+}
