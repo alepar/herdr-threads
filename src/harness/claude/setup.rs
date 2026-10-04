@@ -303,7 +303,10 @@ pub(crate) fn claude_remove(env: &SetupEnv) -> Result<Value, RunError> {
     Ok(report)
 }
 
-pub(crate) fn claude_status(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
+fn claude_status(
+    env: &SetupEnv,
+    observation: Result<(Observed, Option<codex::InstalledVersion>), String>,
+) -> Result<Value, RunError> {
     let settings = env.claude_settings()?;
     let mut report = json!({
         "action": "status",
@@ -312,7 +315,7 @@ pub(crate) fn claude_status(request: &SetupRequest, env: &SetupEnv) -> Result<Va
         "settings": settings.display().to_string(),
         "instance": instance_json(env),
         "recipes": recipe::describe(claude::RECIPES),
-        "harness_version": observation_json(&observe(request, env)),
+        "harness_version": observation_json(&observation),
     });
     settings_status(SettingsKind::ClaudeUser, env, &settings, &mut report)?;
     report["prompt_suggestions"] = prompt_suggestion_status(
@@ -377,8 +380,21 @@ pub(crate) fn setup(
 }
 pub(crate) fn status(
     request: &crate::harness::adapter::StatusRequest,
+    budget: &crate::protocol::time::CallBudget,
 ) -> crate::harness::adapter::SetupStatus {
-    legacy_adapter_status(Harness::Claude, request, claude_status)
+    legacy_adapter_status(Harness::Claude, request, |legacy, env| {
+        let timeout = Duration::from_millis(
+            budget
+                .deadline
+                .0
+                .saturating_sub(request.environment.clock.monotonic_now().0),
+        )
+        .min(Duration::from_secs(5));
+        claude_status(
+            env,
+            observe_bounded(legacy, env, None, timeout, &budget.cancellation),
+        )
+    })
 }
 pub(crate) fn unsetup(
     request: &crate::harness::adapter::UnsetupRequest,
@@ -397,6 +413,25 @@ pub(crate) fn observe_with_cache(
     env: &SetupEnv,
     _codex_cache: Option<&Path>,
 ) -> Result<(Observed, Option<codex::InstalledVersion>), String> {
+    observe_bounded(
+        request,
+        env,
+        _codex_cache,
+        Duration::from_secs(5),
+        &crate::protocol::time::Cancellation::default(),
+    )
+}
+
+fn observe_bounded(
+    request: &SetupRequest,
+    env: &SetupEnv,
+    _codex_cache: Option<&Path>,
+    timeout: Duration,
+    cancellation: &crate::protocol::time::Cancellation,
+) -> Result<(Observed, Option<codex::InstalledVersion>), String> {
+    if timeout.is_zero() || cancellation.is_cancelled() {
+        return Err("native status observation budget exhausted or cancelled".into());
+    }
     let binary = harness_binary(request, env).map_err(|error| error.to_string())?;
     let Some(binary) = binary else {
         return Err(claude::check_version("").unwrap_err()
@@ -404,7 +439,7 @@ pub(crate) fn observe_with_cache(
     };
     // The hook entrypoint's own observation and parser, so setup
     // accepts exactly what the installed hook will accept.
-    let version = match codex::version_output(&binary, Duration::from_secs(5)) {
+    let version = match codex::version_output_cancellable(&binary, timeout, cancellation) {
         Err(_) => String::new(),
         Ok(out) => match claude::version_from_output(&out) {
             Some(version) => version,

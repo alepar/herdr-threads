@@ -2219,3 +2219,98 @@ fn adapter_launch_preparation_rejects_stale_native_setup_status() {
         }
     }
 }
+
+/// Selected native status must not start a probe after deadline or cancellation.
+#[test]
+fn adapter_launch_native_status_exhausted_budget_never_probes() {
+    native_status_budget_regression(false);
+}
+
+/// Selected native status must stop its observation within the remaining budget.
+#[test]
+fn adapter_launch_native_status_short_budget_bounds_probe() {
+    native_status_budget_regression(true);
+}
+
+fn native_status_budget_regression(short: bool) {
+    use crate::harness::adapter::{SetupStatus, StatusRequest};
+    for word in ["claude", "codex"] {
+        for cancelled in [false, true] {
+            if short && cancelled {
+                continue;
+            }
+            let s = Scratch::new();
+            let marker = s.root.join("status-probed");
+            let binary = s.root.join("bin").join(word);
+            fs::write(
+                &binary,
+                format!(
+                    "#!/bin/sh\nprintf started > '{}'\n/bin/sleep 1\nprintf '{}\\n'\n",
+                    marker.display(),
+                    if word == "claude" {
+                        "2.1.283 (Claude Code)"
+                    } else {
+                        "codex-cli 0.159.3"
+                    }
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+            let environment = s.env.snapshot();
+            let cancellation = Cancellation::default();
+            if cancelled {
+                cancellation.cancel();
+            }
+            let budget = CallBudget {
+                deadline: MonoInstant(
+                    environment.clock.monotonic_now().0
+                        + if short {
+                            50
+                        } else if cancelled {
+                            30_000
+                        } else {
+                            0
+                        },
+                ),
+                cancellation,
+            };
+            let registry = crate::harness::registry::builtins();
+            let registration = registry.by_id(registry.agent(word).unwrap()).unwrap();
+            let scope = registration
+                .resolve_setup_scope(&Default::default(), &environment)
+                .unwrap();
+            let began = std::time::Instant::now();
+            let status = registration.status(
+                &StatusRequest {
+                    scope,
+                    environment,
+                    native_binary: None,
+                },
+                &budget,
+            );
+            let elapsed = began.elapsed();
+            assert!(
+                elapsed < std::time::Duration::from_millis(700),
+                "{word} renewed probe budget: {elapsed:?}"
+            );
+            if !short {
+                assert!(
+                    !marker.exists(),
+                    "{word} started an exhausted/cancelled probe"
+                );
+            }
+            if let SetupStatus::Detailed(status) = status {
+                assert_eq!(
+                    status.admitted,
+                    Some(false),
+                    "{word} accepted an expired probe"
+                );
+            } else {
+                assert!(
+                    matches!(status, SetupStatus::Failed(_)),
+                    "{word} must refuse the observation"
+                );
+            }
+        }
+    }
+}

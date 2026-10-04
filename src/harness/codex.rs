@@ -1440,8 +1440,8 @@ impl HarnessAdapter for CodexAdapter {
     fn setup(&self, request: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
         setup::setup(request)
     }
-    fn status(&self, request: &StatusRequest, _: &CallBudget) -> SetupStatus {
-        setup::status(request)
+    fn status(&self, request: &StatusRequest, budget: &CallBudget) -> SetupStatus {
+        setup::status(request, budget)
     }
     fn unsetup(
         &self,

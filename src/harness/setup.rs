@@ -2150,7 +2150,7 @@ pub(crate) mod legacy {
     pub(crate) fn legacy_adapter_status(
         harness: Harness,
         request: &crate::harness::adapter::StatusRequest,
-        status: fn(&SetupRequest, &SetupEnv) -> Result<Value, RunError>,
+        status: impl FnOnce(&SetupRequest, &SetupEnv) -> Result<Value, RunError>,
     ) -> crate::harness::adapter::SetupStatus {
         use crate::harness::adapter::*;
         let result = (|| {
