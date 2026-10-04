@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.1
 
 - **Codex command approvals.** Managed launch accepts newer admitted Codex builds without a measured socket-policy version or sandbox network allowance. Hook and skill guidance uses CLI-only approved outside-sandbox execution, preserving native approval restrictions. Noninteractive exec uses a preapproved CLI rule with ordinary shell calls. Doctor and transport-denied remedies describe this path.
 

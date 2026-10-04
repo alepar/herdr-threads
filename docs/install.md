@@ -1,6 +1,6 @@
 # Installation and local setup
 
-> [v0.1.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v0.1.0); v0.2.0 is being prepared. Package lifecycle and a real GitHub install/reinstall/uninstall matrix passed against private Herdr 0.9.1 sessions. These rehearsals did not alter a shared, everyday Herdr session. Native support is summarized from the [validation report](validation/report.md) (verdict **PASS_WITH_GAPS**); see the [README support table](../README.md#supported-configurations).
+> [v0.1.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v0.1.0); [v0.2.0 is published](https://github.com/alepar/herdr-threads/releases/tag/v0.2.0); v0.2.1 adds approved outside-sandbox Codex CLI execution. Package lifecycle and a real GitHub install/reinstall/uninstall matrix passed against private Herdr 0.9.1 sessions. These rehearsals did not alter a shared, everyday Herdr session. Native support is summarized from the [validation report](validation/report.md) (verdict **PASS_WITH_GAPS**); see the [README support table](../README.md#supported-configurations).
 
 ## Prerequisites
 
@@ -20,7 +20,7 @@ The installer fetches a published prebuilt archive instead of building from sour
 ```sh
 curl -fsSL https://raw.githubusercontent.com/alepar/herdr-threads/main/scripts/install.sh | bash
 # options go after `bash -s --`, e.g. a pinned version and hook setup:
-curl -fsSL https://raw.githubusercontent.com/alepar/herdr-threads/main/scripts/install.sh | bash -s -- --version v0.2.0 --setup
+curl -fsSL https://raw.githubusercontent.com/alepar/herdr-threads/main/scripts/install.sh | bash -s -- --version v0.2.1 --setup
 ```
 
 It detects the OS and architecture, downloads `herdr-threads-OS-ARCH.tar.gz` and `SHA256SUMS` from the GitHub release (latest, or `--version`), refuses a checksum mismatch, installs the package into `~/.local/share/herdr-threads` (`--prefix`) and links `~/.local/bin/herdr-threads` (`--bin-dir`) to its executable, warning when that directory is not on `PATH`. It then registers the package with `herdr plugin link`. Herdr does not build a linked plugin, and the archive carries a `PREBUILT` marker that makes the manifest's build command (`scripts/build.sh`) keep the shipped executable instead of running cargo. When the Herdr server is running it runs the `ensure` action; otherwise the daemon starts with the next server start. On an upgrade it first runs the `stop` action **before** replacing the package, so the still-installed old executable stops the old daemon (a newer executable never takes over an older daemon, and across a wire-protocol change it cannot even stop it). See [Updating](#updating) for what happens when that stop fails.
@@ -62,7 +62,7 @@ The script runs `cargo build --release --locked` with `CARGO_TARGET_DIR` pinned 
 
 ## What the package declares
 
-`herdr-plugin.toml` (id `herdr-threads`, name `Threads`, version 0.2.0) declares:
+`herdr-plugin.toml` (id `herdr-threads`, name `Threads`, version 0.2.1) declares:
 
 | Entry | Command | Runs |
 | --- | --- | --- |
