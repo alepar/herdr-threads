@@ -3874,7 +3874,7 @@ mod hook_sequence {
             TOOL_BUDGET,
             |_| {
                 order.borrow_mut().push("observe");
-                Err("no version".into())
+                Err::<InstalledHarness, _>("no version".into())
             },
             |_| unreachable!("a refused probe never checks in"),
             |_| order.borrow_mut().push("refused"),
@@ -3935,4 +3935,222 @@ fn codex_command_guidance_survives_overflow_without_granting_permissions() {
     ev.harness = Harness::Claude;
     let bytes = encode_native(&ev, standing.as_bytes(), &[], None, None, None, None);
     assert!(!additional_context(&bytes).contains("require_escalated"));
+}
+
+// Catches inert built-in admission/codec dispatch and native output regressions.
+#[test]
+fn hook_adapter_dispatch_keeps_native_output_and_observer_nonconsumption() {
+    use crate::harness::{adapter::*, registry::builtins};
+    let registration = builtins()
+        .by_id(builtins().agent("claude").unwrap())
+        .unwrap();
+    let request = AdmissionRequest {
+        installed: InstallObservation::Available {
+            binary: "/unused/claude".into(),
+            identity: RuntimeIdentity {
+                release_version: Some("2.1.287".into()),
+                exact_key: None,
+                provenance: RuntimeIdentityProvenance::InstalledProbe,
+            },
+        },
+        input: None,
+        runtime_candidate: None,
+    };
+    let admitted = registration
+        .admit(
+            &request,
+            &budget(Instant::now() + TOOL_BUDGET, &SystemClock::new()),
+        )
+        .unwrap();
+    let event = registration
+        .decode(
+            &admitted,
+            &HookInput {
+                bytes: CLAUDE_START.to_vec(),
+                registered_event: Some("SessionStart".into()),
+            },
+        )
+        .unwrap();
+    assert!(event.can_check_in());
+    assert_eq!(event.native_session.as_deref(), Some("sess-1"));
+    let output = registration
+        .encode(
+            &admitted,
+            &event,
+            &NeutralOffer {
+                fixed_guidance: "bounded context".into(),
+                peer_data: serde_json::Value::Null,
+                ready_argv: vec![],
+            },
+        )
+        .unwrap();
+    let EncodedOutput::ContextBearing { bytes } = output else {
+        panic!("context must be context bearing")
+    };
+    assert_eq!(bytes, br#"{"hookSpecificOutput":{"additionalContext":"bounded context","hookEventName":"SessionStart"}}"#);
+    let other = builtins()
+        .by_id(builtins().agent("codex").unwrap())
+        .unwrap();
+    assert!(matches!(
+        other.decode(
+            &admitted,
+            &HookInput {
+                bytes: CLAUDE_START.to_vec(),
+                registered_event: None
+            }
+        ),
+        Err(DecodeFailure::RegistrationMismatch)
+    ));
+}
+
+// Catches descriptor/callback budgets extending the global limits and observer
+// bytes being promoted to consumption after a successful codec return.
+#[test]
+fn adapter_budget_caps_and_encoding_delivery_are_conservative() {
+    use crate::harness::{adapter::*, registry::builtins};
+    let registration = builtins()
+        .by_id(builtins().agent("codex").unwrap())
+        .unwrap();
+    assert_eq!(
+        event_budget(registration, true, Some(Duration::from_secs(60))),
+        Duration::from_secs(5)
+    );
+    assert_eq!(
+        event_budget(registration, false, Some(Duration::from_secs(60))),
+        Duration::from_millis(1500)
+    );
+    assert_eq!(
+        event_budget(registration, true, Some(Duration::from_millis(37))),
+        Duration::from_millis(37)
+    );
+    assert_eq!(
+        event_budget(registration, true, Some(Duration::ZERO)),
+        Duration::ZERO
+    );
+    let (bytes, consumes, diagnostic) = output_bytes(Ok(EncodedOutput::ObserverOnly {
+        bytes: b"observed".to_vec(),
+    }));
+    assert_eq!(bytes, b"observed");
+    assert!(!consumes);
+    assert_eq!(diagnostic, None);
+    assert!(!output_bytes(Ok(EncodedOutput::ContextBearing { bytes: vec![] })).1);
+    assert!(
+        output_bytes(Ok(EncodedOutput::ContextBearing {
+            bytes: b"context".to_vec()
+        }))
+        .1
+    );
+    assert!(!output_bytes(Err(EncodeFailure::Invalid("test".into()))).1);
+}
+
+// Catches child output bypassing policy composition and entering canonical work.
+fn child_lifecycle_context(harness: Harness, native_event: &str) -> String {
+    use crate::daemon::ownership::OwnerLock;
+    use crate::protocol::wire::PROTOCOL_VERSION;
+    let root = private_root();
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(root.join("state"))
+        .unwrap();
+    let mut hook_args = args(&root);
+    hook_args.harness = harness;
+    let runtime = RuntimeContext::explicit(
+        hook_args.state_dir.clone().unwrap(),
+        hook_args.host_endpoint.clone().unwrap(),
+        None,
+    )
+    .unwrap();
+    let paths = InstancePaths::resolve(&runtime).unwrap();
+    let lock = OwnerLock::acquire(&paths).unwrap();
+    let listener = lock.bind_socket().unwrap();
+    lock.publish_endpoint(&listener, env!("CARGO_PKG_VERSION"), PROTOCOL_VERSION)
+        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let listener = {
+        let _guard = runtime.enter();
+        listener.into_async().unwrap()
+    };
+    let installed = match harness {
+        Harness::Claude => claude(),
+        Harness::Codex => {
+            InstalledHarness::Codex(crate::harness::codex::InstalledVersion::pinned_for_test())
+        }
+        _ => unreachable!(),
+    };
+    let payload = serde_json::json!({
+        "hook_event_name": native_event, "session_id": "child-session",
+        "source": "startup", "agent_id": "child", "agent_type": "worker",
+        "turn_id": "child-turn", "cwd": "/tmp", "model": "test",
+        "permission_mode": "default", "transcript_path": null,
+    });
+    let outcome = run_hook(
+        &hook_args,
+        &installed,
+        &serde_json::to_vec(&payload).unwrap(),
+        &herdr(),
+        Instant::now() + LIFECYCLE_BUDGET,
+        clock(),
+        None,
+    );
+    assert_eq!(outcome.diagnostic, None);
+    assert!(outcome.attention.is_none(), "child must not own attention");
+    assert!(
+        runtime
+            .block_on(async {
+                tokio::time::timeout(Duration::from_millis(1), listener.accept()).await
+            })
+            .is_err(),
+        "child must not connect for canonical work"
+    );
+    let value: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+    assert_eq!(value["hookSpecificOutput"]["hookEventName"], native_event);
+    let context = value["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(context.contains("is forbidden to subagents"), "{context}");
+    assert!(context.len() <= MAX_CONTEXT);
+    drop(listener);
+    drop(lock);
+    std::fs::remove_dir_all(root).unwrap();
+    context
+}
+
+#[test]
+fn child_lifecycle_claude_sessionstart_keeps_skill_pointer() {
+    let context = child_lifecycle_context(Harness::Claude, "SessionStart");
+    assert!(
+        context.contains(crate::cli::skill::HOOK_SKILL_HINT),
+        "{context}"
+    );
+    assert!(!context.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE));
+}
+
+#[test]
+fn child_lifecycle_codex_sessionstart_keeps_guidance_and_skill_pointer() {
+    let context = child_lifecycle_context(Harness::Codex, "SessionStart");
+    assert!(
+        context.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE),
+        "{context}"
+    );
+    assert!(
+        context.contains(crate::cli::skill::HOOK_SKILL_HINT),
+        "{context}"
+    );
+}
+
+#[test]
+fn child_lifecycle_codex_subagentstart_keeps_guidance_without_skill_pointer() {
+    let context = child_lifecycle_context(Harness::Codex, "SubagentStart");
+    assert!(
+        context.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE),
+        "{context}"
+    );
+    assert!(
+        !context.contains(crate::cli::skill::HOOK_SKILL_HINT),
+        "{context}"
+    );
 }
