@@ -34,8 +34,8 @@ struct Scratch {
 }
 impl Scratch {
     fn new() -> Self {
-        let root = PathBuf::from(format!(
-            "/private/tmp/htsetup-{}",
+        let root = std::env::temp_dir().join(format!(
+            "htsetup-{}",
             &uuid::Uuid::new_v4().simple().to_string()[..10]
         ));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
@@ -2457,4 +2457,142 @@ fn local_profile_refusals_and_status_leave_native_and_instance_directories_absen
     assert!(!s.state.exists());
     assert!(!s.claude_config.exists());
     assert!(!s.codex_home.exists());
+}
+
+/// Catches lost manifest reuse/restoration, silent noninteractive consent writes,
+/// and status that drops the adapter's manual native-trust guidance.
+#[test]
+fn legacy_adapter_backends_reopen_owned_manifests_and_preserve_consent() {
+    use herdr_threads::harness::{adapter::*, registry};
+    use herdr_threads::protocol::time::{CallBudget, MonoInstant};
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    s.codex_with_schemas("0.159.3");
+    fs::create_dir(&s.claude_config).unwrap();
+    fs::create_dir(&s.codex_home).unwrap();
+    fs::write(s.settings(), ORIGINAL).unwrap();
+    let original_hooks = b"{\n  \"other\": 42\n}\n";
+    let original_config = b"model = \"mine\"\n";
+    fs::write(s.hooks(), original_hooks).unwrap();
+    fs::write(s.codex_home.join("config.toml"), original_config).unwrap();
+    let environment = SetupEnvironment {
+        home: Some(s.home.clone().into_os_string()),
+        path: Some(s.bin.clone().into_os_string()),
+        cwd: s.root.clone(),
+        executable: PathBuf::from(BIN),
+        state_dir: Some(s.state.clone()),
+        host_endpoint: Some(s.host()),
+        config_roots: [
+            ("claude".into(), s.claude_config.clone()),
+            ("codex".into(), s.codex_home.clone()),
+        ]
+        .into(),
+        ..Default::default()
+    };
+    let budget = CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let registry = registry::builtins();
+    for name in ["claude", "codex"] {
+        let registration = registry.by_id(registry.agent(name).unwrap()).unwrap();
+        let scope = registration
+            .resolve_setup_scope(&SetupScopeRequest::Default, &environment)
+            .unwrap();
+        let request = SetupRequest {
+            scope: scope.clone(),
+            executable: environment.executable.clone(),
+            environment: environment.clone(),
+            native_binary: None,
+            options: Default::default(),
+        };
+        let installed = registration.setup(&request, &budget).unwrap();
+        assert_eq!(installed.projection["action"], "installed");
+        if name == "claude" {
+            assert_eq!(
+                installed.projection["prompt_suggestions"]["action"],
+                "advised"
+            );
+            let settings: serde_json::Value =
+                serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
+            assert!(settings.get("promptSuggestionEnabled").is_none());
+        } else {
+            assert_eq!(installed.projection["trust"]["status"], "review_required");
+            assert!(
+                !fs::read_to_string(s.codex_home.join("config.toml"))
+                    .unwrap()
+                    .contains("hooks.state")
+            );
+        }
+        let before = fs::read(if name == "claude" {
+            s.settings()
+        } else {
+            s.hooks()
+        })
+        .unwrap();
+        let again = registration.setup(&request, &budget).unwrap();
+        assert_eq!(again.projection["action"], "already_installed");
+        assert_eq!(again.projection["command"], installed.projection["command"]);
+        assert_eq!(
+            fs::read(if name == "claude" {
+                s.settings()
+            } else {
+                s.hooks()
+            })
+            .unwrap(),
+            before
+        );
+        let status = registration.status(
+            &StatusRequest {
+                scope: scope.clone(),
+                environment: environment.clone(),
+                native_binary: None,
+            },
+            &budget,
+        );
+        let SetupStatus::Detailed(status) = status else {
+            panic!("adapter did not return detailed local status")
+        };
+        assert!(status.installed);
+        assert_eq!(
+            status.projection["command"],
+            installed.projection["command"]
+        );
+        if name == "claude" {
+            assert!(
+                status
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.code == "prompt_suggestions_advice"),
+                "adapter status must retain prompt suggestion guidance"
+            );
+        }
+        if name == "codex" {
+            assert!(
+                status
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.code == "native_trust_manual"),
+                "adapter status must retain manual native trust guidance: {:?}",
+                status.diagnostics
+            );
+        }
+        fs::remove_file(s.bin.join(name)).unwrap();
+        let removed = registration
+            .unsetup(
+                &UnsetupRequest {
+                    scope,
+                    environment: environment.clone(),
+                },
+                &budget,
+            )
+            .unwrap();
+        assert_eq!(removed.projection["action"], "removed");
+    }
+    assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
+    assert_eq!(fs::read(s.hooks()).unwrap(), original_hooks);
+    assert_eq!(
+        fs::read(s.codex_home.join("config.toml")).unwrap(),
+        original_config
+    );
 }

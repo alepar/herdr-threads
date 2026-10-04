@@ -9,6 +9,8 @@
 //! was captured and its `additionalContext` delivered after compaction, so
 //! only the 2.1.287 recipe admits compact (spec §9). Model receipt and
 //! durable receipts remain separate, unqualified gates.
+pub mod setup;
+
 use super::adapter::*;
 use super::admission::{self, OptimisticAdmission, Refusal, Row};
 use super::context::{ContextError, EventKind, Harness, Role};
@@ -899,26 +901,26 @@ impl HarnessAdapter for ClaudeAdapter {
         reader: &mut dyn std::io::BufRead,
         writer: &mut dyn std::io::Write,
     ) -> Result<(), SetupFailure> {
-        crate::cli::setup::settle_prompt_suggestions(
+        setup::settle_prompt_suggestions(
             &crate::cli::setup::SetupEnv::from_snapshot(environment),
             projection,
             reader,
             writer,
         )
-        .map_err(crate::cli::setup::adapter_failure)
+        .map_err(super::setup::legacy::adapter_failure)
     }
     fn setup(&self, request: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
-        crate::cli::setup::legacy_adapter_setup(super::context::Harness::Claude, request)
+        setup::setup(request)
     }
     fn status(&self, request: &StatusRequest, _: &CallBudget) -> SetupStatus {
-        crate::cli::setup::legacy_adapter_status(super::context::Harness::Claude, request)
+        setup::status(request)
     }
     fn unsetup(
         &self,
         request: &UnsetupRequest,
         _: &CallBudget,
     ) -> Result<RemovalOutcome, SetupFailure> {
-        crate::cli::setup::legacy_adapter_unsetup(super::context::Harness::Claude, request)
+        setup::unsetup(request)
     }
 }
 

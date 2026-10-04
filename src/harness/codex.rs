@@ -10,6 +10,8 @@
 //! setup declaration installs context hooks only: lifecycle, child start, and
 //! a Bash `PreToolUse` group whose output is `additionalContext` and never a
 //! permission decision or `updatedInput`.
+pub mod setup;
+
 use super::adapter::*;
 use super::admission::{self, OptimisticAdmission, Refusal, Row};
 use super::codex_schema::{self, Unextractable};
@@ -1433,17 +1435,17 @@ impl HarnessAdapter for CodexAdapter {
         super::attribution::attribute_native_runtime("codex", input)
     }
     fn setup(&self, request: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
-        crate::cli::setup::legacy_adapter_setup(super::context::Harness::Codex, request)
+        setup::setup(request)
     }
     fn status(&self, request: &StatusRequest, _: &CallBudget) -> SetupStatus {
-        crate::cli::setup::legacy_adapter_status(super::context::Harness::Codex, request)
+        setup::status(request)
     }
     fn unsetup(
         &self,
         request: &UnsetupRequest,
         _: &CallBudget,
     ) -> Result<RemovalOutcome, SetupFailure> {
-        crate::cli::setup::legacy_adapter_unsetup(super::context::Harness::Codex, request)
+        setup::unsetup(request)
     }
 }
 
