@@ -1689,7 +1689,8 @@ fn registry_selectors_preserve_legacy_argv_and_never_default_unknown_to_claude()
 }
 
 // Metadata-only author fixture: selecting it must never call runtime operations.
-struct SelectorAdapter(bool);
+static SELECTOR_INSTALL_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+struct SelectorAdapter(u8);
 impl crate::harness::adapter::HarnessAdapter for SelectorAdapter {
     type Admission = ();
     fn metadata(&self) -> &'static crate::harness::adapter::AdapterMetadata {
@@ -1722,7 +1723,10 @@ impl crate::harness::adapter::HarnessAdapter for SelectorAdapter {
             },
             runtime_sources: &[],
         };
-        if self.0 { &FOURTH } else { &METADATA }
+        if self.0 != 0 { &FOURTH } else { &METADATA }
+    }
+    fn canary_strategy(&self) -> Option<&dyn crate::harness::adapter::CanaryStrategy> {
+        if self.0 == 2 { Some(&InvalidDiscoveryStrategy) } else { None }
     }
     fn contracts(&self) -> &'static [crate::harness::adapter::ContractDescriptor] {
         &[]
@@ -1732,6 +1736,7 @@ impl crate::harness::adapter::HarnessAdapter for SelectorAdapter {
         _: &crate::harness::adapter::InstallEnvironment,
         _: &crate::protocol::time::CallBudget,
     ) -> crate::harness::adapter::InstallObservation {
+        SELECTOR_INSTALL_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         panic!("selector must not probe")
     }
     fn admit(
@@ -1804,8 +1809,8 @@ impl crate::harness::adapter::HarnessAdapter for SelectorAdapter {
 fn injected_registry_drives_agent_selector_choices_without_native_operations() {
     use crate::harness::registry::{Registration, Registry};
     use clap::FromArgMatches;
-    static ADAPTER: SelectorAdapter = SelectorAdapter(false);
-    static FOURTH: SelectorAdapter = SelectorAdapter(true);
+    static ADAPTER: SelectorAdapter = SelectorAdapter(0);
+    static FOURTH: SelectorAdapter = SelectorAdapter(1);
     let registrations =
         Box::leak(vec![Registration::new(&ADAPTER), Registration::new(&FOURTH)].into_boxed_slice());
     let registry = Registry::new(registrations).unwrap();
@@ -1905,4 +1910,69 @@ fn injected_registry_drives_agent_selector_choices_without_native_operations() {
             .is_err(),
         "fixture is never production registration"
     );
+}
+
+// Catches hard-coded discovery, reordering, native observation, and synthesized strategies.
+#[test]
+fn adapters_discovery_is_bounded_deterministic_and_never_probes_installation() {
+    use crate::harness::registry::{Registration, Registry};
+    use clap::FromArgMatches;
+    static THIRD: SelectorAdapter = SelectorAdapter(0);
+    static FOURTH: SelectorAdapter = SelectorAdapter(1);
+    let registry = Registry::new(Box::leak(vec![
+        Registration::new(&FOURTH),
+        Registration::new(&crate::harness::claude::ClaudeAdapter),
+        Registration::new(&THIRD),
+        Registration::new(&crate::harness::codex::CodexAdapter),
+    ].into_boxed_slice())).unwrap();
+    let matches = command_for_registry(&registry)
+        .try_get_matches_from(["herdr-threads", "adapters", "--json"]).unwrap();
+    let parsed = parse_cli_in_registry(Cli::from_arg_matches(&matches).unwrap(), &registry).unwrap();
+    assert!(matches!(parsed.action, CliAction::Adapters));
+    assert_eq!(parsed.output.format, OutputFormat::Json);
+    let bytes = adapter_discovery_output(&parsed, &registry).unwrap().expect("local dispatch output");
+    let value: serde_json::Value = serde_json::from_str(&bytes).unwrap();
+    assert_eq!(value["schema_version"], 1);
+    let entries = value["adapters"].as_array().unwrap();
+    assert_eq!(entries.iter().map(|e|e["id"].as_str().unwrap()).collect::<Vec<_>>(),
+        ["fourth", "claude", "hermes", "codex"]);
+    assert_eq!(entries[0], serde_json::json!({"id":"fourth", "display_name":"Fourth",
+        "host_kinds":[], "setup_scopes":["config_root"], "legacy_contract_id":null,
+        "contracts":[], "canary_strategy":null}));
+    assert_eq!(entries[2]["canary_strategy"], serde_json::Value::Null);
+    assert_eq!(entries[1]["contracts"][0]["domain"], "native_payload");
+    assert_eq!(entries[1]["contracts"][0]["required_milestones"], serde_json::json!(["lifecycle","tool"]));
+    assert_eq!(entries[1]["canary_strategy"]["npm_package"], "@anthropic-ai/claude-code");
+    assert_eq!(entries[3]["canary_strategy"]["npm_package"], "@openai/codex");
+    assert_eq!(bytes, crate::harness::discovery::render(&registry).unwrap());
+    assert_eq!(SELECTOR_INSTALL_CALLS.load(std::sync::atomic::Ordering::SeqCst),0);
+    struct CountBackend(usize);
+    impl CliBackend for CountBackend {
+        fn call(&mut self,_:WireCommand,_:&OutputSpec)->Result<CommandResult,ApiError> {
+            self.0 += 1; Err(ApiError::unsupported("unexpected daemon call"))
+        }
+    }
+    let mut backend=CountBackend(0);
+    assert!(dispatch(parsed,&mut backend,None,None).is_err());
+    assert_eq!(backend.0,0);
+
+}
+
+struct InvalidDiscoveryStrategy;
+impl crate::harness::adapter::CanaryStrategy for InvalidDiscoveryStrategy {
+    fn descriptor(&self) -> crate::harness::adapter::CanaryDescriptor {
+        use crate::harness::adapter::*;
+        CanaryDescriptor { kind:CanaryKind::ExactRuntime, candidate_kind:CandidateKind::ExactBuild,
+            npm_package:None, model_key_env:None, companion:"scripts/canary/adapters/../bad.py".into(),
+            artifact_schema_version:1 }
+    }
+}
+// A malformed adapter-owned provider must refuse local discovery, never expose a supported strategy.
+#[test]
+fn adapters_discovery_refuses_invalid_provider_before_daemon_dispatch() {
+    use crate::harness::registry::{Registration, Registry};
+    static BAD: SelectorAdapter = SelectorAdapter(2);
+    let registry=Registry::new(Box::leak(vec![Registration::new(&BAD)].into_boxed_slice())).unwrap();
+    let parsed=parse_argv(["ht","adapters","--json"]).unwrap();
+    assert!(adapter_discovery_output(&parsed,&registry).is_err());
 }

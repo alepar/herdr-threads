@@ -1226,6 +1226,19 @@ fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextE
 
 pub(crate) struct CodexAdapter;
 
+struct CodexCanary;
+impl super::adapter::CanaryStrategy for CodexCanary {
+    fn descriptor(&self) -> super::adapter::CanaryDescriptor {
+        super::adapter::CanaryDescriptor {
+            kind: super::adapter::CanaryKind::NpmRelease,
+            candidate_kind: super::adapter::CandidateKind::StableRelease,
+            npm_package: Some("@openai/codex".into()),
+            model_key_env: Some("OPENAI_API_KEY".into()),
+            companion: "scripts/canary/adapters/codex.py".into(),
+            artifact_schema_version: 1,
+        }
+    }
+}
 impl HarnessAdapter for CodexAdapter {
     type Admission = InstalledVersion;
     fn metadata(&self) -> &'static AdapterMetadata {
@@ -1244,6 +1257,12 @@ impl HarnessAdapter for CodexAdapter {
             },
         };
         &METADATA
+    }
+    fn legacy_contract_id(&self) -> Option<String> {
+        Some(super::contract::contract_id(&CONTRACT))
+    }
+    fn canary_strategy(&self) -> Option<&dyn super::adapter::CanaryStrategy> {
+        Some(&CodexCanary)
     }
     fn contracts(&self) -> &'static [ContractDescriptor] {
         static CONTRACTS: [ContractDescriptor; 1] = [ContractDescriptor {

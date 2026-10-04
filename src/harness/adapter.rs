@@ -8,6 +8,10 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn output_policy(&self) -> OutputPolicy {
         OutputPolicy::default()
     }
+    /// Explicit compatibility projection; rich domains do not imply a legacy scalar.
+    fn legacy_contract_id(&self) -> Option<String> {
+        None
+    }
     fn contracts(&self) -> &'static [ContractDescriptor];
     fn observe_install(&self, env: &InstallEnvironment, budget: &CallBudget) -> InstallObservation;
     fn admit(
@@ -465,12 +469,39 @@ pub trait LaunchPolicy: Send + Sync {
 pub trait ComposerPolicy: Send + Sync {
     fn capabilities(&self) -> super::recipe::PokeCapabilities;
 }
+/// Pure local metadata. Providers must not observe installations or invoke native code.
 pub trait CanaryStrategy: Send + Sync {
     fn descriptor(&self) -> CanaryDescriptor;
 }
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CanaryKind {
+    NpmRelease,
+    ExactRuntime,
+}
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateKind {
+    StableRelease,
+    ExactBuild,
+}
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CanaryDescriptor {
-    pub id: &'static str,
-    pub automatic_install_supported: bool,
+    pub kind: CanaryKind,
+    pub candidate_kind: CandidateKind,
+    #[serde(deserialize_with = "required_canary_nullable")]
+    pub npm_package: Option<String>,
+    #[serde(deserialize_with = "required_canary_nullable")]
+    pub model_key_env: Option<String>,
+    pub companion: String,
+    pub artifact_schema_version: u8,
+}
+fn required_canary_nullable<'de, D>(d: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    <Option<String> as serde::Deserialize>::deserialize(d)
 }
 macro_rules! failure {
     ($ty:ident, $operation:literal, $($mismatch:ident)?) => {
@@ -757,7 +788,7 @@ mod tests {
             );
             assert!(registration.launch_policy().is_none());
             assert!(registration.composer_policy().is_none());
-            assert!(registration.canary_strategy().is_none());
+            assert!(registration.canary_strategy().is_some());
             assert_eq!(
                 registration.version_ladder(
                     &RuntimeIdentity::stable_release("999.0.0", "native_transcript").unwrap()

@@ -38,6 +38,7 @@ mod contract_tests;
 #[cfg(test)]
 #[path = "../../tests/harness/cooperative.rs"]
 mod cooperative;
+pub mod discovery;
 pub mod evidence;
 pub mod hermes;
 pub mod launch;

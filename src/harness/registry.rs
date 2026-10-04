@@ -173,6 +173,7 @@ struct ErasedAdmission {
 }
 trait ErasedAdapter: Send + Sync {
     fn output_policy(&self) -> OutputPolicy;
+    fn legacy_contract_id(&self) -> Option<String>;
     fn contracts(&self) -> &'static [ContractDescriptor];
     fn observe_install(&self, env: &InstallEnvironment, budget: &CallBudget) -> InstallObservation;
     fn admit(
@@ -225,6 +226,9 @@ trait ErasedAdapter: Send + Sync {
 }
 struct TypedAdapter<A: HarnessAdapter>(&'static A);
 impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
+    fn legacy_contract_id(&self) -> Option<String> {
+        self.0.legacy_contract_id()
+    }
     fn output_policy(&self) -> OutputPolicy {
         self.0.output_policy()
     }
@@ -365,6 +369,9 @@ impl Registration {
     }
     pub fn output_policy(&self) -> OutputPolicy {
         self.adapter.output_policy()
+    }
+    pub fn legacy_contract_id(&self) -> Option<String> {
+        self.adapter.legacy_contract_id()
     }
     pub fn contracts(&self) -> &'static [ContractDescriptor] {
         self.adapter.contracts()

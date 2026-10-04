@@ -71,6 +71,8 @@ pub enum CliAction {
     },
     /// Print the embedded agent skill (`skill` or `--skill`); local only.
     Skill,
+    /// Local registry discovery; never observes installations or contacts the daemon.
+    Adapters,
     /// `contract-id [--harness H]`: the native hook payload contract ids;
     /// local only.
     ContractId {
@@ -233,6 +235,7 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::Handoff(_)
         | CliAction::MeInit { .. }
         | CliAction::Skill
+        | CliAction::Adapters
         | CliAction::ContractId { .. }
         | CliAction::HarnessVersionNormalize { .. }
         | CliAction::InternalJsonField { .. }
@@ -682,6 +685,8 @@ enum Top {
     /// section of `herdr-threads skill`).
     #[command(args_conflicts_with_subcommands = true)]
     Summary(SummaryArgs),
+    /// Discover built-in adapters and their declared tooling metadata. Local only.
+    Adapters,
     /// Print the contract id of each harness's native hook payload (the
     /// declared event kinds, required fields and JSON types the hook parsers
     /// consume). With `--json`: `{"claude": ID, "codex": ID, "normalize":
@@ -1380,8 +1385,21 @@ where
     })
 }
 
-/// Like [`parse_argv`], but distinguishes requested help/version output
-/// from invalid arguments.
+/// Local discovery dispatch, before config/context/daemon composition.
+pub(super) fn adapter_discovery_output(
+    parsed: &ParsedCli,
+    registry: &crate::harness::registry::Registry,
+) -> Result<Option<String>, ApiError> {
+    if matches!(parsed.action, CliAction::Adapters) {
+        crate::harness::discovery::render(registry)
+            .map(Some)
+            .map_err(invalid)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Like [`parse_argv`], but distinguishes help/version output from invalid arguments.
 pub fn parse_argv_or_informational<I, T>(argv: I) -> Result<ParsedCli, ParseFailure>
 where
     I: IntoIterator<Item = T>,
@@ -2160,6 +2178,7 @@ fn parse_cli_in_registry(
                 }
             })
         }
+        Top::Adapters => CliAction::Adapters,
         Top::ContractId { harness } => CliAction::ContractId {
             harness: harness
                 .as_deref()
