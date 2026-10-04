@@ -1323,7 +1323,7 @@ fn exact_check_in_replay(
     Ok(saved == frozen)
 }
 
-/// `claude` or `codex`, the names the contract and version helpers use.
+/// The registered agent ID used by the contract and version helpers.
 fn harness_name(harness: crate::harness::context::Harness) -> &'static str {
     harness.as_str()
 }
@@ -1417,7 +1417,7 @@ pub(crate) fn seat_context_dir(paths: &InstancePaths, seat: &str) -> Result<Path
 
 const CALLER_HELP: &str = "run it inside the agent's own Herdr pane (HERDR_PANE_ID) after that \
      seat's lifecycle check-in (a person runs `herdr-threads me init` once in their own pane), or pass --cooperative-seat SEAT --cooperative-target PANE \
-     --cooperative-harness codex|claude --cooperative-role top-level; operator repair uses the \
+     --cooperative-harness HARNESS --cooperative-role top-level; choose a registered agent harness. Operator repair uses the \
      explicit --operator forms and cannot send, accept, ACK or check in";
 
 /// What an action needs from its caller.
