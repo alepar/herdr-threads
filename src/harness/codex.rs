@@ -1225,9 +1225,7 @@ fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextE
 }
 
 pub(crate) struct CodexAdapter;
-fn unsupported(adapter: &'static str, operation: &'static str) -> UnsupportedOperation {
-    UnsupportedOperation { adapter, operation }
-}
+
 impl HarnessAdapter for CodexAdapter {
     type Admission = InstalledVersion;
     fn metadata(&self) -> &'static AdapterMetadata {
@@ -1372,13 +1370,17 @@ impl HarnessAdapter for CodexAdapter {
     fn attribute_runtime(&self, input: &HookInput, _: &CallBudget) -> RuntimeAttribution {
         super::attribution::attribute_native_runtime("codex", input)
     }
-    fn setup(&self, _: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
-        Err(SetupFailure::Unsupported(unsupported("codex", "setup")))
+    fn setup(&self, request: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
+        crate::cli::setup::legacy_adapter_setup(super::context::Harness::Codex, request)
     }
-    fn status(&self, _: &StatusRequest, _: &CallBudget) -> SetupStatus {
-        SetupStatus::Unsupported(unsupported("codex", "status"))
+    fn status(&self, request: &StatusRequest, _: &CallBudget) -> SetupStatus {
+        crate::cli::setup::legacy_adapter_status(super::context::Harness::Codex, request)
     }
-    fn unsetup(&self, _: &UnsetupRequest, _: &CallBudget) -> Result<RemovalOutcome, SetupFailure> {
-        Err(SetupFailure::Unsupported(unsupported("codex", "unsetup")))
+    fn unsetup(
+        &self,
+        request: &UnsetupRequest,
+        _: &CallBudget,
+    ) -> Result<RemovalOutcome, SetupFailure> {
+        crate::cli::setup::legacy_adapter_unsetup(super::context::Harness::Codex, request)
     }
 }

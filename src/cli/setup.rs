@@ -159,6 +159,7 @@ pub enum SetupVerb {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetupRequest {
+    pub scope: crate::harness::adapter::SetupScopeRequest,
     pub verb: SetupVerb,
     pub harness: Harness,
     pub harness_binary: Option<String>,
@@ -222,6 +223,8 @@ fn failed(detail: impl Into<String>) -> RunError {
 /// Everything the commands take from the process, injectable for tests.
 #[derive(Debug, Clone)]
 pub struct SetupEnv {
+    pub home: Option<OsString>,
+    pub declared_environment: std::collections::BTreeMap<String, OsString>,
     pub executable: PathBuf,
     pub state_dir: Option<PathBuf>,
     pub cwd: PathBuf,
@@ -359,14 +362,35 @@ pub fn detect_host_endpoint(inputs: &DetectInputs) -> Result<(PathBuf, String), 
     Ok((socket, "herdr status server".into()))
 }
 
+fn capture_declared_environment(
+    registry: &crate::harness::registry::Registry,
+) -> std::collections::BTreeMap<String, OsString> {
+    let names: std::collections::BTreeSet<_> = registry
+        .registrations()
+        .iter()
+        .flat_map(|registration| registration.setup_environment_inputs())
+        .copied()
+        .collect();
+    names
+        .into_iter()
+        .filter_map(|name| std::env::var_os(name).map(|value| (name.into(), value)))
+        .collect()
+}
+
 impl SetupEnv {
     pub(crate) fn from_process(output: &OutputSpec) -> Result<Self, RunError> {
         let executable = std::env::current_exe()?.canonicalize()?;
         let path = std::env::var_os("PATH");
-        let inputs = super::instance::InstanceInputs::from_process(
+        let cwd = std::env::current_dir()?;
+        let declared_environment =
+            capture_declared_environment(crate::harness::registry::builtins());
+        let codex_override = std::env::var_os("CODEX_HOME");
+        let claude_override = std::env::var_os("CLAUDE_CONFIG_DIR");
+        let mut inputs = super::instance::InstanceInputs::from_process(
             output.context.state_dir.as_ref().map(PathBuf::from),
             output.context.host.as_ref().map(PathBuf::from),
         );
+        inputs.herdr = hook::resolve_on_path("herdr", path.as_deref());
         let mut source = serde_json::Map::new();
         let state_dir = match super::instance::resolve_state_dir(&inputs) {
             Ok((state, how)) => {
@@ -391,16 +415,16 @@ impl SetupEnv {
                 None
             }
         };
+        let home = inputs.home.as_ref().map(|home| home.as_os_str().to_owned());
         Ok(Self {
+            home: home.clone(),
+            declared_environment,
             executable,
             state_dir,
-            cwd: std::env::current_dir()?,
+            cwd,
             path,
-            codex_home: codex_home_from(std::env::var_os("CODEX_HOME"), std::env::var_os("HOME")),
-            claude_config_dir: claude_config_dir_from(
-                std::env::var_os("CLAUDE_CONFIG_DIR"),
-                std::env::var_os("HOME"),
-            ),
+            codex_home: codex_home_from(codex_override, home.clone()),
+            claude_config_dir: claude_config_dir_from(claude_override, home.clone()),
             host_endpoint,
             instance_source: Value::Object(source),
         })
@@ -409,17 +433,20 @@ impl SetupEnv {
     /// The environment of a command that already resolved its runtime
     /// context (`doctor`): the instance is that context's.
     pub(crate) fn for_context(context: &RuntimeContext) -> Self {
+        let home = std::env::var_os("HOME");
         Self {
+            home: home.clone(),
+            declared_environment: capture_declared_environment(crate::harness::registry::builtins()),
             executable: std::env::current_exe()
                 .and_then(|path| path.canonicalize())
                 .unwrap_or_default(),
             state_dir: Some(context.state_dir.clone()),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
             path: std::env::var_os("PATH"),
-            codex_home: codex_home_from(std::env::var_os("CODEX_HOME"), std::env::var_os("HOME")),
+            codex_home: codex_home_from(std::env::var_os("CODEX_HOME"), home.clone()),
             claude_config_dir: claude_config_dir_from(
                 std::env::var_os("CLAUDE_CONFIG_DIR"),
-                std::env::var_os("HOME"),
+                home.clone(),
             ),
             host_endpoint: Some(context.host_endpoint.clone()),
             instance_source: json!({"state_dir": "context", "host_endpoint": "context"}),
@@ -501,16 +528,25 @@ pub fn run<W: Write>(
     let env = SetupEnv::from_process(output)?;
     let mut report = execute(request, &env)?;
     if request.verb == SetupVerb::Install
-        && request.harness == Harness::Claude
         && request.prompt_suggestions == PromptSuggestionPolicy::Ask
         && interactive()
     {
-        settle_prompt_suggestions(
-            &env,
-            &mut report,
-            &mut io::stdin().lock(),
-            &mut io::stderr(),
-        )?;
+        let registry = crate::harness::registry::builtins();
+        let registration = registry
+            .by_id(
+                registry
+                    .agent(request.harness.as_str())
+                    .map_err(|error| invalid(error.to_string()))?,
+            )
+            .map_err(|error| invalid(error.to_string()))?;
+        registration
+            .settle_setup_consent(
+                &env.snapshot(),
+                &mut report,
+                &mut io::stdin().lock(),
+                &mut io::stderr(),
+            )
+            .map_err(adapter_run_error)?;
     }
     let bytes = match output.format {
         OutputFormat::Json => {
@@ -527,7 +563,354 @@ pub fn run<W: Write>(
 }
 
 /// Run one setup command and return its report; errors carry the exit status.
+pub(crate) fn adapter_failure(error: RunError) -> crate::harness::adapter::SetupFailure {
+    use crate::harness::adapter::SetupFailure;
+    match error {
+        RunError::Api(e) => SetupFailure::Api(e),
+        RunError::Io(e) => SetupFailure::Io(e),
+        other => SetupFailure::Io(io::Error::other(other.to_string())),
+    }
+}
+fn adapter_run_error(error: crate::harness::adapter::SetupFailure) -> RunError {
+    use crate::harness::adapter::SetupFailure;
+    match error {
+        SetupFailure::Api(e) => RunError::Api(e),
+        SetupFailure::Io(e) => RunError::Io(e),
+        other => invalid(other.to_string()),
+    }
+}
+impl SetupEnv {
+    pub(crate) fn from_snapshot(snapshot: &crate::harness::adapter::SetupEnvironment) -> Self {
+        Self {
+            home: snapshot.home.clone(),
+            declared_environment: snapshot.declared.clone(),
+            executable: snapshot.executable.clone(),
+            state_dir: snapshot.state_dir.clone(),
+            cwd: snapshot.cwd.clone(),
+            path: snapshot.path.clone(),
+            codex_home: snapshot.config_roots.get("codex").cloned(),
+            claude_config_dir: snapshot.config_roots.get("claude").cloned(),
+            host_endpoint: snapshot.host_endpoint.clone(),
+            instance_source: snapshot.instance_source.clone(),
+        }
+    }
+    pub fn snapshot(&self) -> crate::harness::adapter::SetupEnvironment {
+        let mut config_roots = std::collections::BTreeMap::new();
+        if let Some(root) = &self.codex_home {
+            config_roots.insert("codex".into(), root.clone());
+        }
+        if let Some(root) = &self.claude_config_dir {
+            config_roots.insert("claude".into(), root.clone());
+        }
+        crate::harness::adapter::SetupEnvironment {
+            clock: std::sync::Arc::new(crate::app::SystemClock::new()),
+            home: self.home.clone(),
+            executable: self.executable.clone(),
+            state_dir: self.state_dir.clone(),
+            cwd: self.cwd.clone(),
+            path: self.path.clone(),
+            host_endpoint: self.host_endpoint.clone(),
+            instance_source: self.instance_source.clone(),
+            config_roots,
+            declared: self.declared_environment.clone(),
+        }
+    }
+}
+fn legacy_request(
+    harness: Harness,
+    verb: SetupVerb,
+    native_binary: Option<&Path>,
+    options: &crate::harness::adapter::SetupOptions,
+) -> Result<SetupRequest, crate::harness::adapter::SetupFailure> {
+    Ok(SetupRequest {
+        scope: Default::default(),
+        harness,
+        verb,
+        harness_binary: native_binary
+            .map(|p| {
+                p.to_str().map(str::to_owned).ok_or_else(|| {
+                    crate::harness::adapter::SetupFailure::Invalid(
+                        "native binary path is not UTF-8".into(),
+                    )
+                })
+            })
+            .transpose()?,
+        prompt_suggestions: if options.get("disable-prompt-suggestions") == Some(&true) {
+            PromptSuggestionPolicy::Disable
+        } else if options.get("keep-prompt-suggestions") == Some(&true) {
+            PromptSuggestionPolicy::Keep
+        } else {
+            PromptSuggestionPolicy::Ask
+        },
+    })
+}
+fn scoped_legacy_environment(
+    harness: Harness,
+    scope: &crate::harness::adapter::ResolvedSetupScope,
+    snapshot: &crate::harness::adapter::SetupEnvironment,
+) -> Result<SetupEnv, crate::harness::adapter::SetupFailure> {
+    let crate::harness::adapter::ResolvedSetupScope::ConfigRoot(root) = scope else {
+        return Err(crate::harness::adapter::SetupFailure::Invalid(format!(
+            "{}: named profile is unsupported",
+            harness.as_str()
+        )));
+    };
+    let mut env = SetupEnv::from_snapshot(snapshot);
+    match harness {
+        Harness::Claude => env.claude_config_dir = Some(root.clone()),
+        Harness::Codex => env.codex_home = Some(root.clone()),
+        _ => {}
+    }
+    Ok(env)
+}
+fn legacy_diagnostics(projection: &Value) -> Vec<crate::harness::adapter::SetupDiagnostic> {
+    use crate::harness::adapter::{DiagnosticSeverity, SetupDiagnostic};
+    let mut diagnostics: Vec<_> = projection["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(16)
+        .filter_map(Value::as_str)
+        .map(|text| SetupDiagnostic::new("legacy_setup_warning", DiagnosticSeverity::Warning, text))
+        .collect();
+    if let Some(text) = projection["trust"]["note"].as_str() {
+        diagnostics.push(SetupDiagnostic::new(
+            "native_trust_manual",
+            DiagnosticSeverity::Info,
+            text,
+        ));
+    }
+    diagnostics
+}
+
+pub(crate) fn legacy_adapter_setup(
+    harness: Harness,
+    request: &crate::harness::adapter::SetupRequest,
+) -> Result<crate::harness::adapter::SetupOutcome, crate::harness::adapter::SetupFailure> {
+    let mut env = scoped_legacy_environment(harness, &request.scope, &request.environment)?;
+    env.executable = request.executable.clone();
+    let legacy = legacy_request(
+        harness,
+        SetupVerb::Install,
+        request.native_binary.as_deref(),
+        &request.options,
+    )?;
+    let projection = legacy_execute(&legacy, &env).map_err(adapter_failure)?;
+    let actions = vec![match projection["action"].as_str() {
+        Some("installed") => crate::harness::adapter::SetupAction::InstalledOwned,
+        Some("adopted") => crate::harness::adapter::SetupAction::AdoptedOwned,
+        _ => crate::harness::adapter::SetupAction::Unchanged,
+    }];
+    let diagnostics = legacy_diagnostics(&projection);
+    Ok(crate::harness::adapter::SetupOutcome {
+        actions,
+        diagnostic: String::new(),
+        diagnostics,
+        projection,
+    })
+}
+pub(crate) fn legacy_adapter_unsetup(
+    harness: Harness,
+    request: &crate::harness::adapter::UnsetupRequest,
+) -> Result<crate::harness::adapter::RemovalOutcome, crate::harness::adapter::SetupFailure> {
+    let env = scoped_legacy_environment(harness, &request.scope, &request.environment)?;
+    let legacy = legacy_request(harness, SetupVerb::Remove, None, &Default::default())?;
+    let projection = legacy_execute(&legacy, &env).map_err(adapter_failure)?;
+    let actions = vec![if projection["action"] == "removed" {
+        crate::harness::adapter::SetupAction::RemovedOwned
+    } else {
+        crate::harness::adapter::SetupAction::Unchanged
+    }];
+    let diagnostics = legacy_diagnostics(&projection);
+    Ok(crate::harness::adapter::RemovalOutcome {
+        actions,
+        diagnostic: String::new(),
+        residue: vec![],
+        diagnostics,
+        projection,
+    })
+}
+pub(crate) fn legacy_adapter_status(
+    harness: Harness,
+    request: &crate::harness::adapter::StatusRequest,
+) -> crate::harness::adapter::SetupStatus {
+    use crate::harness::adapter::*;
+    let result = (|| {
+        let env = scoped_legacy_environment(harness, &request.scope, &request.environment)?;
+        let legacy = legacy_request(
+            harness,
+            SetupVerb::Status,
+            request.native_binary.as_deref(),
+            &Default::default(),
+        )?;
+        harness_binary(&legacy, &env).map_err(adapter_failure)?;
+        let projection = match harness {
+            Harness::Claude => claude_status(
+                &legacy,
+                &env,
+                request
+                    .environment
+                    .declared
+                    .get(claude::PROMPT_SUGGESTION_ENV)
+                    .cloned(),
+            ),
+            _ => legacy_execute(&legacy, &env),
+        }
+        .map_err(adapter_failure)?;
+        let configured_hook = user_inspection(harness, &env)
+            .ok()
+            .and_then(|(_, inspection)| inspection.configured_hook);
+        let fingerprint = configured_hook
+            .as_ref()
+            .map(|hook| hook.fingerprint.clone());
+        Ok(LocalSetupStatus {
+            scope: request.scope.clone(),
+            installed: projection["installed"].as_bool().unwrap_or(false),
+            enabled: None,
+            admitted: projection["harness_version"]["supported"].as_bool(),
+            observed: None,
+            configured_hook,
+            fingerprint,
+            diagnostics: vec![SetupDiagnostic::new(
+                "native_enablement_unknown",
+                DiagnosticSeverity::Info,
+                "Native enablement and runtime observation are separate from local installation",
+            )],
+            repairs: vec![
+                LocalRepair::InstallOwned,
+                LocalRepair::RepairOwned,
+                LocalRepair::RemoveOwned,
+            ],
+            projection,
+        })
+    })();
+    match result {
+        Ok(status) => SetupStatus::Detailed(Box::new(status)),
+        Err(error) => SetupStatus::Failed(error),
+    }
+}
 pub fn execute(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
+    let registry = crate::harness::registry::builtins();
+    if request.harness == Harness::Human {
+        return Err(invalid(NO_HUMAN_SETUP));
+    }
+    let registration = registry
+        .by_id(
+            registry
+                .agent(request.harness.as_str())
+                .map_err(|e| invalid(e.to_string()))?,
+        )
+        .map_err(|e| invalid(e.to_string()))?;
+    let snapshot = env.snapshot();
+    let mut options = crate::harness::adapter::SetupOptions::new();
+    match request.prompt_suggestions {
+        PromptSuggestionPolicy::Disable => {
+            options.insert("disable-prompt-suggestions".into(), true);
+        }
+        PromptSuggestionPolicy::Keep => {
+            options.insert("keep-prompt-suggestions".into(), true);
+        }
+        _ => {}
+    }
+    execute_registered(
+        registration,
+        request.verb,
+        &request.scope,
+        request.harness_binary.as_deref().map(Path::new),
+        options,
+        &snapshot,
+    )
+}
+pub fn execute_registered(
+    registration: &crate::harness::registry::Registration,
+    verb: SetupVerb,
+    scope: &crate::harness::adapter::SetupScopeRequest,
+    native_binary: Option<&Path>,
+    options: crate::harness::adapter::SetupOptions,
+    environment: &crate::harness::adapter::SetupEnvironment,
+) -> Result<Value, RunError> {
+    use crate::harness::adapter::*;
+    crate::harness::setup::validate_local_request(
+        Some(registration),
+        verb == SetupVerb::Install,
+        scope,
+        &options,
+    )
+    .map_err(adapter_run_error)?;
+    if verb == SetupVerb::Install && !environment.executable.is_absolute() {
+        return Err(invalid("owned executable must be an absolute path"));
+    }
+    if let Some(binary) = native_binary {
+        if verb == SetupVerb::Remove {
+            return Err(invalid(
+                "--harness-binary is not used by unsetup: removal never depends on the harness version",
+            ));
+        }
+        if !binary.is_absolute() {
+            return Err(invalid("--harness-binary must be an absolute path"));
+        }
+    }
+    if registration.setup_environment_inputs().len() > 32
+        || environment.declared.len() > 32
+        || environment
+            .declared
+            .values()
+            .any(|value| value.len() > 16_384)
+    {
+        return Err(invalid(
+            "declared adapter environment exceeds local request limits",
+        ));
+    }
+    let scope = registration
+        .resolve_setup_scope(scope, environment)
+        .map_err(adapter_run_error)?;
+    let budget = crate::protocol::time::CallBudget {
+        deadline: crate::protocol::time::MonoInstant(
+            environment.clock.monotonic_now().0.saturating_add(30_000),
+        ),
+        cancellation: Default::default(),
+    };
+    match verb {
+        SetupVerb::Install => registration
+            .setup(
+                &crate::harness::adapter::SetupRequest {
+                    scope,
+                    executable: environment.executable.clone(),
+                    environment: environment.clone(),
+                    native_binary: native_binary.map(Path::to_path_buf),
+                    options,
+                },
+                &budget,
+            )
+            .map(|outcome| outcome.projection)
+            .map_err(adapter_run_error),
+        SetupVerb::Remove => registration
+            .unsetup(
+                &UnsetupRequest {
+                    scope,
+                    environment: environment.clone(),
+                },
+                &budget,
+            )
+            .map(|outcome| outcome.projection)
+            .map_err(adapter_run_error),
+        SetupVerb::Status => match registration.status(
+            &StatusRequest {
+                scope,
+                environment: environment.clone(),
+                native_binary: native_binary.map(Path::to_path_buf),
+            },
+            &budget,
+        ) {
+            SetupStatus::Detailed(status) => Ok(status.projection),
+            SetupStatus::Failed(error) => Err(adapter_run_error(error)),
+            SetupStatus::Unsupported(error) => Err(invalid(error.to_string())),
+            _ => Err(invalid("adapter did not provide local setup status")),
+        },
+    }
+}
+
+fn legacy_execute(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
     if !matches!(
         request.harness,
         Harness::Claude | Harness::Codex | Harness::Human
@@ -551,7 +934,7 @@ pub fn execute(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError
     match (request.harness, request.verb) {
         (Harness::Claude, SetupVerb::Install) => claude_install(request, env),
         (Harness::Claude, SetupVerb::Remove) => claude_remove(env),
-        (Harness::Claude, SetupVerb::Status) => claude_status(request, env),
+        (Harness::Claude, SetupVerb::Status) => claude_status(request, env, None),
         (Harness::Codex, SetupVerb::Install) => codex_install(request, env),
         (Harness::Codex, SetupVerb::Remove) => codex_remove(env),
         (Harness::Codex, SetupVerb::Status) => codex_status(request, env),
@@ -564,9 +947,6 @@ pub fn execute(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError
 }
 
 // -------------------------------------------------------------- all harnesses
-
-/// Every harness the bare commands cover, in report order.
-pub const HARNESSES: [Harness; 2] = [Harness::Claude, Harness::Codex];
 
 /// `setup`, `unsetup` or `setup-status` with no harness named: the per-harness
 /// summary is rendered, then a nonzero status is returned (as
@@ -582,19 +962,27 @@ pub fn run_all<W: Write>(
     if verb == SetupVerb::Install
         && prompt_suggestions == PromptSuggestionPolicy::Ask
         && interactive()
-        && let Some(entry) = report["harnesses"].as_array_mut().and_then(|entries| {
-            entries
-                .iter_mut()
-                .find(|entry| entry["harness"] == "claude")
-        })
-        && entry["report"].is_object()
+        && let Some(entries) = report["harnesses"].as_array_mut()
     {
-        settle_prompt_suggestions(
-            &env,
-            &mut entry["report"],
-            &mut io::stdin().lock(),
-            &mut io::stderr(),
-        )?;
+        for entry in entries {
+            if !entry["report"].is_object() {
+                continue;
+            }
+            let registry = crate::harness::registry::builtins();
+            if let Some(name) = entry["harness"].as_str()
+                && let Ok(id) = registry.agent(name)
+                && let Ok(registration) = registry.by_id(id)
+            {
+                registration
+                    .settle_setup_consent(
+                        &env.snapshot(),
+                        &mut entry["report"],
+                        &mut io::stdin().lock(),
+                        &mut io::stderr(),
+                    )
+                    .map_err(adapter_run_error)?;
+            }
+        }
     }
     let bytes = match output.format {
         OutputFormat::Json => {
@@ -650,18 +1038,52 @@ pub fn execute_all(
     prompt_suggestions: PromptSuggestionPolicy,
     env: &SetupEnv,
 ) -> Result<Value, RunError> {
-    let found: Vec<(Harness, Option<PathBuf>)> = HARNESSES
+    execute_all_registered(
+        crate::harness::registry::builtins(),
+        verb,
+        prompt_suggestions,
+        &env.snapshot(),
+    )
+}
+
+pub fn execute_all_registered(
+    registry: &crate::harness::registry::Registry,
+    verb: SetupVerb,
+    prompt_suggestions: PromptSuggestionPolicy,
+    snapshot: &crate::harness::adapter::SetupEnvironment,
+) -> Result<Value, RunError> {
+    let env = &SetupEnv::from_snapshot(snapshot);
+    let found: Vec<(
+        &crate::harness::registry::Registration,
+        Harness,
+        Option<PathBuf>,
+    )> = registry
+        .registrations()
         .iter()
-        .map(|&harness| {
+        .map(|registration| {
+            let harness = crate::harness::registry::OccupantHarness::Agent(
+                registry
+                    .agent(registration.metadata().id)
+                    .expect("validated registry identity"),
+            )
+            .into();
             (
+                registration,
                 harness,
-                hook::resolve_on_path(harness_name(harness), env.path.as_deref()),
+                match registration.metadata().executable {
+                    crate::harness::adapter::ExecutableLookup::Path(name) => {
+                        hook::resolve_on_path(name, env.path.as_deref())
+                    }
+                    _ => None,
+                },
             )
         })
         .collect();
     match verb {
-        SetupVerb::Install if found.iter().any(|(_, binary)| binary.is_some()) => {
-            env.hook_argv(Harness::Claude)?;
+        SetupVerb::Install if found.iter().any(|(_, _, binary)| binary.is_some()) => {
+            if let Some((_, harness, _)) = found.iter().find(|(_, _, binary)| binary.is_some()) {
+                env.hook_argv(*harness)?;
+            }
         }
         SetupVerb::Remove => {
             env.state_dir()?;
@@ -670,8 +1092,8 @@ pub fn execute_all(
     }
     let mut entries = Vec::new();
     let mut exit_status = 0;
-    let mut trust_reminder = false;
-    for (harness, binary) in found {
+    let mut trust_reminder = Value::Null;
+    for (registration, harness, binary) in found {
         let name = harness_name(harness);
         let mut entry = json!({"harness": name, "detected": binary.is_some()});
         if verb == SetupVerb::Install && binary.is_none() {
@@ -680,25 +1102,39 @@ pub fn execute_all(
             entries.push(entry);
             continue;
         }
-        let request = SetupRequest {
+        let mut options = crate::harness::adapter::SetupOptions::new();
+        for option in registration.setup_options() {
+            let enabled = match option.name {
+                "disable-prompt-suggestions" => {
+                    prompt_suggestions == PromptSuggestionPolicy::Disable
+                }
+                "keep-prompt-suggestions" => prompt_suggestions == PromptSuggestionPolicy::Keep,
+                _ => false,
+            };
+            if enabled {
+                options.insert(option.name.into(), true);
+            }
+        }
+        match execute_registered(
+            registration,
             verb,
-            harness,
-            harness_binary: None,
-            prompt_suggestions,
-        };
-        match execute(&request, env) {
+            &Default::default(),
+            None,
+            options,
+            snapshot,
+        ) {
             Ok(mut report) => {
                 entry["outcome"] = match verb {
                     SetupVerb::Status => json!("status"),
                     _ => report["action"].clone(),
                 };
-                if harness == Harness::Codex
-                    && verb == SetupVerb::Install
+                if verb == SetupVerb::Install
                     && let Some(trust) = report["trust"].as_object_mut()
                 {
                     // Printed once for the whole run (`trust_reminder`).
-                    trust.remove("note");
-                    trust_reminder = true;
+                    if let Some(note) = trust.remove("note") {
+                        trust_reminder = note;
+                    }
                 }
                 entry["report"] = report;
             }
@@ -725,7 +1161,7 @@ pub fn execute_all(
             SetupVerb::Status => "status",
         }),
         "harnesses": entries,
-        "trust_reminder": if trust_reminder { json!(CODEX_TRUST_NOTE) } else { Value::Null },
+        "trust_reminder": trust_reminder,
         "exit_status": exit_status,
     }))
 }
@@ -1559,7 +1995,7 @@ fn interactive() -> bool {
 /// `Disable prompt suggestions? [y/N]` on `out`, read one line from `input`,
 /// and set the key `false` only on yes. The advice warning is dropped either
 /// way: the person has answered.
-pub fn settle_prompt_suggestions<R: io::BufRead, W: Write>(
+pub fn settle_prompt_suggestions<R: io::BufRead + ?Sized, W: Write + ?Sized>(
     env: &SetupEnv,
     report: &mut Value,
     input: &mut R,
@@ -1746,7 +2182,11 @@ fn settings_status(
     Ok(())
 }
 
-fn claude_status(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
+fn claude_status(
+    request: &SetupRequest,
+    env: &SetupEnv,
+    suggestion_override: Option<OsString>,
+) -> Result<Value, RunError> {
     let settings = env.claude_settings()?;
     let mut report = json!({
         "action": "status",
@@ -1758,11 +2198,7 @@ fn claude_status(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
         "harness_version": observation_json(&observe(request, env)),
     });
     settings_status(SettingsKind::ClaudeUser, env, &settings, &mut report)?;
-    report["prompt_suggestions"] = prompt_suggestion_status(
-        env,
-        &settings,
-        std::env::var_os(claude::PROMPT_SUGGESTION_ENV),
-    );
+    report["prompt_suggestions"] = prompt_suggestion_status(env, &settings, suggestion_override);
     Ok(report)
 }
 
@@ -2855,6 +3291,8 @@ mod tests {
 
     fn env(state: Option<&str>) -> SetupEnv {
         SetupEnv {
+            home: None,
+            declared_environment: Default::default(),
             executable: PathBuf::from("/opt/h t/herdr-threads"),
             state_dir: state.map(PathBuf::from),
             cwd: PathBuf::from("/"),

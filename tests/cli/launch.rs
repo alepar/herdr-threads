@@ -238,6 +238,8 @@ impl Scratch {
             .unwrap();
         fs::create_dir(root.join("bin")).unwrap();
         let env = SetupEnv {
+            home: None,
+            declared_environment: Default::default(),
             executable: root.join("h t/herdr-threads"),
             state_dir: Some(root.join("state")),
             cwd: root.clone(),
@@ -259,6 +261,7 @@ impl Scratch {
     fn setup(&self, harness: ContextHarness) -> Value {
         setup::execute(
             &SetupRequest {
+                scope: Default::default(),
                 verb: SetupVerb::Install,
                 harness,
                 harness_binary: None,
