@@ -4,6 +4,7 @@ Columns: date · title · relative link · one-line summary · status · tags.
 
 | Date | Title | Design | Summary | Status | Tags |
 |---|---|---|---|---|---|
+| 2026-10-03 | Registry health and tooling | [Design](../runs/2026-10-03-harness-adapters/2026-10-03-harness-adapters--health-tooling-design.md) | Scoped negotiated health, generic doctor and same-binary canary/runtime manifest discovery. | draft | harness-adapters, ht-3bi.3 |
 | 2026-10-03 | Domain evidence recording | [Design](../runs/2026-10-03-harness-adapters/2026-10-03-harness-adapters--hooks-evidence--recording-design.md) | Bounded transactional runtime/domain evidence, negotiated handler and adapter-driven client gates. | draft | harness-adapters, ht-3bi.2.4 |
 | 2026-10-03 | Adapter hook and runtime evidence | [Design](../runs/2026-10-03-harness-adapters/2026-10-03-harness-adapters--hooks-evidence-design.md) | Adapter-directed codecs, durable qualified turns and exact domain-scoped evidence with legacy compatibility. | draft | harness-adapters, ht-3bi.2 |
 | 2026-10-03 | Harness adapters and Hermes | [Design](../runs/2026-10-03-harness-adapters/2026-10-03-harness-adapters-design.md) | Static adapter author interface, compatibility-preserving discovery and bounded native Hermes Python bridge. | draft | harness-adapters, hermes, ht-3bi |

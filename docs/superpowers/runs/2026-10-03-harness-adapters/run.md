@@ -1,7 +1,8 @@
 # super-auto run — 2026-10-03-harness-adapters
 
 flags: planOneShot=false skipPlanRoast=false skipCodeRoast=false autonomous=true
-resumeChange: User schema coordination: CLI owns v19 and any following migrations required for v0.2.2; adapter migration follows CLI final schema, prototype only clearly provisional, absorb main and renumber before freeze. Historical migrations immutable; exact Hermes identity/model-free labels preserved.
+resumeChange: User confirmed schema allocation: CLI v19 thread names, v20 recent activity; durable handoff uses private journals. Adapter/runtime-evidence migration is v21 after CLI lands. Prototype only clearly provisional until absorb main before freeze; historical migrations immutable; exact Hermes identity/model-free labels preserved.
+resumeChange: User reports main 021ac1ec with wake_batch_delay_ms default 0 in InstanceSettings/StoreSettings, explicit batching overrides and retry spacing retained, legacy HealthSettings absent-field fallback preserved. Absorb main before freeze and preserve this behavior/opt-in fixtures; no migration or immediate rebase required.
 phase: design
 codeMechanism: ordinary-subagents
 
