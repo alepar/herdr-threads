@@ -11,7 +11,7 @@ use crate::{
     ports::LocalClient,
     protocol::{
         attention::{AttentionDigest, AttentionToken},
-        authority::{CallerClaim, CallerRole, Harness as WireHarness},
+        authority::{CallerClaim, CallerRole},
         commands::{CheckInMode as WireMode, Command, DirectoryMembership, DirectoryQuery},
         ids::*,
         output::{OutputFormat, OutputSpec, encode_selected},
@@ -259,11 +259,7 @@ pub fn caller_claim(context: &OccupantContext) -> Result<CallerClaim, ContextErr
         seat: SeatId::parse(context.seat.clone()).map_err(|_| ContextError::Invalid)?,
         binding_generation: context.binding_generation,
         role: CallerRole::TopLevel,
-        harness: match context.harness {
-            Harness::Codex => WireHarness::Codex,
-            Harness::Claude => WireHarness::Claude,
-            Harness::Human => WireHarness::Human,
-        },
+        harness: context.harness.into(),
         native_session: NativeSessionId::parse(session).map_err(|_| ContextError::Invalid)?,
         execution: ExecutionId::parse(context.execution.to_string())
             .map_err(|_| ContextError::Invalid)?,
@@ -288,11 +284,7 @@ fn occupant_context(claim: &CallerClaim) -> Result<OccupantContext, ContextError
         instance: Uuid::parse_str(&claim.instance).map_err(|_| ContextError::Invalid)?,
         seat: claim.seat.as_str().into(),
         target: claim.target.as_str().into(),
-        harness: match claim.harness {
-            WireHarness::Codex => Harness::Codex,
-            WireHarness::Claude => Harness::Claude,
-            WireHarness::Human => Harness::Human,
-        },
+        harness: claim.harness.into(),
         binding_generation: claim.binding_generation,
         execution: Uuid::parse_str(claim.execution.as_str()).map_err(|_| ContextError::Invalid)?,
         session,

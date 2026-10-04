@@ -23,36 +23,7 @@ pub enum CallerRole {
     Subagent,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Harness {
-    Codex,
-    Claude,
-    /// A person typing in their own Herdr pane (`herdr-threads me init`).
-    /// Its bindings and decisions carry `operator_human` provenance; it is
-    /// never an agent claim and never launched, hooked or prompted.
-    Human,
-}
-
-impl Harness {
-    /// The durable `occupant_bindings.harness` value.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Codex => "codex",
-            Self::Claude => "claude",
-            Self::Human => "human",
-        }
-    }
-    /// Provenance recorded for this occupant's cooperative registration and
-    /// accountable decisions. A person is recorded as `operator_human`, never
-    /// as an agent's `cooperative_top_level` claim.
-    pub fn cooperative_provenance(self) -> &'static str {
-        match self {
-            Self::Human => OPERATOR_HUMAN_PROVENANCE,
-            Self::Codex | Self::Claude => COOPERATIVE_TOP_LEVEL_PROVENANCE,
-        }
-    }
-}
+pub use crate::harness::registry::OccupantHarness as Harness;
 
 /// An agent's cooperative top-level claim (not native attestation).
 pub const COOPERATIVE_TOP_LEVEL_PROVENANCE: &str = "cooperative_top_level";
@@ -258,6 +229,69 @@ impl MutationPermit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn operational_ids_require_registered_agents() {
+        let registry = crate::harness::registry::builtins();
+        assert_eq!(registry.agent("codex").unwrap().as_str(), "codex");
+        for id in ["human", "Human", "unknown", "Codex"] {
+            assert!(registry.agent(id).is_err());
+        }
+    }
+    #[test]
+    fn occupant_wire_and_context_spellings_are_legacy_exact() {
+        use crate::harness::{
+            context,
+            registry::{OccupantHarness, builtins},
+        };
+        for (wire, local, occupant) in [
+            ("codex", "Codex", OccupantHarness::Codex),
+            ("claude", "Claude", OccupantHarness::Claude),
+            ("human", "Human", OccupantHarness::Human),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&occupant).unwrap(),
+                format!("\"{wire}\"")
+            );
+            assert_eq!(
+                serde_json::to_string(&context::Harness::from(occupant)).unwrap(),
+                format!("\"{local}\"")
+            );
+            assert_eq!(
+                serde_json::from_str::<OccupantHarness>(&format!("\"{wire}\"")).unwrap(),
+                occupant
+            );
+            assert_eq!(
+                OccupantHarness::from(
+                    serde_json::from_str::<context::Harness>(&format!("\"{local}\"")).unwrap()
+                ),
+                occupant
+            );
+            if wire != local {
+                assert!(serde_json::from_str::<OccupantHarness>(&format!("\"{local}\"")).is_err());
+                assert!(serde_json::from_str::<context::Harness>(&format!("\"{wire}\"")).is_err());
+            }
+        }
+        for id in ["human", "Human", "unregistered"] {
+            assert!(builtins().agent(id).is_err());
+        }
+        assert!(serde_json::from_str::<OccupantHarness>("\"unregistered\"").is_err());
+        assert!(serde_json::from_str::<context::Harness>("\"Unregistered\"").is_err());
+    }
+    #[test]
+    fn identity_bridge_is_lossless_for_registered_agents() {
+        use crate::harness::{
+            context,
+            registry::{OccupantHarness, builtins},
+        };
+        for registration in builtins().registrations() {
+            let occupant =
+                OccupantHarness::Agent(builtins().agent(registration.metadata().id).unwrap());
+            assert_eq!(
+                OccupantHarness::from(context::Harness::from(occupant)),
+                occupant
+            );
+        }
+    }
     #[test]
     fn human_occupant_is_recorded_as_operator_human_never_an_agent_claim() {
         assert_eq!(Harness::Human.as_str(), "human");
