@@ -204,6 +204,13 @@ trait ErasedAdapter: Send + Sync {
         budget: &CallBudget,
     ) -> Result<SetupOutcome, SetupFailure>;
     fn status(&self, request: &StatusRequest, budget: &CallBudget) -> SetupStatus;
+    fn doctor_projection(
+        &self,
+        request: &StatusRequest,
+        daemon: &serde_json::Value,
+        budget: &CallBudget,
+    ) -> Option<DoctorProjection>;
+
     fn unsetup(
         &self,
         request: &UnsetupRequest,
@@ -324,6 +331,15 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
     fn status(&self, request: &StatusRequest, budget: &CallBudget) -> SetupStatus {
         self.0.status(request, budget)
     }
+    fn doctor_projection(
+        &self,
+        request: &StatusRequest,
+        daemon: &serde_json::Value,
+        budget: &CallBudget,
+    ) -> Option<DoctorProjection> {
+        self.0.doctor_projection(request, daemon, budget)
+    }
+
     fn unsetup(
         &self,
         request: &UnsetupRequest,
@@ -484,6 +500,15 @@ impl Registration {
     pub fn status(&self, request: &StatusRequest, budget: &CallBudget) -> SetupStatus {
         self.adapter.status(request, budget)
     }
+    pub fn doctor_projection(
+        &self,
+        request: &StatusRequest,
+        daemon: &serde_json::Value,
+        budget: &CallBudget,
+    ) -> Option<DoctorProjection> {
+        self.adapter.doctor_projection(request, daemon, budget)
+    }
+
     pub fn unsetup(
         &self,
         request: &UnsetupRequest,

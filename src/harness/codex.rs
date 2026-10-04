@@ -1291,6 +1291,16 @@ impl HarnessAdapter for CodexAdapter {
         };
         &METADATA
     }
+    fn doctor_projection(
+        &self,
+        request: &StatusRequest,
+        daemon: &serde_json::Value,
+        budget: &CallBudget,
+    ) -> Option<DoctorProjection> {
+        Some(crate::cli::doctor::legacy_codex_projection(
+            request, daemon, budget,
+        ))
+    }
     fn legacy_contract_id(&self) -> Option<String> {
         Some(super::contract::contract_id(&CONTRACT))
     }
