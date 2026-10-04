@@ -565,3 +565,475 @@ fn the_harness_read_is_bounded_to_the_newest_rows() {
         "the newest 256, ordered by first_seen_at"
     );
 }
+
+#[test]
+fn v2_evidence_exact_domains_transaction_milestones_retention_and_legacy_rows() {
+    use crate::harness::{adapter::HarnessAdapter, runtime::RuntimeIdentity};
+    let fx = Fx::new("he-v2-exact");
+    fx.record(
+        "2.1.286",
+        CONTRACT,
+        "SessionStart",
+        EventClass::Lifecycle,
+        EvidenceOutcome::Ok,
+    );
+    let legacy = fx.row("2.1.286", CONTRACT).unwrap();
+    let descriptor = crate::harness::claude::ClaudeAdapter.contracts()[0];
+    let identity = RuntimeIdentity::stable_release("2.1.286", "native_transcript").unwrap();
+    let mut writer = fx.store.writer(&budget()).unwrap();
+    let record = |event| EvidenceRecordV2 {
+        identity: &identity,
+        descriptor: &descriptor,
+        event,
+        outcome: &EvidenceOutcome::Ok,
+        qualified: true,
+    };
+    let first = record_v2(&fx.store.context, &mut writer, &record("SessionStart")).unwrap();
+    assert!(first.created);
+    assert!(!first.row.verified(&descriptor));
+    assert_eq!(first.row.milestones.get("lifecycle"), Some(&(T0 as u64)));
+    fx.advance(1000);
+    let second = record_v2(&fx.store.context, &mut writer, &record("PreToolUse")).unwrap();
+    assert!(second.row.verified(&descriptor));
+    assert_eq!(
+        second.row.milestones.get("tool"),
+        Some(&((T0 + 1000) as u64))
+    );
+    drop(writer);
+    assert_eq!(
+        fx.store
+            .harness_evidence_v2(
+                "claude",
+                &identity.key,
+                descriptor.domain_id,
+                descriptor.origin,
+                &descriptor.contract_id_v2().unwrap(),
+                &budget()
+            )
+            .unwrap(),
+        Some(second.row)
+    );
+    assert_eq!(fx.row("2.1.286", CONTRACT), Some(legacy));
+}
+
+fn v2_identity(version: &str) -> crate::harness::runtime::RuntimeIdentity {
+    crate::harness::runtime::RuntimeIdentity::stable_release(version, "native_transcript").unwrap()
+}
+fn v2_descriptor() -> crate::harness::adapter::ContractDescriptor {
+    use crate::harness::adapter::HarnessAdapter;
+    crate::harness::claude::ClaudeAdapter.contracts()[0]
+}
+fn v2_write(
+    fx: &Fx,
+    identity: &crate::harness::runtime::RuntimeIdentity,
+    descriptor: &crate::harness::adapter::ContractDescriptor,
+    event: &str,
+    outcome: EvidenceOutcome,
+    qualified: bool,
+) -> Result<RecordedV2, crate::protocol::results::ApiError> {
+    fx.store.record_harness_evidence_v2(
+        &EvidenceRecordV2 {
+            identity,
+            descriptor,
+            event,
+            outcome: &outcome,
+            qualified,
+        },
+        &budget(),
+    )
+}
+#[test]
+fn v2_domains_origins_contracts_runtime_and_qualification_do_not_share_success() {
+    use crate::harness::evidence::EvidenceOrigin;
+    let fx = Fx::new("he-v2-isolation");
+    let identity = v2_identity("2.1.286");
+    let descriptor = v2_descriptor();
+    v2_write(
+        &fx,
+        &identity,
+        &descriptor,
+        "SessionStart",
+        EvidenceOutcome::Ok,
+        true,
+    )
+    .unwrap();
+    let mut other = descriptor;
+    for dimension in 0..3 {
+        match dimension {
+            0 => other.domain_id = "bridge",
+            1 => {
+                other = descriptor;
+                other.origin = EvidenceOrigin::BridgeEnvelope;
+            }
+            _ => {
+                other = descriptor;
+                other.required_milestones = &["tool"];
+            }
+        }
+        let row = v2_write(
+            &fx,
+            &identity,
+            &other,
+            "PreToolUse",
+            EvidenceOutcome::Ok,
+            true,
+        )
+        .unwrap()
+        .row;
+        assert!(!row.milestones.contains_key("lifecycle"));
+        assert!(!row.verified(&descriptor));
+    }
+    let different = v2_identity("2.1.287");
+    assert!(
+        !v2_write(
+            &fx,
+            &different,
+            &descriptor,
+            "PreToolUse",
+            EvidenceOutcome::Ok,
+            true
+        )
+        .unwrap()
+        .row
+        .verified(&descriptor)
+    );
+    let unqualified = v2_write(
+        &fx,
+        &identity,
+        &descriptor,
+        "PreToolUse",
+        EvidenceOutcome::Ok,
+        false,
+    )
+    .unwrap();
+    assert!(!unqualified.row.verified(&descriptor));
+    let empty = crate::harness::adapter::ContractDescriptor {
+        required_milestones: &[],
+        ..descriptor
+    };
+    assert!(
+        !v2_write(
+            &fx,
+            &identity,
+            &empty,
+            "PreToolUse",
+            EvidenceOutcome::Ok,
+            true
+        )
+        .unwrap()
+        .row
+        .verified(&empty)
+    );
+}
+#[test]
+fn v2_first_success_and_first_violation_are_sticky_malformed_is_not_violation() {
+    let fx = Fx::new("he-v2-sticky");
+    let identity = v2_identity("2.1.286");
+    let descriptor = v2_descriptor();
+    let malformed = v2_write(
+        &fx,
+        &identity,
+        &descriptor,
+        "PreToolUse",
+        EvidenceOutcome::Malformed,
+        true,
+    )
+    .unwrap();
+    assert!(malformed.row.milestones.is_empty());
+    assert_eq!(malformed.row.violation_at, None);
+    let first = v2_write(
+        &fx,
+        &identity,
+        &descriptor,
+        "SessionStart",
+        EvidenceOutcome::Ok,
+        true,
+    )
+    .unwrap();
+    fx.advance(100);
+    let violation = v2_write(
+        &fx,
+        &identity,
+        &descriptor,
+        "PreToolUse",
+        EvidenceOutcome::Violation {
+            field: "tool_name".into(),
+        },
+        true,
+    )
+    .unwrap();
+    assert!(violation.fresh_violation);
+    fx.advance(100);
+    let second = v2_write(
+        &fx,
+        &identity,
+        &descriptor,
+        "SessionStart",
+        EvidenceOutcome::Ok,
+        true,
+    )
+    .unwrap();
+    let final_row = v2_write(
+        &fx,
+        &identity,
+        &descriptor,
+        "PreToolUse",
+        EvidenceOutcome::Ok,
+        true,
+    )
+    .unwrap()
+    .row;
+    assert_eq!(
+        second.row.milestones.get("lifecycle"),
+        first.row.milestones.get("lifecycle")
+    );
+    assert_eq!(final_row.violation_at, Some((T0 + 100) as u64));
+    assert_eq!(final_row.violation_field.as_deref(), Some("tool_name"));
+    assert!(!final_row.verified(&descriptor));
+    let again = v2_write(
+        &fx,
+        &identity,
+        &descriptor,
+        "SessionStart",
+        EvidenceOutcome::Violation {
+            field: "different".into(),
+        },
+        true,
+    )
+    .unwrap();
+    assert!(!again.fresh_violation);
+    assert_eq!(again.row.violation_event.as_deref(), Some("PreToolUse"));
+}
+#[test]
+fn v2_conflicting_descriptor_and_failed_write_rollback_every_side_effect() {
+    let fx = Fx::new("he-v2-rollback");
+    let identity = v2_identity("2.1.286");
+    let descriptor = v2_descriptor();
+    v2_write(
+        &fx,
+        &identity,
+        &descriptor,
+        "SessionStart",
+        EvidenceOutcome::Ok,
+        true,
+    )
+    .unwrap();
+    let conflict = v2_identity("2.1.286");
+    let mut conflict = conflict;
+    conflict.descriptor.source = "different".into();
+    assert!(conflict.validate().is_ok());
+    fx.advance(100);
+    assert!(
+        v2_write(
+            &fx,
+            &conflict,
+            &descriptor,
+            "PreToolUse",
+            EvidenceOutcome::Ok,
+            true
+        )
+        .is_err()
+    );
+    let writer = fx.store.writer(&budget()).unwrap();
+    let at: i64 = writer
+        .query_row(
+            "SELECT last_seen_at FROM harness_runtime_identities",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(at, T0);
+    writer.execute_batch("CREATE TRIGGER fail_v2 BEFORE INSERT ON harness_contract_evidence_v2 BEGIN SELECT RAISE(ABORT,'injected write failure'); END;").unwrap();
+    drop(writer);
+    let new_identity = v2_identity("2.1.287");
+    assert!(
+        v2_write(
+            &fx,
+            &new_identity,
+            &descriptor,
+            "SessionStart",
+            EvidenceOutcome::Ok,
+            true
+        )
+        .is_err()
+    );
+    let writer = fx.store.writer(&budget()).unwrap();
+    let count: i64 = writer
+        .query_row(
+            "SELECT count(*) FROM harness_runtime_identities WHERE identity_key='release:2.1.287'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+}
+#[test]
+fn v2_reads_have_deterministic_ties_cap_and_retention_prunes_only_unreferenced_descriptors() {
+    let fx = Fx::new("he-v2-retention");
+    let descriptor = v2_descriptor();
+    for n in 0..270 {
+        v2_write(
+            &fx,
+            &v2_identity(&format!("2.1.{n}")),
+            &descriptor,
+            "SessionStart",
+            EvidenceOutcome::Ok,
+            true,
+        )
+        .unwrap();
+    }
+    use crate::harness::{adapter::HarnessAdapter, evidence::EvidenceOrigin};
+    let codex = crate::harness::codex::CodexAdapter.contracts()[0];
+    v2_write(
+        &fx,
+        &v2_identity("2.1.0"),
+        &codex,
+        "SessionStart",
+        EvidenceOutcome::Ok,
+        true,
+    )
+    .unwrap();
+    let bridge = crate::harness::adapter::ContractDescriptor {
+        domain_id: "bridge",
+        origin: EvidenceOrigin::BridgeEnvelope,
+        ..descriptor
+    };
+    v2_write(
+        &fx,
+        &v2_identity("2.1.0"),
+        &bridge,
+        "SessionStart",
+        EvidenceOutcome::Ok,
+        true,
+    )
+    .unwrap();
+    let rows = fx
+        .store
+        .harness_evidence_v2_all("claude", 0, &budget())
+        .unwrap();
+    assert_eq!(rows.len(), 256);
+    assert_eq!(rows[0].identity.key, "release:2.1.0");
+    assert_eq!(rows[1].identity.key, "release:2.1.0");
+    assert_eq!(rows[0].domain, "bridge");
+    assert_eq!(
+        fx.store
+            .harness_evidence_v2_since(0, &budget())
+            .unwrap()
+            .len(),
+        256
+    );
+    fx.advance(EVIDENCE_RETENTION_MS + 1);
+    v2_write(
+        &fx,
+        &v2_identity("3.0.0"),
+        &descriptor,
+        "SessionStart",
+        EvidenceOutcome::Ok,
+        true,
+    )
+    .unwrap();
+    let db = fx.store.context.open_query(budget()).unwrap();
+    let rows = all_v2(&db, "claude", 0).unwrap();
+    assert_eq!(rows.len(), 64);
+    assert_eq!(rows[0].identity.key, "release:3.0.0");
+    let counts:(i64,i64)=db.query_row("SELECT (SELECT count(*) FROM harness_runtime_identities WHERE harness='claude'),(SELECT count(*) FROM harness_contract_evidence_v2 WHERE harness='claude')",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    assert_eq!(counts, (63, 64));
+    assert_eq!(
+        fx.store
+            .harness_evidence_v2_all("codex", 0, &budget())
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        all_v2(&db, "claude", (T0 + EVIDENCE_RETENTION_MS + 1) as u64)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+#[test]
+fn v2_unattributed_reasons_are_bounded_latest_per_exact_domain_origin() {
+    use crate::harness::evidence::EvidenceOrigin::*;
+    let fx = Fx::new("he-v2-reasons");
+    let mut writer = fx.store.writer(&budget()).unwrap();
+    record_unattributed_v2(
+        &fx.store.context,
+        &mut writer,
+        "claude",
+        "native",
+        NativePayload,
+        "first",
+    )
+    .unwrap();
+    fx.advance(50);
+    record_unattributed_v2(
+        &fx.store.context,
+        &mut writer,
+        "claude",
+        "native",
+        NativePayload,
+        "last",
+    )
+    .unwrap();
+    record_unattributed_v2(
+        &fx.store.context,
+        &mut writer,
+        "claude",
+        "native",
+        BridgeEnvelope,
+        "bridge",
+    )
+    .unwrap();
+    assert_eq!(
+        last_unattributed_v2(&writer, "claude", "native", NativePayload).unwrap(),
+        Some(("last".into(), (T0 + 50) as u64))
+    );
+    assert_eq!(
+        last_unattributed_v2(&writer, "claude", "native", BridgeEnvelope).unwrap(),
+        Some(("bridge".into(), (T0 + 50) as u64))
+    );
+    for reason in ["", "bad\nreason", &"é".repeat(129)] {
+        assert!(
+            record_unattributed_v2(
+                &fx.store.context,
+                &mut writer,
+                "claude",
+                "native",
+                NativePayload,
+                reason
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn v2_noncanonical_milestone_maps_are_refused_not_silently_reinterpreted() {
+    let fx = Fx::new("he-v2-corrupt-map");
+    let identity = v2_identity("2.1.286");
+    let descriptor = v2_descriptor();
+    v2_write(
+        &fx,
+        &identity,
+        &descriptor,
+        "SessionStart",
+        EvidenceOutcome::Ok,
+        true,
+    )
+    .unwrap();
+    let writer = fx.store.writer(&budget()).unwrap();
+    writer
+        .execute(
+            "UPDATE harness_contract_evidence_v2 SET milestones_json=?1",
+            [r#"{"lifecycle":1,"lifecycle":2}"#],
+        )
+        .unwrap();
+    drop(writer);
+    assert!(
+        fx.store
+            .harness_evidence_v2_all("claude", 0, &budget())
+            .is_err(),
+        "duplicate milestone timestamp must not be last-wins"
+    );
+}
