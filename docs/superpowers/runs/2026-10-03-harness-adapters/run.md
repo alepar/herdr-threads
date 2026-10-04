@@ -12,6 +12,7 @@ spec: 2026-10-03-harness-adapters-design.md
 
 approvals:
 - design-review · approved — user approved broad architecture and Python bridge before invoking super-auto; detailed design proceeds autonomously with both reviews retained.
+- top-split · auto · ht-3bi.1 LEAF, ht-3bi.2 PROMOTE, ht-3bi.3 PROMOTE, ht-3bi.4 LEAF, ht-3bi.5 PROMOTE, ht-3bi.6 PROMOTE, ht-3bi.7 LEAF, ht-3bi.8 LEAF, ht-3bi.9 LEAF
 
 parked:
 - run.md · degraded-verdict · "Final integrated full-suite sweep, main merge, worktree cleanup and 0.3.0 release belong to threads-main w4:p1 by explicit user instruction; this run supplies focused checks and a frozen merge request."
