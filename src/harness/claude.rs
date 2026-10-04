@@ -11,6 +11,8 @@
 //! durable receipts remain separate, unqualified gates.
 pub mod setup;
 
+mod composer;
+
 use super::adapter::*;
 use super::admission::{self, OptimisticAdmission, Refusal, Row};
 use super::context::{ContextError, EventKind, Harness, Role};
@@ -779,6 +781,9 @@ impl HarnessAdapter for ClaudeAdapter {
     }
     fn canary_strategy(&self) -> Option<&dyn super::adapter::CanaryStrategy> {
         Some(&ClaudeCanary)
+    }
+    fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
+        Some(&composer::NativeComposer)
     }
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
         Some(self)

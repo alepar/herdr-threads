@@ -12,6 +12,8 @@
 //! permission decision or `updatedInput`.
 pub mod setup;
 
+mod composer;
+
 use super::adapter::*;
 use super::admission::{self, OptimisticAdmission, Refusal, Row};
 use super::codex_schema::{self, Unextractable};
@@ -1308,6 +1310,9 @@ impl HarnessAdapter for CodexAdapter {
     }
     fn canary_strategy(&self) -> Option<&dyn super::adapter::CanaryStrategy> {
         Some(&CodexCanary)
+    }
+    fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
+        Some(&composer::NativeComposer)
     }
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
         Some(self)
