@@ -294,6 +294,13 @@ effective deadline.
 
 These are decisions, not bugs. Each is safe to rely on only as stated.
 
+- **Bounded advisory evidence suppression.** Negotiated v2 recording remembers resumed creating-CLI
+  lifecycle suppression with a fixed 8-KiB monotonic hash filter, scoped by harness, session, domain,
+  origin and contract. Hold expiry/eviction cannot forget a recorded suppression during that recorder's
+  lifetime. Hash collisions or saturation may withhold lifecycle milestones from unrelated new sessions;
+  they never grant evidence verification, seat continuity or receipt authority. The filter is in memory
+  and starts empty on daemon restart; suppression does not claim durable session history.
+
 - **Child agents can ACK.** Subagents are instructed not to; the plugin cannot tell them from their parent.
 - **Same-user spoofing.** Any same-user process can select another seat, set `HERDR_PANE_ID`, or write another
   seat's files under the instance `contexts/` and `intents/` directories (writable from the Codex sandbox by

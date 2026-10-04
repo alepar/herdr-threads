@@ -1285,21 +1285,22 @@ where
                     crate::daemon::health::harness_version_lines(&answer);
                 inputs
             };
-            let harness_evidence_v2 = Arc::new(
-                crate::daemon::harness_evidence::HarnessEvidenceRecorderV2::new(
-                    evidence_store.clone(),
-                    Some(manifest.clone()
-                        as Arc<dyn crate::daemon::harness_evidence::ManifestTrigger>),
-                    factory_clock.clone(),
-                ),
-            );
             let harness_evidence = Arc::new(
                 crate::daemon::harness_evidence::HarnessEvidenceRecorder::new(
-                    evidence_store,
+                    evidence_store.clone(),
                     Some(Arc::clone(&manifest)
                         as Arc<dyn crate::daemon::harness_evidence::ManifestTrigger>),
                     Arc::clone(&factory_clock),
                 ),
+            );
+            let harness_evidence_v2 = Arc::new(
+                crate::daemon::harness_evidence::HarnessEvidenceRecorderV2::new(
+                    evidence_store,
+                    Some(manifest.clone()
+                        as Arc<dyn crate::daemon::harness_evidence::ManifestTrigger>),
+                    factory_clock.clone(),
+                )
+                .with_legacy_pending(&harness_evidence),
             );
             Ok(Arc::new(
                 ControlService::new(stop, health, domain)

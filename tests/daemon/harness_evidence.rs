@@ -1179,7 +1179,6 @@ fn v2_pending_ttl_capacity_and_failed_restore_are_deterministic() {
             },
             received_ms: at,
             note,
-            suppressed: false,
         }
     };
     for i in 0..=PENDING_MAX_ENTRIES {
@@ -1332,4 +1331,242 @@ fn v2_unknown_identity_domain_origin_event_or_qualification_never_falls_back() {
         recorder.record(&forged, &budget()).unwrap_err().code,
         crate::protocol::results::ErrorCode::InvalidRequest
     );
+}
+
+// Catch independent legacy/v2 caps: alternating paths must evict the oldest
+// legacy start when their combined count reaches 1025.
+#[test]
+fn mixed_pending_paths_share_one_capacity_and_oldest_eviction() {
+    let fx = Fx::new("mixed-pending-bound");
+    let recorder = HarnessEvidenceRecorderV2::new(fx.store.clone(), None, fx.clock.clone())
+        .with_legacy_pending(&fx.recorder);
+    fx.recorder
+        .record(
+            &note(None, "SessionStart", ok(), Some("oldest-legacy")),
+            &budget(),
+        )
+        .unwrap();
+    for i in 0..PENDING_MAX_ENTRIES {
+        fx.advance(1);
+        if i % 2 == 0 {
+            let mut n = v2_note(false, "SessionStart");
+            n.session_id = Some(format!("mixed-v2-{i}"));
+            recorder.record(&n, &budget()).unwrap();
+        } else {
+            fx.recorder
+                .record(
+                    &note(
+                        None,
+                        "SessionStart",
+                        ok(),
+                        Some(&format!("mixed-legacy-{i}")),
+                    ),
+                    &budget(),
+                )
+                .unwrap();
+        }
+    }
+    assert!(
+        !fx.recorder
+            .record(
+                &note(Some("2.1.286"), "PreToolUse", ok(), Some("oldest-legacy")),
+                &budget()
+            )
+            .unwrap(),
+        "aggregate capacity must evict oldest across both paths"
+    );
+    let mut tool = v2_note(true, "PreToolUse");
+    tool.session_id = Some("mixed-v2-1022".into());
+    assert!(
+        recorder.record(&tool, &budget()).unwrap(),
+        "recent v2 hold remains eligible"
+    );
+    assert!(
+        fx.recorder
+            .record(
+                &note(
+                    Some("2.1.286"),
+                    "PreToolUse",
+                    ok(),
+                    Some("mixed-legacy-1023")
+                ),
+                &budget()
+            )
+            .unwrap(),
+        "recent legacy hold remains eligible"
+    );
+}
+
+fn codex_note(
+    runtime: bool,
+    event: &str,
+    session: &str,
+) -> crate::protocol::commands::HarnessEvidenceV2 {
+    use crate::harness::adapter::HarnessAdapter;
+    let d = crate::harness::codex::CodexAdapter.contracts()[0];
+    let mut n = v2_note(runtime, event);
+    n.harness = "codex".into();
+    n.contract_id = d.contract_id_v2().unwrap();
+    n.session_id = Some(session.into());
+    n.runtime = runtime.then(|| {
+        crate::harness::runtime::RuntimeIdentity::stable_release("0.159.3", "native_transcript")
+            .unwrap()
+    });
+    n.unavailable_reason = (!runtime).then(|| d.resumed_unavailable_reason.unwrap().into());
+    n
+}
+
+// Catch suppression-marker expiry/eviction granting creating-CLI lifecycle.
+fn assert_codex_suppression_after_forgetting(expire: bool) {
+    let fx = Fx::new(if expire {
+        "codex-sticky-expiry"
+    } else {
+        "codex-sticky-eviction"
+    });
+    let recorder = HarnessEvidenceRecorderV2::new(fx.store.clone(), None, fx.clock.clone());
+    recorder
+        .record(&codex_note(false, "SessionStart", "resumed-old"), &budget())
+        .unwrap();
+    if expire {
+        fx.advance(PENDING_MAX_AGE_MS);
+    } else {
+        for i in 0..PENDING_MAX_ENTRIES {
+            fx.advance(1);
+            let mut n = v2_note(false, "SessionStart");
+            n.session_id = Some(format!("unrelated-{i}"));
+            recorder.record(&n, &budget()).unwrap();
+        }
+    }
+    recorder
+        .record(&codex_note(true, "SessionStart", "resumed-old"), &budget())
+        .unwrap();
+    assert!(
+        !recorder
+            .record(&codex_note(true, "PreToolUse", "resumed-old"), &budget())
+            .unwrap(),
+        "forgotten suppression must not credit creating CLI"
+    );
+    let rows = fx
+        .store
+        .harness_evidence_v2_all("codex", 0, &budget())
+        .unwrap();
+    assert!(!rows[0].milestones.contains_key("lifecycle"));
+    assert!(
+        recorder
+            .record(
+                &codex_note(true, "SessionStart", "genuinely-new"),
+                &budget()
+            )
+            .unwrap(),
+        "an unrelated fresh lifecycle remains eligible"
+    );
+}
+#[test]
+fn v2_resumed_suppression_survives_pending_ttl() {
+    assert_codex_suppression_after_forgetting(true);
+}
+#[test]
+fn v2_resumed_suppression_survives_pending_capacity_eviction() {
+    assert_codex_suppression_after_forgetting(false);
+}
+
+#[test]
+fn v2_saturated_suppression_filter_withholds_only_lifecycle_credit() {
+    let fx = Fx::new("codex-filter-saturated");
+    let recorder = HarnessEvidenceRecorderV2::new(fx.store.clone(), None, fx.clock.clone());
+    // Worst-case collision/saturation fixture, not a native observation.
+    recorder.pending.lock().unwrap().2.0.fill(u64::MAX);
+    recorder
+        .record(
+            &codex_note(true, "SessionStart", "new-but-colliding"),
+            &budget(),
+        )
+        .unwrap();
+    assert!(
+        !recorder
+            .record(
+                &codex_note(true, "PreToolUse", "new-but-colliding"),
+                &budget()
+            )
+            .unwrap()
+    );
+    let rows = fx
+        .store
+        .harness_evidence_v2_all("codex", 0, &budget())
+        .unwrap();
+    assert!(!rows[0].milestones.contains_key("lifecycle"));
+    assert!(
+        rows[0].milestones.contains_key("tool"),
+        "filter cannot suppress independent tool observations"
+    );
+}
+
+#[test]
+fn mixed_pending_paths_can_evict_v2_and_expire_both_lanes() {
+    let fx = Fx::new("mixed-pending-v2-oldest");
+    let recorder = HarnessEvidenceRecorderV2::new(fx.store.clone(), None, fx.clock.clone())
+        .with_legacy_pending(&fx.recorder);
+    recorder
+        .record(&v2_note(false, "SessionStart"), &budget())
+        .unwrap();
+    for i in 0..PENDING_MAX_ENTRIES {
+        fx.advance(1);
+        fx.recorder
+            .record(
+                &note(None, "SessionStart", ok(), Some(&format!("legacy-{i}"))),
+                &budget(),
+            )
+            .unwrap();
+    }
+    assert!(
+        !recorder
+            .record(&v2_note(true, "PreToolUse"), &budget())
+            .unwrap(),
+        "legacy entries evict oldest v2 hold"
+    );
+    recorder
+        .record(&v2_note(false, "SessionStart"), &budget())
+        .unwrap();
+    fx.advance(PENDING_MAX_AGE_MS);
+    assert!(
+        !fx.recorder
+            .record(
+                &note(Some("2.1.286"), "PreToolUse", ok(), Some("legacy-1023")),
+                &budget()
+            )
+            .unwrap(),
+        "shared legacy hold expires"
+    );
+    assert!(
+        !recorder
+            .record(&v2_note(true, "PreToolUse"), &budget())
+            .unwrap(),
+        "shared v2 hold expires"
+    );
+}
+
+#[test]
+fn v2_suppression_collision_cannot_flush_an_older_held_lifecycle() {
+    let fx = Fx::new("codex-filter-held-collision");
+    let recorder = HarnessEvidenceRecorderV2::new(fx.store.clone(), None, fx.clock.clone());
+    let mut held = codex_note(false, "SessionStart", "held-before-collision");
+    held.unavailable_reason = Some("awaiting transcript".into());
+    recorder.record(&held, &budget()).unwrap();
+    // Other suppression marks can make an already-held key collide.
+    recorder.pending.lock().unwrap().2.0.fill(u64::MAX);
+    assert!(
+        !recorder
+            .record(
+                &codex_note(true, "PreToolUse", "held-before-collision"),
+                &budget()
+            )
+            .unwrap(),
+        "conservative filter also applies to held lifecycle flush"
+    );
+    let rows = fx
+        .store
+        .harness_evidence_v2_all("codex", 0, &budget())
+        .unwrap();
+    assert!(!rows[0].milestones.contains_key("lifecycle"));
+    assert!(rows[0].milestones.contains_key("tool"));
 }
