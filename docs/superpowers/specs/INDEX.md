@@ -4,6 +4,7 @@ Columns: date · title · relative link · one-line summary · status · tags.
 
 | Date | Title | Design | Summary | Status | Tags |
 |---|---|---|---|---|---|
+| 2026-10-03 | Hermes native adapter | [Design](../runs/2026-10-03-harness-adapters/2026-10-03-harness-adapters--hermes-design.md) | Exact-runtime qualification, owned profile assets, bounded Python callback transport and native launch/canary. | draft | harness-adapters, hermes, ht-3bi.6 |
 | 2026-10-03 | Native adapter policies | [Design](../runs/2026-10-03-harness-adapters/2026-10-03-harness-adapters--native-policies-design.md) | Generic local status/setup, native launch and fenced host/composer provider boundaries. | draft | harness-adapters, ht-3bi.5 |
 | 2026-10-03 | Registry health and tooling | [Design](../runs/2026-10-03-harness-adapters/2026-10-03-harness-adapters--health-tooling-design.md) | Scoped negotiated health, generic doctor and same-binary canary/runtime manifest discovery. | draft | harness-adapters, ht-3bi.3 |
 | 2026-10-03 | Domain evidence recording | [Design](../runs/2026-10-03-harness-adapters/2026-10-03-harness-adapters--hooks-evidence--recording-design.md) | Bounded transactional runtime/domain evidence, negotiated handler and adapter-driven client gates. | draft | harness-adapters, ht-3bi.2.4 |
