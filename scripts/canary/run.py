@@ -394,7 +394,10 @@ def isolated_env(work, strategy, stage):
         path = work / rel
         path.mkdir(parents=True, exist_ok=True)
         env[key] = str(path)
-    for key in ("CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN", "CARGO_TARGET_DIR"):
+    caller_home = pathlib.Path(os.path.expanduser("~"))
+    for key, rel in (("CARGO_HOME", ".cargo"), ("RUSTUP_HOME", ".rustup")):
+        env[key] = os.environ.get(key) or str(caller_home / rel)
+    for key in ("RUSTUP_TOOLCHAIN", "CARGO_TARGET_DIR"):
         if key in os.environ:
             env[key] = os.environ[key]
     key = strategy.get("model_key_env")
@@ -502,7 +505,7 @@ def run_strategy(adapter, out, binary, root, model_tier="off", runtime_command=N
             block["reason"] = result["reason"]
             if result["outcome"] == "complete" and len(verified_domains(result, adapter)) == len(adapter["contracts"]) and adapter["contracts"]:
                 block["status"] = "all_pass"
-            elif result["identity"] is not None and stage != "source_captured" and any(
+            elif result["outcome"] == "complete" and result["identity"] is not None and stage != "source_captured" and any(
                     d["outcome"] == "contract_violation" for d in result["domains"]):
                 block["status"] = "break"
             return block
@@ -550,16 +553,18 @@ def run_strategy(adapter, out, binary, root, model_tier="off", runtime_command=N
                     verdict = parsed["result"]
                     checks, ft = parsed["checks"], parsed["failed_tier"]
                     contract_result = parsed.get("contract")
-                    if verdict == "pass" and (result["outcome"] != "complete" or
-                            not adapter["contracts"] or len(verified_domains(result, adapter)) != len(adapter["contracts"])):
-                        verdict = "infra"
+                    # Historical semver probes remain independent of rich milestone verification.
                 else:
                     verdict = "pass" if result["outcome"] == "complete" and (
                         len(verified_domains(result, adapter)) == len(adapter["contracts"])) and adapter["contracts"] else "infra"
-                    if any(d["outcome"] == "contract_violation" for d in result["domains"]):
+                    if result["outcome"] == "complete" and any(
+                            d["outcome"] == "contract_violation" for d in result["domains"]):
                         verdict = "fail"
                     checks, ft, contract_result = [], None, None
-                if result["identity"] is None or result["outcome"] in ("unsupported", "inconclusive") or stage == "source_captured":
+                if result["outcome"] == "infra_failure":
+                    verdict = "infra"
+                if (result["identity"] is None or result["outcome"] == "unsupported" or
+                        (not legacy.is_file() and result["outcome"] == "inconclusive") or stage == "source_captured"):
                     verdict = "infra"
                     incomplete_runtime[0] = True
                 att = {"result": verdict, "tier1": stage == "live", "duration_ms": int((time.monotonic()-start)*1000),

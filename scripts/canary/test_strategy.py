@@ -12,6 +12,7 @@ sys.modules.pop("bisect", None)
 import tempfile
 import subprocess
 import unittest
+from unittest.mock import patch
 sys.path[:] = _saved
 
 spec = importlib.util.spec_from_file_location("strategy_runner", HERE / "run.py")
@@ -169,6 +170,141 @@ class Strategy(unittest.TestCase):
         normalized = runner.normalize_legacy(probe, a, "try1", "no_model", "1.2.3")
         self.assertEqual(normalized["domains"][0]["outcome"], "contract_violation")
         self.assertEqual(normalized["domains"][0]["violations"], [{"event": "SessionStart", "field": "session_id"}])
+
+    # Actual discovery descriptors: tier0 observes lifecycle, never the tool milestone.
+    def test_legacy_model_off_lifecycle_pass_stays_legacy_pass(self):
+        descriptors = [
+            ("claude", "Claude", "3f860645de4c3363", "c4c4b249584b3578",
+             "@anthropic-ai/claude-code", "ANTHROPIC_API_KEY"),
+            ("codex", "Codex", "d3b98d74f26f7e2c", "7c86f2da08117f13",
+             "@openai/codex", "OPENAI_API_KEY")]
+        for name, display, legacy_id, rich_id, package, key in descriptors:
+            with self.subTest(harness=name), tempfile.TemporaryDirectory() as d:
+                root = pathlib.Path(d)
+                a = {"id": name, "display_name": display, "host_kinds": [name],
+                     "setup_scopes": ["config_root"], "legacy_contract_id": legacy_id,
+                     "contracts": [{"domain": "native_payload", "origin": "native_payload", "id": rich_id,
+                         "events": [{"event": "SessionStart", "milestone": "lifecycle", "always_send": True},
+                                    {"event": "PreToolUse", "milestone": "tool", "always_send": False}],
+                         "required_milestones": ["lifecycle", "tool"]}],
+                     "canary_strategy": {"kind": "npm_release", "candidate_kind": "stable_release",
+                         "npm_package": package, "model_key_env": key,
+                         "companion": "scripts/canary/adapters/" + name + ".py", "artifact_schema_version": 1}}
+                if name == "codex":
+                    a["contracts"][0]["events"].append(
+                        {"event": "SubagentStart", "milestone": None, "always_send": False})
+                probe = {"result": "pass", "checks": [{"id": "t0.version", "status": "pass"},
+                          {"id": "t0.payload-parse", "status": "pass"}, {"id": "t1.model", "status": "skip"}],
+                         "failed_tier": None, "contract": {"contract_id": legacy_id, "release": None,
+                         "payloads": [{"kind": "ok", "event": "SessionStart", "field": None}]}}
+                companions = root / "scripts/canary/adapters"
+                companions.mkdir(parents=True)
+                (companions / (name + ".py")).write_text(
+                    "import importlib.util,json,sys,pathlib\n"
+                    "s=importlib.util.spec_from_file_location('runner'," + repr(str(HERE / "run.py")) + ")\n"
+                    "runner=importlib.util.module_from_spec(s);s.loader.exec_module(runner)\n"
+                    "args=dict(zip(sys.argv[1::2],sys.argv[2::2]))\n"
+                    "work=pathlib.Path(args['--work-dir'])\n"
+                    "q=json.loads((work/'request.json').read_text())\n"
+                    "probe=" + repr(probe) + "\n"
+                    "(work/'legacy-probe.json').write_text(json.dumps(probe))\n"
+                    "print(json.dumps(runner.normalize_legacy(probe,q['adapter'],args['--attempt'],args['--stage'],q['version'])))\n")
+                npm = root / "npm"
+                npm.write_text("#!" + sys.executable + "\nprint('[\"1.2.3\"]')\n")
+                npm.chmod(0o755)
+                with patch.dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"]):
+                    index = {"schema_version": 1, "attempts": []}
+                    block = runner.run_strategy(a, root / "out", "/bin/false", root,
+                                                model_tier="off", versions_mode="latest", index=index)
+                self.assertEqual(block["status"], "all_pass", block)
+                retained = json.loads((root / "out" / index["attempts"][0]["result_path"]).read_text())
+                self.assertEqual(retained["domains"][0]["successful_milestones"], ["lifecycle"])
+                self.assertEqual(runner.verified_domains(retained, a), [])
+
+    # HOME isolation must not hide caller-default rustup/cargo from the owned parser.
+    def test_unset_toolchain_homes_reach_owned_payload_parser(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            caller = root / "caller"
+            cargo = caller / ".cargo/bin/cargo"
+            cargo.parent.mkdir(parents=True)
+            (caller / ".rustup").mkdir()
+            cargo.write_text("#!/bin/sh\n"
+                '[ "$CARGO_HOME" = "' + str(caller / ".cargo") + '" ] || exit 21\n'
+                '[ "$RUSTUP_HOME" = "' + str(caller / ".rustup") + '" ] || exit 22\n'
+                '[ "$HOME" != "' + str(caller) + '" ] || exit 23\n'
+                "printf '%s' '{\"observation\":\"ok\",\"payloads\":[]}' > \"$HT_CANARY_CAPTURE_DIR/canary-rust.json\"\n")
+            cargo.chmod(0o755)
+            with patch.dict(os.environ, HOME=str(caller), PATH=str(cargo.parent) + os.pathsep + os.environ["PATH"]):
+                os.environ.pop("CARGO_HOME", None)
+                os.environ.pop("RUSTUP_HOME", None)
+                env = runner.isolated_env(root / "attempt", adapter()["canary_strategy"], "no_model")
+            probe = root / "probe"
+            for rel in ("logs", "capture/tier0", "tmp"):
+                (probe / rel).mkdir(parents=True, exist_ok=True)
+            body = ("set -euo pipefail\nexport HT_CANARY_SOURCE_ONLY=1\n"
+                    "source \"$1\" --out \"$2/out\" --model-tier off\n"
+                    "P=\"$2/probe\"; LOGS=\"$P/logs\"; H=claude; V=1.2.3; HOOK_FIRES_RAN=0\n"
+                    "build_env \"$P\"\nchk_t0_payload_parse\nprintf '%s' \"$CK_STATUS\"\n")
+            cp = subprocess.run(["bash", "-c", body, str(HERE.parent / "harness-canary.sh"),
+                                 str(HERE.parent / "harness-canary.sh"), str(root)],
+                                env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(cp.returncode, 0, cp.stderr)
+            self.assertEqual(cp.stdout, "pass", (cp.stdout, cp.stderr,
+                             (probe / "logs/payload-parse.err").read_text()))
+            self.assertEqual(env["CARGO_HOME"], str(caller / ".cargo"))
+            self.assertEqual(env["RUSTUP_HOME"], str(caller / ".rustup"))
+            with patch.dict(os.environ, CARGO_HOME=str(root / "explicit-cargo"),
+                            RUSTUP_HOME=str(root / "explicit-rustup")):
+                explicit = runner.isolated_env(root / "explicit-attempt", adapter()["canary_strategy"], "no_model")
+            self.assertEqual(explicit["CARGO_HOME"], str(root / "explicit-cargo"))
+            self.assertEqual(explicit["RUSTUP_HOME"], str(root / "explicit-rustup"))
+
+    # Attributed violations cannot turn incomplete/failed operations into known-broken releases.
+    def test_noncomplete_violations_never_classify_break(self):
+        for kind in ("exact_runtime", "npm_release"):
+            for outcome, expected in [("infra_failure", "infra_error" if kind == "npm_release" else "inconclusive"),
+                                      ("unsupported", "inconclusive"), ("inconclusive", "inconclusive"),
+                                      ("complete", "break")]:
+                with self.subTest(kind=kind, outcome=outcome), tempfile.TemporaryDirectory() as d:
+                    root = pathlib.Path(d)
+                    companions = root / "scripts/canary/adapters"
+                    companions.mkdir(parents=True)
+                    a = adapter(kind=kind)
+                    r = result()
+                    r.update(outcome=outcome, reason="fixture outcome")
+                    r["domains"][0].update(outcome="contract_violation", successful_milestones=[],
+                                            violations=[{"event": "SessionStart", "field": "session_id"}])
+                    r["identity"] = {"key": "release:1.2.3", "source": "npm", "release_version": "1.2.3",
+                                     "base_version": None, "derived_version": None, "commit": None,
+                                     "dirty": None, "distance": None}
+                    if kind == "exact_runtime":
+                        r["identity"] = {"key": "build:c7dac5c7b327a0ef51fc1e59d0a1e00d41988d64678433420766248b554c304e",
+                                         "source": "git", "release_version": None, "base_version": None,
+                                         "derived_version": None, "commit": "b" * 40, "dirty": False, "distance": 1}
+                    (companions / "third.py").write_text(
+                        "import json,sys,pathlib\nargs=dict(zip(sys.argv[1::2],sys.argv[2::2]))\n"
+                        "r=" + repr(r) + "\nr['attempt']=args['--attempt']\n"
+                        "q=json.loads(pathlib.Path(args['--work-dir'],'request.json').read_text())\n"
+                        "if q.get('version') == '1.2.2':\n"
+                        " r['identity'].update(key='release:1.2.2',release_version='1.2.2')\n"
+                        " r['outcome']='complete'\n"
+                        " r['domains'][0].update(outcome='compatible',successful_milestones=['session_start','turn_end'],violations=[])\n"
+                        "print(json.dumps(r))\n")
+                    npm = root / "npm"
+                    npm.write_text("#!" + sys.executable + "\nprint('[\"1.2.3\"]')\n")
+                    npm.chmod(0o755)
+                    runtime = root / "runtime.json"
+                    runtime.write_text('["fixture"]')
+                    with patch.dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"]):
+                        block = runner.run_strategy(a, root / "out", "/bin/false", root,
+                                      model_tier="off", versions_mode="latest", runtime_command=runtime, baseline="1.2.2", bisect=True)
+                    self.assertEqual(block["status"], expected, block)
+                    if outcome != "complete":
+                        self.assertIsNone(block["suggested_action"])
+                        self.assertIsNone(block["first_bad"])
+                    elif kind == "npm_release":
+                        self.assertEqual(block["first_bad"], "1.2.3")
 
     def test_discovery_rejects_malformed_strategy_and_domains(self):
         a = adapter()
