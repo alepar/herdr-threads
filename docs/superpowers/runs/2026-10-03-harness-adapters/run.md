@@ -3,7 +3,9 @@
 flags: planOneShot=false skipPlanRoast=false skipCodeRoast=false autonomous=true
 resumeChange: User confirmed schema allocation: CLI v19 thread names, v20 recent activity; durable handoff uses private journals. Adapter/runtime-evidence migration is v21 after CLI lands. Prototype only clearly provisional until absorb main before freeze; historical migrations immutable; exact Hermes identity/model-free labels preserved.
 resumeChange: User reports main 021ac1ec with wake_batch_delay_ms default 0 in InstanceSettings/StoreSettings, explicit batching overrides and retry spacing retained, legacy HealthSettings absent-field fallback preserved. Absorb main before freeze and preserve this behavior/opt-in fixtures; no migration or immediate rebase required.
-phase: design
+resumeChange: 2026-10-03 · "Critical schema allocation update: user-added invitation rejection belongs to the next v0.2.2 release and requires an additive immutable rejection-overlay table. CLI retains v19 thread names/v20 activity; invitation rejection receives v21. Your later v0.3.0 adapter/runtime-evidence migration must therefore be v22, after absorbing those merged changes. No historical migrations edited. Preserve invitation effective-state helpers when integrating this seam. No immediate status response/rebase needed; report only a blocker." · supersedes earlier v21 adapter allocation; active specs/bead4 use v22, invitation effective-state behavior preserved.
+
+phase: roast-design
 codeMechanism: ordinary-subagents
 
 idea: Own the harness adapter architecture and Hermes feature; ideally adding a new harness is as easy as implementing the new interface. Audit Claude/Codex seams and authoritative Hermes integration docs, preview and approve the architecture, then implement and review in an isolated worktree for coordinator-owned integration into main. Approved scope includes a built-in registry in the same binary and the Hermes Python bridge, for the later 0.3.0 release.
@@ -16,8 +18,16 @@ approvals:
 - design-review · approved — user approved broad architecture and Python bridge before invoking super-auto; detailed design proceeds autonomously with both reviews retained.
 - top-split · auto · ht-3bi.1 LEAF, ht-3bi.2 PROMOTE, ht-3bi.3 PROMOTE, ht-3bi.4 LEAF, ht-3bi.5 PROMOTE, ht-3bi.6 PROMOTE, ht-3bi.7 LEAF, ht-3bi.8 LEAF, ht-3bi.9 LEAF
 
+- coverage-round-1 · auto · requirements: 18 · mapped: 18 · unmapped: 0 · canonical list: coverage-round-1-requirements.md · C1/R18 applied to ht-3bi and ht-3bi.7 · two valid independent reviews
+- coverage-round-2 · auto · requirements: 18 · mapped: 18 · unmapped: 0 · two valid reviews · no findings · C1/R18 closed · widening: no · targeted integration sweep ht-3bi.10 added after coverage
+
 parked:
 - run.md · degraded-verdict · "Final integrated full-suite sweep, main merge, worktree cleanup and 0.3.0 release belong to threads-main w4:p1 by explicit user instruction; this run supplies focused checks and a frozen merge request."
+- design-roast-1 · escalation · "Material dissent — runtime identity snapshot after a live Hermes source-checkout change remains unresolved. Once-per-load capture does not establish unchanged source for later lazy imports; no confirmation/native PASS asserted. Full entry in design roast1 Escalations section; retained for final report."
 
-coverage-round-1: requirements: 18 · mapped: 18 · unmapped: 0 · canonical list: coverage-round-1-requirements.md · C1/R18 applied to ht-3bi and ht-3bi.7 · two valid independent reviews
-coverage-round-2: requirements: 18 · mapped: 18 · unmapped: 0 · two valid reviews · no findings · C1/R18 closed · widening: no · targeted integration sweep ht-3bi.10 added after coverage
+roast-design: 2026-10-03-harness-adapters-roast-design-1.md
+roastDesignRound: 1
+
+stepBackDesign-round-1: patch — independent registration context namespace and resolved-profile transaction ordering omissions; source-mutation escalation unresolved
+
+Design roast1 fixes applied inline: context spelling validation/reserved Human in root/.1/.7; shared resolved-profile transaction exclusion in Hermes/.6.2/.7. Changed design/data handling requires roast2 with prior report. Historical report remains unchanged.

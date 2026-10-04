@@ -58,3 +58,5 @@ Serial execution owns shared CLI/harness/protocol edits. Use cargo fmt, required
 ## Post-Implementation Notes
 
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
+
+Schema coordination update (2026-10-03): CLI thread names/activity retain v19/v20; immutable additive invitation-rejection overlay is v21 for v0.2.2. Adapter/runtime-evidence migration is v22 after absorbing those merged changes. Historical migrations remain immutable. Preserve invitation effective-state helpers in storage/query/inbox integration.

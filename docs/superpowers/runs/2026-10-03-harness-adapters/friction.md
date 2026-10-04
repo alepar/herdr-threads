@@ -4,3 +4,5 @@
 - preflight · user override · Reuse existing isolated harness-adapters branch/worktree; coordinator owns integrated full-suite sweep, base merge and cleanup. Do not recreate or remove the user-authorized workspace or run branch full suites.
 
 - 2026-10-03 · super-design coverage · ordinary spawn_agent accepts text only, no input attachment. Reviewers load one immutable assembled prompt bundle (literal goals/tree/canonical requirements/precheck/ledger) then perform no further tool or source exploration; this is prompt transport only, all reviewers receive identical inputs.
+
+- 2026-10-03 · super-roast · Workflow absent; manual fan-out uses canonical assemble-args engine under owned Node relay, ordinary fresh agents for every scout/dedupe/seat/reporter; native OpenAI family inherited, unavailable opus/sonnet/fable names retained only as role aliases. Report independence explicitly same-family OpenAI/manual fan-out; no cross-family claim.

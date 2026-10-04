@@ -16,7 +16,7 @@ Health must distinguish installation admission, selected-profile setup, actual a
 
 ## Key decisions made
 
-Use registry-keyed daemon observations, one strict negotiated `harness.health_v2` result, generic doctor iteration and a dedicated local `adapters --json` discovery document. Preserve old Health and harness.states wire shapes exactly. Keep schema 2 and add `runtime_contracts` plus `runtime_rows` as separate top-level collections; legacy `rows` and `contracts` retain their meaning. Adapter-owned canary descriptors select either existing npm-release mechanics with owned probe companions or an exact-runtime companion; missing installer/probe support is explicitly unsupported/inconclusive. Coordinator retains merge/final sweep/release ownership, and migration `.4` alone places v21 after CLI v19/v20 have landed.
+Use registry-keyed daemon observations, one strict negotiated `harness.health_v2` result, generic doctor iteration and a dedicated local `adapters --json` discovery document. Preserve old Health and harness.states wire shapes exactly. Keep schema 2 and add `runtime_contracts` plus `runtime_rows` as separate top-level collections; legacy `rows` and `contracts` retain their meaning. Adapter-owned canary descriptors select either existing npm-release mechanics with owned probe companions or an exact-runtime companion; missing installer/probe support is explicitly unsupported/inconclusive. Coordinator retains merge/final sweep/release ownership, and migration `.4` alone places v22 after CLI v19/v20 and invitation-rejection v21 have landed.
 
 ## Decision points
 
@@ -86,3 +86,5 @@ Leaf 3 can follow foundation/model independently. Leaf 4 follows the model and r
 ## Post-Implementation Notes
 
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
+
+Schema coordination update (2026-10-03): CLI thread names/activity retain v19/v20; immutable additive invitation-rejection overlay is v21 for v0.2.2. Adapter/runtime-evidence migration is v22 after absorbing those merged changes. Historical migrations remain immutable. Preserve invitation effective-state helpers in storage/query/inbox integration.
