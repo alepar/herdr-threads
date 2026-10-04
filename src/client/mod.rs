@@ -57,8 +57,8 @@ pub(crate) fn connect_error(
             ErrorCode::TransportDenied,
             format!(
                 "daemon socket not reachable from this sandbox (permission denied): {}; \
-                 launch the harness with the sandbox socket allowance printed by \
-                 `herdr-threads setup codex` (see docs/install.md)",
+                 use approved outside-sandbox execution for this CLI command; in Codex, \
+                 request command approval or use a preapproved CLI-only rule (see docs/install.md)",
                 path.display()
             ),
         )
@@ -100,7 +100,8 @@ mod tests {
             assert_eq!(error.code, ErrorCode::TransportDenied, "errno {errno}");
             assert!(error.detail.contains("permission denied"));
             assert!(error.detail.contains(&path.display().to_string()));
-            assert!(error.detail.contains("setup codex"));
+            assert!(error.detail.contains("approved outside-sandbox"));
+            assert!(!error.detail.contains("setup codex"));
             assert_eq!(api_exit_code(&error.code), EXIT_UNSUPPORTED);
         }
         for kind in [io::ErrorKind::NotFound, io::ErrorKind::ConnectionRefused] {

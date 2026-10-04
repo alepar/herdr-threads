@@ -6,15 +6,12 @@ description: "Use herdr-threads, the Herdr plugin for durable message threads be
 # herdr-threads
 
 herdr-threads gives each agent pane a **seat** to join **threads**, send messages and **ACK** receipts.
-A local daemon stores everything; Claude Code and Codex hooks show pending attention at startup and before tools.
-The installed binary is the authority for syntax: run `herdr-threads --help` and
-`herdr-threads <command> --help` as needed. Do not "probe" mutations
-(`send`, `ack`, `accept`, `invite`, `leave`, ...): they execute.
+The installed binary defines syntax: use `herdr-threads --help` and command help.
+Do not "probe" mutations (`send`, `ack`, `accept`, `invite`, `leave`, ...): they execute.
 
 ## Trust model: cooperative, not enforced
-
-- Commands locate your seat from this pane's `HERDR_PANE_ID` (never the
-  focused pane). The pane locates the seat; it does not prove who you are.
+- Commands locate your seat from this pane's `HERDR_PANE_ID` (never the focused
+  pane). The pane locates the seat; it does not prove who you are.
 - Any process in this pane (you, a subagent, a script) that runs a write acts
   **as the top-level seat**. The plugin cannot tell them apart. Follow the
   rules below; nothing else stops a misbehaving process.
@@ -31,13 +28,18 @@ are read-only. `read`, `body`, searching, viewing and check-in never ACK.
 Accepting an invitation is separate from ACKing any message.
 
 ## Who may write
-
 - **Top-level agent**: reads, sends, ACKs, accepts invitations, leaves.
 - **Subagents**: may read and summarize (`inbox --machine`, `pending-receipts`, `read`,
   `body`, `search`, `thread list/show/participants`) and return message IDs
   plus a summary to the top-level agent. A subagent must **never** run `ack`,
   `accept`, `accept-required`, `send`, `check-in`, `leave`, `invite` or any
   other write.
+
+Codex: run `herdr-threads` / `ht` outside the sandbox through a CLI-only approved
+rule; otherwise request `sandbox_permissions="require_escalated"` with justification
+and a CLI-only `prefix_rule`, never a shell rule. With approval `never` (including
+`exec`), use ordinary calls with a preapproved rule. Keep other commands sandboxed;
+report refused/unavailable permission, never bypass policy or enable networking.
 
 ## Hook output and ready commands
 
@@ -65,8 +67,6 @@ Ready commands (run exactly as written, in this pane):
   `attention digest: invitations=1 [INV@THREAD]; receipts=2 [MSG@THREAD, ...]; warnings=0`.
   `ITEM@THREAD` in it is a display reference. Pass the bare ID, never the `@`
   form.
-- Optional accepts are a choice. Join only threads you intend to work in.
-- No output on a tool call means nothing new; it does not mean "no mail".
 
 ## Daily loop (top-level agent)
 

@@ -816,12 +816,6 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
         codex.result.as_ref().ok().map(|version| version.as_str()),
     );
     let socket_policy_validation = codex.result.as_ref().ok().map(|_| "not_run");
-    let policy_unmeasured = codex.result.as_ref().ok().filter(|version| {
-        !super::setup::CODEX_SANDBOX_MEASURED_VERSIONS.contains(&version.as_str())
-    });
-    if policy_unmeasured.is_some() {
-        limitations.push("Codex socket policy unvalidated for the target executable/effective config; managed launch needs explicit -C and a target-pane executable witness; global auto repair withheld".into());
-    }
     if let Some(binary) = &codex.binary {
         match &codex.result {
             Err(_) => limitations.push(format!(
@@ -903,6 +897,7 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
             "installed": installed,
             "sandbox_warning": sandbox_warning,
             "socket_policy_validation": socket_policy_validation,
+            "command_execution": "approved_outside_sandbox",
             "sandbox_roots_warning": roots_warning,
             "sandbox_proxy_warnings": proxy_warnings,
             "last_hook": last_hook.map(|record| json!({
@@ -1416,7 +1411,7 @@ fn add_manual_repairs(report: &Value, repairs: &mut Vec<Value>) {
                 !super::setup::CODEX_SANDBOX_MEASURED_VERSIONS.contains(&version)
             })
     {
-        repairs.push(json!({"action": "Codex socket policy", "outcome": "manual", "detail": "target executable/effective config unvalidated; managed launch needs explicit -C and a target-pane executable witness; global auto repair withheld"}));
+        repairs.push(json!({"action": "Codex socket policy", "outcome": "manual", "detail": "legacy in-sandbox socket policy unvalidated; managed launch uses approved outside-sandbox CLI execution instead; global auto repair withheld"}));
     }
     if !report["hooks"]["claude"]["error"].is_null() {
         repairs.push(json!({"action": "setup claude", "outcome": "refused", "detail": "hook ownership could not be inspected; inspect doctor --debug before setup"}));

@@ -767,19 +767,21 @@ fn doctor_reports_codex_schema_matched_admission() {
             value["doctor"]["hooks"]["codex"]["socket_policy_validation"],
             "not_run"
         );
-        if version == "0.160.0" {
-            assert!(
-                value["doctor"]["limitations"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|row| {
-                        row.as_str()
-                            .is_some_and(|line| line.contains("target executable/effective config"))
-                    }),
-                "{value}"
-            );
-        }
+        assert_eq!(
+            value["doctor"]["hooks"]["codex"]["command_execution"],
+            "approved_outside_sandbox"
+        );
+        assert!(
+            value["doctor"]["limitations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| {
+                    !row.as_str()
+                        .is_some_and(|line| line.contains("target executable/effective config"))
+                }),
+            "unmeasured socket policy must not be a launch blocker: {value}"
+        );
     }
     let bin = codex_on_path(&scratch.0, "text", "0.160.0", &schemas);
     let output = scrubbed_command(BIN)

@@ -570,8 +570,8 @@ fn unknown_outcome_exits_five_and_keeps_handoff_discoverable() {
 /// Codex on a version whose sandbox default-deny was measured, set up at
 /// user level: the hooks and the socket allowance are on disk, so launch
 /// adds no hook or sandbox arguments, keeps the caller's unchanged and adds
-/// `--no-daemon` exactly once. Kills: launching without the installation or
-/// the allowance, reordering caller arguments, and duplicating `--no-daemon`.
+/// `--no-daemon` exactly once. Command approvals replace the allowance check.
+/// Kills: launching without owned hooks, reordering args or duplicating --no-daemon.
 #[test]
 fn codex_launch_needs_the_user_installation_and_adds_only_no_daemon() {
     let s = Scratch::new();
@@ -615,24 +615,17 @@ fn codex_launch_needs_the_user_installation_and_adds_only_no_daemon() {
     .unwrap();
     assert_eq!(host.submitted()[0].argv, ["--no-daemon"]);
 
-    // The allowance removed by hand: the default sandbox could not reach
-    // the daemon, so launch refuses.
+    // A socket policy edit does not prevent approved command execution.
     let config = s.env.codex_home.clone().unwrap().join("config.toml");
     let text = fs::read_to_string(&config).unwrap();
-    fs::write(&config, text.replace("\"allow\"", "\"deny\"")).unwrap();
+    let denied = text.replace("\"allow\"", "\"deny\"");
+    fs::write(&config, &denied).unwrap();
     let host = FakeHost::new();
-    let refusal = s
+    let out = s
         .launch(&host, &seats, &handoff, request(ContextHarness::Codex, &[]))
-        .unwrap_err();
-    let RunError::Api(refusal) = refusal else {
-        panic!("expected a missing-allowance refusal");
-    };
-    assert_eq!(refusal.code, ErrorCode::Conflict);
-    assert!(refusal.detail.contains("not installed in config.toml"));
-    assert!(refusal.detail.contains("setup codex"));
-    assert!(!refusal.detail.contains("transport_denied"));
-    assert!(!refusal.detail.contains("danger-full-access"));
-    assert!(host.submitted().is_empty());
+        .unwrap();
+    assert_eq!(out.exit, 0);
+    assert_eq!(fs::read_to_string(&config).unwrap(), denied);
 }
 
 /// `codex exec` (native-codex-matrix-1 P4/P5): `--no-daemon` precedes
@@ -722,83 +715,46 @@ fn codex_launch_warms_the_hook_fingerprint_cache() {
     }
 }
 
-/// On a version without a measured sandbox default-deny setup withholds the
-/// allowance, so the default sandbox could not reach the daemon: launch
-/// refuses unless the caller explicitly chose full access. Kills: silently
-/// launching an agent that cannot run herdr-threads commands.
+/// Even a listed older version can launch without an in-sandbox allowance.
 #[test]
-fn codex_without_measured_allowance_needs_explicit_full_access() {
+fn codex_without_measured_allowance_uses_command_approvals() {
     let s = Scratch::new();
     s.harness("codex", "codex-cli 0.158.0", b"");
-    let report = s.setup(ContextHarness::Codex);
-    assert!(report["sandbox"]["socket_path"].is_null(), "{report}");
-    assert!(
-        !s.env
-            .codex_home
-            .clone()
-            .unwrap()
-            .join("config.toml")
-            .exists()
-    );
+    s.setup(ContextHarness::Codex);
     let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
-    let refusal = s
+    let result = s
         .launch(&host, &seats, &handoff, request(ContextHarness::Codex, &[]))
-        .unwrap_err();
-    let RunError::Api(refusal) = refusal else {
-        panic!("expected a policy-validation refusal");
-    };
-    assert_eq!(refusal.code, ErrorCode::Conflict);
-    assert!(refusal.detail.contains("socket policy is unvalidated"));
-    assert!(
-        refusal
-            .detail
-            .contains("does not establish incompatibility")
-    );
-    assert!(!refusal.detail.contains("transport_denied"));
-    assert!(!refusal.detail.contains("danger-full-access"));
-    assert!(host.submitted().is_empty());
-    let out = s
-        .launch(
-            &host,
-            &seats,
-            &handoff,
-            request(ContextHarness::Codex, &["-s", "danger-full-access"]),
-        )
         .unwrap();
-    assert_eq!(out.exit, 0);
-    assert_eq!(
-        host.submitted()[0].argv,
-        ["--no-daemon", "-s", "danger-full-access"]
-    );
+    assert_eq!(result.exit, 0);
+    assert_eq!(host.submitted()[0].argv, ["--no-daemon"]);
 }
 
-/// A schema-matched newer build passes hook admission but has no socket
-/// policy proof. The refusal must describe that missing proof, not condemn
-/// the Codex build or report an EPERM that was never observed.
+/// Newer admitted Codex builds use approved outside-sandbox CLI calls. A
+/// socket-policy version allowlist must never prevent their managed start.
 #[test]
-fn future_codex_launch_reports_unvalidated_socket_policy() {
+fn future_codex_launch_uses_command_approvals_without_network_allowance() {
     let s = Scratch::new();
     s.harness("codex", "codex-cli 0.160.0", &committed_codex_schemas());
     let setup = s.setup(ContextHarness::Codex);
     assert_eq!(setup["sandbox"]["validation"], "unvalidated", "{setup}");
+    let config = s.env.codex_home.as_ref().unwrap().join("config.toml");
+    assert!(!config.exists());
     let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
-    let refusal = s
-        .launch(&host, &seats, &handoff, request(ContextHarness::Codex, &[]))
-        .unwrap_err();
-    let RunError::Api(refusal) = refusal else {
-        panic!("expected a policy-validation refusal");
-    };
-    assert_eq!(refusal.code, ErrorCode::Conflict);
-    assert!(refusal.detail.contains("Codex 0.160.0"));
+    let caller = ["-a", "on-request", "You are Bob."];
+    let result = s
+        .launch(
+            &host,
+            &seats,
+            &handoff,
+            request(ContextHarness::Codex, &caller),
+        )
+        .unwrap();
+    assert_eq!(result.exit, 0);
+    assert_eq!(&host.submitted()[0].argv[1..], caller);
     assert!(
-        refusal
-            .detail
-            .contains("does not establish incompatibility")
+        !config.exists(),
+        "launch must not install network permissions"
     );
-    assert!(!refusal.detail.contains("transport_denied"));
-    assert!(!refusal.detail.contains("curl"));
-    assert!(!refusal.detail.contains("danger-full-access"));
-    assert!(host.submitted().is_empty());
 }
 
 /// Kills: letting a caller `-c hooks.*` override silently replace the owned
@@ -828,43 +784,6 @@ fn codex_conflicting_caller_arguments_refuse_before_seat() {
     }
     assert_eq!(seats.calls.load(Ordering::SeqCst), 0);
     assert!(host.submitted().is_empty());
-}
-
-/// Kills: treating the default or a restrictive sandbox as not needing the
-/// allowance, and reading the prompt after `--` as an option.
-#[test]
-fn sandbox_allowance_is_unneeded_only_for_explicit_full_access() {
-    let args = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-    assert!(codex_sandbox_needs_allowance(&args(&[])));
-    assert!(codex_sandbox_needs_allowance(&args(&[
-        "-s",
-        "workspace-write"
-    ])));
-    assert!(codex_sandbox_needs_allowance(&args(&[
-        "-s",
-        "danger-full-access",
-        "-s",
-        "read-only"
-    ])));
-    assert!(!codex_sandbox_needs_allowance(&args(&[
-        "-s",
-        "danger-full-access"
-    ])));
-    assert!(!codex_sandbox_needs_allowance(&args(&[
-        "--sandbox=danger-full-access"
-    ])));
-    assert!(!codex_sandbox_needs_allowance(&args(&[
-        "-c",
-        "sandbox_mode=\"danger-full-access\""
-    ])));
-    assert!(!codex_sandbox_needs_allowance(&args(&[
-        "--dangerously-bypass-approvals-and-sandbox"
-    ])));
-    assert!(codex_sandbox_needs_allowance(&args(&[
-        "--",
-        "-s",
-        "danger-full-access"
-    ])));
 }
 
 /// The public form is `launch --pane PANE --kind claude|codex

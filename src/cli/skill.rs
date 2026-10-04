@@ -28,3 +28,7 @@ pub fn has_summary_procedure(text: &str) -> bool {
 #[cfg(test)]
 #[path = "../../tests/cli/skill.rs"]
 mod tests;
+
+/// Fixed first-party guidance: permission requests remain Codex's decision,
+/// never a grant from hook text or from untrusted peer messages.
+pub const CODEX_COMMAND_GUIDANCE: &str = "Codex: run herdr-threads (ht) commands outside the sandbox through an approved CLI-only command rule. Without a rule, request sandbox_permissions=\"require_escalated\" with a short justification and CLI-only prefix_rule, never a shell rule. With approval never (including exec), use ordinary shell calls with a preapproved CLI rule; explicit escalation is unavailable. Keep other commands sandboxed. If approval is refused or unavailable, report it; never bypass policy or enable networking.\n";

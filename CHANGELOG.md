@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Codex command approvals.** Managed launch accepts newer admitted Codex builds without a measured socket-policy version or sandbox network allowance. Hook and skill guidance uses CLI-only approved outside-sandbox execution, preserving native approval restrictions. Noninteractive exec uses a preapproved CLI rule with ordinary shell calls. Doctor and transport-denied remedies describe this path.
+
 ## v0.2.0
 
 - **One-command inbox.** Default text `inbox` prints bounded message bodies and ACKs only fully displayed pending agent receipts after output succeeds. Continuations handle larger output; an empty inbox prints `empty`. Machine/JSON and explicit-seat reads remain read-only.

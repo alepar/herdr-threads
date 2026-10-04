@@ -10,8 +10,8 @@
 //!    guarded `seat resolve` path (a recovery hold refuses), the owned
 //!    user-level hook installation inspected (`setup` must have installed it
 //!    in the Claude settings / Codex hooks.json this environment resolves;
-//!    for Codex under a sandbox that needs it, the recorded config.toml
-//!    socket allowance for this instance too), and a last fenced recheck;
+//!    Codex commands use approved outside-sandbox execution, without requiring
+//!    a network allowance), and a last fenced recheck;
 //! 3. Herdr's guarded `agent.start` with the argument array: the caller's
 //!    arguments byte for byte and in order (the owned configuration is on
 //!    disk, so launch adds none), and Codex `--no-daemon` exactly once at the
@@ -38,7 +38,6 @@ use super::{
 use crate::{
     client::local::LocalSocketClient,
     harness::{
-        codex,
         context::Harness as ContextHarness,
         launch::{
             LaunchHookConfiguration, LaunchHookInspector, LaunchSeatResolver, ManagedLaunchRequest,
@@ -224,9 +223,8 @@ Preflight (nothing is started when any step refuses):
   - the owned user-level hooks must be set up (`herdr-threads setup claude|codex`) in the
     Claude settings / Codex hooks.json of the CLAUDE_CONFIG_DIR / CODEX_HOME the agent
     will use (an absolute one the pane's shell exports, else launch's own, else HOME;
-    the report's config_dir names it); for Codex under a sandbox
-    that refuses the daemon socket, the recorded config.toml allowance for this
-    instance's socket too;
+    the report's config_dir names it); Codex CLI commands use approved
+    outside-sandbox execution, without a network/socket allowance;
   - a last fresh read of the pane just before Herdr starts the agent.
 
 Agent name: --name NAME, else the pane's Herdr label, else s<short seat id>
@@ -322,44 +320,12 @@ fn harness_word(harness: ContextHarness) -> &'static str {
     }
 }
 
-/// Whether the caller's Codex arguments leave the sandbox in a mode that
-/// refuses the daemon socket (the default `workspace-write`, or an explicit
-/// `read-only`/`workspace-write`). Only an explicit full-access mode or the
-/// sandbox bypass flag makes the socket allowance unnecessary.
-pub fn codex_sandbox_needs_allowance(argv: &[String]) -> bool {
-    let options_end = argv.iter().position(|a| a == "--").unwrap_or(argv.len());
-    let options = &argv[..options_end];
-    let mut full_access = false;
-    for (index, arg) in options.iter().enumerate() {
-        let next = options.get(index + 1).map(String::as_str);
-        let mode = match arg.as_str() {
-            "-s" | "--sandbox" => next,
-            "--dangerously-bypass-approvals-and-sandbox" => Some("danger-full-access"),
-            "-c" | "--config" => next.and_then(|value| {
-                value
-                    .strip_prefix("sandbox_mode=")
-                    .map(|v| v.trim_matches(|c| c == '"' || c == '\''))
-            }),
-            other => other
-                .strip_prefix("--sandbox=")
-                .or_else(|| other.strip_prefix("-s").filter(|rest| !rest.is_empty())),
-        };
-        if let Some(mode) = mode {
-            // The last explicit choice wins, as it does for Codex.
-            full_access = mode == "danger-full-access";
-        }
-    }
-    !full_access
-}
-
 /// The owned hook configuration of one launch, read from the setup library:
-/// the exact user-level installation (no extra arguments), plus for Codex the
-/// recorded sandbox socket allowance when the caller's sandbox needs it.
+/// the exact user-level installation (no extra arguments).
+/// Codex commands use its approved outside-sandbox execution mechanism.
 pub struct SetupHookInspector {
     env: SetupEnv,
     harness: ContextHarness,
-    codex_witness: Option<codex::InstalledVersion>,
-    caller_argv: Vec<String>,
     warnings: Mutex<Vec<String>>,
 }
 
@@ -373,34 +339,6 @@ impl SetupHookInspector {
                 hook,
                 argv: Vec::new(),
             }))
-    }
-
-    fn codex(&self) -> Result<Option<LaunchHookConfiguration>, ApiError> {
-        let witness = self
-            .codex_witness
-            .as_ref()
-            .ok_or_else(|| api(ErrorCode::UnsupportedHarness, "Codex version unobserved"))?;
-        let Some(configuration) = self.installed()? else {
-            return Ok(None);
-        };
-        if !codex_sandbox_needs_allowance(&self.caller_argv) {
-            return Ok(Some(configuration));
-        }
-        let socket = setup::codex_sandbox_socket(&self.env, witness);
-        match socket {
-            Ok(socket) if setup::codex_allowance_present(&self.env, &socket) => {
-                Ok(Some(configuration))
-            }
-            Ok(socket) => Err(api(
-                ErrorCode::Conflict,
-                format!(
-                    "the Codex sandbox allowance for {socket} (socket and writable roots) is not \
-                     installed in config.toml: run `herdr-threads setup codex`. Managed launch \
-                     requires that allowance under the selected workspace-write policy"
-                ),
-            )),
-            Err(reason) => Err(api(ErrorCode::Conflict, reason.to_string())),
-        }
     }
 }
 
@@ -425,7 +363,7 @@ impl LaunchHookInspector for SetupHookInspector {
         }
         match self.harness {
             ContextHarness::Claude => self.installed(),
-            ContextHarness::Codex => self.codex(),
+            ContextHarness::Codex => self.installed(),
             ContextHarness::Human => Err(api(
                 ErrorCode::InvalidRequest,
                 "launch starts agents only; a person uses `herdr-threads me init`",
@@ -806,6 +744,8 @@ fn codex_report(env: &SetupEnv, argv: &[String]) -> Value {
         "config_present": config.is_some(),
         "profile": profile,
         "profile_source": profile_source,
+        "command_execution": "approved_outside_sandbox",
+        "command_guidance": "Run herdr-threads commands outside the sandbox through Codex approval; if denied, report the policy refusal without bypassing it",
     })
 }
 
@@ -838,14 +778,12 @@ pub fn execute(request: &LaunchRequest, parts: &LaunchParts<'_>) -> Result<Launc
             .map(|private| crate::harness::codex_evidence::cache_path(&private)),
         ContextHarness::Claude | ContextHarness::Human => None,
     };
-    let (observed, witness) =
+    let (observed, _witness) =
         setup::observe_with_cache(&setup_request, parts.env, codex_cache.as_deref())
             .map_err(setup::refuse_version)?;
     let inspector = SetupHookInspector {
         env: parts.env.clone(),
         harness: request.harness,
-        codex_witness: witness,
-        caller_argv: request.argv.clone(),
         warnings: Mutex::new(Vec::new()),
     };
     let seats = RecordingResolver {

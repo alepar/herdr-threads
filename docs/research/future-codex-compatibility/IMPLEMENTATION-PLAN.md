@@ -1,5 +1,7 @@
 # Scoped Codex socket policy: implementation plan
 
+**Superseded for managed launch (2026-10-03):** the user selected approved CLI-only outside-sandbox execution instead of automatic socket-policy probing. Managed launch no longer depends on this plan or a measured-version socket allowlist. The research below remains historical evidence for the separate legacy in-sandbox transport; see [current command approval behavior](../../install.md#codex-command-approvals).
+
 **Goal:** A managed Codex launch may use a future binary after the exact executable and effective session policy have passed a bounded capability probe, while default-deny networking and daemon authority remain intact.
 
 **Current review checkpoint:** 0.160.0 native exec captured the full measured private-policy result, and the interactive TUI's function-call output captured by the private mock provider returned the same result. The product still lacks a target-pane executable witness. The independent preparatory change in this branch adds an explicit `-C` parser and rejects caller config/profile/sandbox overrides when an owned scoped policy is present. It does not authorize a new launch by itself. See [report](REPORT.md).

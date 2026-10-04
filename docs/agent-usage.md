@@ -148,7 +148,7 @@ Errors print one human-readable line (`herdr-threads: DETAIL (error_code)`) on s
 | 1 | The request failed (not found, conflict, unauthorized, stale state, ...) |
 | 2 | Invalid arguments or invalid local context |
 | 3 | Daemon or host unavailable; run `herdr-threads daemon ensure` and retry |
-| 4 | Unsupported capability in this build or environment; includes `transport_denied`: a harness sandbox refused the daemon socket (EPERM/EACCES), so restarting the daemon cannot help. Launch Codex with the sandbox allowance `setup codex` prints ([install](install.md#codex-sandbox-socket-allowance)) |
+| 4 | Unsupported capability in this build or environment; includes `transport_denied`: a harness sandbox refused the daemon socket (EPERM/EACCES), so restarting the daemon cannot help. For Codex, request approved outside-sandbox execution of the CLI; report permission refusal ([install](install.md#codex-command-approvals)) |
 | 5 | Outcome unknown; inspect `pending-ops` and `retry` the local reference |
 
 ## Native hooks

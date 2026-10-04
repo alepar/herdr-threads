@@ -2086,9 +2086,9 @@ impl std::fmt::Display for CodexSocketPolicyError {
                 f,
                 "Codex {version} socket policy is unvalidated for this installation (measured: \
                  {}). No new global network allowance is authorized. This does not establish \
-                 incompatibility. Managed launch needs controlled allow/deny evidence bound to \
-                 the target executable and effective configuration; use a measured Codex build \
-                 for managed launch until that validation is available",
+                 incompatibility. Legacy in-sandbox transport needs controlled allow/deny evidence \
+                 bound to the target executable and effective configuration; managed launch \
+                 uses approved outside-sandbox CLI commands instead",
                 CODEX_SANDBOX_MEASURED_VERSIONS.join(", ")
             ),
             Self::Unavailable(reason) => write!(f, "socket path unavailable: {reason}"),
@@ -2764,23 +2764,6 @@ pub(crate) fn user_inspection(
         )
     })?;
     Ok((file, inspection))
-}
-
-/// Whether the recorded Codex sandbox allowance is present for this
-/// instance's socket and writable roots.
-pub(crate) fn codex_allowance_present(env: &SetupEnv, socket: &str) -> bool {
-    let Ok(roots) = codex_sandbox_roots(env) else {
-        return false;
-    };
-    codex_paths(env)
-        .ok()
-        .and_then(|paths| codex_config::inspect(&paths.config, &paths.config_manifest).ok())
-        .is_some_and(|inspection| {
-            inspection.roots_present(&roots)
-                && inspection
-                    .recorded
-                    .is_some_and(|manifest| manifest.socket == socket)
-        })
 }
 
 // ------------------------------------------------------------------ render

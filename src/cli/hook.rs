@@ -396,13 +396,23 @@ pub fn encode_native(
     overview: Option<&OverviewRows>,
     recovery: Option<&RecoveryRows>,
 ) -> Vec<u8> {
-    if text.is_empty() && recovery.is_none() {
+    let codex_start = event.harness == Harness::Codex
+        && event.kind.mode() == crate::harness::context::CheckInMode::Lifecycle;
+    if text.is_empty() && recovery.is_none() && !codex_start {
         return Vec::new();
     }
-    let instruction = render_context(event.role, &[], true).unwrap_or_default();
+    let base_instruction = render_context(event.role, &[], true).unwrap_or_default();
+    let instruction = if event.harness == Harness::Codex {
+        format!(
+            "{base_instruction}\n{}",
+            super::skill::CODEX_COMMAND_GUIDANCE
+        )
+    } else {
+        base_instruction.clone()
+    };
     let text = String::from_utf8_lossy(text);
     let offer = text
-        .strip_prefix(instruction.as_str())
+        .strip_prefix(base_instruction.as_str())
         .unwrap_or(&text)
         .trim_matches('\n');
     let data = match summary {
@@ -936,7 +946,12 @@ pub fn diagnose_argv(args: &HookArgs, pane: &InstanceInputs) -> Vec<String> {
 
 fn unavailable_context(event: &LifecycleEvent, reason: &str, diagnose: &[String]) -> Vec<u8> {
     let context = format!(
-        "herdr-threads: check-in unavailable ({reason}). Tool use continues normally; accountable herdr-threads commands fail until the service recovers. Diagnose with argv (JSON data): {}",
+        "{}herdr-threads: check-in unavailable ({reason}). Tool use continues normally; accountable herdr-threads commands fail until the service recovers. Diagnose with argv (JSON data): {}",
+        if event.harness == Harness::Codex {
+            super::skill::CODEX_COMMAND_GUIDANCE
+        } else {
+            ""
+        },
         serde_json::to_string(diagnose).unwrap_or_default()
     );
     serde_json::to_vec(&serde_json::json!({"hookSpecificOutput": {

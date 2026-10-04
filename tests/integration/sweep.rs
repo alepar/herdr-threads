@@ -720,7 +720,7 @@ fn cooperative_setup_sweep_reports_healthy_daemon_and_pending_codex_review() {
         "{doctor}"
     );
     let limitations = doctor["doctor"]["limitations"].as_array().unwrap();
-    assert_eq!(limitations.len(), 2, "{doctor}");
+    assert_eq!(limitations.len(), 1, "{doctor}");
     assert!(
         limitations.iter().any(|line| line
             .as_str()
@@ -728,12 +728,9 @@ fn cooperative_setup_sweep_reports_healthy_daemon_and_pending_codex_review() {
             .starts_with("Codex hook review required")),
         "{doctor}"
     );
-    assert!(
-        limitations.iter().any(|line| line
-            .as_str()
-            .unwrap()
-            .starts_with("Codex socket policy unvalidated")),
-        "{doctor}"
+    assert_eq!(
+        doctor["doctor"]["hooks"]["codex"]["command_execution"],
+        "approved_outside_sandbox"
     );
 }
 
