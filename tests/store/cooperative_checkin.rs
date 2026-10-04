@@ -2584,3 +2584,31 @@ fn continuity_candidates_ignore_managed_launch_bindings() {
         1
     );
 }
+
+#[test]
+fn adapter_unknown_stored_harness_is_unsupported_without_ending_binding() {
+    let (store, db, _) = fixture();
+    let registered = check_in(&store, lifecycle(claim(), "startup")).unwrap();
+    db.execute(
+        "UPDATE occupant_bindings SET harness='future_agent' WHERE ended_at IS NULL",
+        [],
+    )
+    .unwrap();
+    let error = check_in(&store, current(&registered.context, "unsupported-current")).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Unsupported);
+    assert_eq!(
+        db.query_row(
+            "SELECT harness FROM occupant_bindings WHERE ended_at IS NULL",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "future_agent"
+    );
+    assert_eq!(
+        db.query_row("SELECT generation FROM seats WHERE id='s'", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}

@@ -3845,7 +3845,7 @@ fn v8_upgrade_rebuilds_occupant_bindings_to_accept_a_human_occupant() {
     );
     assert!(
         db.execute(
-            "UPDATE occupant_bindings SET harness='robot' WHERE generation=3",
+            "UPDATE occupant_bindings SET harness='Robot' WHERE generation=3",
             []
         )
         .is_err()
@@ -4985,7 +4985,7 @@ fn invitation_rejection_v21_upgrades_v20_without_rebuilding_history() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        21
+        schema::LATEST_VERSION
     );
     assert_eq!(
         db.query_row(
@@ -5051,6 +5051,301 @@ fn recent_activity_writer_rejects_missing_or_null_default() {
         assert!(
             matches!(result,Err(ref error) if error.code==ErrorCode::IncompatibleSchema),
             "writer must reject the altered default before creation: {replacement}: {result:?}"
+        );
+    }
+}
+
+// Catches lost binding/evidence history, missing lexical expansion, sequence rewind,
+// and incomplete public migration chaining from any supported historical version.
+#[test]
+fn adapter_migration_preserves_all_supported_history_and_rejection_overlay() {
+    for version in 1..=21 {
+        let db = adapter_historical_database(version);
+        db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0); INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (7,'s',1,'p','b',0,'codex','session','execution','cooperative_top_level',1,1,'term','inc');").unwrap();
+        db.execute_batch("INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,ended_at) VALUES (90,'s',2,'p','b',0,'codex','deleted','deleted','cooperative_top_level',2,3); DELETE FROM occupant_bindings WHERE ordinal=90;").unwrap();
+        if version >= 12 {
+            db.execute_batch("INSERT INTO harness_version_evidence(harness,version,contract_id,first_seen_at,last_seen_at,violation_at,violation_event,violation_field) VALUES ('codex','0.159.3','0123456789abcdef',1,2,2,'PreToolUse','field'); INSERT INTO harness_unattributed(harness,reason,at) VALUES ('claude','historical reason',3);").unwrap();
+        }
+        if version >= 21 {
+            db.execute_batch(r#"INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES ('inv','t','s',1,'pending',1,1,100,101); INSERT INTO invitation_rejections(invitation_id,reason,rejected_at,actor_seat_id,generation,observation) VALUES ('inv','declined',2,'s',1,'{"provenance":"cooperative_top_level"}');"#).unwrap();
+        }
+        schema::initialize(&db, || UtcMillis(10)).unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            22,
+            "from {version}"
+        );
+        let history:(i64,String,String,String)=db.query_row("SELECT ordinal,native_session,execution_id,observation_provenance FROM occupant_bindings WHERE seat_id='s'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+        assert_eq!(
+            history,
+            (
+                7,
+                "session".into(),
+                "execution".into(),
+                "cooperative_top_level".into()
+            )
+        );
+        {
+            assert_eq!(
+                db.query_row(
+                    "SELECT seq FROM sqlite_sequence WHERE name='occupant_bindings'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                90
+            );
+        }
+        if version >= 12 {
+            assert_eq!(
+                db.query_row(
+                    "SELECT violation_field FROM harness_version_evidence",
+                    [],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+                "field"
+            );
+            assert_eq!(
+                db.query_row("SELECT reason FROM harness_unattributed", [], |r| r
+                    .get::<_, String>(0))
+                    .unwrap(),
+                "historical reason"
+            );
+        }
+        if version >= 21 {
+            assert_eq!(
+                db.query_row(
+                    "SELECT reason FROM invitation_rejections WHERE invitation_id='inv'",
+                    [],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+                "declined"
+            );
+            assert!(db.execute("DELETE FROM invitation_rejections", []).is_err());
+        }
+        db.execute("UPDATE occupant_bindings SET harness='future_agent'", [])
+            .unwrap();
+        schema::initialize(&db, || UtcMillis(11)).unwrap();
+        assert_eq!(
+            db.query_row("SELECT ended_at FROM occupant_bindings", [], |r| r
+                .get::<_, Option<i64>>(0))
+                .unwrap(),
+            None
+        );
+        for table in [
+            "harness_runtime_identities",
+            "harness_contract_evidence_v2",
+            "harness_unattributed_v2",
+        ] {
+            assert_eq!(
+                db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+        }
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            0
+        );
+    }
+}
+
+// Catches weakened lexical bounds, descriptor/domain separation, missing composite
+// foreign keys, and accepting native/bridge evidence with no runtime identity.
+#[test]
+fn adapter_migration_v2_tables_enforce_bounded_keys_and_references() {
+    let db = Connection::open_in_memory().unwrap();
+    db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    let runtime = "INSERT INTO harness_runtime_identities(harness,identity_key,descriptor_json,last_seen_at) VALUES (?1,'release:1.2.3','{}',0)";
+    for invalid in [
+        "",
+        "Human",
+        "9agent",
+        "agent name",
+        "agent/../../",
+        "human",
+        "agent\0hidden",
+    ] {
+        assert!(db.execute(runtime, [invalid]).is_err(), "{invalid}");
+    }
+    assert!(db.execute(runtime, ["future_agent"]).is_ok());
+    assert!(db.execute(runtime, ["future_agent"]).is_err(), "runtime PK");
+    let evidence = "INSERT INTO harness_contract_evidence_v2(harness,identity_key,domain,origin,contract_id,first_seen_at,last_seen_at,milestones_json) VALUES ('future_agent',?1,'native_turn',?2,'0123456789abcdef',0,0,'{}')";
+    assert!(
+        db.execute(
+            evidence,
+            params!["release:9.9.9", "native_shape_observation"]
+        )
+        .is_err(),
+        "runtime FK"
+    );
+    assert!(
+        db.execute(
+            evidence,
+            params!["release:1.2.3", "native_shape_observation"]
+        )
+        .is_ok()
+    );
+    assert!(
+        db.execute(evidence, params!["release:1.2.3", "bridge_envelope"])
+            .is_ok()
+    );
+    assert!(
+        db.execute(evidence, params!["release:1.2.3", "native_payload"])
+            .is_ok()
+    );
+    assert!(
+        db.execute(evidence, params!["release:1.2.3", "made_up"])
+            .is_err()
+    );
+    assert!(
+        db.execute("DELETE FROM harness_runtime_identities", [])
+            .is_err()
+    );
+    for invalid in ["", "UPPER", "9domain", "domain-dash"] {
+        assert!(db.execute("INSERT INTO harness_unattributed_v2(harness,domain,origin,reason,at) VALUES ('future_agent',?1,'bridge_envelope','unavailable',0)",[invalid]).is_err());
+    }
+    assert!(db.execute("INSERT INTO harness_unattributed_v2(harness,domain,origin,reason,at) VALUES ('future_agent','native_turn','native_shape_observation',?1,0)",["x".repeat(257)]).is_err());
+    assert!(
+        db.execute(
+            "UPDATE harness_runtime_identities SET descriptor_json=?1",
+            ["x".repeat(4097)]
+        )
+        .is_err()
+    );
+    assert!(
+        db.execute(
+            "UPDATE harness_contract_evidence_v2 SET milestones_json=?1",
+            ["x".repeat(4097)]
+        )
+        .is_err()
+    );
+    assert!(
+        db.execute("UPDATE harness_contract_evidence_v2 SET violation_at=1", [])
+            .is_err(),
+        "partial sticky violation"
+    );
+}
+
+fn adapter_historical_database(version: usize) -> Connection {
+    let migrations = [
+        include_str!("../../migrations/0001_initial.sql"),
+        include_str!("../../migrations/0002_service_substrate.sql"),
+        include_str!("../../migrations/0003_invitation_cancellations.sql"),
+        include_str!("../../migrations/0004_voluntary_membership.sql"),
+        include_str!("../../migrations/0005_service_notifications.sql"),
+        include_str!("../../migrations/0006_retirement_health.sql"),
+        include_str!("../../migrations/0007_attention_digest.sql"),
+        include_str!("../../migrations/0008_digest_pending_paths.sql"),
+        include_str!("../../migrations/0009_human_occupant.sql"),
+        include_str!("../../migrations/0010_b5_trust_guards.sql"),
+        include_str!("../../migrations/0011_cooperative_only.sql"),
+        include_str!("../../migrations/0012_harness_version_evidence.sql"),
+        include_str!("../../migrations/0013_thread_summaries.sql"),
+        include_str!("../../migrations/0014_catch_up_release.sql"),
+        include_str!("../../migrations/0015_preparation_retention.sql"),
+        include_str!("../../migrations/0016_human_receipt_waivers.sql"),
+        include_str!("../../migrations/0017_wake_batches.sql"),
+        include_str!("../../migrations/0018_warning_conditions.sql"),
+        include_str!("../../migrations/0019_thread_names.sql"),
+        include_str!("../../migrations/0020_recent_activity.sql"),
+        include_str!("../../migrations/0021_invitation_rejections.sql"),
+    ];
+    let db = Connection::open_in_memory().unwrap();
+    db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    for migration in &migrations[..version] {
+        db.execute_batch(migration).unwrap();
+    }
+    db.pragma_update(None, "user_version", version as i64)
+        .unwrap();
+    db
+}
+
+#[test]
+fn adapter_migration_failure_rolls_back_rebuilt_tables_and_schema_version() {
+    let db = adapter_historical_database(21);
+    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0); INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at) VALUES (7,'s',1,'p','b',0,'codex','launch:n','launch:e','managed_launch',0); UPDATE sqlite_sequence SET seq=90 WHERE name='occupant_bindings'; CREATE TABLE harness_runtime_identities(collision INTEGER);").unwrap();
+    let original: String = db
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name='occupant_bindings'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(schema::initialize(&db, || UtcMillis(0)).is_err());
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        21
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT sql FROM sqlite_master WHERE name='occupant_bindings'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        original
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT seq FROM sqlite_sequence WHERE name='occupant_bindings'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        90
+    );
+    assert!(
+        db.execute("UPDATE occupant_bindings SET harness='future_agent'", [])
+            .is_err()
+    );
+    db.execute_batch("DROP TABLE harness_runtime_identities")
+        .unwrap();
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT observation_provenance FROM occupant_bindings",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "managed_launch"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT seq FROM sqlite_sequence WHERE name='occupant_bindings'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        90
+    );
+}
+
+#[test]
+fn adapter_migration_reopen_rejects_weakened_lexical_tables_and_missing_indexes() {
+    for statement in [
+        "DROP INDEX harness_contract_evidence_v2_seen",
+        "DROP TABLE harness_unattributed_v2",
+        "DROP INDEX occupant_bindings_history",
+        "PRAGMA writable_schema=ON; UPDATE sqlite_master SET sql=replace(sql,'instr(harness,char(0))=0 AND ','') WHERE name='harness_runtime_identities'; PRAGMA writable_schema=OFF",
+    ] {
+        let db = Connection::open_in_memory().unwrap();
+        schema::initialize(&db, || UtcMillis(0)).unwrap();
+        db.execute_batch(statement).unwrap();
+        assert_eq!(
+            schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
+            ErrorCode::IncompatibleSchema
         );
     }
 }

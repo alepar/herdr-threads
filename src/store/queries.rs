@@ -4919,10 +4919,13 @@ fn inbox_batch(
     if !owned {
         return Err(api_error(ErrorCode::NotFound, "seat not found"));
     }
-    let current_agent: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL AND harness IN ('claude','codex') AND observation_provenance='cooperative_top_level')",
+    let current_harness: Option<String> = db.query_row(
+        "SELECT b.harness FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation WHERE s.id=?1 AND s.state='resolved' AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.observation_provenance='cooperative_top_level' AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.native_session<>'' AND b.execution_id<>''",
         [seat.as_str()], |r| r.get(0),
-    ).map_err(store_error)?;
+    ).optional().map_err(store_error)?;
+    let current_agent = current_harness
+        .as_deref()
+        .is_some_and(|harness| crate::harness::registry::builtins().agent(harness).is_ok());
     let offered_warning_through: i64 = db.query_row(
         "SELECT o.offered_through_seq FROM warning_offer o JOIN seats s ON s.id=o.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE o.seat_id=?1 AND o.binding_generation=s.generation AND o.execution_id=b.execution_id",
         [seat.as_str()], |r| r.get(0),
