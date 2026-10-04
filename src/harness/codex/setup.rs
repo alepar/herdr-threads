@@ -1,4 +1,6 @@
 //! Owned Codex local setup backend.
+use std::time::Duration;
+
 use crate::cli::{
     RunError,
     setup::{SetupEnv, SetupRequest, SetupVerb},
@@ -902,8 +904,10 @@ pub(crate) fn codex_remove(env: &SetupEnv) -> Result<Value, RunError> {
     Ok(report)
 }
 
-pub(crate) fn codex_status(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
-    let observation = observe(request, env);
+fn codex_status(
+    env: &SetupEnv,
+    observation: Result<(Observed, Option<codex::InstalledVersion>), String>,
+) -> Result<Value, RunError> {
     let mut report = json!({
         "action": "status",
         "harness": "codex",
@@ -972,8 +976,21 @@ pub(crate) fn setup(
 }
 pub(crate) fn status(
     request: &crate::harness::adapter::StatusRequest,
+    budget: &crate::protocol::time::CallBudget,
 ) -> crate::harness::adapter::SetupStatus {
-    legacy_adapter_status(Harness::Codex, request, codex_status)
+    legacy_adapter_status(Harness::Codex, request, |legacy, env| {
+        let timeout = Duration::from_millis(
+            budget
+                .deadline
+                .0
+                .saturating_sub(request.environment.clock.monotonic_now().0),
+        )
+        .min(Duration::from_secs(5));
+        codex_status(
+            env,
+            observe_bounded(legacy, env, None, timeout, &budget.cancellation),
+        )
+    })
 }
 pub(crate) fn unsetup(
     request: &crate::harness::adapter::UnsetupRequest,
@@ -992,18 +1009,38 @@ pub(crate) fn observe_with_cache(
     env: &SetupEnv,
     codex_cache: Option<&Path>,
 ) -> Result<(Observed, Option<codex::InstalledVersion>), String> {
+    observe_bounded(
+        request,
+        env,
+        codex_cache,
+        Duration::from_secs(5),
+        &crate::protocol::time::Cancellation::default(),
+    )
+}
+
+fn observe_bounded(
+    request: &SetupRequest,
+    env: &SetupEnv,
+    codex_cache: Option<&Path>,
+    timeout: Duration,
+    cancellation: &crate::protocol::time::Cancellation,
+) -> Result<(Observed, Option<codex::InstalledVersion>), String> {
+    if timeout.is_zero() || cancellation.is_cancelled() {
+        return Err("native status observation budget exhausted or cancelled".into());
+    }
     let binary = harness_binary(request, env).map_err(|error| error.to_string())?;
     let Some(binary) = binary else {
         return Err(codex::VersionError::Unavailable.to_string()
             + " (no executable `codex` on PATH; pass --harness-binary)");
     };
-    let witness = codex::InstalledVersion::observe_with(
+    let witness = codex::InstalledVersion::observe_with_cancel(
         &binary,
-        codex::VERSION_TIMEOUT,
+        timeout,
         codex_cache.map_or(
             crate::harness::codex_schema::FingerprintCache::Memory,
             crate::harness::codex_schema::FingerprintCache::ReadWrite,
         ),
+        Some(cancellation),
     )
     .map_err(|error| error.to_string())?;
     Ok((

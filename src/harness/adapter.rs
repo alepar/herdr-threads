@@ -524,19 +524,58 @@ impl std::fmt::Display for UnsupportedOperation {
 }
 impl std::error::Error for UnsupportedOperation {}
 
+/// Adapter-local launch inputs. No seat, binding or host mutation capability.
 pub struct LaunchRequest {
-    pub argv: Vec<OsString>,
-    pub scope: Option<ResolvedSetupScope>,
+    pub argv: Vec<String>,
+    pub environment: SetupEnvironment,
+    pub native_binary: Option<std::path::PathBuf>,
+}
+#[derive(Debug, Clone)]
+pub struct LaunchScope {
+    pub setup: ResolvedSetupScope,
+    pub working_directory: std::path::PathBuf,
+    pub config_source: &'static str,
 }
 pub struct LaunchPreparation {
-    pub argv: Vec<OsString>,
+    pub argv: Vec<String>,
+    pub hook: crate::ports::ConfiguredHook,
+    pub working_directory: std::path::PathBuf,
+    pub environment_overrides: std::collections::BTreeMap<String, OsString>,
+    pub report: serde_json::Value,
+    pub wrapper_warning: Option<&'static str>,
 }
 pub trait LaunchPolicy: Send + Sync {
-    fn prepare(
+    fn resolve_scope(
         &self,
         request: &LaunchRequest,
+        probe: &dyn super::launch::CodexShellProbe,
         budget: &CallBudget,
-    ) -> Result<LaunchPreparation, UnsupportedOperation>;
+    ) -> Result<LaunchScope, crate::protocol::results::ApiError>;
+    fn validate_native_argv(
+        &self,
+        argv: &[String],
+    ) -> Result<(), crate::protocol::results::ApiError>;
+    fn compose_argv(
+        &self,
+        caller: Vec<String>,
+        owned: Vec<String>,
+        shell_passes_no_daemon: bool,
+    ) -> Result<Vec<String>, crate::protocol::results::ApiError>;
+    fn prepare_launch(
+        &self,
+        request: &LaunchRequest,
+        scope: &LaunchScope,
+        admitted: &super::registry::AdmittedHandle,
+        status: &LocalSetupStatus,
+        probe: &dyn super::launch::CodexShellProbe,
+        budget: &CallBudget,
+    ) -> Result<LaunchPreparation, crate::protocol::results::ApiError>;
+    fn configuration_fingerprint(
+        &self,
+        request: &LaunchRequest,
+        scope: &LaunchScope,
+    ) -> Result<String, crate::protocol::results::ApiError>;
+    fn expected_host_kinds(&self) -> &'static [&'static str];
 }
 pub trait ComposerPolicy: Send + Sync {
     fn capabilities(&self) -> super::recipe::PokeCapabilities;

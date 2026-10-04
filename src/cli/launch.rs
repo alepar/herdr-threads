@@ -29,20 +29,21 @@
 //! when the agent's initial prompt is lost. Each submitted start is appended
 //! to a private launch record in the instance directory.
 
+#[cfg(test)]
+use super::setup::{self, SetupRequest, SetupVerb};
 use super::{
     RunError,
     journal::{IntentScope, Journal, SemanticMutation},
     retry,
-    setup::{self, SetupEnv, SetupRequest, SetupVerb},
+    setup::SetupEnv,
 };
 use crate::{
     client::local::LocalSocketClient,
     harness::{
         context::Harness as ContextHarness,
         launch::{
-            LaunchHookConfiguration, LaunchHookInspector, LaunchSeatResolver, ManagedLaunchRequest,
-            OpenBinding, managed_launch_command, prepare_managed, submit_prepared,
-            submit_prepared_with_evidence,
+            LaunchHookInspector, LaunchSeatResolver, ManagedLaunchRequest, OpenBinding,
+            managed_launch_command, submit_prepared, submit_prepared_with_evidence,
         },
     },
     host::observation::PaneName,
@@ -63,151 +64,15 @@ use crate::{
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::{self, Read, Write},
+    io::{self, Write},
     path::Path,
-    process::{Command as Process, Stdio},
     sync::Mutex,
-    time::{Duration, Instant},
 };
 
-/// How the pane's interactive shell resolves `codex`. Herdr starts the
-/// agent by name inside that shell, so a user function or alias wrapping
-/// `codex` runs first and may already pass `--no-daemon` (Codex refuses the
-/// flag twice). Injected so tests never run a real shell.
-pub trait CodexShellProbe {
-    /// The shell's description of `codex` (stdout only), or why it could
-    /// not be obtained.
-    fn resolve_codex(&self) -> Result<String, String>;
-
-    /// The value the pane's interactive shell itself gives `var` (an `export`
-    /// in its startup files), without the launcher's own value; `None` when
-    /// the shell sets none or cannot be asked. Herdr's `agent.start` carries
-    /// no environment, so the agent inherits whatever the pane shell has.
-    fn pane_shell_env(&self, _var: &str) -> Option<String> {
-        None
-    }
-}
-
-/// The bound on the shell probe; on timeout launch keeps adding `--no-daemon`.
-pub const SHELL_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// Runs the user's `$SHELL` (else `/bin/zsh`) interactively, as the pane
-/// does: zsh `whence -f codex 2>/dev/null || type codex`, otherwise
-/// `type codex`. Stdout only; stdin and stderr are null.
-pub struct SystemShellProbe {
-    pub shell: std::path::PathBuf,
-    pub timeout: Duration,
-}
-
-impl SystemShellProbe {
-    pub fn from_process() -> Self {
-        let shell = std::env::var_os("SHELL")
-            .filter(|shell| !shell.is_empty())
-            .map_or_else(|| "/bin/zsh".into(), std::path::PathBuf::from);
-        Self {
-            shell,
-            timeout: crate::protocol::time::external_bound(SHELL_PROBE_TIMEOUT),
-        }
-    }
-}
-
-impl SystemShellProbe {
-    /// Runs `script` in the interactive shell (`-ic`), stdout only, bounded by
-    /// the probe timeout. `unset` removes one inherited variable first.
-    fn run_script(&self, script: &str, unset: Option<&str>) -> Result<String, String> {
-        let mut command = Process::new(&self.shell);
-        command.arg("-ic").arg(script);
-        if let Some(var) = unset {
-            command.env_remove(var);
-        }
-        let mut child = command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| format!("{}: {error}", self.shell.display()))?;
-        let mut stdout = child.stdout.take().ok_or("no shell stdout")?;
-        let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            let result = stdout.read_to_end(&mut bytes).map(|_| bytes);
-            let _ = sender.send(result);
-        });
-        let deadline = Instant::now() + self.timeout;
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                Ok(None) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err("the shell probe timed out".into());
-                }
-                Err(error) => return Err(error.to_string()),
-            }
-        };
-        if !status.success() {
-            return Err(format!("the shell probe exited with {status}"));
-        }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let bytes = receiver
-            .recv_timeout(remaining.max(Duration::from_millis(100)))
-            .map_err(|_| "the shell probe output was not closed".to_owned())?
-            .map_err(|error| error.to_string())?;
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
-    }
-}
-
-impl CodexShellProbe for SystemShellProbe {
-    fn resolve_codex(&self) -> Result<String, String> {
-        let is_zsh = self
-            .shell
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.contains("zsh"));
-        let script = if is_zsh {
-            "whence -f codex 2>/dev/null || type codex"
-        } else {
-            "type codex"
-        };
-        self.run_script(script, None)
-    }
-
-    fn pane_shell_env(&self, var: &str) -> Option<String> {
-        const BEGIN: &str = "HT_PANE_ENV_BEGIN";
-        const END: &str = "HT_PANE_ENV_END";
-        // Only a plain variable name is ever interpolated into the script.
-        if var.is_empty() || !var.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
-            return None;
-        }
-        let script = format!("printf '%s' {BEGIN}\"${{{var}-}}\"{END}");
-        let output = self.run_script(&script, Some(var)).ok()?;
-        let value = output.split(BEGIN).nth(1)?.split(END).next()?;
-        (!value.is_empty()).then(|| value.to_owned())
-    }
-}
-
-/// Whether a shell's description of `codex` (a function body or alias)
-/// passes `--no-daemon` as a word of its own. Comment lines are ignored;
-/// `--no-daemon=...` is not the flag.
-pub fn wrapper_passes_no_daemon(description: &str) -> bool {
-    description
-        .lines()
-        .filter(|line| !line.trim_start().starts_with('#'))
-        .flat_map(|line| {
-            line.split(|c: char| {
-                c.is_whitespace() || matches!(c, '\'' | '"' | '`' | ';' | '(' | ')' | '|' | '&')
-            })
-        })
-        .any(|word| word == "--no-daemon")
-}
-
-/// The report text when the pane shell's `codex` wrapper already passes
-/// `--no-daemon` and launch therefore adds none.
-pub const CODEX_WRAPPER_NO_DAEMON: &str =
-    "shell function or alias already passes --no-daemon; launch added none";
+pub use crate::harness::codex::launch::{
+    CODEX_WRAPPER_NO_DAEMON, codex_profile, wrapper_passes_no_daemon,
+};
+pub use crate::harness::launch::{CodexShellProbe, SHELL_PROBE_TIMEOUT, SystemShellProbe};
 
 /// `launch --help` epilogue.
 pub const LAUNCH_HELP: &str = "Target:
@@ -309,63 +174,14 @@ fn policy_harness(harness: ContextHarness) -> Harness {
     harness.into()
 }
 
-fn harness_word(harness: ContextHarness) -> &'static str {
-    harness.as_str()
-}
-
-/// The owned hook configuration of one launch, read from the setup library:
-/// the exact user-level installation (no extra arguments).
-/// Codex commands use its approved outside-sandbox execution mechanism.
-pub struct SetupHookInspector {
-    env: SetupEnv,
-    harness: ContextHarness,
-    warnings: Mutex<Vec<String>>,
-}
-
-impl SetupHookInspector {
-    fn installed(&self) -> Result<Option<LaunchHookConfiguration>, ApiError> {
-        let (_, inspection) = setup::user_inspection(self.harness, &self.env)
-            .map_err(|detail| api(ErrorCode::Conflict, detail))?;
-        Ok(inspection
-            .configured_hook
-            .map(|hook| LaunchHookConfiguration {
-                hook,
-                argv: Vec::new(),
-            }))
-    }
-}
-
-impl LaunchHookInspector for SetupHookInspector {
+struct PreparedHookInspector(ConfiguredHook);
+impl LaunchHookInspector for PreparedHookInspector {
     fn configured_hook(
         &self,
-        harness: Harness,
-        budget: &CallBudget,
+        _: Harness,
+        _: &CallBudget,
     ) -> Result<Option<ConfiguredHook>, ApiError> {
-        Ok(self
-            .launch_configuration(harness, budget)?
-            .map(|configuration| configuration.hook))
-    }
-
-    fn launch_configuration(
-        &self,
-        harness: Harness,
-        _budget: &CallBudget,
-    ) -> Result<Option<LaunchHookConfiguration>, ApiError> {
-        if harness != policy_harness(self.harness) {
-            return Err(api(ErrorCode::InvalidRequest, "launch harness mismatch"));
-        }
-        match self.harness {
-            ContextHarness::Claude => self.installed(),
-            ContextHarness::Codex => self.installed(),
-            ContextHarness::Human => Err(api(
-                ErrorCode::InvalidRequest,
-                "launch starts agents only; a person uses `herdr-threads me init`",
-            )),
-            _ => Err(api(
-                ErrorCode::InvalidRequest,
-                format!("{}: launch is unsupported", self.harness.as_str()),
-            )),
-        }
+        Ok(Some(self.0.clone()))
     }
 }
 
@@ -666,92 +482,28 @@ fn append_record(dir: &Path, record: &Value) -> io::Result<()> {
     file.write_all(&line)
 }
 
-/// The config directory the agent will use and where that came from: the
-/// pane shell's own `CODEX_HOME` / `CLAUDE_CONFIG_DIR` (an `export` in its
-/// startup files; Herdr's `agent.start` carries no environment, so the agent
-/// inherits the pane's) when it sets an absolute one, else the launcher's
-/// resolved value (the pane then inherits the Herdr server's environment,
-/// which launch cannot read). Returns the environment to inspect with.
-fn effective_env(
-    request: &LaunchRequest,
-    env: &SetupEnv,
-    probe: &dyn CodexShellProbe,
-) -> (SetupEnv, &'static str) {
-    let var = match request.harness {
-        ContextHarness::Codex => "CODEX_HOME",
-        ContextHarness::Claude => "CLAUDE_CONFIG_DIR",
-        ContextHarness::Human => return (env.clone(), "launcher"),
-        _ => return (env.clone(), "launcher"),
-    };
-    let pane_dir = probe
-        .pane_shell_env(var)
-        .map(std::path::PathBuf::from)
-        .filter(|dir| dir.is_absolute());
-    let Some(dir) = pane_dir else {
-        return (env.clone(), "launcher");
-    };
-    let mut effective = env.clone();
-    match request.harness {
-        ContextHarness::Codex => effective.codex_home = Some(dir),
-        ContextHarness::Claude => effective.claude_config_dir = Some(dir),
-        _ => return (env.clone(), "launcher"),
-    }
-    (effective, "pane_shell")
-}
-
-/// The Codex profile Codex applies: `-p/--profile` before `--` (the last one
-/// wins), else the top-level `profile` key of `config.toml`, else none.
-pub fn codex_profile(argv: &[String], config: Option<&str>) -> (String, &'static str) {
-    let options_end = argv.iter().position(|a| a == "--").unwrap_or(argv.len());
-    let options = &argv[..options_end];
-    let mut chosen = None;
-    for (index, arg) in options.iter().enumerate() {
-        let value = match arg.as_str() {
-            "-p" | "--profile" => options.get(index + 1).map(String::as_str),
-            other => other
-                .strip_prefix("--profile=")
-                .or_else(|| other.strip_prefix("-p").filter(|rest| !rest.is_empty())),
-        };
-        if let Some(value) = value {
-            chosen = Some(value.to_owned());
+/// Adapter-local report keys are additive; canonical launch evidence keeps its own fields.
+fn append_adapter_projection(report: &mut Value, projection: &Value) {
+    if let (Some(report), Some(projection)) = (report.as_object_mut(), projection.as_object()) {
+        for (key, value) in projection {
+            report.entry(key.clone()).or_insert_with(|| value.clone());
         }
     }
-    if let Some(profile) = chosen {
-        return (profile, "argv");
-    }
-    let from_config = config
-        .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok())
-        .and_then(|doc| doc.get("profile")?.as_str().map(str::to_owned));
-    match from_config {
-        Some(profile) => (profile, "config.toml"),
-        None => ("default".to_owned(), "none"),
-    }
-}
-
-/// The effective Codex home, its `config.toml` and the selected profile,
-/// which answers "why was my Codex profile not applied?".
-fn codex_report(env: &SetupEnv, argv: &[String]) -> Value {
-    let home = env.codex_home.as_deref();
-    let config_path = home.map(|home| home.join("config.toml"));
-    let config = config_path
-        .as_deref()
-        .and_then(|path| fs::read_to_string(path).ok());
-    let (profile, profile_source) = codex_profile(argv, config.as_deref());
-    json!({
-        "codex_home": home.map(|home| home.display().to_string()),
-        "config_path": config_path.as_ref().map(|path| path.display().to_string()),
-        "config_present": config.is_some(),
-        "profile": profile,
-        "profile_source": profile_source,
-        "command_execution": "approved_outside_sandbox",
-        "command_guidance": "Run herdr-threads commands outside the sandbox through Codex approval; if denied, report the policy refusal without bypassing it",
-    })
 }
 
 /// Run the managed launch preflight and start; errors are refusals before
 /// any start was submitted.
 pub fn execute(request: &LaunchRequest, parts: &LaunchParts<'_>) -> Result<LaunchReport, RunError> {
-    execute_guarded_inner(request, parts, false, false, &mut |_| Ok(()))
+    execute_with_registry(crate::harness::registry::builtins(), request, parts)
+}
+
+/// Injectable registry entrypoint uses exactly the same guarded composition as production.
+pub fn execute_with_registry(
+    registry: &crate::harness::registry::Registry,
+    request: &LaunchRequest,
+    parts: &LaunchParts<'_>,
+) -> Result<LaunchReport, RunError> {
+    execute_guarded_inner(registry, request, parts, false, false, &mut |_| Ok(()))
 }
 
 /// A preflight uses the exact launch guards but does not submit or record a start.
@@ -767,81 +519,261 @@ pub fn execute_guarded(
     preflight: bool,
     boundary: &mut dyn FnMut(LaunchBoundary<'_>) -> Result<(), ApiError>,
 ) -> Result<LaunchReport, RunError> {
-    execute_guarded_inner(request, parts, preflight, true, boundary)
+    execute_guarded_inner(
+        crate::harness::registry::builtins(),
+        request,
+        parts,
+        preflight,
+        true,
+        boundary,
+    )
 }
 
 fn execute_guarded_inner(
+    registry: &crate::harness::registry::Registry,
     request: &LaunchRequest,
     parts: &LaunchParts<'_>,
     preflight: bool,
     typed_evidence: bool,
     boundary: &mut dyn FnMut(LaunchBoundary<'_>) -> Result<(), ApiError>,
 ) -> Result<LaunchReport, RunError> {
-    if !matches!(
-        request.harness,
-        ContextHarness::Claude | ContextHarness::Codex | ContextHarness::Human
-    ) {
+    use crate::harness::adapter::{
+        AdmissionRequest, ExecutableLookup, InstallEnvironment, InstallObservation,
+        LaunchRequest as AdapterLaunchRequest, ResolvedSetupScope, SetupStatus, StatusRequest,
+    };
+    let registration =
+        crate::harness::launch::launch_registration(registry, policy_harness(request.harness))?;
+    let policy = registration.launch_policy().expect("checked provider");
+    let word = registration.metadata().id;
+    // Snapshot starts one decreasing wall-clock budget before any native probe.
+    let mut adapter_request = AdapterLaunchRequest {
+        argv: request.argv.clone(),
+        environment: parts.env.snapshot(),
+        native_binary: request
+            .harness_binary
+            .as_ref()
+            .map(std::path::PathBuf::from),
+    };
+    let local_clock = adapter_request.environment.clock.clone();
+    let local_budget = CallBudget {
+        deadline: MonoInstant(local_clock.monotonic_now().0.saturating_add(30_000)),
+        cancellation: Cancellation::default(),
+    };
+    policy.validate_native_argv(&request.argv)?;
+    let scope = policy.resolve_scope(&adapter_request, parts.shell_probe, &local_budget)?;
+    let root = match &scope.setup {
+        ResolvedSetupScope::ConfigRoot(root) => root,
+        ResolvedSetupScope::Profile { home, .. } => home,
+    };
+    adapter_request
+        .environment
+        .config_roots
+        .insert(word.into(), root.clone());
+    let ExecutableLookup::Path(executable_name) = registration.metadata().executable else {
         return Err(api(
-            ErrorCode::InvalidRequest,
-            format!("{}: launch is unsupported", request.harness.as_str()),
+            ErrorCode::UnsupportedHarness,
+            format!("{word}: executable lookup is unsupported"),
+        )
+        .into());
+    };
+    let binary = crate::cli::hook::resolve_on_path(
+        executable_name,
+        adapter_request.environment.path.as_deref(),
+    )
+    .ok_or_else(|| {
+        api(
+            ErrorCode::UnsupportedHarness,
+            format!("no executable `{executable_name}` on PATH"),
+        )
+    })?;
+    if let Some(explicit) = &adapter_request.native_binary {
+        if !explicit.is_absolute() {
+            return Err(api(
+                ErrorCode::InvalidRequest,
+                "--harness-binary must be an absolute path",
+            )
+            .into());
+        }
+        if fs::canonicalize(explicit).ok() != fs::canonicalize(&binary).ok() {
+            return Err(api(
+                ErrorCode::InvalidRequest,
+                "admitted executable must match the native command on PATH",
+            )
+            .into());
+        }
+    }
+    let binary_identity = crate::harness::BinaryIdentity::observe(&binary).ok_or_else(|| {
+        api(
+            ErrorCode::UnsupportedHarness,
+            "launch executable identity unavailable",
+        )
+    })?;
+    let install_env = InstallEnvironment {
+        clock: local_clock.clone(),
+        path: adapter_request.environment.path.clone(),
+        config_root: Some(root.clone()),
+        state_dir: adapter_request.environment.state_dir.clone(),
+    };
+    let probe_budget = CallBudget {
+        deadline: MonoInstant(
+            local_budget
+                .deadline
+                .0
+                .min(local_clock.monotonic_now().0.saturating_add(5_000)),
+        ),
+        cancellation: local_budget.cancellation.clone(),
+    };
+    let installed = registration.observe_install(&install_env, &probe_budget);
+    let version = match &installed {
+        InstallObservation::Available {
+            identity,
+            binary: observed,
+        } => {
+            if fs::canonicalize(observed).ok() != fs::canonicalize(&binary).ok() {
+                return Err(api(
+                    ErrorCode::Conflict,
+                    "installation observation executable mismatch",
+                )
+                .into());
+            }
+            identity
+                .release_version
+                .clone()
+                .unwrap_or_else(|| identity.key.to_string())
+        }
+        InstallObservation::CodexWitness(version) => version.as_str().to_owned(),
+        InstallObservation::Unavailable { diagnostic } => {
+            return Err(api(ErrorCode::UnsupportedHarness, diagnostic).into());
+        }
+        InstallObservation::Unsupported(operation) => {
+            return Err(api(ErrorCode::UnsupportedHarness, operation.to_string()).into());
+        }
+    };
+    let admitted = registration
+        .admit(
+            &AdmissionRequest {
+                installed,
+                input: None,
+                runtime_candidate: None,
+            },
+            &local_budget,
+        )
+        .map_err(|err| api(ErrorCode::UnsupportedHarness, err.to_string()))?;
+    let observed = crate::harness::setup::legacy::Observed {
+        binary: binary.clone(),
+        version,
+        recipe: admitted.recipe(),
+    };
+    let status = match registration.status(
+        &StatusRequest {
+            scope: scope.setup.clone(),
+            environment: adapter_request.environment.clone(),
+            native_binary: Some(binary.clone()),
+        },
+        &local_budget,
+    ) {
+        SetupStatus::Detailed(status) => status,
+        SetupStatus::Failed(error) => {
+            return Err(api(ErrorCode::Conflict, error.to_string()).into());
+        }
+        _ => {
+            return Err(api(
+                ErrorCode::MissingHook,
+                format!("{word}: launch setup status is unavailable"),
+            )
+            .into());
+        }
+    };
+    let config_fingerprint = if status.installed
+        && status.configured_hook.is_some()
+        && status.enabled != Some(false)
+        && status.admitted != Some(false)
+    {
+        Some(policy.configuration_fingerprint(&adapter_request, &scope)?)
+    } else {
+        None
+    };
+    let preparation = registration
+        .prepare_launch(&adapter_request, &scope, &admitted, &status, parts.shell_probe, &local_budget)
+        .map_err(|mut error| {
+            if error.code == ErrorCode::MissingHook {
+                error.detail = format!(
+                    "the owned {word} hooks are not installed in {} ({}): run `herdr-threads setup {word}` first, with the CLAUDE_CONFIG_DIR / CODEX_HOME the agent uses (nothing was started)",
+                    root.display(), error.detail
+                );
+            }
+            error
+        })?;
+    // The native host carries argv only; providers cannot silently request an environment it cannot submit.
+    if !preparation.environment_overrides.is_empty() {
+        return Err(api(
+            ErrorCode::UnsupportedHarness,
+            "native host cannot apply launch environment overrides",
         )
         .into());
     }
-
-    let word = harness_word(request.harness);
-    let (effective, config_dir_source) = effective_env(request, parts.env, parts.shell_probe);
-    let parts = &LaunchParts {
-        env: &effective,
-        ..*parts
-    };
-    // 1. Installed-version recipe gate.
-    let setup_request = SetupRequest {
-        scope: Default::default(),
-        verb: SetupVerb::Status,
-        harness: request.harness,
-        harness_binary: request.harness_binary.clone(),
-        prompt_suggestions: Default::default(),
-    };
-    // Codex: warm the hook's persistent fingerprint cache here, outside the
-    // hook's time budget, so a cold scan of an unlisted (schema-matched)
-    // version is not repeated, and refused, by every budget-bound hook.
-    // Best effort: without an owned state root the scan stays in memory.
-    let codex_cache = match request.harness {
-        ContextHarness::Codex => parts
-            .env
-            .state_dir
-            .as_deref()
-            .and_then(|state| crate::harness::codex_evidence::prepare(state).ok())
-            .map(|private| crate::harness::codex_evidence::cache_path(&private)),
-        _ => None,
-    };
-    let (observed, _witness) =
-        setup::observe_with_cache(&setup_request, parts.env, codex_cache.as_deref())
-            .map_err(setup::refuse_version)?;
-    let inspector = SetupHookInspector {
-        env: parts.env.clone(),
-        harness: request.harness,
-        warnings: Mutex::new(Vec::new()),
-    };
+    if !registration
+        .metadata()
+        .host_kinds
+        .iter()
+        .any(|kind| policy.expected_host_kinds().contains(kind))
+    {
+        return Err(api(
+            ErrorCode::UnsupportedHarness,
+            "launch policy has no registered host kind",
+        )
+        .into());
+    }
+    let config_fingerprint = config_fingerprint.ok_or_else(|| {
+        api(
+            ErrorCode::MissingHook,
+            "owned launch configuration unavailable",
+        )
+    })?;
+    let inspector = PreparedHookInspector(preparation.hook.clone());
     let seats = RecordingResolver {
         inner: parts.seats,
         seat: Mutex::new(None),
     };
+    let remaining = local_budget
+        .deadline
+        .0
+        .saturating_sub(local_clock.monotonic_now().0);
     let budget = CallBudget {
-        deadline: MonoInstant(parts.clock.monotonic_now().0.saturating_add(40_000)),
-        cancellation: Cancellation::default(),
+        deadline: MonoInstant(parts.clock.monotonic_now().0.saturating_add(remaining)),
+        cancellation: local_budget.cancellation.clone(),
     };
-    // The pane's shell may wrap `codex` with its own `--no-daemon`; a probe
-    // failure or timeout keeps launch adding the flag.
-    let shell_passes_no_daemon = request.harness == ContextHarness::Codex
-        && parts
-            .shell_probe
-            .resolve_codex()
-            .is_ok_and(|description| wrapper_passes_no_daemon(&description));
-    let codex_wrapper = shell_passes_no_daemon.then_some(CODEX_WRAPPER_NO_DAEMON);
+    let codex_wrapper = preparation.wrapper_warning;
+    let config_dir_source = scope.config_source;
     let (name_hint, name_source) = request.name_hint();
+    let recheck_configuration = || -> Result<(), ApiError> {
+        if local_budget.is_exhausted(local_clock.as_ref()) || budget.is_exhausted(parts.clock) {
+            return Err(api(
+                ErrorCode::DeadlineExceeded,
+                "launch budget exhausted before submission",
+            ));
+        }
+        if crate::harness::BinaryIdentity::observe(&binary).as_ref() != Some(&binary_identity)
+            || crate::cli::hook::resolve_on_path(
+                executable_name,
+                adapter_request.environment.path.as_deref(),
+            )
+            .and_then(|path| crate::harness::BinaryIdentity::observe(&path))
+            .as_ref()
+                != Some(&binary_identity)
+            || policy.configuration_fingerprint(&adapter_request, &scope)? != config_fingerprint
+        {
+            return Err(api(
+                ErrorCode::Conflict,
+                "launch executable or selected configuration changed before submission",
+            ));
+        }
+        Ok(())
+    };
+    recheck_configuration()?;
     // 2-3. Policy: fresh read, seat, owned hooks, recheck, guarded start.
-    let prepared = prepare_managed(
+    let prepared = crate::harness::launch::prepare_managed_with_registry(
+        registry,
         parts.host,
         &seats,
         &inspector,
@@ -850,25 +782,14 @@ fn execute_guarded_inner(
             target: request.target.clone(),
             harness: policy_harness(request.harness),
             argv: request.argv.clone(),
-            shell_passes_no_daemon,
+            shell_passes_no_daemon: false,
             name_hint: name_hint.clone(),
         },
         &budget,
+        Some(preparation.argv.clone()),
     );
     let seat = seats.seat.lock().ok().and_then(|slot| slot.clone());
-    let prepared = prepared.map_err(|mut error| {
-        if error.code == ErrorCode::MissingHook {
-            let file = setup::user_inspection(request.harness, parts.env)
-                .map(|(file, _)| file.display().to_string())
-                .unwrap_or_else(|detail| detail);
-            error.detail = format!(
-                "the owned {word} hooks are not installed in {file}: run `herdr-threads setup \
-                 {word}` first, with the CLAUDE_CONFIG_DIR / CODEX_HOME the agent uses (nothing \
-                 was started)"
-            );
-        }
-        RunError::Api(error)
-    })?;
+    let prepared = prepared?;
     if preflight {
         return Ok(LaunchReport {
             report: json!({"seat": prepared.request.seat}),
@@ -876,6 +797,10 @@ fn execute_guarded_inner(
         });
     }
     boundary(LaunchBoundary::BeforeSubmit(&prepared.request))?;
+    if let Err(error) = recheck_configuration() {
+        boundary(LaunchBoundary::RefusedBeforeStart)?;
+        return Err(error.into());
+    }
     let outcome = if typed_evidence {
         match submit_prepared_with_evidence(parts.host, parts.clock, prepared) {
             Ok(outcome) => outcome,
@@ -924,11 +849,7 @@ fn execute_guarded_inner(
         },
         None => Value::Null,
     };
-    let mut warnings = inspector
-        .warnings
-        .lock()
-        .map(|w| w.clone())
-        .unwrap_or_default();
+    let mut warnings = Vec::new();
     if let Some(name) = &request.name
         && name_source == "name"
         && crate::ports::sanitize_agent_name(name).as_deref() != Some(name.as_str())
@@ -937,18 +858,13 @@ fn execute_guarded_inner(
             "--name `{name}` was fitted to Herdr's agent-name rule [a-z][a-z0-9_-]{{0,31}}"
         ));
     }
-    let config_dir = json!({
-        "path": match request.harness {
-            ContextHarness::Codex => parts.env.codex_home.as_deref(),
-            ContextHarness::Claude => parts.env.claude_config_dir.as_deref(),
-            _ => None,
-        }
-        .map(|dir| dir.display().to_string()),
-        "source": config_dir_source,
-    });
-    let codex =
-        (request.harness == ContextHarness::Codex).then(|| codex_report(parts.env, &request.argv));
-    let record = json!({
+    let config_dir = json!({ "path": root.display().to_string(), "source": config_dir_source });
+    let codex = preparation
+        .report
+        .get("codex")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let mut record = json!({
         "at_utc_ms": parts.clock.utc_now().0,
         "pane": request.target.as_str(),
         "seat": seat.as_ref().map(SeatId::as_str),
@@ -966,6 +882,7 @@ fn execute_guarded_inner(
         "recipe": observed.recipe,
         "binding": binding,
     });
+    append_adapter_projection(&mut record, &preparation.report);
     if let Some(dir) = parts.record_dir
         && let Err(error) = append_record(dir, &record)
     {
@@ -998,6 +915,7 @@ fn execute_guarded_inner(
         ),
         "warnings": warnings,
     });
+    append_adapter_projection(&mut report, &preparation.report);
     if let Some(candidates) = agent_name_candidates {
         report["agent_name_candidates"] = json!(candidates);
     }

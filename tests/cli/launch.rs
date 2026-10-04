@@ -1607,3 +1607,710 @@ fn handoff_native_launcher_checks_frozen_seat_and_propagates_confirmed_refusal()
     assert!(host.submitted().is_empty());
     assert!(scratch.records().is_empty());
 }
+
+/// Missing policy must refuse before observing configuration or allocating a seat.
+#[test]
+fn adapter_launch_missing_provider_refuses_before_seat_or_start() {
+    let s = Scratch::new();
+    let host = FakeHost::new();
+    let seats = seats();
+    let handoff = FakeHandoff(AtomicUsize::new(0));
+    let error = s
+        .launch(&host, &seats, &handoff, request(ContextHarness::Human, &[]))
+        .unwrap_err();
+    let RunError::Api(error) = error else {
+        panic!("API refusal required")
+    };
+    assert_eq!(error.code, ErrorCode::UnsupportedHarness);
+    assert_eq!(seats.calls.load(Ordering::SeqCst), 0);
+    assert!(host.submitted().is_empty());
+    assert!(s.records().is_empty());
+}
+
+/// Mutation after preparation (including a durable fence) cannot start stale hooks.
+#[test]
+fn adapter_launch_configuration_mutation_before_submit_refuses() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.283 (Claude Code)", &[]);
+    s.setup_claude();
+    let host = FakeHost::new();
+    let seats = seats();
+    let handoff = FakeHandoff(AtomicUsize::new(0));
+    let clock = Clock0(AtomicU64::new(1));
+    let probe = FakeProbe(Err("unused".into()));
+    let result = execute_guarded(
+        &request(ContextHarness::Claude, &[]),
+        &LaunchParts {
+            env: &s.env,
+            host: &host,
+            seats: &seats,
+            handoff: &handoff,
+            clock: &clock,
+            record_dir: Some(&s.root),
+            shell_probe: &probe,
+        },
+        false,
+        &mut |boundary| {
+            if matches!(boundary, LaunchBoundary::BeforeSubmit(_)) {
+                fs::write(
+                    s.env
+                        .claude_config_dir
+                        .as_ref()
+                        .unwrap()
+                        .join("settings.json"),
+                    b"{}",
+                )
+                .unwrap();
+            }
+            Ok(())
+        },
+    );
+    let RunError::Api(error) = result.unwrap_err() else {
+        panic!("API refusal required")
+    };
+    assert_eq!(error.code, ErrorCode::Conflict);
+    assert!(host.submitted().is_empty());
+    assert!(seats.recorded.lock().unwrap().is_empty());
+}
+
+mod fourth_adapter {
+    use super::*;
+    use crate::harness::adapter::*;
+    use crate::harness::registry::{AdmittedHandle, Registration, Registry};
+
+    const METADATA: AdapterMetadata = AdapterMetadata {
+        id: "fourth",
+        display_label: "Fourth fixture",
+        context_spelling: "Fourth",
+        context_aliases: &[],
+        executable: ExecutableLookup::Path("fourth"),
+        host_kinds: &["fourth"],
+        setup_scopes: &[SetupScopeKind::ConfigRoot],
+        budget: EventBudgetPolicy {
+            lifecycle_ms: 1000,
+            observer_ms: 1000,
+        },
+        runtime_sources: &["installed_probe"],
+    };
+    pub struct Fourth {
+        pub provider: bool,
+        pub disabled: bool,
+        pub wrong_scope: bool,
+        pub mutate_binary: std::sync::atomic::AtomicBool,
+        pub status_calls: AtomicUsize,
+    }
+    impl HarnessAdapter for Fourth {
+        type Admission = ();
+        fn metadata(&self) -> &'static AdapterMetadata {
+            &METADATA
+        }
+        fn contracts(&self) -> &'static [ContractDescriptor] {
+            &[]
+        }
+        fn observe_install(&self, env: &InstallEnvironment, _: &CallBudget) -> InstallObservation {
+            InstallObservation::Available {
+                binary: crate::cli::hook::resolve_on_path("fourth", env.path.as_deref()).unwrap(),
+                identity: RuntimeIdentity::stable_release("1.0.0", "installed_probe").unwrap(),
+            }
+        }
+        fn admit(&self, _: &AdmissionRequest, _: &CallBudget) -> AdmissionDecision<()> {
+            AdmissionDecision::Listed {
+                state: (),
+                recipe: "fourth-fixture",
+            }
+        }
+        fn version_ladder(&self, _: &RuntimeIdentity) -> Ladder {
+            Ladder::Admitted
+        }
+        fn classify(&self, _: &HookInput) -> ContractObservation {
+            panic!("launch cannot classify hooks")
+        }
+        fn decode(&self, _: &(), _: &HookInput) -> Result<DecodedEvent, DecodeFailure> {
+            panic!("launch cannot check in")
+        }
+        fn encode(
+            &self,
+            _: &(),
+            _: &DecodedEvent,
+            _: &NeutralOffer,
+        ) -> Result<EncodedOutput, EncodeFailure> {
+            panic!("launch cannot provide receipt output")
+        }
+        fn attribute_runtime(&self, _: &HookInput, _: &CallBudget) -> RuntimeAttribution {
+            panic!("launch is not runtime evidence")
+        }
+        fn setup(
+            &self,
+            _: &crate::harness::adapter::SetupRequest,
+            _: &CallBudget,
+        ) -> Result<SetupOutcome, SetupFailure> {
+            panic!("launch must never install")
+        }
+        fn unsetup(
+            &self,
+            _: &UnsetupRequest,
+            _: &CallBudget,
+        ) -> Result<RemovalOutcome, SetupFailure> {
+            panic!("launch must never remove")
+        }
+        fn status(&self, request: &StatusRequest, _: &CallBudget) -> SetupStatus {
+            self.status_calls.fetch_add(1, Ordering::SeqCst);
+            if self.mutate_binary.load(Ordering::SeqCst) {
+                fs::write(
+                    request.native_binary.as_ref().unwrap(),
+                    b"changed executable during preparation",
+                )
+                .unwrap();
+            }
+            let root = match &request.scope {
+                ResolvedSetupScope::ConfigRoot(root) => root,
+                _ => panic!("wrong scope"),
+            };
+            SetupStatus::Detailed(Box::new(LocalSetupStatus {
+                scope: if self.wrong_scope {
+                    ResolvedSetupScope::ConfigRoot(root.join("other"))
+                } else {
+                    request.scope.clone()
+                },
+                installed: true,
+                enabled: Some(!self.disabled),
+                admitted: Some(true),
+                observed: None,
+                configured_hook: Some(ConfiguredHook {
+                    scope: "fixture".into(),
+                    path: root.join("fixture-hooks").display().to_string(),
+                    fingerprint: "owned-fourth".into(),
+                }),
+                fingerprint: Some("owned-fourth".into()),
+                diagnostics: vec![],
+                repairs: vec![],
+                projection: Value::Null,
+            }))
+        }
+        fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
+            self.provider.then_some(self)
+        }
+    }
+    impl LaunchPolicy for Fourth {
+        fn resolve_scope(
+            &self,
+            request: &crate::harness::adapter::LaunchRequest,
+            _: &dyn CodexShellProbe,
+            _: &CallBudget,
+        ) -> Result<LaunchScope, ApiError> {
+            Ok(LaunchScope {
+                setup: ResolvedSetupScope::ConfigRoot(request.environment.cwd.clone()),
+                working_directory: request.environment.cwd.clone(),
+                config_source: "fixture",
+            })
+        }
+        fn validate_native_argv(&self, argv: &[String]) -> Result<(), ApiError> {
+            if argv.iter().any(|arg| arg == "refuse") {
+                return Err(api(
+                    ErrorCode::InvalidRequest,
+                    "fourth native grammar refusal",
+                ));
+            }
+            Ok(())
+        }
+        fn compose_argv(
+            &self,
+            caller: Vec<String>,
+            owned: Vec<String>,
+            _: bool,
+        ) -> Result<Vec<String>, ApiError> {
+            Ok([vec!["--fourth-owned".into()], owned, caller].concat())
+        }
+        fn prepare_launch(
+            &self,
+            request: &crate::harness::adapter::LaunchRequest,
+            scope: &LaunchScope,
+            _: &AdmittedHandle,
+            status: &LocalSetupStatus,
+            _: &dyn CodexShellProbe,
+            _: &CallBudget,
+        ) -> Result<LaunchPreparation, ApiError> {
+            Ok(LaunchPreparation {
+                argv: self.compose_argv(request.argv.clone(), vec![], false)?,
+                hook: crate::harness::launch::owned_launch_hook(status)?,
+                working_directory: scope.working_directory.clone(),
+                environment_overrides: Default::default(),
+                report: json!({"fourth": {"mode": "fixture"}}),
+                wrapper_warning: None,
+            })
+        }
+        fn configuration_fingerprint(
+            &self,
+            _: &crate::harness::adapter::LaunchRequest,
+            _: &LaunchScope,
+        ) -> Result<String, ApiError> {
+            Ok("fourth-unchanged".into())
+        }
+        fn expected_host_kinds(&self) -> &'static [&'static str] {
+            &["fourth"]
+        }
+    }
+    pub fn registry(provider: bool, disabled: bool) -> (Registry, &'static Fourth) {
+        registry_with_scope(provider, disabled, false)
+    }
+    pub fn registry_with_scope(
+        provider: bool,
+        disabled: bool,
+        wrong_scope: bool,
+    ) -> (Registry, &'static Fourth) {
+        let fourth = Box::leak(Box::new(Fourth {
+            provider,
+            disabled,
+            wrong_scope,
+            mutate_binary: std::sync::atomic::AtomicBool::new(false),
+            status_calls: AtomicUsize::new(0),
+        }));
+        // Includes a third metadata-only entry, so the launch target really is fourth.
+        let third = Box::leak(Box::new(Third));
+        let registrations = Box::leak(
+            vec![
+                Registration::new(&crate::harness::claude::ClaudeAdapter),
+                Registration::new(&crate::harness::codex::CodexAdapter),
+                Registration::new(third),
+                Registration::new(fourth),
+            ]
+            .into_boxed_slice(),
+        );
+        (Registry::new(registrations).unwrap(), fourth)
+    }
+    struct Third;
+    impl HarnessAdapter for Third {
+        type Admission = ();
+        fn metadata(&self) -> &'static AdapterMetadata {
+            static THIRD: AdapterMetadata = AdapterMetadata {
+                id: "third",
+                display_label: "Third fixture",
+                context_spelling: "Third",
+                context_aliases: &[],
+                executable: ExecutableLookup::Unsupported,
+                host_kinds: &["third"],
+                setup_scopes: &[],
+                budget: EventBudgetPolicy {
+                    lifecycle_ms: 1000,
+                    observer_ms: 1000,
+                },
+                runtime_sources: &[],
+            };
+            &THIRD
+        }
+        fn contracts(&self) -> &'static [ContractDescriptor] {
+            &[]
+        }
+        fn observe_install(&self, _: &InstallEnvironment, _: &CallBudget) -> InstallObservation {
+            panic!("unselected adapter observed")
+        }
+        fn admit(&self, _: &AdmissionRequest, _: &CallBudget) -> AdmissionDecision<()> {
+            panic!("unselected adapter admitted")
+        }
+        fn version_ladder(&self, _: &RuntimeIdentity) -> Ladder {
+            Ladder::Admitted
+        }
+        fn classify(&self, _: &HookInput) -> ContractObservation {
+            unreachable!()
+        }
+        fn decode(&self, _: &(), _: &HookInput) -> Result<DecodedEvent, DecodeFailure> {
+            unreachable!()
+        }
+        fn encode(
+            &self,
+            _: &(),
+            _: &DecodedEvent,
+            _: &NeutralOffer,
+        ) -> Result<EncodedOutput, EncodeFailure> {
+            unreachable!()
+        }
+        fn attribute_runtime(&self, _: &HookInput, _: &CallBudget) -> RuntimeAttribution {
+            unreachable!()
+        }
+        fn setup(
+            &self,
+            _: &crate::harness::adapter::SetupRequest,
+            _: &CallBudget,
+        ) -> Result<SetupOutcome, SetupFailure> {
+            unreachable!()
+        }
+        fn status(&self, _: &StatusRequest, _: &CallBudget) -> SetupStatus {
+            unreachable!()
+        }
+        fn unsetup(
+            &self,
+            _: &UnsetupRequest,
+            _: &CallBudget,
+        ) -> Result<RemovalOutcome, SetupFailure> {
+            unreachable!()
+        }
+    }
+}
+
+/// Catches retaining a closed Claude/Codex dispatch or granting check-in on startup.
+#[test]
+fn adapter_launch_keeps_native_argv_guards_and_managed_launch_only_provenance() {
+    let s = Scratch::new();
+    s.harness("fourth", "fourth-fixture", &[]);
+    let (registry, adapter) = fourth_adapter::registry(true, false);
+    let host = FakeHost::new();
+    let seats = seats();
+    let handoff = handoff();
+    let clock = Clock0(AtomicU64::new(1));
+    let probe = FakeProbe(Err("fourth must not probe Codex".into()));
+    let parts = LaunchParts {
+        env: &s.env,
+        host: &host,
+        seats: &seats,
+        handoff: &handoff,
+        clock: &clock,
+        record_dir: Some(&s.root),
+        shell_probe: &probe,
+    };
+    let harness = ContextHarness::from(crate::harness::registry::OccupantHarness::Agent(
+        registry.agent("fourth").unwrap(),
+    ));
+    let out =
+        execute_with_registry(&registry, &request(harness, &["hello 'world'"]), &parts).unwrap();
+    assert_eq!(
+        host.submitted()[0].argv,
+        ["--fourth-owned", "hello 'world'"]
+    );
+    assert_eq!(out.report["harness"], "fourth");
+    assert_eq!(out.report["fourth"]["mode"], "fixture");
+    assert_eq!(out.report["codex"], Value::Null);
+    assert_eq!(out.report["binding"]["provenance"], "managed_launch");
+    assert_eq!(out.report["binding"]["state"], "launched, not checked in");
+    assert_eq!(seats.recorded.lock().unwrap()[0].harness.as_str(), "fourth");
+    assert_eq!(s.records()[0]["harness"], "fourth");
+    assert_eq!(adapter.status_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        code(execute_with_registry(
+            &registry,
+            &request(harness, &["refuse"]),
+            &parts
+        )),
+        ErrorCode::InvalidRequest
+    );
+    assert_eq!(host.submitted().len(), 1);
+    assert_eq!(adapter.status_calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn adapter_launch_injected_missing_provider_never_inspects_or_starts() {
+    let s = Scratch::new();
+    let (registry, adapter) = fourth_adapter::registry(false, false);
+    let host = FakeHost::new();
+    let seats = seats();
+    let handoff = handoff();
+    let clock = Clock0(AtomicU64::new(1));
+    let probe = FakeProbe(Err("unused".into()));
+    let harness = ContextHarness::from(crate::harness::registry::OccupantHarness::Agent(
+        registry.agent("fourth").unwrap(),
+    ));
+    assert_eq!(
+        code(execute_with_registry(
+            &registry,
+            &request(harness, &[]),
+            &LaunchParts {
+                env: &s.env,
+                host: &host,
+                seats: &seats,
+                handoff: &handoff,
+                clock: &clock,
+                record_dir: Some(&s.root),
+                shell_probe: &probe
+            }
+        )),
+        ErrorCode::UnsupportedHarness
+    );
+    assert_eq!(adapter.status_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(seats.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(host.sequence.load(Ordering::SeqCst), 1);
+    assert!(host.submitted().is_empty());
+    assert!(s.records().is_empty());
+}
+
+#[test]
+fn adapter_launch_disabled_configuration_never_allocates_or_starts() {
+    let s = Scratch::new();
+    s.harness("fourth", "fourth-fixture", &[]);
+    let (registry, _) = fourth_adapter::registry(true, true);
+    let host = FakeHost::new();
+    let seats = seats();
+    let handoff = handoff();
+    let clock = Clock0(AtomicU64::new(1));
+    let probe = FakeProbe(Err("unused".into()));
+    let harness = ContextHarness::from(crate::harness::registry::OccupantHarness::Agent(
+        registry.agent("fourth").unwrap(),
+    ));
+    assert_eq!(
+        code(execute_with_registry(
+            &registry,
+            &request(harness, &[]),
+            &LaunchParts {
+                env: &s.env,
+                host: &host,
+                seats: &seats,
+                handoff: &handoff,
+                clock: &clock,
+                record_dir: Some(&s.root),
+                shell_probe: &probe
+            }
+        )),
+        ErrorCode::MissingHook
+    );
+    assert_eq!(seats.calls.load(Ordering::SeqCst), 0);
+    assert!(host.submitted().is_empty());
+}
+
+/// A status for a different config scope cannot qualify the selected launch.
+#[test]
+fn adapter_launch_selected_scope_mismatch_refuses_before_seat() {
+    let s = Scratch::new();
+    s.harness("fourth", "fourth-fixture", &[]);
+    let (registry, _) = fourth_adapter::registry_with_scope(true, false, true);
+    let host = FakeHost::new();
+    let seats = seats();
+    let handoff = handoff();
+    let clock = Clock0(AtomicU64::new(1));
+    let probe = FakeProbe(Err("unused".into()));
+    let harness = ContextHarness::from(crate::harness::registry::OccupantHarness::Agent(
+        registry.agent("fourth").unwrap(),
+    ));
+    assert_eq!(
+        code(execute_with_registry(
+            &registry,
+            &request(harness, &[]),
+            &LaunchParts {
+                env: &s.env,
+                host: &host,
+                seats: &seats,
+                handoff: &handoff,
+                clock: &clock,
+                record_dir: Some(&s.root),
+                shell_probe: &probe
+            }
+        )),
+        ErrorCode::Conflict
+    );
+    assert_eq!(seats.calls.load(Ordering::SeqCst), 0);
+    assert!(host.submitted().is_empty());
+}
+
+/// Replacing the admitted executable during setup inspection refuses before allocation.
+#[test]
+fn adapter_launch_executable_change_during_preparation_never_allocates() {
+    let s = Scratch::new();
+    s.harness("fourth", "fourth-fixture", &[]);
+    let (registry, adapter) = fourth_adapter::registry(true, false);
+    adapter.mutate_binary.store(true, Ordering::SeqCst);
+    let host = FakeHost::new();
+    let seats = seats();
+    let handoff = handoff();
+    let clock = Clock0(AtomicU64::new(1));
+    let probe = FakeProbe(Err("unused".into()));
+    let harness = ContextHarness::from(crate::harness::registry::OccupantHarness::Agent(
+        registry.agent("fourth").unwrap(),
+    ));
+    assert_eq!(
+        code(execute_with_registry(
+            &registry,
+            &request(harness, &[]),
+            &LaunchParts {
+                env: &s.env,
+                host: &host,
+                seats: &seats,
+                handoff: &handoff,
+                clock: &clock,
+                record_dir: Some(&s.root),
+                shell_probe: &probe
+            }
+        )),
+        ErrorCode::Conflict
+    );
+    assert_eq!(seats.calls.load(Ordering::SeqCst), 0);
+    assert!(host.submitted().is_empty());
+}
+
+/// Concrete preparation must reject a setup status captured before a config mutation.
+#[test]
+fn adapter_launch_preparation_rejects_stale_native_setup_status() {
+    use crate::harness::adapter::{
+        AdmissionRequest, InstallEnvironment, LaunchRequest as AdapterLaunchRequest, SetupStatus,
+        StatusRequest,
+    };
+    for (harness, word, version, file_name) in [
+        (
+            ContextHarness::Claude,
+            "claude",
+            "2.1.283 (Claude Code)",
+            "settings.json",
+        ),
+        (
+            ContextHarness::Codex,
+            "codex",
+            "codex-cli 0.159.2",
+            "hooks.json",
+        ),
+    ] {
+        let s = Scratch::new();
+        let schemas = committed_codex_schemas();
+        s.harness(word, version, if word == "codex" { &schemas } else { &[] });
+        s.setup(harness);
+        let environment = s.env.snapshot();
+        let budget = CallBudget {
+            deadline: MonoInstant(environment.clock.monotonic_now().0 + 30_000),
+            cancellation: Cancellation::default(),
+        };
+        let registry = crate::harness::registry::builtins();
+        let registration = registry.by_id(registry.agent(word).unwrap()).unwrap();
+        let admitted = registration
+            .admit(
+                &AdmissionRequest {
+                    installed: registration.observe_install(
+                        &InstallEnvironment {
+                            clock: environment.clock.clone(),
+                            path: environment.path.clone(),
+                            config_root: environment.config_roots.get(word).cloned(),
+                            state_dir: environment.state_dir.clone(),
+                        },
+                        &budget,
+                    ),
+                    input: None,
+                    runtime_candidate: None,
+                },
+                &budget,
+            )
+            .unwrap();
+        let request = AdapterLaunchRequest {
+            argv: vec![],
+            environment,
+            native_binary: None,
+        };
+        let probe = FakeProbe(Err("unused".into()));
+        let scope = registration
+            .launch_policy()
+            .unwrap()
+            .resolve_scope(&request, &probe, &budget)
+            .unwrap();
+        let SetupStatus::Detailed(status) = registration.status(
+            &StatusRequest {
+                scope: scope.setup.clone(),
+                environment: request.environment.clone(),
+                native_binary: None,
+            },
+            &budget,
+        ) else {
+            panic!("owned native status required")
+        };
+        let file = request
+            .environment
+            .config_roots
+            .get(word)
+            .unwrap()
+            .join(file_name);
+        let mut settings: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        settings["unrelated"] = json!("changed between status and preparation");
+        fs::write(&file, serde_json::to_vec(&settings).unwrap()).unwrap();
+        match registration.prepare_launch(&request, &scope, &admitted, &status, &probe, &budget) {
+            Err(error) => assert_eq!(error.code, ErrorCode::Conflict, "{word}"),
+            Ok(_) => panic!("stale {word} setup status must refuse native preparation"),
+        }
+    }
+}
+
+/// Selected native status must not start a probe after deadline or cancellation.
+#[test]
+fn adapter_launch_native_status_exhausted_budget_never_probes() {
+    native_status_budget_regression(false);
+}
+
+/// Selected native status must stop its observation within the remaining budget.
+#[test]
+fn adapter_launch_native_status_short_budget_bounds_probe() {
+    native_status_budget_regression(true);
+}
+
+fn native_status_budget_regression(short: bool) {
+    use crate::harness::adapter::{SetupStatus, StatusRequest};
+    for word in ["claude", "codex"] {
+        for cancelled in [false, true] {
+            if short && cancelled {
+                continue;
+            }
+            let s = Scratch::new();
+            let marker = s.root.join("status-probed");
+            let binary = s.root.join("bin").join(word);
+            fs::write(
+                &binary,
+                format!(
+                    "#!/bin/sh\nprintf started > '{}'\n/bin/sleep 1\nprintf '{}\\n'\n",
+                    marker.display(),
+                    if word == "claude" {
+                        "2.1.283 (Claude Code)"
+                    } else {
+                        "codex-cli 0.159.3"
+                    }
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+            let environment = s.env.snapshot();
+            let cancellation = Cancellation::default();
+            if cancelled {
+                cancellation.cancel();
+            }
+            let budget = CallBudget {
+                deadline: MonoInstant(
+                    environment.clock.monotonic_now().0
+                        + if short {
+                            50
+                        } else if cancelled {
+                            30_000
+                        } else {
+                            0
+                        },
+                ),
+                cancellation,
+            };
+            let registry = crate::harness::registry::builtins();
+            let registration = registry.by_id(registry.agent(word).unwrap()).unwrap();
+            let scope = registration
+                .resolve_setup_scope(&Default::default(), &environment)
+                .unwrap();
+            let began = std::time::Instant::now();
+            let status = registration.status(
+                &StatusRequest {
+                    scope,
+                    environment,
+                    native_binary: None,
+                },
+                &budget,
+            );
+            let elapsed = began.elapsed();
+            assert!(
+                elapsed < std::time::Duration::from_millis(700),
+                "{word} renewed probe budget: {elapsed:?}"
+            );
+            if !short {
+                assert!(
+                    !marker.exists(),
+                    "{word} started an exhausted/cancelled probe"
+                );
+            }
+            if let SetupStatus::Detailed(status) = status {
+                assert_eq!(
+                    status.admitted,
+                    Some(false),
+                    "{word} accepted an expired probe"
+                );
+            } else {
+                assert!(
+                    matches!(status, SetupStatus::Failed(_)),
+                    "{word} must refuse the observation"
+                );
+            }
+        }
+    }
+}

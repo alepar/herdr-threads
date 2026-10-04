@@ -1535,11 +1535,9 @@ mod detect_tests {
 
 pub use crate::harness::setup::legacy::manifest_path;
 
+pub(crate) use crate::harness::setup::legacy::user_inspection;
 #[cfg(test)]
 use crate::harness::setup::legacy::{first_shell_word, printable_line};
-pub(crate) use crate::harness::setup::legacy::{
-    observe_with_cache, refuse_version, user_inspection,
-};
 
 pub use crate::harness::claude::setup::{
     PROMPT_SUGGESTION_EXPLANATION, allow_rule_json, claude_config_dir_from, claude_paths,

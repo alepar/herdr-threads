@@ -2150,7 +2150,7 @@ pub(crate) mod legacy {
     pub(crate) fn legacy_adapter_status(
         harness: Harness,
         request: &crate::harness::adapter::StatusRequest,
-        status: fn(&SetupRequest, &SetupEnv) -> Result<Value, RunError>,
+        status: impl FnOnce(&SetupRequest, &SetupEnv) -> Result<Value, RunError>,
     ) -> crate::harness::adapter::SetupStatus {
         use crate::harness::adapter::*;
         let result = (|| {
@@ -2234,29 +2234,6 @@ pub(crate) mod legacy {
         pub(crate) binary: PathBuf,
         pub(crate) version: String,
         pub(crate) recipe: &'static str,
-    }
-
-    /// Observe the installed harness and select its recipe, or return the
-    /// actionable recipe-naming refusal. Codex obtains its witness only through
-    /// `InstalledVersion::observe`, which the Codex planner requires.
-    /// Installed observation with an optional persistent Codex schema-fingerprint cache
-    /// file (inside `<state>/harness`). Managed `launch` passes the hook's cache
-    /// so a cold fingerprint scan, which can exceed the hook's time budget, is
-    /// done once outside that budget and the hook answers from the warm cache.
-    pub(crate) fn observe_with_cache(
-        request: &SetupRequest,
-        env: &SetupEnv,
-        codex_cache: Option<&Path>,
-    ) -> Result<(Observed, Option<codex::InstalledVersion>), String> {
-        match request.harness {
-            Harness::Claude => claude::setup::observe_with_cache(request, env, codex_cache),
-            Harness::Codex => codex::setup::observe_with_cache(request, env, codex_cache),
-            Harness::Human => Err(NO_HUMAN_SETUP.to_owned()),
-            _ => Err(format!(
-                "{}: installed observation is unsupported",
-                request.harness.as_str()
-            )),
-        }
     }
 
     pub(crate) fn observation_json(

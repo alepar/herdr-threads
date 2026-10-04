@@ -11,6 +11,8 @@ use crate::protocol::{
     time::{CallBudget, Clock, MonoInstant},
 };
 
+pub use super::codex::launch::{CodexShellProbe, SHELL_PROBE_TIMEOUT, SystemShellProbe};
+
 const MAX_LAUNCH_MILLIS: u64 = 30_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,239 +160,12 @@ fn launch_target(
     Ok((proof.terminal().clone(), proof.incarnation().to_owned()))
 }
 
-/// Codex options (root, `exec` and `resume` levels) that consume the next
-/// argument as their value. Any other `-`/`--` option is taken as a switch;
-/// `--flag=value` spellings never consume the next argument. `-i/--image`
-/// takes one or more values, so its separated spelling is refused
-/// ([`CODEX_MULTI_VALUE_OPTIONS`]) rather than guessing its arity.
-pub(super) const CODEX_VALUE_OPTIONS: &[&str] = &[
-    "-c",
-    "--config",
-    "--enable",
-    "--disable",
-    "-i",
-    "--image",
-    "--remote",
-    "--remote-auth-token-env",
-    "--thread-source",
-    "-m",
-    "--model",
-    "--local-provider",
-    "-p",
-    "--profile",
-    "-s",
-    "--sandbox",
-    "-a",
-    "--ask-for-approval",
-    "-C",
-    "--cd",
-    "--add-dir",
-    "--output-schema",
-    "--color",
-    "-o",
-    "--output-last-message",
-];
+#[cfg(test)]
+pub(crate) use super::codex::launch::{
+    CODEX_EXEC_UNSUPPORTED_SUBCOMMANDS, CODEX_UNSUPPORTED_SUBCOMMANDS, CODEX_VALUE_OPTIONS,
+};
+pub use super::codex::launch::{CodexLaunchForm, scoped_codex_cwd};
 
-/// Codex options taking a variable number of values (codex-cli 0.159.2
-/// `-i, --image <FILE>...`): the separated spelling would swallow a
-/// following subcommand or prompt, so only `--image=FILE` (or the option
-/// after `--`) is accepted.
-const CODEX_MULTI_VALUE_OPTIONS: &[&str] = &["-i", "--image"];
-
-/// Codex subcommands a managed launch cannot configure: refused rather than
-/// started without the owned hooks. `exec` is a handled form; `resume` is refused until captured.
-/// Covers every top-level subcommand and alias `codex --help` lists for
-/// codex-cli 0.159.2 (plus older names), so a bare first positional naming a
-/// Codex subcommand is never mistaken for an interactive prompt; a prompt
-/// that is such a word goes after `--`.
-pub(super) const CODEX_UNSUPPORTED_SUBCOMMANDS: &[&str] = &[
-    "agents",
-    "e",
-    "review",
-    "login",
-    "logout",
-    "mcp",
-    "mcp-server",
-    "app-server",
-    "app",
-    "completion",
-    "sandbox",
-    "debug",
-    "apply",
-    "a",
-    "fork",
-    "cloud",
-    "cloud-tasks",
-    "features",
-    "help",
-    "plugin",
-    "remote-control",
-    "update",
-    "doctor",
-    "queue",
-    "archive",
-    "delete",
-    "migrate-rollouts",
-    "unarchive",
-    "exec-server",
-    "responses-api-proxy",
-    "stdio-to-uds",
-    "execpolicy",
-    "generate-ts",
-];
-
-/// `codex exec` subcommands other than `resume` (codex-cli 0.159.2
-/// `codex exec --help`): refused, since no evidence shows they read the
-/// exec-level owned hooks.
-pub(super) const CODEX_EXEC_UNSUPPORTED_SUBCOMMANDS: &[&str] = &["fork", "review", "help"];
-
-/// Where a managed Codex launch places the owned `-c` configuration. Codex
-/// 0.159.2 `exec` ignores root-level `hooks.*` overrides
-/// (`native-codex-matrix-1/hook-placement-probe`), so each subcommand form
-/// carries them at its own level; `--no-daemon` is a top-level flag and
-/// always precedes the subcommand.
-///
-/// Evidence per form:
-/// - `Interactive`: `codex --no-daemon -c hooks.* [PROMPT]`, the launch line
-///   `setup codex` prints (root-level session overrides);
-/// - `Exec`: `codex --no-daemon exec -c hooks.* ... PROMPT`
-///   (`hook-placement-probe/exec.jsonl`, `codex-158-live-hook-capture/run1.sh`);
-/// - `ExecResume`: `codex --no-daemon exec ... resume ... -c hooks.* ID PROMPT`
-///   (`codex-158-live-hook-capture/run3.sh`, SessionStart resume captured);
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CodexLaunchForm {
-    Interactive,
-    Exec,
-    ExecResume,
-}
-
-/// The explicit working directory whose project configuration a scoped
-/// sandbox probe can reproduce. An implicit pane cwd is not inferred from
-/// the coordinator process or saved pane paths.
-pub fn scoped_codex_cwd(argv: &[String]) -> Result<std::path::PathBuf, ApiError> {
-    let options_end = argv
-        .iter()
-        .position(|arg| arg == "--")
-        .unwrap_or(argv.len());
-    let mut found = None;
-    let mut index = 0;
-    while index < options_end {
-        let arg = argv[index].as_str();
-        let cwd = if arg == "-C" || arg == "--cd" {
-            argv.get(index + 1).map(String::as_str)
-        } else {
-            arg.strip_prefix("--cd=")
-                .or_else(|| arg.strip_prefix("-C="))
-        };
-        if let Some(cwd) = cwd {
-            let path = std::path::PathBuf::from(cwd);
-            if found.is_some() || !path.is_absolute() {
-                return Err(error(
-                    ErrorCode::InvalidRequest,
-                    "scoped Codex sandbox validation needs one absolute -C directory",
-                ));
-            }
-            found = Some(path);
-            index += if arg == "-C" || arg == "--cd" { 2 } else { 1 };
-        } else {
-            index += if CODEX_VALUE_OPTIONS.contains(&arg) {
-                2
-            } else {
-                1
-            };
-        }
-    }
-    found.ok_or_else(|| {
-        error(
-            ErrorCode::InvalidRequest,
-            "scoped Codex sandbox validation needs an explicit -C /absolute/project/path to match project policy",
-        )
-    })
-}
-
-/// The next positional argument at or after `start`: its index and whether
-/// it follows `--` (and so is a prompt, never a subcommand).
-fn next_positional(argv: &[String], start: usize) -> Option<(usize, bool)> {
-    let mut index = start;
-    while index < argv.len() {
-        let arg = argv[index].as_str();
-        if arg == "--" {
-            return (index + 1 < argv.len()).then_some((index + 1, true));
-        }
-        if arg.len() > 1 && arg.starts_with('-') {
-            index += if CODEX_VALUE_OPTIONS.contains(&arg) {
-                2
-            } else {
-                1
-            };
-            continue;
-        }
-        return Some((index, false));
-    }
-    None
-}
-
-/// The caller's Codex form and the index at which the owned configuration is
-/// inserted (right after the subcommand that must carry it).
-fn codex_form(argv: &[String]) -> Result<(CodexLaunchForm, usize, Option<usize>), ApiError> {
-    let Some((first, after_separator)) = next_positional(argv, 0) else {
-        return Ok((CodexLaunchForm::Interactive, 0, None));
-    };
-    if after_separator {
-        return Ok((CodexLaunchForm::Interactive, 0, None));
-    }
-    match argv[first].as_str() {
-        "exec" => match next_positional(argv, first + 1) {
-            Some((second, false)) if argv[second] == "resume" => {
-                Ok((CodexLaunchForm::ExecResume, second + 1, Some(first)))
-            }
-            // Only `exec resume` has evidence of reading its own hook level;
-            // every other exec subcommand (0.159.2: `fork`, `review`, `help`)
-            // is refused rather than started with unverified hook placement.
-            Some((second, false))
-                if CODEX_EXEC_UNSUPPORTED_SUBCOMMANDS.contains(&argv[second].as_str()) =>
-            {
-                Err(error(
-                    ErrorCode::InvalidRequest,
-                    "managed launch supports Codex `exec` and `exec resume` only; this exec \
-                     subcommand cannot carry the owned hook configuration",
-                ))
-            }
-            _ => Ok((CodexLaunchForm::Exec, first + 1, Some(first))),
-        },
-        "resume" => Err(error(
-            ErrorCode::InvalidRequest,
-            "managed launch refuses the Codex `resume` form: no live capture shows it loading the owned hooks (TRUST-POLICY Accepted limits); run `codex resume` by hand in the pane, or use `exec resume`",
-        )),
-        word if CODEX_UNSUPPORTED_SUBCOMMANDS.contains(&word) => Err(error(
-            ErrorCode::InvalidRequest,
-            "managed launch supports Codex interactive, `exec` and `exec resume` only; \
-             this subcommand cannot carry the owned hook configuration",
-        )),
-        _ => {
-            // Interactive with a prompt: Codex takes one prompt, so a second
-            // positional means the arguments were misread (an unknown option
-            // taking a value before a subcommand). Refuse rather than place
-            // the owned hooks where the subcommand would ignore them.
-            if next_positional(argv, first + 1).is_some() {
-                return Err(error(
-                    ErrorCode::InvalidRequest,
-                    "ambiguous Codex arguments: more than one positional argument before a \
-                     recognised subcommand; put the prompt after `--`",
-                ));
-            }
-            Ok((CodexLaunchForm::Interactive, 0, None))
-        }
-    }
-}
-
-/// The native argument array a managed launch submits: for Claude the owned
-/// arguments then the caller's; for Codex `--no-daemon` exactly once at the
-/// top level, then the caller's arguments byte for byte and in order with the
-/// owned configuration inserted at the level of the caller's subcommand
-/// ([`CodexLaunchForm`]). An owned `--no-daemon` is dropped, never
-/// duplicated. Unsupported subcommands, conflicting daemon modes, a
-/// misplaced `--no-daemon` and caller `hooks.*` overrides are refused.
 pub fn compose_native_argv(
     harness: Harness,
     caller: Vec<String>,
@@ -398,170 +173,40 @@ pub fn compose_native_argv(
 ) -> Result<Vec<String>, ApiError> {
     compose_native_argv_with(harness, caller, owned, false)
 }
-
-/// [`compose_native_argv`] for a pane whose shell wrapper may already pass
-/// `--no-daemon`. With `shell_passes_no_daemon` the composed Codex argv
-/// carries no `--no-daemon` at all (the wrapper supplies the single one), so
-/// a caller's own top-level `--no-daemon` is dropped too; every other check
-/// and placement is unchanged.
 pub fn compose_native_argv_with(
     harness: Harness,
     caller: Vec<String>,
     owned: Vec<String>,
-    shell_passes_no_daemon: bool,
+    shell: bool,
 ) -> Result<Vec<String>, ApiError> {
-    if harness != Harness::Codex {
-        return Ok(owned.into_iter().chain(caller).collect());
-    }
-    let options_end = caller
-        .iter()
-        .position(|arg| arg == "--")
-        .unwrap_or(caller.len());
-    let options = &caller[..options_end];
-    if options.iter().any(|arg| {
-        arg == "--daemon" || arg.starts_with("--daemon=") || arg.starts_with("--no-daemon=")
-    }) {
+    let registration = launch_registration(super::registry::builtins(), harness)?;
+    registration
+        .launch_policy()
+        .expect("checked provider")
+        .compose_argv(caller, owned, shell)
+}
+pub fn launch_registration(
+    registry: &super::registry::Registry,
+    harness: Harness,
+) -> Result<&'static super::registry::Registration, ApiError> {
+    let super::registry::OccupantHarness::Agent(id) = harness else {
         return Err(error(
-            ErrorCode::InvalidRequest,
-            "conflicting Codex daemon mode",
+            ErrorCode::UnsupportedHarness,
+            "launch starts agents only; a person uses `herdr-threads me init`",
         ));
-    }
-    // Codex applies repeated `-c` values in order within the session layer,
-    // so a caller hook override (a `hooks.*` key or the whole `hooks` table)
-    // would silently replace the owned hook.
-    let scoped_socket_policy = owned
-        .iter()
-        .any(|arg| arg == "sandbox_workspace_write.network_access=true");
-    let mut previous_is_config = false;
-    let mut previous_takes_value = false;
-    for arg in options {
-        let value = if previous_is_config {
-            Some(arg.as_str())
-        } else {
-            arg.strip_prefix("--config=").or_else(|| {
-                arg.strip_prefix("-c")
-                    .filter(|rest| !rest.is_empty())
-                    .map(|rest| rest.strip_prefix('=').unwrap_or(rest))
-            })
-        };
-        if value.is_some_and(overrides_hooks) {
-            return Err(error(
-                ErrorCode::InvalidRequest,
-                "caller Codex hooks override would replace the owned hook configuration",
-            ));
-        }
-        if scoped_socket_policy
-            && (value.is_some()
-                || (!previous_takes_value
-                    && matches!(
-                        arg.as_str(),
-                        "-c" | "--config"
-                            | "-p"
-                            | "--profile"
-                            | "-s"
-                            | "--sandbox"
-                            | "--enable"
-                            | "--disable"
-                            | "--add-dir"
-                            | "--remote"
-                            | "--remote-auth-token-env"
-                            | "--worktree"
-                            | "--approve-for-me"
-                            | "--dangerously-bypass-approvals-and-sandbox"
-                            | "--yolo"
-                            | "--dangerously-bypass-hook-trust"
-                            | "--full-auto"
-                            | "--search"
-                    ))
-                || (!previous_takes_value
-                    && [
-                        "--profile=",
-                        "--sandbox=",
-                        "--enable=",
-                        "--disable=",
-                        "--add-dir=",
-                        "--remote=",
-                        "--remote-auth-token-env=",
-                    ]
-                    .iter()
-                    .any(|prefix| arg.starts_with(prefix)))
-                || (!previous_takes_value && (arg.starts_with("-s") || arg.starts_with("-p"))))
-        {
-            return Err(error(
-                ErrorCode::InvalidRequest,
-                "caller Codex policy or profile override would differ from the measured scoped sandbox policy",
-            ));
-        }
-        if !previous_takes_value && CODEX_MULTI_VALUE_OPTIONS.contains(&arg.as_str()) {
-            return Err(error(
-                ErrorCode::InvalidRequest,
-                "ambiguous Codex arguments: put images as --image=FILE or before --",
-            ));
-        }
-        previous_is_config = !previous_takes_value && (arg == "-c" || arg == "--config");
-        previous_takes_value = !previous_takes_value && CODEX_VALUE_OPTIONS.contains(&arg.as_str());
-    }
-    let (_, insert_at, subcommand) = codex_form(&caller)?;
-    let no_daemon: Vec<usize> = options
-        .iter()
-        .enumerate()
-        .filter(|(_, arg)| *arg == "--no-daemon")
-        .map(|(index, _)| index)
-        .collect();
-    if no_daemon.len() > 1 {
-        return Err(error(
-            ErrorCode::InvalidRequest,
-            "duplicate Codex --no-daemon",
-        ));
-    }
-    if let (Some(&at), Some(subcommand)) = (no_daemon.first(), subcommand)
-        && at > subcommand
-    {
-        return Err(error(
-            ErrorCode::InvalidRequest,
-            "Codex --no-daemon is a top-level flag; it must precede the subcommand",
-        ));
-    }
-    let owned = owned.into_iter().filter(|arg| arg != "--no-daemon");
-    let mut argv = Vec::with_capacity(caller.len() + 8);
-    let (caller, insert_at) = match (shell_passes_no_daemon, no_daemon.first()) {
-        (true, Some(&at)) => {
-            // The wrapper's flag is the single one; removing a top-level
-            // switch never changes the subcommand form.
-            let mut caller = caller;
-            caller.remove(at);
-            (
-                caller,
-                if at < insert_at {
-                    insert_at - 1
-                } else {
-                    insert_at
-                },
-            )
-        }
-        (true, None) => (caller, insert_at),
-        (false, _) => {
-            if no_daemon.is_empty() {
-                argv.push("--no-daemon".to_owned());
-            }
-            (caller, insert_at)
-        }
     };
-    let mut caller = caller.into_iter();
-    argv.extend(caller.by_ref().take(insert_at));
-    argv.extend(owned);
-    argv.extend(caller);
-    Ok(argv)
+    let registration = registry
+        .by_id(id)
+        .map_err(|err| error(ErrorCode::UnsupportedHarness, &err.to_string()))?;
+    if registration.launch_policy().is_none() {
+        return Err(error(
+            ErrorCode::UnsupportedHarness,
+            &format!("{}: launch is unsupported", id.as_str()),
+        ));
+    }
+    Ok(registration)
 }
 
-/// Whether a Codex `-c` value sets the `hooks` table or a key under it: the
-/// key is the text before the first `=`, trimmed.
-fn overrides_hooks(value: &str) -> bool {
-    let key = value.split('=').next().unwrap_or("").trim();
-    key == "hooks" || key.starts_with("hooks.")
-}
-
-/// Fully guarded preparation; must be submitted immediately after the durable gate.
 pub struct PreparedLaunch {
     pub request: NativeLaunchRequest,
     context: HostCallContext,
@@ -590,6 +235,32 @@ pub fn prepare_managed(
     request: ManagedLaunchRequest,
     caller_budget: &CallBudget,
 ) -> Result<PreparedLaunch, ApiError> {
+    prepare_managed_with_registry(
+        super::registry::builtins(),
+        host,
+        seats,
+        hooks,
+        clock,
+        request,
+        caller_budget,
+        None,
+    )
+}
+
+/// The application passes adapter-prepared argv; compatibility callers use provider composition.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_managed_with_registry(
+    registry: &super::registry::Registry,
+    host: &dyn HostPort,
+    seats: &dyn LaunchSeatResolver,
+    hooks: &dyn LaunchHookInspector,
+    clock: &dyn Clock,
+    request: ManagedLaunchRequest,
+    caller_budget: &CallBudget,
+    native_argv: Option<Vec<String>>,
+) -> Result<PreparedLaunch, ApiError> {
+    let registration = launch_registration(registry, request.harness)?;
+    let policy = registration.launch_policy().expect("checked provider");
     if caller_budget.is_exhausted(clock) {
         return Err(error(
             ErrorCode::DeadlineExceeded,
@@ -603,13 +274,8 @@ pub fn prepare_managed(
             "native guarded launch is unavailable",
         ));
     }
-    // Refuse an unconfigurable form before any host or seat work.
-    compose_native_argv_with(
-        request.harness,
-        request.argv.clone(),
-        Vec::new(),
-        request.shell_passes_no_daemon,
-    )?;
+    // Refuse native grammar before any host or seat work.
+    policy.validate_native_argv(&request.argv)?;
     // All launch work shares one finite absolute deadline and cancellation token.
     let budget = CallBudget {
         deadline: MonoInstant(
@@ -619,6 +285,20 @@ pub fn prepare_managed(
                 .min(clock.monotonic_now().0.saturating_add(MAX_LAUNCH_MILLIS)),
         ),
         cancellation: caller_budget.cancellation.clone(),
+    };
+    let configuration = hooks
+        .launch_configuration(request.harness, &budget)?
+        .ok_or_else(|| error(ErrorCode::MissingHook, "supported hook is not configured"))?;
+    let hook = configuration.hook;
+    // Owned configuration at the caller's subcommand level (Codex) or first
+    // (Claude); the caller's arguments keep their bytes and order.
+    let argv = match native_argv {
+        Some(argv) => argv,
+        None => policy.compose_argv(
+            request.argv.clone(),
+            configuration.argv,
+            request.shell_passes_no_daemon,
+        )?,
     };
     let first = host.observe_current_target(
         &request.target,
@@ -650,7 +330,7 @@ pub fn prepare_managed(
         )?;
         if let Some(kind) = observed
             .and_then(|agent| agent.kind)
-            .filter(|kind| crate::protocol::authority::is_harness_agent_kind(kind))
+            .filter(|kind| registry.by_host_kind(kind).is_some())
         {
             return Err(error(
                 ErrorCode::TargetUnsafe,
@@ -662,18 +342,6 @@ pub fn prepare_managed(
             ));
         }
     }
-    let configuration = hooks
-        .launch_configuration(request.harness, &budget)?
-        .ok_or_else(|| error(ErrorCode::MissingHook, "supported hook is not configured"))?;
-    let hook = configuration.hook;
-    // Owned configuration at the caller's subcommand level (Codex) or first
-    // (Claude); the caller's arguments keep their bytes and order.
-    let argv = compose_native_argv_with(
-        request.harness,
-        request.argv,
-        configuration.argv,
-        request.shell_passes_no_daemon,
-    )?;
     if budget.is_exhausted(clock) {
         return Err(error(
             ErrorCode::DeadlineExceeded,
@@ -816,3 +484,97 @@ pub fn submit_prepared_with_evidence(
 #[cfg(test)]
 #[path = "../../tests/harness/launch.rs"]
 mod tests;
+
+/// Resolve only the adapter-declared config variable, retaining the existing pane-shell fallback.
+pub(crate) fn native_scope(
+    request: &super::adapter::LaunchRequest,
+    id: &str,
+    variable: &str,
+    probe: &dyn CodexShellProbe,
+    budget: &CallBudget,
+) -> Result<super::adapter::LaunchScope, ApiError> {
+    if budget.is_exhausted(request.environment.clock.as_ref()) {
+        return Err(error(
+            ErrorCode::DeadlineExceeded,
+            "launch budget exhausted",
+        ));
+    }
+    let pane = probe
+        .pane_shell_env_bounded(variable, request.environment.clock.as_ref(), budget)
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute());
+    let source = if pane.is_some() {
+        "pane_shell"
+    } else {
+        "launcher"
+    };
+    let root = pane
+        .or_else(|| request.environment.config_roots.get(id).cloned())
+        .ok_or_else(|| error(ErrorCode::MissingHook, "native config root unavailable"))?;
+    Ok(super::adapter::LaunchScope {
+        setup: super::adapter::ResolvedSetupScope::ConfigRoot(root),
+        working_directory: request.environment.cwd.clone(),
+        config_source: source,
+    })
+}
+
+pub(crate) fn owned_launch_hook(
+    status: &super::adapter::LocalSetupStatus,
+) -> Result<ConfiguredHook, ApiError> {
+    status.configured_hook.clone().filter(|_| status.installed && status.enabled != Some(false) && status.admitted != Some(false))
+        .ok_or_else(|| {
+            let file = status.projection["settings"].as_str().or_else(|| status.projection["hooks_file"].as_str()).unwrap_or("the selected scope");
+            error(ErrorCode::MissingHook, &format!("supported hook is not configured in {file}; run `herdr-threads setup` first with the config directory the agent uses"))
+        })
+}
+
+/// Fingerprint the concrete adapter's selected files and actual owned hook inspection.
+pub(crate) fn native_configuration_fingerprint(
+    request: &super::adapter::LaunchRequest,
+    scope: &super::adapter::LaunchScope,
+    harness: super::context::Harness,
+    files: &[&str],
+) -> Result<String, ApiError> {
+    use sha2::{Digest, Sha256};
+    let hook = native_configuration_hook(request, scope, harness)?;
+    let super::adapter::ResolvedSetupScope::ConfigRoot(root) = &scope.setup else {
+        return Err(error(
+            ErrorCode::InvalidRequest,
+            "legacy launch requires a config root",
+        ));
+    };
+    let mut hash = Sha256::new();
+    hash.update(hook.fingerprint.as_bytes());
+    for file in files {
+        hash.update(file.as_bytes());
+        match std::fs::read(root.join(file)) {
+            Ok(bytes) => {
+                hash.update([1]);
+                hash.update(bytes);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => hash.update([0]),
+            Err(err) => return Err(error(ErrorCode::Conflict, &err.to_string())),
+        }
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+/// Reinspect the descriptor consumed by concrete preparation, independently of the status snapshot.
+pub(crate) fn native_configuration_hook(
+    request: &super::adapter::LaunchRequest,
+    scope: &super::adapter::LaunchScope,
+    harness: super::context::Harness,
+) -> Result<ConfiguredHook, ApiError> {
+    let env = super::setup::legacy::scoped_legacy_environment(
+        harness,
+        &scope.setup,
+        &request.environment,
+    )
+    .map_err(|err| error(ErrorCode::Conflict, &err.to_string()))?;
+    let (_, inspection) = crate::cli::setup::user_inspection(harness, &env)
+        .map_err(|err| error(ErrorCode::Conflict, &err))?;
+    let hook = inspection
+        .configured_hook
+        .ok_or_else(|| error(ErrorCode::Conflict, "owned launch hooks changed"))?;
+    Ok(hook)
+}
