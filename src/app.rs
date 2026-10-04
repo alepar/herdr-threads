@@ -1287,16 +1287,26 @@ where
             };
             let harness_evidence = Arc::new(
                 crate::daemon::harness_evidence::HarnessEvidenceRecorder::new(
-                    evidence_store,
+                    evidence_store.clone(),
                     Some(Arc::clone(&manifest)
                         as Arc<dyn crate::daemon::harness_evidence::ManifestTrigger>),
                     Arc::clone(&factory_clock),
                 ),
             );
+            let harness_evidence_v2 = Arc::new(
+                crate::daemon::harness_evidence::HarnessEvidenceRecorderV2::new(
+                    evidence_store,
+                    Some(manifest.clone()
+                        as Arc<dyn crate::daemon::harness_evidence::ManifestTrigger>),
+                    factory_clock.clone(),
+                )
+                .with_legacy_pending(&harness_evidence),
+            );
             Ok(Arc::new(
                 ControlService::new(stop, health, domain)
                     .with_hook_parse_failures(factory_parse_failures)
                     .with_harness_evidence(harness_evidence)
+                    .with_harness_evidence_v2(harness_evidence_v2)
                     .with_harness_states(states)
                     .with_harness_manifest(manifest),
             ) as Arc<dyn LocalService>)

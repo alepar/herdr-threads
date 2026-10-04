@@ -74,6 +74,8 @@ pub struct ControlService<H, S> {
     harness_manifest: Option<std::sync::Arc<crate::harness::manifest::ManifestService>>,
     harness_evidence:
         Option<std::sync::Arc<crate::daemon::harness_evidence::HarnessEvidenceRecorder>>,
+    harness_evidence_v2:
+        Option<std::sync::Arc<crate::daemon::harness_evidence::HarnessEvidenceRecorderV2>>,
     harness_states: Option<std::sync::Arc<crate::daemon::harness_states::HarnessStatesProvider>>,
 }
 
@@ -91,6 +93,7 @@ where
             harness_manifest: None,
             harness_evidence: None,
             harness_states: None,
+            harness_evidence_v2: None,
         }
     }
 
@@ -111,6 +114,15 @@ where
         recorder: std::sync::Arc<crate::daemon::harness_evidence::HarnessEvidenceRecorder>,
     ) -> Self {
         self.harness_evidence = Some(recorder);
+        self
+    }
+
+    /// Installs the v2 recorder and enables its capability; absence refuses requests.
+    pub fn with_harness_evidence_v2(
+        mut self,
+        recorder: std::sync::Arc<crate::daemon::harness_evidence::HarnessEvidenceRecorderV2>,
+    ) -> Self {
+        self.harness_evidence_v2 = Some(recorder);
         self
     }
 
@@ -236,6 +248,10 @@ where
             ApiCommand::Capabilities => Ok(CommandResult::Capabilities(CapabilityList {
                 capabilities: crate::protocol::capabilities::ADVERTISED
                     .iter()
+                    .filter(|name| {
+                        **name != crate::protocol::capabilities::HARNESS_EVIDENCE_V2
+                            || self.harness_evidence_v2.is_some()
+                    })
                     .map(|name| (*name).to_owned())
                     .collect(),
             })),
@@ -251,6 +267,19 @@ where
                     None => false,
                 };
                 Ok(CommandResult::HarnessEvidenceRecorded { verified })
+            }
+            ApiCommand::HarnessEvidenceV2(note) => {
+                let recorder = self.harness_evidence_v2.as_ref().ok_or_else(|| {
+                    ApiError::new(
+                        crate::protocol::results::ErrorCode::Unsupported,
+                        "v2 evidence unavailable",
+                    )
+                })?;
+                Ok(CommandResult::HarnessEvidenceV2Recorded(
+                    crate::protocol::results::HarnessEvidenceV2Recorded {
+                        verified: recorder.record(&note, budget)?,
+                    },
+                ))
             }
             ApiCommand::HarnessStates => {
                 Ok(CommandResult::HarnessStates(match &self.harness_states {

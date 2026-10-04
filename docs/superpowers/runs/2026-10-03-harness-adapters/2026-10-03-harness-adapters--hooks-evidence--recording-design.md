@@ -51,3 +51,17 @@ No leaf owns migration numbering/SQL, Python callbacks, Health rendering, releas
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
 
 Schema coordination update (2026-10-03): CLI thread names/activity retain v19/v20; immutable additive invitation-rejection overlay is v21 for v0.2.2. Adapter/runtime-evidence migration is v22 after absorbing those merged changes. Historical migrations remain immutable. Preserve invitation effective-state helpers in storage/query/inbox integration.
+
+
+Task12 review fix (2026-10-04): production legacy/v2 recorders now share one aggregate holding
+budget of 1024 entries with the existing 24-hour TTL. Eviction compares oldest receive timestamps
+across the two paths (legacy first on a tie); restored failed writes use the same budget. Legacy
+wire and recording remain separate and unchanged. Composition shares the budget before notes arrive.
+Resumed lifecycle suppression is unheld and remembered separately by a fixed 8-KiB monotonic hash
+filter over the exact harness/session/domain/origin/contract key. It never expires or forgets a
+recorded suppression during the recorder lifetime; collisions or saturation conservatively withhold
+lifecycle credit, including potentially from a genuinely new session. This availability limit cannot
+grant verification or authority. Both queue and filter are in memory, not durable daemon-restart
+history. Real-recorder regressions cover mixed-path eviction, TTL/capacity suppression and an
+unrelated fresh session. Installed Hermes remains Unsupported and its native acceptance remains unmet;
+this generic advisory fix supplies no native producer, effective-config or timeout-snapshot proof.
