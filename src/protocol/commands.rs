@@ -36,8 +36,12 @@ pub enum Command {
     /// Bounded read-only active warning conditions for one thread.
     ActiveWarnings(ActiveWarningsQuery),
     Thread(ThreadQuery),
+    /// Indexed exact ID/name lookup across the selected instance.
+    ResolveThread(ResolveThreadQuery),
+    ThreadName(ThreadNameQuery),
     History(HistoryQuery),
     Participants(ParticipantsQuery),
+    ParticipantLocations(ParticipantLocationsQuery),
     Recipients(RecipientsQuery),
     DeliveryInspect(DeliveryInspectQuery),
     PendingReceipts(PendingReceiptsQuery),
@@ -72,12 +76,14 @@ pub enum Command {
     Invite(Invite),
     Accept(Accept),
     AcceptRequired(AcceptRequired),
+    Reject(Reject),
     SendMessage(SendMessage),
     Ack(Ack),
     /// Accountable ACK claimed only after a whole inbox text page is flushed.
     AckDisplayed(Ack),
     Leave(Leave),
     SetTopic(SetTopic),
+    SetThreadName(SetThreadName),
     Archive(ThreadMutation),
     Reopen(ThreadMutation),
     OperatorRebind(OperatorRebind),
@@ -216,6 +222,8 @@ pub struct ServiceDisconnectRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DirectoryQuery {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub recent: bool,
     pub membership: Option<SeatId>,
     pub membership_filter: DirectoryMembership,
     pub topic_contains: Option<String>,
@@ -314,6 +322,13 @@ pub struct ParticipantsQuery {
     /// P2). Presentation only; it scopes and authorizes nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller: Option<SeatId>,
+}
+/// Bounded canonical mappings for one already displayed participant page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParticipantLocationsQuery {
+    pub thread: ThreadId,
+    pub seats: Vec<SeatId>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -502,6 +517,8 @@ pub enum CheckInMode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateThread {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub topic: String,
     pub goal: String,
     pub operation: OperationId,
@@ -523,6 +540,25 @@ pub struct Accept {
     pub operation: OperationId,
     pub claim: CallerClaim,
 }
+/// Reject only the exact ordinary invitation the recipient inspected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reject {
+    pub thread: ThreadId,
+    pub invitation: InvitationId,
+    pub reason: String,
+    pub operation: OperationId,
+    pub claim: CallerClaim,
+}
+
+pub const MAX_REJECTION_REASON_BYTES: usize = 4096;
+pub fn validate_rejection_reason(reason: &str) -> Result<(), &'static str> {
+    if reason.trim().is_empty() || reason.len() > MAX_REJECTION_REASON_BYTES {
+        return Err("rejection reason must be nonblank and at most 4096 UTF-8 bytes");
+    }
+    Ok(())
+}
+
 /// A native caller must name the requirement episode and revision it saw.
 /// An ordinary acceptance key cannot accept a later required upgrade.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -608,6 +644,45 @@ pub struct SetTopic {
     pub operation: OperationId,
     pub claim: CallerClaim,
 }
+/// Names are exact, single-line UTF-8; size is measured in bytes.
+pub fn validate_thread_name(name: &str) -> Result<(), &'static str> {
+    if name.is_empty()
+        || name.len() > 128
+        || name
+            .chars()
+            .any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}'))
+    {
+        return Err("thread name must be 1..128 UTF-8 bytes with no control characters");
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadNameQuery {
+    pub thread: ThreadId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolveThreadQuery {
+    pub selector: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_target: Option<HostTargetId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<SeatId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetThreadName {
+    pub thread: ThreadId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub operation: OperationId,
+    pub claim: CallerClaim,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThreadMutation {
@@ -671,10 +746,12 @@ impl Command {
             Self::Invite(v) => Some(&v.claim),
             Self::Accept(v) => Some(&v.claim),
             Self::AcceptRequired(v) => Some(&v.claim),
+            Self::Reject(v) => Some(&v.claim),
             Self::SendMessage(v) => Some(&v.claim),
             Self::Ack(v) | Self::AckDisplayed(v) => Some(&v.claim),
             Self::Leave(v) => Some(&v.claim),
             Self::SetTopic(v) => Some(&v.claim),
+            Self::SetThreadName(v) => Some(&v.claim),
             Self::Archive(v) | Self::Reopen(v) => Some(&v.claim),
             _ => None,
         };
@@ -712,6 +789,13 @@ impl Command {
             Self::CreateThread(create) if create.goal.is_empty() || create.goal.len() > 1024 => {
                 Err("invalid thread goal byte bound")
             }
+            Self::CreateThread(create) => {
+                create.name.as_deref().map_or(Ok(()), validate_thread_name)
+            }
+            Self::SetThreadName(change) => {
+                change.name.as_deref().map_or(Ok(()), validate_thread_name)
+            }
+            Self::ResolveThread(query) => validate_thread_name(&query.selector),
             Self::Invite(invite) if invite.deadline_millis == Some(0) => {
                 Err("deadline must be positive")
             }
@@ -723,7 +807,13 @@ impl Command {
             {
                 Err("invalid hot thread limit")
             }
+            Self::ParticipantLocations(query)
+                if query.seats.is_empty() || query.seats.len() > MAX_BATCH_ITEMS =>
+            {
+                Err("participant location batch must contain 1..=100 seats")
+            }
             Self::AcceptRequired(accept) => accept.validate(),
+            Self::Reject(reject) => validate_rejection_reason(&reject.reason),
             Self::ContinuityCheckIn(continuity) => continuity.validate(),
             Self::RecordManagedLaunch(launch) => launch.validate(),
             Self::OperatorOrphanInvite(invite) if invite.deadline_millis == Some(0) => {
@@ -825,11 +915,13 @@ pub enum PermitMutation {
     Invite(Invite),
     Accept(Accept),
     AcceptRequired(AcceptRequired),
+    Reject(Reject),
     SendMessage(SendMessage),
     Ack(Ack),
     AckDisplayed(Ack),
     Leave(Leave),
     SetTopic(SetTopic),
+    SetThreadName(SetThreadName),
     Archive(ThreadMutation),
     Reopen(ThreadMutation),
 }
@@ -842,11 +934,13 @@ impl TryFrom<Command> for PermitMutation {
             Command::Invite(v) => Ok(Self::Invite(v)),
             Command::Accept(v) => Ok(Self::Accept(v)),
             Command::AcceptRequired(v) => Ok(Self::AcceptRequired(v)),
+            Command::Reject(v) => Ok(Self::Reject(v)),
             Command::SendMessage(v) => Ok(Self::SendMessage(v)),
             Command::Ack(v) => Ok(Self::Ack(v)),
             Command::AckDisplayed(v) => Ok(Self::AckDisplayed(v)),
             Command::Leave(v) => Ok(Self::Leave(v)),
             Command::SetTopic(v) => Ok(Self::SetTopic(v)),
+            Command::SetThreadName(v) => Ok(Self::SetThreadName(v)),
             Command::Archive(v) => Ok(Self::Archive(v)),
             Command::Reopen(v) => Ok(Self::Reopen(v)),
             other => Err(other),

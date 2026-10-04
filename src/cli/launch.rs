@@ -41,7 +41,8 @@ use crate::{
         context::Harness as ContextHarness,
         launch::{
             LaunchHookConfiguration, LaunchHookInspector, LaunchSeatResolver, ManagedLaunchRequest,
-            OpenBinding, launch_managed, managed_launch_command,
+            OpenBinding, managed_launch_command, prepare_managed, submit_prepared,
+            submit_prepared_with_evidence,
         },
     },
     host::observation::PaneName,
@@ -256,7 +257,7 @@ else `profile` in config.toml, else default).
 Exit status: 0 startup observed; 5 start may have happened but was not confirmed:
 inspect the pane (`herdr agent get` / `herdr agent read`) before launching again.";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LaunchRequest {
     pub target: HostTargetId,
     pub harness: ContextHarness,
@@ -750,6 +751,32 @@ fn codex_report(env: &SetupEnv, argv: &[String]) -> Value {
 /// Run the managed launch preflight and start; errors are refusals before
 /// any start was submitted.
 pub fn execute(request: &LaunchRequest, parts: &LaunchParts<'_>) -> Result<LaunchReport, RunError> {
+    execute_guarded_inner(request, parts, false, false, &mut |_| Ok(()))
+}
+
+/// A preflight uses the exact launch guards but does not submit or record a start.
+/// The final gate persists compound state immediately before native submission.
+pub enum LaunchBoundary<'a> {
+    BeforeSubmit(&'a crate::ports::NativeLaunchRequest),
+    RefusedBeforeStart,
+}
+
+pub fn execute_guarded(
+    request: &LaunchRequest,
+    parts: &LaunchParts<'_>,
+    preflight: bool,
+    boundary: &mut dyn FnMut(LaunchBoundary<'_>) -> Result<(), ApiError>,
+) -> Result<LaunchReport, RunError> {
+    execute_guarded_inner(request, parts, preflight, true, boundary)
+}
+
+fn execute_guarded_inner(
+    request: &LaunchRequest,
+    parts: &LaunchParts<'_>,
+    preflight: bool,
+    typed_evidence: bool,
+    boundary: &mut dyn FnMut(LaunchBoundary<'_>) -> Result<(), ApiError>,
+) -> Result<LaunchReport, RunError> {
     if !matches!(
         request.harness,
         ContextHarness::Claude | ContextHarness::Codex | ContextHarness::Human
@@ -814,7 +841,7 @@ pub fn execute(request: &LaunchRequest, parts: &LaunchParts<'_>) -> Result<Launc
     let codex_wrapper = shell_passes_no_daemon.then_some(CODEX_WRAPPER_NO_DAEMON);
     let (name_hint, name_source) = request.name_hint();
     // 2-3. Policy: fresh read, seat, owned hooks, recheck, guarded start.
-    let outcome = launch_managed(
+    let prepared = prepare_managed(
         parts.host,
         &seats,
         &inspector,
@@ -829,7 +856,7 @@ pub fn execute(request: &LaunchRequest, parts: &LaunchParts<'_>) -> Result<Launc
         &budget,
     );
     let seat = seats.seat.lock().ok().and_then(|slot| slot.clone());
-    let outcome = outcome.map_err(|mut error| {
+    let prepared = prepared.map_err(|mut error| {
         if error.code == ErrorCode::MissingHook {
             let file = setup::user_inspection(request.harness, parts.env)
                 .map(|(file, _)| file.display().to_string())
@@ -842,6 +869,26 @@ pub fn execute(request: &LaunchRequest, parts: &LaunchParts<'_>) -> Result<Launc
         }
         RunError::Api(error)
     })?;
+    if preflight {
+        return Ok(LaunchReport {
+            report: json!({"seat": prepared.request.seat}),
+            exit: 0,
+        });
+    }
+    boundary(LaunchBoundary::BeforeSubmit(&prepared.request))?;
+    let outcome = if typed_evidence {
+        match submit_prepared_with_evidence(parts.host, parts.clock, prepared) {
+            Ok(outcome) => outcome,
+            Err(failure) => {
+                if failure.submission == crate::ports::NativeSubmission::NotSubmitted {
+                    boundary(LaunchBoundary::RefusedBeforeStart)?;
+                }
+                return Err(failure.error.into());
+            }
+        }
+    } else {
+        submit_prepared(parts.host, parts.clock, prepared)?
+    };
     let (status, argv, agent_name, exit) = match &outcome {
         NativeLaunchOutcome::ObservedStartup { correlation, .. } => (
             "started",

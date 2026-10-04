@@ -361,9 +361,29 @@ fn agent_facing_machine_text_is_compact() {
         "{show}"
     );
     assert!(!show.contains("native_observation"), "{show}");
-    assert_eq!(
-        participants,
-        format!("participants\n{alice_seat} joined\n{hatter_seat} joined self\n")
+    let canonical = format!("participants\n{alice_seat} joined\n{hatter_seat} joined self\n");
+    assert!(participants.starts_with(&canonical), "{participants}");
+    let hints: Vec<_> = participants[canonical.len()..].lines().collect();
+    assert_eq!(hints.len(), 2, "{participants}");
+    for (hint, seat, target) in [
+        (hints[0], &alice_seat, "w1:p1"),
+        (hints[1], &hatter_seat, "w1:p2"),
+    ] {
+        assert!(
+            hint.starts_with(&format!("location {seat}: "))
+                && hint.contains(target)
+                && hint.ends_with("[advisory]"),
+            "{hint}"
+        );
+    }
+    // Advisory rows fit the compact budget and never crowd out canonical rows.
+    assert!(participants.len() <= 256, "{} bytes", participants.len());
+    let bounded = plugin.text(
+        Some(hatter),
+        &["thread", "participants", &thread, "--max-bytes", "256"],
     );
+    assert!(bounded.starts_with(&canonical), "{bounded}");
+    assert!(bounded.len() <= 256, "{} bytes", bounded.len());
+    assert!(show.len() < 1_000, "{} bytes", show.len());
     assert!(paged.ends_with(" --limit 3\n"), "{paged}");
 }

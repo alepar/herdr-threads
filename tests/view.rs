@@ -42,6 +42,8 @@ impl ViewReader for Reader {
             }
             Command::Directory(_) if !self.unavailable => {
                 Ok(CommandResult::Directory(page(vec![ThreadSummary {
+                    last_activity: None,
+                    name: None,
                     thread: ThreadId::new("t1"),
                     managed_owner: None,
                     topic_data: "urgent\n\u{001b}[31m\u{0085}\u{2028}".into(),
@@ -379,6 +381,8 @@ fn legal_child_at_hard_cap_is_refit_as_progressing_whole_view() {
     use herdr_threads::protocol::pagination::Cursor;
     let rows: Vec<_> = (0..100)
         .map(|i| ThreadSummary {
+            last_activity: None,
+            name: None,
             thread: ThreadId::new(format!("t{i}")),
             managed_owner: None,
             topic_data: "é control\n and quoted ' topic".repeat(12),
@@ -442,6 +446,8 @@ fn legal_child_at_hard_cap_is_refit_as_progressing_whole_view() {
 fn fitted_view_reaches_every_row_through_source_cursors() {
     let rows: Vec<_> = (0..205)
         .map(|i| ThreadSummary {
+            last_activity: None,
+            name: None,
             thread: ThreadId::new(format!("t{i}")),
             managed_owner: None,
             topic_data: "é control\n and quoted ' topic".repeat(4),
@@ -506,6 +512,8 @@ fn rendered_actions_execute_as_shell_commands() {
     let mut reader = PagedReader {
         rows: (0..2)
             .map(|i| ThreadSummary {
+                last_activity: None,
+                name: None,
                 thread: ThreadId::new(format!("t{i}")),
                 managed_owner: None,
                 topic_data: "topic".into(),
@@ -601,6 +609,8 @@ fn cancellation_after_first_directory_read_prevents_retry() {
         inner: PagedReader {
             rows: (0..5)
                 .map(|i| ThreadSummary {
+                    last_activity: None,
+                    name: None,
                     thread: ThreadId::new(format!("t{i}")),
                     managed_owner: None,
                     topic_data: "x".repeat(200),
@@ -663,6 +673,8 @@ impl ViewReader for MinRejectReader {
 #[test]
 fn minimum_includes_view_when_first_child_row_is_rejected() {
     let row = ThreadSummary {
+        last_activity: None,
+        name: None,
         thread: ThreadId::new("t0"),
         managed_owner: None,
         topic_data: "topic".into(),
@@ -884,6 +896,8 @@ mod escaping {
 
     fn thread(id: &str, topic: &str) -> ThreadSummary {
         ThreadSummary {
+            last_activity: None,
+            name: None,
             thread: ThreadId::new(id),
             managed_owner: None,
             topic_data: topic.into(),

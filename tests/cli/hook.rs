@@ -345,7 +345,8 @@ fn native_envelope_marks_peer_data_and_never_decides_permission() {
         start_fixed.contains(crate::cli::skill::HOOK_SKILL_HINT),
         "{start_context}"
     );
-    assert!(!context.contains("herdr-threads skill"), "{context}");
+    assert!(context.contains("Before using threads, run herdr-threads skill"));
+    assert!(!context.contains(crate::cli::skill::HOOK_SKILL_HINT));
 }
 
 // Kills: removing the size bound (unbounded additionalContext), leaking peer
@@ -920,6 +921,8 @@ fn startup_offer(
         items: threads
             .iter()
             .map(|thread| ThreadSummary {
+                last_activity: None,
+                name: None,
                 thread: ThreadId::new(thread.clone()),
                 managed_owner: None,
                 topic_data: format!(
@@ -1237,6 +1240,32 @@ fn skill_hint_is_sessionstart_only() {
             "{label}: {context}"
         );
     }
+}
+
+// Kills: relying only on the optional SessionStart hint, which is dropped
+// when an offer exceeds the budget. The load instruction must remain fixed
+// for both supported harnesses, without loading the guide on every tool call.
+#[test]
+fn communication_guide_instruction_survives_offer_trimming() {
+    for harness in [Harness::Claude, Harness::Codex] {
+        for payload in [CLAUDE_START, CLAUDE_TOOL] {
+            let mut ev = event(payload);
+            ev.harness = harness;
+            let instruction = render_context(Role::TopLevel, &[], true).unwrap();
+            let text = format!("{instruction}{}", "peer data\n".repeat(MAX_CONTEXT));
+            let bytes = encode_native(&ev, text.as_bytes(), &[], None, None, None, None);
+            let context = additional_context(&bytes);
+            assert!(context.len() <= MAX_CONTEXT);
+            assert!(
+                context.contains("Before using threads, run herdr-threads skill"),
+                "{harness:?}: {context}"
+            );
+            assert!(context.contains("unless its guide is already in context"));
+        }
+    }
+    let child = render_context(Role::Subagent, &[], true).unwrap();
+    assert!(!child.contains("Before using threads"));
+    assert!(child.contains("forbidden to subagents"));
 }
 
 // W6-R3: a missing digest (the best-effort query failed) still emits the D2

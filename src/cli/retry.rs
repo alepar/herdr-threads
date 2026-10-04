@@ -361,10 +361,15 @@ fn matches_result(request: &SemanticMutation, result: &CommandResult) -> bool {
                 SemanticMutation::Ack { .. } | SemanticMutation::AckDisplayed { .. },
                 CommandResult::Acknowledged(_)
             )
+            | (SemanticMutation::Reject { .. }, CommandResult::Rejected(_))
             | (SemanticMutation::Leave { .. }, CommandResult::Left(_))
             | (
                 SemanticMutation::SetTopic { .. },
                 CommandResult::TopicChanged(_)
+            )
+            | (
+                SemanticMutation::SetThreadName { .. },
+                CommandResult::ThreadNameChanged(_)
             )
             | (SemanticMutation::Archive { .. }, CommandResult::Archived(_))
             | (SemanticMutation::Reopen { .. }, CommandResult::Reopened(_))

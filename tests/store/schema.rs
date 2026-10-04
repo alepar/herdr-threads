@@ -4856,3 +4856,201 @@ fn wake_batch_schema_audit_rejects_missing_or_altered_clear_trigger() {
         assert!(error.detail.contains("wake batching"));
     }
 }
+
+#[test]
+fn thread_names_migration_v19_preserves_ids_and_unnamed_rows() {
+    let db = Connection::open_in_memory().unwrap();
+    for migration in [
+        include_str!("../../migrations/0001_initial.sql"),
+        include_str!("../../migrations/0002_service_substrate.sql"),
+        include_str!("../../migrations/0003_invitation_cancellations.sql"),
+        include_str!("../../migrations/0004_voluntary_membership.sql"),
+        include_str!("../../migrations/0005_service_notifications.sql"),
+        include_str!("../../migrations/0006_retirement_health.sql"),
+        include_str!("../../migrations/0007_attention_digest.sql"),
+        include_str!("../../migrations/0008_digest_pending_paths.sql"),
+        include_str!("../../migrations/0009_human_occupant.sql"),
+        include_str!("../../migrations/0010_b5_trust_guards.sql"),
+        include_str!("../../migrations/0011_cooperative_only.sql"),
+        include_str!("../../migrations/0012_harness_version_evidence.sql"),
+        include_str!("../../migrations/0013_thread_summaries.sql"),
+        include_str!("../../migrations/0014_catch_up_release.sql"),
+        include_str!("../../migrations/0015_preparation_retention.sql"),
+        include_str!("../../migrations/0016_human_receipt_waivers.sql"),
+        include_str!("../../migrations/0017_wake_batches.sql"),
+        include_str!("../../migrations/0018_warning_conditions.sql"),
+    ] {
+        db.execute_batch(migration).unwrap();
+    }
+    db.execute_batch("PRAGMA user_version=18; INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('tKEEP1234','i','old topic','old goal',11,12);").unwrap();
+    schema::initialize(&db, || UtcMillis(100)).unwrap();
+    schema::initialize(&db, || UtcMillis(200)).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        schema::LATEST_VERSION
+    );
+    let row: (String, String, String, i64, i64, Option<String>) = db
+        .query_row(
+            "SELECT id,topic,goal,created_at,updated_at,name FROM threads",
+            [],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        (
+            "tKEEP1234".into(),
+            "old topic".into(),
+            "old goal".into(),
+            11,
+            12,
+            None
+        )
+    );
+    db.execute_batch("DROP INDEX threads_instance_name; CREATE UNIQUE INDEX threads_instance_name ON threads(instance_id,name)").unwrap();
+    assert_eq!(
+        schema::initialize(&db, || UtcMillis(300)).unwrap_err().code,
+        ErrorCode::IncompatibleSchema
+    );
+}
+
+#[test]
+fn invitation_rejection_schema_audit_rejects_projection_guard_tampering() {
+    for replacement in [
+        None,
+        Some(
+            "CREATE TRIGGER invitations_rejection_projection_guard BEFORE UPDATE OF reject_recorded ON invitations BEGIN SELECT 1; END;",
+        ),
+    ] {
+        let db = Connection::open_in_memory().unwrap();
+        schema::initialize(&db, || UtcMillis(0)).unwrap();
+        db.execute_batch("DROP TRIGGER invitations_rejection_projection_guard")
+            .unwrap();
+        if let Some(sql) = replacement {
+            db.execute_batch(sql).unwrap();
+        }
+        let error = schema::initialize(&db, || UtcMillis(1)).unwrap_err();
+        assert_eq!(error.code, ErrorCode::IncompatibleSchema);
+        assert!(error.detail.contains("invitation rejection"));
+    }
+}
+
+#[test]
+fn invitation_rejection_v21_upgrades_v20_without_rebuilding_history() {
+    let db = Connection::open_in_memory().unwrap();
+    for migration in [
+        include_str!("../../migrations/0001_initial.sql"),
+        include_str!("../../migrations/0002_service_substrate.sql"),
+        include_str!("../../migrations/0003_invitation_cancellations.sql"),
+        include_str!("../../migrations/0004_voluntary_membership.sql"),
+        include_str!("../../migrations/0005_service_notifications.sql"),
+        include_str!("../../migrations/0006_retirement_health.sql"),
+        include_str!("../../migrations/0007_attention_digest.sql"),
+        include_str!("../../migrations/0008_digest_pending_paths.sql"),
+        include_str!("../../migrations/0009_human_occupant.sql"),
+        include_str!("../../migrations/0010_b5_trust_guards.sql"),
+        include_str!("../../migrations/0011_cooperative_only.sql"),
+        include_str!("../../migrations/0012_harness_version_evidence.sql"),
+        include_str!("../../migrations/0013_thread_summaries.sql"),
+        include_str!("../../migrations/0014_catch_up_release.sql"),
+        include_str!("../../migrations/0015_preparation_retention.sql"),
+        include_str!("../../migrations/0016_human_receipt_waivers.sql"),
+        include_str!("../../migrations/0017_wake_batches.sql"),
+        include_str!("../../migrations/0018_warning_conditions.sql"),
+        include_str!("../../migrations/0019_thread_names.sql"),
+        include_str!("../../migrations/0020_recent_activity.sql"),
+    ] {
+        db.execute_batch(migration).unwrap();
+    }
+    db.execute_batch("PRAGMA user_version=20; INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('tKEEP1234','i','old topic','old goal',11,12);").unwrap();
+    let before: i64 = db
+        .query_row(
+            "SELECT rootpage FROM sqlite_master WHERE name='invitations'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    schema::initialize(&db, || UtcMillis(100)).unwrap();
+    schema::initialize(&db, || UtcMillis(200)).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        21
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT rootpage FROM sqlite_master WHERE name='invitations'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        before
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT topic,created_at FROM threads WHERE id='tKEEP1234'",
+            [],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        )
+        .unwrap(),
+        ("old topic".into(), 11)
+    );
+}
+
+#[test]
+fn recent_activity_writer_rejects_missing_or_null_default() {
+    for replacement in [
+        "last_activity INTEGER NOT NULL",
+        "last_activity INTEGER NOT NULL DEFAULT NULL",
+    ] {
+        let path = std::env::temp_dir().join(format!(
+            "ht-activity-default-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Connection::open(&path).unwrap();
+        schema::initialize(&db, || UtcMillis(0)).unwrap();
+        let original: String = db
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type='table' AND name='threads'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let altered = original.replace("last_activity INTEGER NOT NULL DEFAULT 0", replacement);
+        assert_ne!(original, altered);
+        db.execute_batch("PRAGMA writable_schema=ON").unwrap();
+        db.execute(
+            "UPDATE sqlite_schema SET sql=?1 WHERE type='table' AND name='threads'",
+            [altered],
+        )
+        .unwrap();
+        db.execute_batch("PRAGMA writable_schema=OFF").unwrap();
+        drop(db);
+        let db = Connection::open(&path).unwrap();
+        let default: Option<String> = db
+            .query_row(
+                "SELECT dflt_value FROM pragma_table_info('threads') WHERE name='last_activity'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(default.is_none() || default.as_deref() == Some("NULL"));
+        let result = schema::initialize(&db, || UtcMillis(1));
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+        assert!(
+            matches!(result,Err(ref error) if error.code==ErrorCode::IncompatibleSchema),
+            "writer must reject the altered default before creation: {replacement}: {result:?}"
+        );
+    }
+}

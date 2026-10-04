@@ -552,7 +552,7 @@ pub(super) fn stage_recipient(
             .as_ref()
             .is_some_and(|v| v.state == "joined")
     {
-        let pending_invitation:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM invitations i WHERE i.thread_id=?1 AND i.seat_id=?2 AND i.state='pending' AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id))",params![thread.as_str(),recipient],|r|r.get(0)).map_err(store_error)?;
+        let pending_invitation:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM invitations i WHERE i.thread_id=?1 AND i.seat_id=?2 AND i.state='pending' AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id))",params![thread.as_str(),recipient],|r|r.get(0)).map_err(store_error)?;
         if !pending_invitation {
             let episode = schema::ensure_unavailability_episode(tx, &SeatId::new(recipient))?;
             let key = UnavailableWarningKey {

@@ -54,6 +54,7 @@ pub enum IntentScope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SemanticMutation {
+    Handoff(Box<super::handoff::HandoffPlan>),
     Frozen {
         claim: CallerClaim,
         mutation: Box<SemanticMutation>,
@@ -83,6 +84,8 @@ pub enum SemanticMutation {
     },
     CheckIn,
     CreateThread {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
         topic: String,
         goal: String,
     },
@@ -93,6 +96,11 @@ pub enum SemanticMutation {
     },
     Accept {
         thread: ThreadId,
+    },
+    Reject {
+        thread: ThreadId,
+        invitation: InvitationId,
+        reason: String,
     },
     AcceptRequired {
         thread: ThreadId,
@@ -116,6 +124,11 @@ pub enum SemanticMutation {
     },
     Leave {
         thread: ThreadId,
+    },
+    SetThreadName {
+        thread: ThreadId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
     SetTopic {
         thread: ThreadId,
@@ -186,6 +199,7 @@ impl SemanticMutation {
             return Err(invalid("top-level cooperative context required"));
         }
         match self {
+            Self::Handoff(plan) => plan.validate(),
             Self::Frozen { mutation, .. } => {
                 if mutation.is_operator()
                     || matches!(
@@ -271,6 +285,10 @@ impl SemanticMutation {
             Self::CreateThread { goal, .. } if goal.is_empty() || goal.len() > 1024 => {
                 Err(invalid("invalid thread goal byte bound"))
             }
+            Self::CreateThread { name, .. } | Self::SetThreadName { name, .. } => name
+                .as_deref()
+                .map_or(Ok(()), |name| validate_thread_name(name).map_err(invalid)),
+            Self::Reject { reason, .. } => validate_rejection_reason(reason).map_err(invalid),
             Self::AcceptRequired {
                 expected_revision: 0,
                 ..
@@ -300,6 +318,7 @@ impl SemanticMutation {
     }
     pub fn kind(&self) -> IntentKind {
         match self {
+            Self::Handoff(_) => IntentKind::Handoff,
             Self::Frozen { mutation, .. } => mutation.kind(),
             Self::CooperativeCheckIn { .. } => IntentKind::CheckIn,
             Self::ResolveSeat { .. } => IntentKind::ResolveSeat,
@@ -308,11 +327,13 @@ impl SemanticMutation {
             Self::CreateThread { .. } => IntentKind::CreateThread,
             Self::Invite { .. } => IntentKind::Invite,
             Self::Accept { .. } => IntentKind::Accept,
+            Self::Reject { .. } => IntentKind::Reject,
             Self::AcceptRequired { .. } => IntentKind::Accept,
             Self::SendMessage { .. } => IntentKind::SendMessage,
             Self::Ack { .. } | Self::AckDisplayed { .. } => IntentKind::Ack,
             Self::Leave { .. } => IntentKind::Leave,
             Self::SetTopic { .. } => IntentKind::SetTopic,
+            Self::SetThreadName { .. } => IntentKind::SetThreadName,
             Self::Archive { .. } => IntentKind::Archive,
             Self::Reopen { .. } => IntentKind::Reopen,
             Self::OperatorRebind { .. } => IntentKind::OperatorRebind,
@@ -324,13 +345,16 @@ impl SemanticMutation {
     }
     pub fn thread(&self) -> Option<&ThreadId> {
         match self {
+            Self::Handoff(plan) => plan.request.thread.as_ref(),
             Self::Frozen { mutation, .. } => mutation.thread(),
             Self::Invite { thread, .. }
             | Self::Accept { thread }
             | Self::AcceptRequired { thread, .. }
+            | Self::Reject { thread, .. }
             | Self::SendMessage { thread, .. }
             | Self::Leave { thread }
             | Self::SetTopic { thread, .. }
+            | Self::SetThreadName { thread, .. }
             | Self::Archive { thread }
             | Self::Reopen { thread }
             | Self::OperatorOrphanInvite { thread, .. } => Some(thread),
@@ -348,6 +372,7 @@ impl SemanticMutation {
                 .ok_or_else(|| invalid("fresh caller claim required"))
         };
         let command = match self {
+            Self::Handoff(_) => return Err(invalid("handoff requires compound coordinator")),
             Self::Frozen { claim, mutation } => {
                 return mutation.to_command(operation, Some(claim.clone()));
             }
@@ -392,7 +417,8 @@ impl SemanticMutation {
                 operation,
                 claim: native()?,
             }),
-            Self::CreateThread { topic, goal } => Command::CreateThread(CreateThread {
+            Self::CreateThread { name, topic, goal } => Command::CreateThread(CreateThread {
+                name: name.clone(),
                 topic: topic.clone(),
                 goal: goal.clone(),
                 operation,
@@ -406,6 +432,17 @@ impl SemanticMutation {
                 thread: thread.clone(),
                 seat: seat.clone(),
                 deadline_millis: *deadline_millis,
+                operation,
+                claim: native()?,
+            }),
+            Self::Reject {
+                thread,
+                invitation,
+                reason,
+            } => Command::Reject(Reject {
+                thread: thread.clone(),
+                invitation: invitation.clone(),
+                reason: reason.clone(),
                 operation,
                 claim: native()?,
             }),
@@ -454,6 +491,12 @@ impl SemanticMutation {
             }),
             Self::Leave { thread } => Command::Leave(Leave {
                 thread: thread.clone(),
+                operation,
+                claim: native()?,
+            }),
+            Self::SetThreadName { thread, name } => Command::SetThreadName(SetThreadName {
+                thread: thread.clone(),
+                name: name.clone(),
                 operation,
                 claim: native()?,
             }),
@@ -555,6 +598,9 @@ struct DisplayedProgress {
     flushed_through: u64,
 }
 impl Journal {
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
     pub fn open(root: impl AsRef<Path>) -> io::Result<Self> {
         let root = root.as_ref();
         if !root.exists() {

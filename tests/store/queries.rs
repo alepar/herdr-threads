@@ -2468,6 +2468,7 @@ fn directory_stale_restart_keeps_selected_context_and_filters() {
     request.limit = 1;
     let make = |page| {
         Command::Directory(DirectoryQuery {
+            recent: false,
             membership: None,
             membership_filter: DirectoryMembership::All,
             topic_contains: Some("topic".into()),
@@ -2653,6 +2654,7 @@ fn directory_pages_205_threads_with_fixed_high_water() {
     let mut ids = Vec::new();
     loop {
         let q = Command::Directory(DirectoryQuery {
+            recent: false,
             membership: None,
             membership_filter: DirectoryMembership::All,
             topic_contains: None,
@@ -2715,6 +2717,7 @@ fn directory_default_pages_quiet_joined_invited_and_archived_memberships() {
     let mut empty_work = false;
     for _ in 0..100 {
         let command = Command::Directory(DirectoryQuery {
+            recent: false,
             membership: Some(SeatId::new("s")),
             membership_filter: DirectoryMembership::Default,
             topic_contains: None,
@@ -2785,6 +2788,7 @@ fn directory_cursor_stales_only_on_relevant_member_revision() {
     request.limit = 1;
     let make = |request: PageRequest| {
         Command::Directory(DirectoryQuery {
+            recent: false,
             membership: Some(SeatId::new("s")),
             membership_filter: DirectoryMembership::Joined,
             topic_contains: None,
@@ -2821,6 +2825,7 @@ fn directory_topic_filter_stales_after_topic_change() {
     request.limit = 1;
     let make = |page: PageRequest| {
         Command::Directory(DirectoryQuery {
+            recent: false,
             membership: None,
             membership_filter: DirectoryMembership::All,
             topic_contains: Some("topic".into()),
@@ -2855,6 +2860,7 @@ fn continuation_context_is_budgeted_and_round_trips_special_path() {
         },
     };
     let mut q = DirectoryQuery {
+        recent: false,
         membership: None,
         membership_filter: DirectoryMembership::All,
         topic_contains: None,
@@ -4110,4 +4116,408 @@ fn diagnostics_overdue_listing_uses_the_effective_deadline() {
     assert_eq!(subjects(&store), vec!["overdue_receipt:m1:s"]);
     db.execute("INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,state) VALUES ('s','t',0,1,'e',0,500,'active')", []).unwrap();
     assert!(subjects(&store).is_empty());
+}
+
+#[test]
+fn thread_names_indexed_resolution_route_is_read_only() {
+    let (store, db) = fixture();
+    let command: Result<Command, _> = serde_json::from_value(serde_json::json!({
+        "kind": "resolve_thread", "args": {"selector": "t", "caller": null}
+    }));
+    assert!(
+        command.is_ok(),
+        "thread resolution needs a read-only daemon route: {command:?}"
+    );
+    let result = query(&store, "i", &command.unwrap(), &budget()).unwrap();
+    assert_eq!(
+        serde_json::to_value(result).unwrap(),
+        serde_json::json!({"kind":"thread_resolved","data":"t"})
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM threads", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn thread_names_resolve_all_memberships_archives_ids_and_instances() {
+    let (store, db) = fixture();
+    db.execute(
+        "INSERT INTO host_instances(id,created_at) VALUES ('other',0)",
+        [],
+    )
+    .unwrap();
+    db.execute("UPDATE threads SET name='tABC12345' WHERE id='t'", [])
+        .unwrap();
+    let resolve = |selector: &str| {
+        query(
+            &store,
+            "i",
+            &Command::ResolveThread(crate::protocol::commands::ResolveThreadQuery {
+                selector: selector.into(),
+                caller_target: None,
+                caller: Some(SeatId::new("s")),
+            }),
+            &budget(),
+        )
+    };
+    // An ID-shaped name stays eligible when no such ID exists.
+    assert_eq!(
+        resolve("tABC12345").unwrap(),
+        CommandResult::ThreadResolved(ThreadId::new("t"))
+    );
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,name,archived) VALUES ('tABC12345','i','archived','goal',0,0,'team café',1)", []).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,name) VALUES ('t-other','other','other','goal',0,0,'team café')", []).unwrap();
+    // Exact existing ID wins over a different thread's name.
+    assert_eq!(
+        resolve("tABC12345").unwrap(),
+        CommandResult::ThreadResolved(ThreadId::new("tABC12345"))
+    );
+    // Archive and no membership do not hide a candidate; other instance does.
+    assert_eq!(
+        resolve("team café").unwrap(),
+        CommandResult::ThreadResolved(ThreadId::new("tABC12345"))
+    );
+    assert_eq!(resolve("Team café").unwrap_err().code, ErrorCode::NotFound);
+    assert_eq!(resolve("missing").unwrap_err().code, ErrorCode::NotFound);
+    db.execute("UPDATE threads SET name='team café' WHERE id='t'", [])
+        .unwrap();
+    db.execute(
+        "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s','joined',0)",
+        [],
+    )
+    .unwrap();
+    db.execute("UPDATE seats SET target_id='p-own' WHERE id='s'", [])
+        .unwrap();
+    let target_error = query(
+        &store,
+        "i",
+        &Command::ResolveThread(crate::protocol::commands::ResolveThreadQuery {
+            selector: "team café".into(),
+            caller: None,
+            caller_target: Some(crate::protocol::ids::HostTargetId::new("p-own")),
+        }),
+        &budget(),
+    )
+    .unwrap_err();
+    assert!(
+        target_error.detail.contains("membership=joined"),
+        "{}",
+        target_error.detail
+    );
+    let error = resolve("team café").unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict);
+    assert!(
+        error.detail.contains("tABC12345")
+            && error.detail.contains("archived=true")
+            && error.detail.contains("membership=joined")
+            && error.detail.contains("membership=none"),
+        "{}",
+        error.detail
+    );
+    // Conflict detection is independent of directory paging and bounded even for many matches.
+    for n in 0..12 {
+        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,name) VALUES (?1,'i',?2,'goal',0,0,'team café')",params![format!("tn{n}"),"hostile\n\u{1b}[31m".repeat(50)]).unwrap();
+    }
+    let error = resolve("team café").unwrap_err();
+    assert!(error.detail.contains("additional candidates omitted"));
+    assert!(!error.detail.contains('\u{1b}'));
+    assert!(error.detail.len() < 6000);
+    let plan: String = db.query_row("EXPLAIN QUERY PLAN SELECT id FROM threads INDEXED BY threads_instance_name WHERE instance_id='i' AND name='team café' LIMIT 9", [], |r|r.get(3)).unwrap();
+    assert!(plan.contains("threads_instance_name"), "{plan}");
+}
+
+#[test]
+fn thread_names_digest_form_lookup_precedes_cli_misuse_hint() {
+    let (store, db) = fixture();
+    db.execute("UPDATE threads SET name='m1@t1' WHERE id='t'", [])
+        .unwrap();
+    let mut parsed = parse_argv(["ht", "read", "m1@t1"]).unwrap();
+    crate::cli::threads::resolve_cli_threads(&mut parsed, |selector| {
+        let result = query(
+            &store,
+            "i",
+            &Command::ResolveThread(crate::protocol::commands::ResolveThreadQuery {
+                selector: selector.into(),
+                caller: None,
+                caller_target: None,
+            }),
+            &budget(),
+        )
+        .map_err(|error| crate::cli::threads::selector_error(error, selector))?;
+        let CommandResult::ThreadResolved(id) = result else {
+            panic!("resolve")
+        };
+        Ok::<_, crate::protocol::results::ApiError>(id)
+    })
+    .unwrap();
+    assert_eq!(
+        crate::cli::threads::selector_mut(&mut parsed.action)
+            .unwrap()
+            .as_str(),
+        "t"
+    );
+    let unnamed = query(
+        &store,
+        "i",
+        &Command::ThreadName(crate::protocol::commands::ThreadNameQuery {
+            thread: ThreadId::new("t"),
+        }),
+        &budget(),
+    )
+    .unwrap();
+    assert_eq!(
+        unnamed,
+        CommandResult::ThreadName(crate::protocol::results::ThreadNameResult {
+            thread: ThreadId::new("t"),
+            name: Some("m1@t1".into())
+        })
+    );
+}
+
+#[test]
+fn recent_picker_public_syntax_and_wire() {
+    assert!(
+        parse_argv(["ht", "read"]).is_ok(),
+        "bare read must parse as picker"
+    );
+    assert!(
+        parse_argv(["ht", "thread", "list", "--recent", "--all"]).is_ok(),
+        "recent directory must parse"
+    );
+    let q = serde_json::json!({"membership":null,"membership_filter":"all","topic_contains":null,"recent":true,"page":{"cursor":null,"limit":1,"max_bytes":65536}});
+    assert!(
+        serde_json::from_value::<DirectoryQuery>(q).is_ok(),
+        "recent order wire option missing"
+    );
+}
+
+#[test]
+fn recent_picker_materialized_activity_schema() {
+    let (_store, db) = fixture();
+    let indexed: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='threads_recent_activity')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        indexed,
+        "recent activity requires an indexed materialized order"
+    );
+}
+
+fn recent_page(
+    store: &super::super::connection::StoreContext,
+    cursor: Option<String>,
+    limit: u16,
+) -> Result<Page<ThreadSummary>, ApiError> {
+    let result = query(
+        store,
+        "i",
+        &Command::Directory(DirectoryQuery {
+            recent: true,
+            membership: None,
+            membership_filter: DirectoryMembership::All,
+            topic_contains: None,
+            page: PageRequest {
+                cursor,
+                limit,
+                max_bytes: 65536,
+            },
+        }),
+        &budget(),
+    )?;
+    let CommandResult::Directory(page) = result else {
+        panic!("directory result required")
+    };
+    Ok(page)
+}
+
+#[test]
+fn recent_picker_pages_all_archived_and_ties_with_index_seek() {
+    let (store, db) = fixture();
+    for n in 1..=205 {
+        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,archived) VALUES (?1,'i','topic','goal',?2,?2,?3)",params![format!("t{n:03}"),n/3,n%2]).unwrap();
+    }
+    let mut cursor = None;
+    let mut ids = Vec::new();
+    let mut archived = false;
+    loop {
+        let page = recent_page(&store, cursor, 19).unwrap();
+        assert!(page.items.iter().all(|row| row.last_activity.is_some()));
+        archived |= page.items.iter().any(|row| row.archived);
+        ids.extend(
+            page.items
+                .into_iter()
+                .map(|row| row.thread.as_str().to_owned()),
+        );
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(ids.len(), 206);
+    assert_eq!(ids[0], "t205");
+    assert_eq!(ids.last().unwrap(), "t");
+    assert!(archived);
+    let plan:String=db.query_row("EXPLAIN QUERY PLAN SELECT ordinal FROM threads INDEXED BY threads_recent_activity WHERE instance_id='i' AND (last_activity,ordinal)<(10,20) ORDER BY last_activity DESC,ordinal DESC LIMIT 1",[],|r|r.get(3)).unwrap();
+    assert!(
+        plan.contains("threads_recent_activity") && plan.contains("last_activity<?"),
+        "bounded seek required: {plan}"
+    );
+}
+
+#[test]
+fn recent_picker_activity_and_rename_invalidate_only_selected_instance() {
+    let (store, db) = fixture();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','i','other','goal',2,2)",[]).unwrap();
+    let first = recent_page(&store, None, 1).unwrap();
+    assert_eq!(first.items[0].thread.as_str(), "t2");
+    db.execute("UPDATE threads SET updated_at=500 WHERE id='t'", [])
+        .unwrap();
+    super::super::schema::bump_timeline_revision(&db, &ThreadId::new("t")).unwrap();
+    let stale = recent_page(&store, first.next_cursor, 1).unwrap_err();
+    assert_eq!(stale.code, ErrorCode::CursorStale);
+    assert!(
+        stale
+            .restart_argv
+            .as_ref()
+            .unwrap()
+            .contains(&"--recent".into())
+    );
+    let first = recent_page(&store, None, 1).unwrap();
+    assert_eq!(first.items[0].thread.as_str(), "t");
+    assert_eq!(first.items[0].last_activity, Some(UtcMillis(500)));
+    db.execute("UPDATE threads SET name='renamed' WHERE id='t2'", [])
+        .unwrap();
+    assert_eq!(
+        recent_page(&store, first.next_cursor, 1).unwrap_err().code,
+        ErrorCode::CursorStale
+    );
+    let first = recent_page(&store, None, 1).unwrap();
+    db.execute(
+        "INSERT INTO host_instances(id,created_at) VALUES ('other',0)",
+        [],
+    )
+    .unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('foreign','other','topic','goal',999,999)",[]).unwrap();
+    assert_eq!(
+        recent_page(&store, first.next_cursor, 1).unwrap().items[0]
+            .thread
+            .as_str(),
+        "t2"
+    );
+}
+
+#[test]
+fn recent_picker_migration_backfills_committed_info_and_creation() {
+    // Construct the historical schema rather than downgrade the current one.
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    for migration in [
+        include_str!("../../migrations/0001_initial.sql"),
+        include_str!("../../migrations/0002_service_substrate.sql"),
+        include_str!("../../migrations/0003_invitation_cancellations.sql"),
+        include_str!("../../migrations/0004_voluntary_membership.sql"),
+        include_str!("../../migrations/0005_service_notifications.sql"),
+        include_str!("../../migrations/0006_retirement_health.sql"),
+        include_str!("../../migrations/0007_attention_digest.sql"),
+        include_str!("../../migrations/0008_digest_pending_paths.sql"),
+        include_str!("../../migrations/0009_human_occupant.sql"),
+        include_str!("../../migrations/0010_b5_trust_guards.sql"),
+        include_str!("../../migrations/0011_cooperative_only.sql"),
+        include_str!("../../migrations/0012_harness_version_evidence.sql"),
+        include_str!("../../migrations/0013_thread_summaries.sql"),
+        include_str!("../../migrations/0014_catch_up_release.sql"),
+        include_str!("../../migrations/0015_preparation_retention.sql"),
+        include_str!("../../migrations/0016_human_receipt_waivers.sql"),
+        include_str!("../../migrations/0017_wake_batches.sql"),
+        include_str!("../../migrations/0018_warning_conditions.sql"),
+        include_str!("../../migrations/0019_thread_names.sql"),
+    ] {
+        db.execute_batch(migration).unwrap();
+    }
+    db.execute_batch("PRAGMA user_version=19; INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);").unwrap();
+    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq,event_offset) VALUES('e1','i','t',1,'info','event1','{}',456,1,0)",[]).unwrap();
+    db.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
+        .unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('empty','i','topic','goal',123,123)",[]).unwrap();
+    super::super::schema::initialize(&db, || UtcMillis(500)).unwrap();
+    assert_eq!(
+        db.query_row("SELECT last_activity FROM threads WHERE id='t'", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap(),
+        456
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT last_activity FROM threads WHERE id='empty'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        123
+    );
+    db.execute_batch("DROP INDEX threads_recent_activity; CREATE INDEX threads_recent_activity ON threads(instance_id,ordinal);").unwrap();
+    assert_eq!(
+        super::super::schema::initialize(&db, || UtcMillis(500))
+            .unwrap_err()
+            .code,
+        ErrorCode::IncompatibleSchema
+    );
+}
+
+#[test]
+fn recent_picker_committed_notices_update_activity_duplicates_and_rollback_do_not() {
+    let (store, mut db) = fixture();
+    let thread = ThreadId::new("t");
+    let publish = |conn: &rusqlite::Connection, key: &str, at: i64| {
+        super::super::schema::append_event_once(
+            conn,
+            super::super::schema::EventInput {
+                thread: &thread,
+                key,
+                kind: "info",
+                payload_json: "{\"action\":\"set_topic\"}",
+                decision_at: UtcMillis(at),
+                source_message: None,
+                source_invitation: None,
+            },
+        )
+        .unwrap()
+    };
+    let tx = db.transaction().unwrap();
+    assert!(publish(&tx, "notice1", 700).1);
+    tx.commit().unwrap();
+    assert_eq!(
+        recent_page(&store, None, 1).unwrap().items[0].last_activity,
+        Some(UtcMillis(700))
+    );
+    assert!(!publish(&db, "notice1", 900).1);
+    assert_eq!(
+        recent_page(&store, None, 1).unwrap().items[0].last_activity,
+        Some(UtcMillis(700))
+    );
+    let tx = db.transaction().unwrap();
+    assert!(publish(&tx, "notice2", 1000).1);
+    tx.rollback().unwrap();
+    assert_eq!(
+        recent_page(&store, None, 1).unwrap().items[0].last_activity,
+        Some(UtcMillis(700))
+    );
+    let query = DirectoryQuery {
+        recent: false,
+        membership: None,
+        membership_filter: DirectoryMembership::All,
+        topic_contains: None,
+        page: page(None),
+    };
+    assert!(
+        serde_json::to_value(query).unwrap().get("recent").is_none(),
+        "historical persisted defaults must omit false"
+    );
 }

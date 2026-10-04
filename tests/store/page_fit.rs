@@ -72,6 +72,8 @@ fn topic(rng: &mut Rng) -> String {
 
 fn thread(i: usize, rng: &mut Rng) -> ThreadSummary {
     ThreadSummary {
+        last_activity: None,
+        name: None,
         thread: ThreadId::new(format!("thread-{i}")),
         managed_owner: None,
         topic_data: topic(rng),

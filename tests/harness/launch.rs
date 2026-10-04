@@ -1335,3 +1335,26 @@ fn codex_top_level_resume_form_is_refused_until_captured() {
     }
     assert!(compose(&["exec", "resume", "ID"]).is_ok());
 }
+
+#[test]
+fn handoff_preparation_runs_all_guards_without_native_submission() {
+    let (host, seats, hooks, clock, budget) = fixture();
+    let prepared = prepare_managed(
+        &host,
+        &seats,
+        &hooks,
+        &clock,
+        request(Harness::Codex, &[]),
+        &budget,
+    )
+    .unwrap();
+    assert_eq!(prepared.request.seat, SeatId::new("seat_1"));
+    assert!(host.submitted.lock().unwrap().is_empty());
+    assert_eq!(seats.calls.load(Ordering::SeqCst), 1);
+    let outcome = submit_prepared(&host, &clock, prepared).unwrap();
+    assert!(matches!(
+        outcome,
+        NativeLaunchOutcome::ObservedStartup { .. }
+    ));
+    assert_eq!(host.submitted.lock().unwrap().len(), 1);
+}

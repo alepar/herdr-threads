@@ -48,9 +48,20 @@ fn fixture(at: i64) -> (StoreContext, Connection, PathBuf, Arc<FixedClock>) {
 /// `fixture` plus a live, not-yet-registered cooperative occupant binding for
 /// each acting seat, so cooperative permits can be issued for them.
 fn bound_fixture(at: i64) -> (StoreContext, Connection, PathBuf, Arc<FixedClock>) {
+    bound_fixture_recipient_harness(at, Harness::Codex)
+}
+fn bound_fixture_recipient_harness(
+    at: i64,
+    recipient: Harness,
+) -> (StoreContext, Connection, PathBuf, Arc<FixedClock>) {
     let fixture = fixture(at);
     for seat in ["s1", "s2"] {
-        fixture.1.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,?1,'b',1,1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-'||?1,'inc')", [seat]).unwrap();
+        let harness = if seat == "s2" {
+            recipient
+        } else {
+            Harness::Codex
+        };
+        fixture.1.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,?1,'b',1,1,?2,'n','00000000-0000-4000-8000-000000000001',?3,0,'term-'||?1,'inc')", rusqlite::params![seat,harness.as_str(),harness.cooperative_provenance()]).unwrap();
     }
     fixture
 }
@@ -1544,6 +1555,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
     );
     let directory =
         crate::protocol::commands::Command::Directory(crate::protocol::commands::DirectoryQuery {
+            recent: false,
             membership: Some(SeatId::new("s2")),
             membership_filter: crate::protocol::commands::DirectoryMembership::Joined,
             topic_contains: None,
@@ -2770,6 +2782,7 @@ fn managed_release_cancels_only_required_invitation_and_replay_retains_history()
     );
     let native_directory =
         crate::protocol::commands::Command::Directory(crate::protocol::commands::DirectoryQuery {
+            recent: false,
             membership: Some(SeatId::new("s2")),
             membership_filter: crate::protocol::commands::DirectoryMembership::Invited,
             topic_contains: None,
@@ -3193,6 +3206,7 @@ fn retirement_cutover_makes_pending_requirement_terminal_before_bounded_cleanup(
 fn create_thread_persists_joined_creator_and_creation_audit() {
     let (context, mut conn, path, _) = bound_fixture(100);
     let command = CreateThread {
+        name: None,
         topic: "topic".into(),
         goal: "goal".into(),
         operation: OperationId::new("o1"),
@@ -3280,6 +3294,7 @@ fn create_thread_persists_joined_creator_and_creation_audit() {
     assert_eq!(replay, CommandResult::ThreadCreated(thread));
     assert_eq!(conn.query_row("SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind='inbox' AND scope_key='s1'",[],|r|r.get::<_,i64>(0)).unwrap(),inbox_revision);
     let changed = CreateThread {
+        name: None,
         topic: "changed".into(),
         ..command.clone()
     };
@@ -3337,6 +3352,7 @@ fn joined_member_changes_topic_with_scoped_revision_and_audit() {
     use crate::protocol::commands::SetTopic;
     let (context, mut conn, path, _) = bound_fixture(100);
     let create = CreateThread {
+        name: None,
         topic: "old".into(),
         goal: "goal".into(),
         operation: OperationId::new("create-topic"),
@@ -3415,6 +3431,7 @@ fn joined_member_changes_topic_with_scoped_revision_and_audit() {
 fn pending_reinvite_keeps_first_deadline_and_new_invites_use_precedence() {
     let (context, mut conn, path, _) = bound_fixture(100);
     let create = CreateThread {
+        name: None,
         topic: "topic".into(),
         goal: "goal".into(),
         operation: OperationId::new("create"),
@@ -3601,6 +3618,7 @@ fn operator_orphan_invite_uses_configured_duration_and_keeps_pending_deadline() 
 fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
     let (context, mut conn, path, clock) = bound_fixture(100);
     let create = CreateThread {
+        name: None,
         topic: "topic".into(),
         goal: "goal".into(),
         operation: OperationId::new("c"),
@@ -4669,6 +4687,7 @@ fn snapshot_rejects_nonrepresentable_host_numbers_without_changing_state() {
 fn inviting_directly_joined_creator_is_truthful_replayable_noop() {
     let (context, mut conn, path, _) = bound_fixture(100);
     let create = CreateThread {
+        name: None,
         topic: "topic".into(),
         goal: "goal".into(),
         operation: OperationId::new("create-creator"),
@@ -8550,6 +8569,834 @@ fn spent_snapshot_quantum_commits_its_prefix_and_staging_resumes() {
     seats::seal_snapshot_stage(&context, &mut conn, &stage.id, &budget).unwrap();
     let published = seats::publish_snapshot_stage(&context, &mut conn, &stage.id, &budget).unwrap();
     assert_eq!(published.target_count, 3);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn thread_names_create_rename_clear_and_replay_keep_topic_and_authority() {
+    let (context, mut conn, path, _) = bound_fixture(100);
+    let command: CreateThread = serde_json::from_value(serde_json::json!({
+        "topic":"topic", "goal":"goal", "name":"team café", "operation":"names-create", "claim":claim("s1")
+    })).expect("named create must decode");
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let hash = cooperative_payload_hash("create_thread", &command).unwrap();
+    let result = create_thread(
+        &context,
+        &mut conn,
+        &budget,
+        &command,
+        permit(
+            "s1",
+            "names-create",
+            ObligationRef::CheckIn(SeatId::new("s1")),
+            hash,
+            100,
+        ),
+    )
+    .unwrap();
+    let CommandResult::ThreadCreated(thread) = result else {
+        panic!("create")
+    };
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT name FROM threads WHERE id=?1",
+            [thread.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored.as_deref(), Some("team café"));
+    // All name writes exercise the same joined-caller rule as topic changes.
+    for (operation, name) in [("names-rename", Some("new name")), ("names-clear", None)] {
+        let wire: crate::protocol::commands::Command = serde_json::from_value(serde_json::json!({
+            "kind":"set_thread_name", "args":{"thread":thread,"name":name,"operation":operation,"claim":claim("s1")}
+        })).unwrap();
+        let crate::protocol::commands::Command::SetThreadName(command) = wire else {
+            panic!("name")
+        };
+        let hash = cooperative_payload_hash("set_thread_name", &command).unwrap();
+        for _ in 0..2 {
+            let result = set_thread_name(
+                &context,
+                &mut conn,
+                &budget,
+                &command,
+                permit(
+                    "s1",
+                    operation,
+                    ObligationRef::Control(thread.clone()),
+                    hash,
+                    100,
+                ),
+            )
+            .unwrap();
+            assert_eq!(result, CommandResult::ThreadNameChanged(thread.clone()));
+        }
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT name FROM threads WHERE id=?1",
+                [thread.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored.as_deref(), name);
+        let mut foreign = command.clone();
+        foreign.claim = claim("s2");
+        foreign.operation = OperationId::new(format!("foreign-{operation}"));
+        let hash = cooperative_payload_hash("set_thread_name", &foreign).unwrap();
+        assert_eq!(
+            set_thread_name(
+                &context,
+                &mut conn,
+                &budget,
+                &foreign,
+                permit(
+                    "s2",
+                    foreign.operation.as_str(),
+                    ObligationRef::Control(thread.clone()),
+                    hash,
+                    100
+                )
+            )
+            .unwrap_err()
+            .code,
+            crate::protocol::results::ErrorCode::Unauthorized
+        );
+    }
+    assert_eq!(
+        conn.query_row(
+            "SELECT topic || '/' || goal FROM threads WHERE id=?1",
+            [thread.as_str()],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "topic/goal"
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn thread_names_store_validates_before_writes_and_allows_duplicate_create() {
+    let (context, mut conn, path, _) = bound_fixture(100);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    for invalid in [
+        "".to_owned(),
+        "x".repeat(129),
+        "é".repeat(65),
+        "bad\nname".into(),
+        "bad\u{7f}".into(),
+    ] {
+        let invalid_create = CreateThread {
+            name: Some(invalid.clone()),
+            topic: "topic".into(),
+            goal: "goal".into(),
+            operation: OperationId::new("invalid-create-name"),
+            claim: claim("s1"),
+        };
+        let hash = cooperative_payload_hash("create_thread", &invalid_create).unwrap();
+        assert_eq!(
+            create_thread(
+                &context,
+                &mut conn,
+                &budget,
+                &invalid_create,
+                permit(
+                    "s1",
+                    "invalid-create-name",
+                    ObligationRef::CheckIn(SeatId::new("s1")),
+                    hash,
+                    100
+                )
+            )
+            .unwrap_err()
+            .code,
+            crate::protocol::results::ErrorCode::InvalidRequest
+        );
+        let invalid_change = crate::protocol::commands::SetThreadName {
+            thread: ThreadId::new("missing"),
+            name: Some(invalid),
+            operation: OperationId::new("invalid-set-name"),
+            claim: claim("s1"),
+        };
+        let hash = cooperative_payload_hash("set_thread_name", &invalid_change).unwrap();
+        assert_eq!(
+            set_thread_name(
+                &context,
+                &mut conn,
+                &budget,
+                &invalid_change,
+                permit(
+                    "s1",
+                    "invalid-set-name",
+                    ObligationRef::Control(ThreadId::new("missing")),
+                    hash,
+                    100
+                )
+            )
+            .unwrap_err()
+            .code,
+            crate::protocol::results::ErrorCode::InvalidRequest
+        );
+    }
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM threads", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    for operation in ["duplicate-one", "duplicate-two"] {
+        let command = CreateThread {
+            name: Some("é".repeat(64)),
+            topic: "topic".into(),
+            goal: "goal".into(),
+            operation: OperationId::new(operation),
+            claim: claim("s1"),
+        };
+        let hash = cooperative_payload_hash("create_thread", &command).unwrap();
+        create_thread(
+            &context,
+            &mut conn,
+            &budget,
+            &command,
+            permit(
+                "s1",
+                operation,
+                ObligationRef::CheckIn(SeatId::new("s1")),
+                hash,
+                100,
+            ),
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM threads WHERE name=?1",
+            ["é".repeat(64)],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+fn rejection_offer() -> (
+    StoreContext,
+    Connection,
+    PathBuf,
+    Arc<FixedClock>,
+    ThreadId,
+    InvitationId,
+) {
+    rejection_offer_with_recipient_harness(Harness::Codex)
+}
+fn rejection_offer_with_recipient_harness(
+    recipient: Harness,
+) -> (
+    StoreContext,
+    Connection,
+    PathBuf,
+    Arc<FixedClock>,
+    ThreadId,
+    InvitationId,
+) {
+    let (context, mut conn, path, clock) = bound_fixture_recipient_harness(100, recipient);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let create = CreateThread {
+        name: None,
+        topic: "review".into(),
+        goal: "review only".into(),
+        operation: OperationId::new("create"),
+        claim: claim("s1"),
+    };
+    let hash = cooperative_payload_hash("create_thread", &create).unwrap();
+    let CommandResult::ThreadCreated(thread) = create_thread(
+        &context,
+        &mut conn,
+        &budget,
+        &create,
+        permit(
+            "s1",
+            "create",
+            ObligationRef::CheckIn(SeatId::new("s1")),
+            hash,
+            100,
+        ),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    let offer = Invite {
+        thread: thread.clone(),
+        seat: SeatId::new("s2"),
+        deadline_millis: Some(10),
+        operation: OperationId::new("invite"),
+        claim: claim("s1"),
+    };
+    let hash = cooperative_payload_hash("invite", &offer).unwrap();
+    let CommandResult::Invitation(invitation) = invite(
+        &context,
+        &mut conn,
+        &budget,
+        &offer,
+        permit(
+            "s1",
+            "invite",
+            ObligationRef::Control(thread.clone()),
+            hash,
+            100,
+        ),
+        None,
+    )
+    .unwrap() else {
+        panic!()
+    };
+    (context, conn, path, clock, thread, invitation)
+}
+
+fn rejection_call(
+    context: &StoreContext,
+    conn: &mut Connection,
+    command: &crate::protocol::commands::Reject,
+    at: i64,
+) -> Result<CommandResult, ApiError> {
+    let hash = cooperative_payload_hash("reject", command).unwrap();
+    reject(
+        context,
+        conn,
+        &crate::protocol::time::CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
+        command,
+        MutationPermit::cooperative(
+            command.claim.clone(),
+            command.operation.clone(),
+            ObligationRef::Invitation(command.invitation.clone()),
+            hash,
+            MonoInstant(at as u64),
+            (1, 0),
+            crate::protocol::time::CallBudget {
+                deadline: MonoInstant(u64::MAX),
+                cancellation: Default::default(),
+            },
+        ),
+    )
+}
+
+#[test]
+fn rejection_retains_reason_provenance_and_settles_only_invitation() {
+    let (context, mut conn, path, clock, thread, invitation) = rejection_offer();
+    // Deadlines classify lateness; they do not expire an invitation.
+    clock.0.store(200, Ordering::SeqCst);
+    let command = crate::protocol::commands::Reject {
+        thread: thread.clone(),
+        invitation: invitation.clone(),
+        reason: "Outside my review role\nPeer data: <script>".into(),
+        operation: OperationId::new("reject"),
+        claim: claim("s2"),
+    };
+    let CommandResult::Rejected(record) =
+        rejection_call(&context, &mut conn, &command, 200).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(record.reason, command.reason);
+    assert_eq!(record.actor.as_str(), "s2");
+    assert_eq!(record.generation, 1);
+    assert!(record.observation.contains("cooperative_top_level"));
+    assert_eq!(record.rejected_at, UtcMillis(200));
+    assert_eq!(
+        rejection_call(&context, &mut conn, &command, 200).unwrap(),
+        CommandResult::Rejected(record.clone())
+    );
+    let mut retry = command.clone();
+    retry.operation = OperationId::new("retry");
+    assert_eq!(
+        rejection_call(&context, &mut conn, &retry, 200).unwrap(),
+        CommandResult::Rejected(record)
+    );
+    retry.operation = OperationId::new("changed");
+    retry.reason = "changed reason".into();
+    assert_eq!(
+        rejection_call(&context, &mut conn, &retry, 200)
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    let pending: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM digest_pending_invitations WHERE invitation_id=?1",
+            [invitation.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending, 0);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM membership_intervals WHERE seat_id='s2'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    let event: String = conn
+        .query_row(
+            "SELECT event_json FROM messages WHERE event_key=?1",
+            [format!("reject:{}", invitation.as_str())],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&event).unwrap()["reason"],
+        command.reason
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+fn rejection_accept(
+    context: &StoreContext,
+    conn: &mut Connection,
+    thread: &ThreadId,
+    invitation: &InvitationId,
+) -> Result<CommandResult, ApiError> {
+    let command = Accept {
+        thread: thread.clone(),
+        operation: OperationId::new("accept"),
+        claim: claim("s2"),
+    };
+    let hash = cooperative_payload_hash("accept", &command).unwrap();
+    accept(
+        context,
+        conn,
+        &crate::protocol::time::CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
+        &command,
+        permit(
+            "s2",
+            "accept",
+            ObligationRef::Invitation(invitation.clone()),
+            hash,
+            100,
+        ),
+    )
+}
+
+#[test]
+fn invitation_rejection_accept_races_have_one_winner_and_reinvite_is_fresh() {
+    for accept_first in [true, false] {
+        let (context, mut conn, path, _, thread, invitation) = rejection_offer();
+        let command = crate::protocol::commands::Reject {
+            thread: thread.clone(),
+            invitation: invitation.clone(),
+            reason: "Wrong topic".into(),
+            operation: OperationId::new("reject"),
+            claim: claim("s2"),
+        };
+        if accept_first {
+            rejection_accept(&context, &mut conn, &thread, &invitation).unwrap();
+            assert_eq!(
+                rejection_call(&context, &mut conn, &command, 100)
+                    .unwrap_err()
+                    .code,
+                ErrorCode::Conflict
+            );
+            assert_eq!(
+                conn.query_row("SELECT count(*) FROM invitation_rejections", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+        } else {
+            let original = rejection_call(&context, &mut conn, &command, 100).unwrap();
+            assert_eq!(
+                rejection_accept(&context, &mut conn, &thread, &invitation)
+                    .unwrap_err()
+                    .code,
+                ErrorCode::Conflict
+            );
+            let offer = Invite {
+                thread: thread.clone(),
+                seat: SeatId::new("s2"),
+                deadline_millis: Some(50),
+                operation: OperationId::new("reinvite"),
+                claim: claim("s1"),
+            };
+            let hash = cooperative_payload_hash("invite", &offer).unwrap();
+            let CommandResult::Invitation(fresh) = invite(
+                &context,
+                &mut conn,
+                &crate::protocol::time::CallBudget {
+                    deadline: MonoInstant(u64::MAX),
+                    cancellation: Default::default(),
+                },
+                &offer,
+                permit(
+                    "s1",
+                    "reinvite",
+                    ObligationRef::Control(thread.clone()),
+                    hash,
+                    100,
+                ),
+                None,
+            )
+            .unwrap() else {
+                panic!()
+            };
+            assert_ne!(fresh, invitation);
+            // Delayed replay may report the original decision, but never settles the fresh episode.
+            assert_eq!(
+                rejection_call(&context, &mut conn, &command, 100).unwrap(),
+                original
+            );
+            let mut delayed = command.clone();
+            delayed.operation = OperationId::new("delayed");
+            assert_eq!(
+                rejection_call(&context, &mut conn, &delayed, 100).unwrap(),
+                original
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT count(*) FROM digest_pending_invitations WHERE invitation_id=?1",
+                    [fresh.as_str()],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                1
+            );
+            rejection_accept(&context, &mut conn, &thread, &fresh).unwrap();
+        }
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+fn rejection_required_upgrade(
+    conn: &mut Connection,
+    thread: &ThreadId,
+    invitation: &InvitationId,
+    required_only: bool,
+) {
+    conn.execute(
+        "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('owner','i',0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE threads SET managed_owner_author_id='owner' WHERE id=?1",
+        [thread.as_str()],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at) SELECT 'requirement',thread_id,seat_id,'owner',id,'pending',created_decision_seq+?2,created_at FROM invitations WHERE id=?1", rusqlite::params![invitation.as_str(),i64::from(!required_only)]).unwrap();
+}
+
+#[test]
+fn invitation_rejection_refuses_required_upgrade_and_cancelled_or_retired_episode() {
+    for state in ["required", "required-accepted", "cancelled", "retired"] {
+        let (context, mut conn, path, _, thread, invitation) = rejection_offer();
+        let command = crate::protocol::commands::Reject {
+            thread: thread.clone(),
+            invitation: invitation.clone(),
+            reason: "Outside scope".into(),
+            operation: OperationId::new("reject"),
+            claim: claim("s2"),
+        };
+        match state {
+            "required" => rejection_required_upgrade(&mut conn, &thread, &invitation, false),
+            "required-accepted" => {
+                rejection_required_upgrade(&mut conn, &thread, &invitation, false);
+                conn.execute(
+                    "UPDATE invitations SET state='accepted',accepted_at=100,accepted_actor_seat_id='s2',accepted_generation=1,accepted_observation='cooperative_top_level:test' WHERE id=?1",
+                    [invitation.as_str()],
+                )
+                .unwrap();
+                conn.execute("UPDATE requirement_episodes SET state='accepted',accepted_at=100,accepted_by_seat_id='s2',accepted_generation=1,accepted_observation='cooperative_top_level:test',revision=revision+1",[]).unwrap();
+            }
+            "cancelled" => {
+                rejection_required_upgrade(&mut conn, &thread, &invitation, true);
+                conn.execute("UPDATE requirement_episodes SET state='released',revision=revision+1,released_at=100 WHERE id='requirement'", []).unwrap();
+                conn.execute("INSERT INTO invitation_cancellations(invitation_id,requirement_id,cancelled_at) VALUES (?1,'requirement',100)", [invitation.as_str()]).unwrap();
+            }
+            "retired" => {
+                conn.execute(
+                    "UPDATE invitations SET state='recipient_retired',retired_at=100 WHERE id=?1",
+                    [invitation.as_str()],
+                )
+                .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let error = rejection_call(&context, &mut conn, &command, 100).unwrap_err();
+        if state.starts_with("required") {
+            assert_eq!(error.code, ErrorCode::MembershipRequired);
+            assert!(
+                error.detail.contains("owner")
+                    && error.detail.contains("release requirement requirement")
+            );
+            assert_eq!(
+                conn.query_row("SELECT state FROM requirement_episodes", [], |r| r
+                    .get::<_, String>(0))
+                    .unwrap(),
+                if state == "required" {
+                    "pending"
+                } else {
+                    "accepted"
+                }
+            );
+        } else {
+            assert_eq!(error.code, ErrorCode::Conflict);
+        }
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM invitation_rejections", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn invitation_rejection_leaves_message_receipts_and_deadlines_unchanged() {
+    let (context, mut conn, path, _, thread, invitation) = rejection_offer();
+    conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','owed',?1,100,'ordinary','explicitly addressed',0,100)", [thread.as_str()]).unwrap();
+    conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('owed',?1,'s2','pending',300000,100,300100)", [thread.as_str()]).unwrap();
+    let command = crate::protocol::commands::Reject {
+        thread: thread.clone(),
+        invitation,
+        reason: "Outside role".into(),
+        operation: OperationId::new("reject"),
+        claim: claim("s2"),
+    };
+    rejection_call(&context, &mut conn, &command, 100).unwrap();
+    let receipt: (String,i64,Option<i64>,Option<String>) = conn.query_row("SELECT state,deadline_at,acked_at,ack_observation FROM receipts WHERE message_id='owed'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+    assert_eq!(receipt, ("pending".into(), 300100, None, None));
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM human_receipt_waivers", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn invitation_rejection_history_does_not_expand_due_scan_work() {
+    let (context, mut conn, path, _, thread, invitation) = rejection_offer();
+    // Fill retained terminal history without involving clocks or external processes.
+    conn.execute("WITH RECURSIVE n(v) AS (SELECT 2 UNION ALL SELECT v+1 FROM n WHERE v<2000) INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) SELECT 'history-'||v,?1,'s2',v,'pending',100,v,10,110 FROM n", [thread.as_str()]).unwrap();
+    conn.execute("INSERT INTO invitation_rejections(invitation_id,reason,rejected_at,actor_seat_id,generation,observation) SELECT id,'outside role',100,'s2',1,'cooperative_top_level:test' FROM invitations WHERE thread_id=?1",[thread.as_str()]).unwrap();
+    let mut statement = conn
+        .prepare(crate::store::invitation_due::INVITATION_DUE_SELECTION)
+        .unwrap();
+    let rows = statement
+        .query_map(rusqlite::params![i64::MIN, 0, 1], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(rows.is_empty());
+    let steps = statement.get_status(rusqlite::StatementStatus::VmStep);
+    assert!(
+        steps < 1000,
+        "terminal invitation history expanded due work: {steps} instructions"
+    );
+    drop(statement);
+    let selected =
+        crate::store::invitation_due::select_invitation_due_candidates(&conn, None, 1).unwrap();
+    let batch = crate::store::invitation_due::apply_invitation_due_candidates(
+        &context, &mut conn, selected,
+    )
+    .unwrap();
+    assert_eq!(batch.inspected, 0);
+    assert_eq!(batch.warnings_added, 0);
+    assert!(
+        conn.execute(
+            "UPDATE invitation_rejections SET reason='rewritten' WHERE invitation_id=?1",
+            [invitation.as_str()]
+        )
+        .is_err()
+    );
+    assert!(
+        conn.execute(
+            "DELETE FROM invitation_rejections WHERE invitation_id=?1",
+            [invitation.as_str()]
+        )
+        .is_err()
+    );
+    assert!(
+        conn.execute(
+            "UPDATE invitations SET reject_recorded=0 WHERE id=?1",
+            [invitation.as_str()]
+        )
+        .is_err()
+    );
+    assert_eq!(conn.query_row("SELECT count(*) FROM invitations WHERE reject_recorded<>EXISTS(SELECT 1 FROM invitation_rejections r WHERE r.invitation_id=invitations.id)",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn invitation_rejection_requires_recipient_current_top_level_binding() {
+    for invalid in ["subagent", "generation", "recipient", "target"] {
+        let (context, mut conn, path, _, thread, invitation) = rejection_offer();
+        let mut command = crate::protocol::commands::Reject {
+            thread,
+            invitation,
+            reason: "Outside role".into(),
+            operation: OperationId::new("reject"),
+            claim: claim("s2"),
+        };
+        match invalid {
+            "subagent" => command.claim.role = crate::protocol::authority::CallerRole::Subagent,
+            "generation" => command.claim.binding_generation += 1,
+            "recipient" => command.claim = claim("s1"),
+            "target" => command.claim.target = HostTargetId::new("unbound"),
+            _ => unreachable!(),
+        }
+        assert!(
+            rejection_call(&context, &mut conn, &command, 100).is_err(),
+            "accepted {invalid}"
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM invitation_rejections", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn invitation_rejection_restores_left_only_from_recorded_leave_evidence() {
+    for retain_evidence in [true, false] {
+        let (context, mut conn, path, _, thread, invitation) = rejection_offer();
+        rejection_accept(&context, &mut conn, &thread, &invitation).unwrap();
+        let budget = crate::protocol::time::CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        };
+        let command = Leave {
+            thread: thread.clone(),
+            operation: OperationId::new("leave"),
+            claim: claim("s2"),
+        };
+        let hash = cooperative_payload_hash("leave", &command).unwrap();
+        leave(
+            &context,
+            &mut conn,
+            &budget,
+            &command,
+            permit(
+                "s2",
+                "leave",
+                ObligationRef::Control(thread.clone()),
+                hash,
+                100,
+            ),
+        )
+        .unwrap();
+        if !retain_evidence {
+            // A legacy closed interval without its matching leave event is insufficient.
+            conn.execute("UPDATE membership_intervals SET left_seq=left_seq+1000 WHERE thread_id=?1 AND seat_id='s2'",[thread.as_str()]).unwrap();
+        }
+        let offer = Invite {
+            thread: thread.clone(),
+            seat: SeatId::new("s2"),
+            deadline_millis: Some(50),
+            operation: OperationId::new("reinvite"),
+            claim: claim("s1"),
+        };
+        let hash = cooperative_payload_hash("invite", &offer).unwrap();
+        let CommandResult::Invitation(fresh) = invite(
+            &context,
+            &mut conn,
+            &budget,
+            &offer,
+            permit(
+                "s1",
+                "reinvite",
+                ObligationRef::Control(thread.clone()),
+                hash,
+                100,
+            ),
+            None,
+        )
+        .unwrap() else {
+            panic!()
+        };
+        let before: i64 = conn
+            .query_row("SELECT count(*) FROM membership_intervals", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let rejection = crate::protocol::commands::Reject {
+            thread: thread.clone(),
+            invitation: fresh,
+            reason: "Outside current role".into(),
+            operation: OperationId::new("reject"),
+            claim: claim("s2"),
+        };
+        rejection_call(&context, &mut conn, &rejection, 100).unwrap();
+        let state:(String,Option<i64>) = conn.query_row("SELECT voluntary_state,left_at FROM memberships WHERE thread_id=?1 AND seat_id='s2'",[thread.as_str()],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!(
+            state,
+            if retain_evidence {
+                ("left".into(), Some(100))
+            } else {
+                ("absent".into(), None)
+            }
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM membership_intervals", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            before
+        );
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn invitation_rejection_human_retains_declared_human_provenance() {
+    let (context, mut conn, path, _, thread, invitation) =
+        rejection_offer_with_recipient_harness(Harness::Human);
+    let mut human = claim("s2");
+    human.harness = Harness::Human;
+    let command = crate::protocol::commands::Reject {
+        thread,
+        invitation,
+        reason: "Outside my topic".into(),
+        operation: OperationId::new("reject-human"),
+        claim: human,
+    };
+    let CommandResult::Rejected(result) =
+        rejection_call(&context, &mut conn, &command, 100).unwrap()
+    else {
+        panic!()
+    };
+    let observation: serde_json::Value = serde_json::from_str(&result.observation).unwrap();
+    assert_eq!(observation["provenance"], "operator_human");
+    assert_eq!(observation["harness"], "human");
+    assert_eq!(result.actor, SeatId::new("s2"));
     drop(conn);
     let _ = std::fs::remove_file(path);
 }

@@ -54,6 +54,10 @@ struct Fixture {
 
 impl Fixture {
     fn new(label: &str) -> Self {
+        Self::with_guards(label, false)
+    }
+
+    fn with_guards(label: &str, keep_guards: bool) -> Self {
         let iso = TestIsolation::new(label);
         let path = iso.state_root().join("store.db");
         let kicks = Arc::new(CommitKicks::default());
@@ -66,7 +70,7 @@ impl Fixture {
         .with_commit_kicks(Arc::clone(&kicks));
         // The raw rows below skip parents and the immutability triggers: the
         // subject here is the update hook, not the schema's own guards.
-        {
+        if !keep_guards {
             let db = store.writer(&budget()).unwrap();
             db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
             let triggers: Vec<String> = db
@@ -122,7 +126,8 @@ fn set(lanes: &[Lane]) -> LaneSet {
         .fold(LaneSet::EMPTY, |set, lane| set.with(*lane))
 }
 
-/// A minimal valid row per mapped table (foreign keys and triggers are off).
+/// A minimal row per mapped table. Rejections use their guarded setup below;
+/// the other rows isolate update hooks with foreign keys and triggers off.
 const INSERTS: &[(&str, &str)] = &[
     ("wake_work", "INSERT INTO wake_work(seat_id) VALUES ('s1')"),
     (
@@ -168,6 +173,10 @@ const INSERTS: &[(&str, &str)] = &[
     (
         "invitation_cancellations",
         "INSERT INTO invitation_cancellations(invitation_id,requirement_id,cancelled_at) VALUES ('inv','req',0)",
+    ),
+    (
+        "invitation_rejections",
+        "INSERT INTO invitation_rejections(invitation_id,reason,rejected_at,actor_seat_id,generation,observation) VALUES ('inv','outside role',100,'s1',0,'cooperative_top_level:test')",
     ),
     (
         "receipts",
@@ -308,6 +317,10 @@ fn each_table_kicks_exactly_its_lanes() {
         "every mapped table has an insert fixture"
     );
     for (table, insert) in INSERTS {
+        if *table == "invitation_rejections" {
+            rejection_kicks_with_guards(insert);
+            continue;
+        }
         let expected = lanes_for_table(table);
         assert_ne!(expected, LaneSet::EMPTY, "{table}");
         let first_column: String = fixture
@@ -341,6 +354,99 @@ fn each_table_kicks_exactly_its_lanes() {
     fixture.run(OPERATION_INSERT);
     assert_eq!(fixture.flushed(), vec![]);
     assert_eq!(fixture.count("request"), before + 1);
+}
+
+/// Rejections are retained facts, not mutable rows. Exercise the insert with
+/// its real parents and projection triggers, including the wake-batch cascade.
+fn rejection_kicks_with_guards(insert: &str) {
+    assert_eq!(
+        lanes_for_table("invitation_rejections"),
+        set(&[Lane::Deadlines])
+    );
+    for batched in [false, true] {
+        let fixture = Fixture::with_guards("kicks-rejection", true);
+        fixture.run("BEGIN;
+            INSERT INTO host_instances(id,created_at) VALUES ('i',0);
+            INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s1','i','unresolved','native',0,0);
+            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);
+            INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('inv','t','s1',1,'pending',1,0,30000,30000);
+            INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('w',2,'t',0,'s1','invitation','inv');
+            INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('w','s1',1);
+            COMMIT;");
+        if batched {
+            fixture.run("INSERT INTO wake_batches(seat_id,deadline_at) VALUES ('s1',30000)");
+        }
+        {
+            let db = fixture.store.writer(&budget()).unwrap();
+            for table in [
+                "digest_pending_invitations",
+                "digest_open_warnings",
+                "digest_open_warning_recipients",
+            ] {
+                assert_eq!(
+                    db.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row
+                        .get::<_, i64>(0))
+                        .unwrap(),
+                    1,
+                    "{table} starts pending"
+                );
+            }
+        }
+        fixture.flushed();
+        let before = fixture.count("request");
+        fixture.run(insert);
+        let expected = if batched {
+            set(&[Lane::Deadlines, Lane::Wakes])
+        } else {
+            set(&[Lane::Deadlines])
+        };
+        assert_eq!(
+            fixture.flushed(),
+            vec![(expected, None)],
+            "rejection insert, batched={batched}"
+        );
+        assert_eq!(fixture.count("request"), before + 1);
+        {
+            let db = fixture.store.writer(&budget()).unwrap();
+            assert_eq!(
+                db.query_row(
+                    "SELECT state,reject_recorded FROM invitations WHERE id='inv'",
+                    [],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                )
+                .unwrap(),
+                ("pending".into(), 1)
+            );
+            for table in [
+                "digest_pending_invitations",
+                "digest_open_warnings",
+                "digest_open_warning_recipients",
+                "wake_batches",
+            ] {
+                assert_eq!(
+                    db.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row
+                        .get::<_, i64>(0))
+                        .unwrap(),
+                    0,
+                    "{table} cleared by rejection"
+                );
+            }
+        }
+        for sql in [
+            "UPDATE invitation_rejections SET reason='rewritten' WHERE invitation_id='inv'",
+            "DELETE FROM invitation_rejections WHERE invitation_id='inv'",
+            "UPDATE invitations SET reject_recorded=0 WHERE id='inv'",
+        ] {
+            let db = fixture.store.writer(&budget()).unwrap();
+            assert!(
+                db.execute_batch(sql).is_err(),
+                "ledger and projection guards reject {sql}"
+            );
+            drop(db);
+            assert_eq!(fixture.flushed(), vec![], "refused mutation kicks nothing");
+            assert_eq!(fixture.count("request"), before + 1);
+        }
+    }
 }
 
 #[test]

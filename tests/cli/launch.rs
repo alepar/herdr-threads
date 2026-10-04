@@ -32,6 +32,7 @@ struct FakeHost {
     occupancy: StructuralOccupancy,
     submitted: Mutex<Vec<NativeLaunchRequest>>,
     unknown: bool,
+    confirmed_refusal: bool,
 }
 impl FakeHost {
     fn new() -> Self {
@@ -40,6 +41,7 @@ impl FakeHost {
             occupancy: StructuralOccupancy::Unknown,
             submitted: Mutex::new(Vec::new()),
             unknown: false,
+            confirmed_refusal: false,
         }
     }
     fn observation(&self) -> HostObservation {
@@ -107,6 +109,19 @@ impl HostPort for FakeHost {
         Ok(crate::ports::AgentComposerState::Submitted)
     }
 
+    fn launch_native_with_evidence(
+        &self,
+        request: NativeLaunchRequest,
+        context: &HostCallContext,
+    ) -> Result<NativeLaunchOutcome, crate::ports::NativeLaunchFailure> {
+        if self.confirmed_refusal {
+            return Err(crate::ports::NativeLaunchFailure::not_submitted(api(
+                ErrorCode::TargetUnsafe,
+                "confirmed busy",
+            )));
+        }
+        self.launch_native(request, context).map_err(Into::into)
+    }
     fn launch_native(
         &self,
         request: NativeLaunchRequest,
@@ -1519,4 +1534,76 @@ fn binding_record_outcomes_never_fail_the_launch() {
             out.report["binding"]
         );
     }
+}
+
+#[test]
+fn handoff_preflight_and_failed_durable_gate_never_submit_or_record_start() {
+    let scratch = Scratch::new();
+    scratch.harness("claude", "2.1.285 (Claude Code)", b"");
+    scratch.setup_claude();
+    let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
+    let clock = Clock0(AtomicU64::new(1));
+    let probe = FakeProbe(Ok(String::new()));
+    let parts = LaunchParts {
+        env: &scratch.env,
+        host: &host,
+        seats: &seats,
+        handoff: &handoff,
+        clock: &clock,
+        record_dir: Some(&scratch.root),
+        shell_probe: &probe,
+    };
+    let req = request(ContextHarness::Claude, &["bootstrap"]);
+    let ready =
+        execute_guarded(&req, &parts, true, &mut |_| panic!("preflight submitted")).unwrap();
+    assert_eq!(ready.report["seat"], "seat_launch");
+    let result = execute_guarded(&req, &parts, false, &mut |boundary| {
+        let LaunchBoundary::BeforeSubmit(native) = boundary else {
+            panic!("unexpected refusal boundary");
+        };
+        assert_eq!(native.seat.as_str(), "seat_launch");
+        Err(api(ErrorCode::StoreCorrupt, "durable fence failed"))
+    });
+    assert_eq!(code(result), ErrorCode::StoreCorrupt);
+    assert!(host.submitted().is_empty());
+    assert!(seats.recorded.lock().unwrap().is_empty());
+    assert!(scratch.records().is_empty());
+}
+
+#[test]
+fn handoff_native_launcher_checks_frozen_seat_and_propagates_confirmed_refusal() {
+    use crate::cli::handoff::{HandoffLauncher, NativeLauncher};
+    let scratch = Scratch::new();
+    scratch.harness("claude", "2.1.285 (Claude Code)", b"");
+    scratch.setup_claude();
+    let (mut host, seats, handoff) = (FakeHost::new(), seats(), handoff());
+    host.confirmed_refusal = true;
+    let clock = Clock0(AtomicU64::new(1));
+    let probe = FakeProbe(Ok(String::new()));
+    let parts = LaunchParts {
+        env: &scratch.env,
+        host: &host,
+        seats: &seats,
+        handoff: &handoff,
+        clock: &clock,
+        record_dir: Some(&scratch.root),
+        shell_probe: &probe,
+    };
+    let mut launcher = NativeLauncher { parts };
+    let req = request(ContextHarness::Claude, &["bootstrap"]);
+    let mut events = vec![];
+    let result = launcher.launch(&req, &SeatId::new("changed-seat"), &mut |possible| {
+        events.push(possible);
+        Ok(())
+    });
+    assert_eq!(code(result), ErrorCode::TargetUnsafe);
+    assert!(events.is_empty());
+    let result = launcher.launch(&req, &SeatId::new("seat_launch"), &mut |possible| {
+        events.push(possible);
+        Ok(())
+    });
+    assert_eq!(code(result), ErrorCode::TargetUnsafe);
+    assert_eq!(events, vec![true, false]);
+    assert!(host.submitted().is_empty());
+    assert!(scratch.records().is_empty());
 }

@@ -26,6 +26,12 @@ fn summary_commands_parse_to_typed_actions() {
         parsed.action,
         CliAction::Summary(SummaryCli::Summary { thread: thread() })
     );
+    let named = parse_argv(["herdr-threads", "summary", "tea party"]).unwrap();
+    assert_eq!(named.thread_selector.as_deref(), Some("tea party"));
+    assert!(matches!(
+        named.action,
+        CliAction::Summary(SummaryCli::Summary { .. })
+    ));
     let parsed = parse_argv(["herdr-threads", "summary", "job", "j1", "--lease", "l1"]).unwrap();
     assert_eq!(
         parsed.action,
@@ -50,7 +56,10 @@ fn malformed_summary_invocations_are_usage_errors() {
         vec!["herdr-threads", "summary"],
         vec!["herdr-threads", "summary", "job", "j1"],
         vec!["herdr-threads", "summary", "submit", "j1"],
-        vec!["herdr-threads", "summary", "bad id"],
+        vec!["herdr-threads", "summary", ""],
+        vec!["herdr-threads", "summary", "bad\nname"],
+        vec!["herdr-threads", "summary", "bad\u{2028}name"],
+        vec!["herdr-threads", "summary", "job", "bad id", "--lease", "l1"],
         vec![
             "herdr-threads",
             "summary",

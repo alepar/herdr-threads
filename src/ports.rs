@@ -1789,6 +1789,33 @@ pub enum NativeLaunchOutcome {
     },
     OutcomeUnknown,
 }
+/// Evidence produced by the adapter at its native submission boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeSubmission {
+    NotSubmitted,
+    Possible,
+}
+#[derive(Debug)]
+pub struct NativeLaunchFailure {
+    pub error: ApiError,
+    pub submission: NativeSubmission,
+}
+impl NativeLaunchFailure {
+    pub fn not_submitted(error: ApiError) -> Self {
+        Self {
+            error,
+            submission: NativeSubmission::NotSubmitted,
+        }
+    }
+}
+impl From<ApiError> for NativeLaunchFailure {
+    fn from(error: ApiError) -> Self {
+        Self {
+            error,
+            submission: NativeSubmission::Possible,
+        }
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeLaunchCapability {
     HostGuardedStart,
@@ -2796,6 +2823,14 @@ pub trait HostPort: Send + Sync {
         request: NativeLaunchRequest,
         context: &HostCallContext,
     ) -> Result<NativeLaunchOutcome, ApiError>;
+    /// Legacy adapters provide no proof that an error preceded submission.
+    fn launch_native_with_evidence(
+        &self,
+        request: NativeLaunchRequest,
+        context: &HostCallContext,
+    ) -> Result<NativeLaunchOutcome, NativeLaunchFailure> {
+        self.launch_native(request, context).map_err(Into::into)
+    }
     /// Read the pane's agent composer state after a wake send (Wave 28 verification).
     fn pane_agent_state(
         &self,

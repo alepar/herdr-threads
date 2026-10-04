@@ -1739,7 +1739,15 @@ fn durable_batch_uses_oldest_saturated_publication_and_clears_when_work_drains()
         db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES (?1,'t','s',?2,'pending',?3,?2,100000,100000)",params![format!("inv-{n}"),n,if n==1 {0}else{90}]).unwrap();
     }
     drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "i",
+        StoreSettings {
+            wake_batch_delay_ms: 30_000,
+            ..StoreSettings::default()
+        },
+    )
+    .unwrap();
     let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
         .unwrap()
         .items
@@ -1793,7 +1801,15 @@ fn canonical_batch_cleanup_clears_catch_up_holds_and_release_starts_new_window()
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('m','i','t',1,'ordinary','body',1,0);
         INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t','s','pending',100000);").unwrap();
     drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "i",
+        StoreSettings {
+            wake_batch_delay_ms: 30_000,
+            ..StoreSettings::default()
+        },
+    )
+    .unwrap();
     let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
         .unwrap()
         .items
@@ -1810,7 +1826,10 @@ fn canonical_batch_cleanup_clears_catch_up_holds_and_release_starts_new_window()
     let store = SqliteStore::new(
         StoreContext::new(path.clone(), Arc::new(WakeClock)),
         "i",
-        StoreSettings::default(),
+        StoreSettings {
+            wake_batch_delay_ms: 30_000,
+            ..StoreSettings::default()
+        },
     )
     .unwrap();
     assert_eq!(
@@ -1925,7 +1944,15 @@ fn batch_window_ignores_human_waived_receipts_and_clears_last_required_waiver() 
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('waived','i','t',1,'ordinary','body',1,0),('required','i','t',2,'ordinary','body',2,90);
         INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,ack_required) VALUES ('waived','t','s','pending',100000,0),('required','t','s','pending',100000,1);").unwrap();
     drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "i",
+        StoreSettings {
+            wake_batch_delay_ms: 30_000,
+            ..StoreSettings::default()
+        },
+    )
+    .unwrap();
     let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
         .unwrap()
         .items

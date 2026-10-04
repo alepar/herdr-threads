@@ -385,7 +385,7 @@ fn actionable(tx: &Connection, warning: &str, seat: &str) -> Result<bool, ApiErr
     match kind.as_str() {
         "invitation" => tx
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM invitations i WHERE i.id=?1 AND i.state='pending' AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id))",
+                "SELECT EXISTS(SELECT 1 FROM invitations i WHERE i.id=?1 AND i.state='pending' AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id))",
                 [condition],
                 |r| r.get(0),
             )

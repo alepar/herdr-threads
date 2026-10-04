@@ -18,6 +18,14 @@ pub struct ParsedCli {
     pub presentation: crate::cli::output::Presentation,
     pub action: CliAction,
     pub cooperative: Option<CooperativeSelection>,
+    /// Target/recipient locators; execution freezes IDs before journal submission.
+    pub pane_selector: Option<super::panes::PaneSelector>,
+    /// An omitted read selector denotes the caller, preserving own-inbox ACK eligibility.
+    pub caller_read_default: bool,
+    pub cooperative_selector: Option<super::panes::PaneSelector>,
+    /// Raw thread selector, consumed once before any daemon dispatch or journal.
+    pub thread_selector: Option<String>,
+    pub require_ack_panes: Vec<super::panes::PaneSelector>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +63,7 @@ pub enum CliAction {
     ),
     /// Managed native launch into one explicit existing empty shell pane.
     Launch(super::launch::LaunchRequest),
+    Handoff(super::handoff::HandoffRequest),
     /// `me init`: record the invoking pane as the person's own seat identity.
     /// `operator` overrides the agent-to-human guard (TRUST-POLICY A4).
     MeInit {
@@ -80,9 +89,44 @@ pub enum CliAction {
     /// `read THREAD --follow`: recent messages, then each new one as it is
     /// committed. Read-only: never ACKs or accepts.
     Follow(FollowRequest),
+    /// Human terminal discovery; never sent to the daemon.
+    Picker(PickerRequest),
     /// `summary THREAD`, `summary job`, `summary submit`: act as the invoking
     /// seat (cooperative claim from its saved context), never journaled.
     Summary(super::summary::SummaryCli),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickerRequest {
+    pub page: PageRequest,
+    pub initial: Option<HistoryRange>,
+    pub follow: bool,
+    pub no_system: bool,
+}
+impl PickerRequest {
+    pub fn selected(&self, thread: ThreadId) -> CliAction {
+        if self.follow {
+            CliAction::Follow(FollowRequest {
+                thread,
+                recent: match self.initial {
+                    Some(HistoryRange::Recent { count }) => count,
+                    _ => 0,
+                },
+                after: match self.initial {
+                    Some(HistoryRange::After { sequence }) => Some(sequence),
+                    _ => None,
+                },
+                no_system: self.no_system,
+            })
+        } else {
+            CliAction::Wire(WireCommand::History(HistoryQuery {
+                thread,
+                page: self.page.clone(),
+                initial: self.initial.clone(),
+                full_bodies: false,
+            }))
+        }
+    }
 }
 
 /// `read THREAD --follow` options.
@@ -140,6 +184,27 @@ pub fn dispatch<B: CliBackend>(
     claim: Option<CallerClaim>,
     operation: Option<OperationId>,
 ) -> Result<CommandResult, ApiError> {
+    if parsed.pane_selector.as_ref().is_some_and(|selector| {
+        selector.direct_id().is_none()
+            || matches!(
+                parsed.action,
+                CliAction::Wire(_) | CliAction::Mutation(MutationSpec::Invite { .. })
+            )
+    }) || !parsed.require_ack_panes.is_empty()
+        || parsed
+            .cooperative_selector
+            .as_ref()
+            .is_some_and(|selector| selector.direct_id().is_none())
+    {
+        return Err(invalid(
+            "pane selectors require runtime resolution before dispatch",
+        ));
+    }
+    if parsed.thread_selector.is_some() {
+        return Err(invalid(
+            "thread selectors require runtime resolution before dispatch",
+        ));
+    }
     let command = match parsed.action {
         CliAction::Wire(command) => command,
         CliAction::Mutation(mutation) => mutation.into_command(
@@ -165,11 +230,13 @@ pub fn dispatch<B: CliBackend>(
         CliAction::Setup(_)
         | CliAction::SetupAll(..)
         | CliAction::Launch(_)
+        | CliAction::Handoff(_)
         | CliAction::MeInit { .. }
         | CliAction::Skill
         | CliAction::ContractId { .. }
         | CliAction::HarnessVersionNormalize { .. }
         | CliAction::InternalJsonField { .. }
+        | CliAction::Picker(_)
         | CliAction::Follow(_)
         | CliAction::Summary(_) => {
             return Err(ApiError::unsupported(
@@ -184,8 +251,13 @@ pub fn dispatch<B: CliBackend>(
 pub enum MutationSpec {
     Resolve(HostTargetId),
     Create {
+        name: Option<String>,
         topic: String,
         goal: String,
+    },
+    Name {
+        thread: ThreadId,
+        name: Option<String>,
     },
     Topic {
         thread: ThreadId,
@@ -198,6 +270,11 @@ pub enum MutationSpec {
         operator: bool,
     },
     Accept(ThreadId),
+    Reject {
+        thread: ThreadId,
+        invitation: InvitationId,
+        reason: String,
+    },
     AcceptRequired {
         thread: ThreadId,
         invitation: InvitationId,
@@ -261,9 +338,16 @@ impl MutationSpec {
         };
         let command = match self {
             Self::Resolve(target) => WireCommand::ResolveSeat(ResolveSeat { target, operation }),
-            Self::Create { topic, goal } => WireCommand::CreateThread(CreateThread {
+            Self::Create { name, topic, goal } => WireCommand::CreateThread(CreateThread {
+                name,
                 topic,
                 goal,
+                operation,
+                claim: claim.unwrap(),
+            }),
+            Self::Name { thread, name } => WireCommand::SetThreadName(SetThreadName {
+                thread,
+                name,
                 operation,
                 claim: claim.unwrap(),
             }),
@@ -295,6 +379,17 @@ impl MutationSpec {
                 seat,
                 deadline_millis,
                 operation,
+            }),
+            Self::Reject {
+                thread,
+                invitation,
+                reason,
+            } => WireCommand::Reject(Reject {
+                thread,
+                invitation,
+                reason,
+                operation,
+                claim: claim.unwrap(),
             }),
             Self::Accept(thread) => WireCommand::Accept(Accept {
                 thread,
@@ -420,7 +515,7 @@ struct Cli {
     /// --cooperative-* options.
     #[arg(long, global = true)]
     cooperative_seat: Option<String>,
-    /// Herdr target ID bound to the cooperative seat.
+    /// Exact live pane ID or scoped name bound to the cooperative seat.
     #[arg(long, global = true)]
     cooperative_target: Option<String>,
     /// Agent harness making the cooperative call.
@@ -451,6 +546,14 @@ enum Top {
     },
     /// Accept an invitation to a thread.
     Accept { thread: String },
+    /// Reject an exact ordinary invitation with an explicit reason.
+    Reject {
+        thread: String,
+        #[arg(long)]
+        invitation: String,
+        #[arg(long)]
+        reason: String,
+    },
     /// Accept a service-required invitation with its exact revision.
     AcceptRequired {
         thread: String,
@@ -485,6 +588,9 @@ enum Top {
     /// List messages still waiting for ACKs.
     PendingReceipts(PendingReceiptsArgs),
     /// Read thread history or follow new messages; reading never ACKs.
+    #[command(
+        after_help = "Without THREAD, progressively browse recent threads across this instance, including archives and nonmembers. Type a fuzzy name/topic filter; arrows or Ctrl-N/P move, Enter reads the canonical ID, Esc/Ctrl-C cancel with exit 0. Requires stdin/stdout/stderr TTYs, usable TERM, and no agent/cooperative caller, --machine or --json. Agents and scripts must supply an exact thread ID or unique name.\n\nHuman author/recipient nicknames are relative to the live caller: alice, tryout/alice, project/tryout/alice. History and follow never ACK or accept."
+    )]
     Read(ReadArgs),
     /// Read a message body, including pages beyond its preview.
     Body(BodyArgs),
@@ -559,6 +665,9 @@ enum Top {
     /// registers, accepts or ACKs: the handoff is read through the hooks.
     #[command(after_help = super::launch::LAUNCH_HELP)]
     Launch(LaunchArgs),
+    /// Deliver one durable task, then start an agent in an explicit pane.
+    #[command(after_help = super::handoff::HANDOFF_HELP)]
+    Handoff(HandoffArgs),
     /// Your own identity as a person in this Herdr pane.
     Me {
         #[command(subcommand)]
@@ -662,8 +771,11 @@ enum MeSub {
 
 #[derive(Subcommand)]
 enum ThreadSub {
-    /// Create a thread with a topic and optional goal.
+    /// Create a thread with a topic, optional goal and exact name.
     Create {
+        /// Optional exact name (1..128 UTF-8 bytes, no controls; duplicates allowed).
+        #[arg(long)]
+        name: Option<String>,
         /// Initial topic shown in the thread directory.
         #[arg(long)]
         topic: String,
@@ -677,6 +789,16 @@ enum ThreadSub {
         #[arg(long = "set")]
         set: Option<String>,
     },
+    /// Show a thread name, set it, or clear it (THREAD accepts an exact ID or name).
+    Name {
+        thread: String,
+        #[arg(long, conflicts_with = "clear")]
+        set: Option<String>,
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Alias for thread name THREAD --set NAME.
+    Rename { thread: String, name: String },
     /// List threads, optionally filtered by membership or topic text.
     List(ThreadListArgs),
     /// Show a thread's topic, state and recent details.
@@ -703,8 +825,8 @@ enum SeatSub {
     },
     /// Resolve a pane to its seat; --new-seat creates a fresh operator seat.
     Resolve {
-        #[arg(long)]
-        pane: String,
+        #[command(flatten)]
+        selector: super::panes::PaneSelector,
         #[arg(long, requires = "operator")]
         new_seat: bool,
         #[arg(long, requires = "new_seat")]
@@ -719,8 +841,8 @@ enum SeatSub {
     /// Rebind a seat to a pane through explicit operator repair.
     Rebind {
         seat: String,
-        #[arg(long)]
-        pane: String,
+        #[command(flatten)]
+        selector: super::panes::PaneSelector,
         /// Retire the seat that owns the pane (NEW) and rebind this seat onto
         /// the pane in one step; NEW's pending obligations settle as
         /// recipient-retired and nothing moves from NEW to this seat.
@@ -813,6 +935,11 @@ struct PageArgs {
 }
 #[derive(Args)]
 struct ThreadListArgs {
+    /// Order by latest committed timeline activity.
+    #[arg(long)]
+    recent: bool,
+    #[command(flatten)]
+    selector: super::panes::PaneSelector,
     #[arg(long)]
     seat: Option<String>,
     #[arg(long, group = "membership")]
@@ -828,6 +955,8 @@ struct ThreadListArgs {
 }
 #[derive(Args)]
 struct InboxArgs {
+    #[command(flatten)]
+    selector: super::panes::PaneSelector,
     #[arg(long)]
     seat: Option<String>,
     #[command(flatten)]
@@ -835,11 +964,13 @@ struct InboxArgs {
 }
 #[derive(Args)]
 struct InviteArgs {
+    #[command(flatten)]
+    selector: super::panes::PaneSelector,
     /// Thread to invite the seat into.
     thread: String,
     /// Seat ID to invite.
     #[arg(long)]
-    seat: String,
+    seat: Option<String>,
     /// Invitation deadline in positive seconds.
     #[arg(long)]
     deadline: Option<u64>,
@@ -849,6 +980,8 @@ struct InviteArgs {
 }
 #[derive(Args)]
 struct SendArgs {
+    #[command(flatten)]
+    selector: super::panes::PaneSelector,
     /// Thread that receives the message.
     thread: String,
     /// Message body given directly on the command line.
@@ -863,6 +996,11 @@ struct SendArgs {
     /// Require an ACK from this seat; repeat for more seats.
     #[arg(long = "require-ack", num_args = 1.., action = ArgAction::Append)]
     require_ack: Vec<String>,
+    /// Require an ACK from one exact pane ID, label or live agent name; repeat
+    /// this option for each recipient. Uses --space/--tab scope; qualify conflicts.
+    /// Deduplicates with --require-ack seats without changing the sender.
+    #[arg(long = "require-ack-pane", action = ArgAction::Append)]
+    require_ack_pane: Vec<String>,
     /// ACK deadline in positive seconds.
     #[arg(long)]
     deadline: Option<u64>,
@@ -874,6 +1012,8 @@ struct SendArgs {
 }
 #[derive(Args)]
 struct PendingReceiptsArgs {
+    #[command(flatten)]
+    selector: super::panes::PaneSelector,
     #[arg(long)]
     seat: Option<String>,
     #[arg(long)]
@@ -883,6 +1023,8 @@ struct PendingReceiptsArgs {
 }
 #[derive(Args)]
 struct DiagnosticsArgs {
+    #[command(flatten)]
+    selector: super::panes::PaneSelector,
     #[arg(long)]
     seat: Option<String>,
     #[arg(long)]
@@ -892,6 +1034,8 @@ struct DiagnosticsArgs {
 }
 #[derive(Args)]
 struct WarningsArgs {
+    #[command(flatten)]
+    selector: super::panes::PaneSelector,
     #[arg(long)]
     seat: Option<String>,
     /// Show open conditions and actionable legacy warnings in this thread.
@@ -902,8 +1046,8 @@ struct WarningsArgs {
 }
 #[derive(Args)]
 struct ReadArgs {
-    /// Thread to read.
-    thread: String,
+    /// Thread to read; omitted opens the human terminal picker.
+    thread: Option<String>,
     /// Keep running: print the recent messages (default 20, or --recent N)
     /// oldest first, then each new message as it is committed, IRC style for
     /// a person and one record per line otherwise. Never ACKs or accepts;
@@ -967,10 +1111,8 @@ struct SetupArgs {
 
 #[derive(Args)]
 struct LaunchArgs {
-    /// Explicit existing Herdr pane at its interactive shell prompt (never
-    /// the focused pane).
-    #[arg(long, value_name = "PANE")]
-    pane: String,
+    #[command(flatten)]
+    selector: super::panes::PaneSelector,
     /// Native agent to start.
     #[arg(long, value_parser = ["claude", "codex"])]
     kind: String,
@@ -986,6 +1128,35 @@ struct LaunchArgs {
     /// Native agent arguments, kept byte for byte and in order after `--`.
     #[arg(last = true, allow_hyphen_values = true, value_name = "AGENT_ARG")]
     agent_args: Vec<String>,
+}
+
+#[derive(Args)]
+struct HandoffArgs {
+    #[command(flatten)]
+    selector: super::panes::PaneSelector,
+    #[arg(long, required_unless_present = "thread", conflicts_with = "thread")]
+    new_thread: bool,
+    #[arg(long)]
+    thread: Option<String>,
+    #[arg(long, requires = "new_thread")]
+    thread_name: Option<String>,
+    #[arg(long, requires = "new_thread")]
+    topic: Option<String>,
+    #[arg(long, requires = "new_thread")]
+    goal: Option<String>,
+    #[arg(long, value_parser = ["claude", "codex"])]
+    kind: String,
+    #[arg(long)]
+    harness_binary: Option<String>,
+    /// Herdr agent name, distinct from --thread-name.
+    #[arg(long)]
+    name: Option<String>,
+    /// Repeat for each native argument (use --agent-arg=-a for flags).
+    #[arg(long = "agent-arg", allow_hyphen_values = true)]
+    agent_args: Vec<String>,
+    /// Exactly one quoted durable message after --; never native argv.
+    #[arg(last = true, required = true, num_args = 1, allow_hyphen_values = true)]
+    body: String,
 }
 
 #[derive(Args)]
@@ -1110,16 +1281,12 @@ fn digest_reference(value: &str) -> Option<(&str, &str)> {
     let (item, thread) = value.split_once('@')?;
     (!item.is_empty() && !thread.is_empty() && !thread.contains('@')).then_some((item, thread))
 }
-/// A thread argument. The digest form is refused as invalid arguments naming
-/// the bare thread ID to pass, never looked up (a lookup of the whole string
-/// reported a misleading `current invitation missing (not_found)`).
+/// Validate a public thread selector while keeping UTF-8 names outside the
+/// opaque ID type. Runtime lookup precedes any digest-reference misuse hint.
 fn thread_id(value: String) -> Result<ThreadId, ApiError> {
-    if let Some((_, thread)) = digest_reference(&value) {
-        return Err(invalid(format!(
-            "`{value}` is an attention digest item (ITEM@THREAD), not a thread ID; pass the bare thread ID `{thread}`, for example `herdr-threads accept {thread}`"
-        )));
-    }
-    id(value, ThreadId::parse)
+    validate_thread_name(&value).map_err(validation_error)?;
+    // UTF-8/space selectors stay in ParsedCli, never in the opaque-ID type.
+    Ok(ThreadId::parse(value).unwrap_or_else(|_| ThreadId::new("unresolved-thread-selector")))
 }
 /// A message argument; the digest form is refused naming the bare message ID.
 fn message_id(value: String) -> Result<MessageId, ApiError> {
@@ -1246,7 +1413,18 @@ fn single_global(flag: &str, values: Vec<String>) -> Result<Option<String>, ApiE
     }
 }
 
+fn locator_hint(value: String) -> HostTargetId {
+    HostTargetId::parse(value).unwrap_or_else(|_| HostTargetId::new("pending-pane-selector"))
+}
+
 fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
+    let cooperative_selector =
+        cli.cooperative_target
+            .as_ref()
+            .map(|target| super::panes::PaneSelector {
+                pane: Some(target.clone()),
+                ..Default::default()
+            });
     let cooperative = match (
         cli.cooperative_seat,
         cli.cooperative_target,
@@ -1256,7 +1434,7 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
         (None, None, None, None) => None,
         (Some(seat), Some(target), Some(harness), Some(role)) => Some(CooperativeSelection {
             seat: id(seat, SeatId::parse)?,
-            target: id(target, HostTargetId::parse)?,
+            target: locator_hint(target),
             harness: if harness == "codex" {
                 crate::harness::context::Harness::Codex
             } else {
@@ -1286,11 +1464,144 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
         },
     };
     output.validate().map_err(invalid)?;
+    if let Top::Thread {
+        command: ThreadSub::List(args),
+    } = &cli.command
+        && args.all
+        && args.selector.is_explicit()
+    {
+        return Err(invalid(
+            "--all conflicts with pane selectors; use the unfiltered instance directory or one pane's memberships",
+        ));
+    }
+    let caller_read_default = match &cli.command {
+        Top::Thread {
+            command: ThreadSub::List(args),
+        } => args.seat.is_none() && !args.selector.is_explicit() && !args.all,
+        Top::Inbox(args) => args.seat.is_none() && !args.selector.is_explicit(),
+        Top::PendingReceipts(args) => {
+            args.seat.is_none() && !args.selector.is_explicit() && args.thread.is_none()
+        }
+        Top::Diagnostics(args) => {
+            args.seat.is_none() && !args.selector.is_explicit() && args.thread.is_none()
+        }
+        Top::Warnings(args) => {
+            args.seat.is_none() && !args.selector.is_explicit() && args.active.is_none()
+        }
+        _ => false,
+    };
+    let selected = match &cli.command {
+        Top::Seat {
+            command: SeatSub::Resolve {
+                selector, new_seat, ..
+            },
+        } => {
+            if *new_seat && selector.pane.is_none() {
+                return Err(invalid("fresh-seat repair requires --pane PANE"));
+            }
+            Some(selector.clone())
+        }
+        Top::Seat {
+            command: SeatSub::Rebind { selector, .. },
+        }
+        | Top::Launch(LaunchArgs { selector, .. })
+        | Top::Handoff(HandoffArgs { selector, .. }) => {
+            if selector.pane.is_none() {
+                return Err(invalid("launch, handoff and rebind require --pane PANE"));
+            }
+            Some(selector.clone())
+        }
+        Top::Invite(args) => {
+            if args.seat.is_some() && args.selector.is_explicit() {
+                return Err(invalid("--seat conflicts with pane selectors"));
+            }
+            args.seat.is_none().then(|| args.selector.clone())
+        }
+        Top::Inbox(InboxArgs { selector, seat, .. })
+        | Top::PendingReceipts(PendingReceiptsArgs { selector, seat, .. })
+        | Top::Diagnostics(DiagnosticsArgs { selector, seat, .. })
+        | Top::Warnings(WarningsArgs { selector, seat, .. })
+        | Top::Thread {
+            command: ThreadSub::List(ThreadListArgs { selector, seat, .. }),
+        } => {
+            if seat.is_some() && selector.is_explicit() {
+                return Err(invalid("--seat conflicts with pane selectors"));
+            }
+            // An omitted selector reads as the caller's seat through the daemon's
+            // canonical mapping, even when Herdr is unavailable (C4). Only an
+            // explicit human locator needs a live topology read.
+            selector.is_explicit().then(|| selector.clone())
+        }
+        Top::Send(args) => {
+            if args.selector.pane.is_some() {
+                return Err(invalid("send uses --require-ack-pane PANE"));
+            }
+            if args.selector.is_explicit() && args.require_ack_pane.is_empty() {
+                return Err(invalid("send parents require --require-ack-pane"));
+            }
+            None
+        }
+        _ => None,
+    };
+    if let Top::Warnings(args) = &cli.command
+        && args.active.is_some()
+        && args.selector.is_explicit()
+    {
+        return Err(invalid("--active conflicts with pane selectors"));
+    }
+    let require_ack_panes = match &cli.command {
+        Top::Send(args) => {
+            if args.require_ack.len() + args.require_ack_pane.len() > MAX_BATCH_ITEMS {
+                return Err(invalid("too many explicit recipients"));
+            }
+            args.require_ack_pane
+                .iter()
+                .map(|pane| super::panes::PaneSelector {
+                    pane: Some(pane.clone()),
+                    ..args.selector.clone()
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    let thread_selector = match &cli.command {
+        Top::Thread {
+            command:
+                ThreadSub::Topic { thread, .. }
+                | ThreadSub::Name { thread, .. }
+                | ThreadSub::Rename { thread, .. }
+                | ThreadSub::Show { thread, .. }
+                | ThreadSub::Participants { thread, .. },
+        } => Some(thread.clone()),
+        Top::Participants { thread, .. }
+        | Top::Accept { thread }
+        | Top::Reject { thread, .. }
+        | Top::AcceptRequired { thread, .. }
+        | Top::Leave { thread }
+        | Top::Archive { thread }
+        | Top::Reopen { thread } => Some(thread.clone()),
+        Top::Handoff(args) => args.thread.clone(),
+        Top::Invite(args) => Some(args.thread.clone()),
+        Top::Send(args) => Some(args.thread.clone()),
+        Top::Read(args) => args.thread.clone(),
+        Top::PendingReceipts(args) => args.thread.clone(),
+        Top::Diagnostics(args) => args.thread.clone(),
+        Top::Warnings(args) => args.active.clone(),
+        Top::Search(args) => args.thread.clone(),
+        Top::Summary(args) => args.thread.clone(),
+        _ => None,
+    };
     let action = match cli.command {
         Top::Thread { command } => match command {
-            ThreadSub::Create { topic, goal } => {
+            ThreadSub::Create { name, topic, goal } => {
                 let goal = goal.unwrap_or_else(|| topic.clone());
                 CliAction::Mutation(MutationSpec::Create {
+                    name: name
+                        .map(|name| {
+                            validate_thread_name(&name).map_err(validation_error)?;
+                            Ok::<_, ApiError>(name)
+                        })
+                        .transpose()?,
                     topic: bounded(topic, "topic")?,
                     goal: bounded(goal, "goal")?,
                 })
@@ -1309,7 +1620,26 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
                     caller: None,
                 }))
             }
+            ThreadSub::Name { thread, set, clear } => {
+                let thread = thread_id(thread)?;
+                if clear || set.is_some() {
+                    if let Some(name) = &set {
+                        validate_thread_name(name).map_err(validation_error)?;
+                    }
+                    CliAction::Mutation(MutationSpec::Name { thread, name: set })
+                } else {
+                    CliAction::Wire(WireCommand::ThreadName(ThreadNameQuery { thread }))
+                }
+            }
+            ThreadSub::Rename { thread, name } => {
+                validate_thread_name(&name).map_err(validation_error)?;
+                CliAction::Mutation(MutationSpec::Name {
+                    thread: thread_id(thread)?,
+                    name: Some(name),
+                })
+            }
             ThreadSub::List(args) => CliAction::Wire(WireCommand::Directory(DirectoryQuery {
+                recent: args.recent,
                 membership: args.seat.map(|s| id(s, SeatId::parse)).transpose()?,
                 membership_filter: if args.joined {
                     DirectoryMembership::Joined
@@ -1340,7 +1670,10 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
         },
         Top::Invite(args) => CliAction::Mutation(MutationSpec::Invite {
             thread: thread_id(args.thread)?,
-            seat: id(args.seat, SeatId::parse)?,
+            seat: id(
+                args.seat.unwrap_or_else(|| "pending-pane-selector".into()),
+                SeatId::parse,
+            )?,
             deadline_millis: deadline(args.deadline)?,
             operator: args.operator,
         }),
@@ -1352,6 +1685,18 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
             }))
         }
         Top::Accept { thread } => CliAction::Mutation(MutationSpec::Accept(thread_id(thread)?)),
+        Top::Reject {
+            thread,
+            invitation,
+            reason,
+        } => {
+            validate_rejection_reason(&reason).map_err(invalid)?;
+            CliAction::Mutation(MutationSpec::Reject {
+                thread: thread_id(thread)?,
+                invitation: id(invitation, InvitationId::parse)?,
+                reason,
+            })
+        }
         Top::AcceptRequired {
             thread,
             invitation,
@@ -1417,7 +1762,11 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
             seat: args.seat.map(|s| id(s, SeatId::parse)).transpose()?,
             page: page(args.page)?,
         })),
-        Top::Warnings(args) => match (args.seat, args.active) {
+        Top::Warnings(args) => match (
+            args.seat
+                .or_else(|| selected.as_ref().map(|_| "pending-pane-selector".into())),
+            args.active,
+        ) {
             (Some(seat), None) => CliAction::Wire(WireCommand::Warnings(WarningsQuery {
                 seat: id(seat, SeatId::parse)?,
                 page: page(args.page)?,
@@ -1428,7 +1777,11 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
                     page: page(args.page)?,
                 },
             )),
-            _ => return Err(invalid("warnings require --seat SEAT or --active THREAD")),
+            (None, None) => CliAction::Wire(WireCommand::Warnings(WarningsQuery {
+                seat: SeatId::new("pending-pane-selector"),
+                page: page(args.page)?,
+            })),
+            _ => return Err(invalid("warnings cannot combine seat and active thread")),
         },
         Top::CheckIn(args) => CliAction::Mutation(match args.lifecycle_event {
             Some(event_id) => MutationSpec::CheckInLifecycle {
@@ -1448,6 +1801,45 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
                 page: page(args.page)?,
             }))
         }
+        Top::Read(args) if args.thread.is_none() => {
+            if args.page.cursor.is_some() {
+                return Err(invalid(
+                    "bare read cannot use a history cursor; select a thread explicitly",
+                ));
+            }
+            if args.recent.is_some() && args.page.limit.is_some() {
+                return Err(invalid("recent conflicts with limit"));
+            }
+            let initial = args
+                .after
+                .map(|sequence| HistoryRange::After { sequence })
+                .or_else(|| {
+                    args.before
+                        .map(|sequence| HistoryRange::Before { sequence })
+                })
+                .or_else(|| {
+                    Some(HistoryRange::Recent {
+                        count: args
+                            .recent
+                            .unwrap_or(args.page.limit.unwrap_or(FOLLOW_DEFAULT_RECENT)),
+                    })
+                });
+            let mut page = page(args.page)?;
+            if let Some(HistoryRange::Recent { count }) = initial {
+                if count > crate::protocol::pagination::MAX_PAGE_LIMIT
+                    || (!args.follow && count == 0)
+                {
+                    return Err(validation_error("invalid recent history count"));
+                }
+                page.limit = count.max(1);
+            }
+            CliAction::Picker(PickerRequest {
+                page,
+                initial,
+                follow: args.follow,
+                no_system: args.no_system,
+            })
+        }
         Top::Read(args) if args.follow => {
             let recent = args.recent.unwrap_or(if args.after.is_some() {
                 0
@@ -1458,7 +1850,7 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
                 return Err(validation_error("invalid recent history count"));
             }
             CliAction::Follow(FollowRequest {
-                thread: thread_id(args.thread)?,
+                thread: thread_id(args.thread.expect("explicit read branch"))?,
                 recent,
                 after: args.after,
                 no_system: args.no_system,
@@ -1486,7 +1878,7 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
                 page.limit = count;
             }
             CliAction::Wire(WireCommand::History(HistoryQuery {
-                thread: thread_id(args.thread)?,
+                thread: thread_id(args.thread.expect("explicit read branch"))?,
                 page,
                 initial,
                 full_bodies: false,
@@ -1516,12 +1908,18 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
                 include_retired,
             })),
             SeatSub::Resolve {
-                pane,
+                selector,
                 new_seat: true,
                 ..
-            } => CliAction::Mutation(MutationSpec::FreshSeat(id(pane, HostTargetId::parse)?)),
-            SeatSub::Resolve { pane, .. } => {
-                CliAction::Mutation(MutationSpec::Resolve(id(pane, HostTargetId::parse)?))
+            } => CliAction::Mutation(MutationSpec::FreshSeat(locator_hint(
+                selector.pane.expect("explicit pane validated"),
+            ))),
+            SeatSub::Resolve { selector, .. } => {
+                CliAction::Mutation(MutationSpec::Resolve(locator_hint(
+                    selector
+                        .pane
+                        .unwrap_or_else(|| "pending-caller-selector".into()),
+                )))
             }
             SeatSub::Inspect { seat, page: args } => {
                 CliAction::Wire(WireCommand::SeatInspect(SeatInspectQuery {
@@ -1536,7 +1934,7 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
             }
             SeatSub::Rebind {
                 seat,
-                pane,
+                selector,
                 replace,
                 operator,
             } => {
@@ -1544,7 +1942,7 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
                     return Err(invalid("operator required"));
                 }
                 let seat = id(seat, SeatId::parse)?;
-                let pane = id(pane, HostTargetId::parse)?;
+                let pane = locator_hint(selector.pane.expect("explicit pane validated"));
                 CliAction::Mutation(match replace {
                     Some(replace) => MutationSpec::Replace {
                         seat,
@@ -1658,12 +2056,51 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
                 )));
             }
             CliAction::Launch(super::launch::LaunchRequest {
-                target: id(args.pane, HostTargetId::parse)?,
+                target: locator_hint(args.selector.pane.expect("explicit pane validated")),
                 harness,
                 harness_binary: args.harness_binary,
                 argv: args.agent_args,
                 name: args.name,
                 pane_label: None,
+            })
+        }
+        Top::Handoff(args) => {
+            if !args.new_thread
+                && (args.thread_name.is_some() || args.topic.is_some() || args.goal.is_some())
+            {
+                return Err(invalid(
+                    "--thread-name, --topic and --goal require --new-thread",
+                ));
+            }
+            if args
+                .name
+                .as_ref()
+                .is_some_and(|name| crate::ports::sanitize_agent_name(name).is_none())
+            {
+                return Err(invalid("invalid agent --name"));
+            }
+            if let Some(name) = &args.thread_name {
+                validate_thread_name(name).map_err(validation_error)?;
+            }
+            let body = bounded(args.body, "body")?;
+            CliAction::Handoff(super::handoff::HandoffRequest {
+                thread: args.thread.map(thread_id).transpose()?,
+                thread_name: args.thread_name,
+                topic: args.topic.map(|s| bounded(s, "topic")).transpose()?,
+                goal: args.goal.map(|s| bounded(s, "goal")).transpose()?,
+                body,
+                launch: super::launch::LaunchRequest {
+                    target: locator_hint(args.selector.pane.expect("explicit pane validated")),
+                    harness: if args.kind == "codex" {
+                        crate::harness::context::Harness::Codex
+                    } else {
+                        crate::harness::context::Harness::Claude
+                    },
+                    harness_binary: args.harness_binary,
+                    argv: args.agent_args,
+                    name: args.name,
+                    pane_label: None,
+                },
             })
         }
         Top::PendingOps(args) => CliAction::PendingOps(page(args)?),
@@ -1743,6 +2180,11 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
         },
         action,
         cooperative,
+        pane_selector: selected,
+        caller_read_default,
+        cooperative_selector,
+        require_ack_panes,
+        thread_selector,
     })
 }
 

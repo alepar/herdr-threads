@@ -266,7 +266,7 @@ fn hundred_message_page_resolves_names_once() {
     let mut fx = fixture(standard_daemon(hundred_messages()));
     let text = read_page(&mut fx);
     assert!(text.contains("pane-name-0"), "{text}");
-    assert!(text.contains("tab-name-8"), "{text}");
+    assert!(text.contains(target(8).as_str()), "{text}");
     assert_eq!(fx.fake.calls(CallKind::SeatInspect), 0);
     assert!(fx.fake.calls(CallKind::Participants) <= 1);
     assert!(fx.fake.calls(CallKind::PaneNames) <= 1);
@@ -328,4 +328,303 @@ fn rendered_transcript_is_unchanged() {
         actual, expected,
         "transcript bytes changed (HT_BLESS=1 rewrites)"
     );
+}
+
+#[test]
+fn relative_nick_missing_pane_label_retains_pane_id() {
+    let mut fx = fixture(standard_daemon(hundred_messages()));
+    fx.cache.panes = Some((
+        Instant::now(),
+        vec![PaneName {
+            target: target(8),
+            label: None,
+            tab_label: Some("tryout".into()),
+            tab_pane_count: 1,
+        }],
+    ));
+    let shown = fx.cache.pane_label(
+        target(8).as_str(),
+        &budget(fx.cache.clock.as_ref(), 2000, &Cancellation::default()),
+    );
+    assert_eq!(
+        shown.as_deref(),
+        Some(target(8).as_str()),
+        "relative nicks must retain the pane component instead of substituting a tab alias"
+    );
+}
+
+struct ScopedPanes {
+    labels: Arc<Mutex<Option<Vec<SeatHostLabels>>>>,
+}
+impl PaneNameSource for ScopedPanes {
+    fn pane_names(&self, _: &CallBudget) -> Result<Vec<PaneName>, ApiError> {
+        panic!("scope source must use one snapshot")
+    }
+    fn seat_labels(&self, _: &CallBudget) -> Result<Option<Vec<SeatHostLabels>>, ApiError> {
+        self.labels
+            .lock()
+            .unwrap()
+            .clone()
+            .map(Some)
+            .ok_or_else(|| ApiError::host_unavailable("host offline"))
+    }
+}
+fn scoped_labels(index: usize, workspace: &str, tab: &str) -> SeatHostLabels {
+    SeatHostLabels {
+        terminal: "test-terminal".into(),
+        incarnation: None,
+        target: target(index),
+        workspace_id: workspace.into(),
+        workspace_label: Some("project".into()),
+        tab_id: tab.into(),
+        tab_label: Some("tryout".into()),
+        pane_label: Some("alice".into()),
+    }
+}
+#[test]
+fn relative_nick_scope_uses_ids_refreshes_caller_move_and_survives_host_failure() {
+    let mut fx = fixture(standard_daemon(hundred_messages()));
+    let labels = Arc::new(Mutex::new(Some(vec![
+        scoped_labels(0, "w1", "t1"),
+        scoped_labels(1, "w1", "t2"),
+        scoped_labels(2, "w2", "t1"),
+    ])));
+    fx.cache.host = Box::new(ScopedPanes {
+        labels: Arc::clone(&labels),
+    });
+    fx.cache = fx.cache.with_caller(Some(target(0).as_str()));
+    let shown = read_page(&mut fx);
+    assert!(shown.contains("<alice>"), "{shown}");
+    assert!(shown.contains("<tryout/alice>"), "{shown}");
+    assert!(
+        shown.contains("<project/tryout/alice>"),
+        "equal labels must not erase distinct canonical parents: {shown}"
+    );
+    let mut moved = labels.lock().unwrap();
+    moved.as_mut().unwrap()[0].workspace_id = "w2".into();
+    drop(moved);
+    fx.cache.panes = None;
+    let shown = read_page(&mut fx);
+    assert!(shown.contains("<project/tryout/alice>"));
+    assert_eq!(fx.cache.nicks.get(&seat(2)).unwrap().1.name, "alice");
+    *labels.lock().unwrap() = None;
+    fx.cache.panes = None;
+    let shown = read_page(&mut fx);
+    assert!(shown.contains("message number 100"));
+    assert!(!shown.contains("<project/tryout/alice>"));
+}
+#[test]
+fn relative_nick_missing_scope_labels_and_event_recipient_keep_ids_and_readonly() {
+    let mut warning = message(1, seat(0));
+    warning.kind = MessageKind::Warn;
+    warning.preview_data = format!(
+        "{{\"obligation\":\"receipt\",\"seat\":\"{}\"}}",
+        seat(1).as_str()
+    );
+    let mut fx = fixture(standard_daemon(vec![warning]));
+    let mut recipient = scoped_labels(1, "w1", "t2");
+    recipient.tab_label = None;
+    recipient.pane_label = None;
+    let labels = Arc::new(Mutex::new(Some(vec![
+        scoped_labels(0, "w1", "t1"),
+        recipient,
+    ])));
+    fx.cache.host = Box::new(ScopedPanes { labels });
+    fx.cache = fx.cache.with_caller(Some(target(0).as_str()));
+    let shown = read_page(&mut fx);
+    assert!(
+        shown.contains(&format!("t2/{} is overdue", target(1).as_str())),
+        "{shown}"
+    );
+    assert_eq!(fx.fake.calls(CallKind::History), 1);
+    assert!(fx.fake.calls(CallKind::SeatInspect) <= 1);
+    assert_eq!(fx.fake.calls(CallKind::Message), 0);
+}
+
+#[test]
+fn relative_nick_follow_refreshes_live_scope_without_changing_machine_ids() {
+    let mut fx = fixture(standard_daemon(hundred_messages()));
+    let labels = Arc::new(Mutex::new(Some(vec![
+        scoped_labels(0, "w1", "t1"),
+        scoped_labels(1, "w1", "t2"),
+    ])));
+    fx.cache.host = Box::new(ScopedPanes {
+        labels: Arc::clone(&labels),
+    });
+    fx.cache = fx.cache.with_caller(Some(target(0).as_str()));
+    let spec = OutputSpec {
+        format: OutputFormat::Text,
+        context: ContinuationContext::default(),
+    };
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    let mut printer = Printer {
+        form: Form::Human,
+        style: Style::plain(),
+        no_system: false,
+        writer: &mut out,
+        errors: &mut errors,
+    };
+    printer
+        .message(&message(1, seat(1)), fx.fake.as_ref(), &mut fx.cache, &spec)
+        .unwrap();
+    labels.lock().unwrap().as_mut().unwrap()[0].tab_id = "t2".into();
+    fx.cache.panes = None;
+    printer
+        .message(&message(2, seat(1)), fx.fake.as_ref(), &mut fx.cache, &spec)
+        .unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(
+        text.lines().nth(1).unwrap().contains("<alice>"),
+        "follow must refresh cached relative scope: {text}"
+    );
+    let mut out = Vec::new();
+    let mut printer = Printer {
+        form: Form::Lines,
+        style: Style::plain(),
+        no_system: false,
+        writer: &mut out,
+        errors: &mut errors,
+    };
+    let before = fx.fake.calls(CallKind::SeatInspect);
+    printer
+        .message(&message(3, seat(1)), fx.fake.as_ref(), &mut fx.cache, &spec)
+        .unwrap();
+    assert!(String::from_utf8(out).unwrap().contains(seat(1).as_str()));
+    assert_eq!(fx.fake.calls(CallKind::SeatInspect), before);
+}
+
+struct MovingCallerState {
+    current: Option<HostTargetId>,
+    labels: Vec<SeatHostLabels>,
+    hints: Vec<String>,
+    snapshots: usize,
+}
+struct MovingCallerPanes(Arc<Mutex<MovingCallerState>>);
+impl PaneNameSource for MovingCallerPanes {
+    fn pane_names(&self, _: &CallBudget) -> Result<Vec<PaneName>, ApiError> {
+        panic!("scoped snapshot required")
+    }
+    fn current_pane(&self, hint: &str, _: &CallBudget) -> Result<HostTargetId, ApiError> {
+        let mut state = self.0.lock().unwrap();
+        state.hints.push(hint.into());
+        state
+            .current
+            .clone()
+            .ok_or_else(|| ApiError::host_unavailable("caller lookup outage"))
+    }
+    fn seat_labels(&self, _: &CallBudget) -> Result<Option<Vec<SeatHostLabels>>, ApiError> {
+        let mut state = self.0.lock().unwrap();
+        state.snapshots += 1;
+        Ok(Some(state.labels.clone()))
+    }
+}
+fn moving_caller_fixture(
+    current: Option<HostTargetId>,
+    labels: Vec<SeatHostLabels>,
+    author_target: HostTargetId,
+) -> (Fixture, Arc<Mutex<MovingCallerState>>) {
+    let mut daemon = standard_daemon(hundred_messages());
+    daemon.seats[1].target = Some(author_target);
+    let mut fx = fixture(daemon);
+    let state = Arc::new(Mutex::new(MovingCallerState {
+        current,
+        labels,
+        hints: Vec::new(),
+        snapshots: 0,
+    }));
+    fx.cache.host = Box::new(MovingCallerPanes(Arc::clone(&state)));
+    fx.cache = fx.cache.with_caller(Some("w1:p0"));
+    (fx, state)
+}
+#[test]
+fn relative_nick_live_caller_qualified_id_move_reuses_original_hint_with_bounded_lookups() {
+    let mut author = scoped_labels(1, "w2", "t2");
+    author.target = HostTargetId::new("w2:p1");
+    let (mut fx, state) = moving_caller_fixture(
+        Some(target(0)),
+        vec![scoped_labels(0, "w1", "t1"), author.clone()],
+        author.target,
+    );
+    read_page(&mut fx);
+    assert_eq!(
+        fx.cache.nicks.get(&seat(1)).unwrap().1.name,
+        "project/tryout/alice"
+    );
+    read_page(&mut fx);
+    assert_eq!(
+        state.lock().unwrap().hints.len(),
+        1,
+        "cached100-message reads must not re-resolve per message/page"
+    );
+    let mut caller = scoped_labels(0, "w2", "t2");
+    caller.target = HostTargetId::new("w2:p0");
+    {
+        let mut state = state.lock().unwrap();
+        state.current = Some(caller.target.clone());
+        state.labels[0] = caller;
+    }
+    fx.cache.panes = None;
+    read_page(&mut fx);
+    assert_eq!(
+        fx.cache.nicks.get(&seat(1)).unwrap().1.name,
+        "alice",
+        "cross-workspace move changes qualified caller ID"
+    );
+    let state = state.lock().unwrap();
+    assert_eq!(state.hints, vec!["w1:p0", "w1:p0"]);
+    assert_eq!(state.snapshots, 2);
+}
+#[test]
+fn relative_nick_live_caller_initial_outage_recovers_with_unchanged_labels() {
+    let (mut fx, state) = moving_caller_fixture(
+        None,
+        vec![scoped_labels(0, "w1", "t1"), scoped_labels(1, "w1", "t1")],
+        target(1),
+    );
+    read_page(&mut fx);
+    assert_eq!(
+        fx.cache.nicks.get(&seat(1)).unwrap().1.name,
+        "project/tryout/alice"
+    );
+    state.lock().unwrap().current = Some(target(0));
+    fx.cache.panes = None;
+    read_page(&mut fx);
+    assert_eq!(
+        fx.cache.nicks.get(&seat(1)).unwrap().1.name,
+        "alice",
+        "initial caller lookup failure must recover at bounded refresh"
+    );
+    let state = state.lock().unwrap();
+    assert_eq!(state.hints, vec!["w1:p0", "w1:p0"]);
+    assert_eq!(state.snapshots, 2);
+}
+#[test]
+fn relative_nick_live_caller_target_change_invalidates_nicks_even_with_unchanged_snapshot() {
+    let mut author = scoped_labels(1, "w2", "t2");
+    author.target = HostTargetId::new("w2:p1");
+    let mut next = scoped_labels(0, "w2", "t2");
+    next.target = HostTargetId::new("w2:p0");
+    let (mut fx, state) = moving_caller_fixture(
+        Some(target(0)),
+        vec![scoped_labels(0, "w1", "t1"), next.clone(), author.clone()],
+        author.target,
+    );
+    read_page(&mut fx);
+    assert_eq!(
+        fx.cache.nicks.get(&seat(1)).unwrap().1.name,
+        "project/tryout/alice"
+    );
+    state.lock().unwrap().current = Some(next.target);
+    fx.cache.panes = None;
+    read_page(&mut fx);
+    assert_eq!(
+        fx.cache.nicks.get(&seat(1)).unwrap().1.name,
+        "alice",
+        "live caller alone must invalidate cached parent omissions"
+    );
+    read_page(&mut fx);
+    let state = state.lock().unwrap();
+    assert_eq!(state.hints, vec!["w1:p0", "w1:p0"]);
+    assert_eq!(state.snapshots, 2);
 }

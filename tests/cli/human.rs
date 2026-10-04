@@ -336,3 +336,21 @@ fn table_columns_align_by_display_width() {
     assert_eq!(second(lines[1], 'x'), second(lines[2], 'y'), "{out}");
     assert_eq!(second(lines[1], 'x'), second(lines[0], 'V'), "{out}");
 }
+
+#[test]
+fn thread_names_human_directory_keeps_name_beside_canonical_id() {
+    let summary: crate::protocol::results::ThreadSummary =
+        serde_json::from_value(serde_json::json!({
+            "thread":"t-human", "name":"team café", "topic_data":"topic", "topic_omitted":false,
+            "topic_detail_argv":null,"archived":true,"orphaned":false,"message_count":0,
+            "created_at":0,"ordinary_count":0,"system_count":0,"joined_count":1
+        }))
+        .unwrap();
+    let rendered = human(&CommandResult::Directory(page(vec![summary])));
+    assert!(rendered.contains("t-human (team café)"), "{rendered}");
+    let unnamed = CommandResult::ThreadName(crate::protocol::results::ThreadNameResult {
+        thread: ThreadId::new("t-human"),
+        name: None,
+    });
+    assert_eq!(human(&unnamed), "Thread t-human name: unnamed.\n");
+}

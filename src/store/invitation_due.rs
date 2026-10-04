@@ -47,6 +47,8 @@ pub(crate) struct AdvisoryPage {
     high_water_ordinal: i64,
 }
 
+pub(crate) const INVITATION_DUE_SELECTION: &str = "SELECT i.id, i.deadline_at, i.ordinal FROM invitations i INDEXED BY invitations_effective_pending_unwarned WHERE i.state='pending' AND i.warning_message_id IS NULL AND i.reject_recorded=0 AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) AND (i.deadline_at, i.ordinal)>(?1, ?2) ORDER BY i.deadline_at, i.ordinal LIMIT ?3";
+
 /// Advisory selection does not authorize any transition. It reads at most the
 /// admitted number of physical rows from the pending-unwarned index. The
 /// ordinal high water is checked after this bounded index slice.
@@ -82,7 +84,8 @@ pub(crate) fn select_invitation_due_candidates(
     let (after_deadline, after_ordinal) = after
         .map(|cursor| (cursor.after_deadline, cursor.after_ordinal))
         .unwrap_or((i64::MIN, 0));
-    let mut statement = conn.prepare_cached("SELECT i.id, i.deadline_at, i.ordinal FROM invitations i INDEXED BY invitations_pending_unwarned WHERE i.state='pending' AND i.warning_message_id IS NULL AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND (i.deadline_at, i.ordinal)>(?1, ?2) ORDER BY i.deadline_at, i.ordinal LIMIT ?3")
+    let mut statement = conn
+        .prepare_cached(INVITATION_DUE_SELECTION)
         .map_err(store_error)?;
     let rows = statement
         .query_map(
@@ -134,7 +137,7 @@ pub(crate) fn apply_invitation_due_candidates(
                 // Deadline and state are reread; advisory rows can become terminal.
                 let current: Option<(String, i64, String, Option<String>, String)> = tx
                     .query_row(
-                        "SELECT t.instance_id, i.deadline_at, CASE WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END, i.warning_message_id, s.state FROM invitations i JOIN threads t ON t.id=i.thread_id JOIN seats s ON s.id=i.seat_id LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.id=?1",
+                        "SELECT t.instance_id, i.deadline_at, CASE WHEN EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) THEN 'rejected' WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END, i.warning_message_id, s.state FROM invitations i JOIN threads t ON t.id=i.thread_id JOIN seats s ON s.id=i.seat_id LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.id=?1",
                         [candidate.id.as_str()],
                         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
                     )

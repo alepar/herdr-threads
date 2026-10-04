@@ -1,7 +1,7 @@
 //! IRC-style human transcript of a thread: `[HH:MM] <nick> message`.
 //!
 //! Used by the human form of `read` and by `read --follow`. A nick is the
-//! author seat's Herdr pane name (or single-pane tab label) when one is known,
+//! author seat's Herdr space/tab/pane label relative to the live caller,
 //! otherwise the short seat ID, with the seat's current binding harness as a
 //! suffix (`alice·claude`) when known. System events (joins, accepts, leaves,
 //! ACKs, warnings) become `-!-` notice lines. Bodies are shown in full,
@@ -74,7 +74,16 @@ impl Nick {
     /// `name·harness`, escaped and clipped. The harness suffix is left out
     /// when the name already says it (`mad-tea-hatter-codex`).
     pub fn display(&self) -> String {
-        let name = one_line(&self.name, false, NICK_MAX);
+        let bound = if self.name.contains('/') {
+            (NICK_MAX + 1) * 3 + 2
+        } else {
+            NICK_MAX
+        };
+        let escaped = crate::view::escape::escape_for_terminal(
+            &self.name,
+            crate::view::escape::Context::SingleLine,
+        );
+        let name = one_line(&escaped, false, bound);
         match &self.harness {
             Some(harness)
                 if !harness.is_empty()
@@ -85,6 +94,33 @@ impl Nick {
             _ => name,
         }
     }
+}
+
+/// Display a pane relative to the live caller's canonical parent IDs.
+/// Shared with handoff; labels are presentation only and never locate a seat.
+pub fn relative_pane_nick(
+    pane: &crate::host::observation::SeatHostLabels,
+    caller: Option<&crate::host::observation::SeatHostLabels>,
+) -> String {
+    let label = |name: &Option<String>, id: &str| {
+        let raw = name
+            .as_deref()
+            .filter(|name| !name.is_empty())
+            .unwrap_or(id);
+        let escaped =
+            crate::view::escape::escape_for_terminal(raw, crate::view::escape::Context::SingleLine);
+        one_line(&escaped, false, NICK_MAX)
+    };
+    let mut parts = Vec::new();
+    let same_space = caller.is_some_and(|caller| caller.workspace_id == pane.workspace_id);
+    if !same_space {
+        parts.push(label(&pane.workspace_label, &pane.workspace_id));
+    }
+    if !same_space || caller.is_none_or(|caller| caller.tab_id != pane.tab_id) {
+        parts.push(label(&pane.tab_label, &pane.tab_id));
+    }
+    parts.push(label(&pane.pane_label, pane.target.as_str()));
+    parts.join("/")
 }
 
 /// A seat ID short enough for a nick: compact IDs are kept whole; persisted

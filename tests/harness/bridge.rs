@@ -464,6 +464,8 @@ fn lifecycle_overview_preserves_server_page_and_signed_age() {
     let (root, j, cj, seed, event) = fixture();
     let mut client = Transport::new();
     let summary = |id: &str, created_at| ThreadSummary {
+        last_activity: None,
+        name: None,
         thread: ThreadId::new(id),
         managed_owner: None,
         topic_data: "peer \"topic\"\nnext".into(),

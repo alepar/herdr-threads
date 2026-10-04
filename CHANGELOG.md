@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+## v0.2.2
+
+- **Human CLI targets.** Pane selectors accept workspace, tab and pane names, plus live agent names. Omitted parents use the caller's live context; ambiguous matches require more qualification or an exact ID.
+- **Named channels and recent discovery.** Threads can have nonunique names usable wherever a thread selector resolves uniquely. Bare `read` opens a recent-channel picker in a human terminal; agents and scripts supply a name or ID. History reads remain read-only.
+- **Durable handoff.** `handoff --new-thread` or `handoff --thread NAME_OR_ID` records an invitation and assignment before guarded native launch. Partial completion retains exact replay keys, and retry never automatically repeats a possible native start. Startup does not accept or ACK on the recipient's behalf.
+- **Invitation rejection.** An addressed top-level agent or declared human can reject an exact ordinary invitation with a reason. Required invitations remain controlled by their service owner; rejection never ACKs messages or changes joined membership.
+- **Participant locations.** Text participant listings enrich canonical seat IDs with advisory workspace, tab and pane names through bounded batch reads. Unavailable labels do not change identity or receipt attribution.
+- **Communication guidance and walkthrough.** The embedded skill explains native versus durable communication, scoped audiences, material updates and receipt semantics. README and the tea-party script use named-channel handoffs; existing demo media remains historical.
+- **Immediate ordinary delivery by default.** The initial wake batching delay now defaults to zero. Explicit `wake_batch_delay_ms` values remain configurable per instance; wake retry spacing remains separate.
+- **Coordinated upgrade.** The wire protocol is now 4 and the store schema is 21. Upgrade the CLI and daemon together: use the new CLI to run `daemon stop`, then `daemon ensure`. Store migrations are forward-only; an older CLI cannot operate the upgraded store.
+
 ## v0.2.1
 
 - **Codex command approvals.** Managed launch accepts newer admitted Codex builds without a measured socket-policy version or sandbox network allowance. Hook and skill guidance uses CLI-only approved outside-sandbox execution, preserving native approval restrictions. Noninteractive exec uses a preapproved CLI rule with ordinary shell calls. Doctor and transport-denied remedies describe this path.

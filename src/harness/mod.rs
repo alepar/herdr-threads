@@ -147,14 +147,14 @@ pub struct MailSummary {
     pub topic: String,
 }
 /// Plugin-authored top-level instruction. Harness adapters place it in their
-/// fixed instruction section. It names the `herdr-threads` CLI but carries no
-/// argv shapes: the ready-command block that follows it (built from the
+/// fixed instruction section. It names the embedded-guide command, but mail
+/// argv shapes stay in the ready-command block that follows (built from the
 /// attention digest) gives the exact command lines, so the hook budget is not
 /// spent twice. The D2 `accept-required` procedure
 /// ([`REQUIRED_INVITATION_INSTRUCTION`]) is not part of it: the ready-command
 /// header carries it only when a required invitation is pending (native codex
 /// matrix P3: a model read it as a precondition for every plain accept).
-pub const TOP_LEVEL_INSTRUCTION: &str = "The top-level agent reads pending mail. Default text inbox ACKs only complete pending agent messages it fully displays, after output is written and flushed; follow its printed cursor. JSON/--machine inbox, read and pending-receipts are read-only. Accept invitations separately; explicitly ACK exact IDs read elsewhere. Use the herdr-threads CLI with your shell tool in this pane; ready commands below are exact. ACK means receipt only.\n";
+pub const TOP_LEVEL_INSTRUCTION: &str = "The top-level agent reads pending mail. Default text inbox ACKs only complete pending agent messages it fully displays, after output is written and flushed; follow its printed cursor. JSON/--machine inbox, read and pending-receipts are read-only. Accept invitations separately; explicitly ACK exact IDs read elsewhere. Before using threads, run herdr-threads skill unless its guide is already in context. Use the herdr-threads CLI in this pane; ready commands below are exact. ACK means receipt only.\n";
 /// The D2 `accept-required` procedure, emitted only when a required invitation
 /// is pending (and by adapters that carry no attention digest).
 pub const REQUIRED_INVITATION_INSTRUCTION: &str = "For a required invitation, read the current requirement ID, invitation ID and revision in thread participants, then explicitly use accept-required with those exact values. A required membership cannot be left until its service owner releases it; stale acceptance requires rereading the current revision.";

@@ -30,6 +30,7 @@ pub enum CommandResult {
     Thread(ThreadDetails),
     History(Page<MessageSummary>),
     Participants(Page<Participant>),
+    ParticipantLocations(Vec<ParticipantLocation>),
     Recipients(Page<Recipient>),
     /// Warning recipients have no receipt or ACK obligation.
     WarningRecipients(Page<WarningRecipient>),
@@ -59,17 +60,33 @@ pub enum CommandResult {
     Invitation(InvitationId),
     AlreadyJoined(AlreadyJoined),
     Accepted(AcceptedInvitation),
+    Rejected(InvitationRejection),
     RequiredAccepted(RequiredMembership),
     MessageSent(MessageId),
     Acknowledged(AckResult),
     Left(ThreadId),
     TopicChanged(ThreadId),
+    ThreadNameChanged(ThreadId),
+    ThreadResolved(ThreadId),
+    ThreadName(ThreadNameResult),
     Archived(ThreadId),
     Reopened(ThreadId),
     OperatorRebound(SeatId),
     OperatorFreshSeat(SeatId),
     OperatorInvited(InvitationId),
     OperatorRetired(SeatId),
+}
+
+/// Retained recipient decision; reason is untrusted peer data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InvitationRejection {
+    pub invitation: InvitationId,
+    pub actor: SeatId,
+    pub generation: u64,
+    pub observation: String,
+    pub rejected_at: UtcMillis,
+    pub reason: String,
 }
 
 /// The result of a plain `accept`: the invitation, plus the thread when it
@@ -411,6 +428,8 @@ pub struct HealthSettings {
     pub wake_batch_delay_ms: u64,
 }
 
+// Keep the established fallback for responses that omit this field.
+// Current daemons always send the resolved value, including zero.
 fn default_wake_batch_delay_ms() -> u64 {
     30_000
 }
@@ -579,7 +598,19 @@ pub enum HealthState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ThreadNameResult {
+    pub thread: ThreadId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ThreadSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity: Option<UtcMillis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub thread: ThreadId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub managed_owner: Option<ServiceAuthorId>,
@@ -945,6 +976,16 @@ pub struct ConditionStatus {
     pub active: bool,
     pub state: String,
 }
+/// Canonical seat mapping; topology labels are deliberately client-local.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParticipantLocation {
+    pub seat: SeatId,
+    pub continuity: ContinuityStatus,
+    pub target: Option<HostTargetId>,
+    pub terminal: Option<String>,
+    pub incarnation: Option<String>,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Participant {
@@ -1061,15 +1102,18 @@ pub struct LocalIntent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IntentKind {
+    Handoff,
     ResolveSeat,
     CheckIn,
     CreateThread,
     Invite,
     Accept,
+    Reject,
     SendMessage,
     Ack,
     Leave,
     SetTopic,
+    SetThreadName,
     Archive,
     Reopen,
     OperatorRebind,

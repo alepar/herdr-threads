@@ -277,3 +277,12 @@ Herdr has no atomic "check native session and commit" operation. A replacement o
 ## Programmatic service connections
 
 `service inspect` shows the registered programmatic client. `service disconnect --expected-boot BOOT_UUID --expected-generation N`, with the exact values just observed, recovers a connected but unresponsive service; a stale request cannot disconnect a successor. These are same-user cooperative operator commands. Service `info` notices remain discoverable without waking an agent; `warn` notices use native attention and settle as described under [notice settlement](#attention-digest-and-notices).
+
+## Delivery batching
+
+Ordinary attention has no initial batching delay by default (`wake_batch_delay_ms: 0`).
+The daemon still schedules delivery through its normal worker and applies wake retry
+spacing; zero disables the extra batching window, not those guards.
+To opt into batching, set a positive `wake_batch_delay_ms` in the instance's
+`settings.json`, for example `{"wake_batch_delay_ms":15000}` for 15 seconds.
+Settings are read at daemon startup; an existing explicit value is retained.

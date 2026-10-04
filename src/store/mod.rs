@@ -84,7 +84,7 @@ impl Default for StoreSettings {
             message_limits: messages::MessageLimits::default(),
             daemon_boot: None,
             minimum_wake_delay_ms: 30_000,
-            wake_batch_delay_ms: 30_000,
+            wake_batch_delay_ms: 0,
             summary: crate::protocol::summary::SummarySettings::default(),
         }
     }
@@ -1469,6 +1469,9 @@ impl StorePort for SqliteStore {
                 let result = control::accept(&self.context, &mut writer, budget, &v, permit)?;
                 Ok(self.with_join_hint(result, &v.thread, budget))
             }
+            PermitMutation::Reject(v) => {
+                control::reject(&self.context, &mut writer, budget, &v, permit)
+            }
             PermitMutation::AcceptRequired(v) => {
                 control::accept_required(&self.context, &mut writer, budget, &v, permit)
             }
@@ -1488,6 +1491,9 @@ impl StorePort for SqliteStore {
             }
             PermitMutation::Leave(v) => {
                 control::leave(&self.context, &mut writer, budget, &v, permit)
+            }
+            PermitMutation::SetThreadName(v) => {
+                control::set_thread_name(&self.context, &mut writer, budget, &v, permit)
             }
             PermitMutation::SetTopic(v) => {
                 control::set_topic(&self.context, &mut writer, budget, &v, permit)
@@ -2635,6 +2641,13 @@ pub fn cooperative_permit_request(
             control::cooperative_payload_hash("accept", v)?,
             None,
         ),
+        PermitMutation::Reject(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::Invitation(v.invitation.clone()),
+            control::cooperative_payload_hash("reject", v)?,
+            None,
+        ),
         PermitMutation::AcceptRequired(v) => (
             v.claim.clone(),
             v.operation.clone(),
@@ -2668,6 +2681,13 @@ pub fn cooperative_permit_request(
             v.operation.clone(),
             ObligationRef::Control(v.thread.clone()),
             control::cooperative_payload_hash("leave", v)?,
+            None,
+        ),
+        PermitMutation::SetThreadName(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::Control(v.thread.clone()),
+            control::cooperative_payload_hash("set_thread_name", v)?,
             None,
         ),
         PermitMutation::SetTopic(v) => (

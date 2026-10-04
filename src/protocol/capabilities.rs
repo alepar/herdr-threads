@@ -11,6 +11,10 @@ pub const SERVICE_SEND_V1: &str = "service.send_v1";
 pub const HARNESS_EVIDENCE: &str = "hook.harness_evidence";
 pub const HARNESS_STATES: &str = "harness.states";
 pub const SEAT_MANAGED_LAUNCH: &str = "seat.managed_launch";
+pub const PARTICIPANT_LOCATIONS: &str = "participants.locations_v1";
+
+pub const INVITATION_REJECT: &str = "invitation.reject_v1";
+
 pub const INBOX_BATCH: &str = "inbox.batch_v1";
 
 /// Everything this daemon build serves. A capability is listed only once its
@@ -29,6 +33,8 @@ pub const ADVERTISED: &[&str] = &[
     HARNESS_STATES,
     SEAT_MANAGED_LAUNCH,
     INBOX_BATCH,
+    INVITATION_REJECT,
+    PARTICIPANT_LOCATIONS,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

@@ -93,6 +93,7 @@ const DEADLINE_TABLES: &[&str] = &[
     "retirements",
     "invitations",
     "invitation_cancellations",
+    "invitation_rejections",
     "receipts",
     "receipt_state",
     // Catch-up rows move effective receipt deadlines (TRUST-POLICY A6).

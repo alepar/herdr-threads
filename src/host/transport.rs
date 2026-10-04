@@ -370,6 +370,7 @@ fn request_inner(
                     }
                     let expected = match method {
                         "pane.get" => Some("pane_info"),
+                        "pane.current" => Some("pane_current"),
                         "pane.read" => Some("pane_read"),
                         "session.snapshot" => Some("session_snapshot"),
                         "agent.prompt" => Some("agent_prompted"),

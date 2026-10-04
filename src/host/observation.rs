@@ -261,6 +261,8 @@ pub fn normalize_pane_names(raw: &str) -> Result<Vec<PaneName>, ApiError> {
 /// reconciled from these labels.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeatHostLabels {
+    pub terminal: String,
+    pub incarnation: Option<String>,
     pub target: HostTargetId,
     pub workspace_id: String,
     pub workspace_label: Option<String>,
@@ -296,6 +298,8 @@ pub fn normalize_seat_labels(raw: &str) -> Result<Vec<SeatHostLabels>, ApiError>
         .panes
         .into_iter()
         .map(|pane| SeatHostLabels {
+            terminal: pane.terminal_id,
+            incarnation: None,
             pane_label: find("panes", "pane_id", pane.target.as_str()),
             workspace_label: find("workspaces", "workspace_id", &pane.workspace_id),
             tab_label: find("tabs", "tab_id", &pane.tab_id),
@@ -416,4 +420,122 @@ mod pane_agent_tests {
         let wrong = raw(r#""agent":"claude","#, "w4:p1", "").replace("agent_info", "pane_info");
         assert!(normalize_pane_agent(&wrong, "w4:p1").is_err());
     }
+}
+
+/// Exact, live selection metadata from one validated session snapshot.
+/// Labels and agent names locate targets; they never establish seat continuity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostTopology {
+    pub spaces: Vec<TopologySpace>,
+    pub tabs: Vec<TopologyTab>,
+    pub panes: Vec<TopologyPane>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopologySpace {
+    pub id: String,
+    pub label: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopologyTab {
+    pub id: String,
+    pub space: String,
+    pub label: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopologyPane {
+    pub target: HostTargetId,
+    pub space: String,
+    pub tab: String,
+    pub label: Option<String>,
+    pub agent_names: Vec<String>,
+}
+
+pub fn normalize_topology(raw: &str) -> Result<HostTopology, ApiError> {
+    let snapshot = normalize_snapshot(raw)?;
+    let result = envelope(raw, "session_snapshot")?;
+    let root = &result["snapshot"];
+    let label = |value: &Value| {
+        value
+            .get("label")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    let mut spaces = Vec::new();
+    let mut space_ids = HashSet::new();
+    for value in root["workspaces"]
+        .as_array()
+        .ok_or_else(|| invalid("missing workspaces"))?
+    {
+        let id = field(value, "workspace_id")?.to_owned();
+        if !space_ids.insert(id.clone()) {
+            return Err(invalid("duplicate workspace identity"));
+        }
+        spaces.push(TopologySpace {
+            id,
+            label: label(value),
+        });
+    }
+    let mut tabs = Vec::new();
+    let mut tab_ids = HashSet::new();
+    for value in root["tabs"]
+        .as_array()
+        .ok_or_else(|| invalid("missing tabs"))?
+    {
+        let id = field(value, "tab_id")?.to_owned();
+        let space = field(value, "workspace_id")?.to_owned();
+        if !tab_ids.insert(id.clone()) || !space_ids.contains(&space) {
+            return Err(invalid("duplicate tab or unknown workspace"));
+        }
+        tabs.push(TopologyTab {
+            id,
+            space,
+            label: label(value),
+        });
+    }
+    let raw_panes = root["panes"]
+        .as_array()
+        .ok_or_else(|| invalid("missing panes"))?;
+    let mut panes = Vec::new();
+    for pane in snapshot.panes {
+        if !tabs
+            .iter()
+            .any(|tab| tab.id == pane.tab_id && tab.space == pane.workspace_id)
+        {
+            return Err(invalid("pane parent mismatch"));
+        }
+        let raw = raw_panes
+            .iter()
+            .find(|raw| raw["pane_id"].as_str() == Some(pane.target.as_str()));
+        panes.push(TopologyPane {
+            target: pane.target,
+            space: pane.workspace_id,
+            tab: pane.tab_id,
+            label: raw.and_then(label),
+            agent_names: Vec::new(),
+        });
+    }
+    for agent in root["agents"]
+        .as_array()
+        .ok_or_else(|| invalid("missing agents"))?
+    {
+        let target = field(agent, "pane_id")?;
+        let pane = panes
+            .iter_mut()
+            .find(|pane| pane.target.as_str() == target)
+            .ok_or_else(|| invalid("agent names unknown pane"))?;
+        let name = field(agent, "name")?.to_owned();
+        if !pane.agent_names.contains(&name) {
+            pane.agent_names.push(name);
+        }
+    }
+    Ok(HostTopology {
+        spaces,
+        tabs,
+        panes,
+    })
+}
+
+pub fn normalize_current_pane(raw: &str) -> Result<HostTargetId, ApiError> {
+    let result = envelope(raw, "pane_current")?;
+    HostTargetId::parse(field(&result["pane"], "pane_id")?).map_err(invalid)
 }

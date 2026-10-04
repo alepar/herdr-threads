@@ -260,6 +260,7 @@ impl Matrix {
     fn create_thread(&self, claim: &CallerClaim, op: &str) -> ThreadId {
         match self
             .handle(Command::CreateThread(CreateThread {
+                name: None,
                 topic: "topic".into(),
                 goal: "goal".into(),
                 operation: OperationId::new(op),
@@ -691,10 +692,10 @@ impl Matrix {
     }
 }
 
-/// Production defaults delay the first ordinary wake without sliding the
+/// Configured batching delays the first ordinary wake without sliding the
 /// retained deadline on new mail or making batch bookkeeping self-kick.
 #[test]
-fn default_batching_retains_first_attention_without_self_kicks() {
+fn configured_batching_retains_first_attention_without_self_kicks() {
     use crate::service::kicks::{CommitKicks, Lane, LaneSet, enter_lane};
 
     let m = Matrix::new();
@@ -707,6 +708,7 @@ fn default_batching_retains_first_attention_without_self_kicks() {
             m.instance.clone(),
             StoreSettings {
                 daemon_boot: Some(m.boot),
+                wake_batch_delay_ms: 30_000,
                 ..StoreSettings::default()
             },
         )

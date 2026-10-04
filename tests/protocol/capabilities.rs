@@ -273,7 +273,9 @@ fn capability_constants_are_stable() {
             "hook.harness_evidence",
             "harness.states",
             "seat.managed_launch",
-            "inbox.batch_v1"
+            "inbox.batch_v1",
+            "invitation.reject_v1",
+            "participants.locations_v1"
         ]
     );
 }
@@ -293,6 +295,8 @@ fn every_advertised_capability_has_a_handler() {
             HARNESS_STATES => probe_harness_states(),
             SEAT_MANAGED_LAUNCH => probe_seat_managed_launch(),
             INBOX_BATCH => probe_inbox_batch(),
+            INVITATION_REJECT => probe_invitation_reject(),
+            PARTICIPANT_LOCATIONS => probe_participant_locations(),
             other => panic!("{other} is advertised but has no handler probe here"),
         }
     }
@@ -921,4 +925,62 @@ fn harness_evidence_validation_bounds_every_field() {
         field: "f".repeat(128),
     };
     assert!(edge.validate().is_ok(), "the bounds are inclusive");
+}
+
+fn probe_invitation_reject() {
+    use crate::protocol::{
+        authority::{CallerClaim, CallerRole, Harness},
+        commands::Reject,
+        ids::*,
+    };
+    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let command = Command::Reject(Reject {
+        thread: ThreadId::new("t1"),
+        invitation: InvitationId::new("v1"),
+        reason: "Outside assigned role".into(),
+        operation: OperationId::new("reject-probe"),
+        claim: CallerClaim {
+            instance: "i".into(),
+            seat: SeatId::new("s1"),
+            binding_generation: 1,
+            role: CallerRole::TopLevel,
+            harness: Harness::Codex,
+            native_session: NativeSessionId::new("n"),
+            execution: ExecutionId::new("e"),
+            target: HostTargetId::new("w1:p1"),
+        },
+    });
+    assert!(command.validate().is_ok());
+    assert_eq!(
+        serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap()).unwrap(),
+        command
+    );
+    assert_eq!(
+        handler
+            .handle(command, PeerIdentity::from_kernel(501), &budget())
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+}
+
+fn probe_participant_locations() {
+    use crate::protocol::{commands::ParticipantLocationsQuery, ids::*};
+    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let command = Command::ParticipantLocations(ParticipantLocationsQuery {
+        thread: ThreadId::new("t1"),
+        seats: vec![SeatId::new("s1")],
+    });
+    assert!(command.validate().is_ok());
+    assert_eq!(
+        serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap()).unwrap(),
+        command
+    );
+    assert_eq!(
+        handler
+            .handle(command, PeerIdentity::from_kernel(501), &budget())
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
 }

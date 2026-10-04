@@ -141,6 +141,21 @@ fn health_settings_are_typed_and_unknown_until_resolved() {
         1,
     );
     assert!(health.settings.is_none());
+    let legacy: HealthSettings = serde_json::from_value(serde_json::json!({
+        "invitation_default_ms": 300_000,
+        "receipt_default_ms": 300_000,
+        "minimum_wake_delay_ms": 30_000
+    }))
+    .unwrap();
+    assert_eq!(legacy.wake_batch_delay_ms, 30_000);
+    let explicit_zero: HealthSettings = serde_json::from_value(serde_json::json!({
+        "invitation_default_ms": 300_000,
+        "receipt_default_ms": 300_000,
+        "minimum_wake_delay_ms": 30_000,
+        "wake_batch_delay_ms": 0
+    }))
+    .unwrap();
+    assert_eq!(explicit_zero.wake_batch_delay_ms, 0);
     health.settings = Some(HealthSettings {
         invitation_default_ms: 300_000,
         receipt_default_ms: 300_000,

@@ -9,7 +9,7 @@
 pub const SKILL_MD: &str = include_str!("../../integrations/skill/SKILL.md");
 
 /// Footer of the top-level `--help`: points an AI agent at the skill.
-pub const AI_HELP_FOOTER: &str = "Are you an AI agent? Run `herdr-threads skill` for the agent guide (skip it if a herdr-threads skill is already in your context); then read `herdr-threads <command> --help` as needed.";
+pub const AI_HELP_FOOTER: &str = "Are you an AI agent? Before using threads, run `herdr-threads skill` for communication and receipt guidance (skip it if already in context); then read `herdr-threads <command> --help` as needed.";
 
 /// One line the SessionStart hook adds to its fixed instructions.
 pub const HOOK_SKILL_HINT: &str =

@@ -207,6 +207,24 @@ pub fn query_with_output(
         )
     })?;
     let result = match command {
+        Command::ResolveThread(q) => resolve_thread(&db, instance, q),
+        Command::ThreadName(q) => {
+            let name: Option<Option<String>> = db
+                .query_row(
+                    "SELECT name FROM threads WHERE instance_id=?1 AND id=?2",
+                    params![instance, q.thread.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| db.map_error(e))?;
+            name.map(|name| {
+                CommandResult::ThreadName(crate::protocol::results::ThreadNameResult {
+                    thread: q.thread.clone(),
+                    name,
+                })
+            })
+            .ok_or_else(|| api_error(ErrorCode::NotFound, "thread not found"))
+        }
         Command::History(q) => history(&db, instance, q, output),
         Command::PendingReceipts(q) => {
             pending_receipts(&db, instance, q, store.clock().utc_now(), output)
@@ -215,6 +233,7 @@ pub fn query_with_output(
         Command::Search(q) => search(&db, store, instance, q, output, &active_budget),
         Command::Directory(q) => directory(&db, instance, q, output),
         Command::Participants(q) => participants(&db, instance, q, output),
+        Command::ParticipantLocations(q) => participant_locations(&db, instance, q),
         Command::Seats(q) => seats(&db, instance, q, output),
         Command::Diagnostics(q) => diagnostics(&db, instance, q, store.clock().utc_now(), output),
         Command::Recipients(q) => recipients(&db, instance, q, store.clock().utc_now(), output),
@@ -392,6 +411,7 @@ pub fn query_operation_status(
                 CommandResult::ThreadCreated(v)
                 | CommandResult::Left(v)
                 | CommandResult::TopicChanged(v)
+                | CommandResult::ThreadNameChanged(v)
                 | CommandResult::Archived(v)
                 | CommandResult::Reopened(v) => Some(v.as_str().to_owned()),
                 CommandResult::MessageSent(v) => Some(v.as_str().to_owned()),
@@ -1535,11 +1555,37 @@ fn directory(
     } else {
         0
     };
-    let filter = digest(&(
+    let recent_revision: i64 = if q.recent {
+        db.query_row("SELECT coalesce((SELECT revision FROM filter_revisions WHERE instance_id=?1 AND scope_kind='directory' AND scope_key='recent:all'),0)", [instance], |r|r.get(0)).map_err(|e|db.map_error(e))?
+    } else {
+        member_revision
+    };
+    let key = |ordinal: u64| -> Result<String, ApiError> {
+        if !q.recent {
+            return Ok(lifecycle_revision.to_string());
+        }
+        let activity: i64 = if ordinal == 0 {
+            i64::MAX
+        } else {
+            db.query_row(
+                "SELECT last_activity FROM threads WHERE ordinal=?1",
+                [ordinal as i64],
+                |r| r.get(0),
+            )
+            .map_err(|e| db.map_error(e))?
+        };
+        Ok(format!("{lifecycle_revision}:{member_revision}:{activity}"))
+    };
+    let base_filter = (
         q.membership.as_ref().map(|s| s.as_str()),
         q.membership_filter,
         q.topic_contains.as_deref(),
-    ))?;
+    );
+    let filter = if q.recent {
+        digest(&(base_filter, "recent"))?
+    } else {
+        digest(&base_filter)?
+    };
     let scope_key = "*";
     let cursor = decode_cursor(
         &q.page,
@@ -1547,12 +1593,16 @@ fn directory(
         CursorScope::Directory,
         scope_key,
         &filter,
-        CursorDirection::Ascending,
+        if q.recent {
+            CursorDirection::Descending
+        } else {
+            CursorDirection::Ascending
+        },
     )?;
     if cursor.as_ref().is_some_and(|c| {
-        c.scope_revision != Some(member_revision as u64)
+        c.scope_revision != Some(recent_revision as u64)
             || c.filter_revision != Some(topic_revision as u64)
-            || c.last_examined_key.as_deref() != Some(&*lifecycle_revision.to_string())
+            || c.last_examined_key.as_deref() != key(c.after_ordinal).ok().as_deref()
     }) {
         return Err(ApiError::cursor_stale("directory filter changed")
             .with_restart_argv(contextual_argv(directory_argv(q, None), output)));
@@ -1579,7 +1629,42 @@ fn directory(
             break;
         }
         type Row = (i64, String, String, i64, i64, i64);
-        let row:Option<Row>=db.query_row("SELECT ordinal,id,topic,archived,created_at,next_sequence FROM threads WHERE instance_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT 1",params![instance,last as i64,high as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(|e|db.map_error(e))?;
+        let row: Option<Row> = if q.recent {
+            // Seek the materialized index; never sort or scan the inventory.
+            let activity: i64 = if last == 0 {
+                i64::MAX
+            } else {
+                db.query_row(
+                    "SELECT last_activity FROM threads WHERE ordinal=?1",
+                    [last as i64],
+                    |r| r.get(0),
+                )
+                .map_err(|e| db.map_error(e))?
+            };
+            let sql = if last == 0 {
+                "SELECT ordinal,id,topic,archived,created_at,next_sequence FROM threads INDEXED BY threads_recent_activity WHERE instance_id=?1 AND last_activity<=?4 AND ordinal<=?3 ORDER BY last_activity DESC,ordinal DESC LIMIT 1"
+            } else {
+                "SELECT ordinal,id,topic,archived,created_at,next_sequence FROM threads INDEXED BY threads_recent_activity WHERE instance_id=?1 AND (last_activity,ordinal)<(?4,?2) AND ordinal<=?3 ORDER BY last_activity DESC,ordinal DESC LIMIT 1"
+            };
+            db.query_row(
+                sql,
+                params![instance, last as i64, high as i64, activity],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|e| db.map_error(e))?
+        } else {
+            db.query_row("SELECT ordinal,id,topic,archived,created_at,next_sequence FROM threads WHERE instance_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT 1",params![instance,last as i64,high as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(|e|db.map_error(e))?
+        };
         let Some((ordinal, id, topic, archived, created_at, next_sequence)) = row else {
             break;
         };
@@ -1602,19 +1687,33 @@ fn directory(
             true
         };
         if topic_match && membership_match {
-            let item = thread_summary(db, &id, &topic, archived, created_at, next_sequence)?;
+            let mut item = thread_summary(db, &id, &topic, archived, created_at, next_sequence)?;
+            if q.recent {
+                item.last_activity = Some(UtcMillis(
+                    db.query_row(
+                        "SELECT last_activity FROM threads WHERE ordinal=?1",
+                        [ordinal],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| db.map_error(e))?,
+                ));
+            }
             let mut next_cursor = cursor_for(
                 instance,
                 CursorScope::Directory,
                 scope_key,
                 &filter,
-                CursorDirection::Ascending,
+                if q.recent {
+                    CursorDirection::Descending
+                } else {
+                    CursorDirection::Ascending
+                },
                 ordinal as u64,
                 high,
             );
-            next_cursor.scope_revision = Some(member_revision as u64);
+            next_cursor.scope_revision = Some(recent_revision as u64);
             next_cursor.filter_revision = Some(topic_revision as u64);
-            next_cursor.last_examined_key = Some(lifecycle_revision.to_string());
+            next_cursor.last_examined_key = Some(key(ordinal as u64)?);
             let next = next_cursor
                 .encode()
                 .map_err(|e| api_error(ErrorCode::InvalidCursor, e))?;
@@ -1650,13 +1749,17 @@ fn directory(
             CursorScope::Directory,
             scope_key,
             &filter,
-            CursorDirection::Ascending,
+            if q.recent {
+                CursorDirection::Descending
+            } else {
+                CursorDirection::Ascending
+            },
             last,
             high,
         );
-        next_cursor.scope_revision = Some(member_revision as u64);
+        next_cursor.scope_revision = Some(recent_revision as u64);
         next_cursor.filter_revision = Some(topic_revision as u64);
-        next_cursor.last_examined_key = Some(lifecycle_revision.to_string());
+        next_cursor.last_examined_key = Some(key(last)?);
         let raw = next_cursor
             .encode()
             .map_err(|e| api_error(ErrorCode::InvalidCursor, e))?;
@@ -2014,6 +2117,66 @@ fn literal_contains_bounded(
     Ok(false)
 }
 
+/// Exact ID wins; otherwise a nonunique name index reads at most nine candidates.
+/// The ninth row proves omitted matches without scanning or counting the remainder.
+fn resolve_thread(
+    db: &QueryConnection,
+    instance: &str,
+    q: &crate::protocol::commands::ResolveThreadQuery,
+) -> Result<CommandResult, ApiError> {
+    if db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM threads WHERE id=?1 AND instance_id=?2)",
+            params![q.selector, instance],
+            |r| r.get::<_, bool>(0),
+        )
+        .map_err(|e| db.map_error(e))?
+    {
+        return Ok(CommandResult::ThreadResolved(ThreadId::new(&q.selector)));
+    }
+    let caller = match (&q.caller, &q.caller_target) {
+        (Some(seat), _) => Some(seat.as_str().to_owned()),
+        (None, Some(target)) => db.query_row("SELECT id FROM seats INDEXED BY seats_live_target WHERE instance_id=?1 AND target_id=?2 AND state='resolved' AND target_id IS NOT NULL", params![instance,target.as_str()], |r|r.get::<_,String>(0)).optional().map_err(|e|db.map_error(e))?,
+        _ => None,
+    };
+    let mut stmt = db.prepare("SELECT t.id,t.topic,t.archived,COALESCE((SELECT state FROM memberships WHERE thread_id=t.id AND seat_id=?3),'none') FROM threads t INDEXED BY threads_instance_name WHERE t.instance_id=?1 AND t.name=?2 LIMIT 9").map_err(|e|db.map_error(e))?;
+    let candidates = stmt
+        .query_map(params![instance, q.selector, caller], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, bool>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|e| db.map_error(e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| db.map_error(e))?;
+    match candidates.as_slice() {
+        [] => Err(api_error(
+            ErrorCode::NotFound,
+            format!("thread {:?} not found", q.selector),
+        )),
+        [(id, _, _, _)] => Ok(CommandResult::ThreadResolved(ThreadId::new(id))),
+        _ => {
+            let mut detail = format!(
+                "thread name {:?} is ambiguous; use an exact thread ID:",
+                q.selector
+            );
+            for (id, topic, archived, membership) in candidates.iter().take(8) {
+                let bounded: String = topic.chars().take(80).collect();
+                detail.push_str(&format!(
+                    "\n  {id}: topic={bounded:?} archived={archived} membership={membership}"
+                ));
+            }
+            if candidates.len() > 8 {
+                detail.push_str("\n  additional candidates omitted");
+            }
+            Err(api_error(ErrorCode::Conflict, detail))
+        }
+    }
+}
+
 fn thread_summary(
     db: &QueryConnection,
     id: &str,
@@ -2039,7 +2202,12 @@ fn thread_summary(
             "message count exceeds timeline",
         ));
     }
+    let name = db
+        .query_row("SELECT name FROM threads WHERE id=?1", [id], |r| r.get(0))
+        .map_err(|e| db.map_error(e))?;
     Ok(ThreadSummary {
+        last_activity: None,
+        name,
         thread: ThreadId::new(id),
         managed_owner: super::service_substrate::managed_owner(db, &ThreadId::new(id))?,
         topic_data: topic.into(),
@@ -2399,6 +2567,9 @@ fn directory_argv(q: &DirectoryQuery, cursor: Option<&str>) -> Vec<String> {
         DirectoryMembership::Invited => argv.push("--invited".into()),
         DirectoryMembership::All => argv.push("--all".into()),
         DirectoryMembership::Default => {}
+    }
+    if q.recent {
+        argv.push("--recent".into());
     }
     if let Some(search) = &q.topic_contains {
         argv.extend(["--search".into(), search.clone()]);
@@ -3659,7 +3830,7 @@ fn diagnostics(
         match phase {
             SearchPhase::Topic => {
                 type Row = (i64, String, String, String, String, i64);
-                let row:Option<Row>=db.query_row("SELECT i.ordinal,i.id,i.thread_id,i.seat_id,CASE WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END,i.deadline_at FROM invitations i LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.ordinal>?1 AND i.ordinal<=?2 ORDER BY i.ordinal LIMIT 1",params![invitation_after as i64,invitation_high as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(|e|db.map_error(e))?;
+                let row:Option<Row>=db.query_row("SELECT i.ordinal,i.id,i.thread_id,i.seat_id,CASE WHEN EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) THEN 'rejected' WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END,i.deadline_at FROM invitations i LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.ordinal>?1 AND i.ordinal<=?2 ORDER BY i.ordinal LIMIT 1",params![invitation_after as i64,invitation_high as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(|e|db.map_error(e))?;
                 let Some((ordinal, id, thread, seat, state, deadline)) = row else {
                     phase = SearchPhase::Body;
                     continue;
@@ -4874,7 +5045,7 @@ fn inbox_batch(
                     let state = after.attention.as_mut().unwrap();
                     state.invitation_after_ordinal = ordinal;
                     state.invitation_after_seq = ordinal;
-                    let pending: bool = db.query_row("SELECT state='pending' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations WHERE invitation_id=?1) FROM invitations WHERE id=?1", [&id], |r| r.get(0)).map_err(store_error)?;
+                    let pending: bool = db.query_row("SELECT state='pending' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations WHERE invitation_id=?1) AND NOT EXISTS(SELECT 1 FROM invitation_rejections WHERE invitation_id=?1) FROM invitations WHERE id=?1", [&id], |r| r.get(0)).map_err(store_error)?;
                     if pending {
                         let required_service = super::service_substrate::current_requirement(
                             db,
@@ -5493,3 +5664,61 @@ fn hot_threads_in(
 #[cfg(test)]
 #[path = "../../tests/store/queries.rs"]
 mod tests;
+
+/// One bounded query under the canonical read transaction; no host labels or client hints.
+fn participant_locations(
+    db: &QueryConnection,
+    instance: &str,
+    q: &crate::protocol::commands::ParticipantLocationsQuery,
+) -> Result<CommandResult, ApiError> {
+    if q.seats.is_empty() || q.seats.len() > crate::protocol::commands::MAX_BATCH_ITEMS {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "invalid participant location batch",
+        ));
+    }
+    let placeholders = (3..=q.seats.len() + 2)
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT s.id,s.state,s.target_id,s.structural_terminal_id,s.structural_incarnation FROM memberships m JOIN seats s ON s.id=m.seat_id JOIN threads t ON t.id=m.thread_id WHERE t.instance_id=?1 AND t.id=?2 AND s.id IN ({placeholders}) ORDER BY m.ordinal"
+    );
+    let mut values = vec![instance.to_owned(), q.thread.as_str().to_owned()];
+    values.extend(q.seats.iter().map(|seat| seat.as_str().to_owned()));
+    let mut statement = db.prepare(&sql).map_err(|e| db.map_error(e))?;
+    let rows = statement
+        .query_map(rusqlite::params_from_iter(values), |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+            ))
+        })
+        .map_err(|e| db.map_error(e))?;
+    let mut locations = Vec::new();
+    for row in rows {
+        let (seat, state, target, terminal, incarnation) = row.map_err(|e| db.map_error(e))?;
+        let continuity = match state.as_str() {
+            "resolved" => crate::protocol::results::ContinuityStatus::Resolved,
+            "unresolved" => crate::protocol::results::ContinuityStatus::Unresolved,
+            "retired" => crate::protocol::results::ContinuityStatus::Retired,
+            _ => {
+                return Err(api_error(
+                    ErrorCode::StoreCorrupt,
+                    "invalid seat continuity",
+                ));
+            }
+        };
+        locations.push(crate::protocol::results::ParticipantLocation {
+            seat: SeatId::new(seat),
+            continuity,
+            target: target.map(HostTargetId::new),
+            terminal,
+            incarnation,
+        });
+    }
+    Ok(CommandResult::ParticipantLocations(locations))
+}

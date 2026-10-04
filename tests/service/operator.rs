@@ -126,7 +126,7 @@ impl HostPort for Host {
                 identity: "incarnation".into(),
                 evidence_kind: EvidenceKind::CoherentEnumeration,
             },
-            targets: ["pane", "other", "third"]
+            targets: ["w1:p1", "w1:p2", "w1:p3"]
                 .into_iter()
                 .map(|p| self.observation(p, sequence))
                 .collect(),
@@ -341,7 +341,7 @@ fn elected_operator_rebind_and_fresh_preserve_history_and_replay_without_host() 
     history.execute_batch("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('old-message','history','saved','pending',90000);").unwrap();
     let rebind = Command::OperatorRebind(OperatorRebind {
         seat: SeatId::new("saved"),
-        target: HostTargetId::new("pane"),
+        target: HostTargetId::new("w1:p1"),
         operation: OperationId::new("rebind"),
     });
     let result = f.call(rebind.clone()).unwrap();
@@ -368,12 +368,12 @@ fn elected_operator_rebind_and_fresh_preserve_history_and_replay_without_host() 
             .unwrap(),
         0
     );
-    let CommandResult::OperatorFreshSeat(new) = f.fresh("other", "fresh").unwrap() else {
+    let CommandResult::OperatorFreshSeat(new) = f.fresh("w1:p2", "fresh").unwrap() else {
         panic!()
     };
     assert_ne!(new, SeatId::new("saved"));
     assert_eq!(
-        f.fresh("pane", "collision").unwrap_err().code,
+        f.fresh("w1:p1", "collision").unwrap_err().code,
         ErrorCode::TargetAlreadyOwned
     );
     db.execute(
@@ -383,7 +383,7 @@ fn elected_operator_rebind_and_fresh_preserve_history_and_replay_without_host() 
     .unwrap();
     let retired = Command::OperatorRebind(OperatorRebind {
         seat: SeatId::new("saved"),
-        target: HostTargetId::new("third"),
+        target: HostTargetId::new("w1:p3"),
         operation: OperationId::new("retired"),
     });
     assert_eq!(
@@ -394,7 +394,7 @@ fn elected_operator_rebind_and_fresh_preserve_history_and_replay_without_host() 
     f.host.fail.store(true, Ordering::SeqCst);
     assert_eq!(f.call(rebind).unwrap(), result);
     assert_eq!(
-        f.fresh("other", "fresh").unwrap(),
+        f.fresh("w1:p2", "fresh").unwrap(),
         CommandResult::OperatorFreshSeat(new)
     );
     assert_eq!(f.host.calls.load(Ordering::SeqCst), calls);
@@ -477,7 +477,7 @@ fn elected_operator_rejects_newer_invalidation_without_allocating() {
     let f = Fixture::new();
     f.host.invalidate.store(true, Ordering::SeqCst);
     assert_eq!(
-        f.fresh("pane", "invalidated").unwrap_err().code,
+        f.fresh("w1:p1", "invalidated").unwrap_err().code,
         ErrorCode::StaleHostObservation
     );
     assert_eq!(
@@ -500,7 +500,7 @@ fn elected_operator_unqualified_target_has_no_allocation_or_native_authority() {
     let f = Fixture::new();
     f.host.unqualified.store(true, Ordering::SeqCst);
     assert_eq!(
-        f.fresh("pane", "unqualified").unwrap_err().code,
+        f.fresh("w1:p1", "unqualified").unwrap_err().code,
         ErrorCode::StaleHostObservation
     );
     let db = f.db();
@@ -580,7 +580,7 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
             "seat",
             "resolve",
             "--pane",
-            "other",
+            "w1:p2",
             "--new-seat",
             "--operator",
         ],
@@ -589,7 +589,7 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
     let recipient = fresh["result"]["data"].as_str().unwrap().to_owned();
     let rebound = ok(
         None,
-        &["seat", "rebind", "saved", "--pane", "pane", "--operator"],
+        &["seat", "rebind", "saved", "--pane", "w1:p1", "--operator"],
     );
     assert_eq!(rebound["result"]["kind"], "operator_rebound");
     assert_eq!(rebound["result"]["data"], "saved");
@@ -611,7 +611,7 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
             "--cooperative-seat",
             "saved",
             "--cooperative-target",
-            "pane",
+            "w1:p1",
             "--cooperative-harness",
             "claude",
             "--cooperative-role",
@@ -620,7 +620,7 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
             "rebind",
             "saved",
             "--pane",
-            "pane",
+            "w1:p1",
             "--operator",
         ],
     ));
@@ -629,8 +629,8 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
 
     // Launch-driver lifecycle check-ins record each seat's private context.
     for (seat, pane, event) in [
-        ("saved", "pane", "launch-a"),
-        (recipient.as_str(), "other", "launch-b"),
+        ("saved", "w1:p1", "launch-a"),
+        (recipient.as_str(), "w1:p2", "launch-b"),
     ] {
         let checked = ok(
             None,
@@ -654,26 +654,26 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
     // Documented agent forms without selection flags derive the caller from
     // the invoking pane and act as that seat.
     let created = ok(
-        Some("pane"),
+        Some("w1:p1"),
         &["thread", "create", "--topic", "cli surface"],
     );
     assert_eq!(created["result"]["kind"], "thread_created");
     let thread = created["result"]["data"].as_str().unwrap().to_owned();
     assert_eq!(
         ok(
-            Some("pane"),
+            Some("w1:p1"),
             &["thread", "topic", &thread, "--set", "renamed"]
         )["result"]["kind"],
         "topic_changed"
     );
     assert_eq!(
-        ok(Some("pane"), &["invite", &thread, "--seat", &recipient])["result"]["kind"],
+        ok(Some("w1:p1"), &["invite", &thread, "--seat", &recipient])["result"]["kind"],
         "invitation"
     );
     let body = f.root.join("body.txt");
     fs::write(&body, "line one\nline two ünïcode\n").unwrap();
     let sent = ok(
-        Some("pane"),
+        Some("w1:p1"),
         &[
             "send",
             &thread,
@@ -686,7 +686,7 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
     assert_eq!(sent["result"]["kind"], "message_sent");
     let message = sent["result"]["data"].as_str().unwrap().to_owned();
     assert_eq!(
-        ok(Some("other"), &["accept", &thread])["result"]["kind"],
+        ok(Some("w1:p2"), &["accept", &thread])["result"]["kind"],
         "accepted"
     );
     let pending = ok(None, &["pending-receipts", "--seat", &recipient]);
@@ -695,13 +695,13 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
         message.as_str()
     );
     // Reading never ACKs.
-    let history = ok(Some("other"), &["read", &thread, "--recent", "5"]);
+    let history = ok(Some("w1:p2"), &["read", &thread, "--recent", "5"]);
     assert_eq!(history["result"]["kind"], "history");
     assert_eq!(
         ok(None, &["pending-receipts", "--seat", &recipient])["result"]["data"]["items"][0]["message"],
         message.as_str()
     );
-    let acked = ok(Some("other"), &["ack", &message]);
+    let acked = ok(Some("w1:p2"), &["ack", &message]);
     assert_eq!(acked["result"]["kind"], "acknowledged");
     let acked_seat: String = f
         .db()
@@ -720,11 +720,11 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
         .unwrap();
     assert_eq!(stored, "line one\nline two ünïcode\n");
     assert_eq!(
-        ok(Some("pane"), &["archive", &thread])["result"]["kind"],
+        ok(Some("w1:p1"), &["archive", &thread])["result"]["kind"],
         "archived"
     );
     assert_eq!(
-        ok(Some("pane"), &["reopen", &thread])["result"]["kind"],
+        ok(Some("w1:p1"), &["reopen", &thread])["result"]["kind"],
         "reopened"
     );
 
@@ -741,17 +741,17 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
         no_caller.detail
     );
     assert_eq!(
-        api_error(run(Some("third"), &["ack", &message])).code,
+        api_error(run(Some("w1:p3"), &["ack", &message])).code,
         ErrorCode::InvalidRequest
     );
 
     // Zero-joined recovery through the documented operator invite.
     assert_eq!(
-        ok(Some("pane"), &["leave", &thread])["result"]["kind"],
+        ok(Some("w1:p1"), &["leave", &thread])["result"]["kind"],
         "left"
     );
     assert_eq!(
-        ok(Some("other"), &["leave", &thread])["result"]["kind"],
+        ok(Some("w1:p2"), &["leave", &thread])["result"]["kind"],
         "left"
     );
     let invited = ok(None, &["invite", &thread, "--seat", "saved", "--operator"]);
@@ -766,7 +766,7 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
                 "seat",
                 "resolve",
                 "--pane",
-                "third",
+                "w1:p3",
                 "--new-seat",
                 "--operator"
             ]),
@@ -784,7 +784,7 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
     assert_eq!(retried["result"]["kind"], "operator_fresh_seat");
     let third_seat: String = f
         .db()
-        .query_row("SELECT id FROM seats WHERE target_id='third'", [], |r| {
+        .query_row("SELECT id FROM seats WHERE target_id='w1:p3'", [], |r| {
             r.get(0)
         })
         .unwrap();
@@ -844,7 +844,7 @@ fn cli_pane_derivation_covers_retry_and_seat_default_reads() {
             "seat",
             "resolve",
             "--pane",
-            "other",
+            "w1:p2",
             "--new-seat",
             "--operator",
         ],
@@ -852,11 +852,11 @@ fn cli_pane_derivation_covers_retry_and_seat_default_reads() {
     let recipient = fresh["result"]["data"].as_str().unwrap().to_owned();
     ok(
         None,
-        &["seat", "rebind", "saved", "--pane", "pane", "--operator"],
+        &["seat", "rebind", "saved", "--pane", "w1:p1", "--operator"],
     );
     for (seat, pane, event) in [
-        ("saved", "pane", "launch-a"),
-        (recipient.as_str(), "other", "launch-b"),
+        ("saved", "w1:p1", "launch-a"),
+        (recipient.as_str(), "w1:p2", "launch-b"),
     ] {
         ok(
             None,
@@ -875,10 +875,10 @@ fn cli_pane_derivation_covers_retry_and_seat_default_reads() {
             ],
         );
     }
-    let created = ok(Some("pane"), &["thread", "create", "--topic", "retry"]);
+    let created = ok(Some("w1:p1"), &["thread", "create", "--topic", "retry"]);
     let thread = created["result"]["data"].as_str().unwrap().to_owned();
-    ok(Some("pane"), &["invite", &thread, "--seat", &recipient]);
-    ok(Some("other"), &["accept", &thread]);
+    ok(Some("w1:p1"), &["invite", &thread, "--seat", &recipient]);
+    ok(Some("w1:p2"), &["accept", &thread]);
 
     // A pane-derived send whose output is lost stays journaled.
     let mut lost = LostOutput;
@@ -892,7 +892,7 @@ fn cli_pane_derivation_covers_retry_and_seat_default_reads() {
                 "--require-ack",
                 &recipient
             ]),
-            Some("pane"),
+            Some("w1:p1"),
             &mut lost
         )
         .is_err()
@@ -910,7 +910,7 @@ fn cli_pane_derivation_covers_retry_and_seat_default_reads() {
         .unwrap();
 
     // (W) Another pane's seat cannot replay this seat's intent.
-    let foreign = api_error(run(Some("other"), &["retry", &reference]));
+    let foreign = api_error(run(Some("w1:p2"), &["retry", &reference]));
     assert!(
         foreign.detail.contains("different instance or seat"),
         "{}",
@@ -925,7 +925,7 @@ fn cli_pane_derivation_covers_retry_and_seat_default_reads() {
     );
     // (R) The documented recovery runs from the originating pane with the
     // persisted key: it renders the already committed message, sends nothing new.
-    let retried = ok(Some("pane"), &["retry", &reference]);
+    let retried = ok(Some("w1:p1"), &["retry", &reference]);
     assert_eq!(retried["result"]["kind"], "message_sent");
     assert_eq!(retried["result"]["data"], committed.as_str());
     let copies: i64 = f
@@ -946,16 +946,22 @@ fn cli_pane_derivation_covers_retry_and_seat_default_reads() {
     );
 
     // (S) Reads in the recipient's pane default to its seat and never ACK.
-    let receipts = ok(Some("other"), &["pending-receipts"]);
+    let receipts = ok(Some("w1:p2"), &["pending-receipts"]);
     let listed = receipts["result"]["data"]["items"].as_array().unwrap();
     assert_eq!(listed.len(), 1, "{receipts}");
     assert_eq!(listed[0]["message"], committed.as_str());
-    let inbox = ok(Some("other"), &["inbox"]);
+    let inbox = ok(Some("w1:p2"), &["inbox"]);
     assert_eq!(inbox["result"]["kind"], "inbox");
     assert!(inbox.to_string().contains(&thread), "{inbox}");
+    // Explicit read selectors choose the requested seat, independently of the caller.
+    let selected = ok(Some("w1:p1"), &["pending-receipts", "--pane", "w1:p2"]);
+    assert_eq!(selected["result"]["data"], receipts["result"]["data"]);
+    let selected_inbox = ok(Some("w1:p1"), &["inbox", "--pane", "w1:p2"]);
+    assert_eq!(selected_inbox["result"]["data"], inbox["result"]["data"]);
+
     // The sender's pane selects the sender's seat, which owes nothing.
     assert_eq!(
-        ok(Some("pane"), &["pending-receipts"])["result"]["data"]["items"]
+        ok(Some("w1:p1"), &["pending-receipts"])["result"]["data"]["items"]
             .as_array()
             .unwrap()
             .len(),
@@ -971,7 +977,7 @@ fn cli_pane_derivation_covers_retry_and_seat_default_reads() {
         .unwrap();
     assert_eq!(acked, 0);
     // (F) An explicit thread scope still works where the pane has no seat.
-    let scoped = ok(Some("third"), &["pending-receipts", "--thread", &thread]);
+    let scoped = ok(Some("w1:p3"), &["pending-receipts", "--thread", &thread]);
     assert_eq!(
         scoped["result"]["data"]["items"].as_array().unwrap().len(),
         1,
@@ -1053,13 +1059,13 @@ fn elected_operator_retire_over_ipc_is_audited_and_peer_checked() {
 #[test]
 fn elected_operator_replace_over_ipc() {
     let f = Fixture::new();
-    let CommandResult::OperatorFreshSeat(new) = f.fresh("other", "fresh-other").unwrap() else {
+    let CommandResult::OperatorFreshSeat(new) = f.fresh("w1:p2", "fresh-other").unwrap() else {
         panic!()
     };
     let replace = |operation: &str, replace: &SeatId| {
         Command::OperatorReplace(OperatorReplace {
             seat: SeatId::new("saved"),
-            target: HostTargetId::new("other"),
+            target: HostTargetId::new("w1:p2"),
             replace: replace.clone(),
             operation: OperationId::new(operation),
         })
@@ -1085,7 +1091,7 @@ fn elected_operator_replace_over_ipc() {
         .unwrap();
     assert_eq!(
         states,
-        ("retired".into(), "resolved".into(), Some("other".into()))
+        ("retired".into(), "resolved".into(), Some("w1:p2".into()))
     );
     let labels: Vec<(String, Option<String>)> = db
         .prepare("SELECT kind,operator_label FROM allocation_decisions WHERE kind IN ('operator_retire','operator_rebind') ORDER BY ordinal")
