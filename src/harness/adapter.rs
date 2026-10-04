@@ -196,6 +196,7 @@ pub enum EventRole {
 pub enum EventIntent {
     Lifecycle(crate::harness::context::EventKind),
     Current,
+    QualifiedTurn(crate::harness::context::QualifiedTurn),
     Observer,
 }
 pub struct EventMetadata {
@@ -523,7 +524,7 @@ impl DecodedEvent {
         matches!(self.role, EventRole::TopLevel)
             && matches!(
                 self.intent,
-                EventIntent::Lifecycle(_) | EventIntent::Current
+                EventIntent::Lifecycle(_) | EventIntent::Current | EventIntent::QualifiedTurn(_)
             )
     }
 }
@@ -839,6 +840,18 @@ impl DecodedEvent {
             kind: match self.intent {
                 EventIntent::Lifecycle(kind) => kind,
                 EventIntent::Current => super::context::EventKind::Tool,
+                EventIntent::QualifiedTurn(ref turn) => {
+                    if self.native_session.as_deref() != Some(&turn.session)
+                        || self.event_id != turn.event_key
+                    {
+                        return None;
+                    }
+                    if turn.reset.is_some() {
+                        super::context::EventKind::Clear
+                    } else {
+                        super::context::EventKind::Startup
+                    }
+                }
                 EventIntent::Observer => return None,
             },
             native_session: self.native_session.clone(),
