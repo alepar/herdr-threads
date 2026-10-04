@@ -314,3 +314,294 @@ impl HarnessEvidenceRecorder {
 #[cfg(test)]
 #[path = "../../tests/daemon/harness_evidence.rs"]
 mod tests;
+
+#[derive(Clone, PartialEq, Eq)]
+struct V2HoldKey {
+    harness: String,
+    session: String,
+    domain: String,
+    origin: crate::harness::evidence::EvidenceOrigin,
+    contract: String,
+}
+struct HeldV2 {
+    key: V2HoldKey,
+    received_ms: i64,
+    note: crate::protocol::commands::HarnessEvidenceV2,
+    suppressed: bool,
+}
+#[derive(Default)]
+struct PendingV2(VecDeque<HeldV2>);
+impl PendingV2 {
+    fn expire(&mut self, now: i64) {
+        self.0
+            .retain(|h| now.saturating_sub(h.received_ms) < PENDING_MAX_AGE_MS);
+    }
+    fn push(&mut self, held: HeldV2, now: i64) {
+        self.expire(now);
+        if self.0.iter().any(|h| h.key == held.key && h.suppressed) {
+            return;
+        }
+        self.0.retain(|h| h.key != held.key);
+        while self.0.len() >= PENDING_MAX_ENTRIES {
+            self.0.pop_front();
+        }
+        self.0.push_back(held);
+    }
+    fn restore(&mut self, held: HeldV2, now: i64) {
+        self.expire(now);
+        if now.saturating_sub(held.received_ms) >= PENDING_MAX_AGE_MS
+            || self.0.iter().any(|h| h.key == held.key)
+        {
+            return;
+        }
+        let at = self
+            .0
+            .iter()
+            .position(|h| h.received_ms > held.received_ms)
+            .unwrap_or(self.0.len());
+        self.0.insert(at, held);
+        while self.0.len() > PENDING_MAX_ENTRIES {
+            self.0.pop_front();
+        }
+    }
+}
+/// Cached exact-domain existence lookup. It may skip a refresh, never verify evidence.
+/// The runtime manifest reader supplies this source in its own leaf.
+pub trait RichManifestSource: Send + Sync {
+    fn contains(
+        &self,
+        harness: &str,
+        identity: &crate::harness::runtime::RuntimeIdentity,
+        domain: &str,
+        origin: crate::harness::evidence::EvidenceOrigin,
+        contract_id: &str,
+    ) -> bool;
+}
+struct EmptyRichManifestSource;
+impl RichManifestSource for EmptyRichManifestSource {
+    fn contains(
+        &self,
+        _: &str,
+        _: &crate::harness::runtime::RuntimeIdentity,
+        _: &str,
+        _: crate::harness::evidence::EvidenceOrigin,
+        _: &str,
+    ) -> bool {
+        false
+    }
+}
+/// Exact-domain advisory recorder. Legacy recording remains a separate lane.
+pub struct HarnessEvidenceRecorderV2 {
+    rich_manifest: Arc<dyn RichManifestSource>,
+    registry: &'static crate::harness::registry::Registry,
+    pending: Mutex<PendingV2>,
+    store: Arc<dyn StorePort>,
+    manifest: Option<Arc<dyn ManifestTrigger>>,
+    clock: Arc<dyn Clock>,
+}
+impl HarnessEvidenceRecorderV2 {
+    pub fn new(
+        store: Arc<dyn StorePort>,
+        manifest: Option<Arc<dyn ManifestTrigger>>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        Self {
+            store,
+            manifest,
+            clock,
+            rich_manifest: Arc::new(EmptyRichManifestSource),
+            registry: crate::harness::registry::builtins(),
+            pending: Mutex::new(PendingV2::default()),
+        }
+    }
+    pub fn record(
+        &self,
+        message: &crate::protocol::commands::HarnessEvidenceV2,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        message.validate().map_err(ApiError::invalid_request)?;
+        let registry = self.registry;
+        let registration = registry
+            .by_id(
+                registry
+                    .agent(&message.harness)
+                    .map_err(|_| Self::unsupported())?,
+            )
+            .map_err(|_| Self::unsupported())?;
+        let descriptor = registration
+            .contracts()
+            .iter()
+            .find(|d| {
+                d.domain_id == message.domain
+                    && d.origin == message.origin
+                    && d.contract_id_v2().ok().as_deref() == Some(&message.contract_id)
+            })
+            .ok_or_else(Self::unsupported)?;
+        if descriptor.event(&message.event).is_none()
+            || message
+                .qualifications
+                .iter()
+                .any(|q| !descriptor.qualifications.contains(&q.as_str()))
+        {
+            return Err(Self::unsupported());
+        }
+        if let crate::protocol::commands::HarnessEvidenceOutcomeV2::Violation { field } =
+            &message.outcome
+            && !descriptor
+                .contract
+                .events
+                .iter()
+                .filter(|e| e.event == message.event)
+                .any(|e| e.fields.iter().any(|f| f.path == field))
+        {
+            return Err(Self::unsupported());
+        }
+        let now = self.clock.utc_now().0;
+        let key = message.session_id.as_ref().map(|session| V2HoldKey {
+            harness: message.harness.clone(),
+            session: session.clone(),
+            domain: message.domain.clone(),
+            origin: message.origin,
+            contract: message.contract_id.clone(),
+        });
+        let lifecycle = descriptor.contract.events.iter().any(|e| {
+            e.event == message.event && e.class == crate::harness::contract::EventClass::Lifecycle
+        });
+        let resumed = message
+            .unavailable_reason
+            .as_deref()
+            .is_some_and(|reason| descriptor.resumed_unavailable_reason == Some(reason));
+        let Some(runtime) = &message.runtime else {
+            if lifecycle
+                && let Some(key) = &key
+                && (descriptor.may_hold(resumed) || resumed)
+            {
+                self.pending.lock().unwrap_or_else(|p| p.into_inner()).push(
+                    HeldV2 {
+                        key: key.clone(),
+                        received_ms: now,
+                        note: message.clone(),
+                        suppressed: resumed,
+                    },
+                    now,
+                );
+            }
+            self.store.record_unattributed_v2(
+                &message.harness,
+                &message.domain,
+                message.origin,
+                message
+                    .unavailable_reason
+                    .as_deref()
+                    .expect("validated reason"),
+                budget,
+            )?;
+            return Ok(false);
+        };
+        let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+        pending.expire(now);
+        let suppressed = key
+            .as_ref()
+            .is_some_and(|key| pending.0.iter().any(|h| &h.key == key && h.suppressed));
+        let held = key
+            .as_ref()
+            .and_then(|key| {
+                pending
+                    .0
+                    .iter()
+                    .position(|h| &h.key == key && !h.suppressed)
+            })
+            .and_then(|at| pending.0.remove(at));
+        drop(pending);
+        if let Some(held) = held
+            && let Err(error) = self.store_one(&held.note, runtime, descriptor, true, budget)
+        {
+            self.pending
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .restore(held, now);
+            return Err(error);
+        }
+        self.store_one(
+            message,
+            runtime,
+            descriptor,
+            !(suppressed && lifecycle),
+            budget,
+        )
+    }
+    fn store_one(
+        &self,
+        message: &crate::protocol::commands::HarnessEvidenceV2,
+        runtime: &crate::harness::runtime::RuntimeIdentity,
+        descriptor: &crate::harness::adapter::ContractDescriptor,
+        eligible: bool,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        let outcome = match &message.outcome {
+            crate::protocol::commands::HarnessEvidenceOutcomeV2::Ok => EvidenceOutcome::Ok,
+            crate::protocol::commands::HarnessEvidenceOutcomeV2::Malformed => {
+                EvidenceOutcome::Malformed
+            }
+            crate::protocol::commands::HarnessEvidenceOutcomeV2::Violation { field } => {
+                EvidenceOutcome::Violation {
+                    field: field.clone(),
+                }
+            }
+        };
+        let qualified = eligible
+            && descriptor
+                .qualifications
+                .iter()
+                .all(|q| message.qualifications.iter().any(|fact| fact == q));
+        let recorded = self.store.record_harness_evidence_v2(
+            &crate::store::harness_evidence::EvidenceRecordV2 {
+                identity: runtime,
+                descriptor,
+                event: &message.event,
+                outcome: &outcome,
+                qualified,
+            },
+            budget,
+        )?;
+        if let Some(manifest) = &self.manifest {
+            if recorded.created
+                && !self.rich_manifest.contains(
+                    &message.harness,
+                    runtime,
+                    descriptor.domain_id,
+                    descriptor.origin,
+                    &message.contract_id,
+                )
+            {
+                manifest.ensure_manifest(
+                    &message.harness,
+                    FetchReason::UnseenRuntime {
+                        identity: runtime.clone(),
+                        domain: descriptor.domain_id.into(),
+                        origin: descriptor.origin,
+                        contract_id: message.contract_id.clone(),
+                    },
+                );
+            }
+            if recorded.fresh_violation {
+                manifest.ensure_manifest(&message.harness, FetchReason::FreshViolation);
+            }
+        }
+        Ok(recorded.row.verified(descriptor))
+    }
+    pub fn with_rich_manifest_source(mut self, source: Arc<dyn RichManifestSource>) -> Self {
+        self.rich_manifest = source;
+        self
+    }
+    pub fn with_registry(mut self, registry: &'static crate::harness::registry::Registry) -> Self {
+        self.registry = registry;
+        self
+    }
+    fn unsupported() -> ApiError {
+        ApiError::new(
+            crate::protocol::results::ErrorCode::Unsupported,
+            "unsupported harness evidence descriptor",
+        )
+    }
+}

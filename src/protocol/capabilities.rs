@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 pub const HISTORY_FULL_BODIES: &str = "history.full_bodies";
 pub const HOOK_PARSE_FAILURE_REPORT: &str = "hook.parse_failure_report";
 pub const SERVICE_SEND_V1: &str = "service.send_v1";
+pub const HARNESS_EVIDENCE_V2: &str = "hook.harness_evidence_v2";
 pub const HARNESS_EVIDENCE: &str = "hook.harness_evidence";
 pub const HARNESS_STATES: &str = "harness.states";
 pub const SEAT_MANAGED_LAUNCH: &str = "seat.managed_launch";
@@ -30,6 +31,7 @@ pub const ADVERTISED: &[&str] = &[
     HOOK_PARSE_FAILURE_REPORT,
     SERVICE_SEND_V1,
     HARNESS_EVIDENCE,
+    HARNESS_EVIDENCE_V2,
     HARNESS_STATES,
     SEAT_MANAGED_LAUNCH,
     INBOX_BATCH,

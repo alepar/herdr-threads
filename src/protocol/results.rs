@@ -2,6 +2,13 @@ use crate::protocol::service::{EventAuthor, RequiredMembership};
 use crate::protocol::{ids::*, pagination::Page, time::UtcMillis};
 use serde::{Deserialize, Deserializer, Serialize};
 
+/// Advisory exact-domain verification; no native proof or receipt authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HarnessEvidenceV2Recorded {
+    pub verified: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum CommandResult {
@@ -15,6 +22,8 @@ pub enum CommandResult {
     HarnessEvidenceRecorded {
         verified: bool,
     },
+    /// Advisory exact-domain result, gated by `hook.harness_evidence_v2`.
+    HarnessEvidenceV2Recorded(HarnessEvidenceV2Recorded),
     /// Each harness's version verdicts as the daemon derived them (ht-xoc.5).
     HarnessStates(HarnessStatesReport),
     StopAccepted(StopAccepted),

@@ -360,6 +360,13 @@ pub enum FetchReason {
     UnseenVersion {
         version: String,
     },
+    /// An exact v2 domain observation; never projected into legacy release rows.
+    UnseenRuntime {
+        identity: super::runtime::RuntimeIdentity,
+        domain: String,
+        origin: super::evidence::EvidenceOrigin,
+        contract_id: String,
+    },
     FreshViolation,
 }
 
@@ -418,6 +425,21 @@ pub fn should_fetch(
     match policy {
         ManifestPolicy::Off(_) => return Decision::Skip("fetching is off"),
         ManifestPolicy::Auto => (),
+    }
+    if let FetchReason::UnseenRuntime {
+        identity,
+        domain,
+        contract_id,
+        ..
+    } = reason
+        && (identity.validate().is_err()
+            || !super::evidence::valid_name(domain)
+            || contract_id.len() != 16
+            || !contract_id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+    {
+        return Decision::Skip("invalid exact runtime observation");
     }
     if matches!(reason, FetchReason::UnseenVersion { .. }) && has_row {
         return Decision::Skip("the manifest already has a row for this version");
@@ -804,7 +826,7 @@ impl ManifestService {
         let inner = &self.inner;
         let has_row = match &reason {
             FetchReason::UnseenVersion { version } => inner.current().has_row(harness, version),
-            FetchReason::FreshViolation => false,
+            FetchReason::FreshViolation | FetchReason::UnseenRuntime { .. } => false,
         };
         let now = inner.clock.utc_now().0;
         {

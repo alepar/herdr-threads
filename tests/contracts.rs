@@ -2138,3 +2138,98 @@ fn deadline_extension_fields_are_additive_on_pending_receipts_and_recipients() {
     assert_eq!(parsed.effective_deadline.map(|at| at.0), Some(120_000));
     assert_eq!(serde_json::to_value(parsed).unwrap(), extended);
 }
+
+#[test]
+fn v2_evidence_handler_negotiates_strict_domains_without_legacy_wire_changes() {
+    let wire = serde_json::json!({"kind":"harness_evidence_v2","args":{
+        "harness":"claude","domain":"native_payload","origin":"native_payload",
+        "runtime":null,"unavailable_reason":"not yet attributed","contract_id":"0123456789abcdef",
+        "event":"tool_started","outcome":{"kind":"ok"},"session_id":"session",
+        "qualifications":[]
+    }});
+    let command =
+        serde_json::from_value::<herdr_threads::protocol::commands::Command>(wire.clone());
+    assert!(
+        command.is_ok(),
+        "v2 must be a distinct recognized command: {command:?}"
+    );
+    let command = command.unwrap();
+    assert!(command.validate().is_ok());
+    assert_eq!(serde_json::to_value(command).unwrap(), wire);
+}
+
+#[test]
+fn v2_evidence_wire_bounds_and_unknown_fields_leave_legacy_bytes_frozen() {
+    use herdr_threads::protocol::commands::{Command, HarnessEvidence};
+    let legacy = r#"{"kind":"harness_evidence","args":{"harness":"claude","version":"2.1.286","unattributed_reason":null,"contract_id":"0123456789abcdef","event":"SessionStart","outcome":{"kind":"ok"},"session_id":"s"}}"#;
+    let old: Command = serde_json::from_str(legacy).unwrap();
+    assert!(old.validate().is_ok());
+    assert_eq!(serde_json::to_string(&old).unwrap(), legacy);
+    let mut legacy_note = serde_json::from_value::<HarnessEvidence>(
+        serde_json::to_value(&old).unwrap()["args"].clone(),
+    )
+    .unwrap();
+    legacy_note.event = "tool_finished".into();
+    assert!(legacy_note.validate().is_err());
+    let base = serde_json::json!({"kind":"harness_evidence_v2","args":{"harness":"fourth","domain":"native_shape","origin":"native_shape_observation","runtime":null,"unavailable_reason":"unavailable","contract_id":"0123456789abcdef","event":"tool_finished","outcome":{"kind":"ok"},"session_id":"s","qualifications":["observer"]}});
+    assert!(
+        serde_json::from_value::<Command>(base.clone())
+            .unwrap()
+            .validate()
+            .is_ok()
+    );
+    for field in ["verified", "class", "required_milestones", "user_content"] {
+        let mut bad = base.clone();
+        bad["args"][field] = true.into();
+        assert!(
+            serde_json::from_value::<Command>(bad).is_err(),
+            "unknown {field}"
+        );
+    }
+    for (field, value) in [
+        ("harness", serde_json::json!("a".repeat(65))),
+        ("harness", serde_json::json!("Claude")),
+        ("domain", serde_json::json!("d".repeat(33))),
+        ("event", serde_json::json!("e".repeat(64))),
+        ("event", serde_json::json!("bad-event")),
+        ("contract_id", serde_json::json!("ABCDEF0123456789")),
+        ("session_id", serde_json::json!("é".repeat(129))),
+        ("unavailable_reason", serde_json::json!("é".repeat(65))),
+        ("unavailable_reason", serde_json::json!("bad\nreason")),
+        (
+            "qualifications",
+            serde_json::json!(["observer", "observer"]),
+        ),
+        (
+            "qualifications",
+            serde_json::json!(["a", "b", "c", "d", "e", "f", "g", "h", "i"]),
+        ),
+    ] {
+        let mut bad = base.clone();
+        bad["args"][field] = value;
+        assert!(
+            serde_json::from_value::<Command>(bad)
+                .unwrap()
+                .validate()
+                .is_err(),
+            "bound {field}"
+        );
+    }
+    let mut extra = base.clone();
+    extra["args"]["outcome"]["verified"] = true.into();
+    assert!(serde_json::from_value::<Command>(extra).is_err());
+    let result =
+        serde_json::json!({"kind":"harness_evidence_v2_recorded","data":{"verified":false}});
+    let decoded =
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(result.clone())
+            .unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), result);
+}
+#[test]
+fn v2_evidence_recorded_result_rejects_unknown_fields() {
+    let result = serde_json::json!({"kind":"harness_evidence_v2_recorded","data":{"verified":false,"native_proof":true}});
+    assert!(
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(result).is_err(),
+        "strict v2 result cannot acquire native proof fields"
+    );
+}

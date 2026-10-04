@@ -271,6 +271,7 @@ fn capability_constants_are_stable() {
             "hook.parse_failure_report",
             "service.send_v1",
             "hook.harness_evidence",
+            "hook.harness_evidence_v2",
             "harness.states",
             "seat.managed_launch",
             "inbox.batch_v1",
@@ -292,6 +293,7 @@ fn every_advertised_capability_has_a_handler() {
             HOOK_PARSE_FAILURE_REPORT => probe_hook_parse_failure_report(),
             SERVICE_SEND_V1 => probe_service_send_v1(),
             HARNESS_EVIDENCE => probe_harness_evidence(),
+            HARNESS_EVIDENCE_V2 => v2_capability_is_negotiated_only_with_recorder(),
             HARNESS_STATES => probe_harness_states(),
             SEAT_MANAGED_LAUNCH => probe_seat_managed_launch(),
             INBOX_BATCH => probe_inbox_batch(),
@@ -332,7 +334,7 @@ fn capabilities_reply_round_trips_and_defaults_empty() {
 }
 
 #[test]
-fn this_daemon_advertises_exactly_advertised() {
+fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
     let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
     let result = handler
         .handle(
@@ -344,7 +346,20 @@ fn this_daemon_advertises_exactly_advertised() {
     let CommandResult::Capabilities(advertised) = result else {
         panic!("expected a capabilities result, got {result:?}");
     };
-    assert_eq!(advertised.capabilities, ADVERTISED);
+    assert_eq!(
+        advertised.capabilities,
+        [
+            "history.full_bodies",
+            "hook.parse_failure_report",
+            "service.send_v1",
+            "hook.harness_evidence",
+            "harness.states",
+            "seat.managed_launch",
+            "inbox.batch_v1",
+            "invitation.reject_v1",
+            "participants.locations_v1"
+        ]
+    );
     let caps = Capabilities::from_list(advertised.capabilities);
     assert!(
         !caps.supports(HOOK_PARSE_FAILURE_REPORT)
@@ -982,5 +997,120 @@ fn probe_participant_locations() {
             .unwrap_err()
             .code,
         ErrorCode::NotFound
+    );
+}
+
+#[test]
+fn v2_capability_is_negotiated_only_with_recorder() {
+    use crate::{
+        daemon::harness_evidence::HarnessEvidenceRecorderV2,
+        harness::adapter::HarnessAdapter,
+        ports::StorePort,
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+        test_support::isolation::TestIsolation,
+    };
+    let (instance, boot) = (Uuid::new_v4(), Uuid::new_v4());
+    let make = || {
+        ControlService::new(
+            StopController::new(instance, boot, Cancellation::default()),
+            move |_: &CallBudget| HealthInputs::unknown(instance, boot),
+            NoDomain,
+        )
+    };
+    let bare = make();
+    let CommandResult::Capabilities(caps) = bare
+        .handle(
+            Command::Capabilities,
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("capabilities reply")
+    };
+    assert!(
+        !caps
+            .capabilities
+            .iter()
+            .any(|v| v == "hook.harness_evidence_v2")
+    );
+    let iso = TestIsolation::new("v2-cap-handler");
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock);
+    let store = Arc::new(
+        SqliteStore::new(
+            StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
+            "i",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    let handler = make().with_harness_evidence_v2(Arc::new(HarnessEvidenceRecorderV2::new(
+        store.clone(),
+        None,
+        clock,
+    )));
+    let CommandResult::Capabilities(caps) = handler
+        .handle(
+            Command::Capabilities,
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("capabilities reply")
+    };
+    assert!(
+        caps.capabilities
+            .iter()
+            .any(|v| v == "hook.harness_evidence_v2")
+    );
+    assert_eq!(caps.capabilities, ADVERTISED);
+    let d = crate::harness::claude::ClaudeAdapter.contracts()[0];
+    let note = crate::protocol::commands::HarnessEvidenceV2 {
+        harness: "claude".into(),
+        domain: "native_payload".into(),
+        origin: d.origin,
+        runtime: Some(
+            crate::harness::runtime::RuntimeIdentity::stable_release(
+                "2.1.286",
+                "native_transcript",
+            )
+            .unwrap(),
+        ),
+        unavailable_reason: None,
+        contract_id: d.contract_id_v2().unwrap(),
+        event: "SessionStart".into(),
+        outcome: crate::protocol::commands::HarnessEvidenceOutcomeV2::Ok,
+        session_id: None,
+        qualifications: vec![],
+    };
+    assert_eq!(
+        bare.handle(
+            Command::HarnessEvidenceV2(note.clone()),
+            PeerIdentity::from_kernel(501),
+            &budget()
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::Unsupported
+    );
+    assert_eq!(
+        handler
+            .handle(
+                Command::HarnessEvidenceV2(note),
+                PeerIdentity::from_kernel(501),
+                &budget()
+            )
+            .unwrap(),
+        CommandResult::HarnessEvidenceV2Recorded(
+            crate::protocol::results::HarnessEvidenceV2Recorded { verified: false }
+        )
+    );
+    assert_eq!(
+        store
+            .harness_evidence_v2_all("claude", 0, &budget())
+            .unwrap()
+            .len(),
+        1
     );
 }

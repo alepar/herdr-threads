@@ -719,3 +719,617 @@ fn restore_yields_to_a_newer_hold() {
     );
     assert!(pending.take("claude", "s0", T0 + 20).is_some());
 }
+
+fn v2_note(runtime: bool, event: &str) -> crate::protocol::commands::HarnessEvidenceV2 {
+    use crate::harness::adapter::HarnessAdapter;
+    let descriptor = crate::harness::claude::ClaudeAdapter.contracts()[0];
+    crate::protocol::commands::HarnessEvidenceV2 {
+        harness: "claude".into(),
+        domain: "native_payload".into(),
+        origin: descriptor.origin,
+        runtime: runtime.then(|| {
+            crate::harness::runtime::RuntimeIdentity::stable_release("2.1.286", "native_transcript")
+                .unwrap()
+        }),
+        unavailable_reason: (!runtime).then(|| "awaiting transcript".into()),
+        contract_id: descriptor.contract_id_v2().unwrap(),
+        event: event.into(),
+        outcome: crate::protocol::commands::HarnessEvidenceOutcomeV2::Ok,
+        session_id: Some("v2-session".into()),
+        qualifications: vec![],
+    }
+}
+#[test]
+fn v2_recorder_records_required_milestones_without_legacy_rows() {
+    let fx = Fx::new("v2-recorder");
+    let recorder = HarnessEvidenceRecorderV2::new(
+        fx.store.clone(),
+        Some(fx.triggers.clone()),
+        fx.clock.clone(),
+    );
+    assert!(
+        !recorder
+            .record(&v2_note(true, "SessionStart"), &budget())
+            .unwrap()
+    );
+    assert!(
+        recorder
+            .record(&v2_note(true, "PreToolUse"), &budget())
+            .unwrap()
+    );
+    assert!(
+        fx.store
+            .harness_evidence_all("claude", &budget())
+            .unwrap()
+            .is_empty()
+    );
+    let rows = fx
+        .store
+        .harness_evidence_v2_all("claude", 0, &budget())
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0]
+            .milestones
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["lifecycle", "tool"]
+    );
+}
+
+#[test]
+fn v2_holds_credit_only_exact_contract_without_stale_fallback() {
+    let fx = Fx::new("v2-holds");
+    let recorder = HarnessEvidenceRecorderV2::new(fx.store.clone(), None, fx.clock.clone());
+    assert!(
+        !recorder
+            .record(&v2_note(false, "SessionStart"), &budget())
+            .unwrap()
+    );
+    let mut stale = v2_note(true, "PreToolUse");
+    stale.contract_id = "ffffffffffffffff".into();
+    assert_eq!(
+        recorder.record(&stale, &budget()).unwrap_err().code,
+        crate::protocol::results::ErrorCode::Unsupported
+    );
+    assert!(
+        recorder
+            .record(&v2_note(true, "PreToolUse"), &budget())
+            .unwrap(),
+        "held lifecycle must survive unrelated stale observation"
+    );
+}
+#[test]
+fn v2_codex_resumed_suppression_is_sticky_for_session() {
+    use crate::harness::adapter::HarnessAdapter;
+    let fx = Fx::new("v2-codex-resume");
+    let recorder = HarnessEvidenceRecorderV2::new(fx.store.clone(), None, fx.clock.clone());
+    let d = crate::harness::codex::CodexAdapter.contracts()[0];
+    let mut start = v2_note(false, "SessionStart");
+    start.harness = "codex".into();
+    start.contract_id = d.contract_id_v2().unwrap();
+    recorder.record(&start, &budget()).unwrap();
+    start.unavailable_reason = d.resumed_unavailable_reason.map(str::to_owned);
+    recorder.record(&start, &budget()).unwrap();
+    start.runtime = Some(
+        crate::harness::runtime::RuntimeIdentity::stable_release("0.159.3", "native_transcript")
+            .unwrap(),
+    );
+    start.unavailable_reason = None;
+    recorder.record(&start, &budget()).unwrap();
+    start.event = "PreToolUse".into();
+    assert!(
+        !recorder.record(&start, &budget()).unwrap(),
+        "resumed creating-CLI lifecycle must never receive later credit"
+    );
+    let rows = fx
+        .store
+        .harness_evidence_v2_all("codex", 0, &budget())
+        .unwrap();
+    assert!(!rows[0].milestones.contains_key("lifecycle"));
+}
+
+struct FourthEvidenceAdapter;
+impl crate::harness::adapter::HarnessAdapter for FourthEvidenceAdapter {
+    type Admission = ();
+    fn metadata(&self) -> &'static crate::harness::adapter::AdapterMetadata {
+        use crate::harness::adapter::*;
+        static META: AdapterMetadata = AdapterMetadata {
+            id: "fourth",
+            display_label: "Fourth fixture",
+            context_spelling: "Fourth",
+            context_aliases: &[],
+            executable: ExecutableLookup::Unsupported,
+            host_kinds: &["fourth"],
+            setup_scopes: &[],
+            budget: EventBudgetPolicy {
+                lifecycle_ms: 5000,
+                observer_ms: 1500,
+            },
+            runtime_sources: &["fixture"],
+        };
+        &META
+    }
+    fn contracts(&self) -> &'static [crate::harness::adapter::ContractDescriptor] {
+        use crate::harness::{
+            adapter::{ContractDescriptor, ContractDomain},
+            contract::{EventClass, EventContract, FieldSpec, HarnessContract, JsonType},
+            evidence::{AttributionHolding, EvidenceEvent, EvidenceOrigin},
+        };
+        static CONTRACT: HarnessContract = HarnessContract {
+            harness: "fourth",
+            discriminator: "event",
+            events: &[
+                EventContract {
+                    event: "turn_started",
+                    class: EventClass::Lifecycle,
+                    fields: &[FieldSpec {
+                        path: "session_id",
+                        ty: JsonType::String,
+                        required: true,
+                    }],
+                },
+                EventContract {
+                    event: "tool_finished",
+                    class: EventClass::Tool,
+                    fields: &[FieldSpec {
+                        path: "session_id",
+                        ty: JsonType::String,
+                        required: true,
+                    }],
+                },
+            ],
+        };
+        static EVENTS: &[EvidenceEvent] = &[
+            EvidenceEvent {
+                native_event: "turn_started",
+                milestone: Some("turn"),
+                always_send: true,
+            },
+            EvidenceEvent {
+                native_event: "tool_finished",
+                milestone: Some("post_tool"),
+                always_send: false,
+            },
+        ];
+        static DOMAINS: [ContractDescriptor; 2] = [
+            ContractDescriptor {
+                domain_id: "native_shape",
+                origin: EvidenceOrigin::NativeShapeObservation,
+                events: EVENTS,
+                required_milestones: &["turn", "post_tool"],
+                qualifications: &["same_runtime", "observer"],
+                holding: AttributionHolding::UntilAttributed,
+                resumed_unavailable_reason: None,
+                domain: ContractDomain::Native,
+                contract: &CONTRACT,
+            },
+            ContractDescriptor {
+                domain_id: "bridge",
+                origin: EvidenceOrigin::BridgeEnvelope,
+                events: EVENTS,
+                required_milestones: &["turn", "post_tool"],
+                qualifications: &["same_runtime", "observer"],
+                holding: AttributionHolding::Never,
+                resumed_unavailable_reason: None,
+                domain: ContractDomain::Bridge,
+                contract: &CONTRACT,
+            },
+        ];
+        &DOMAINS
+    }
+    fn observe_install(
+        &self,
+        _: &crate::harness::adapter::InstallEnvironment,
+        _: &CallBudget,
+    ) -> crate::harness::adapter::InstallObservation {
+        panic!("evidence must not probe")
+    }
+    fn admit(
+        &self,
+        _: &crate::harness::adapter::AdmissionRequest,
+        _: &CallBudget,
+    ) -> crate::harness::adapter::AdmissionDecision<()> {
+        panic!("evidence grants no admission")
+    }
+    fn version_ladder(
+        &self,
+        _: &crate::harness::runtime::RuntimeIdentity,
+    ) -> crate::harness::adapter::Ladder {
+        panic!("evidence is not release admission")
+    }
+    fn classify(
+        &self,
+        _: &crate::harness::adapter::HookInput,
+    ) -> crate::harness::adapter::ContractObservation {
+        panic!("wire supplies projected outcome")
+    }
+    fn decode(
+        &self,
+        _: &(),
+        _: &crate::harness::adapter::HookInput,
+    ) -> Result<crate::harness::adapter::DecodedEvent, crate::harness::adapter::DecodeFailure> {
+        panic!("no decode")
+    }
+    fn encode(
+        &self,
+        _: &(),
+        _: &crate::harness::adapter::DecodedEvent,
+        _: &crate::harness::adapter::NeutralOffer,
+    ) -> Result<crate::harness::adapter::EncodedOutput, crate::harness::adapter::EncodeFailure>
+    {
+        panic!("no offers")
+    }
+    fn attribute_runtime(
+        &self,
+        _: &crate::harness::adapter::HookInput,
+        _: &CallBudget,
+    ) -> crate::harness::adapter::RuntimeAttribution {
+        panic!("no runtime execution")
+    }
+    fn setup(
+        &self,
+        _: &crate::harness::adapter::SetupRequest,
+        _: &CallBudget,
+    ) -> Result<crate::harness::adapter::SetupOutcome, crate::harness::adapter::SetupFailure> {
+        panic!("no setup")
+    }
+    fn status(
+        &self,
+        _: &crate::harness::adapter::StatusRequest,
+        _: &CallBudget,
+    ) -> crate::harness::adapter::SetupStatus {
+        panic!("no status")
+    }
+    fn unsetup(
+        &self,
+        _: &crate::harness::adapter::UnsetupRequest,
+        _: &CallBudget,
+    ) -> Result<crate::harness::adapter::RemovalOutcome, crate::harness::adapter::SetupFailure>
+    {
+        panic!("no unsetup")
+    }
+}
+fn fourth_registry() -> &'static crate::harness::registry::Registry {
+    static REG: std::sync::OnceLock<crate::harness::registry::Registry> =
+        std::sync::OnceLock::new();
+    REG.get_or_init(|| {
+        crate::harness::registry::Registry::new(Box::leak(
+            vec![crate::harness::registry::Registration::new(
+                &FourthEvidenceAdapter,
+            )]
+            .into_boxed_slice(),
+        ))
+        .unwrap()
+    })
+}
+fn fourth_note(
+    domain: usize,
+    runtime: bool,
+    event: &str,
+) -> crate::protocol::commands::HarnessEvidenceV2 {
+    use crate::harness::adapter::HarnessAdapter;
+    let d = FourthEvidenceAdapter.contracts()[domain];
+    let mut n = v2_note(runtime, event);
+    n.harness = "fourth".into();
+    n.domain = d.domain_id.into();
+    n.origin = d.origin;
+    n.contract_id = d.contract_id_v2().unwrap();
+    n.qualifications = vec!["same_runtime".into(), "observer".into()];
+    n
+}
+#[test]
+fn v2_fourth_harness_observer_domains_are_independent_and_do_not_create_authority() {
+    let fx = Fx::new("v2-fourth");
+    let recorder = HarnessEvidenceRecorderV2::new(
+        fx.store.clone(),
+        Some(fx.triggers.clone()),
+        fx.clock.clone(),
+    )
+    .with_registry(fourth_registry());
+    recorder
+        .record(&fourth_note(0, false, "turn_started"), &budget())
+        .unwrap();
+    assert!(
+        !recorder
+            .record(&fourth_note(1, true, "tool_finished"), &budget())
+            .unwrap()
+    );
+    assert!(
+        recorder
+            .record(&fourth_note(0, true, "tool_finished"), &budget())
+            .unwrap()
+    );
+    let rows = fx
+        .store
+        .harness_evidence_v2_all("fourth", 0, &budget())
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows.iter()
+            .find(|r| r.domain == "native_shape")
+            .unwrap()
+            .milestones
+            .contains_key("turn")
+    );
+    assert!(
+        !rows
+            .iter()
+            .find(|r| r.domain == "bridge")
+            .unwrap()
+            .milestones
+            .contains_key("turn")
+    );
+    let connection = rusqlite::Connection::open(fx._iso.state_root().join("store.db")).unwrap();
+    for table in [
+        "seats",
+        "occupant_bindings",
+        "receipts",
+        "warning_offer",
+        "digest_notice_offer",
+        "digest_open_warnings",
+        "memberships",
+        "messages",
+    ] {
+        let count: i64 = connection
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "no authority side effect in {table}");
+    }
+}
+#[test]
+fn v2_held_write_failure_is_restored_for_exact_retry() {
+    let fx = Fx::new("v2-failed-hold");
+    let recorder = HarnessEvidenceRecorderV2::new(fx.store.clone(), None, fx.clock.clone());
+    recorder
+        .record(&v2_note(false, "SessionStart"), &budget())
+        .unwrap();
+    let db = rusqlite::Connection::open(fx._iso.state_root().join("store.db")).unwrap();
+    db.execute_batch("CREATE TRIGGER reject_v2 BEFORE INSERT ON harness_contract_evidence_v2 BEGIN SELECT RAISE(ABORT,'injected evidence failure'); END;").unwrap();
+    assert!(
+        recorder
+            .record(&v2_note(true, "PreToolUse"), &budget())
+            .is_err()
+    );
+    db.execute_batch("DROP TRIGGER reject_v2;").unwrap();
+    assert!(
+        recorder
+            .record(&v2_note(true, "PreToolUse"), &budget())
+            .unwrap()
+    );
+}
+#[test]
+fn v2_rejects_undeclared_violation_field_without_poisoning_domain() {
+    let fx = Fx::new("v2-bad-field");
+    let recorder = HarnessEvidenceRecorderV2::new(fx.store.clone(), None, fx.clock.clone());
+    let mut n = v2_note(true, "SessionStart");
+    n.outcome = crate::protocol::commands::HarnessEvidenceOutcomeV2::Violation {
+        field: "user_content".into(),
+    };
+    assert_eq!(
+        recorder.record(&n, &budget()).unwrap_err().code,
+        crate::protocol::results::ErrorCode::Unsupported
+    );
+    assert!(
+        fx.store
+            .harness_evidence_v2_all("claude", 0, &budget())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn v2_build_and_release_first_seen_fetches_use_exact_domain_reason() {
+    for build in [false, true] {
+        let fx = Fx::new("v2-exact-fetch");
+        let recorder = HarnessEvidenceRecorderV2::new(
+            fx.store.clone(),
+            Some(fx.triggers.clone()),
+            fx.clock.clone(),
+        );
+        let mut n = v2_note(true, "SessionStart");
+        if build {
+            n.runtime = Some(
+                crate::harness::runtime::RuntimeIdentity::build(
+                    crate::harness::runtime::RuntimeDescriptor {
+                        release_version: Some("2.1.286".into()),
+                        source: "fixture".into(),
+                        base_version: Some("2.1.286".into()),
+                        derived_version: Some("2.1.286+dev".into()),
+                        commit: None,
+                        dirty: Some(true),
+                        distance: None,
+                    },
+                )
+                .unwrap(),
+            );
+        }
+        recorder.record(&n, &budget()).unwrap();
+        assert_eq!(
+            fx.triggers.calls(),
+            vec![(
+                "claude".into(),
+                FetchReason::UnseenRuntime {
+                    identity: n.runtime.clone().unwrap(),
+                    domain: "native_payload".into(),
+                    origin: n.origin,
+                    contract_id: n.contract_id.clone()
+                }
+            )]
+        );
+        recorder.record(&n, &budget()).unwrap();
+        assert_eq!(fx.triggers.calls().len(), 1);
+    }
+}
+
+#[test]
+fn v2_pending_ttl_capacity_and_failed_restore_are_deterministic() {
+    let mut pending = PendingV2::default();
+    let held = |session: String, at: i64| {
+        let mut note = v2_note(false, "SessionStart");
+        note.session_id = Some(session.clone());
+        HeldV2 {
+            key: V2HoldKey {
+                harness: "claude".into(),
+                session,
+                domain: "native_payload".into(),
+                origin: note.origin,
+                contract: note.contract_id.clone(),
+            },
+            received_ms: at,
+            note,
+            suppressed: false,
+        }
+    };
+    for i in 0..=PENDING_MAX_ENTRIES {
+        pending.push(held(format!("s{i}"), T0 + i as i64), T0 + i as i64);
+    }
+    assert_eq!(pending.0.len(), 1024);
+    assert_eq!(pending.0.front().unwrap().key.session, "s1");
+    let failed = pending.0.remove(3).unwrap();
+    let failed_key = failed.key.clone();
+    let received = failed.received_ms;
+    pending.restore(failed, T0 + 1024);
+    assert_eq!(pending.0[3].key.session, failed_key.session);
+    pending.expire(received + PENDING_MAX_AGE_MS);
+    assert!(pending.0.iter().all(|h| h.received_ms > received));
+    let failed = held("retry".into(), T0);
+    pending.push(held("retry".into(), T0 + 1), T0 + 1);
+    pending.restore(failed, T0 + 1);
+    assert_eq!(
+        pending
+            .0
+            .iter()
+            .filter(|h| h.key.session == "retry")
+            .count(),
+        1
+    );
+    assert_eq!(
+        pending
+            .0
+            .iter()
+            .find(|h| h.key.session == "retry")
+            .unwrap()
+            .received_ms,
+        T0 + 1
+    );
+}
+#[test]
+fn v2_missing_qualification_malformed_and_violation_are_not_success() {
+    let fx = Fx::new("v2-qualified");
+    let recorder = HarnessEvidenceRecorderV2::new(fx.store.clone(), None, fx.clock.clone())
+        .with_registry(fourth_registry());
+    let mut n = fourth_note(0, true, "turn_started");
+    n.qualifications.clear();
+    recorder.record(&n, &budget()).unwrap();
+    n = fourth_note(0, true, "tool_finished");
+    n.outcome = crate::protocol::commands::HarnessEvidenceOutcomeV2::Malformed;
+    assert!(!recorder.record(&n, &budget()).unwrap());
+    let rows = fx
+        .store
+        .harness_evidence_v2_all("fourth", 0, &budget())
+        .unwrap();
+    assert!(rows[0].milestones.is_empty());
+    assert!(rows[0].violation_at.is_none());
+    n.outcome = crate::protocol::commands::HarnessEvidenceOutcomeV2::Violation {
+        field: "session_id".into(),
+    };
+    recorder.record(&n, &budget()).unwrap();
+    n.outcome = crate::protocol::commands::HarnessEvidenceOutcomeV2::Ok;
+    assert!(!recorder.record(&n, &budget()).unwrap());
+    n.event = "turn_started".into();
+    assert!(!recorder.record(&n, &budget()).unwrap());
+    let rows = fx
+        .store
+        .harness_evidence_v2_all("fourth", 0, &budget())
+        .unwrap();
+    assert_eq!(rows[0].violation_field.as_deref(), Some("session_id"));
+    assert_eq!(rows[0].milestones.len(), 2);
+}
+
+struct CachedExactDomain;
+impl RichManifestSource for CachedExactDomain {
+    fn contains(
+        &self,
+        harness: &str,
+        identity: &crate::harness::runtime::RuntimeIdentity,
+        domain: &str,
+        origin: crate::harness::evidence::EvidenceOrigin,
+        contract_id: &str,
+    ) -> bool {
+        harness == "claude"
+            && identity.key == "release:2.1.286"
+            && identity.source == "native_transcript"
+            && domain == "native_payload"
+            && origin == crate::harness::evidence::EvidenceOrigin::NativePayload
+            && contract_id == "c4c4b249584b3578"
+    }
+}
+#[test]
+fn v2_cached_rich_row_skips_refresh_without_granting_local_verification() {
+    let fx = Fx::new("v2-rich-cache");
+    let recorder = HarnessEvidenceRecorderV2::new(
+        fx.store.clone(),
+        Some(fx.triggers.clone()),
+        fx.clock.clone(),
+    )
+    .with_rich_manifest_source(Arc::new(CachedExactDomain));
+    assert!(
+        !recorder
+            .record(&v2_note(true, "SessionStart"), &budget())
+            .unwrap()
+    );
+    assert!(fx.triggers.calls().is_empty());
+    let rows = fx
+        .store
+        .harness_evidence_v2_all("claude", 0, &budget())
+        .unwrap();
+    assert_eq!(rows[0].milestones.len(), 1);
+    assert!(
+        recorder
+            .record(&v2_note(true, "PreToolUse"), &budget())
+            .unwrap()
+    );
+}
+#[test]
+fn v2_unknown_identity_domain_origin_event_or_qualification_never_falls_back() {
+    let fx = Fx::new("v2-refuse");
+    let recorder = HarnessEvidenceRecorderV2::new(fx.store.clone(), None, fx.clock.clone());
+    for which in [
+        "harness",
+        "domain",
+        "origin",
+        "contract",
+        "event",
+        "qualification",
+    ] {
+        let mut n = v2_note(true, "SessionStart");
+        match which {
+            "harness" => n.harness = "missing".into(),
+            "domain" => n.domain = "other".into(),
+            "origin" => n.origin = crate::harness::evidence::EvidenceOrigin::BridgeEnvelope,
+            "contract" => n.contract_id = "ffffffffffffffff".into(),
+            "event" => n.event = "turn_started".into(),
+            "qualification" => n.qualifications = vec!["invented".into()],
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            recorder.record(&n, &budget()).unwrap_err().code,
+            crate::protocol::results::ErrorCode::Unsupported,
+            "{which}"
+        );
+    }
+    assert!(
+        fx.store
+            .harness_evidence_v2_all("claude", 0, &budget())
+            .unwrap()
+            .is_empty()
+    );
+    let mut forged = v2_note(true, "SessionStart");
+    forged.runtime.as_mut().unwrap().key = "release:9.9.9".into();
+    assert_eq!(
+        recorder.record(&forged, &budget()).unwrap_err().code,
+        crate::protocol::results::ErrorCode::InvalidRequest
+    );
+}

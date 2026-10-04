@@ -1129,3 +1129,79 @@ fn daemon_start_refuses_an_invalid_settings_file() {
     assert!(!paths.descriptor_path.exists());
     assert!(!paths.database_path.exists());
 }
+
+#[test]
+fn exact_runtime_refresh_ignores_legacy_release_rows_and_remains_async_bounded() {
+    let identity =
+        crate::harness::runtime::RuntimeIdentity::stable_release("2.1.286", "native_transcript")
+            .unwrap();
+    let reason = FetchReason::UnseenRuntime {
+        identity,
+        domain: "native_payload".into(),
+        origin: crate::harness::evidence::EvidenceOrigin::NativePayload,
+        contract_id: "0123456789abcdef".into(),
+    };
+    assert_eq!(
+        should_fetch(
+            ManifestPolicy::Auto,
+            &reason,
+            "claude",
+            DAY_MS,
+            &CacheMeta::default(),
+            true
+        ),
+        Decision::Fetch,
+        "a legacy release row cannot satisfy an exact-domain lookup"
+    );
+    let dir = TestDir::new();
+    let fetcher = FakeFetcher::gated(vec![Err(FetchError::Failed("fixture blocked".into()))]);
+    let (service, _) = service(
+        &dir,
+        ManifestPolicy::Auto,
+        fetcher.clone(),
+        FakeClock::at(DAY_MS),
+    );
+    let start = Instant::now();
+    service.ensure_manifest("claude", reason.clone());
+    let took = start.elapsed();
+    service.ensure_manifest("claude", reason);
+    fetcher.release();
+    assert!(service.wait_idle(WAIT));
+    assert!(
+        took < Duration::from_millis(100),
+        "exact-domain refresh blocked request: {took:?}"
+    );
+    assert_eq!(
+        fetcher.calls().len(),
+        1,
+        "same bounded per-harness retry spacing"
+    );
+}
+
+#[test]
+fn exact_runtime_refresh_refuses_invalid_descriptor_before_scheduling() {
+    let mut identity =
+        crate::harness::runtime::RuntimeIdentity::stable_release("2.1.286", "native_transcript")
+            .unwrap();
+    identity.key = "release:9.9.9".into();
+    let reason = FetchReason::UnseenRuntime {
+        identity,
+        domain: "native_payload".into(),
+        origin: crate::harness::evidence::EvidenceOrigin::NativePayload,
+        contract_id: "0123456789abcdef".into(),
+    };
+    assert!(
+        matches!(
+            should_fetch(
+                ManifestPolicy::Auto,
+                &reason,
+                "claude",
+                DAY_MS,
+                &CacheMeta::default(),
+                false
+            ),
+            Decision::Skip(_)
+        ),
+        "invalid rich identity must never start fetch"
+    );
+}

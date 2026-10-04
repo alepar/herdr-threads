@@ -420,6 +420,7 @@ impl LocalService for DomainService {
             | Command::Capabilities
             | Command::HookParseFailure(_)
             | Command::HarnessEvidence(_)
+            | Command::HarnessEvidenceV2(_)
             | Command::HarnessStates
             | Command::Stop(_)
             | Command::ServiceInspect
