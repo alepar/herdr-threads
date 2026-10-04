@@ -85,6 +85,15 @@ pub trait HarnessAdapter: Send + Sync + 'static {
         offer: &NeutralOffer,
     ) -> Result<EncodedOutput, EncodeFailure>;
     fn attribute_runtime(&self, input: &HookInput, budget: &CallBudget) -> RuntimeAttribution;
+    /// Cooperative facts about this exact input/runtime/domain, never native attestation.
+    /// The default supplies no qualification, including for unavailable runtime identity.
+    fn evidence_qualifications(
+        &self,
+        _: &EvidenceQualificationRequest<'_>,
+        _: &CallBudget,
+    ) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
     fn setup(
         &self,
         request: &SetupRequest,
@@ -249,6 +258,11 @@ pub struct ContractDescriptor {
     pub resumed_unavailable_reason: Option<&'static str>,
     pub domain: ContractDomain,
     pub contract: &'static crate::harness::contract::HarnessContract,
+}
+pub struct EvidenceQualificationRequest<'a> {
+    pub input: &'a HookInput,
+    pub runtime: &'a RuntimeIdentity,
+    pub descriptor: &'a ContractDescriptor,
 }
 pub struct ContractObservation {
     pub domain: ContractDomain,
