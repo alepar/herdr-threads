@@ -448,7 +448,8 @@ def invoke(adapter, root, binary, out, token, stage, request, index, runtime_com
     key = strategy.get("model_key_env")
     if key and os.environ.get(key):
         diagnostic = diagnostic.replace(os.environ[key], "[redacted]")
-    (work / "stderr.txt").write_text("".join(c for c in diagnostic if c.isprintable()))
+    sanitized = "".join(c for c in diagnostic if c.isprintable()).encode("utf-8")
+    (work / "stderr.txt").write_bytes(sanitized[:8192].decode("utf-8", "ignore").encode("utf-8"))
     captures = []
     capture_index = work / "captures.json"
     if capture_index.exists():

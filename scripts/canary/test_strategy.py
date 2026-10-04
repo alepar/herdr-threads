@@ -227,6 +227,22 @@ class Strategy(unittest.TestCase):
             self.assertFalse(observed["unexpected_key"])
             self.assertTrue(pathlib.Path(observed["home"]).is_relative_to(out))
             self.assertEqual(runner.validate_index(json.dumps(index).encode(), out, [a]), index)
+            # Redaction must not expand a bounded diagnostic into an oversized artifact.
+            (companions / "third.py").write_text(source + "sys.stderr.write('k'*8192)\n")
+            a["canary_strategy"]["model_key_env"] = "CANARY_FIXTURE_KEY"
+            prior = os.environ.get("CANARY_FIXTURE_KEY")
+            os.environ["CANARY_FIXTURE_KEY"] = "k"
+            try:
+                diagnostic = pathlib.Path(d) / "diagnostic"
+                measured = runner.run_strategy(a, diagnostic, "/bin/false", root, model_tier="off",
+                                               runtime_command=command)
+            finally:
+                if prior is None:
+                    os.environ.pop("CANARY_FIXTURE_KEY")
+                else:
+                    os.environ["CANARY_FIXTURE_KEY"] = prior
+            self.assertEqual(measured["status"], "all_pass", measured)
+            self.assertLessEqual(len((diagnostic / "work/third-attempt-1/stderr.txt").read_bytes()), 8192)
 
     def test_npm_strategy_keeps_bisect_and_descriptor_package(self):
         with tempfile.TemporaryDirectory() as d:
