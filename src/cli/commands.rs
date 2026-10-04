@@ -9,7 +9,7 @@ use crate::protocol::{
     pagination::{DEFAULT_PAGE_BYTES, DEFAULT_PAGE_LIMIT, PageRequest},
     results::{ApiError, CommandResult, ErrorCode},
 };
-use clap::{ArgAction, Args, Parser, Subcommand};
+use clap::{ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedCli {
@@ -519,7 +519,7 @@ struct Cli {
     #[arg(long, global = true)]
     cooperative_target: Option<String>,
     /// Agent harness making the cooperative call.
-    #[arg(long, global = true, value_parser = ["codex", "claude"])]
+    #[arg(long, global = true)]
     cooperative_harness: Option<String>,
     /// Agent role for the cooperative call.
     #[arg(long, global = true, value_parser = ["top-level", "subagent"])]
@@ -688,7 +688,7 @@ enum Top {
     /// {...}}`. Local only; never contacts the daemon.
     ContractId {
         /// Print only this harness.
-        #[arg(long, value_parser = ["claude", "codex"])]
+        #[arg(long)]
         harness: Option<String>,
     },
     /// Harness version helpers shared with the compatibility canary. Local
@@ -742,7 +742,6 @@ enum HarnessVersionSub {
     /// string (for example `codex-cli 0.158.0` or `2.1.286 (Claude Code)`);
     /// exits non-zero for a string it does not recognize.
     Normalize {
-        #[arg(value_parser = ["claude", "codex"])]
         harness: String,
         #[arg(allow_hyphen_values = true)]
         raw: String,
@@ -1114,7 +1113,7 @@ struct LaunchArgs {
     #[command(flatten)]
     selector: super::panes::PaneSelector,
     /// Native agent to start.
-    #[arg(long, value_parser = ["claude", "codex"])]
+    #[arg(long)]
     kind: String,
     /// Absolute harness executable whose `--version` is gated (default: the
     /// first `claude`/`codex` on PATH, which Herdr starts by name).
@@ -1144,7 +1143,7 @@ struct HandoffArgs {
     topic: Option<String>,
     #[arg(long, requires = "new_thread")]
     goal: Option<String>,
-    #[arg(long, value_parser = ["claude", "codex"])]
+    #[arg(long)]
     kind: String,
     #[arg(long)]
     harness_binary: Option<String>,
@@ -1167,7 +1166,11 @@ struct ViewArgs {
     page: PageArgs,
 }
 
-fn setup_action(verb: super::setup::SetupVerb, args: SetupArgs) -> Result<CliAction, ApiError> {
+fn setup_action(
+    verb: super::setup::SetupVerb,
+    args: SetupArgs,
+    registry: &crate::harness::registry::Registry,
+) -> Result<CliAction, ApiError> {
     use super::setup::PromptSuggestionPolicy;
     let prompt_suggestions = if args.disable_prompt_suggestions {
         PromptSuggestionPolicy::Disable
@@ -1176,7 +1179,6 @@ fn setup_action(verb: super::setup::SetupVerb, args: SetupArgs) -> Result<CliAct
     } else {
         PromptSuggestionPolicy::Ask
     };
-    let registry = crate::harness::registry::builtins();
     let registration = args
         .harness
         .as_deref()
@@ -1247,13 +1249,15 @@ fn setup_action(verb: super::setup::SetupVerb, args: SetupArgs) -> Result<CliAct
     }))
 }
 
-/// The harness named by a `claude|codex` value-parsed argument.
-fn harness_arg(name: &str) -> crate::harness::context::Harness {
-    if name == "codex" {
-        crate::harness::context::Harness::Codex
-    } else {
-        crate::harness::context::Harness::Claude
-    }
+/// Resolve an agent selector without manufacturing a fallback identity.
+fn harness_arg(
+    name: &str,
+    registry: &crate::harness::registry::Registry,
+) -> Result<crate::harness::context::Harness, ApiError> {
+    registry
+        .agent(name)
+        .map(|id| crate::harness::registry::OccupantHarness::Agent(id).into())
+        .map_err(|error| invalid(format!("{error}; select a registered agent harness")))
 }
 
 fn invalid(detail: impl Into<String>) -> ApiError {
@@ -1383,19 +1387,52 @@ where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
 {
-    let cli = Cli::try_parse_from(argv).map_err(|error| {
-        use clap::error::ErrorKind;
-        match error.kind() {
-            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
-                ParseFailure::Informational(error.render().to_string())
+    let matches = command_for_registry(crate::harness::registry::builtins())
+        .try_get_matches_from(argv)
+        .map_err(|error| {
+            use clap::error::ErrorKind;
+            match error.kind() {
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
+                    ParseFailure::Informational(error.render().to_string())
+                }
+                ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
+                    ParseFailure::Usage(error.render().to_string())
+                }
+                _ => ParseFailure::Invalid(invalid(error.render().to_string())),
             }
-            ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
-                ParseFailure::Usage(error.render().to_string())
-            }
-            _ => ParseFailure::Invalid(invalid(error.render().to_string())),
-        }
-    })?;
+        })?;
+    let cli = Cli::from_arg_matches(&matches).map_err(|error| invalid(error.to_string()))?;
     Ok(parse_cli(cli)?)
+}
+
+/// Apply the registry's agent namespace to every selector, including global
+/// cooperative selection. Human-specific commands have no harness selector.
+fn command_for_registry(registry: &crate::harness::registry::Registry) -> clap::Command {
+    fn selectors(mut command: clap::Command, choices: &[&'static str]) -> clap::Command {
+        // mut_args preserves declaration order, including positional HARNESS RAW.
+        command = command.mut_args(|arg| {
+            if matches!(
+                arg.get_id().as_str(),
+                "harness" | "kind" | "cooperative_harness"
+            ) {
+                arg.value_parser(clap::builder::PossibleValuesParser::new(
+                    choices.iter().copied(),
+                ))
+            } else {
+                arg
+            }
+        });
+        for child in command.get_subcommands_mut() {
+            *child = selectors(child.clone(), choices);
+        }
+        command
+    }
+    let choices: Vec<_> = registry
+        .registrations()
+        .iter()
+        .map(|registration| registration.metadata().id)
+        .collect();
+    selectors(Cli::command(), &choices)
 }
 
 /// P7 (native Claude demo 3): a global path flag may repeat only with one
@@ -1418,6 +1455,13 @@ fn locator_hint(value: String) -> HostTargetId {
 }
 
 fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
+    parse_cli_in_registry(cli, crate::harness::registry::builtins())
+}
+
+fn parse_cli_in_registry(
+    cli: Cli,
+    registry: &crate::harness::registry::Registry,
+) -> Result<ParsedCli, ApiError> {
     let cooperative_selector =
         cli.cooperative_target
             .as_ref()
@@ -1435,11 +1479,7 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
         (Some(seat), Some(target), Some(harness), Some(role)) => Some(CooperativeSelection {
             seat: id(seat, SeatId::parse)?,
             target: locator_hint(target),
-            harness: if harness == "codex" {
-                crate::harness::context::Harness::Codex
-            } else {
-                crate::harness::context::Harness::Claude
-            },
+            harness: harness_arg(&harness, registry)?,
             role: if role == "top-level" {
                 crate::harness::context::Role::TopLevel
             } else {
@@ -2013,7 +2053,6 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
             harness,
             profile,
         } => {
-            let registry = crate::harness::registry::builtins();
             let registration = harness
                 .as_deref()
                 .map(|name| registry.agent(name).and_then(|id| registry.by_id(id)))
@@ -2034,19 +2073,14 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
                 fix: matches!(command, Some(DoctorSub::Fix)),
             }
         }
-        Top::Setup(args) => setup_action(super::setup::SetupVerb::Install, args)?,
-        Top::Unsetup(args) => setup_action(super::setup::SetupVerb::Remove, args)?,
-        Top::SetupStatus(args) => setup_action(super::setup::SetupVerb::Status, args)?,
+        Top::Setup(args) => setup_action(super::setup::SetupVerb::Install, args, registry)?,
+        Top::Unsetup(args) => setup_action(super::setup::SetupVerb::Remove, args, registry)?,
+        Top::SetupStatus(args) => setup_action(super::setup::SetupVerb::Status, args, registry)?,
         Top::Me {
             command: MeSub::Init { operator },
         } => CliAction::MeInit { operator },
         Top::Launch(args) => {
-            use crate::harness::context::Harness;
-            let harness = if args.kind == "codex" {
-                Harness::Codex
-            } else {
-                Harness::Claude
-            };
+            let harness = harness_arg(&args.kind, registry)?;
             if let Some(name) = &args.name
                 && crate::ports::sanitize_agent_name(name).is_none()
             {
@@ -2091,11 +2125,7 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
                 body,
                 launch: super::launch::LaunchRequest {
                     target: locator_hint(args.selector.pane.expect("explicit pane validated")),
-                    harness: if args.kind == "codex" {
-                        crate::harness::context::Harness::Codex
-                    } else {
-                        crate::harness::context::Harness::Claude
-                    },
+                    harness: harness_arg(&args.kind, registry)?,
                     harness_binary: args.harness_binary,
                     argv: args.agent_args,
                     name: args.name,
@@ -2131,12 +2161,15 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
             })
         }
         Top::ContractId { harness } => CliAction::ContractId {
-            harness: harness.as_deref().map(harness_arg),
+            harness: harness
+                .as_deref()
+                .map(|name| harness_arg(name, registry))
+                .transpose()?,
         },
         Top::HarnessVersion {
             command: HarnessVersionSub::Normalize { harness, raw },
         } => CliAction::HarnessVersionNormalize {
-            harness: harness_arg(&harness),
+            harness: harness_arg(&harness, registry)?,
             raw,
         },
         Top::Internal {
