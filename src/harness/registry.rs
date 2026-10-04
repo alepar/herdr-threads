@@ -198,6 +198,11 @@ trait ErasedAdapter: Send + Sync {
         offer: &NeutralOffer,
     ) -> Result<EncodedOutput, EncodeFailure>;
     fn attribute_runtime(&self, input: &HookInput, budget: &CallBudget) -> RuntimeAttribution;
+    fn evidence_qualifications(
+        &self,
+        request: &EvidenceQualificationRequest<'_>,
+        budget: &CallBudget,
+    ) -> Result<Vec<String>, String>;
     fn setup(
         &self,
         request: &SetupRequest,
@@ -321,6 +326,13 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
     fn attribute_runtime(&self, input: &HookInput, budget: &CallBudget) -> RuntimeAttribution {
         self.0.attribute_runtime(input, budget)
     }
+    fn evidence_qualifications(
+        &self,
+        request: &EvidenceQualificationRequest<'_>,
+        budget: &CallBudget,
+    ) -> Result<Vec<String>, String> {
+        self.0.evidence_qualifications(request, budget)
+    }
     fn setup(
         &self,
         request: &SetupRequest,
@@ -434,6 +446,39 @@ impl Registration {
     }
     pub fn classify(&self, input: &HookInput) -> ContractObservation {
         self.adapter.classify(input)
+    }
+    /// Adapter-supplied bounded facts bound to this registration's exact domain/runtime.
+    pub fn evidence_qualifications(
+        &self,
+        request: &EvidenceQualificationRequest<'_>,
+        budget: &CallBudget,
+    ) -> Result<Vec<String>, String> {
+        let descriptor = request.descriptor;
+        let id = descriptor.contract_id_v2()?;
+        if request.runtime.validate().is_err()
+            || !self
+                .metadata
+                .runtime_sources
+                .contains(&request.runtime.source.as_str())
+            || !self.contracts().iter().any(|known| {
+                known.domain == descriptor.domain
+                    && known.contract_id_v2().is_ok_and(|known_id| known_id == id)
+            })
+        {
+            return Err("qualification request does not match registration".into());
+        }
+        let facts = self.adapter.evidence_qualifications(request, budget)?;
+        let mut seen = std::collections::HashSet::new();
+        if facts.len() > 8
+            || facts.iter().any(|fact| {
+                !super::evidence::valid_name(fact)
+                    || !descriptor.qualifications.contains(&fact.as_str())
+                    || !seen.insert(fact)
+            })
+        {
+            return Err("invalid or undeclared evidence qualifications".into());
+        }
+        Ok(facts)
     }
     pub fn attribute_runtime(&self, input: &HookInput, budget: &CallBudget) -> RuntimeAttribution {
         match self.adapter.attribute_runtime(input, budget) {
