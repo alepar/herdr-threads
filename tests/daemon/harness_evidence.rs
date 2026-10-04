@@ -1570,3 +1570,50 @@ fn v2_suppression_collision_cannot_flush_an_older_held_lifecycle() {
     assert!(!rows[0].milestones.contains_key("lifecycle"));
     assert!(rows[0].milestones.contains_key("tool"));
 }
+
+// Exercises the real parser/cache source and recorder together; a cached domain
+// skips refresh but still cannot supply the missing local tool milestone.
+#[test]
+fn v2_real_runtime_manifest_lookup_skips_refresh_without_local_credit() {
+    let fx = Fx::new("v2-real-manifest");
+    let cache = fx._iso.state_root().join("rich-manifest");
+    std::fs::create_dir_all(&cache).unwrap();
+    let mut d: serde_json::Value = serde_json::from_str(include_str!(
+        "../harness/testdata/manifest/runtime-schema2.json"
+    ))
+    .unwrap();
+    d.as_object_mut().unwrap().remove("generated_at");
+    std::fs::write(cache.join("harness-versions.json"), d.to_string()).unwrap();
+    let service = Arc::new(ManifestService::new(
+        cache,
+        ManifestPolicy::Off(crate::harness::manifest::OffReason::Settings),
+        Arc::new(NeverFetch),
+        fx.clock.clone(),
+        Arc::new(|_| {}),
+    ));
+    let recorder = HarnessEvidenceRecorderV2::new(
+        fx.store.clone(),
+        Some(fx.triggers.clone()),
+        fx.clock.clone(),
+    )
+    .with_legacy_pending(&fx.recorder)
+    .with_rich_manifest_source(service);
+    let mut n = v2_note(true, "SessionStart");
+    n.runtime = Some(serde_json::from_value(d["runtime_rows"][0]["identity"].clone()).unwrap());
+    assert!(!recorder.record(&n, &budget()).unwrap());
+    assert!(fx.triggers.calls().is_empty());
+    let rows = fx
+        .store
+        .harness_evidence_v2_all("claude", 0, &budget())
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].milestones.len(), 1);
+    n.event = "PreToolUse".into();
+    assert!(recorder.record(&n, &budget()).unwrap());
+}
+struct NeverFetch;
+impl Fetcher for NeverFetch {
+    fn fetch(&self, _: &str, _: Option<&str>) -> Result<FetchOutcome, FetchError> {
+        panic!("offline manifest test must not fetch")
+    }
+}

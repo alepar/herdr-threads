@@ -134,12 +134,293 @@ pub struct ManifestRow {
     pub issue_url: Option<String>,
 }
 
+/// Runtime rows never participate in legacy semver lookup or release ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeStage {
+    SourceCaptured,
+    NoModel,
+    Live,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeStatus {
+    Verified,
+    KnownBroken,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSource {
+    Canary,
+    Manual,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeRow {
+    pub harness: String,
+    pub identity: super::runtime::RuntimeIdentity,
+    pub domain: String,
+    pub origin: super::evidence::EvidenceOrigin,
+    pub contract_id: String,
+    pub status: RuntimeStatus,
+    pub evidence_stage: RuntimeStage,
+    pub source: RuntimeSource,
+    pub required_milestones: Vec<String>,
+    pub successful_milestones: Vec<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    pub broken_event: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    pub broken_field: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    pub supported_since: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    pub issue_url: Option<String>,
+    /// UTC milliseconds, matching rich local evidence wire/store timestamps.
+    pub last_seen_at: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeContract {
+    pub domain: String,
+    pub origin: super::evidence::EvidenceOrigin,
+    pub id: String,
+    pub events: Vec<RuntimeEvent>,
+    pub required_milestones: Vec<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeEvent {
+    pub event: String,
+    #[serde(deserialize_with = "required_nullable")]
+    pub milestone: Option<String>,
+    pub always_send: bool,
+}
+fn required_nullable<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d)
+}
+fn names_unique(names: &[String]) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    names.iter().all(|s| seen.insert(s))
+}
+fn hash16(s: &str) -> bool {
+    s.len() == 16
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+fn harness_id(s: &str) -> bool {
+    s.len() <= 64
+        && s.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-".contains(&b))
+}
+fn field_name(s: &str) -> bool {
+    s.len() <= 64
+        && s.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._".contains(&b))
+}
+type RuntimeKey = (String, String, String, String, String);
+fn runtime_key(
+    harness: &str,
+    key: &str,
+    domain: &str,
+    origin: super::evidence::EvidenceOrigin,
+    contract: &str,
+) -> RuntimeKey {
+    (
+        harness.into(),
+        key.into(),
+        domain.into(),
+        serde_json::to_string(&origin).expect("origin enum serializes"),
+        contract.into(),
+    )
+}
+#[derive(Deserialize)]
+struct RuntimeCollections {
+    #[serde(default, deserialize_with = "unique_contract_map")]
+    runtime_contracts: BTreeMap<String, Vec<RuntimeContract>>,
+    #[serde(default)]
+    runtime_rows: Vec<RuntimeRow>,
+    #[serde(skip)]
+    runtime_index: BTreeMap<RuntimeKey, usize>,
+}
+fn unique_contract_map<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<BTreeMap<String, Vec<RuntimeContract>>, D::Error> {
+    struct Visitor;
+    impl<'de> serde::de::Visitor<'de> for Visitor {
+        type Value = BTreeMap<String, Vec<RuntimeContract>>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("unique runtime harness descriptor map")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut out = BTreeMap::new();
+            while let Some((key, value)) = map.next_entry::<String, Vec<RuntimeContract>>()? {
+                if out.insert(key, value).is_some() {
+                    return Err(serde::de::Error::custom("duplicate runtime harness key"));
+                }
+            }
+            Ok(out)
+        }
+    }
+    d.deserialize_map(Visitor)
+}
+fn runtime_collections(bytes: &[u8]) -> Result<RuntimeCollections, ManifestError> {
+    let invalid = |reason: &str| ManifestError::Invalid(format!("runtime collections: {reason}"));
+    // Deserialize rich fields directly: Value normalizes duplicate JSON keys. The
+    // frozen legacy reader still consumes its original permissive Value projection.
+    let mut collections: RuntimeCollections =
+        serde_json::from_slice(bytes).map_err(|_| invalid("invalid strict descriptors or rows"))?;
+    let contracts = &collections.runtime_contracts;
+    if contracts.len() > 64 {
+        return Err(invalid("too many harnesses"));
+    }
+    for (harness, domains) in contracts {
+        // Manifest history can contain multiple contract versions for one domain;
+        // discovery describes one current binary. Reuse its per-descriptor validator
+        // but enforce the manifest's domain/origin/id uniqueness independently.
+        let mut seen = std::collections::HashSet::new();
+        for d in domains {
+            if !seen.insert((
+                &d.domain,
+                serde_json::to_string(&d.origin).expect("origin serializes"),
+                &d.id,
+            )) {
+                return Err(invalid("duplicate runtime descriptor"));
+            }
+            if d.required_milestones.is_empty() {
+                return Err(invalid("empty required milestones"));
+            }
+            let entry = super::discovery::AdapterEntry {
+                id: harness.clone(),
+                display_name: harness.clone(),
+                host_kinds: vec![],
+                setup_scopes: vec![],
+                legacy_contract_id: None,
+                canary_strategy: None,
+                contracts: vec![super::discovery::DomainContract {
+                    domain: d.domain.clone(),
+                    origin: d.origin,
+                    id: d.id.clone(),
+                    required_milestones: d.required_milestones.clone(),
+                    events: d
+                        .events
+                        .iter()
+                        .map(|e| super::discovery::DomainEvent {
+                            event: e.event.clone(),
+                            milestone: e.milestone.clone(),
+                            always_send: e.always_send,
+                        })
+                        .collect(),
+                }],
+            };
+            super::discovery::Discovery {
+                schema_version: 1,
+                adapters: vec![entry],
+            }
+            .validate()
+            .map_err(|_| invalid("invalid discovery descriptor"))?;
+        }
+        if !harness_id(harness) {
+            return Err(invalid("invalid harness id"));
+        }
+    }
+    let rows = &collections.runtime_rows;
+    // The total document cap bounds protected/manual history too; the reader does not
+    // prune the writer's retained known-broken or manual rows.
+    let mut index = BTreeMap::new();
+    for (i, row) in rows.iter().enumerate() {
+        if !harness_id(&row.harness)
+            || row.last_seen_at > i64::MAX as u64
+            || !hash16(&row.contract_id)
+            || !names_unique(&row.required_milestones)
+            || !names_unique(&row.successful_milestones)
+            || row.successful_milestones.len() > 8
+            || row
+                .supported_since
+                .as_ref()
+                .is_some_and(|s| !super::runtime::printable(s, 128))
+            || row
+                .issue_url
+                .as_ref()
+                .is_some_and(|s| !super::runtime::printable(s, 512))
+        {
+            return Err(invalid("unbounded or duplicate row metadata"));
+        }
+        let Some(descriptor) = contracts.get(&row.harness).and_then(|ds| {
+            ds.iter().find(|d| {
+                d.domain == row.domain && d.origin == row.origin && d.id == row.contract_id
+            })
+        }) else {
+            return Err(invalid("row has no exact declared descriptor"));
+        };
+        let mut required = row.required_milestones.clone();
+        required.sort();
+        let mut declared = descriptor.required_milestones.clone();
+        declared.sort();
+        if required != declared
+            || row.successful_milestones.iter().any(|m| {
+                !descriptor
+                    .events
+                    .iter()
+                    .any(|e| e.milestone.as_ref() == Some(m))
+            })
+        {
+            return Err(invalid("milestones do not match exact domain"));
+        }
+        match row.status {
+            RuntimeStatus::Verified
+                if row.evidence_stage == RuntimeStage::SourceCaptured
+                    || row.broken_event.is_some()
+                    || row.broken_field.is_some()
+                    || !required
+                        .iter()
+                        .all(|m| row.successful_milestones.contains(m)) =>
+            {
+                return Err(invalid("verified row lacks qualified complete evidence"));
+            }
+            RuntimeStatus::KnownBroken
+                if row
+                    .broken_event
+                    .as_ref()
+                    .is_none_or(|e| !descriptor.events.iter().any(|d| &d.event == e))
+                    || row.broken_field.as_ref().is_none_or(|s| !field_name(s)) =>
+            {
+                return Err(invalid("known-broken row lacks declared event/field"));
+            }
+            _ => (),
+        }
+        let key = runtime_key(
+            &row.harness,
+            &row.identity.key,
+            &row.domain,
+            row.origin,
+            &row.contract_id,
+        );
+        if index.insert(key, i).is_some() {
+            return Err(invalid("duplicate exact runtime row"));
+        }
+    }
+    collections.runtime_index = index;
+    Ok(collections)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Manifest {
     pub generated_at: Option<String>,
     pub latest_release: Option<String>,
     pub contracts: BTreeMap<String, String>,
     pub rows: Vec<ManifestRow>,
+    runtime_contracts: BTreeMap<String, Vec<RuntimeContract>>,
+    runtime_rows: Vec<RuntimeRow>,
+    runtime_index: BTreeMap<RuntimeKey, usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -212,7 +493,15 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest, ManifestError> {
                 .collect()
         })
         .unwrap_or_default();
+    let RuntimeCollections {
+        runtime_contracts,
+        runtime_rows,
+        runtime_index,
+    } = runtime_collections(bytes)?;
     Ok(Manifest {
+        runtime_contracts,
+        runtime_rows,
+        runtime_index,
         generated_at: text(&document, "generated_at"),
         latest_release: text(&document, "latest_release"),
         contracts,
@@ -221,6 +510,75 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest, ManifestError> {
 }
 
 impl Manifest {
+    /// Validated historical metadata; use runtime_row with the current descriptor
+    /// before deriving a usable verdict. Unknown/stale rows remain diagnostic only.
+    pub fn runtime_rows(&self) -> &[RuntimeRow] {
+        &self.runtime_rows
+    }
+    /// Exact current descriptor lookup; historical unrelated declarations are unavailable.
+    pub fn runtime_row(
+        &self,
+        harness: &str,
+        identity: &super::runtime::RuntimeIdentity,
+        descriptor: &super::adapter::ContractDescriptor,
+    ) -> Option<&RuntimeRow> {
+        if identity.validate().is_err()
+            || descriptor.validate().is_err()
+            || descriptor.required_milestones.is_empty()
+            || descriptor.contract.harness != harness
+        {
+            return None;
+        }
+        let id = descriptor.contract_id_v2().ok()?;
+        let declared = self.runtime_contracts.get(harness)?.iter().find(|d| {
+            d.domain == descriptor.domain_id && d.origin == descriptor.origin && d.id == id
+        })?;
+        // Discovery omits full native field declarations: do not pretend to rehash
+        // its projection. Match the current binary's canonical contract id AND all
+        // projected metadata before using a historical row.
+        if declared
+            .required_milestones
+            .iter()
+            .map(String::as_str)
+            .ne(descriptor.required_milestones.iter().copied())
+            || declared.events.len() != descriptor.events.len()
+            || declared.events.iter().zip(descriptor.events).any(|(a, b)| {
+                a.event != b.native_event
+                    || a.milestone.as_deref() != b.milestone
+                    || a.always_send != b.always_send
+            })
+        {
+            return None;
+        }
+        let index = self.runtime_index.get(&runtime_key(
+            harness,
+            &identity.key,
+            descriptor.domain_id,
+            descriptor.origin,
+            &id,
+        ))?;
+        let row = self.runtime_rows.get(*index)?;
+        if &row.identity != identity {
+            return None;
+        }
+        // For a current known-broken contract, the named field must actually be
+        // part of that event or the contract discriminator, not merely an identifier.
+        if row.status == RuntimeStatus::KnownBroken {
+            let event = descriptor
+                .contract
+                .events
+                .iter()
+                .find(|e| Some(e.event) == row.broken_event.as_deref())?;
+            let field = row.broken_field.as_deref()?;
+            if field != descriptor.contract.discriminator
+                && event.fields.iter().all(|f| f.path != field)
+            {
+                return None;
+            }
+        }
+        Some(row)
+    }
+
     /// The row whose status the daemon may use: `contract_id == own` and a
     /// known status. A row of another (or no) contract is no status data.
     pub fn status_row(
@@ -752,6 +1110,36 @@ impl Inner {
     }
 }
 
+impl crate::daemon::harness_evidence::RichManifestSource for ManifestService {
+    fn contains(
+        &self,
+        harness: &str,
+        identity: &super::runtime::RuntimeIdentity,
+        domain: &str,
+        origin: super::evidence::EvidenceOrigin,
+        contract_id: &str,
+    ) -> bool {
+        let registry = super::registry::builtins();
+        let Some(registration) = registry
+            .agent(harness)
+            .ok()
+            .and_then(|id| registry.by_id(id).ok())
+        else {
+            return false;
+        };
+        let Some(descriptor) = registration.contracts().iter().find(|d| {
+            d.domain_id == domain
+                && d.origin == origin
+                && d.contract_id_v2().ok().as_deref() == Some(contract_id)
+        }) else {
+            return false;
+        };
+        self.current()
+            .runtime_row(harness, identity, descriptor)
+            .is_some()
+    }
+}
+
 /// Clears the in-flight flag however the fetch thread ends.
 struct InFlight(Arc<Inner>);
 impl Drop for InFlight {
@@ -824,6 +1212,23 @@ impl ManifestService {
     /// unsupported, oversized or invalid body never replaces a valid cache.
     pub fn ensure_manifest(&self, harness: &str, reason: FetchReason) {
         let inner = &self.inner;
+        if let FetchReason::UnseenRuntime {
+            identity,
+            domain,
+            origin,
+            contract_id,
+        } = &reason
+            && crate::daemon::harness_evidence::RichManifestSource::contains(
+                self,
+                harness,
+                identity,
+                domain,
+                *origin,
+                contract_id,
+            )
+        {
+            return;
+        }
         let has_row = match &reason {
             FetchReason::UnseenVersion { version } => inner.current().has_row(harness, version),
             FetchReason::FreshViolation | FetchReason::UnseenRuntime { .. } => false,
