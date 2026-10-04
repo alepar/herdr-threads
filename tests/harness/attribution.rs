@@ -595,3 +595,91 @@ fn symlinked_transcript_is_unreadable() {
         unattributable(Unattributed::Unreadable)
     );
 }
+
+#[test]
+fn adapter_runtime_attribution_uses_native_reader_reason() {
+    use crate::harness::{
+        adapter::{HookInput, RuntimeAttribution},
+        registry::builtins,
+    };
+    let budget = crate::protocol::time::CallBudget {
+        deadline: crate::protocol::time::MonoInstant(100),
+        cancellation: Default::default(),
+    };
+    for registration in builtins().registrations() {
+        let result = registration.attribute_runtime(
+            &HookInput {
+                bytes: br#"{"hook_event_name":"PreToolUse"}"#.to_vec(),
+                registered_event: None,
+            },
+            &budget,
+        );
+        match result {
+            RuntimeAttribution::Unavailable { diagnostic } => {
+                assert_eq!(diagnostic, "no transcript path in the payload")
+            }
+            RuntimeAttribution::Attributed(_) => {
+                panic!("missing transcript must not produce an identity")
+            }
+        }
+    }
+}
+
+#[test]
+fn adapter_runtime_attribution_suppresses_every_resumed_codex_event() {
+    use crate::harness::{
+        adapter::{HookInput, RuntimeAttribution},
+        registry::builtins,
+    };
+    let registration = builtins()
+        .by_id(builtins().agent("codex").unwrap())
+        .unwrap();
+    let budget = crate::protocol::time::CallBudget {
+        deadline: crate::protocol::time::MonoInstant(100),
+        cancellation: Default::default(),
+    };
+    let result = registration.attribute_runtime_for_session(
+        &HookInput {
+            bytes: br#"{"hook_event_name":"PreToolUse"}"#.to_vec(),
+            registered_event: Some("PreToolUse".into()),
+        },
+        &budget,
+        true,
+    );
+    match result {
+        RuntimeAttribution::Unavailable { diagnostic } => {
+            assert_eq!(diagnostic, Unattributed::CodexResumed.as_str())
+        }
+        RuntimeAttribution::Attributed(_) => {
+            panic!("resumed creator version must never be attributed")
+        }
+    }
+}
+
+#[test]
+fn adapter_runtime_identity_is_native_transcript_release() {
+    use crate::harness::{
+        adapter::{HookInput, RuntimeAttribution},
+        registry::builtins,
+    };
+    let budget = crate::protocol::time::CallBudget {
+        deadline: crate::protocol::time::MonoInstant(100),
+        cancellation: Default::default(),
+    };
+    for (harness, transcript, key) in [
+        ("claude", "claude-fresh.jsonl", "release:2.1.286"),
+        ("codex", "codex-fresh.jsonl", "release:0.158.0"),
+    ] {
+        let registration = builtins()
+            .by_id(builtins().agent(harness).unwrap())
+            .unwrap();
+        let input = HookInput { bytes: serde_json::to_vec(&serde_json::json!({"hook_event_name":"PreToolUse", "transcript_path":fixture(transcript)})).unwrap(), registered_event: Some("PreToolUse".into()) };
+        match registration.attribute_runtime(&input, &budget) {
+            RuntimeAttribution::Attributed(identity) => {
+                assert_eq!(identity.key, key);
+                assert_eq!(identity.source, "native_transcript");
+            }
+            RuntimeAttribution::Unavailable { diagnostic } => panic!("{diagnostic}"),
+        }
+    }
+}

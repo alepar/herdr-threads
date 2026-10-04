@@ -1239,6 +1239,7 @@ impl HarnessAdapter for CodexAdapter {
             executable: ExecutableLookup::Path("codex"),
             host_kinds: &["codex"],
             setup_scopes: &[SetupScopeKind::ConfigRoot],
+            runtime_sources: &["installed_probe", "native_transcript"],
             budget: EventBudgetPolicy {
                 lifecycle_ms: 5000,
                 observer_ms: 1500,
@@ -1249,6 +1250,21 @@ impl HarnessAdapter for CodexAdapter {
     fn contracts(&self) -> &'static [ContractDescriptor] {
         static CONTRACTS: [ContractDescriptor; 1] = [ContractDescriptor {
             domain: ContractDomain::Native,
+            domain_id: "native_payload",
+            origin: super::evidence::EvidenceOrigin::NativePayload,
+            events: &[
+                super::evidence::LEGACY_EVENTS[0],
+                super::evidence::LEGACY_EVENTS[1],
+                super::evidence::EvidenceEvent {
+                    native_event: "SubagentStart",
+                    milestone: None,
+                    always_send: false,
+                },
+            ],
+            required_milestones: &["lifecycle", "tool"],
+            qualifications: &[],
+            holding: super::evidence::AttributionHolding::SuppressResumed,
+            resumed_unavailable_reason: Some("codex resume: rollout version is the creating CLI's"),
             contract: &CONTRACT,
         }];
         &CONTRACTS
@@ -1313,8 +1329,10 @@ impl HarnessAdapter for CodexAdapter {
             },
         }
     }
-    fn version_ladder(&self, _: &RuntimeIdentity) -> Ladder {
-        Ladder { rows: vec![] }
+    fn version_ladder(&self, identity: &RuntimeIdentity) -> Ladder {
+        identity.release().map_or(Ladder::Admitted, |version| {
+            super::state::table_ladder(admission_table(), version)
+        })
     }
     fn classify(&self, input: &HookInput) -> ContractObservation {
         ContractObservation {
@@ -1351,10 +1369,8 @@ impl HarnessAdapter for CodexAdapter {
     ) -> Result<EncodedOutput, EncodeFailure> {
         super::adapter::encode_context(event, offer)
     }
-    fn attribute_runtime(&self, _: &HookInput, _: &CallBudget) -> RuntimeAttribution {
-        RuntimeAttribution::Unavailable {
-            diagnostic: "codex: runtime attribution migration is unavailable".into(),
-        }
+    fn attribute_runtime(&self, input: &HookInput, _: &CallBudget) -> RuntimeAttribution {
+        super::attribution::attribute_native_runtime("codex", input)
     }
     fn setup(&self, _: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
         Err(SetupFailure::Unsupported(unsupported("codex", "setup")))

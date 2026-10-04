@@ -133,7 +133,7 @@ pub struct Derived {
     pub doctor_notes: Vec<String>,
 }
 
-fn table_ladder<P>(table: &[Recipe<P>], version: &str) -> Ladder {
+pub(crate) fn table_ladder<P>(table: &[Recipe<P>], version: &str) -> Ladder {
     match admission::classify(table, version, || None) {
         Row::Refused(Refusal::OlderThanSupported(_)) => Ladder::BelowFloor {
             min: table
@@ -161,11 +161,20 @@ fn table_ladder<P>(table: &[Recipe<P>], version: &str) -> Ladder {
 
 /// The ladder row of `version` on the recipe tables (no schema fingerprint).
 pub fn ladder_for(harness: &str, version: &str) -> Ladder {
-    match harness {
-        "claude" => table_ladder(super::claude::admission_table(), version),
-        "codex" => table_ladder(super::codex::admission_table(), version),
-        _ => Ladder::Admitted,
-    }
+    let registry = super::registry::builtins();
+    let Some(registration) = registry
+        .agent(harness)
+        .ok()
+        .and_then(|id| registry.by_id(id).ok())
+    else {
+        return Ladder::Admitted;
+    };
+    let Ok(identity) =
+        super::runtime::RuntimeIdentity::stable_release(version, "native_transcript")
+    else {
+        return Ladder::Admitted;
+    };
+    registration.version_ladder(&identity)
 }
 
 fn source_word(source: RowSource) -> &'static str {

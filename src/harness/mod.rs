@@ -38,6 +38,7 @@ mod contract_tests;
 #[cfg(test)]
 #[path = "../../tests/harness/cooperative.rs"]
 mod cooperative;
+pub mod evidence;
 pub mod launch;
 pub mod manifest;
 #[cfg(test)]
@@ -52,6 +53,7 @@ pub mod recipe;
 #[path = "../../tests/harness/recipe.rs"]
 mod recipe_tests;
 pub mod registry;
+pub mod runtime;
 pub mod setup;
 pub mod state;
 #[cfg(test)]

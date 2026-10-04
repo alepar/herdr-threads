@@ -710,6 +710,7 @@ impl HarnessAdapter for ClaudeAdapter {
             executable: ExecutableLookup::Path("claude"),
             host_kinds: &["claude"],
             setup_scopes: &[SetupScopeKind::ConfigRoot],
+            runtime_sources: &["installed_probe", "native_transcript"],
             budget: EventBudgetPolicy {
                 lifecycle_ms: 5000,
                 observer_ms: 1500,
@@ -720,6 +721,13 @@ impl HarnessAdapter for ClaudeAdapter {
     fn contracts(&self) -> &'static [ContractDescriptor] {
         static CONTRACTS: [ContractDescriptor; 1] = [ContractDescriptor {
             domain: ContractDomain::Native,
+            domain_id: "native_payload",
+            origin: super::evidence::EvidenceOrigin::NativePayload,
+            events: super::evidence::LEGACY_EVENTS,
+            required_milestones: &["lifecycle", "tool"],
+            qualifications: &[],
+            holding: super::evidence::AttributionHolding::UntilAttributed,
+            resumed_unavailable_reason: None,
             contract: &CONTRACT,
         }];
         &CONTRACTS
@@ -731,13 +739,9 @@ impl HarnessAdapter for ClaudeAdapter {
             };
         };
         match observe_installed_version(&binary, super::adapter::adapter_timeout(env, budget)) {
-            Ok(version) => InstallObservation::Available {
-                binary,
-                identity: RuntimeIdentity {
-                    release_version: Some(version),
-                    exact_key: None,
-                    provenance: RuntimeIdentityProvenance::InstalledProbe,
-                },
+            Ok(version) => match RuntimeIdentity::stable_release(&version, "installed_probe") {
+                Ok(identity) => InstallObservation::Available { binary, identity },
+                Err(diagnostic) => InstallObservation::Unavailable { diagnostic },
             },
             Err(error) => InstallObservation::Unavailable {
                 diagnostic: format!("installed claude version: {error:?}"),
@@ -770,8 +774,10 @@ impl HarnessAdapter for ClaudeAdapter {
             Err(diagnostic) => AdmissionDecision::Refused { diagnostic },
         }
     }
-    fn version_ladder(&self, _: &RuntimeIdentity) -> Ladder {
-        Ladder { rows: vec![] }
+    fn version_ladder(&self, identity: &RuntimeIdentity) -> Ladder {
+        identity.release().map_or(Ladder::Admitted, |version| {
+            super::state::table_ladder(admission_table(), version)
+        })
     }
     fn classify(&self, input: &HookInput) -> ContractObservation {
         ContractObservation {
@@ -808,10 +814,8 @@ impl HarnessAdapter for ClaudeAdapter {
     ) -> Result<EncodedOutput, EncodeFailure> {
         super::adapter::encode_context(event, offer)
     }
-    fn attribute_runtime(&self, _: &HookInput, _: &CallBudget) -> RuntimeAttribution {
-        RuntimeAttribution::Unavailable {
-            diagnostic: "claude: runtime attribution migration is unavailable".into(),
-        }
+    fn attribute_runtime(&self, input: &HookInput, _: &CallBudget) -> RuntimeAttribution {
+        super::attribution::attribute_native_runtime("claude", input)
     }
     fn setup(&self, _: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
         Err(SetupFailure::Unsupported(unsupported("claude", "setup")))

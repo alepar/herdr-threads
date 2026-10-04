@@ -3947,11 +3947,7 @@ fn hook_adapter_dispatch_keeps_native_output_and_observer_nonconsumption() {
     let request = AdmissionRequest {
         installed: InstallObservation::Available {
             binary: "/unused/claude".into(),
-            identity: RuntimeIdentity {
-                release_version: Some("2.1.287".into()),
-                exact_key: None,
-                provenance: RuntimeIdentityProvenance::InstalledProbe,
-            },
+            identity: RuntimeIdentity::stable_release("2.1.287", "installed_probe").unwrap(),
         },
         input: None,
         runtime_candidate: None,
