@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v0.2.4
+
+- **Codex approval-neutral examples.** Launch and handoff examples no longer force an approval mode that conflicts with wrappers using `--approve-for-me`. Existing agent guidance and approval restrictions remain intact.
+- **Socket troubleshooting.** Document approved outside-sandbox CLI execution, sandbox permission failures and unavailable or refused approval. Restarting the daemon does not resolve sandbox denial; broad networking and policy bypasses are not remedies. Historical socket-allowance evidence is clearly separated from current guidance.
+
 ## v0.2.3
 
 - **Pane-name lookup with unnamed agents.** Herdr agents do not need assigned names. An unnamed agent anywhere in the session no longer prevents resolving pane labels for handoff, launch, invitations and other commands. Named-agent aliases, ambiguity checks and structural validation remain intact.
