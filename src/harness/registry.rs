@@ -365,16 +365,23 @@ impl Registration {
                 }
                 RuntimeAttribution::Attributed(identity)
             }
-            RuntimeAttribution::Unavailable { diagnostic } => RuntimeAttribution::Unavailable {
-                diagnostic: diagnostic
+            RuntimeAttribution::Unavailable { diagnostic } => {
+                let diagnostic: String = diagnostic
                     .chars()
                     .filter(|c| !c.is_control())
                     .scan(0, |bytes, c| {
                         *bytes += c.len_utf8();
                         (*bytes <= 128).then_some(c)
                     })
-                    .collect(),
-            },
+                    .collect();
+                RuntimeAttribution::Unavailable {
+                    diagnostic: if diagnostic.is_empty() {
+                        "adapter supplied no runtime attribution reason".into()
+                    } else {
+                        diagnostic
+                    },
+                }
+            }
         }
     }
     /// Sticky session resume state belongs to the caller's durable gate.
@@ -742,9 +749,9 @@ mod tests {
                 bytes: state.to_string().into_bytes(),
             })
         }
-        fn attribute_runtime(&self, _: &HookInput, _: &CallBudget) -> RuntimeAttribution {
+        fn attribute_runtime(&self, input: &HookInput, _: &CallBudget) -> RuntimeAttribution {
             RuntimeAttribution::Unavailable {
-                diagnostic: "test".into(),
+                diagnostic: input.registered_event.as_deref().unwrap_or("test").into(),
             }
         }
         fn setup(&self, _: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
@@ -860,6 +867,34 @@ mod tests {
             bytes: b"{}".to_vec(),
             registered_event: None,
         }
+    }
+    // Removing the registration fallback exposes empty adapter reasons to callers.
+    fn assert_unavailable_reason(raw: &str) {
+        let registry = registry(&[fixture("reason", "Reason", &[], &[])]).unwrap();
+        let result = registry.registrations()[0].attribute_runtime(
+            &HookInput {
+                registered_event: Some(raw.into()),
+                ..input()
+            },
+            &budget(),
+        );
+        let RuntimeAttribution::Unavailable { diagnostic } = result else {
+            panic!("unavailable attribution must not acquire a runtime key");
+        };
+        assert!(
+            !diagnostic.is_empty(),
+            "adapter reason {raw:?} became empty"
+        );
+        assert!(diagnostic.len() <= 128);
+        assert!(!diagnostic.chars().any(char::is_control));
+    }
+    #[test]
+    fn unavailable_attribution_empty_reason_has_nonempty_fallback() {
+        assert_unavailable_reason("");
+    }
+    #[test]
+    fn unavailable_attribution_control_only_reason_has_nonempty_fallback() {
+        assert_unavailable_reason("\0\n\r\t\u{7f}");
     }
     fn offer() -> NeutralOffer {
         NeutralOffer {
