@@ -2499,6 +2499,49 @@ pub trait StorePort: Send + Sync {
     /// work-job transaction (spec D3). Opens no write transaction when no row
     /// qualifies.
     fn prune_retention(&self, budget: &CallBudget) -> Result<PruneProgress, ApiError>;
+    /// Server-resolved v2 observations are advisory and grant no seat/receipt authority.
+    fn record_harness_evidence_v2(
+        &self,
+        record: &crate::store::harness_evidence::EvidenceRecordV2<'_>,
+        budget: &CallBudget,
+    ) -> Result<crate::store::harness_evidence::RecordedV2, ApiError>;
+    fn harness_evidence_v2(
+        &self,
+        harness: &str,
+        identity: &str,
+        domain: &str,
+        origin: crate::harness::evidence::EvidenceOrigin,
+        contract: &str,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::store::harness_evidence::EvidenceRowV2>, ApiError>;
+    /// At most 256 newest rows of one harness, filtered by timestamp.
+    fn harness_evidence_v2_all(
+        &self,
+        harness: &str,
+        since_ms: u64,
+        budget: &CallBudget,
+    ) -> Result<Vec<crate::store::harness_evidence::EvidenceRowV2>, ApiError>;
+    /// At most 256 newest rows across harnesses.
+    fn harness_evidence_v2_since(
+        &self,
+        since_ms: u64,
+        budget: &CallBudget,
+    ) -> Result<Vec<crate::store::harness_evidence::EvidenceRowV2>, ApiError>;
+    fn record_unattributed_v2(
+        &self,
+        harness: &str,
+        domain: &str,
+        origin: crate::harness::evidence::EvidenceOrigin,
+        reason: &str,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError>;
+    fn last_unattributed_v2(
+        &self,
+        harness: &str,
+        domain: &str,
+        origin: crate::harness::evidence::EvidenceOrigin,
+        budget: &CallBudget,
+    ) -> Result<Option<(String, u64)>, ApiError>;
     /// Records one hook payload's harness evidence (ht-xoc.4): upserts the
     /// (harness, version, contract id) row and applies the outcome.
     fn record_harness_evidence(
