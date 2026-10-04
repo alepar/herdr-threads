@@ -209,3 +209,37 @@ class SeamIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class IndexedReleaseSeam(unittest.TestCase):
+    def test_actual_legacy_capture_index_replays_only_its_original_stage(self):
+        import tempfile
+        import test_manifest as tm
+        import test_strategy as ts
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            work = root / 'work/claude-try1'
+            legacy = work / 'legacy/work/claude-2.1.286-1'
+            shutil.copytree(ROOT / 'tests/harness/testdata/canary', legacy)
+            a = ts.adapter('claude')
+            a['canary_strategy'] = None
+            a['contracts'][0].update(domain='native_payload', origin='native_payload')
+            r = ts.result()
+            r.update(harness='claude', identity={'key':'release:2.1.286', 'release_version':'2.1.286',
+                    'source':'npm', 'base_version':None, 'derived_version':None, 'commit':None,
+                    'dirty':False, 'distance':None})
+            r['domains'][0].update(domain='native_payload', origin='native_payload')
+            captures = ts.runner.index_legacy_captures(work, r, 'claude', '2.1.286', 'no_model')
+            self.assertEqual(len(captures), 2)  # stdin + argv; live tier1 is excluded
+            (work / 'request.json').write_text(json.dumps({'adapter':a}))
+            (work / 'result.json').write_text(json.dumps(r))
+            (root / 'artifact-index.json').write_text(json.dumps({'schema_version':1, 'attempts':[{
+                'harness':'claude', 'attempt':'try1', 'identity_key':'release:2.1.286',
+                'evidence_stage':'no_model', 'result_path':'work/claude-try1/result.json',
+                'capture_paths':['work/claude-try1/' + path for path in captures]}]}))
+            plan = tm.manifest.prepare_replay(root, None, tm.MAIN)
+            self.assertEqual(plan['probes'][0]['evidence_stage'], 'no_model')
+            replay = root / plan['probes'][0]['work_path']
+            self.assertTrue((replay / 'capture/tier0/1.stdin').is_file())
+            self.assertFalse((replay / 'capture/tier1').exists())
+            self.assertEqual((replay / 'capture/tier0/1.stdin').read_bytes(),
+                             (legacy / 'capture/tier0/1.stdin').read_bytes())
