@@ -40,3 +40,5 @@ Design roast1 fixes applied inline: context spelling validation/reserved Human i
 Design roast2 exit: clean [converged], all9scouts returned0raw; prior2confirmed resolved, runtime-source mutation escalation remains parked. Owned relay exit0/session44341 reaped. Parallelism pass next.
 
 graph-pass: depth 11→11 · width 2.5→2.5 · applied 0 · parked 1
+
+resumeChange: 2026-10-04 · Registry health foundation Task22 merged9a4cdea7 after independent Important finding and one fresh scoped FIXED pass: broken rollup precedes public cap20.184 distinct focused tests, rootlint26.89/default gates green, owned load settled;13/28 leaves complete. Health-tooling native config-get availability claim superseded by coordinator source audit; Hermes inspection remains Unsupported/native acceptance UNMET. Continue existing ordinary-subagent run with both overall review gates retained; no new native experiments/main writes/full suite.
