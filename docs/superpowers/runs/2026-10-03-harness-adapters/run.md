@@ -24,6 +24,7 @@ approvals:
 - coverage-round-2 · auto · requirements: 18 · mapped: 18 · unmapped: 0 · two valid reviews · no findings · C1/R18 closed · widening: no · targeted integration sweep ht-3bi.10 added after coverage
 
 parked:
+- native-boundary-audit · escalation · "Independent source audit on installed37daf85 found no complete official nonmutating structured producer/effective-config/dispatcher-timeout snapshot route. Concrete Hermes acceptance remains UNMET until a genuine upstream API or separately reviewed/measured equivalent boundary exists. Current Unsupported is an approved safe slice, not goal completion; no native-source edits, external requests or experiments authorized. Audit /private/tmp/herdr-hermes-readonly-boundary-review.md; both review gates retained."
 - run.md · degraded-verdict · "Final integrated full-suite sweep, main merge, worktree cleanup and 0.3.0 release belong to threads-main w4:p1 by explicit user instruction; this run supplies focused checks and a frozen merge request."
 - design-roast-1 · escalation · "Material dissent — runtime identity snapshot after a live Hermes source-checkout change remains unresolved. Once-per-load capture does not establish unchanged source for later lazy imports; no confirmation/native PASS asserted. Full entry in design roast1 Escalations section; retained for final report."
 
