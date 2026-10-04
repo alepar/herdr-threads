@@ -762,6 +762,16 @@ impl HarnessAdapter for ClaudeAdapter {
         };
         &METADATA
     }
+    fn doctor_projection(
+        &self,
+        request: &StatusRequest,
+        daemon: &serde_json::Value,
+        budget: &CallBudget,
+    ) -> Option<DoctorProjection> {
+        Some(crate::cli::doctor::legacy_claude_projection(
+            request, daemon, budget,
+        ))
+    }
     fn legacy_contract_id(&self) -> Option<String> {
         Some(super::contract::contract_id(&CONTRACT))
     }

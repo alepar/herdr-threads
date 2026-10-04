@@ -3,11 +3,11 @@ use super::*;
 #[test]
 fn doctor_debug_and_fix_are_scoped_to_doctor() {
     let plain = parse_argv(["herdr-threads", "doctor"]).unwrap();
-    assert!(matches!(plain.action, CliAction::Doctor { debug: false, fix: false }));
+    assert!(matches!(plain.action, CliAction::Doctor { debug: false, fix: false, .. }));
     let debug = parse_argv(["herdr-threads", "doctor", "--debug"]).unwrap();
-    assert!(matches!(debug.action, CliAction::Doctor { debug: true, fix: false }));
+    assert!(matches!(debug.action, CliAction::Doctor { debug: true, fix: false, .. }));
     let fix = parse_argv(["herdr-threads", "--json", "doctor", "fix"]).unwrap();
-    assert!(matches!(fix.action, CliAction::Doctor { debug: false, fix: true }));
+    assert!(matches!(fix.action, CliAction::Doctor { debug: false, fix: true, .. }));
     assert_eq!(fix.output.format, OutputFormat::Json);
     assert!(parse_argv(["herdr-threads", "doctor", "repair"]).is_err());
 }
@@ -1702,7 +1702,7 @@ impl crate::harness::adapter::HarnessAdapter for SelectorAdapter {
             context_aliases: &[],
             executable: ExecutableLookup::Unsupported,
             host_kinds: &[],
-            setup_scopes: &[SetupScopeKind::ConfigRoot],
+            setup_scopes: &[SetupScopeKind::ConfigRoot, SetupScopeKind::Profile],
             budget: EventBudgetPolicy {
                 lifecycle_ms: 1,
                 observer_ms: 1,
@@ -1910,6 +1910,21 @@ fn injected_registry_drives_agent_selector_choices_without_native_operations() {
             .is_err(),
         "fixture is never production registration"
     );
+}
+
+#[test]
+fn doctor_action_retains_selected_registered_profile() {
+    use crate::harness::registry::{Registration, Registry};
+    use clap::FromArgMatches;
+    static ADAPTER: SelectorAdapter = SelectorAdapter(0);
+    let registry = Registry::new(Box::leak(vec![Registration::new(&ADAPTER)].into_boxed_slice())).unwrap();
+    let matches = command_for_registry(&registry).try_get_matches_from([
+        "herdr-threads", "doctor", "--harness", "hermes", "--profile", "work"
+    ]).unwrap();
+    let parsed = parse_cli_in_registry(Cli::from_arg_matches(&matches).unwrap(), &registry).unwrap();
+    let action = format!("{:?}", parsed.action);
+    assert!(action.contains("hermes"), "{action}");
+    assert!(action.contains("work"), "{action}");
 }
 
 // Catches hard-coded discovery, reordering, native observation, and synthesized strategies.

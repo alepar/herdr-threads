@@ -3,6 +3,34 @@
 
 use super::*;
 
+/// Kills a fixed Claude/Codex renderer and conflation of local profile with
+/// daemon/default or aggregate runtime observation.
+#[test]
+fn doctor_registry_selected_profile_v2_failures_and_safe_repair_consent() {
+    let report = json!({
+        "result": "ok", "context": {"ok": true}, "daemon": {"state": "healthy"},
+        "adapter_order": ["fourth"],
+        "local_harnesses": {"fourth": {
+            "scope": {"kind": "local_profile", "profile": "work", "home": "/isolated/work"},
+            "installed": true, "enabled": false, "admitted": null, "observed": null,
+            "diagnostics": [{"text": "Enable manually"}]
+        }},
+        "harness_health_v2": {"harnesses": {"fourth": {
+            "scope": {"kind": "daemon_default", "profile": null},
+            "runtime_evidence": [{"scope": {"kind": "runtime_evidence_all_scopes", "profile": null}, "state": "working", "line": "fixture no_model"}]
+        }}},
+        "harness_health_v2_unavailable": "advertised harness.health_v2 returned another result"
+    });
+    for text in [render_text(&report), render_debug_text(&report)] {
+        assert!(text.contains("fourth local_profile work"), "{text}");
+        assert!(text.contains("enabled: false"), "{text}");
+        assert!(text.contains("observed: unknown"), "{text}");
+        assert!(text.contains("daemon_default"), "{text}");
+        assert!(text.contains("runtime_evidence_all_scopes"), "{text}");
+        assert!(text.contains("returned another result"), "{text}");
+    }
+}
+
 #[test]
 fn default_doctor_pins_result_and_issues_without_debug_inventory() {
     let report = json!({

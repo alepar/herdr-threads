@@ -91,6 +91,17 @@ pub trait HarnessAdapter: Send + Sync + 'static {
         budget: &CallBudget,
     ) -> Result<SetupOutcome, SetupFailure>;
     fn status(&self, request: &StatusRequest, budget: &CallBudget) -> SetupStatus;
+    /// Optional frozen doctor projection and explicitly safe owned-local repair policy.
+    /// Setup status alone never authorizes native enablement, trust or removal.
+    fn doctor_projection(
+        &self,
+        _: &StatusRequest,
+        _: &serde_json::Value,
+        _: &CallBudget,
+    ) -> Option<DoctorProjection> {
+        None
+    }
+
     fn unsetup(
         &self,
         request: &UnsetupRequest,
@@ -445,6 +456,15 @@ pub struct RemovalOutcome {
     pub residue: Vec<std::path::PathBuf>,
     pub projection: serde_json::Value,
     pub diagnostics: Vec<SetupDiagnostic>,
+}
+pub struct DoctorProjection {
+    /// Captured in the same bounded observation as hooks; avoids a second probe.
+    pub status: Option<SetupStatus>,
+    pub hooks: serde_json::Value,
+    pub limitations: Vec<String>,
+    pub manual_repairs: Vec<serde_json::Value>,
+    pub safe_repairs: Vec<LocalRepair>,
+    pub repair_options: SetupOptions,
 }
 pub struct LocalSetupStatus {
     pub scope: ResolvedSetupScope,

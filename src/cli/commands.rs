@@ -51,6 +51,8 @@ pub enum CliAction {
     Doctor {
         debug: bool,
         fix: bool,
+        harness: Option<String>,
+        scope: crate::harness::adapter::SetupScopeRequest,
     },
     CachedCheckIn(CachePageRequest),
     /// Local harness hook setup, removal or inspection; never contacts the daemon.
@@ -1405,7 +1407,18 @@ where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
 {
-    let matches = command_for_registry(crate::harness::registry::builtins())
+    parse_argv_in_registry(argv, crate::harness::registry::builtins())
+}
+
+pub(crate) fn parse_argv_in_registry<I, T>(
+    argv: I,
+    registry: &crate::harness::registry::Registry,
+) -> Result<ParsedCli, ParseFailure>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let matches = command_for_registry(registry)
         .try_get_matches_from(argv)
         .map_err(|error| {
             use clap::error::ErrorKind;
@@ -1420,7 +1433,7 @@ where
             }
         })?;
     let cli = Cli::from_arg_matches(&matches).map_err(|error| invalid(error.to_string()))?;
-    Ok(parse_cli(cli)?)
+    Ok(parse_cli_in_registry(cli, registry)?)
 }
 
 /// Apply the registry's agent namespace to every selector, including global
@@ -1472,6 +1485,7 @@ fn locator_hint(value: String) -> HostTargetId {
     HostTargetId::parse(value).unwrap_or_else(|_| HostTargetId::new("pending-pane-selector"))
 }
 
+#[cfg(test)]
 fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
     parse_cli_in_registry(cli, crate::harness::registry::builtins())
 }
@@ -2089,6 +2103,8 @@ fn parse_cli_in_registry(
             CliAction::Doctor {
                 debug,
                 fix: matches!(command, Some(DoctorSub::Fix)),
+                harness,
+                scope,
             }
         }
         Top::Setup(args) => setup_action(super::setup::SetupVerb::Install, args, registry)?,
