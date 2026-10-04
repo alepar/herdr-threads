@@ -1309,6 +1309,9 @@ impl HarnessAdapter for CodexAdapter {
     fn canary_strategy(&self) -> Option<&dyn super::adapter::CanaryStrategy> {
         Some(&CodexCanary)
     }
+    fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
+        Some(self)
+    }
     fn contracts(&self) -> &'static [ContractDescriptor] {
         static CONTRACTS: [ContractDescriptor; 1] = [ContractDescriptor {
             domain: ContractDomain::Native,
@@ -1473,4 +1476,763 @@ fn observe_daemon_install(
         ),
         version,
     )
+}
+
+/// Codex native launch grammar, environment and wrapper policy.
+pub mod launch {
+    use crate::cli::setup::SetupEnv;
+    use crate::protocol::results::{ApiError, ErrorCode};
+    use crate::protocol::time::CallBudget;
+    use serde_json::{Value, json};
+    use std::{
+        fs,
+        io::Read,
+        process::{Command as Process, Stdio},
+        time::{Duration, Instant},
+    };
+    fn error(code: ErrorCode, detail: &str) -> ApiError {
+        ApiError::new(code, detail)
+    }
+    /// Codex options (root, `exec` and `resume` levels) that consume the next
+    /// argument as their value. Any other `-`/`--` option is taken as a switch;
+    /// `--flag=value` spellings never consume the next argument. `-i/--image`
+    /// takes one or more values, so its separated spelling is refused
+    /// ([`CODEX_MULTI_VALUE_OPTIONS`]) rather than guessing its arity.
+    pub(crate) const CODEX_VALUE_OPTIONS: &[&str] = &[
+        "-c",
+        "--config",
+        "--enable",
+        "--disable",
+        "-i",
+        "--image",
+        "--remote",
+        "--remote-auth-token-env",
+        "--thread-source",
+        "-m",
+        "--model",
+        "--local-provider",
+        "-p",
+        "--profile",
+        "-s",
+        "--sandbox",
+        "-a",
+        "--ask-for-approval",
+        "-C",
+        "--cd",
+        "--add-dir",
+        "--output-schema",
+        "--color",
+        "-o",
+        "--output-last-message",
+    ];
+
+    /// Codex options taking a variable number of values (codex-cli 0.159.2
+    /// `-i, --image <FILE>...`): the separated spelling would swallow a
+    /// following subcommand or prompt, so only `--image=FILE` (or the option
+    /// after `--`) is accepted.
+    const CODEX_MULTI_VALUE_OPTIONS: &[&str] = &["-i", "--image"];
+
+    /// Codex subcommands a managed launch cannot configure: refused rather than
+    /// started without the owned hooks. `exec` is a handled form; `resume` is refused until captured.
+    /// Covers every top-level subcommand and alias `codex --help` lists for
+    /// codex-cli 0.159.2 (plus older names), so a bare first positional naming a
+    /// Codex subcommand is never mistaken for an interactive prompt; a prompt
+    /// that is such a word goes after `--`.
+    pub(crate) const CODEX_UNSUPPORTED_SUBCOMMANDS: &[&str] = &[
+        "agents",
+        "e",
+        "review",
+        "login",
+        "logout",
+        "mcp",
+        "mcp-server",
+        "app-server",
+        "app",
+        "completion",
+        "sandbox",
+        "debug",
+        "apply",
+        "a",
+        "fork",
+        "cloud",
+        "cloud-tasks",
+        "features",
+        "help",
+        "plugin",
+        "remote-control",
+        "update",
+        "doctor",
+        "queue",
+        "archive",
+        "delete",
+        "migrate-rollouts",
+        "unarchive",
+        "exec-server",
+        "responses-api-proxy",
+        "stdio-to-uds",
+        "execpolicy",
+        "generate-ts",
+    ];
+
+    /// `codex exec` subcommands other than `resume` (codex-cli 0.159.2
+    /// `codex exec --help`): refused, since no evidence shows they read the
+    /// exec-level owned hooks.
+    pub(crate) const CODEX_EXEC_UNSUPPORTED_SUBCOMMANDS: &[&str] = &["fork", "review", "help"];
+
+    /// Where a managed Codex launch places the owned `-c` configuration. Codex
+    /// 0.159.2 `exec` ignores root-level `hooks.*` overrides
+    /// (`native-codex-matrix-1/hook-placement-probe`), so each subcommand form
+    /// carries them at its own level; `--no-daemon` is a top-level flag and
+    /// always precedes the subcommand.
+    ///
+    /// Evidence per form:
+    /// - `Interactive`: `codex --no-daemon -c hooks.* [PROMPT]`, the launch line
+    ///   `setup codex` prints (root-level session overrides);
+    /// - `Exec`: `codex --no-daemon exec -c hooks.* ... PROMPT`
+    ///   (`hook-placement-probe/exec.jsonl`, `codex-158-live-hook-capture/run1.sh`);
+    /// - `ExecResume`: `codex --no-daemon exec ... resume ... -c hooks.* ID PROMPT`
+    ///   (`codex-158-live-hook-capture/run3.sh`, SessionStart resume captured);
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum CodexLaunchForm {
+        Interactive,
+        Exec,
+        ExecResume,
+    }
+
+    /// The explicit working directory whose project configuration a scoped
+    /// sandbox probe can reproduce. An implicit pane cwd is not inferred from
+    /// the coordinator process or saved pane paths.
+    pub fn scoped_codex_cwd(argv: &[String]) -> Result<std::path::PathBuf, ApiError> {
+        let options_end = argv
+            .iter()
+            .position(|arg| arg == "--")
+            .unwrap_or(argv.len());
+        let mut found = None;
+        let mut index = 0;
+        while index < options_end {
+            let arg = argv[index].as_str();
+            let cwd = if arg == "-C" || arg == "--cd" {
+                argv.get(index + 1).map(String::as_str)
+            } else {
+                arg.strip_prefix("--cd=")
+                    .or_else(|| arg.strip_prefix("-C="))
+            };
+            if let Some(cwd) = cwd {
+                let path = std::path::PathBuf::from(cwd);
+                if found.is_some() || !path.is_absolute() {
+                    return Err(error(
+                        ErrorCode::InvalidRequest,
+                        "scoped Codex sandbox validation needs one absolute -C directory",
+                    ));
+                }
+                found = Some(path);
+                index += if arg == "-C" || arg == "--cd" { 2 } else { 1 };
+            } else {
+                index += if CODEX_VALUE_OPTIONS.contains(&arg) {
+                    2
+                } else {
+                    1
+                };
+            }
+        }
+        found.ok_or_else(|| {
+        error(
+            ErrorCode::InvalidRequest,
+            "scoped Codex sandbox validation needs an explicit -C /absolute/project/path to match project policy",
+        )
+    })
+    }
+
+    /// The next positional argument at or after `start`: its index and whether
+    /// it follows `--` (and so is a prompt, never a subcommand).
+    fn next_positional(argv: &[String], start: usize) -> Option<(usize, bool)> {
+        let mut index = start;
+        while index < argv.len() {
+            let arg = argv[index].as_str();
+            if arg == "--" {
+                return (index + 1 < argv.len()).then_some((index + 1, true));
+            }
+            if arg.len() > 1 && arg.starts_with('-') {
+                index += if CODEX_VALUE_OPTIONS.contains(&arg) {
+                    2
+                } else {
+                    1
+                };
+                continue;
+            }
+            return Some((index, false));
+        }
+        None
+    }
+
+    /// The caller's Codex form and the index at which the owned configuration is
+    /// inserted (right after the subcommand that must carry it).
+    fn codex_form(argv: &[String]) -> Result<(CodexLaunchForm, usize, Option<usize>), ApiError> {
+        let Some((first, after_separator)) = next_positional(argv, 0) else {
+            return Ok((CodexLaunchForm::Interactive, 0, None));
+        };
+        if after_separator {
+            return Ok((CodexLaunchForm::Interactive, 0, None));
+        }
+        match argv[first].as_str() {
+            "exec" => match next_positional(argv, first + 1) {
+                Some((second, false)) if argv[second] == "resume" => {
+                    Ok((CodexLaunchForm::ExecResume, second + 1, Some(first)))
+                }
+                // Only `exec resume` has evidence of reading its own hook level;
+                // every other exec subcommand (0.159.2: `fork`, `review`, `help`)
+                // is refused rather than started with unverified hook placement.
+                Some((second, false))
+                    if CODEX_EXEC_UNSUPPORTED_SUBCOMMANDS.contains(&argv[second].as_str()) =>
+                {
+                    Err(error(
+                        ErrorCode::InvalidRequest,
+                        "managed launch supports Codex `exec` and `exec resume` only; this exec \
+                     subcommand cannot carry the owned hook configuration",
+                    ))
+                }
+                _ => Ok((CodexLaunchForm::Exec, first + 1, Some(first))),
+            },
+            "resume" => Err(error(
+                ErrorCode::InvalidRequest,
+                "managed launch refuses the Codex `resume` form: no live capture shows it loading the owned hooks (TRUST-POLICY Accepted limits); run `codex resume` by hand in the pane, or use `exec resume`",
+            )),
+            word if CODEX_UNSUPPORTED_SUBCOMMANDS.contains(&word) => Err(error(
+                ErrorCode::InvalidRequest,
+                "managed launch supports Codex interactive, `exec` and `exec resume` only; \
+             this subcommand cannot carry the owned hook configuration",
+            )),
+            _ => {
+                // Interactive with a prompt: Codex takes one prompt, so a second
+                // positional means the arguments were misread (an unknown option
+                // taking a value before a subcommand). Refuse rather than place
+                // the owned hooks where the subcommand would ignore them.
+                if next_positional(argv, first + 1).is_some() {
+                    return Err(error(
+                        ErrorCode::InvalidRequest,
+                        "ambiguous Codex arguments: more than one positional argument before a \
+                     recognised subcommand; put the prompt after `--`",
+                    ));
+                }
+                Ok((CodexLaunchForm::Interactive, 0, None))
+            }
+        }
+    }
+
+    /// The native argument array a managed launch submits: for Claude the owned
+    /// arguments then the caller's; for Codex `--no-daemon` exactly once at the
+    /// top level, then the caller's arguments byte for byte and in order with the
+    /// owned configuration inserted at the level of the caller's subcommand
+    /// ([`CodexLaunchForm`]). An owned `--no-daemon` is dropped, never
+    /// duplicated. Unsupported subcommands, conflicting daemon modes, a
+    /// misplaced `--no-daemon` and caller `hooks.*` overrides are refused.
+    /// [`compose_native_argv`](crate::harness::launch::compose_native_argv) for a pane whose shell wrapper may already pass
+    /// `--no-daemon`. With `shell_passes_no_daemon` the composed Codex argv
+    /// carries no `--no-daemon` at all (the wrapper supplies the single one), so
+    /// a caller's own top-level `--no-daemon` is dropped too; every other check
+    /// and placement is unchanged.
+    pub fn compose_native_argv_with(
+        caller: Vec<String>,
+        owned: Vec<String>,
+        shell_passes_no_daemon: bool,
+    ) -> Result<Vec<String>, ApiError> {
+        let options_end = caller
+            .iter()
+            .position(|arg| arg == "--")
+            .unwrap_or(caller.len());
+        let options = &caller[..options_end];
+        if options.iter().any(|arg| {
+            arg == "--daemon" || arg.starts_with("--daemon=") || arg.starts_with("--no-daemon=")
+        }) {
+            return Err(error(
+                ErrorCode::InvalidRequest,
+                "conflicting Codex daemon mode",
+            ));
+        }
+        // Codex applies repeated `-c` values in order within the session layer,
+        // so a caller hook override (a `hooks.*` key or the whole `hooks` table)
+        // would silently replace the owned hook.
+        let scoped_socket_policy = owned
+            .iter()
+            .any(|arg| arg == "sandbox_workspace_write.network_access=true");
+        let mut previous_is_config = false;
+        let mut previous_takes_value = false;
+        for arg in options {
+            let value = if previous_is_config {
+                Some(arg.as_str())
+            } else {
+                arg.strip_prefix("--config=").or_else(|| {
+                    arg.strip_prefix("-c")
+                        .filter(|rest| !rest.is_empty())
+                        .map(|rest| rest.strip_prefix('=').unwrap_or(rest))
+                })
+            };
+            if value.is_some_and(overrides_hooks) {
+                return Err(error(
+                    ErrorCode::InvalidRequest,
+                    "caller Codex hooks override would replace the owned hook configuration",
+                ));
+            }
+            if scoped_socket_policy
+                && (value.is_some()
+                    || (!previous_takes_value
+                        && matches!(
+                            arg.as_str(),
+                            "-c" | "--config"
+                                | "-p"
+                                | "--profile"
+                                | "-s"
+                                | "--sandbox"
+                                | "--enable"
+                                | "--disable"
+                                | "--add-dir"
+                                | "--remote"
+                                | "--remote-auth-token-env"
+                                | "--worktree"
+                                | "--approve-for-me"
+                                | "--dangerously-bypass-approvals-and-sandbox"
+                                | "--yolo"
+                                | "--dangerously-bypass-hook-trust"
+                                | "--full-auto"
+                                | "--search"
+                        ))
+                    || (!previous_takes_value
+                        && [
+                            "--profile=",
+                            "--sandbox=",
+                            "--enable=",
+                            "--disable=",
+                            "--add-dir=",
+                            "--remote=",
+                            "--remote-auth-token-env=",
+                        ]
+                        .iter()
+                        .any(|prefix| arg.starts_with(prefix)))
+                    || (!previous_takes_value && (arg.starts_with("-s") || arg.starts_with("-p"))))
+            {
+                return Err(error(
+                    ErrorCode::InvalidRequest,
+                    "caller Codex policy or profile override would differ from the measured scoped sandbox policy",
+                ));
+            }
+            if !previous_takes_value && CODEX_MULTI_VALUE_OPTIONS.contains(&arg.as_str()) {
+                return Err(error(
+                    ErrorCode::InvalidRequest,
+                    "ambiguous Codex arguments: put images as --image=FILE or before --",
+                ));
+            }
+            previous_is_config = !previous_takes_value && (arg == "-c" || arg == "--config");
+            previous_takes_value =
+                !previous_takes_value && CODEX_VALUE_OPTIONS.contains(&arg.as_str());
+        }
+        let (_, insert_at, subcommand) = codex_form(&caller)?;
+        let no_daemon: Vec<usize> = options
+            .iter()
+            .enumerate()
+            .filter(|(_, arg)| *arg == "--no-daemon")
+            .map(|(index, _)| index)
+            .collect();
+        if no_daemon.len() > 1 {
+            return Err(error(
+                ErrorCode::InvalidRequest,
+                "duplicate Codex --no-daemon",
+            ));
+        }
+        if let (Some(&at), Some(subcommand)) = (no_daemon.first(), subcommand)
+            && at > subcommand
+        {
+            return Err(error(
+                ErrorCode::InvalidRequest,
+                "Codex --no-daemon is a top-level flag; it must precede the subcommand",
+            ));
+        }
+        let owned = owned.into_iter().filter(|arg| arg != "--no-daemon");
+        let mut argv = Vec::with_capacity(caller.len() + 8);
+        let (caller, insert_at) = match (shell_passes_no_daemon, no_daemon.first()) {
+            (true, Some(&at)) => {
+                // The wrapper's flag is the single one; removing a top-level
+                // switch never changes the subcommand form.
+                let mut caller = caller;
+                caller.remove(at);
+                (
+                    caller,
+                    if at < insert_at {
+                        insert_at - 1
+                    } else {
+                        insert_at
+                    },
+                )
+            }
+            (true, None) => (caller, insert_at),
+            (false, _) => {
+                if no_daemon.is_empty() {
+                    argv.push("--no-daemon".to_owned());
+                }
+                (caller, insert_at)
+            }
+        };
+        let mut caller = caller.into_iter();
+        argv.extend(caller.by_ref().take(insert_at));
+        argv.extend(owned);
+        argv.extend(caller);
+        Ok(argv)
+    }
+
+    /// Whether a Codex `-c` value sets the `hooks` table or a key under it: the
+    /// key is the text before the first `=`, trimmed.
+    fn overrides_hooks(value: &str) -> bool {
+        let key = value.split('=').next().unwrap_or("").trim();
+        key == "hooks" || key.starts_with("hooks.")
+    }
+
+    /// How the pane's interactive shell resolves `codex`. Herdr starts the
+    /// agent by name inside that shell, so a user function or alias wrapping
+    /// `codex` runs first and may already pass `--no-daemon` (Codex refuses the
+    /// flag twice). Injected so tests never run a real shell.
+    pub trait CodexShellProbe {
+        /// The shell's description of `codex` (stdout only), or why it could
+        /// not be obtained.
+        fn resolve_codex(&self) -> Result<String, String>;
+        fn resolve_codex_bounded(
+            &self,
+            clock: &dyn crate::protocol::time::Clock,
+            budget: &CallBudget,
+        ) -> Result<String, String> {
+            if budget.is_exhausted(clock) {
+                return Err("launch budget exhausted".into());
+            }
+            self.resolve_codex()
+        }
+        fn pane_shell_env_bounded(
+            &self,
+            var: &str,
+            clock: &dyn crate::protocol::time::Clock,
+            budget: &CallBudget,
+        ) -> Option<String> {
+            if budget.is_exhausted(clock) {
+                return None;
+            }
+            self.pane_shell_env(var)
+        }
+
+        /// The value the pane's interactive shell itself gives `var` (an `export`
+        /// in its startup files), without the launcher's own value; `None` when
+        /// the shell sets none or cannot be asked. Herdr's `agent.start` carries
+        /// no environment, so the agent inherits whatever the pane shell has.
+        fn pane_shell_env(&self, _var: &str) -> Option<String> {
+            None
+        }
+    }
+
+    /// The bound on the shell probe; on timeout launch keeps adding `--no-daemon`.
+    pub const SHELL_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
+    /// Runs the user's `$SHELL` (else `/bin/zsh`) interactively, as the pane
+    /// does: zsh `whence -f codex 2>/dev/null || type codex`, otherwise
+    /// `type codex`. Stdout only; stdin and stderr are null.
+    pub struct SystemShellProbe {
+        pub shell: std::path::PathBuf,
+        pub timeout: Duration,
+    }
+
+    impl SystemShellProbe {
+        pub fn from_process() -> Self {
+            let shell = std::env::var_os("SHELL")
+                .filter(|shell| !shell.is_empty())
+                .map_or_else(|| "/bin/zsh".into(), std::path::PathBuf::from);
+            Self {
+                shell,
+                timeout: crate::protocol::time::external_bound(SHELL_PROBE_TIMEOUT),
+            }
+        }
+    }
+
+    impl SystemShellProbe {
+        /// Runs `script` in the interactive shell (`-ic`), stdout only, bounded by
+        /// the probe timeout. `unset` removes one inherited variable first.
+        fn run_script(&self, script: &str, unset: Option<&str>) -> Result<String, String> {
+            let mut command = Process::new(&self.shell);
+            command.arg("-ic").arg(script);
+            if let Some(var) = unset {
+                command.env_remove(var);
+            }
+            let mut child = command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|error| format!("{}: {error}", self.shell.display()))?;
+            let mut stdout = child.stdout.take().ok_or("no shell stdout")?;
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let result = stdout.read_to_end(&mut bytes).map(|_| bytes);
+                let _ = sender.send(result);
+            });
+            let deadline = Instant::now() + self.timeout;
+            let status = loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break status,
+                    Ok(None) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    Ok(None) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err("the shell probe timed out".into());
+                    }
+                    Err(error) => return Err(error.to_string()),
+                }
+            };
+            if !status.success() {
+                return Err(format!("the shell probe exited with {status}"));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let bytes = receiver
+                .recv_timeout(remaining.max(Duration::from_millis(100)))
+                .map_err(|_| "the shell probe output was not closed".to_owned())?
+                .map_err(|error| error.to_string())?;
+            Ok(String::from_utf8_lossy(&bytes).into_owned())
+        }
+    }
+
+    impl CodexShellProbe for SystemShellProbe {
+        fn resolve_codex_bounded(
+            &self,
+            clock: &dyn crate::protocol::time::Clock,
+            budget: &CallBudget,
+        ) -> Result<String, String> {
+            let remaining = budget.deadline.0.saturating_sub(clock.monotonic_now().0);
+            if remaining == 0 {
+                return Err("launch budget exhausted".into());
+            }
+            Self {
+                shell: self.shell.clone(),
+                timeout: self.timeout.min(Duration::from_millis(remaining)),
+            }
+            .resolve_codex()
+        }
+        fn pane_shell_env_bounded(
+            &self,
+            var: &str,
+            clock: &dyn crate::protocol::time::Clock,
+            budget: &CallBudget,
+        ) -> Option<String> {
+            let remaining = budget.deadline.0.saturating_sub(clock.monotonic_now().0);
+            if remaining == 0 {
+                return None;
+            }
+            Self {
+                shell: self.shell.clone(),
+                timeout: self.timeout.min(Duration::from_millis(remaining)),
+            }
+            .pane_shell_env(var)
+        }
+
+        fn resolve_codex(&self) -> Result<String, String> {
+            let is_zsh = self
+                .shell
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains("zsh"));
+            let script = if is_zsh {
+                "whence -f codex 2>/dev/null || type codex"
+            } else {
+                "type codex"
+            };
+            self.run_script(script, None)
+        }
+
+        fn pane_shell_env(&self, var: &str) -> Option<String> {
+            const BEGIN: &str = "HT_PANE_ENV_BEGIN";
+            const END: &str = "HT_PANE_ENV_END";
+            // Only a plain variable name is ever interpolated into the script.
+            if var.is_empty() || !var.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
+                return None;
+            }
+            let script = format!("printf '%s' {BEGIN}\"${{{var}-}}\"{END}");
+            let output = self.run_script(&script, Some(var)).ok()?;
+            let value = output.split(BEGIN).nth(1)?.split(END).next()?;
+            (!value.is_empty()).then(|| value.to_owned())
+        }
+    }
+
+    /// Whether a shell's description of `codex` (a function body or alias)
+    /// passes `--no-daemon` as a word of its own. Comment lines are ignored;
+    /// `--no-daemon=...` is not the flag.
+    pub fn wrapper_passes_no_daemon(description: &str) -> bool {
+        description
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .flat_map(|line| {
+                line.split(|c: char| {
+                    c.is_whitespace() || matches!(c, '\'' | '"' | '`' | ';' | '(' | ')' | '|' | '&')
+                })
+            })
+            .any(|word| word == "--no-daemon")
+    }
+
+    /// The report text when the pane shell's `codex` wrapper already passes
+    /// `--no-daemon` and launch therefore adds none.
+    pub const CODEX_WRAPPER_NO_DAEMON: &str =
+        "shell function or alias already passes --no-daemon; launch added none";
+
+    /// The Codex profile Codex applies: `-p/--profile` before `--` (the last one
+    /// wins), else the top-level `profile` key of `config.toml`, else none.
+    pub fn codex_profile(argv: &[String], config: Option<&str>) -> (String, &'static str) {
+        let options_end = argv.iter().position(|a| a == "--").unwrap_or(argv.len());
+        let options = &argv[..options_end];
+        let mut chosen = None;
+        for (index, arg) in options.iter().enumerate() {
+            let value = match arg.as_str() {
+                "-p" | "--profile" => options.get(index + 1).map(String::as_str),
+                other => other
+                    .strip_prefix("--profile=")
+                    .or_else(|| other.strip_prefix("-p").filter(|rest| !rest.is_empty())),
+            };
+            if let Some(value) = value {
+                chosen = Some(value.to_owned());
+            }
+        }
+        if let Some(profile) = chosen {
+            return (profile, "argv");
+        }
+        let from_config = config
+            .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok())
+            .and_then(|doc| doc.get("profile")?.as_str().map(str::to_owned));
+        match from_config {
+            Some(profile) => (profile, "config.toml"),
+            None => ("default".to_owned(), "none"),
+        }
+    }
+
+    /// The effective Codex home, its `config.toml` and the selected profile,
+    /// which answers "why was my Codex profile not applied?".
+    pub(crate) fn codex_report(env: &SetupEnv, argv: &[String]) -> Value {
+        let home = env.codex_home.as_deref();
+        let config_path = home.map(|home| home.join("config.toml"));
+        let config = config_path
+            .as_deref()
+            .and_then(|path| fs::read_to_string(path).ok());
+        let (profile, profile_source) = codex_profile(argv, config.as_deref());
+        json!({
+            "codex_home": home.map(|home| home.display().to_string()),
+            "config_path": config_path.as_ref().map(|path| path.display().to_string()),
+            "config_present": config.is_some(),
+            "profile": profile,
+            "profile_source": profile_source,
+            "command_execution": "approved_outside_sandbox",
+            "command_guidance": "Run herdr-threads commands outside the sandbox through Codex approval; if denied, report the policy refusal without bypassing it",
+        })
+    }
+}
+
+impl LaunchPolicy for CodexAdapter {
+    fn resolve_scope(
+        &self,
+        request: &LaunchRequest,
+        probe: &dyn super::launch::CodexShellProbe,
+        budget: &CallBudget,
+    ) -> Result<LaunchScope, crate::protocol::results::ApiError> {
+        let mut scope = super::launch::native_scope(request, "codex", "CODEX_HOME", probe, budget)?;
+        // -C remains in native argv. It changes project lookup, never setup profile selection.
+        let options_end = request
+            .argv
+            .iter()
+            .position(|a| a == "--")
+            .unwrap_or(request.argv.len());
+        let mut index = 0;
+        while index < options_end {
+            let arg = &request.argv[index];
+            let value = if arg == "-C" || arg == "--cd" {
+                request.argv.get(index + 1).map(String::as_str)
+            } else {
+                arg.strip_prefix("--cd=")
+                    .or_else(|| arg.strip_prefix("-C="))
+            };
+            if let Some(value) = value {
+                scope.working_directory = request.environment.cwd.join(value);
+            }
+            index += if launch::CODEX_VALUE_OPTIONS.contains(&arg.as_str()) {
+                2
+            } else {
+                1
+            };
+        }
+        Ok(scope)
+    }
+    fn validate_native_argv(
+        &self,
+        argv: &[String],
+    ) -> Result<(), crate::protocol::results::ApiError> {
+        launch::compose_native_argv_with(argv.to_vec(), Vec::new(), false).map(|_| ())
+    }
+    fn compose_argv(
+        &self,
+        caller: Vec<String>,
+        owned: Vec<String>,
+        shell: bool,
+    ) -> Result<Vec<String>, crate::protocol::results::ApiError> {
+        launch::compose_native_argv_with(caller, owned, shell)
+    }
+    fn prepare_launch(
+        &self,
+        request: &LaunchRequest,
+        scope: &LaunchScope,
+        admitted: &super::registry::AdmittedHandle,
+        status: &LocalSetupStatus,
+        probe: &dyn super::launch::CodexShellProbe,
+        budget: &CallBudget,
+    ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
+        if admitted.metadata().id != "codex" || status.scope != scope.setup {
+            return Err(crate::protocol::results::ApiError::new(
+                crate::protocol::results::ErrorCode::InvalidRequest,
+                "launch admission or scope mismatch",
+            ));
+        }
+        let hook = super::launch::owned_launch_hook(status)?;
+        if hook != super::launch::native_configuration_hook(request, scope, Harness::Codex)? {
+            return Err(crate::protocol::results::ApiError::new(
+                crate::protocol::results::ErrorCode::Conflict,
+                "selected native setup status changed before preparation",
+            ));
+        }
+        let shell = probe
+            .resolve_codex_bounded(request.environment.clock.as_ref(), budget)
+            .is_ok_and(|text| launch::wrapper_passes_no_daemon(&text));
+        let env = crate::harness::setup::legacy::scoped_legacy_environment(
+            Harness::Codex,
+            &scope.setup,
+            &request.environment,
+        )
+        .map_err(|err| {
+            crate::protocol::results::ApiError::new(
+                crate::protocol::results::ErrorCode::InvalidRequest,
+                err.to_string(),
+            )
+        })?;
+        Ok(LaunchPreparation {
+            argv: self.compose_argv(request.argv.clone(), Vec::new(), shell)?,
+            hook,
+            working_directory: scope.working_directory.clone(),
+            environment_overrides: Default::default(),
+            report: json!({"codex": launch::codex_report(&env, &request.argv)}),
+            wrapper_warning: shell.then_some(launch::CODEX_WRAPPER_NO_DAEMON),
+        })
+    }
+    fn configuration_fingerprint(
+        &self,
+        request: &LaunchRequest,
+        scope: &LaunchScope,
+    ) -> Result<String, crate::protocol::results::ApiError> {
+        super::launch::native_configuration_fingerprint(
+            request,
+            scope,
+            Harness::Codex,
+            &["hooks.json", "config.toml"],
+        )
+    }
+    fn expected_host_kinds(&self) -> &'static [&'static str] {
+        self.metadata().host_kinds
+    }
 }

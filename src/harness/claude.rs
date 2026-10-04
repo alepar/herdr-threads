@@ -780,6 +780,9 @@ impl HarnessAdapter for ClaudeAdapter {
     fn canary_strategy(&self) -> Option<&dyn super::adapter::CanaryStrategy> {
         Some(&ClaudeCanary)
     }
+    fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
+        Some(self)
+    }
     fn contracts(&self) -> &'static [ContractDescriptor] {
         static CONTRACTS: [ContractDescriptor; 1] = [ContractDescriptor {
             domain: ContractDomain::Native,
@@ -946,4 +949,72 @@ fn observe_daemon_install(
         crate::app::claude_status(observed, crate::harness::claude::health_capability()),
         version,
     )
+}
+
+impl LaunchPolicy for ClaudeAdapter {
+    fn resolve_scope(
+        &self,
+        request: &LaunchRequest,
+        probe: &dyn super::launch::CodexShellProbe,
+        budget: &CallBudget,
+    ) -> Result<LaunchScope, crate::protocol::results::ApiError> {
+        super::launch::native_scope(request, "claude", "CLAUDE_CONFIG_DIR", probe, budget)
+    }
+    fn validate_native_argv(&self, _: &[String]) -> Result<(), crate::protocol::results::ApiError> {
+        Ok(())
+    }
+    fn compose_argv(
+        &self,
+        caller: Vec<String>,
+        owned: Vec<String>,
+        _: bool,
+    ) -> Result<Vec<String>, crate::protocol::results::ApiError> {
+        Ok(owned.into_iter().chain(caller).collect())
+    }
+    fn prepare_launch(
+        &self,
+        request: &LaunchRequest,
+        scope: &LaunchScope,
+        admitted: &super::registry::AdmittedHandle,
+        status: &LocalSetupStatus,
+        _: &dyn super::launch::CodexShellProbe,
+        _: &CallBudget,
+    ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
+        if admitted.metadata().id != "claude" || status.scope != scope.setup {
+            return Err(crate::protocol::results::ApiError::new(
+                crate::protocol::results::ErrorCode::InvalidRequest,
+                "launch admission or scope mismatch",
+            ));
+        }
+        let hook = super::launch::owned_launch_hook(status)?;
+        if hook != super::launch::native_configuration_hook(request, scope, Harness::Claude)? {
+            return Err(crate::protocol::results::ApiError::new(
+                crate::protocol::results::ErrorCode::Conflict,
+                "selected native setup status changed before preparation",
+            ));
+        }
+        Ok(LaunchPreparation {
+            argv: request.argv.clone(),
+            hook,
+            working_directory: scope.working_directory.clone(),
+            environment_overrides: Default::default(),
+            report: Value::Null,
+            wrapper_warning: None,
+        })
+    }
+    fn configuration_fingerprint(
+        &self,
+        request: &LaunchRequest,
+        scope: &LaunchScope,
+    ) -> Result<String, crate::protocol::results::ApiError> {
+        super::launch::native_configuration_fingerprint(
+            request,
+            scope,
+            Harness::Claude,
+            &["settings.json"],
+        )
+    }
+    fn expected_host_kinds(&self) -> &'static [&'static str] {
+        self.metadata().host_kinds
+    }
 }

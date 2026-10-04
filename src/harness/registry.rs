@@ -542,6 +542,39 @@ impl Registration {
     pub fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
         self.adapter.launch_policy()
     }
+    /// Erased launch admission remains scoped to the registration that produced it.
+    pub fn prepare_launch(
+        &self,
+        request: &LaunchRequest,
+        scope: &LaunchScope,
+        admitted: &AdmittedHandle,
+        status: &LocalSetupStatus,
+        probe: &dyn super::launch::CodexShellProbe,
+        budget: &CallBudget,
+    ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
+        use crate::protocol::results::{ApiError, ErrorCode};
+        if !std::ptr::eq(self, admitted.registration) {
+            return Err(ApiError::new(
+                ErrorCode::InvalidRequest,
+                "launch admission registration mismatch",
+            ));
+        }
+        if status.scope != scope.setup {
+            return Err(ApiError::new(
+                ErrorCode::Conflict,
+                "launch setup status belongs to a different scope",
+            ));
+        }
+        super::launch::owned_launch_hook(status)?;
+        self.launch_policy()
+            .ok_or_else(|| {
+                ApiError::new(
+                    ErrorCode::UnsupportedHarness,
+                    format!("{}: launch is unsupported", self.metadata().id),
+                )
+            })?
+            .prepare_launch(request, scope, admitted, status, probe, budget)
+    }
     pub fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
         self.adapter.composer_policy()
     }
