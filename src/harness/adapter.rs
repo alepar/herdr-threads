@@ -5,6 +5,9 @@ use std::ffi::OsString;
 pub trait HarnessAdapter: Send + Sync + 'static {
     type Admission: Send + Sync + 'static;
     fn metadata(&self) -> &'static AdapterMetadata;
+    fn output_policy(&self) -> OutputPolicy {
+        OutputPolicy::default()
+    }
     fn contracts(&self) -> &'static [ContractDescriptor];
     fn observe_install(&self, env: &InstallEnvironment, budget: &CallBudget) -> InstallObservation;
     fn admit(
@@ -71,10 +74,15 @@ pub struct EventBudgetPolicy {
     pub observer_ms: u64,
 }
 pub struct InstallEnvironment {
+    /// Clock whose monotonic epoch defines the supplied CallBudget.
+    pub clock: std::sync::Arc<dyn crate::protocol::time::Clock>,
     pub path: Option<std::ffi::OsString>,
     pub config_root: Option<std::path::PathBuf>,
+    pub state_dir: Option<std::path::PathBuf>,
 }
 pub enum InstallObservation {
+    /// Carries the unforgeable installed binary/schema witness, never a payload claim.
+    CodexWitness(super::codex::InstalledVersion),
     Available {
         binary: std::path::PathBuf,
         identity: RuntimeIdentity,
@@ -160,6 +168,11 @@ pub enum EventIntent {
     Observer,
 }
 pub struct EventMetadata {
+    pub skill_pointer: bool,
+    /// An adapter callback can shorten the core end-to-end limit.
+    pub callback_deadline: Option<std::time::Instant>,
+    pub context_source: String,
+    pub capability: super::Capability,
     pub domain: ContractDomain,
     pub native_event: String,
     pub shape_fields: Vec<String>,
@@ -229,6 +242,7 @@ pub enum SetupStatus {
 }
 #[derive(Debug)]
 pub enum DecodeFailure {
+    Native(super::context::ContextError),
     Unsupported(UnsupportedOperation),
     Invalid(String),
     RegistrationMismatch,
@@ -295,7 +309,22 @@ macro_rules! failure {
         impl std::error::Error for $ty {}
     };
 }
-failure!(DecodeFailure, "decode", RegistrationMismatch);
+impl std::fmt::Display for DecodeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Native(error) => write!(f, "native decode: {error:?}"),
+            Self::Unsupported(error) => error.fmt(f),
+            Self::Invalid(message) => write!(
+                f,
+                "decode: invalid adapter input: {}",
+                message.chars().take(256).collect::<String>()
+            ),
+            Self::RegistrationMismatch => write!(f, "decode: adapter registration mismatch"),
+        }
+    }
+}
+impl std::error::Error for DecodeFailure {}
+
 failure!(EncodeFailure, "encode", RegistrationMismatch);
 failure!(SetupFailure, "setup",);
 
@@ -322,6 +351,10 @@ mod tests {
             event_id: "event".into(),
             intent: EventIntent::Current,
             metadata: EventMetadata {
+                context_source: "PreToolUse".into(),
+                callback_deadline: None,
+                skill_pointer: false,
+                capability: crate::harness::Capability::ObservedInput,
                 domain: ContractDomain::Native,
                 native_event: "Tool".into(),
                 shape_fields: vec![],
@@ -342,7 +375,7 @@ mod tests {
         }
     }
     #[test]
-    fn builtin_boundaries_are_inert_and_classify_native_contracts() {
+    fn builtin_hook_admission_refuses_missing_install_and_classifies_without_admission() {
         let budget = CallBudget {
             deadline: crate::protocol::time::MonoInstant(100),
             cancellation: Default::default(),
@@ -356,16 +389,6 @@ mod tests {
                 runtime_candidate: None,
             };
             assert!(registration.admit(&request, &budget).is_err());
-            assert!(matches!(
-                registration.observe_install(
-                    &InstallEnvironment {
-                        path: None,
-                        config_root: None
-                    },
-                    &budget
-                ),
-                InstallObservation::Unsupported(_)
-            ));
             assert!(matches!(
                 registration.status(
                     &StatusRequest {
@@ -427,4 +450,108 @@ mod tests {
             ));
         }
     }
+}
+
+#[derive(Default)]
+pub struct OutputPolicy {
+    /// Legacy native child startup stays silent without a local daemon endpoint.
+    pub child_requires_endpoint: bool,
+    pub extra_guidance: &'static str,
+    pub empty_lifecycle: bool,
+    pub session_start_hint: bool,
+}
+impl DecodedEvent {
+    pub fn from_native(event: super::LifecycleEvent) -> Self {
+        let crate::harness::registry::OccupantHarness::Agent(harness) = event.harness.occupant()
+        else {
+            unreachable!("native agent event")
+        };
+        let native_event = if event.kind == super::context::EventKind::Tool {
+            "PreToolUse"
+        } else if event.source == "SubagentStart" {
+            "SubagentStart"
+        } else {
+            "SessionStart"
+        };
+        Self {
+            harness,
+            role: match event.role {
+                super::context::Role::TopLevel => EventRole::TopLevel,
+                super::context::Role::Subagent => EventRole::Subagent,
+            },
+            native_session: event.native_session,
+            event_id: event.event_id,
+            intent: if event.kind == super::context::EventKind::Tool {
+                EventIntent::Current
+            } else {
+                EventIntent::Lifecycle(event.kind)
+            },
+            metadata: EventMetadata {
+                context_source: event.source,
+                callback_deadline: None,
+                skill_pointer: native_event == "SessionStart",
+                capability: event.capability,
+                domain: ContractDomain::Native,
+                native_event: native_event.into(),
+                shape_fields: vec![],
+            },
+            delivery: DeliveryEligibility::Context,
+            runtime: RuntimeAttribution::Unavailable {
+                diagnostic: "runtime attribution is separate".into(),
+            },
+        }
+    }
+    pub fn context_event(&self) -> Option<super::LifecycleEvent> {
+        Some(super::LifecycleEvent {
+            harness: super::registry::OccupantHarness::Agent(self.harness).into(),
+            source: self.metadata.context_source.clone(),
+            kind: match self.intent {
+                EventIntent::Lifecycle(kind) => kind,
+                EventIntent::Current => super::context::EventKind::Tool,
+                EventIntent::Observer => return None,
+            },
+            native_session: self.native_session.clone(),
+            role: match self.role {
+                EventRole::TopLevel => super::context::Role::TopLevel,
+                EventRole::Subagent => super::context::Role::Subagent,
+                EventRole::Unknown => return None,
+            },
+            event_id: self.event_id.clone(),
+            capability: self.metadata.capability,
+        })
+    }
+}
+pub(crate) fn encode_context(
+    event: &DecodedEvent,
+    offer: &NeutralOffer,
+) -> Result<EncodedOutput, EncodeFailure> {
+    let context = &offer.fixed_guidance;
+    if context.len() > 4096 {
+        return Err(EncodeFailure::Invalid("context exceeds budget".into()));
+    }
+    let bytes = if context.is_empty() {
+        vec![]
+    } else {
+        serde_json::to_vec(&serde_json::json!({"hookSpecificOutput": {"hookEventName": event.metadata.native_event, "additionalContext": context}})).map_err(|error| EncodeFailure::Invalid(error.to_string()))?
+    };
+    if matches!(event.delivery, DeliveryEligibility::Context)
+        && !matches!(event.intent, EventIntent::Observer)
+        && matches!(event.role, EventRole::TopLevel)
+    {
+        Ok(EncodedOutput::ContextBearing { bytes })
+    } else {
+        Ok(EncodedOutput::ObserverOnly { bytes })
+    }
+}
+
+pub(crate) fn adapter_timeout(
+    env: &InstallEnvironment,
+    budget: &CallBudget,
+) -> std::time::Duration {
+    std::time::Duration::from_millis(
+        budget
+            .deadline
+            .0
+            .saturating_sub(env.clock.monotonic_now().0),
+    )
 }

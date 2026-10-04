@@ -170,6 +170,7 @@ struct ErasedAdmission {
     state: Box<dyn Any + Send + Sync>,
 }
 trait ErasedAdapter: Send + Sync {
+    fn output_policy(&self) -> OutputPolicy;
     fn contracts(&self) -> &'static [ContractDescriptor];
     fn observe_install(&self, env: &InstallEnvironment, budget: &CallBudget) -> InstallObservation;
     fn admit(
@@ -208,6 +209,9 @@ trait ErasedAdapter: Send + Sync {
 }
 struct TypedAdapter<A: HarnessAdapter>(&'static A);
 impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
+    fn output_policy(&self) -> OutputPolicy {
+        self.0.output_policy()
+    }
     fn contracts(&self) -> &'static [ContractDescriptor] {
         self.0.contracts()
     }
@@ -320,6 +324,9 @@ impl Registration {
     pub fn metadata(&self) -> &'static AdapterMetadata {
         self.metadata
     }
+    pub fn output_policy(&self) -> OutputPolicy {
+        self.adapter.output_policy()
+    }
     pub fn contracts(&self) -> &'static [ContractDescriptor] {
         self.adapter.contracts()
     }
@@ -401,16 +408,26 @@ impl Registration {
         }
         Ok(event)
     }
+    /// Validate registration-bound admission and normalized event before orchestration.
+    pub fn validate_event(
+        &'static self,
+        admitted: &AdmittedHandle,
+        event: &DecodedEvent,
+    ) -> Result<(), EncodeFailure> {
+        if !std::ptr::eq(self, admitted.registration) || self.identity.get() != Some(&event.harness)
+        {
+            Err(EncodeFailure::RegistrationMismatch)
+        } else {
+            Ok(())
+        }
+    }
     pub fn encode(
         &'static self,
         admitted: &AdmittedHandle,
         event: &DecodedEvent,
         offer: &NeutralOffer,
     ) -> Result<EncodedOutput, EncodeFailure> {
-        if !std::ptr::eq(self, admitted.registration) || self.identity.get() != Some(&event.harness)
-        {
-            return Err(EncodeFailure::RegistrationMismatch);
-        }
+        self.validate_event(admitted, event)?;
         self.adapter.encode(admitted.state.as_ref(), event, offer)
     }
 }
@@ -510,164 +527,13 @@ impl Registry {
             .find(|r| r.metadata().host_kinds.contains(&kind))
     }
 }
-fn unsupported(adapter: &'static str, operation: &'static str) -> UnsupportedOperation {
-    UnsupportedOperation { adapter, operation }
-}
-struct LegacyClaudeBoundary;
-struct LegacyCodexBoundary;
-static LEGACY_CLAUDE: LegacyClaudeBoundary = LegacyClaudeBoundary;
-static LEGACY_CODEX: LegacyCodexBoundary = LegacyCodexBoundary;
-impl HarnessAdapter for LegacyClaudeBoundary {
-    type Admission = std::convert::Infallible;
-    fn metadata(&self) -> &'static AdapterMetadata {
-        static METADATA: AdapterMetadata = AdapterMetadata {
-            id: "claude",
-            display_label: "Claude",
-            context_spelling: "Claude",
-            context_aliases: &[],
-            executable: ExecutableLookup::Path("claude"),
-            host_kinds: &["claude"],
-            setup_scopes: &[SetupScopeKind::ConfigRoot],
-            budget: EventBudgetPolicy {
-                lifecycle_ms: 5000,
-                observer_ms: 1500,
-            },
-        };
-        &METADATA
-    }
-    fn contracts(&self) -> &'static [ContractDescriptor] {
-        static CONTRACTS: [ContractDescriptor; 1] = [ContractDescriptor {
-            domain: ContractDomain::Native,
-            contract: &super::claude::CONTRACT,
-        }];
-        &CONTRACTS
-    }
-    fn observe_install(&self, _: &InstallEnvironment, _: &CallBudget) -> InstallObservation {
-        InstallObservation::Unsupported(unsupported("claude", "observe_install"))
-    }
-    fn admit(&self, _: &AdmissionRequest, _: &CallBudget) -> AdmissionDecision<Self::Admission> {
-        AdmissionDecision::Refused {
-            diagnostic: "claude: adapter capability migration is unavailable".into(),
-        }
-    }
-    fn version_ladder(&self, _: &RuntimeIdentity) -> Ladder {
-        Ladder { rows: vec![] }
-    }
-    fn classify(&self, input: &HookInput) -> ContractObservation {
-        ContractObservation {
-            domain: ContractDomain::Native,
-            classification: super::contract::classify(
-                &super::claude::CONTRACT,
-                input.registered_event.as_deref(),
-                &input.bytes,
-            ),
-        }
-    }
-    fn decode(&self, _: &Self::Admission, _: &HookInput) -> Result<DecodedEvent, DecodeFailure> {
-        Err(DecodeFailure::Unsupported(unsupported("claude", "decode")))
-    }
-    fn encode(
-        &self,
-        _: &Self::Admission,
-        _: &DecodedEvent,
-        _: &NeutralOffer,
-    ) -> Result<EncodedOutput, EncodeFailure> {
-        Err(EncodeFailure::Unsupported(unsupported("claude", "encode")))
-    }
-    fn attribute_runtime(&self, _: &HookInput, _: &CallBudget) -> RuntimeAttribution {
-        RuntimeAttribution::Unavailable {
-            diagnostic: "claude: runtime attribution migration is unavailable".into(),
-        }
-    }
-    fn setup(&self, _: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
-        Err(SetupFailure::Unsupported(unsupported("claude", "setup")))
-    }
-    fn status(&self, _: &StatusRequest, _: &CallBudget) -> SetupStatus {
-        SetupStatus::Unsupported(unsupported("claude", "status"))
-    }
-    fn unsetup(&self, _: &UnsetupRequest, _: &CallBudget) -> Result<RemovalOutcome, SetupFailure> {
-        Err(SetupFailure::Unsupported(unsupported("claude", "unsetup")))
-    }
-}
-impl HarnessAdapter for LegacyCodexBoundary {
-    type Admission = super::codex::InstalledVersion;
-    fn metadata(&self) -> &'static AdapterMetadata {
-        static METADATA: AdapterMetadata = AdapterMetadata {
-            id: "codex",
-            display_label: "Codex",
-            context_spelling: "Codex",
-            context_aliases: &[],
-            executable: ExecutableLookup::Path("codex"),
-            host_kinds: &["codex"],
-            setup_scopes: &[SetupScopeKind::ConfigRoot],
-            budget: EventBudgetPolicy {
-                lifecycle_ms: 5000,
-                observer_ms: 1500,
-            },
-        };
-        &METADATA
-    }
-    fn contracts(&self) -> &'static [ContractDescriptor] {
-        static CONTRACTS: [ContractDescriptor; 1] = [ContractDescriptor {
-            domain: ContractDomain::Native,
-            contract: &super::codex::CONTRACT,
-        }];
-        &CONTRACTS
-    }
-    fn observe_install(&self, _: &InstallEnvironment, _: &CallBudget) -> InstallObservation {
-        InstallObservation::Unsupported(unsupported("codex", "observe_install"))
-    }
-    fn admit(&self, _: &AdmissionRequest, _: &CallBudget) -> AdmissionDecision<Self::Admission> {
-        AdmissionDecision::Refused {
-            diagnostic: "codex: adapter capability migration is unavailable".into(),
-        }
-    }
-    fn version_ladder(&self, _: &RuntimeIdentity) -> Ladder {
-        Ladder { rows: vec![] }
-    }
-    fn classify(&self, input: &HookInput) -> ContractObservation {
-        ContractObservation {
-            domain: ContractDomain::Native,
-            classification: super::contract::classify(
-                &super::codex::CONTRACT,
-                input.registered_event.as_deref(),
-                &input.bytes,
-            ),
-        }
-    }
-    fn decode(&self, _: &Self::Admission, _: &HookInput) -> Result<DecodedEvent, DecodeFailure> {
-        Err(DecodeFailure::Unsupported(unsupported("codex", "decode")))
-    }
-    fn encode(
-        &self,
-        _: &Self::Admission,
-        _: &DecodedEvent,
-        _: &NeutralOffer,
-    ) -> Result<EncodedOutput, EncodeFailure> {
-        Err(EncodeFailure::Unsupported(unsupported("codex", "encode")))
-    }
-    fn attribute_runtime(&self, _: &HookInput, _: &CallBudget) -> RuntimeAttribution {
-        RuntimeAttribution::Unavailable {
-            diagnostic: "codex: runtime attribution migration is unavailable".into(),
-        }
-    }
-    fn setup(&self, _: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
-        Err(SetupFailure::Unsupported(unsupported("codex", "setup")))
-    }
-    fn status(&self, _: &StatusRequest, _: &CallBudget) -> SetupStatus {
-        SetupStatus::Unsupported(unsupported("codex", "status"))
-    }
-    fn unsetup(&self, _: &UnsetupRequest, _: &CallBudget) -> Result<RemovalOutcome, SetupFailure> {
-        Err(SetupFailure::Unsupported(unsupported("codex", "unsetup")))
-    }
-}
 pub fn builtins() -> &'static Registry {
     static BUILTINS: OnceLock<Registry> = OnceLock::new();
     BUILTINS.get_or_init(|| {
         let registrations = Box::leak(
             vec![
-                Registration::new(&LEGACY_CLAUDE),
-                Registration::new(&LEGACY_CODEX),
+                Registration::new(&crate::harness::claude::ClaudeAdapter),
+                Registration::new(&crate::harness::codex::CodexAdapter),
             ]
             .into_boxed_slice(),
         );
@@ -686,12 +552,17 @@ pub fn builtins() -> &'static Registry {
 }
 #[cfg(test)]
 mod tests {
+    fn unsupported(adapter: &'static str, operation: &'static str) -> UnsupportedOperation {
+        UnsupportedOperation { adapter, operation }
+    }
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct TestAdapter {
         metadata: &'static AdapterMetadata,
         calls: AtomicUsize,
         event_id: &'static str,
+        harness: OnceLock<AgentHarnessId>,
+        offers: std::sync::Mutex<Vec<String>>,
     }
     impl HarnessAdapter for TestAdapter {
         type Admission = usize;
@@ -741,17 +612,38 @@ mod tests {
                 ),
             }
         }
-        fn decode(&self, state: &usize, _: &HookInput) -> Result<DecodedEvent, DecodeFailure> {
+        fn decode(&self, state: &usize, input: &HookInput) -> Result<DecodedEvent, DecodeFailure> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             assert_eq!(*state, 17);
-            Ok(event(self.event_id))
+            let mut event = event(self.event_id);
+            if let Some(harness) = self.harness.get() {
+                event.harness = *harness;
+            }
+            match input.registered_event.as_deref() {
+                Some("unknown") => event.role = EventRole::Unknown,
+                Some("observer") => {
+                    event.intent = EventIntent::Observer;
+                    event.delivery = DeliveryEligibility::ObserverOnly;
+                }
+                Some("child") => {
+                    event.role = EventRole::Subagent;
+                    event.intent =
+                        EventIntent::Lifecycle(super::super::context::EventKind::Startup);
+                }
+                _ => {}
+            }
+            Ok(event)
         }
         fn encode(
             &self,
             state: &usize,
             _: &DecodedEvent,
-            _: &NeutralOffer,
+            offer: &NeutralOffer,
         ) -> Result<EncodedOutput, EncodeFailure> {
+            self.offers
+                .lock()
+                .unwrap()
+                .push(offer.fixed_guidance.clone());
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(EncodedOutput::ContextBearing {
                 bytes: state.to_string().into_bytes(),
@@ -788,6 +680,24 @@ mod tests {
         aliases: &'static [&'static str],
         kinds: &'static [&'static str],
     ) -> &'static TestAdapter {
+        fixture_with_budget(
+            id,
+            spelling,
+            aliases,
+            kinds,
+            EventBudgetPolicy {
+                lifecycle_ms: 5,
+                observer_ms: 2,
+            },
+        )
+    }
+    fn fixture_with_budget(
+        id: &'static str,
+        spelling: &'static str,
+        aliases: &'static [&'static str],
+        kinds: &'static [&'static str],
+        budget: EventBudgetPolicy,
+    ) -> &'static TestAdapter {
         Box::leak(Box::new(TestAdapter {
             metadata: Box::leak(Box::new(AdapterMetadata {
                 id,
@@ -797,13 +707,12 @@ mod tests {
                 executable: ExecutableLookup::Unsupported,
                 host_kinds: kinds,
                 setup_scopes: &[],
-                budget: EventBudgetPolicy {
-                    lifecycle_ms: 5,
-                    observer_ms: 2,
-                },
+                budget,
             })),
             calls: AtomicUsize::new(0),
             event_id: "codex",
+            harness: OnceLock::new(),
+            offers: std::sync::Mutex::new(vec![]),
         }))
     }
     fn registry(adapters: &[&'static TestAdapter]) -> Result<Registry, RegistryError> {
@@ -823,6 +732,10 @@ mod tests {
             event_id: "event".into(),
             intent: EventIntent::Current,
             metadata: EventMetadata {
+                context_source: "PreToolUse".into(),
+                callback_deadline: None,
+                skill_pointer: false,
+                capability: super::super::Capability::ObservedInput,
                 domain: ContractDomain::Native,
                 native_event: "event".into(),
                 shape_fields: vec![],
@@ -860,6 +773,160 @@ mod tests {
             peer_data: serde_json::Value::Null,
             ready_argv: vec![],
         }
+    }
+    // Catches brand-dependent dispatch or any canonical lookup for ineligible roles:
+    // the supplied state/endpoint cannot serve a seat, offer, attention or check-in.
+    #[test]
+    fn hook_fake_adapter_decode_encode_skips_canonical_work_for_ineligible_roles() {
+        let a = fixture_with_budget(
+            "fakehooks",
+            "FakeHooks",
+            &[],
+            &[],
+            EventBudgetPolicy {
+                lifecycle_ms: 5000,
+                observer_ms: 1500,
+            },
+        );
+        let registry = registry(&[a]).unwrap();
+        a.harness.set(registry.agent("fakehooks").unwrap()).unwrap();
+        let registration = &registry.registrations()[0];
+        let admitted = registration.admit(&request(), &budget()).unwrap();
+        let args = crate::cli::hook::HookArgs {
+            harness: OccupantHarness::Agent(registry.agent("fakehooks").unwrap()).into(),
+            state_dir: Some("/missing/no-hook-state".into()),
+            host_endpoint: None,
+            event: None,
+        };
+        for (role, expected_bytes, expected_calls) in [
+            ("unknown", &b""[..], 1),
+            ("observer", &b"17"[..], 2),
+            ("child", &b"17"[..], 2),
+        ] {
+            a.calls.store(0, Ordering::SeqCst);
+            a.offers.lock().unwrap().clear();
+            let decoded = registration
+                .decode(
+                    &admitted,
+                    &HookInput {
+                        bytes: vec![],
+                        registered_event: Some(role.into()),
+                    },
+                )
+                .unwrap();
+            let outcome = crate::cli::hook::run_admitted_hook(
+                &args,
+                registration,
+                &admitted,
+                &decoded,
+                &crate::cli::hook::HookEnv {
+                    herdr_env: true,
+                    pane: Some("w1:p1".into()),
+                },
+                std::time::Instant::now() + std::time::Duration::from_secs(1),
+                std::sync::Arc::new(crate::app::SystemClock::new()),
+                None,
+            );
+            assert_eq!(outcome.stdout, expected_bytes, "{role}");
+            assert_eq!(
+                outcome.diagnostic, None,
+                "{role}: canonical state must not be consulted"
+            );
+            assert!(
+                outcome.attention.is_none(),
+                "{role}: encoded bytes cannot consume"
+            );
+            assert_eq!(a.calls.load(Ordering::SeqCst), expected_calls, "{role}");
+            if role == "child" {
+                assert!(a.offers.lock().unwrap()[0].contains(crate::harness::CHILD_RESTRICTION));
+            }
+        }
+        let mut decoded = registration.decode(&admitted, &input()).unwrap();
+        decoded.metadata.callback_deadline =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
+        a.calls.store(0, Ordering::SeqCst);
+        let outcome = crate::cli::hook::run_admitted_hook(
+            &args,
+            registration,
+            &admitted,
+            &decoded,
+            &crate::cli::hook::HookEnv {
+                herdr_env: true,
+                pane: Some("w1:p1".into()),
+            },
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+            std::sync::Arc::new(crate::app::SystemClock::new()),
+            None,
+        );
+        assert!(outcome.stdout.is_empty());
+        assert!(outcome.diagnostic.unwrap().contains("budget expired"));
+        assert_eq!(a.calls.load(Ordering::SeqCst), 0);
+    }
+    // Catches unvalidated handles on quiet-role paths and brand-dependent budgets.
+    #[test]
+    fn hook_fake_adapter_refuses_foreign_unknown_handle() {
+        let a = fixture("small", "Small", &[], &[]);
+        let registry = registry(&[a]).unwrap();
+        let registration = &registry.registrations()[0];
+        let admitted = registration.admit(&request(), &budget()).unwrap();
+        assert_eq!(
+            crate::cli::hook::event_budget(registration, true, None),
+            std::time::Duration::from_millis(5)
+        );
+        assert_eq!(
+            crate::cli::hook::event_budget(registration, false, None),
+            std::time::Duration::from_millis(2)
+        );
+        assert_eq!(
+            crate::cli::hook::event_budget(
+                registration,
+                true,
+                Some(std::time::Duration::from_millis(1))
+            ),
+            std::time::Duration::from_millis(1)
+        );
+        let id = registry.agent("small").unwrap();
+        let lifecycle = crate::harness::LifecycleEvent {
+            harness: OccupantHarness::Agent(id).into(),
+            source: "startup".into(),
+            kind: super::super::context::EventKind::Startup,
+            native_session: None,
+            role: super::super::context::Role::TopLevel,
+            event_id: "fake".into(),
+            capability: super::super::Capability::ObservedInput,
+        };
+
+        let mut decoded = event("codex");
+        decoded.harness = id;
+        decoded.role = EventRole::Unknown;
+        let args = crate::cli::hook::HookArgs {
+            harness: lifecycle.harness,
+            state_dir: Some("/unavailable/never-created".into()),
+            host_endpoint: None,
+            event: None,
+        };
+        let outcome = crate::cli::hook::run_admitted_hook(
+            &args,
+            builtins()
+                .by_id(builtins().agent("claude").unwrap())
+                .unwrap(),
+            &admitted,
+            &decoded,
+            &crate::cli::hook::HookEnv {
+                herdr_env: true,
+                pane: Some("w1:p1".into()),
+            },
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+            std::sync::Arc::new(crate::app::SystemClock::new()),
+            None,
+        );
+        assert!(
+            outcome
+                .diagnostic
+                .unwrap()
+                .contains("registration mismatch")
+        );
+        assert_eq!(a.calls.load(Ordering::SeqCst), 0);
     }
     #[test]
     fn admission_preserves_kind_recipe_diagnostic_and_typed_state() {
@@ -986,8 +1053,8 @@ mod tests {
             ("Other", &["Claude"][..]),
         ] {
             let mut regs: Vec<_> = vec![
-                Registration::new(&LEGACY_CLAUDE),
-                Registration::new(&LEGACY_CODEX),
+                Registration::new(&crate::harness::claude::ClaudeAdapter),
+                Registration::new(&crate::harness::codex::CodexAdapter),
             ];
             regs.push(Registration::new(fixture(
                 "test-alpha",

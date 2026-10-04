@@ -9,6 +9,7 @@
 //! was captured and its `additionalContext` delivered after compaction, so
 //! only the 2.1.287 recipe admits compact (spec §9). Model receipt and
 //! durable receipts remain separate, unqualified gates.
+use super::adapter::*;
 use super::admission::{self, OptimisticAdmission, Refusal, Row};
 use super::context::{ContextError, EventKind, Harness, Role};
 use super::contract::{
@@ -21,6 +22,7 @@ use super::{
     TOP_LEVEL_INSTRUCTION, field, input,
 };
 use crate::protocol::results::CapabilityState;
+use crate::protocol::time::CallBudget;
 use serde_json::{Value, json};
 
 pub const MAX_HOOK_OUTPUT: usize = 4096;
@@ -691,4 +693,133 @@ pub fn declared_hooks_for_argv(argv: &[String]) -> Result<Value, super::setup::S
         hooks.insert(event.into(), json!([group]));
     }
     Ok(Value::Object(hooks))
+}
+
+pub(crate) struct ClaudeAdapter;
+fn unsupported(adapter: &'static str, operation: &'static str) -> UnsupportedOperation {
+    UnsupportedOperation { adapter, operation }
+}
+impl HarnessAdapter for ClaudeAdapter {
+    type Admission = String;
+    fn metadata(&self) -> &'static AdapterMetadata {
+        static METADATA: AdapterMetadata = AdapterMetadata {
+            id: "claude",
+            display_label: "Claude",
+            context_spelling: "Claude",
+            context_aliases: &[],
+            executable: ExecutableLookup::Path("claude"),
+            host_kinds: &["claude"],
+            setup_scopes: &[SetupScopeKind::ConfigRoot],
+            budget: EventBudgetPolicy {
+                lifecycle_ms: 5000,
+                observer_ms: 1500,
+            },
+        };
+        &METADATA
+    }
+    fn contracts(&self) -> &'static [ContractDescriptor] {
+        static CONTRACTS: [ContractDescriptor; 1] = [ContractDescriptor {
+            domain: ContractDomain::Native,
+            contract: &CONTRACT,
+        }];
+        &CONTRACTS
+    }
+    fn observe_install(&self, env: &InstallEnvironment, budget: &CallBudget) -> InstallObservation {
+        let Some(binary) = crate::cli::hook::resolve_on_path("claude", env.path.as_deref()) else {
+            return InstallObservation::Unavailable {
+                diagnostic: "installed claude executable not found on PATH".into(),
+            };
+        };
+        match observe_installed_version(&binary, super::adapter::adapter_timeout(env, budget)) {
+            Ok(version) => InstallObservation::Available {
+                binary,
+                identity: RuntimeIdentity {
+                    release_version: Some(version),
+                    exact_key: None,
+                    provenance: RuntimeIdentityProvenance::InstalledProbe,
+                },
+            },
+            Err(error) => InstallObservation::Unavailable {
+                diagnostic: format!("installed claude version: {error:?}"),
+            },
+        }
+    }
+    fn admit(
+        &self,
+        request: &AdmissionRequest,
+        _: &CallBudget,
+    ) -> AdmissionDecision<Self::Admission> {
+        let InstallObservation::Available { identity, .. } = &request.installed else {
+            return AdmissionDecision::Refused {
+                diagnostic: "installed claude version unavailable".into(),
+            };
+        };
+        let version = identity.release_version.as_deref().unwrap_or("");
+        match admit(version) {
+            Ok(admitted) => match admitted.admission {
+                ClaudeAdmission::Listed => AdmissionDecision::Listed {
+                    state: version.into(),
+                    recipe: admitted.recipe.id,
+                },
+                ClaudeAdmission::Optimistic(admission) => AdmissionDecision::Optimistic {
+                    state: version.into(),
+                    recipe: admitted.recipe.id,
+                    diagnostic: super::optimistic_label(&admission, false),
+                },
+            },
+            Err(diagnostic) => AdmissionDecision::Refused { diagnostic },
+        }
+    }
+    fn version_ladder(&self, _: &RuntimeIdentity) -> Ladder {
+        Ladder { rows: vec![] }
+    }
+    fn classify(&self, input: &HookInput) -> ContractObservation {
+        ContractObservation {
+            domain: ContractDomain::Native,
+            classification: super::contract::classify(
+                &CONTRACT,
+                input.registered_event.as_deref(),
+                &input.bytes,
+            ),
+        }
+    }
+    fn output_policy(&self) -> OutputPolicy {
+        OutputPolicy {
+            child_requires_endpoint: true,
+            extra_guidance: "",
+            empty_lifecycle: false,
+            session_start_hint: true,
+        }
+    }
+    fn decode(
+        &self,
+        admitted: &Self::Admission,
+        input: &HookInput,
+    ) -> Result<DecodedEvent, DecodeFailure> {
+        parse_event(admitted, &input.bytes, &uuid::Uuid::new_v4().to_string())
+            .map(DecodedEvent::from_native)
+            .map_err(DecodeFailure::Native)
+    }
+    fn encode(
+        &self,
+        _: &Self::Admission,
+        event: &DecodedEvent,
+        offer: &NeutralOffer,
+    ) -> Result<EncodedOutput, EncodeFailure> {
+        super::adapter::encode_context(event, offer)
+    }
+    fn attribute_runtime(&self, _: &HookInput, _: &CallBudget) -> RuntimeAttribution {
+        RuntimeAttribution::Unavailable {
+            diagnostic: "claude: runtime attribution migration is unavailable".into(),
+        }
+    }
+    fn setup(&self, _: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
+        Err(SetupFailure::Unsupported(unsupported("claude", "setup")))
+    }
+    fn status(&self, _: &StatusRequest, _: &CallBudget) -> SetupStatus {
+        SetupStatus::Unsupported(unsupported("claude", "status"))
+    }
+    fn unsetup(&self, _: &UnsetupRequest, _: &CallBudget) -> Result<RemovalOutcome, SetupFailure> {
+        Err(SetupFailure::Unsupported(unsupported("claude", "unsetup")))
+    }
 }

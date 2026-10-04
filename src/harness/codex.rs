@@ -10,6 +10,7 @@
 //! setup declaration installs context hooks only: lifecycle, child start, and
 //! a Bash `PreToolUse` group whose output is `additionalContext` and never a
 //! permission decision or `updatedInput`.
+use super::adapter::*;
 use super::admission::{self, OptimisticAdmission, Refusal, Row};
 use super::codex_schema::{self, Unextractable};
 use super::context::{ContextError, EventKind, Harness, Role};
@@ -22,6 +23,7 @@ pub use super::recipe::NativeSupport;
 use super::recipe::{self, Evidence, LookupError, Recipe, Version, VersionSet};
 use super::{Capability, LifecycleEvent, declared_role, field, input};
 use crate::protocol::results::CapabilityState;
+use crate::protocol::time::CallBudget;
 use crate::protocol::time::{Cancellation, external_bound};
 use serde_json::{Value, json};
 use std::{
@@ -1220,4 +1222,147 @@ fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextE
         event_id: event_id.into(),
         capability: Capability::SourceSupported,
     })
+}
+
+pub(crate) struct CodexAdapter;
+fn unsupported(adapter: &'static str, operation: &'static str) -> UnsupportedOperation {
+    UnsupportedOperation { adapter, operation }
+}
+impl HarnessAdapter for CodexAdapter {
+    type Admission = InstalledVersion;
+    fn metadata(&self) -> &'static AdapterMetadata {
+        static METADATA: AdapterMetadata = AdapterMetadata {
+            id: "codex",
+            display_label: "Codex",
+            context_spelling: "Codex",
+            context_aliases: &[],
+            executable: ExecutableLookup::Path("codex"),
+            host_kinds: &["codex"],
+            setup_scopes: &[SetupScopeKind::ConfigRoot],
+            budget: EventBudgetPolicy {
+                lifecycle_ms: 5000,
+                observer_ms: 1500,
+            },
+        };
+        &METADATA
+    }
+    fn contracts(&self) -> &'static [ContractDescriptor] {
+        static CONTRACTS: [ContractDescriptor; 1] = [ContractDescriptor {
+            domain: ContractDomain::Native,
+            contract: &CONTRACT,
+        }];
+        &CONTRACTS
+    }
+    fn observe_install(&self, env: &InstallEnvironment, budget: &CallBudget) -> InstallObservation {
+        let Some(binary) = resolve_on_path(env.path.as_deref()) else {
+            return InstallObservation::Unavailable {
+                diagnostic: "installed codex executable not found on PATH".into(),
+            };
+        };
+        let private = env
+            .state_dir
+            .as_deref()
+            .and_then(|state| super::codex_evidence::prepare(state).ok());
+        let cache = private.as_deref().map(super::codex_evidence::cache_path);
+        let admission = InstalledAdmission::observe_binary(
+            binary,
+            super::adapter::adapter_timeout(env, budget),
+            cache.as_deref().map_or(
+                super::codex_schema::FingerprintCache::Memory,
+                super::codex_schema::FingerprintCache::ReadWrite,
+            ),
+        );
+        if let Some(private) = &private {
+            let now = env.clock.utc_now().0.max(0) as u64;
+            let _ = super::codex_evidence::record(
+                &super::codex_evidence::admission_path(private),
+                &admission,
+                now,
+            );
+        }
+        match admission.result {
+            Ok(version) => InstallObservation::CodexWitness(version),
+            Err(error) => InstallObservation::Unavailable {
+                diagnostic: format!("installed codex version: {}", error.summary()),
+            },
+        }
+    }
+    fn admit(
+        &self,
+        request: &AdmissionRequest,
+        _: &CallBudget,
+    ) -> AdmissionDecision<Self::Admission> {
+        let InstallObservation::CodexWitness(version) = &request.installed else {
+            return AdmissionDecision::Refused {
+                diagnostic: "installed codex witness unavailable".into(),
+            };
+        };
+        match version.admission() {
+            Admission::Listed => AdmissionDecision::Listed {
+                state: version.clone(),
+                recipe: version.recipe().id,
+            },
+            Admission::SchemaMatched { .. } => AdmissionDecision::SchemaMatched {
+                state: version.clone(),
+                recipe: version.recipe().id,
+            },
+            Admission::Optimistic { admission, .. } => AdmissionDecision::Optimistic {
+                state: version.clone(),
+                recipe: version.recipe().id,
+                diagnostic: super::optimistic_label(admission, false),
+            },
+        }
+    }
+    fn version_ladder(&self, _: &RuntimeIdentity) -> Ladder {
+        Ladder { rows: vec![] }
+    }
+    fn classify(&self, input: &HookInput) -> ContractObservation {
+        ContractObservation {
+            domain: ContractDomain::Native,
+            classification: super::contract::classify(
+                &CONTRACT,
+                input.registered_event.as_deref(),
+                &input.bytes,
+            ),
+        }
+    }
+    fn output_policy(&self) -> OutputPolicy {
+        OutputPolicy {
+            child_requires_endpoint: true,
+            extra_guidance: crate::cli::skill::CODEX_COMMAND_GUIDANCE,
+            empty_lifecycle: true,
+            session_start_hint: true,
+        }
+    }
+    fn decode(
+        &self,
+        admitted: &Self::Admission,
+        input: &HookInput,
+    ) -> Result<DecodedEvent, DecodeFailure> {
+        parse_event_for_version(&input.bytes, &uuid::Uuid::new_v4().to_string(), admitted)
+            .map(DecodedEvent::from_native)
+            .map_err(DecodeFailure::Native)
+    }
+    fn encode(
+        &self,
+        _: &Self::Admission,
+        event: &DecodedEvent,
+        offer: &NeutralOffer,
+    ) -> Result<EncodedOutput, EncodeFailure> {
+        super::adapter::encode_context(event, offer)
+    }
+    fn attribute_runtime(&self, _: &HookInput, _: &CallBudget) -> RuntimeAttribution {
+        RuntimeAttribution::Unavailable {
+            diagnostic: "codex: runtime attribution migration is unavailable".into(),
+        }
+    }
+    fn setup(&self, _: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
+        Err(SetupFailure::Unsupported(unsupported("codex", "setup")))
+    }
+    fn status(&self, _: &StatusRequest, _: &CallBudget) -> SetupStatus {
+        SetupStatus::Unsupported(unsupported("codex", "status"))
+    }
+    fn unsetup(&self, _: &UnsetupRequest, _: &CallBudget) -> Result<RemovalOutcome, SetupFailure> {
+        Err(SetupFailure::Unsupported(unsupported("codex", "unsetup")))
+    }
 }

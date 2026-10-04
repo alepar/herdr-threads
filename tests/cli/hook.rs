@@ -3874,7 +3874,7 @@ mod hook_sequence {
             TOOL_BUDGET,
             |_| {
                 order.borrow_mut().push("observe");
-                Err("no version".into())
+                Err::<InstalledHarness, _>("no version".into())
             },
             |_| unreachable!("a refused probe never checks in"),
             |_| order.borrow_mut().push("refused"),
@@ -3935,4 +3935,110 @@ fn codex_command_guidance_survives_overflow_without_granting_permissions() {
     ev.harness = Harness::Claude;
     let bytes = encode_native(&ev, standing.as_bytes(), &[], None, None, None, None);
     assert!(!additional_context(&bytes).contains("require_escalated"));
+}
+
+// Catches inert built-in admission/codec dispatch and native output regressions.
+#[test]
+fn hook_adapter_dispatch_keeps_native_output_and_observer_nonconsumption() {
+    use crate::harness::{adapter::*, registry::builtins};
+    let registration = builtins()
+        .by_id(builtins().agent("claude").unwrap())
+        .unwrap();
+    let request = AdmissionRequest {
+        installed: InstallObservation::Available {
+            binary: "/unused/claude".into(),
+            identity: RuntimeIdentity {
+                release_version: Some("2.1.287".into()),
+                exact_key: None,
+                provenance: RuntimeIdentityProvenance::InstalledProbe,
+            },
+        },
+        input: None,
+        runtime_candidate: None,
+    };
+    let admitted = registration
+        .admit(
+            &request,
+            &budget(Instant::now() + TOOL_BUDGET, &SystemClock::new()),
+        )
+        .unwrap();
+    let event = registration
+        .decode(
+            &admitted,
+            &HookInput {
+                bytes: CLAUDE_START.to_vec(),
+                registered_event: Some("SessionStart".into()),
+            },
+        )
+        .unwrap();
+    assert!(event.can_check_in());
+    assert_eq!(event.native_session.as_deref(), Some("sess-1"));
+    let output = registration
+        .encode(
+            &admitted,
+            &event,
+            &NeutralOffer {
+                fixed_guidance: "bounded context".into(),
+                peer_data: serde_json::Value::Null,
+                ready_argv: vec![],
+            },
+        )
+        .unwrap();
+    let EncodedOutput::ContextBearing { bytes } = output else {
+        panic!("context must be context bearing")
+    };
+    assert_eq!(bytes, br#"{"hookSpecificOutput":{"additionalContext":"bounded context","hookEventName":"SessionStart"}}"#);
+    let other = builtins()
+        .by_id(builtins().agent("codex").unwrap())
+        .unwrap();
+    assert!(matches!(
+        other.decode(
+            &admitted,
+            &HookInput {
+                bytes: CLAUDE_START.to_vec(),
+                registered_event: None
+            }
+        ),
+        Err(DecodeFailure::RegistrationMismatch)
+    ));
+}
+
+// Catches descriptor/callback budgets extending the global limits and observer
+// bytes being promoted to consumption after a successful codec return.
+#[test]
+fn adapter_budget_caps_and_encoding_delivery_are_conservative() {
+    use crate::harness::{adapter::*, registry::builtins};
+    let registration = builtins()
+        .by_id(builtins().agent("codex").unwrap())
+        .unwrap();
+    assert_eq!(
+        event_budget(registration, true, Some(Duration::from_secs(60))),
+        Duration::from_secs(5)
+    );
+    assert_eq!(
+        event_budget(registration, false, Some(Duration::from_secs(60))),
+        Duration::from_millis(1500)
+    );
+    assert_eq!(
+        event_budget(registration, true, Some(Duration::from_millis(37))),
+        Duration::from_millis(37)
+    );
+    assert_eq!(
+        event_budget(registration, true, Some(Duration::ZERO)),
+        Duration::ZERO
+    );
+    let (bytes, consumes, diagnostic) = output_bytes(Ok(EncodedOutput::ObserverOnly {
+        bytes: b"observed".to_vec(),
+    }));
+    assert_eq!(bytes, b"observed");
+    assert!(!consumes);
+    assert_eq!(diagnostic, None);
+    assert!(!output_bytes(Ok(EncodedOutput::ContextBearing { bytes: vec![] })).1);
+    assert!(
+        output_bytes(Ok(EncodedOutput::ContextBearing {
+            bytes: b"context".to_vec()
+        }))
+        .1
+    );
+    assert!(!output_bytes(Err(EncodeFailure::Invalid("test".into()))).1);
 }
