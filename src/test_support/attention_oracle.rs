@@ -127,7 +127,7 @@ pub fn scan_effective_seat_attention(
     let mut hold = crate::store::catch_up::HoldCache::new(seat_id);
     while !position.invitations_done && visited < max_candidates {
         let row:Option<(i64,i64,String)> = db.query_row(
-            "SELECT i.created_decision_seq,i.ordinal,CASE WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END FROM invitations i LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.seat_id=?1 AND (i.created_decision_seq,i.ordinal)>(?2,?3) AND i.created_decision_seq<=?4 ORDER BY i.created_decision_seq,i.ordinal LIMIT 1",
+            "SELECT i.created_decision_seq,i.ordinal,CASE WHEN EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) THEN 'rejected' WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END FROM invitations i LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.seat_id=?1 AND (i.created_decision_seq,i.ordinal)>(?2,?3) AND i.created_decision_seq<=?4 ORDER BY i.created_decision_seq,i.ordinal LIMIT 1",
             params![seat_id,position.invitation_after_seq,position.invitation_after_ordinal,decision_seq],
             |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
         ).optional().map_err(store_error)?;

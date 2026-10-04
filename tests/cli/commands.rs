@@ -1441,6 +1441,20 @@ fn contract_id_runs_without_a_daemon_and_prints_exact_documents() {
 }
 
 #[test]
+fn rejection_requires_exact_invitation_and_bounded_nonblank_reason() {
+    let parsed = parse_argv([
+        "herdr-threads", "reject", "t1", "--invitation", "iv1", "--reason",
+        "Outside my reviewer role",
+    ]);
+    assert!(parsed.is_ok(), "ordinary invitation rejection must parse: {parsed:?}");
+    assert!(parse_argv(["herdr-threads", "reject", "t1", "--reason", "irrelevant"]).is_err());
+    assert!(parse_argv(["herdr-threads", "reject", "t1", "--invitation", "iv1"]).is_err());
+    assert!(parse_argv(["herdr-threads", "reject", "t1", "--invitation", "iv1", "--reason", " \n "]).is_err());
+    let too_long = "x".repeat(4097);
+    assert!(parse_argv(["herdr-threads", "reject", "t1", "--invitation", "iv1", "--reason", &too_long]).is_err());
+}
+
+#[test]
 fn thread_names_public_create_and_selectors() {
     let named = parse_argv(["ht", "thread", "create", "--topic", "Announcements", "--name", "team café"]);
     assert!(named.is_ok(), "optional names must parse: {named:?}");
@@ -1462,6 +1476,7 @@ fn thread_names_every_selector_freezes_one_literal_id() {
         vec!["ht","thread","show","review"], vec!["ht","thread","topic","review"],
         vec!["ht","thread","topic","review","--set","topic"], vec!["ht","thread","participants","review"],
         vec!["ht","participants","review"], vec!["ht","invite","review","--seat","s1"],
+        vec!["ht","reject","review","--invitation","v1","--reason","Outside my role"],
         vec!["ht","accept","review"], vec!["ht","accept-required","review","--invitation","v1","--requirement","q1","--revision","1"],
         vec!["ht","leave","review"], vec!["ht","send","review","--body","ready"],
         vec!["ht","archive","review"], vec!["ht","reopen","review"], vec!["ht","read","review"],

@@ -41,6 +41,7 @@ pub enum Command {
     ThreadName(ThreadNameQuery),
     History(HistoryQuery),
     Participants(ParticipantsQuery),
+    ParticipantLocations(ParticipantLocationsQuery),
     Recipients(RecipientsQuery),
     DeliveryInspect(DeliveryInspectQuery),
     PendingReceipts(PendingReceiptsQuery),
@@ -75,6 +76,7 @@ pub enum Command {
     Invite(Invite),
     Accept(Accept),
     AcceptRequired(AcceptRequired),
+    Reject(Reject),
     SendMessage(SendMessage),
     Ack(Ack),
     /// Accountable ACK claimed only after a whole inbox text page is flushed.
@@ -321,6 +323,13 @@ pub struct ParticipantsQuery {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller: Option<SeatId>,
 }
+/// Bounded canonical mappings for one already displayed participant page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParticipantLocationsQuery {
+    pub thread: ThreadId,
+    pub seats: Vec<SeatId>,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecipientsQuery {
@@ -531,6 +540,25 @@ pub struct Accept {
     pub operation: OperationId,
     pub claim: CallerClaim,
 }
+/// Reject only the exact ordinary invitation the recipient inspected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reject {
+    pub thread: ThreadId,
+    pub invitation: InvitationId,
+    pub reason: String,
+    pub operation: OperationId,
+    pub claim: CallerClaim,
+}
+
+pub const MAX_REJECTION_REASON_BYTES: usize = 4096;
+pub fn validate_rejection_reason(reason: &str) -> Result<(), &'static str> {
+    if reason.trim().is_empty() || reason.len() > MAX_REJECTION_REASON_BYTES {
+        return Err("rejection reason must be nonblank and at most 4096 UTF-8 bytes");
+    }
+    Ok(())
+}
+
 /// A native caller must name the requirement episode and revision it saw.
 /// An ordinary acceptance key cannot accept a later required upgrade.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -718,6 +746,7 @@ impl Command {
             Self::Invite(v) => Some(&v.claim),
             Self::Accept(v) => Some(&v.claim),
             Self::AcceptRequired(v) => Some(&v.claim),
+            Self::Reject(v) => Some(&v.claim),
             Self::SendMessage(v) => Some(&v.claim),
             Self::Ack(v) | Self::AckDisplayed(v) => Some(&v.claim),
             Self::Leave(v) => Some(&v.claim),
@@ -778,7 +807,13 @@ impl Command {
             {
                 Err("invalid hot thread limit")
             }
+            Self::ParticipantLocations(query)
+                if query.seats.is_empty() || query.seats.len() > MAX_BATCH_ITEMS =>
+            {
+                Err("participant location batch must contain 1..=100 seats")
+            }
             Self::AcceptRequired(accept) => accept.validate(),
+            Self::Reject(reject) => validate_rejection_reason(&reject.reason),
             Self::ContinuityCheckIn(continuity) => continuity.validate(),
             Self::RecordManagedLaunch(launch) => launch.validate(),
             Self::OperatorOrphanInvite(invite) if invite.deadline_millis == Some(0) => {
@@ -880,6 +915,7 @@ pub enum PermitMutation {
     Invite(Invite),
     Accept(Accept),
     AcceptRequired(AcceptRequired),
+    Reject(Reject),
     SendMessage(SendMessage),
     Ack(Ack),
     AckDisplayed(Ack),
@@ -898,6 +934,7 @@ impl TryFrom<Command> for PermitMutation {
             Command::Invite(v) => Ok(Self::Invite(v)),
             Command::Accept(v) => Ok(Self::Accept(v)),
             Command::AcceptRequired(v) => Ok(Self::AcceptRequired(v)),
+            Command::Reject(v) => Ok(Self::Reject(v)),
             Command::SendMessage(v) => Ok(Self::SendMessage(v)),
             Command::Ack(v) => Ok(Self::Ack(v)),
             Command::AckDisplayed(v) => Ok(Self::AckDisplayed(v)),

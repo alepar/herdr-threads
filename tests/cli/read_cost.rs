@@ -341,3 +341,57 @@ fn two_resolved_seats_behind_unresolved_ones_are_ambiguous() {
         error.detail
     );
 }
+
+#[test]
+fn participant_json_with_active_host_source_makes_no_enrichment_calls() {
+    for show in [false, true] {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&seen);
+        let fake = CountingLocalClient::scripted(
+            move |command: &Command| {
+                log.lock().unwrap().push(command.clone());
+                match command {
+                    Command::Participants(_) => Ok(CommandResult::Participants(participants())),
+                    Command::Thread(_) => Ok(CommandResult::Thread(thread_details())),
+                    other => panic!("JSON requested enrichment: {other:?}"),
+                }
+            },
+            DaemonVintage::Current,
+        );
+        let page = crate::protocol::pagination::PageRequest::default();
+        let command = if show {
+            Command::Thread(crate::protocol::commands::ThreadQuery {
+                thread: ThreadId::new("t1"),
+                page,
+                caller: None,
+            })
+        } else {
+            Command::Participants(crate::protocol::commands::ParticipantsQuery {
+                thread: ThreadId::new("t1"),
+                page,
+                caller: None,
+            })
+        };
+        let source = crate::host::native::NativeCli::new(
+            std::env::temp_dir().join(format!("absent-participant-json-{}", uuid::Uuid::new_v4())),
+            Arc::new(SystemClock::default()),
+        );
+        let mut output = Vec::new();
+        crate::cli::peer_locations::with_source(source, || {
+            crate::cli::run_wire(
+                command,
+                &OutputSpec::default(),
+                &fake,
+                &|| CallBudget {
+                    deadline: MonoInstant(u64::MAX),
+                    cancellation: Default::default(),
+                },
+                &mut output,
+            )
+        })
+        .unwrap();
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert!(!value.to_string().contains("advisory"));
+    }
+}

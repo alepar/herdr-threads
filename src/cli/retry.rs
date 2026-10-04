@@ -361,6 +361,7 @@ fn matches_result(request: &SemanticMutation, result: &CommandResult) -> bool {
                 SemanticMutation::Ack { .. } | SemanticMutation::AckDisplayed { .. },
                 CommandResult::Acknowledged(_)
             )
+            | (SemanticMutation::Reject { .. }, CommandResult::Rejected(_))
             | (SemanticMutation::Leave { .. }, CommandResult::Left(_))
             | (
                 SemanticMutation::SetTopic { .. },

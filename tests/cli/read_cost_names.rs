@@ -371,6 +371,8 @@ impl PaneNameSource for ScopedPanes {
 }
 fn scoped_labels(index: usize, workspace: &str, tab: &str) -> SeatHostLabels {
     SeatHostLabels {
+        terminal: "test-terminal".into(),
+        incarnation: None,
         target: target(index),
         workspace_id: workspace.into(),
         workspace_label: Some("project".into()),

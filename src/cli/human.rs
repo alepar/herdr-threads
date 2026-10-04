@@ -115,6 +115,13 @@ pub fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String> {
             joined.seat.as_str(),
             joined.thread.as_str()
         )),
+        CommandResult::Rejected(rejected) => {
+            out.push_str(&format!(
+                "Rejected invitation {}.\nReason: {}\n",
+                rejected.invitation.as_str(),
+                multi_line(&rejected.reason)
+            ));
+        }
         CommandResult::Accepted(accepted) => {
             out.push_str(&format!(
                 "Accepted invitation {}.\n",
@@ -295,6 +302,8 @@ mod seat_list_tests {
             consistency: Consistency::BoundedLive,
         };
         let labels = vec![SeatHostLabels {
+            terminal: "term-test".into(),
+            incarnation: None,
             target: HostTargetId::new("w4:p1"),
             workspace_id: "w4".into(),
             workspace_label: Some("Space".into()),
@@ -554,6 +563,9 @@ fn participant_line(participant: &Participant, out: &mut String) {
     }
     if participant.is_self {
         out.push_str(" (you)");
+    }
+    if let Some(location) = super::peer_locations::hint(&participant.seat) {
+        out.push_str(&format!(" — {location}"));
     }
     out.push('\n');
 }

@@ -56,7 +56,8 @@ const V17: &str = include_str!("../../migrations/0017_wake_batches.sql");
 const V18: &str = include_str!("../../migrations/0018_warning_conditions.sql");
 const V19: &str = include_str!("../../migrations/0019_thread_names.sql");
 const V20: &str = include_str!("../../migrations/0020_recent_activity.sql");
-pub(crate) const LATEST_VERSION: i64 = 20;
+const V21: &str = include_str!("../../migrations/0021_invitation_rejections.sql");
+pub(crate) const LATEST_VERSION: i64 = 21;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -150,6 +151,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V18))
                 .and_then(|_| conn.execute_batch(V19))
                 .and_then(|_| conn.execute_batch(V20))
+                .and_then(|_| conn.execute_batch(V21))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -390,7 +392,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=20 => verify_existing(conn),
+        18..=21 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -427,7 +429,74 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    verify_existing_v20(conn)
+    verify_existing_v20(conn)?;
+    if (1..=20).contains(&version) {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V21)
+            .and_then(|_| conn.pragma_update(None, "user_version", 21));
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(store_error(error));
+            }
+        }
+    }
+    verify_existing_v21(conn)
+}
+
+fn verify_existing_v21(conn: &Connection) -> Result<(), ApiError> {
+    let normalize = |sql: &str| {
+        sql.split_whitespace()
+            .collect::<String>()
+            .trim_end_matches(';')
+            .to_ascii_lowercase()
+    };
+    for (kind, name) in [
+        ("table", "invitation_rejections"),
+        ("index", "invitations_effective_pending_unwarned"),
+        ("trigger", "invitation_rejections_shape"),
+        ("trigger", "invitation_rejections_immutable"),
+        ("trigger", "invitation_rejections_retained"),
+        ("trigger", "digest_invitation_rejected"),
+        ("trigger", "invitations_rejection_projection_insert"),
+        ("trigger", "invitations_rejection_projection_guard"),
+        ("trigger", "invitation_rejections_project"),
+    ] {
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        let marker = format!("CREATE {} {name}", kind.to_uppercase());
+        let end = match kind {
+            "table" => ") STRICT;",
+            "trigger" => "END;",
+            _ => ";",
+        };
+        let expected = V21.split_once(&marker).and_then(|(_, tail)| {
+            tail.find(end)
+                .map(|position| format!("{marker}{}", &tail[..position + end.len()]))
+        });
+        if actual.as_deref().map(normalize) != expected.as_deref().map(normalize) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered invitation rejection {kind} {name}"),
+            ));
+        }
+    }
+    let projection:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('invitations') WHERE name='reject_recorded' AND type='INTEGER' AND [notnull]=1 AND dflt_value='0')",[],|r|r.get(0)).map_err(store_error)?;
+    if !projection {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "missing or altered invitation rejection projection",
+        ));
+    }
+    Ok(())
 }
 
 fn verify_existing_v20(conn: &Connection) -> Result<(), ApiError> {
@@ -2909,7 +2978,7 @@ pub fn clear_warning_condition_for_invitation(
         return Ok(false);
     };
     let pending: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM invitations i WHERE i.id=?1 AND i.state='pending' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id))",
+        "SELECT EXISTS(SELECT 1 FROM invitations i WHERE i.id=?1 AND i.state='pending' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id))",
         [invitation], |r| r.get(0),
     ).map_err(store_error)?;
     if pending {
@@ -2941,7 +3010,7 @@ fn record_overdue_inner(
             ObligationRef::Invitation(id) => {
                 let row: (String, String, i64, String) = tx
                 .query_row(
-                    "SELECT i.thread_id, i.seat_id, i.deadline_at, CASE WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END FROM invitations i LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.id=?1",
+                    "SELECT i.thread_id, i.seat_id, i.deadline_at, CASE WHEN EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) THEN 'rejected' WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END FROM invitations i LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.id=?1",
                     [id.as_str()],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )

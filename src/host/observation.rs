@@ -261,6 +261,8 @@ pub fn normalize_pane_names(raw: &str) -> Result<Vec<PaneName>, ApiError> {
 /// reconciled from these labels.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeatHostLabels {
+    pub terminal: String,
+    pub incarnation: Option<String>,
     pub target: HostTargetId,
     pub workspace_id: String,
     pub workspace_label: Option<String>,
@@ -296,6 +298,8 @@ pub fn normalize_seat_labels(raw: &str) -> Result<Vec<SeatHostLabels>, ApiError>
         .panes
         .into_iter()
         .map(|pane| SeatHostLabels {
+            terminal: pane.terminal_id,
+            incarnation: None,
             pane_label: find("panes", "pane_id", pane.target.as_str()),
             workspace_label: find("workspaces", "workspace_id", &pane.workspace_id),
             tab_label: find("tabs", "tab_id", &pane.tab_id),

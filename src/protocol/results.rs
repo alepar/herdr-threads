@@ -30,6 +30,7 @@ pub enum CommandResult {
     Thread(ThreadDetails),
     History(Page<MessageSummary>),
     Participants(Page<Participant>),
+    ParticipantLocations(Vec<ParticipantLocation>),
     Recipients(Page<Recipient>),
     /// Warning recipients have no receipt or ACK obligation.
     WarningRecipients(Page<WarningRecipient>),
@@ -59,6 +60,7 @@ pub enum CommandResult {
     Invitation(InvitationId),
     AlreadyJoined(AlreadyJoined),
     Accepted(AcceptedInvitation),
+    Rejected(InvitationRejection),
     RequiredAccepted(RequiredMembership),
     MessageSent(MessageId),
     Acknowledged(AckResult),
@@ -73,6 +75,18 @@ pub enum CommandResult {
     OperatorFreshSeat(SeatId),
     OperatorInvited(InvitationId),
     OperatorRetired(SeatId),
+}
+
+/// Retained recipient decision; reason is untrusted peer data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InvitationRejection {
+    pub invitation: InvitationId,
+    pub actor: SeatId,
+    pub generation: u64,
+    pub observation: String,
+    pub rejected_at: UtcMillis,
+    pub reason: String,
 }
 
 /// The result of a plain `accept`: the invitation, plus the thread when it
@@ -962,6 +976,16 @@ pub struct ConditionStatus {
     pub active: bool,
     pub state: String,
 }
+/// Canonical seat mapping; topology labels are deliberately client-local.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParticipantLocation {
+    pub seat: SeatId,
+    pub continuity: ContinuityStatus,
+    pub target: Option<HostTargetId>,
+    pub terminal: Option<String>,
+    pub incarnation: Option<String>,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Participant {
@@ -1084,6 +1108,7 @@ pub enum IntentKind {
     CreateThread,
     Invite,
     Accept,
+    Reject,
     SendMessage,
     Ack,
     Leave,

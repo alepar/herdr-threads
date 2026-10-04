@@ -97,6 +97,11 @@ pub enum SemanticMutation {
     Accept {
         thread: ThreadId,
     },
+    Reject {
+        thread: ThreadId,
+        invitation: InvitationId,
+        reason: String,
+    },
     AcceptRequired {
         thread: ThreadId,
         invitation: InvitationId,
@@ -283,6 +288,7 @@ impl SemanticMutation {
             Self::CreateThread { name, .. } | Self::SetThreadName { name, .. } => name
                 .as_deref()
                 .map_or(Ok(()), |name| validate_thread_name(name).map_err(invalid)),
+            Self::Reject { reason, .. } => validate_rejection_reason(reason).map_err(invalid),
             Self::AcceptRequired {
                 expected_revision: 0,
                 ..
@@ -321,6 +327,7 @@ impl SemanticMutation {
             Self::CreateThread { .. } => IntentKind::CreateThread,
             Self::Invite { .. } => IntentKind::Invite,
             Self::Accept { .. } => IntentKind::Accept,
+            Self::Reject { .. } => IntentKind::Reject,
             Self::AcceptRequired { .. } => IntentKind::Accept,
             Self::SendMessage { .. } => IntentKind::SendMessage,
             Self::Ack { .. } | Self::AckDisplayed { .. } => IntentKind::Ack,
@@ -343,6 +350,7 @@ impl SemanticMutation {
             Self::Invite { thread, .. }
             | Self::Accept { thread }
             | Self::AcceptRequired { thread, .. }
+            | Self::Reject { thread, .. }
             | Self::SendMessage { thread, .. }
             | Self::Leave { thread }
             | Self::SetTopic { thread, .. }
@@ -424,6 +432,17 @@ impl SemanticMutation {
                 thread: thread.clone(),
                 seat: seat.clone(),
                 deadline_millis: *deadline_millis,
+                operation,
+                claim: native()?,
+            }),
+            Self::Reject {
+                thread,
+                invitation,
+                reason,
+            } => Command::Reject(Reject {
+                thread: thread.clone(),
+                invitation: invitation.clone(),
+                reason: reason.clone(),
                 operation,
                 claim: native()?,
             }),

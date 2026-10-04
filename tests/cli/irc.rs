@@ -378,6 +378,8 @@ fn follow_lines_mark_human_and_relayed_messages() {
 #[test]
 fn relative_nick_long_parents_keep_pane_component() {
     let labels = crate::host::observation::SeatHostLabels {
+        terminal: "test-terminal".into(),
+        incarnation: None,
         target: crate::protocol::ids::HostTargetId::new("p"),
         workspace_id: "w".into(),
         workspace_label: Some("project".repeat(30)),
@@ -403,6 +405,8 @@ fn relative_nick_expanded_escaped_parents_reserve_pane_budget() {
         ("w".repeat(100), "t".repeat(100), "p".repeat(100)),
     ] {
         let labels = crate::host::observation::SeatHostLabels {
+            terminal: "test-terminal".into(),
+            incarnation: None,
             target: crate::protocol::ids::HostTargetId::new("pane"),
             workspace_id: "workspace".into(),
             workspace_label: Some(workspace),

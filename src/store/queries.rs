@@ -233,6 +233,7 @@ pub fn query_with_output(
         Command::Search(q) => search(&db, store, instance, q, output, &active_budget),
         Command::Directory(q) => directory(&db, instance, q, output),
         Command::Participants(q) => participants(&db, instance, q, output),
+        Command::ParticipantLocations(q) => participant_locations(&db, instance, q),
         Command::Seats(q) => seats(&db, instance, q, output),
         Command::Diagnostics(q) => diagnostics(&db, instance, q, store.clock().utc_now(), output),
         Command::Recipients(q) => recipients(&db, instance, q, store.clock().utc_now(), output),
@@ -3829,7 +3830,7 @@ fn diagnostics(
         match phase {
             SearchPhase::Topic => {
                 type Row = (i64, String, String, String, String, i64);
-                let row:Option<Row>=db.query_row("SELECT i.ordinal,i.id,i.thread_id,i.seat_id,CASE WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END,i.deadline_at FROM invitations i LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.ordinal>?1 AND i.ordinal<=?2 ORDER BY i.ordinal LIMIT 1",params![invitation_after as i64,invitation_high as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(|e|db.map_error(e))?;
+                let row:Option<Row>=db.query_row("SELECT i.ordinal,i.id,i.thread_id,i.seat_id,CASE WHEN EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) THEN 'rejected' WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END,i.deadline_at FROM invitations i LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.ordinal>?1 AND i.ordinal<=?2 ORDER BY i.ordinal LIMIT 1",params![invitation_after as i64,invitation_high as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(|e|db.map_error(e))?;
                 let Some((ordinal, id, thread, seat, state, deadline)) = row else {
                     phase = SearchPhase::Body;
                     continue;
@@ -5044,7 +5045,7 @@ fn inbox_batch(
                     let state = after.attention.as_mut().unwrap();
                     state.invitation_after_ordinal = ordinal;
                     state.invitation_after_seq = ordinal;
-                    let pending: bool = db.query_row("SELECT state='pending' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations WHERE invitation_id=?1) FROM invitations WHERE id=?1", [&id], |r| r.get(0)).map_err(store_error)?;
+                    let pending: bool = db.query_row("SELECT state='pending' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations WHERE invitation_id=?1) AND NOT EXISTS(SELECT 1 FROM invitation_rejections WHERE invitation_id=?1) FROM invitations WHERE id=?1", [&id], |r| r.get(0)).map_err(store_error)?;
                     if pending {
                         let required_service = super::service_substrate::current_requirement(
                             db,
@@ -5663,3 +5664,61 @@ fn hot_threads_in(
 #[cfg(test)]
 #[path = "../../tests/store/queries.rs"]
 mod tests;
+
+/// One bounded query under the canonical read transaction; no host labels or client hints.
+fn participant_locations(
+    db: &QueryConnection,
+    instance: &str,
+    q: &crate::protocol::commands::ParticipantLocationsQuery,
+) -> Result<CommandResult, ApiError> {
+    if q.seats.is_empty() || q.seats.len() > crate::protocol::commands::MAX_BATCH_ITEMS {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "invalid participant location batch",
+        ));
+    }
+    let placeholders = (3..=q.seats.len() + 2)
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT s.id,s.state,s.target_id,s.structural_terminal_id,s.structural_incarnation FROM memberships m JOIN seats s ON s.id=m.seat_id JOIN threads t ON t.id=m.thread_id WHERE t.instance_id=?1 AND t.id=?2 AND s.id IN ({placeholders}) ORDER BY m.ordinal"
+    );
+    let mut values = vec![instance.to_owned(), q.thread.as_str().to_owned()];
+    values.extend(q.seats.iter().map(|seat| seat.as_str().to_owned()));
+    let mut statement = db.prepare(&sql).map_err(|e| db.map_error(e))?;
+    let rows = statement
+        .query_map(rusqlite::params_from_iter(values), |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+            ))
+        })
+        .map_err(|e| db.map_error(e))?;
+    let mut locations = Vec::new();
+    for row in rows {
+        let (seat, state, target, terminal, incarnation) = row.map_err(|e| db.map_error(e))?;
+        let continuity = match state.as_str() {
+            "resolved" => crate::protocol::results::ContinuityStatus::Resolved,
+            "unresolved" => crate::protocol::results::ContinuityStatus::Unresolved,
+            "retired" => crate::protocol::results::ContinuityStatus::Retired,
+            _ => {
+                return Err(api_error(
+                    ErrorCode::StoreCorrupt,
+                    "invalid seat continuity",
+                ));
+            }
+        };
+        locations.push(crate::protocol::results::ParticipantLocation {
+            seat: SeatId::new(seat),
+            continuity,
+            target: target.map(HostTargetId::new),
+            terminal,
+            incarnation,
+        });
+    }
+    Ok(CommandResult::ParticipantLocations(locations))
+}

@@ -1698,7 +1698,7 @@ pub fn warning_condition_actionable(
     };
     match kind.as_str() {
         "invitation" => db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM invitations i JOIN seats s ON s.id=i.seat_id WHERE i.id=?1 AND i.state='pending' AND s.state!='retired' AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id))",
+            "SELECT EXISTS(SELECT 1 FROM invitations i JOIN seats s ON s.id=i.seat_id WHERE i.id=?1 AND i.state='pending' AND s.state!='retired' AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id))",
             [id],|r|r.get(0),
         ).map_err(store_error),
         "receipt" => {

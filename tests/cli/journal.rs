@@ -1439,3 +1439,49 @@ fn thread_names_journal_retry_uses_frozen_id_after_rename() {
     .unwrap();
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn invitation_rejection_journal_freezes_exact_id_reason_and_binding() {
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let reason = "Outside role\nexplicit peer data: \u{1b}[31m";
+    let semantic = SemanticMutation::freeze(
+        SemanticMutation::Reject {
+            thread: ThreadId::new("tResolved"),
+            invitation: InvitationId::new("vExact"),
+            reason: reason.into(),
+        },
+        claim(),
+    )
+    .unwrap();
+    let reference = journal
+        .record(
+            IntentScope::Cooperative {
+                instance: "i".into(),
+                seat: claim().seat,
+            },
+            semantic.clone(),
+            100,
+        )
+        .unwrap();
+    let reopened = Journal::open(&dir).unwrap().load(&reference).unwrap();
+    assert_eq!(reopened.semantic, semantic);
+    let Command::Reject(command) = reopened
+        .semantic
+        .to_command(reopened.operation.clone(), None)
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(command.invitation.as_str(), "vExact");
+    assert_eq!(command.reason, reason);
+    assert_eq!(command.claim, claim());
+    assert_eq!(command.thread.as_str(), "tResolved");
+    let mut child = command.clone();
+    child.claim.role = crate::protocol::authority::CallerRole::Subagent;
+    assert!(Command::Reject(child).validate().is_err());
+    let mut oversized = command;
+    oversized.reason = "é".repeat(2049);
+    assert!(Command::Reject(oversized).validate().is_err());
+    std::fs::remove_dir_all(dir).unwrap();
+}

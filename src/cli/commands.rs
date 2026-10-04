@@ -270,6 +270,11 @@ pub enum MutationSpec {
         operator: bool,
     },
     Accept(ThreadId),
+    Reject {
+        thread: ThreadId,
+        invitation: InvitationId,
+        reason: String,
+    },
     AcceptRequired {
         thread: ThreadId,
         invitation: InvitationId,
@@ -374,6 +379,17 @@ impl MutationSpec {
                 seat,
                 deadline_millis,
                 operation,
+            }),
+            Self::Reject {
+                thread,
+                invitation,
+                reason,
+            } => WireCommand::Reject(Reject {
+                thread,
+                invitation,
+                reason,
+                operation,
+                claim: claim.unwrap(),
             }),
             Self::Accept(thread) => WireCommand::Accept(Accept {
                 thread,
@@ -530,6 +546,14 @@ enum Top {
     },
     /// Accept an invitation to a thread.
     Accept { thread: String },
+    /// Reject an exact ordinary invitation with an explicit reason.
+    Reject {
+        thread: String,
+        #[arg(long)]
+        invitation: String,
+        #[arg(long)]
+        reason: String,
+    },
     /// Accept a service-required invitation with its exact revision.
     AcceptRequired {
         thread: String,
@@ -1506,6 +1530,7 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
         } => Some(thread.clone()),
         Top::Participants { thread, .. }
         | Top::Accept { thread }
+        | Top::Reject { thread, .. }
         | Top::AcceptRequired { thread, .. }
         | Top::Leave { thread }
         | Top::Archive { thread }
@@ -1615,6 +1640,18 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
             }))
         }
         Top::Accept { thread } => CliAction::Mutation(MutationSpec::Accept(thread_id(thread)?)),
+        Top::Reject {
+            thread,
+            invitation,
+            reason,
+        } => {
+            validate_rejection_reason(&reason).map_err(invalid)?;
+            CliAction::Mutation(MutationSpec::Reject {
+                thread: thread_id(thread)?,
+                invitation: id(invitation, InvitationId::parse)?,
+                reason,
+            })
+        }
         Top::AcceptRequired {
             thread,
             invitation,

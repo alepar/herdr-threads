@@ -4415,8 +4415,32 @@ fn recent_picker_activity_and_rename_invalidate_only_selected_instance() {
 
 #[test]
 fn recent_picker_migration_backfills_committed_info_and_creation() {
-    let (_store, db) = fixture();
-    db.execute_batch("DROP TRIGGER threads_recent_insert; DROP TRIGGER threads_recent_update; DROP INDEX threads_recent_activity; ALTER TABLE threads DROP COLUMN last_activity; PRAGMA user_version=19;").unwrap();
+    // Construct the historical schema rather than downgrade the current one.
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    for migration in [
+        include_str!("../../migrations/0001_initial.sql"),
+        include_str!("../../migrations/0002_service_substrate.sql"),
+        include_str!("../../migrations/0003_invitation_cancellations.sql"),
+        include_str!("../../migrations/0004_voluntary_membership.sql"),
+        include_str!("../../migrations/0005_service_notifications.sql"),
+        include_str!("../../migrations/0006_retirement_health.sql"),
+        include_str!("../../migrations/0007_attention_digest.sql"),
+        include_str!("../../migrations/0008_digest_pending_paths.sql"),
+        include_str!("../../migrations/0009_human_occupant.sql"),
+        include_str!("../../migrations/0010_b5_trust_guards.sql"),
+        include_str!("../../migrations/0011_cooperative_only.sql"),
+        include_str!("../../migrations/0012_harness_version_evidence.sql"),
+        include_str!("../../migrations/0013_thread_summaries.sql"),
+        include_str!("../../migrations/0014_catch_up_release.sql"),
+        include_str!("../../migrations/0015_preparation_retention.sql"),
+        include_str!("../../migrations/0016_human_receipt_waivers.sql"),
+        include_str!("../../migrations/0017_wake_batches.sql"),
+        include_str!("../../migrations/0018_warning_conditions.sql"),
+        include_str!("../../migrations/0019_thread_names.sql"),
+    ] {
+        db.execute_batch(migration).unwrap();
+    }
+    db.execute_batch("PRAGMA user_version=19; INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);").unwrap();
     db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq,event_offset) VALUES('e1','i','t',1,'info','event1','{}',456,1,0)",[]).unwrap();
     db.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
         .unwrap();

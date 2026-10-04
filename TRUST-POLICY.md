@@ -220,7 +220,7 @@ record 0 and pre-migration rows are 0. Neither field authorizes anything; togeth
 
 | Action | Who |
 |---|---|
-| ACK, accept, send, leave, archive, reopen | the seat's current binding (top-level agent or declared human) |
+| ACK, accept, reject an ordinary invitation, send, leave, archive, reopen | the seat's current binding (top-level agent or declared human) |
 | display ACK after text inbox output | the current top-level agent binding, for exact canonical pending agent receipts fully displayed on the page; the daemon decides eligibility again before settlement |
 | check in | the pane's top-level agent (hook) or a human via `me init` |
 | record a launch binding (`managed_launch`) | `launch`, after a host-correlated startup, on a seat with no open binding; it grants no row above |
@@ -229,8 +229,17 @@ record 0 and pre-migration rows are 0. Neither field authorizes anything; togeth
 | summary, summary job, summary submit | the seat's binding or its children (summary workers), all under the seat's claim: read-mostly; submit only stores a validated block for a live lease issued to the seat |
 | anything else on behalf of another seat | nobody by design; possible by spoofing (Accepted limits) |
 
-The operator never ACKs, accepts, sends or advances a checkpoint.
-The service never ACKs or accepts and is never a receipt recipient.
+The operator never ACKs, accepts, rejects invitations, sends or advances a checkpoint.
+The service never ACKs, accepts or rejects invitations and is never a receipt recipient.
+
+An ordinary invitation rejection is the addressed seat's explicit, accountable decision about one
+invitation episode, with a nonblank reason of at most 4096 UTF-8 bytes. It retains the actor seat, binding
+generation, timestamp and existing `cooperative_top_level` or `operator_human` observation in an immutable
+ledger, and publishes an attributed thread info event. It settles only that invitation's attention and
+warning condition: never a message ACK or waiver, an acceptance, or a fabricated join/leave interval.
+Declared subagents cannot reject. Required invitations remain service-owner controlled; a recipient must
+ask that owner to release the requirement and reread its current state before attempting rejection.
+Reinvitation creates a fresh episode; replay of an old rejection cannot reject that new invitation.
 
 **A5a. Human seats do not owe ACKs.** The daemon classifies a recipient from its canonical open
 binding when staging a send. A human binding gets the message through thread membership but no

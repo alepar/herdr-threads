@@ -523,6 +523,31 @@ impl NativeCli {
         crate::host::observation::normalize_seat_labels(&raw)
     }
 
+    /// One advisory topology snapshot, carrying its response's server incarnation.
+    /// Failure never invalidates daemon continuity or client connection epochs.
+    pub fn participant_labels(
+        &self,
+        budget: &CallBudget,
+    ) -> Result<Vec<crate::host::observation::SeatHostLabels>, ApiError> {
+        let (raw, witness) = self.dispatch(
+            &["api", "snapshot"],
+            budget,
+            Duration::from_secs(2),
+            cfg!(target_os = "macos"),
+            false,
+        )?;
+        let incarnation = witness
+            .as_ref()
+            .map(ServerIncarnation::from_witness)
+            .transpose()?
+            .map(|server| server.identity);
+        let mut labels = crate::host::observation::normalize_seat_labels(&raw)?;
+        for label in &mut labels {
+            label.incarnation = incarnation.clone();
+        }
+        Ok(labels)
+    }
+
     pub fn snapshot(&self, budget: &CallBudget) -> Result<NativeSnapshot, ApiError> {
         self.snapshot_witnessed(budget)
             .map(|(snapshot, _)| snapshot)
@@ -3913,5 +3938,46 @@ mod tests {
                 "{wire}"
             );
         }
+    }
+    #[test]
+    fn participant_locations_snapshot_is_witnessed_once_and_advisory_failure_keeps_epoch() {
+        let (socket, cli, worker) = serve_until(|stream, wire| {
+            assert_eq!(wire["method"], "session.snapshot");
+            answer(
+                stream,
+                wire,
+                json!({"type":"session_snapshot","snapshot":{
+                    "version":"0.9.1","protocol":22,"agents":[],"layouts":[],
+                    "workspaces":[{"workspace_id":"w4","label":"Space"}],"tabs":[{"tab_id":"w4:t1","label":"Tab"}],
+                    "panes":[{"pane_id":"w4:p1","terminal_id":"term_1","workspace_id":"w4","tab_id":"w4:t1","focused":false,"agent_status":"idle","revision":1,"label":"Pane"}]
+                }}),
+            );
+            true
+        });
+        let budget = CallBudget {
+            deadline: MonoInstant(10000),
+            cancellation: Cancellation::default(),
+        };
+        let outcome = cli.participant_labels(&budget);
+        let wires = worker.join().unwrap();
+        fs::remove_file(&socket).unwrap();
+        let labels = outcome.unwrap();
+        assert_eq!(wires.len(), 1);
+        assert_eq!(labels[0].terminal, "term_1");
+        if cfg!(target_os = "macos") {
+            assert!(
+                labels[0]
+                    .incarnation
+                    .as_deref()
+                    .is_some_and(|identity| identity.starts_with("herdr-server:pid="))
+            );
+        }
+        let epoch = cli.epoch();
+        assert!(cli.participant_labels(&budget).is_err());
+        assert_eq!(
+            cli.epoch(),
+            epoch,
+            "advisory failure must not invalidate continuity"
+        );
     }
 }

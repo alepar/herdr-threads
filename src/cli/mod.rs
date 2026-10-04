@@ -16,6 +16,7 @@ pub mod launch;
 pub mod me;
 pub mod output;
 pub mod panes;
+pub(crate) mod peer_locations;
 mod picker;
 pub mod retry;
 pub mod setup;
@@ -512,17 +513,21 @@ where
         } else {
             Vec::new()
         };
-    let Some(parsed) = human::with_seat_labels(seat_labels, || {
-        run_caller_scoped(
-            parsed,
-            caller_pane,
-            &context,
-            &paths,
-            &connection,
-            &clock,
-            &budget,
-            writer,
-        )
+    let peer_source =
+        crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(&clock));
+    let Some(parsed) = peer_locations::with_source(peer_source, || {
+        human::with_seat_labels(seat_labels, || {
+            run_caller_scoped(
+                parsed,
+                caller_pane,
+                &context,
+                &paths,
+                &connection,
+                &clock,
+                &budget,
+                writer,
+            )
+        })
     })?
     else {
         return Ok(());
@@ -830,6 +835,11 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
         .map_or(crate::protocol::pagination::MAX_PAGE_BYTES, |page| {
             page.max_bytes
         });
+    let participant_thread = match &command {
+        Command::Participants(query) => Some(query.thread.clone()),
+        Command::Thread(query) => Some(query.thread.clone()),
+        _ => None,
+    };
     let inbox_seat = match &command {
         Command::Inbox(query) => query.seat.clone(),
         _ => None,
@@ -845,6 +855,18 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
     } else {
         client.call_with_output(command, output_spec, &budget())?
     };
+    let peer_hints = if output_spec.format == OutputFormat::Text && peer_locations::active() {
+        let location_budget = budget();
+        peer_locations::prepare(
+            &result,
+            participant_thread,
+            client,
+            &location_budget,
+            || peer_locations::snapshot(&location_budget),
+        )
+    } else {
+        peer_locations::Prepared::default()
+    };
     let topics = match (&result, inbox_seat) {
         (CommandResult::Inbox(page), Some(seat))
             if output::human_active()
@@ -856,10 +878,24 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
         _ => None,
     };
     match topics {
-        Some(topics) => human::with_inbox_topics(topics, || {
-            output::write_selected(&result, output_spec, max_bytes, writer)
-        })?,
-        None => output::write_selected(&result, output_spec, max_bytes, writer)?,
+        Some(topics) => {
+            human::with_inbox_topics(topics, || {
+                output::write_selected(&result, output_spec, max_bytes, writer)
+            })?;
+        }
+        None => {
+            let mut bytes = Vec::new();
+            peer_locations::with_hints(&peer_hints, || {
+                output::write_selected(&result, output_spec, max_bytes, &mut bytes)
+            })?;
+            if output_spec.format == OutputFormat::Text && !output::human_active() {
+                bytes = peer_locations::append_compact(bytes, &peer_hints, max_bytes as usize);
+            } else if peer_hints.unavailable && output_spec.format == OutputFormat::Text {
+                bytes.extend_from_slice(b"location unavailable\n");
+            }
+            writer.write_all(&bytes)?;
+            writer.flush()?;
+        }
     };
     Ok(())
 }
@@ -2078,6 +2114,9 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 instance: claim.instance.clone(),
                 seat: claim.seat.clone(),
             };
+            if matches!(&mutation, MutationSpec::Reject { .. }) {
+                require_rejection_capability(client, clock)?;
+            }
             let semantic = SemanticMutation::freeze(cooperative_semantic(mutation)?, claim)?;
             retry::run_new_api_to_writer_discarding_rejection(
                 journal,
@@ -2157,6 +2196,9 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 )
                 .map_err(bridge_run_error)?;
             } else {
+                if pending.semantic.kind() == crate::protocol::results::IntentKind::Reject {
+                    require_rejection_capability(client, clock)?;
+                }
                 retry::run_retry_api_to_writer(
                     journal,
                     &reference,
@@ -2214,6 +2256,15 @@ fn cooperative_semantic(mutation: MutationSpec) -> io::Result<SemanticMutation> 
             deadline_millis,
         },
         MutationSpec::Accept(thread) => SemanticMutation::Accept { thread },
+        MutationSpec::Reject {
+            thread,
+            invitation,
+            reason,
+        } => SemanticMutation::Reject {
+            thread,
+            invitation,
+            reason,
+        },
         MutationSpec::AcceptRequired {
             thread,
             invitation,
@@ -2286,5 +2337,34 @@ impl LocalClient for SelectedSocketClient<'_> {
             return Err(ApiError::invalid_request("selected output mismatch"));
         }
         self.client.call_with_output(command, output, budget)
+    }
+}
+
+/// Older daemons are refused before any rejection intent is submitted.
+fn require_rejection_capability<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<(), RunError> {
+    match client.call(Command::Capabilities, &cooperative_budget(clock)) {
+        Ok(CommandResult::Capabilities(list))
+            if list
+                .capabilities
+                .iter()
+                .any(|name| name == crate::protocol::capabilities::INVITATION_REJECT) =>
+        {
+            Ok(())
+        }
+        Err(error)
+            if !matches!(
+                error.code,
+                crate::protocol::results::ErrorCode::Unsupported
+                    | crate::protocol::results::ErrorCode::InvalidRequest
+            ) =>
+        {
+            Err(RunError::Api(error))
+        }
+        _ => Err(unsupported(
+            "daemon lacks invitation.reject_v1; use a compatible daemon before rejecting invitations",
+        )),
     }
 }

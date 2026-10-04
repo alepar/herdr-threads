@@ -11,6 +11,7 @@ pub fn selector_mut(action: &mut CliAction) -> Option<&mut ThreadId> {
             | MutationSpec::Name { thread, .. }
             | MutationSpec::Invite { thread, .. }
             | MutationSpec::AcceptRequired { thread, .. }
+            | MutationSpec::Reject { thread, .. }
             | MutationSpec::Send { thread, .. }
             | MutationSpec::Accept(thread)
             | MutationSpec::Leave(thread)
