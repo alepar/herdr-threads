@@ -305,19 +305,11 @@ fn api(code: ErrorCode, detail: impl Into<String>) -> ApiError {
 }
 
 fn policy_harness(harness: ContextHarness) -> Harness {
-    match harness {
-        ContextHarness::Claude => Harness::Claude,
-        ContextHarness::Codex => Harness::Codex,
-        ContextHarness::Human => Harness::Human,
-    }
+    harness.into()
 }
 
 fn harness_word(harness: ContextHarness) -> &'static str {
-    match harness {
-        ContextHarness::Claude => "claude",
-        ContextHarness::Codex => "codex",
-        ContextHarness::Human => "human",
-    }
+    harness.as_str()
 }
 
 /// The owned hook configuration of one launch, read from the setup library:
@@ -367,6 +359,10 @@ impl LaunchHookInspector for SetupHookInspector {
             ContextHarness::Human => Err(api(
                 ErrorCode::InvalidRequest,
                 "launch starts agents only; a person uses `herdr-threads me init`",
+            )),
+            _ => Err(api(
+                ErrorCode::InvalidRequest,
+                format!("{}: launch is unsupported", self.harness.as_str()),
             )),
         }
     }
@@ -684,6 +680,7 @@ fn effective_env(
         ContextHarness::Codex => "CODEX_HOME",
         ContextHarness::Claude => "CLAUDE_CONFIG_DIR",
         ContextHarness::Human => return (env.clone(), "launcher"),
+        _ => return (env.clone(), "launcher"),
     };
     let pane_dir = probe
         .pane_shell_env(var)
@@ -695,7 +692,8 @@ fn effective_env(
     let mut effective = env.clone();
     match request.harness {
         ContextHarness::Codex => effective.codex_home = Some(dir),
-        _ => effective.claude_config_dir = Some(dir),
+        ContextHarness::Claude => effective.claude_config_dir = Some(dir),
+        _ => return (env.clone(), "launcher"),
     }
     (effective, "pane_shell")
 }
@@ -752,6 +750,17 @@ fn codex_report(env: &SetupEnv, argv: &[String]) -> Value {
 /// Run the managed launch preflight and start; errors are refusals before
 /// any start was submitted.
 pub fn execute(request: &LaunchRequest, parts: &LaunchParts<'_>) -> Result<LaunchReport, RunError> {
+    if !matches!(
+        request.harness,
+        ContextHarness::Claude | ContextHarness::Codex | ContextHarness::Human
+    ) {
+        return Err(api(
+            ErrorCode::InvalidRequest,
+            format!("{}: launch is unsupported", request.harness.as_str()),
+        )
+        .into());
+    }
+
     let word = harness_word(request.harness);
     let (effective, config_dir_source) = effective_env(request, parts.env, parts.shell_probe);
     let parts = &LaunchParts {
@@ -776,7 +785,7 @@ pub fn execute(request: &LaunchRequest, parts: &LaunchParts<'_>) -> Result<Launc
             .as_deref()
             .and_then(|state| crate::harness::codex_evidence::prepare(state).ok())
             .map(|private| crate::harness::codex_evidence::cache_path(&private)),
-        ContextHarness::Claude | ContextHarness::Human => None,
+        _ => None,
     };
     let (observed, _witness) =
         setup::observe_with_cache(&setup_request, parts.env, codex_cache.as_deref())
@@ -883,7 +892,8 @@ pub fn execute(request: &LaunchRequest, parts: &LaunchParts<'_>) -> Result<Launc
     let config_dir = json!({
         "path": match request.harness {
             ContextHarness::Codex => parts.env.codex_home.as_deref(),
-            _ => parts.env.claude_config_dir.as_deref(),
+            ContextHarness::Claude => parts.env.claude_config_dir.as_deref(),
+            _ => None,
         }
         .map(|dir| dir.display().to_string()),
         "source": config_dir_source,

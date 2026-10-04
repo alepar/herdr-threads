@@ -204,11 +204,7 @@ const NO_HUMAN_SETUP: &str =
     "setup manages agent hooks only; a person uses `herdr-threads me init`";
 
 fn harness_name(harness: Harness) -> &'static str {
-    match harness {
-        Harness::Claude => "claude",
-        Harness::Codex => "codex",
-        Harness::Human => "human",
-    }
+    harness.as_str()
 }
 
 fn api(code: ErrorCode, detail: impl Into<String>) -> RunError {
@@ -532,6 +528,16 @@ pub fn run<W: Write>(
 
 /// Run one setup command and return its report; errors carry the exit status.
 pub fn execute(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
+    if !matches!(
+        request.harness,
+        Harness::Claude | Harness::Codex | Harness::Human
+    ) {
+        return Err(api(
+            ErrorCode::InvalidRequest,
+            format!("{}: setup is unsupported", request.harness.as_str()),
+        ));
+    }
+
     // A malformed argument is invalid (status 2), never a version refusal.
     harness_binary(request, env)?;
     // A state directory left behind by an uninstalled plugin must not silently take new
@@ -550,6 +556,10 @@ pub fn execute(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError
         (Harness::Codex, SetupVerb::Remove) => codex_remove(env),
         (Harness::Codex, SetupVerb::Status) => codex_status(request, env),
         (Harness::Human, _) => Err(api(ErrorCode::InvalidRequest, NO_HUMAN_SETUP)),
+        _ => Err(api(
+            ErrorCode::InvalidRequest,
+            format!("{}: setup is unsupported", request.harness.as_str()),
+        )),
     }
 }
 
@@ -876,6 +886,10 @@ pub(crate) fn observe_with_cache(
             Harness::Claude => claude::check_version("").unwrap_err(),
             Harness::Codex => codex::VersionError::Unavailable.to_string(),
             Harness::Human => NO_HUMAN_SETUP.to_owned(),
+            _ => format!(
+                "{}: installed observation is unsupported",
+                request.harness.as_str()
+            ),
         } + &format!(" (no executable `{name}` on PATH; pass --harness-binary)"));
     };
     match request.harness {
@@ -927,6 +941,10 @@ pub(crate) fn observe_with_cache(
             ))
         }
         Harness::Human => Err(NO_HUMAN_SETUP.to_owned()),
+        _ => Err(format!(
+            "{}: installed observation is unsupported",
+            request.harness.as_str()
+        )),
     }
 }
 
@@ -2743,6 +2761,12 @@ pub(crate) fn user_inspection(
             env.codex_file("hooks.json").map_err(|e| e.to_string())?,
         ),
         Harness::Human => return Err(NO_HUMAN_SETUP.to_owned()),
+        _ => {
+            return Err(format!(
+                "{}: setup inspection is unsupported",
+                harness.as_str()
+            ));
+        }
     };
     let state = env.state_dir().map_err(|e| e.to_string())?;
     let manifest = manifest_path(state, &format!("{}-user", kind.harness()), &file);

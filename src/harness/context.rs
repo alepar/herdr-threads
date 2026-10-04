@@ -24,13 +24,47 @@ pub const RETAIN_COMPLETED: usize = 32;
 pub const RETAIN_AGE_MILLIS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// Terminally abandoned request keys kept so a dead request is never re-prepared.
 const RETAIN_ABANDONED: usize = 32;
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Harness {
-    Codex,
-    Claude,
-    /// A person in their own Herdr pane (`herdr-threads me init`): never an
-    /// agent, so it has no hooks, setup recipe or launch.
-    Human,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Harness(crate::harness::registry::OccupantHarness);
+#[allow(non_upper_case_globals)]
+impl Harness {
+    pub const Codex: Self = Self(crate::harness::registry::OccupantHarness::Codex);
+    pub const Claude: Self = Self(crate::harness::registry::OccupantHarness::Claude);
+    pub const Human: Self = Self(crate::harness::registry::OccupantHarness::Human);
+    pub fn occupant(self) -> crate::harness::registry::OccupantHarness {
+        self.0
+    }
+    pub fn as_str(self) -> &'static str {
+        self.0.as_str()
+    }
+}
+impl From<crate::harness::registry::OccupantHarness> for Harness {
+    fn from(value: crate::harness::registry::OccupantHarness) -> Self {
+        Self(value)
+    }
+}
+impl From<Harness> for crate::harness::registry::OccupantHarness {
+    fn from(value: Harness) -> Self {
+        value.0
+    }
+}
+impl Serialize for Harness {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let _ = crate::harness::registry::builtins();
+        serializer.serialize_str(match self.0 {
+            crate::harness::registry::OccupantHarness::Agent(id) => id.context_spelling(),
+            crate::harness::registry::OccupantHarness::Human => "Human",
+        })
+    }
+}
+impl<'de> Deserialize<'de> for Harness {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let spelling = String::deserialize(deserializer)?;
+        crate::harness::registry::builtins()
+            .by_context_spelling(&spelling)
+            .map(Self)
+            .map_err(serde::de::Error::custom)
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Role {
@@ -999,4 +1033,84 @@ fn secure_options(options: &mut OpenOptions) {
     options.custom_flags(0x100);
     #[cfg(target_os = "linux")]
     options.custom_flags(0x20000);
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    fn fixture() -> PendingCheckIn {
+        PendingCheckIn {
+            operation_id: Uuid::from_u128(2),
+            mode: CheckInMode::Current,
+            context: OccupantContext {
+                format_version: 1,
+                instance: Uuid::from_u128(1),
+                seat: "seat".into(),
+                target: "target".into(),
+                harness: Harness::Codex,
+                binding_generation: 1,
+                execution: Uuid::from_u128(3),
+                session: SessionReference::PluginContext(Uuid::from_u128(3)),
+                role: Role::TopLevel,
+            },
+            expected_generation: None,
+            event_id: "event".into(),
+            payload_version: 1,
+            payload: b"frozen request".to_vec(),
+        }
+    }
+    #[test]
+    fn legacy_identity_byte_snapshots() {
+        let request = fixture();
+        let saved = crate::harness::cache::CachedCheckIn {
+            request: request.clone(),
+            response: CheckInResponse {
+                context: request.context.clone(),
+                historical: false,
+                output: b"offer".to_vec(),
+            },
+        };
+        let reference = crate::harness::cache::cache_reference(
+            &saved,
+            &crate::protocol::output::OutputSpec::default().context,
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_vec(&request.context).unwrap(), br#"{"format_version":1,"instance":"00000000-0000-0000-0000-000000000001","seat":"seat","target":"target","harness":"Codex","binding_generation":1,"execution":"00000000-0000-0000-0000-000000000003","session":{"PluginContext":"00000000-0000-0000-0000-000000000003"},"role":"TopLevel"}"#);
+        assert_eq!(serde_json::to_vec(&request).unwrap(), br#"{"operation_id":"00000000-0000-0000-0000-000000000002","mode":"Current","context":{"format_version":1,"instance":"00000000-0000-0000-0000-000000000001","seat":"seat","target":"target","harness":"Codex","binding_generation":1,"execution":"00000000-0000-0000-0000-000000000003","session":{"PluginContext":"00000000-0000-0000-0000-000000000003"},"role":"TopLevel"},"expected_generation":null,"event_id":"event","payload_version":1,"payload":[102,114,111,122,101,110,32,114,101,113,117,101,115,116]}"#);
+        assert_eq!(serde_json::to_vec(&reference).unwrap(), br#"{"version":1,"key":{"instance":"00000000-0000-0000-0000-000000000001","seat":"seat","event_id":"event","operation_id":"00000000-0000-0000-0000-000000000002"},"request_sha256":"3d5c439da5297e76f8cc8957d7337460a1ae29192c8b4981604c79c4ab51b013","output_sha256":"f4844e318dbccd47e7dff89fe3ce6b0f37576b4ba90f726b925abc81088f4842","response_meta_sha256":"e998b145a9e31c19c3c3b0511e220ad1158bd33f21fee2aa0604bf1266c28328","selectors_sha256":"d3ab8a526463619ae805f5fc4f3c4661ff23952364ccf6e6c96bdbe7cf958d0c"}"#);
+    }
+    #[test]
+    fn unknown_context_identity_is_rejected_without_rewriting_file() {
+        let directory = std::env::temp_dir().join(format!("context-{}", Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let state = State {
+            version: 1,
+            instance: Uuid::from_u128(1),
+            seat: "seat".into(),
+            current: Some(fixture().context),
+            pending: None,
+            completed: vec![],
+            abandoned: vec![],
+        };
+        let bytes = serde_json::to_string(&state)
+            .unwrap()
+            .replace("Codex", "Unregistered")
+            .into_bytes();
+        let path = directory.join("context.json");
+        fs::write(&path, &bytes).unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let journal = ContextJournal::open(
+            &directory,
+            state.instance,
+            "seat",
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        assert_eq!(journal.current(), Err(ContextError::Corrupt));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_dir_all(directory).unwrap();
+    }
 }

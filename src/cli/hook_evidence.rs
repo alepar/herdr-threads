@@ -109,6 +109,7 @@ fn harness_name(harness: Harness) -> Option<&'static str> {
         Harness::Claude => Some("claude"),
         Harness::Codex => Some("codex"),
         Harness::Human => None,
+        _ => None,
     }
 }
 

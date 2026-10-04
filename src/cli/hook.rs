@@ -96,15 +96,7 @@ pub fn installed_argv(
         argv.extend(["--host-endpoint".to_owned(), host.to_owned()]);
     }
     argv.push(SUBCOMMAND.to_owned());
-    argv.push(
-        match harness {
-            Harness::Claude => "claude",
-            Harness::Codex => "codex",
-            // Never installed: a person has no hooks (parse_hook_argv refuses it).
-            Harness::Human => "human",
-        }
-        .to_owned(),
-    );
+    argv.push(harness.as_str().to_owned());
     argv
 }
 
@@ -279,6 +271,12 @@ pub fn observe_harness_in(
         Harness::Claude => "claude",
         Harness::Codex => "codex",
         Harness::Human => return Err("a human occupant has no installed harness".into()),
+        _ => {
+            return Err(format!(
+                "{}: installed observation is unsupported",
+                harness.as_str()
+            ));
+        }
     };
     let binary = resolve_on_path(name, path)
         .ok_or_else(|| format!("installed {name} executable not found on PATH"))?;
@@ -288,6 +286,10 @@ pub fn observe_harness_in(
             .map_err(|error| format!("installed {name} version: {error:?}")),
         Harness::Codex => observe_codex(binary, timeout, state_dir),
         Harness::Human => Err("a human occupant has no installed harness".into()),
+        _ => Err(format!(
+            "{}: installed observation is unsupported",
+            harness.as_str()
+        )),
     }
 }
 
@@ -991,6 +993,7 @@ pub(crate) fn report_parse_failure(
         Harness::Claude => "claude",
         Harness::Codex => "codex",
         Harness::Human => return false,
+        _ => return false,
     };
     if !capabilities.supports(HOOK_PARSE_FAILURE_REPORT) {
         return false;
@@ -1386,6 +1389,7 @@ fn wire_harness(harness: Harness) -> Option<crate::protocol::authority::Harness>
         Harness::Claude => Some(Wire::Claude),
         Harness::Codex => Some(Wire::Codex),
         Harness::Human => None,
+        _ => None,
     }
 }
 

@@ -56,7 +56,7 @@ pub fn poke_capabilities(
             composer_stash: recipe.profile.composer_stash,
             poke_during_turn: recipe.profile.poke_during_turn,
         }),
-        Harness::Human => return PokeCapabilities::NONE,
+        Harness::Human | Harness::Agent(_) => return PokeCapabilities::NONE,
     }
     .unwrap_or(PokeCapabilities::NONE)
 }

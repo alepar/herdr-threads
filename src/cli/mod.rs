@@ -1197,10 +1197,7 @@ fn exact_check_in_replay(
 
 /// `claude` or `codex`, the names the contract and version helpers use.
 fn harness_name(harness: crate::harness::context::Harness) -> &'static str {
-    match harness {
-        crate::harness::context::Harness::Codex => "codex",
-        _ => "claude",
-    }
+    harness.as_str()
 }
 
 fn invalid_request(detail: &str) -> RunError {

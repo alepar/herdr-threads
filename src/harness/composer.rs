@@ -84,14 +84,15 @@ pub fn read_composer(harness: Harness, detection: &str, pane_width: Option<u16>)
             }
             None => return ComposerRead::Unreadable,
         },
-        Harness::Human => return ComposerRead::Unreadable,
+        Harness::Human | Harness::Agent(_) => return ComposerRead::Unreadable,
     };
     if empty {
         return ComposerRead::Empty;
     }
     let prefix = match harness {
         Harness::Codex => CODEX_PROMPT,
-        _ => CLAUDE_PROMPT,
+        Harness::Claude => CLAUDE_PROMPT,
+        _ => return ComposerRead::Unreadable,
     };
     // The first row's prompt glyph and following space are not typed text.
     let text = rows.join("\n");

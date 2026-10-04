@@ -169,6 +169,7 @@ impl crate::ports::PokeCapabilitySource for ObservedPokeCapabilities {
                 Harness::Claude => (&observed.claude, observed.claude_version.as_deref()),
                 Harness::Codex => (&observed.codex, observed.codex_version.as_deref()),
                 Harness::Human => return None,
+                Harness::Agent(_) => return None,
             };
             match status {
                 HarnessStatus::Refused(_) | HarnessStatus::VersionRefused(_) => None,

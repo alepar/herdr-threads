@@ -160,6 +160,12 @@ impl NativeCli {
                     "a human occupant is never launched",
                 ));
             }
+            Harness::Agent(_) => {
+                return Err(error(
+                    ErrorCode::InvalidRequest,
+                    format!("{}: native start is unsupported", request.harness.as_str()),
+                ));
+            }
         };
         // The readable name first; when Herdr refuses it as taken by another
         // live agent (checked before anything is typed), one retry with a
