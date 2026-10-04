@@ -880,6 +880,81 @@ fn health_v2_cached_install_and_exact_runtime_scopes_remain_separate() {
     assert_eq!(overall.assemble().state, HealthState::Degraded);
 }
 
+// Catches the public display cap hiding a retained current-window rich violation.
+#[test]
+fn health_v2_broken_twenty_first_row_still_degrades_overall_health() {
+    use crate::{
+        harness::{registry, runtime::RuntimeIdentity},
+        protocol::results::RuntimeEvidenceState,
+        store::harness_evidence::{EvidenceOutcome, EvidenceRecordV2},
+    };
+    let fx = Fx::new("hhs-v2-broken-outside-cap");
+    let registration = registry::builtins()
+        .by_id(registry::builtins().agent("claude").unwrap())
+        .unwrap();
+    let descriptor = &registration.contracts()[0];
+    let broken = RuntimeIdentity::stable_release("9.0.0", "fixture").unwrap();
+    fx.store
+        .record_harness_evidence_v2(
+            &EvidenceRecordV2 {
+                identity: &broken,
+                descriptor,
+                event: "PreToolUse",
+                outcome: &EvidenceOutcome::Violation {
+                    field: "tool_input.command".into(),
+                },
+                qualified: true,
+            },
+            &budget(),
+        )
+        .unwrap();
+    for minor in 1..=20 {
+        fx.advance(1);
+        let identity = RuntimeIdentity::stable_release(&format!("9.{minor}.0"), "fixture").unwrap();
+        fx.store
+            .record_harness_evidence_v2(
+                &EvidenceRecordV2 {
+                    identity: &identity,
+                    descriptor,
+                    event: "PreToolUse",
+                    outcome: &EvidenceOutcome::Ok,
+                    qualified: true,
+                },
+                &budget(),
+            )
+            .unwrap();
+    }
+    let provider = fx
+        .provider()
+        .with_observations(Box::new(|| Ok(Default::default())));
+    let report = provider.report_v2(&budget()).unwrap();
+    let rows = &report.harnesses["claude"].runtime_evidence;
+    assert_eq!(rows.len(), 20, "public report must remain capped");
+    assert!(
+        rows.iter()
+            .all(|row| row.state != RuntimeEvidenceState::Broken)
+    );
+    assert!(
+        provider.report(&budget()).unwrap().harnesses[0]
+            .versions
+            .is_empty()
+    );
+    let mut overall = ready_inputs();
+    overall.harness_version_lines = provider.health_lines(&budget()).unwrap();
+    let health = overall.assemble();
+    assert_eq!(
+        health.state,
+        HealthState::Degraded,
+        "display truncation must not erase a retained rich violation"
+    );
+    assert!(
+        health
+            .limitations
+            .iter()
+            .any(|line| line.contains("9.0.0") && line.contains("broken"))
+    );
+}
+
 // Catches a generic registered installation failure silently leaving old Health healthy.
 #[test]
 fn generic_cached_install_failure_degrades_overall_health_with_bounded_note() {

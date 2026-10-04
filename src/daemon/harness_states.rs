@@ -37,6 +37,8 @@ pub type CachedHarnessObservations = Box<
 
 pub type ManifestSource = Box<dyn Fn() -> Arc<Manifest> + Send + Sync>;
 
+type BrokenRuntimeRollup = std::collections::BTreeMap<String, (u64, String)>;
+
 /// The daemon's manifest service as a [`ManifestSource`].
 pub fn service_source(service: Arc<ManifestService>) -> ManifestSource {
     Box::new(move || service.current())
@@ -93,6 +95,20 @@ impl HarnessStatesProvider {
         &self,
         budget: &CallBudget,
     ) -> Result<crate::protocol::results::HarnessHealthV2Report, ApiError> {
+        self.report_v2_with_broken_rollup(budget)
+            .map(|(report, _)| report)
+    }
+
+    fn report_v2_with_broken_rollup(
+        &self,
+        budget: &CallBudget,
+    ) -> Result<
+        (
+            crate::protocol::results::HarnessHealthV2Report,
+            BrokenRuntimeRollup,
+        ),
+        ApiError,
+    > {
         use crate::daemon::health::HarnessStatus;
         use crate::protocol::results::*;
         use std::collections::BTreeMap;
@@ -111,6 +127,7 @@ impl HarnessStatesProvider {
             .map(|f| f.snapshot())
             .unwrap_or_default();
         let mut harnesses = BTreeMap::new();
+        let mut broken_rollup = BTreeMap::new();
         for registration in self.registry.registrations() {
             if budget.cancellation.is_cancelled() {
                 return Err(ApiError::cancelled("harness health cancelled"));
@@ -203,7 +220,6 @@ impl HarnessStatesProvider {
             candidates.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| a.key().cmp(&b.key())));
             let runtime_evidence = candidates
                 .into_iter()
-                .take(20)
                 .map(|candidate| {
                     let derived = state::derive_runtime(
                         registration,
@@ -235,7 +251,16 @@ impl HarnessStatesProvider {
                         scope: HarnessHealthScope::all_runtime_scopes(),
                     }
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            // The bounded diagnostic input must retain its newest broken row
+            // even when newer non-broken rows exhaust the public display cap.
+            if let Some(row) = runtime_evidence
+                .iter()
+                .find(|row| row.in_health_window && row.state == RuntimeEvidenceState::Broken)
+            {
+                broken_rollup.insert(id.into(), (row.last_seen_at, row.line.clone()));
+            }
+            let runtime_evidence = runtime_evidence.into_iter().take(20).collect();
             let mut unattributed = Vec::new();
             for descriptor in registration.contracts() {
                 if let Some((reason, at)) = self.store.last_unattributed_v2(
@@ -294,7 +319,7 @@ impl HarnessStatesProvider {
         report
             .validate()
             .map_err(|reason| ApiError::new(ErrorCode::InvalidRequest, reason))?;
-        Ok(report)
+        Ok((report, broken_rollup))
     }
 
     fn now_ms(&self) -> u64 {
@@ -316,35 +341,29 @@ impl HarnessStatesProvider {
                 all.push((harness, self.store.harness_evidence_all(harness, budget)?));
             }
         }
-        let mut lines: std::collections::BTreeMap<String, (u64, String)> =
-            self.with_manifest(|manifest| {
-                all.iter()
-                    .filter_map(|(harness, rows)| {
-                        let rollup =
-                            state::roll_up(harness, rows, manifest, env!("CARGO_PKG_VERSION"), now);
-                        let line = rollup.health_line()?;
-                        let at = rollup
-                            .versions
-                            .iter()
-                            .filter(|v| {
-                                v.in_health_window
-                                    && matches!(v.derived.state, state::State::Broken(_))
-                            })
-                            .map(|v| v.last_seen_at)
-                            .max()
-                            .unwrap_or(0);
-                        Some(((*harness).into(), (at, line)))
-                    })
-                    .collect()
-            });
+        let mut lines: BrokenRuntimeRollup = self.with_manifest(|manifest| {
+            all.iter()
+                .filter_map(|(harness, rows)| {
+                    let rollup =
+                        state::roll_up(harness, rows, manifest, env!("CARGO_PKG_VERSION"), now);
+                    let line = rollup.health_line()?;
+                    let at = rollup
+                        .versions
+                        .iter()
+                        .filter(|v| {
+                            v.in_health_window && matches!(v.derived.state, state::State::Broken(_))
+                        })
+                        .map(|v| v.last_seen_at)
+                        .max()
+                        .unwrap_or(0);
+                    Some(((*harness).into(), (at, line)))
+                })
+                .collect()
+        });
         if self.has_observations() {
-            for (id, entry) in self.report_v2(budget)?.harnesses {
-                if let Some(row) = entry.runtime_evidence.iter().find(|row| {
-                    row.in_health_window
-                        && row.state == crate::protocol::results::RuntimeEvidenceState::Broken
-                }) && lines.get(&id).is_none_or(|(at, _)| row.last_seen_at >= *at)
-                {
-                    lines.insert(id, (row.last_seen_at, row.line.clone()));
+            for (id, (at, line)) in self.report_v2_with_broken_rollup(budget)?.1 {
+                if lines.get(&id).is_none_or(|(old_at, _)| at >= *old_at) {
+                    lines.insert(id, (at, line));
                 }
             }
         }
