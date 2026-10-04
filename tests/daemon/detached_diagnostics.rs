@@ -332,6 +332,10 @@ fn continuous_writer_fixture() {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
+    if std::env::var_os("HERDR_TASK23_WRITER_END_GATE").is_some() {
+        fs::write(root.join("writer-closed"), b"").unwrap();
+        wait_until(HANG_GUARD, || root.join("release-writer-end").exists());
+    }
     fs::write(root.join("writer-ended"), b"").unwrap();
 }
 
@@ -339,6 +343,7 @@ fn continuous_writer_fixture() {
 #[ignore]
 fn continuous_owner_fixture() {
     let root = PathBuf::from(std::env::var_os("HERDR_TASK23_ROOT").unwrap());
+    let parent_test_owner = std::env::var_os(crate::test_support::spawn::OWNER_ENV).unwrap();
     let paths = fixture_paths(root.clone());
     let shutdown = Cancellation::default();
     let ready_shutdown = shutdown.clone();
@@ -362,10 +367,21 @@ fn continuous_owner_fixture() {
             if std::env::var_os("HERDR_TASK23_SLOW_WRITER").is_some() {
                 writer.env("HERDR_TASK23_SLOW_WRITER", "1");
             }
+            if std::env::var_os("HERDR_TASK23_WRITER_END_GATE").is_some() {
+                writer.env("HERDR_TASK23_WRITER_END_GATE", "1");
+            }
             // The writer is deliberately left running (and unreaped) past this
             // owner process: the fixture tests output from a detached writer.
-            // Tagged so the reaper still stops it once this fixture process is gone.
+            // Its lifetime belongs to the parent test: the short-lived owner's
+            // reaper must not kill it before it observes the closed reader.
+            // It remains in the owned process group and is reaped if the test dies.
             crate::test_support::spawn::tag(&mut writer);
+            writer
+                .env(crate::test_support::spawn::OWNER_ENV, &parent_test_owner)
+                .env(
+                    crate::daemon::lifecycle::TEST_OWNER_PID_ENV,
+                    &parent_test_owner,
+                );
             #[allow(clippy::zombie_processes)]
             writer.spawn().unwrap(); // leak-guard: deliberately outlives its owner (detached writer fixture); tagged above
             wait_until(HANG_GUARD, || root.join("writer-started").exists());
@@ -410,20 +426,27 @@ fn reacquired_owner_fixture() {
 
 #[test]
 fn continuous_descendant_cannot_hold_owner_drain_or_erase_final_error() {
-    run_continuous_case(false, false);
+    run_continuous_case(false, false, false);
 }
 
 #[test]
 fn slow_descendant_hits_monotonic_drain_deadline() {
-    run_continuous_case(true, false);
+    run_continuous_case(true, false, false);
 }
 
 #[test]
 fn contender_is_excluded_at_real_reader_drain_entry() {
-    run_continuous_case(true, true);
+    run_continuous_case(true, true, false);
 }
 
-fn run_continuous_case(slow: bool, probe_drain: bool) {
+// Kills: tagging the detached writer to its short-lived owner instead of the
+// parent test, so that owner's cleanup races the real read-side-close proof.
+#[test]
+fn detached_writer_completion_survives_its_owner_reaper() {
+    run_continuous_case(true, false, true);
+}
+
+fn run_continuous_case(slow: bool, probe_drain: bool, writer_end_gate: bool) {
     let root = std::env::temp_dir().join(format!("herdr-task23-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
@@ -442,6 +465,9 @@ fn run_continuous_case(slow: bool, probe_drain: bool) {
     }
     if probe_drain {
         owner_command.env("HERDR_TASK23_DRAIN_PROBE_DIR", &root);
+    }
+    if writer_end_gate {
+        owner_command.env("HERDR_TASK23_WRITER_END_GATE", "1");
     }
     let mut guard = ContinuousFixtureGuard {
         root: root.clone(),
@@ -490,6 +516,23 @@ fn run_continuous_case(slow: bool, probe_drain: bool) {
         }
         std::thread::sleep(Duration::from_millis(10));
     };
+    if writer_end_gate {
+        wait_until(HANG_GUARD, || root.join("writer-closed").exists());
+        assert!(
+            status.is_some(),
+            "owner did not finish while writer cleanup paused"
+        );
+        assert!(!root.join("stop-writer").exists());
+        // Run the departed owner's real tagged-process cleanup before allowing
+        // the writer to record completion. The parent test is still alive.
+        let mut reaper = scrubbed_process("/bin/sh");
+        reaper
+            .args(["-c", r#". "$1"; ih_kill_pids $(ih_tagged_pids "$2")"#, "sh"])
+            .arg(crate::test_support::spawn::LIB)
+            .arg(guard.owner.id().to_string());
+        assert!(reaper.spawn_owned().unwrap().wait().unwrap().success());
+        fs::write(root.join("release-writer-end"), b"").unwrap();
+    }
     // The watchdog releases only this fixture's descendant if old code hangs.
     let writer_ended_before_stop = {
         let wait_start = Instant::now();
