@@ -1300,7 +1300,9 @@ where
                         as Arc<dyn crate::daemon::harness_evidence::ManifestTrigger>),
                     factory_clock.clone(),
                 )
-                .with_legacy_pending(&harness_evidence),
+                .with_legacy_pending(&harness_evidence)
+                .with_rich_manifest_source(Arc::clone(&manifest)
+                    as Arc<dyn crate::daemon::harness_evidence::RichManifestSource>),
             );
             Ok(Arc::new(
                 ControlService::new(stop, health, domain)
