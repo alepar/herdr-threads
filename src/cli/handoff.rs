@@ -30,7 +30,7 @@ New threads join the sender; existing threads require a joined sender. --thread-
 goal defaults to topic. --name names the native agent, not the channel.
 
 The one quoted body after -- is durable work. Native options use repeatable
---agent-arg=-a --agent-arg=on-request; launch -- native arguments is unchanged.
+--agent-arg=OPTION; launch -- native arguments is unchanged.
 Handoff invites and sends before guarded launch. Startup gets fixed inbox/thread
 instructions, not a second copy of the body. Launch never accepts or ACKs.
 

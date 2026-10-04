@@ -159,7 +159,7 @@ creates a channel joined by you, invites the target, sends one addressed durable
 then performs the ordinary guarded launch. Or use `--thread ID_OR_NAME` when already joined.
 `--topic`, `--goal`, and `--thread-name` are new-thread only; `--name` names the native agent.
 The single quoted body after `--` (1–1024 UTF-8 bytes) is stored once. Native options preserve one argv element per repeated
-`--agent-arg=-a --agent-arg=on-request`; startup gets fixed inbox/thread instructions.
+`--agent-arg=OPTION`; startup gets fixed inbox/thread instructions.
 Launch never accepts or ACKs. Committed messages survive failure: use the reported `retry REF`.
 After `outcome_unknown` or a possible-start crash, retry reports state without relaunching;
 inspect the reported pane/seat and use manual launch only after confirming no agent started.

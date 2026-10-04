@@ -205,7 +205,7 @@ Human transcripts name authors and event recipients relative to the live invokin
 
 ```sh
 herdr-threads handoff --new-thread --thread-name review --topic "Review the change" \
-  --pane bob --kind codex --agent-arg=-a --agent-arg=on-request -- "Review the change"
+  --pane bob --kind codex -- "Review the change"
 herdr-threads handoff --thread review --pane alice --kind claude -- "Check the tests"
 ```
 

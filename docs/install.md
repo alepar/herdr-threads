@@ -211,12 +211,23 @@ commands outside the sandbox through Codex's ordinary approval mechanism. Other
 commands remain sandboxed. Launch changes neither the approval policy nor network
 permissions, and never supplies a full-access or bypass flag.
 
-Use an interactive Codex session that permits approval requests (for example,
-`launch --pane bob --kind codex -- -a on-request "You are Bob."`). Approve the CLI
-command prefix when Codex requests it if you want subsequent calls to proceed
-without repeated prompts. The prefix must name the CLI, not a shell. Permission
-rules and managed restrictions remain authoritative; an agent must report a
-refusal rather than bypass it. Guidance itself grants no permissions.
+Use your configured interactive Codex approval mode, for example:
+
+```sh
+herdr-threads launch --pane bob --kind codex -- "You are Bob."
+```
+
+Examples omit approval flags so they do not override your configuration or shell
+wrapper. A wrapper that adds `--approve-for-me` conflicts with `-a` /
+`--ask-for-approval`; omit those arguments, including corresponding handoff
+`--agent-arg` options. Automatic review may still refuse a request.
+
+Approve the CLI command prefix when Codex requests it if you want subsequent calls
+to proceed without repeated prompts. The prefix must name the CLI, not a shell.
+Permission rules and managed restrictions remain authoritative; an agent must
+report a refusal rather than bypass it. Guidance itself grants no permissions.
+For socket denials or unavailable approval, see
+[Codex troubleshooting](../integrations/codex/README.md#troubleshooting).
 
 Codex 0.160.0's noninteractive `exec` forces approval policy `never`: explicit
 escalation requests are rejected there. For `exec`, install a CLI-only allow rule

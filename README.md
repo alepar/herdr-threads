@@ -56,7 +56,7 @@ herdr-threads handoff --new-thread --thread-name review \
 
 ```sh
 herdr-threads handoff --thread review --pane bob --kind codex \
-  --agent-arg=-a --agent-arg=on-request -- \
+  -- \
   "You are Bob. Read this thread, make the case for tabs, and agree on a recommendation with Alice."
 ```
 
