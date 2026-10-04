@@ -3556,3 +3556,64 @@ fn ack_after_frozen_deadline_during_extension_records_no_late_warning() {
     .unwrap();
     assert_eq!(warning_count(&conn, id.as_str()), 0);
 }
+
+// Catches display settlement trusting a recognized claimed brand despite a
+// noncooperative or unknown canonical binding. Refusal leaves history open.
+#[test]
+fn adapter_display_ack_rechecks_exact_binding_and_cooperative_provenance() {
+    for change in [
+        "observation_provenance='verified'",
+        "harness='future_agent'",
+        "native_session='different'",
+        "execution_id='different'",
+        "generation=2",
+    ] {
+        let (context, mut db, _) = setup();
+        db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('displayed','i','t',1,'ordinary','body',0,2); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('displayed','t','b','pending',300000); UPDATE threads SET next_sequence=2 WHERE id='t'; UPDATE host_instances SET decision_seq=2 WHERE id='i';").unwrap();
+        db.execute(
+            &format!("UPDATE occupant_bindings SET {change} WHERE seat_id='b'"),
+            [],
+        )
+        .unwrap();
+        let request = ack_request(vec![MessageId::new("displayed")]);
+        let digest =
+            crate::store::schema::canonical_digest(&receipts::ack_displayed_payload(&request))
+                .unwrap();
+        let mut grant = cooperative_permit(
+            &request.claim,
+            &request.operation,
+            ObligationRef::CheckIn(SeatId::new("b")),
+            digest,
+            (1, 0),
+        );
+        let result = receipts::ack_displayed(
+            &context,
+            &mut db,
+            &crate::protocol::time::CallBudget {
+                deadline: MonoInstant(u64::MAX),
+                cancellation: Default::default(),
+            },
+            &request,
+            &mut grant,
+        );
+        assert!(result.is_err(), "must refuse {change}: {result:?}");
+        assert_eq!(
+            db.query_row(
+                "SELECT state FROM receipts WHERE message_id='displayed'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "pending"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT ended_at FROM occupant_bindings WHERE seat_id='b'",
+                [],
+                |r| r.get::<_, Option<i64>>(0)
+            )
+            .unwrap(),
+            None
+        );
+    }
+}
