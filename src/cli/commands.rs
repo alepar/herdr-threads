@@ -84,6 +84,9 @@ pub enum CliAction {
         raw: String,
     },
     /// Hidden `internal json-field PATH`: print a field of the JSON on stdin.
+    InstallerIntegrations {
+        confirm_missing: bool,
+    },
     InternalJsonField {
         path: String,
     },
@@ -236,6 +239,7 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::Skill
         | CliAction::ContractId { .. }
         | CliAction::HarnessVersionNormalize { .. }
+        | CliAction::InstallerIntegrations { .. }
         | CliAction::InternalJsonField { .. }
         | CliAction::Picker(_)
         | CliAction::Follow(_)
@@ -643,19 +647,20 @@ enum Top {
     /// Install the owned herdr-threads hooks for a harness at user level
     /// (with no harness: for every detected harness).
     /// Claude: `$CLAUDE_CONFIG_DIR/settings.json` (hooks and allow rule).
-    /// Codex: `$CODEX_HOME/hooks.json` plus the sandbox socket allowance in
-    /// `$CODEX_HOME/config.toml`. Ownership manifests stay private in the
-    /// plugin state. Refuses a harness version that is unparsable,
-    /// known broken or older than every recipe; a newer unlisted version is
-    /// admitted optimistically.
+    /// Codex: `$CODEX_HOME/hooks.json`. Ownership manifests stay private in
+    /// plugin state. Setup uses the declared hook contract; installed version
+    /// metadata is optional and may be unknown. Configured hooks do not prove
+    /// observed delivery or native harness support.
     #[command(after_help = super::setup::SETUP_HELP)]
     Setup(SetupArgs),
     /// Remove the owned herdr-threads hooks installed by `setup`, keeping
     /// every other setting; unchanged settings are restored byte for byte.
+    /// Removal does not depend on installed harness metadata.
     #[command(after_help = super::setup::SETUP_HELP)]
     Unsetup(SetupArgs),
     /// Report whether the owned hooks are installed (separately from native
-    /// observation) and whether the installed harness version is supported.
+    /// observation), with optional installed version metadata. Installation
+    /// does not prove native callback delivery or launch support.
     #[command(after_help = super::setup::SETUP_HELP)]
     SetupStatus(SetupArgs),
     /// List local mutations whose outcome is still unknown.
@@ -755,6 +760,12 @@ enum HarnessVersionSub {
 
 #[derive(Subcommand)]
 enum InternalSub {
+    /// Reconcile supported harness hooks and skills, asking separately for missing components.
+    InstallerIntegrations {
+        /// Explicitly confirm installation of every missing integration (installer --setup).
+        #[arg(long)]
+        confirm_missing: bool,
+    },
     /// Read JSON on stdin and print the value at a dotted path (exit 1 when absent).
     JsonField { path: String },
 }
@@ -1125,8 +1136,8 @@ struct SetupArgs {
     /// one found on PATH; unsetup and setup-status: both).
     #[arg(value_parser = ["claude", "codex"])]
     harness: Option<String>,
-    /// Absolute harness executable whose `--version` is observed (default:
-    /// the first `claude`/`codex` executable on PATH, as the hook observes).
+    /// Absolute harness executable (default: the first `claude`/`codex` on
+    /// PATH). Version metadata is optional; setup uses the declared contract.
     #[arg(long, value_name = "PATH")]
     harness_binary: Option<String>,
     /// setup (claude): set Claude's `promptSuggestionEnabled` to false without
@@ -2130,6 +2141,9 @@ fn parse_cli(mut cli: Cli) -> Result<ParsedCli, ApiError> {
             harness: harness_arg(&harness),
             raw,
         },
+        Top::Internal {
+            command: InternalSub::InstallerIntegrations { confirm_missing },
+        } => CliAction::InstallerIntegrations { confirm_missing },
         Top::Internal {
             command: InternalSub::JsonField { path },
         } => CliAction::InternalJsonField { path },

@@ -21,8 +21,9 @@
 #   4. registers the package with Herdr (`herdr plugin link`; Herdr does not
 #      build a linked plugin, and the package's build command keeps the
 #      prebuilt binary), and ensures the daemon if Herdr runs;
-#   5. optionally runs `herdr-threads setup` (every detected harness)
-#      (claude, codex): asks on a terminal, or --setup / --no-setup;
+#   5. reconciles hooks and skills for each detected supported harness:
+#      missing components need confirmation; owned integrations update silently;
+#      --setup confirms missing integrations, --no-setup skips all;
 #   6. prints the next steps and ONE final status line.
 #
 # The final status line and the exit status (docs/install.md has the table):
@@ -86,8 +87,8 @@ usage() {
 usage: install.sh [options]
 
   --version TAG      install this release (vX.Y.Z or X.Y.Z; default: latest)
-  --setup            run `herdr-threads setup` (sets up every detected harness)
-  --no-setup         skip harness setup (default when not on a terminal)
+  --setup            confirm installation of missing harness hooks and skills
+  --no-setup         skip all harness integration checks and updates
   --no-herdr         do not register the plugin with Herdr
   --prefix DIR       install directory (default ~/.local/share/herdr-threads)
   --bin-dir DIR      symlink directory (default ~/.local/bin)
@@ -214,6 +215,12 @@ user_level_setup() {
 # Builds whose bare `setup` / `unsetup` cover every detected harness (and
 # print a per-harness summary) say so in `setup --help`; older ones need the
 # harness named, one call each.
+installer_integrations() {
+    # A help query has no configuration effects. A supported command failing
+    # during reconciliation must never fall through to legacy setup.
+    "$installed_binary" internal installer-integrations --help >/dev/null 2>&1
+}
+
 bare_setup() {
     "$installed_binary" setup --help 2>/dev/null | grep -i 'sets up every detected harness' >/dev/null
 }
@@ -659,6 +666,16 @@ elif [ "$registered" = 0 ]; then
 elif ! user_level_setup; then
     OUT_SETUP=per_project
     say "this build's setup is per project; the installer does not run it"
+elif installer_integrations; then
+    integration_arg=''
+    if [ "$setup" = yes ]; then integration_arg=--confirm-missing; fi
+    if "$installed_binary" internal installer-integrations ${integration_arg:+"$integration_arg"}; then
+        OUT_SETUP=complete
+    else
+        OUT_SETUP=failed
+        OUT_SETUP_FAILED=$harnesses
+        warn "harness integration reconciliation failed; see the per-component verdicts above"
+    fi
 elif bare_setup; then
     if [ "$setup" = ask ] && ! can_prompt; then
         OUT_SETUP=suggested
