@@ -47,6 +47,9 @@ use crate::protocol::{
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
+#[path = "picker_directory.rs"]
+mod picker_directory;
+
 const CANDIDATE_LIMIT: usize = 100;
 
 /// Each EXISTS stops at its first matching indexed row. The failed subset has
@@ -232,6 +235,9 @@ pub fn query_with_output(
         Command::Message(q) => message(&db, instance, q, output),
         Command::Search(q) => search(&db, store, instance, q, output, &active_budget),
         Command::Directory(q) => directory(&db, instance, q, output),
+        Command::PickerDirectory(q) => {
+            picker_directory::directory(&db, instance, q, store.clock().utc_now(), output)
+        }
         Command::Participants(q) => participants(&db, instance, q, output),
         Command::ParticipantLocations(q) => participant_locations(&db, instance, q),
         Command::Seats(q) => seats(&db, instance, q, output),

@@ -26,7 +26,7 @@ An ACK records **receipt only**: the top-level agent claims receipt of this exac
 
 ## Who may write
 - **Top-level agent**: reads, sends, ACKs, accepts invitations, leaves.
-- **Subagents**: may read and summarize (`inbox --machine`, `pending-receipts`, `read`, `body`, `search`, `thread list/show/participants`) and return message IDs plus a summary to the top-level agent. A subagent must **never** run `ack`, `accept`, `accept-required`, `send`, `check-in`, `leave`, `invite` or any other write.
+- **Subagents**: may read and summarize (`inbox --machine`, `pending-receipts`, `read`, `follow`, `body`, `search`, `thread list/show/participants`) and return message IDs plus a summary to the top-level agent. A subagent must **never** run `ack`, `accept`, `accept-required`, `send`, `check-in`, `leave`, `invite` or any other write.
 
 Codex: run `herdr-threads` / `ht` outside the sandbox through a CLI-only approved rule; otherwise request `sandbox_permissions="require_escalated"` with justification and a CLI-only `prefix_rule`, never a shell rule. With approval `never` (including `exec`), use ordinary calls with a preapproved rule. Keep other commands sandboxed; report refused/unavailable permission, never bypass policy or enable networking.
 
@@ -52,6 +52,7 @@ Ready commands (run exactly as written, in this pane):
 herdr-threads inbox                       # compact messages; displayed agent receipts ACK automatically
 herdr-threads pending-receipts            # exact IDs still awaiting receipt
 herdr-threads read THREAD --recent 20     # recent history (older: follow next command)
+herdr-threads follow THREAD               # read --follow; Ctrl-C stops, never ACKs
 herdr-threads body MESSAGE                # full body of a long message
 herdr-threads ack MESSAGE [MESSAGE ...]   # after reading those exact messages
 herdr-threads send THREAD --body "TEXT"   # reply (or --file PATH / --stdin)
@@ -167,7 +168,9 @@ herdr-threads thread rename "team café" release-review
 A human binding (`me init`) has no ACK obligation or deadline. Entering human mode waives older pending agent receipt obligations without recording an ACK; future mail to a later agent binding follows the normal agent rules.
 
 ## Human discovery and transcript names
-`ht read` (also `read --follow`) without THREAD opens a builtin human terminal picker: paged `thread list --recent --all`, archives included; fuzzy name/topic filter, arrows or Ctrl-N/P, Enter read, Esc/Ctrl-C cancel 0. Default history is recent 20; bare --cursor is invalid. Requires all three TTYs, usable TERM, no agent marker/cooperative caller, --machine or --json. Agents use explicit THREAD or `thread list --recent --all`; read/follow never ACK or accept.
+`herdr-threads follow [THREAD] [--recent N|--after SEQUENCE] [--no-system] [--max-bytes N]` (also `ht follow`) is shorthand for `read [THREAD] --follow`; the original form remains supported. Explicit THREAD has the same ID/name resolution and human/machine/JSON streaming. Default tail is recent 20; `--recent 0` skips it. Follow refuses history-only `--before`, `--cursor`, and `--limit`.
+
+Bare `ht read`, `ht follow`, and `ht read --follow` open the same human terminal picker across the instance, archives and nonmembers included. Rows show active/archived status, effective joined nonretired participants (including accepted service requirements, excluding pending invitations), sampled ordinary messages/minute, and an escaped last-message preview. Active channels come first, then participants × (1 + sampled rate). The rate counts ordinary messages in the latest 512 canonical timeline positions over elapsed time through the sample time, with a one-minute minimum; system events occupy positions but do not count as messages. Complete listings refresh every five seconds without moving selection off its canonical channel. Fuzzy name/topic filter, arrows or Ctrl-N/P, Enter read/follow, Esc/Ctrl-C cancel 0. Color highlights selection/activity and quiets archives; explicit labels/markers remain with `NO_COLOR`. Requires all three TTYs, usable TERM, no agent marker/cooperative caller, --machine or --json. Agents use explicit THREAD or `thread list --recent --all`. An older daemon without picker capability needs an upgrade, or use an exact thread ID. Picker/read/follow never ACK or accept.
 Human author/recipient nicks are relative to the live caller: alice (same tab), tryout/alice (same space), project/tryout/alice (other space). Parent IDs determine omission; missing labels fall back to IDs, labels are escaped, and host failure preserves history. Machine/recovery IDs are unchanged.
 
 ## Durable handoff

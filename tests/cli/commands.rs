@@ -1252,6 +1252,71 @@ fn read_follow_parses_its_options_and_refuses_page_selectors() {
     }
 }
 
+// Kills: follow routed differently, lost selectors/options, or history-only flags admitted.
+#[test]
+fn top_level_follow_matches_read_follow_for_exact_names_and_picker() {
+    let cases: &[&[&str]] = &[
+        &[],
+        &["thread-1"],
+        &["review channel", "--recent", "0"],
+        &[
+            "review channel",
+            "--recent",
+            "30",
+            "--no-system",
+            "--max-bytes",
+            "512",
+        ],
+        &["thread-1", "--after", "7"],
+        &["--recent", "9", "--no-system", "--max-bytes", "512"],
+        &["--after", "7"],
+    ];
+    for executable in ["herdr-threads", "ht"] {
+        for args in cases {
+            for format in [None, Some("--human"), Some("--machine"), Some("--json")] {
+                let mut alias = vec![executable];
+                alias.extend(format);
+                alias.push("follow");
+                alias.extend_from_slice(args);
+                let mut full = vec![executable];
+                full.extend(format);
+                full.extend(["read", "--follow"]);
+                full.extend_from_slice(args);
+                let parsed = parse_argv(alias.clone())
+                    .unwrap_or_else(|error| panic!("{alias:?}: {error:?}"));
+                assert_eq!(parsed, parse_argv(full).unwrap(), "{alias:?}");
+                if let Some(thread) = args.first().filter(|arg| !arg.starts_with("--")) {
+                    assert_eq!(parsed.thread_selector.as_deref(), Some(*thread));
+                    assert!(matches!(parsed.action, CliAction::Follow(_)));
+                } else {
+                    assert!(matches!(
+                        parsed.action,
+                        CliAction::Picker(PickerRequest { follow: true, .. })
+                    ));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn top_level_follow_refuses_history_only_or_conflicting_ranges() {
+    for args in [
+        vec!["--before", "3"],
+        vec!["--limit", "3"],
+        vec!["--cursor", "c3:x"],
+        vec!["--recent", "101"],
+        vec!["--recent", "2", "--after", "7"],
+    ] {
+        for thread in [None, Some("thread-1")] {
+            let mut argv = vec!["herdr-threads", "follow"];
+            argv.extend(thread);
+            argv.extend_from_slice(&args);
+            assert!(parse_argv(argv.clone()).is_err(), "{argv:?}");
+        }
+    }
+}
+
 #[test]
 fn exit_status_help_names_both_exit_3_remedies() {
     use crate::daemon::remedy::{RemedyContext, remedy};
@@ -1742,9 +1807,9 @@ impl crate::harness::adapter::HarnessAdapter for SelectorAdapter {
     fn metadata(&self) -> &'static crate::harness::adapter::AdapterMetadata {
         use crate::harness::adapter::*;
         static METADATA: AdapterMetadata = AdapterMetadata {
-            id: "hermes",
-            display_label: "Synthetic Hermes",
-            context_spelling: "Hermes",
+            id: "selectorfixture",
+            display_label: "Synthetic SelectorFixture",
+            context_spelling: "SelectorFixture",
             context_aliases: &[],
             executable: ExecutableLookup::Unsupported,
             host_kinds: &[],
@@ -1860,7 +1925,10 @@ fn injected_registry_drives_agent_selector_choices_without_native_operations() {
     let registrations =
         Box::leak(vec![Registration::new(&ADAPTER), Registration::new(&FOURTH)].into_boxed_slice());
     let registry = Registry::new(registrations).unwrap();
-    for (name, spelling) in [("hermes", "Hermes"), ("fourth", "Fourth")] {
+    for (name, spelling) in [
+        ("selectorfixture", "SelectorFixture"),
+        ("fourth", "Fourth"),
+    ] {
         for mut argv in [
             vec![
                 "herdr-threads",
@@ -1868,7 +1936,7 @@ fn injected_registry_drives_agent_selector_choices_without_native_operations() {
                 "--pane",
                 "w1:p1",
                 "--kind",
-                "hermes",
+                "selectorfixture",
                 "--",
                 "literal prompt",
             ],
@@ -1878,17 +1946,17 @@ fn injected_registry_drives_agent_selector_choices_without_native_operations() {
                 "--pane",
                 "w1:p1",
                 "--kind",
-                "hermes",
+                "selectorfixture",
                 "--new-thread",
                 "--",
                 "durable body",
             ],
-            vec!["herdr-threads", "contract-id", "--harness", "hermes"],
+            vec!["herdr-threads", "contract-id", "--harness", "selectorfixture"],
             vec![
                 "herdr-threads",
                 "harness-version",
                 "normalize",
-                "hermes",
+                "selectorfixture",
                 "development identity",
             ],
             vec![
@@ -1898,14 +1966,14 @@ fn injected_registry_drives_agent_selector_choices_without_native_operations() {
                 "--cooperative-target",
                 "w1:p1",
                 "--cooperative-harness",
-                "hermes",
+                "selectorfixture",
                 "--cooperative-role",
                 "top-level",
                 "inbox",
             ],
         ] {
             for value in &mut argv {
-                if *value == "hermes" {
+                if *value == "selectorfixture" {
                     *value = name;
                 }
             }
@@ -1952,7 +2020,7 @@ fn injected_registry_drives_agent_selector_choices_without_native_operations() {
     }
     assert!(
         crate::harness::registry::builtins()
-            .agent("hermes")
+            .agent("selectorfixture")
             .is_err(),
         "fixture is never production registration"
     );
@@ -1965,11 +2033,11 @@ fn doctor_action_retains_selected_registered_profile() {
     static ADAPTER: SelectorAdapter = SelectorAdapter(0);
     let registry = Registry::new(Box::leak(vec![Registration::new(&ADAPTER)].into_boxed_slice())).unwrap();
     let matches = command_for_registry(&registry).try_get_matches_from([
-        "herdr-threads", "doctor", "--harness", "hermes", "--profile", "work"
+        "herdr-threads", "doctor", "--harness", "selectorfixture", "--profile", "work"
     ]).unwrap();
     let parsed = parse_cli_in_registry(Cli::from_arg_matches(&matches).unwrap(), &registry).unwrap();
     let action = format!("{:?}", parsed.action);
-    assert!(action.contains("hermes"), "{action}");
+    assert!(action.contains("selectorfixture"), "{action}");
     assert!(action.contains("work"), "{action}");
 }
 
@@ -1996,7 +2064,7 @@ fn adapters_discovery_is_bounded_deterministic_and_never_probes_installation() {
     assert_eq!(value["schema_version"], 1);
     let entries = value["adapters"].as_array().unwrap();
     assert_eq!(entries.iter().map(|e|e["id"].as_str().unwrap()).collect::<Vec<_>>(),
-        ["fourth", "claude", "hermes", "codex"]);
+        ["fourth", "claude", "selectorfixture", "codex"]);
     assert_eq!(entries[0], serde_json::json!({"id":"fourth", "display_name":"Fourth",
         "host_kinds":[], "setup_scopes":["config_root"], "legacy_contract_id":null,
         "contracts":[], "canary_strategy":null}));

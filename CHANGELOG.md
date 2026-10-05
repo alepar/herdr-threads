@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v0.2.7
+
+- **Stable channel picker.** Bare `read` and `read --follow` update only changed rows, preserving the selected channel during refresh and avoiding idle flicker. Keyboard input and cancellation remain responsive while pages load.
+- **Useful channel rows.** Show active/archived status, effective participant counts and a compact last-message preview. Active channels sort first, followed by a participation-weighted recent message-rate sample; busy channels receive stronger visual emphasis.
+- **Terminal colors.** Colored rows distinguish status, activity and selection on supporting terminals. Explicit labels remain readable without color, including `NO_COLOR` and plain terminals.
+- **Follow shorthand.** `follow [THREAD]` shares `read --follow` semantics; omit the thread to select a channel. History and follow remain read-only and do not accept invitations or ACK messages.
+- **Daemon compatibility.** Picker metadata uses an optional advertised read capability; schema 23 and wire 6 stay unchanged. Upgrade the CLI and daemon together to use the picker; older daemons receive no unsupported picker request and exact-thread reads remain available.
+
 ## v0.2.6
 
 - **Handoff launch fix.** Generated recipient guidance stays on one line, so Herdr can launch Claude and Codex from the named-channel README walkthrough. Exact routing and durable retry safeguards remain unchanged.

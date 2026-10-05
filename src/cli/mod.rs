@@ -492,19 +492,29 @@ where
     if let CliAction::Picker(request) = &parsed.action {
         picker::require_terminal(&parsed)?;
         let (_, client) = connection.get()?;
-        let Some(thread) = picker::run(|page| {
+        let Some(thread) = picker::run(|page, refresh, cancellation| {
+            let request_budget = CallBudget {
+                deadline: MonoInstant(clock.monotonic_now().0.saturating_add(if refresh {
+                    1_000
+                } else {
+                    5_000
+                })),
+                cancellation,
+            };
+            if !client
+                .capabilities(&request_budget)
+                .supports(crate::protocol::capabilities::PICKER_DIRECTORY_V1)
+            {
+                return Err(ApiError::invalid_request(
+                    "channel picker capability unavailable; ensure the daemon is responding and supports picker.directory_v1 (upgrade if needed), or use read THREAD / follow THREAD with an exact thread ID",
+                ));
+            }
             let result = client.call(
-                Command::Directory(crate::protocol::commands::DirectoryQuery {
-                    recent: true,
-                    membership: None,
-                    membership_filter: crate::protocol::commands::DirectoryMembership::All,
-                    topic_contains: None,
-                    page,
-                }),
-                &budget(),
+                Command::PickerDirectory(crate::protocol::commands::PickerDirectoryQuery { page }),
+                &request_budget,
             )?;
             match result {
-                CommandResult::Directory(page) => Ok(page),
+                CommandResult::PickerDirectory(page) => Ok(page),
                 _ => Err(ApiError::invalid_request(
                     "unexpected picker directory result",
                 )),

@@ -230,6 +230,7 @@ impl LocalService for DomainService {
         }
         match command {
             Command::Directory(_)
+            | Command::PickerDirectory(_)
             | Command::Seats(_)
             | Command::SeatInspect(_)
             | Command::Inbox(_)

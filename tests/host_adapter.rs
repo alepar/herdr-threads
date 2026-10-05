@@ -82,6 +82,79 @@ fn pane() -> Value {
 }
 
 #[test]
+fn audited_releases_allow_transport_and_snapshot_without_claiming_capabilities() {
+    for version in ["0.9.1", "0.9.3"] {
+        let snapshot = json!({"type":"session_snapshot","snapshot":{
+            "version":version,"protocol":22,"panes":[pane()],"agents":[],
+            "layouts":[],"workspaces":[],"tabs":[]}});
+        let parsed = normalize_snapshot(&json!({"result":snapshot}).to_string()).unwrap();
+        assert_eq!(parsed.panes[0].terminal_id, "term_1");
+        assert!(!parsed.current_execution_proven);
+        assert!(!parsed.incarnation_proven);
+        assert!(!parsed.coherent_enumeration_proven);
+
+        let path = socket_path();
+        let listener = UnixListener::bind(&path).unwrap();
+        let worker = thread::spawn(move || {
+            let (mut ping, _) = listener.accept().unwrap();
+            let request = read_request(&mut ping);
+            assert_eq!(request["method"], "ping");
+            // No feature advertisement: release support must not require or
+            // imply an optional process-hint capability.
+            respond(
+                &mut ping,
+                &request,
+                json!({"type":"pong","version":version,"protocol":22}),
+            );
+            drop(ping);
+            // A regressed ping gate must fail this test rather than leave
+            // cleanup joining a worker blocked forever on the second accept.
+            listener.set_nonblocking(true).unwrap();
+            let until = Instant::now() + Duration::from_secs(2);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < until, "operation was never connected");
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("operation accept: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let request = read_request(&mut stream);
+            assert_eq!(request["method"], "session.snapshot");
+            respond(&mut stream, &request, snapshot);
+        });
+        let cli = NativeCli::new(path.clone(), Arc::new(TestClock(Instant::now())));
+        let result = cli.snapshot(&budget(5000));
+        cleanup(path, worker);
+        assert_eq!(result.unwrap().panes[0].terminal_id, "term_1");
+    }
+}
+
+#[test]
+fn unaudited_snapshot_contracts_remain_unsupported() {
+    for (version, protocol) in [
+        (json!("0.9.2"), json!(22)),
+        (json!("0.9.4"), json!(22)),
+        (json!("0.9.3-modified"), json!(22)),
+        (json!("0.9.3"), json!(23)),
+        (json!("0.9.3"), json!("22")),
+    ] {
+        let raw = json!({"result":{"type":"session_snapshot","snapshot":{
+            "version":version,"protocol":protocol,"panes":[pane()],"agents":[],
+            "layouts":[],"workspaces":[],"tabs":[]}}});
+        assert_eq!(
+            normalize_snapshot(&raw.to_string()).unwrap_err().code,
+            ErrorCode::Unsupported
+        );
+    }
+}
+
+#[test]
 fn explicit_pane_and_snapshot_use_separate_ping_and_operation_connections() {
     let (path, handle) = serve(|stream, request| {
         assert_eq!(request["method"], "pane.get");
@@ -389,6 +462,22 @@ fn ping_errors_preserve_permission_and_protocol_details_before_dispatch() {
         ),
         (
             json!({"result":{"type":"pong","version":"0.9.2","protocol":22}}),
+            ErrorCode::Unsupported,
+        ),
+        (
+            json!({"result":{"type":"pong","version":"0.9.4","protocol":22}}),
+            ErrorCode::Unsupported,
+        ),
+        (
+            json!({"result":{"type":"pong","version":"0.9.3-modified","protocol":22}}),
+            ErrorCode::Unsupported,
+        ),
+        (
+            json!({"result":{"type":"pong","version":"0.9.3","protocol":23}}),
+            ErrorCode::Unsupported,
+        ),
+        (
+            json!({"result":{"type":"pong","protocol":22}}),
             ErrorCode::Unsupported,
         ),
         (
@@ -710,6 +799,208 @@ fn isolated_pinned_herdr_readonly_compatibility() {
     println!(
         "read-only pinned compatibility: {} pane(s); version/protocol/id/framing/EOF validated; native authority unavailable",
         snapshot.panes.len()
+    );
+}
+
+/// The runner puts an official 0.9.3 binary named `herdr` on PATH. All
+/// processes and mutations belong to this test's private IsolatedHerdr root.
+#[test]
+#[ignore = "requires explicitly selected official Herdr 0.9.3 binary on PATH"]
+fn isolated_herdr_093_host_contract() {
+    use herdr_threads::test_support::isolated_herdr::IsolatedHerdr;
+    use std::os::unix::fs::PermissionsExt;
+
+    let host = IsolatedHerdr::new("official-093-contract").expect("Herdr required");
+    let version = host.command("herdr").arg("--version").output().unwrap();
+    assert!(version.status.success());
+    assert_eq!(
+        String::from_utf8(version.stdout).unwrap().trim(),
+        "herdr 0.9.3"
+    );
+    let bin = host.root().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    // Recognizable script path, no provider, credentials, hooks or real agent.
+    let standin = bin.join("codex");
+    fs::write(
+        &standin,
+        r#"#!/bin/sh
+printf '\033[2J\033[H› Ask Codex to do anything\n'
+while IFS= read -r line; do
+ [ "$line" = exit ] && exit 0
+ if [ "$line" = block ]; then
+  printf '\033[2J\033[H› Ask Codex to do anything\npress enter to confirm or esc to cancel\n'
+ else
+  printf '\033[2J\033[H• observed:%s\n› Ask Codex to do anything\n' "$line"
+ fi
+done
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&standin, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::create_dir_all(host.root().join("cfg")).unwrap();
+    fs::write(
+        host.root().join("cfg/herdr.toml"),
+        "default_shell = '/bin/sh'\n",
+    )
+    .unwrap();
+    host.start();
+    // A fresh headless server has no workspace until explicitly created.
+    let workspace = host
+        .command("herdr")
+        .args([
+            "workspace",
+            "create",
+            "--label",
+            "audit-093",
+            "--no-focus",
+            "--cwd",
+        ])
+        .arg(host.root().join("home"))
+        .arg("--env")
+        .arg(format!(
+            "PATH={}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap()
+        ))
+        .output()
+        .unwrap();
+    assert!(
+        workspace.status.success(),
+        "{}",
+        String::from_utf8_lossy(&workspace.stderr)
+    );
+    let clock = Arc::new(TestClock(Instant::now()));
+    let cli = NativeCli::new(host.socket_path(), clock);
+    let snapshot = cli.snapshot(&budget(40_000)).unwrap();
+    assert!(!snapshot.panes.is_empty());
+    assert!(!snapshot.current_execution_proven);
+    let pane = &snapshot.panes[0];
+    let target = pane.target.as_str();
+    assert_eq!(
+        cli.pane(target, &budget(40_000)).unwrap().terminal_id,
+        pane.terminal_id
+    );
+    let raw = cli
+        .run(
+            &[
+                "agent",
+                "start",
+                "audit-093",
+                "--kind",
+                "codex",
+                "--pane",
+                target,
+                "--timeout",
+                "10000",
+                "--",
+            ],
+            &budget(40_000),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+    let started: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(started["result"]["argv"], json!(["codex"]));
+    assert_eq!(started["result"]["agent"]["pane_id"], target);
+    assert_eq!(started["result"]["agent"]["terminal_id"], pane.terminal_id);
+    let mut ready = false;
+    for _ in 0..60 {
+        let raw = cli
+            .run(
+                &["agent", "get", "audit-093"],
+                &budget(40_000),
+                Duration::from_secs(2),
+            )
+            .unwrap();
+        let agent: Value = serde_json::from_str(&raw).unwrap();
+        if agent["result"]["agent"]["interactive_ready"] == true {
+            assert_eq!(agent["result"]["agent"]["agent"], "codex");
+            assert_eq!(agent["result"]["agent"]["pane_id"], target);
+            assert_eq!(agent["result"]["agent"]["terminal_id"], pane.terminal_id);
+            ready = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    assert!(ready, "private stand-in did not become named-ready");
+    assert_eq!(
+        cli.prompt(target, "compatibility-probe", &budget(40_000)),
+        PromptOutcome::Submitted
+    );
+    let mut delivered = false;
+    for _ in 0..30 {
+        let raw = cli
+            .run(
+                &["agent", "read", "audit-093", "--source", "detection"],
+                &budget(40_000),
+                Duration::from_secs(2),
+            )
+            .unwrap();
+        if raw.contains("observed:compatibility-probe") {
+            delivered = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    assert!(delivered, "prompt was not read by the private stand-in");
+    assert_eq!(
+        cli.prompt(target, "block", &budget(40_000)),
+        PromptOutcome::Submitted
+    );
+    let mut blocked = false;
+    for _ in 0..60 {
+        let raw = cli
+            .run(
+                &["agent", "get", "audit-093"],
+                &budget(40_000),
+                Duration::from_secs(2),
+            )
+            .unwrap();
+        let agent: Value = serde_json::from_str(&raw).unwrap();
+        if agent["result"]["agent"]["agent_status"] == "blocked" {
+            blocked = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    assert!(blocked, "stand-in blocker was not observed");
+    assert!(
+        matches!(cli.prompt(target, "refused-probe", &budget(40_000)),
+        PromptOutcome::Rejected(error) if error.code == ErrorCode::TargetUnsafe)
+    );
+    let read = cli
+        .run(
+            &["agent", "read", "audit-093", "--source", "detection"],
+            &budget(40_000),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+    assert!(!read.contains("observed:refused-probe"));
+    // Intentional raw input ends our stand-in, bypassing its fake blocker UI.
+    cli.run(
+        &["pane", "send-text", target, "exit"],
+        &budget(40_000),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    cli.run(
+        &["pane", "send-keys", target, "enter"],
+        &budget(40_000),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let mut returned = false;
+    for _ in 0..100 {
+        if cli.pane(target, &budget(40_000)).unwrap().agent.is_none() {
+            returned = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    assert!(returned, "private stand-in did not return to its shell");
+    host.stop();
+    assert!(!host.socket_path().exists());
+    println!(
+        "official 0.9.3: snapshot/pane identity, guarded start argv, named readiness, prompt delivery/read, blocked prompt refusal, shell return and private server stop verified"
     );
 }
 

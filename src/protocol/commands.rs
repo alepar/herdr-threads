@@ -29,6 +29,8 @@ pub enum Command {
     ServiceInspect,
     ServiceDisconnect(ServiceDisconnectRequest),
     Directory(DirectoryQuery),
+    /// Bounded human picker metrics, gated by picker.directory_v1.
+    PickerDirectory(PickerDirectoryQuery),
     Seats(SeatsQuery),
     SeatInspect(SeatInspectQuery),
     Inbox(InboxQuery),
@@ -317,6 +319,12 @@ pub struct StopRequest {
 pub struct ServiceDisconnectRequest {
     pub expected_boot: String,
     pub expected_generation: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PickerDirectoryQuery {
+    pub page: PageRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -967,6 +975,7 @@ impl Command {
     pub fn page(&self) -> Option<&PageRequest> {
         match self {
             Self::Directory(v) => Some(&v.page),
+            Self::PickerDirectory(v) => Some(&v.page),
             Self::Seats(v) => Some(&v.page),
             Self::SeatInspect(v) => Some(&v.page),
             Self::Inbox(v) | Self::InboxBatch(v) => Some(&v.page),

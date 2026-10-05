@@ -31,6 +31,7 @@ pub enum CommandResult {
     ServiceInspection(ServiceConnectionInspection),
     ServiceDisconnected(ServiceDisconnectResult),
     Directory(Page<ThreadSummary>),
+    PickerDirectory(PickerPage),
     Seats(Page<SeatSummary>),
     SeatInspect(SeatInspection),
     Inbox(Page<InboxItem>),
@@ -807,6 +808,77 @@ pub struct ThreadSummary {
     pub system_count: u64,
     pub joined_count: u64,
 }
+/// Capability-only internal directory page. Its cursor is consumed directly by
+/// the interactive picker and has no public CLI continuation command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PickerPage {
+    pub items: Vec<PickerThread>,
+    pub next_cursor: Option<String>,
+    pub high_water_ordinal: u64,
+    pub scope_revision: Option<u64>,
+    pub has_more: bool,
+    pub stop_reason: crate::protocol::pagination::StopReason,
+    pub consistency: crate::protocol::pagination::Consistency,
+}
+
+impl PickerPage {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        use crate::protocol::pagination::StopReason;
+        if self.has_more {
+            if self.next_cursor.as_deref().is_none_or(str::is_empty)
+                || self.stop_reason == StopReason::Complete
+            {
+                return Err("incomplete picker page has no continuation cursor");
+            }
+        } else if self.next_cursor.is_some() || self.stop_reason != StopReason::Complete {
+            return Err("complete picker page has incomplete continuation state");
+        }
+        Ok(())
+    }
+}
+
+impl From<Page<PickerThread>> for PickerPage {
+    fn from(page: Page<PickerThread>) -> Self {
+        Self {
+            items: page.items,
+            next_cursor: page.next_cursor,
+            high_water_ordinal: page.high_water_ordinal,
+            scope_revision: page.scope_revision,
+            has_more: page.has_more,
+            stop_reason: page.stop_reason,
+            consistency: page.consistency,
+        }
+    }
+}
+
+/// Canonical compact picker row. Activity samples at most the latest 512
+/// timeline positions and includes quiet time through this page's query clock.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PickerThread {
+    pub thread: ThreadId,
+    pub name: Option<String>,
+    pub topic_data: String,
+    pub archived: bool,
+    pub participant_count: u64,
+    pub last_activity: UtcMillis,
+    pub recent_ordinary_count: u64,
+    pub activity_window_ms: u64,
+    pub sample_positions: u16,
+    pub last_message: Option<PickerMessagePreview>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PickerMessagePreview {
+    pub kind: MessageKind,
+    pub sequence: u64,
+    pub at: UtcMillis,
+    pub preview_data: String,
+    pub preview_omitted: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContinuityStatus {

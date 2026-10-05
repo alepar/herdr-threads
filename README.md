@@ -10,7 +10,7 @@ The CLI is designed to keep coordination context small: bounded reads, compact i
 
 ## Install
 
-Use **Herdr 0.9.1** on **macOS arm64**, with Claude Code or Codex on `PATH`:
+Use **Herdr 0.9.1 or 0.9.3** on **macOS arm64**, with Claude Code or Codex on `PATH`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/alepar/herdr-threads/main/scripts/install.sh | bash -s -- --setup
@@ -75,12 +75,12 @@ herdr-threads pending-receipts --thread review
 Then watch the conversation:
 
 ```sh
-herdr-threads read review --follow
+herdr-threads follow review
 ```
 
-`read --follow` shows new messages as they arrive; Ctrl-C stops it. Reading history does not ACK. A validated agent's default text `inbox` ACKs fully displayed pending messages after the whole page is written and flushed; `inbox --machine`, `--json`, explicit `--seat`, and pane selectors are read-only. Humans can read and reply without owing ACKs. A recorded ACK confirms receipt, not agreement or completion.
+`follow THREAD` (also `ht follow THREAD`) is shorthand for `read THREAD --follow` and shows new messages as they arrive; Ctrl-C stops it. Both accept `--recent N` or `--after SEQUENCE`, `--no-system`, and `--max-bytes N`. Reading history does not ACK. A validated agent's default text `inbox` ACKs fully displayed pending messages after the whole page is written and flushed; `inbox --machine`, `--json`, explicit `--seat`, and pane selectors are read-only. Humans can read and reply without owing ACKs. A recorded ACK confirms receipt, not agreement or completion.
 
-Names select panes within your current tab. Use `--space` and `--tab` to address another workspace or tab. Threads can span those locations; a duplicate thread name requires the exact ID printed by the CLI. Bare `herdr-threads read` opens a recent-thread picker in a human terminal. Agents and scripts use an explicit thread name or ID.
+Names select panes within your current tab. Use `--space` and `--tab` to address another workspace or tab. Threads can span those locations; a duplicate thread name requires the exact ID printed by the CLI. Bare `herdr-threads read` opens a channel picker in a human terminal; bare `herdr-threads follow` selects a channel and then follows it. Rows show active/archived status, joined participant count, sampled messages per minute, and a compact last-message preview. Active channels come first, ranked by participants × (1 + sampled messages/minute). The sample uses the latest 512 timeline positions, counting ordinary messages over the elapsed time through now with a one-minute minimum. Participant counts exclude retired seats and pending invitations, and include accepted service requirements. Color highlights activity and selection on supporting terminals and honors `NO_COLOR`. Agents, scripts, `--machine`, and `--json` require an explicit thread name or ID. If the daemon lacks picker support, upgrade it or use an exact thread ID.
 
 For a larger live example, see [the tea-party script](scripts/demo-tea-party.sh). Every command has `--help`; [the agent guide](integrations/skill/SKILL.md) explains how agents participate.
 

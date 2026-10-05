@@ -598,9 +598,14 @@ enum Top {
     PendingReceipts(PendingReceiptsArgs),
     /// Read thread history or follow new messages; reading never ACKs.
     #[command(
-        after_help = "Without THREAD, progressively browse recent threads across this instance, including archives and nonmembers. Type a fuzzy name/topic filter; arrows or Ctrl-N/P move, Enter reads the canonical ID, Esc/Ctrl-C cancel with exit 0. Requires stdin/stdout/stderr TTYs, usable TERM, and no agent/cooperative caller, --machine or --json. Agents and scripts must supply an exact thread ID or unique name.\n\nHuman author/recipient nicknames are relative to the live caller: alice, tryout/alice, project/tryout/alice. History and follow never ACK or accept."
+        after_help = "Without THREAD, browse channels across this instance, including archives and nonmembers. Rows show active/archived status, joined participants, sampled messages/minute and the last message; active channels rank first by participants weighted with activity. Type a fuzzy name/topic filter; arrows or Ctrl-N/P move, Enter reads the canonical ID, Esc/Ctrl-C cancel with exit 0. Requires stdin/stdout/stderr TTYs, usable TERM, and no agent/cooperative caller, --machine or --json. Agents and scripts must supply an exact thread ID or unique name.\n\nHuman author/recipient nicknames are relative to the live caller: alice, tryout/alice, project/tryout/alice. History and follow never ACK or accept."
     )]
     Read(ReadArgs),
+    /// Follow new messages, shorthand for `read --follow`; never ACKs or accepts.
+    #[command(
+        after_help = "Without THREAD, choose a channel in the same human terminal picker as read --follow. Rows show active/archived status, joined participants, sampled messages/minute and the last message. Type a fuzzy name/topic filter; arrows or Ctrl-N/P move, Enter follows the canonical ID, Esc/Ctrl-C cancel with exit 0. Requires stdin/stdout/stderr TTYs, usable TERM, and no agent/cooperative caller, --machine or --json. Agents and scripts must supply an exact thread ID or unique name. History and follow never ACK or accept."
+    )]
+    Follow(FollowArgs),
     /// Read a message body, including pages beyond its preview.
     Body(BodyArgs),
     /// Search for literal text in thread topics and messages.
@@ -1090,6 +1095,24 @@ struct ReadArgs {
     page: PageArgs,
 }
 #[derive(Args)]
+struct FollowArgs {
+    /// Thread to follow; omitted opens the human terminal picker.
+    thread: Option<String>,
+    /// Number of latest messages printed first (default: 20; 0 skips history).
+    #[arg(long, conflicts_with = "after")]
+    recent: Option<u16>,
+    /// Start after this sequence number instead of printing the recent tail.
+    #[arg(long)]
+    after: Option<u64>,
+    /// Hide system notices (joins, ACKs, warnings).
+    #[arg(long)]
+    no_system: bool,
+    /// Same byte-budget option as `read --follow`.
+    #[arg(long)]
+    max_bytes: Option<u32>,
+}
+
+#[derive(Args)]
 struct BodyArgs {
     message: String,
     #[arg(long, conflicts_with = "cursor")]
@@ -1505,9 +1528,27 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
 }
 
 fn parse_cli_in_registry(
-    cli: Cli,
+    mut cli: Cli,
     registry: &crate::harness::registry::Registry,
 ) -> Result<ParsedCli, ApiError> {
+    // Normalize before capturing selectors so names, picker eligibility and
+    // follow execution share the existing read path.
+    cli.command = match cli.command {
+        Top::Follow(args) => Top::Read(ReadArgs {
+            thread: args.thread,
+            follow: true,
+            no_system: args.no_system,
+            recent: args.recent,
+            after: args.after,
+            before: None,
+            page: PageArgs {
+                cursor: None,
+                limit: None,
+                max_bytes: args.max_bytes,
+            },
+        }),
+        command => command,
+    };
     let cooperative_selector =
         cli.cooperative_target
             .as_ref()
@@ -1678,6 +1719,7 @@ fn parse_cli_in_registry(
         _ => None,
     };
     let action = match cli.command {
+        Top::Follow(_) => unreachable!("follow was normalized to read"),
         Top::Thread { command } => match command {
             ThreadSub::Create { name, topic, goal } => {
                 let goal = goal.unwrap_or_else(|| topic.clone());

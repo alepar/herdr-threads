@@ -27,6 +27,8 @@ mod host_adapter;
 mod lifecycle_ux;
 #[path = "local_endpoint.rs"]
 mod local_endpoint;
+#[path = "cli/read_picker_pty.rs"]
+mod read_picker_pty;
 #[path = "setup_cli.rs"]
 mod setup_cli;
 #[path = "view.rs"]

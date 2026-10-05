@@ -37,6 +37,12 @@ impl Plugin {
             .env_remove("HERDR_PANE_ID")
             .env_remove("HERDR_BIN_PATH")
             .env_remove("HERDR_ENV")
+            .env("HOME", self.state.parent().unwrap())
+            .env(
+                "CLAUDE_CONFIG_DIR",
+                self.state.parent().unwrap().join("claude"),
+            )
+            .env("CODEX_HOME", self.state.parent().unwrap().join("codex"))
             .env("NO_COLOR", "1");
         command
     }
@@ -359,4 +365,190 @@ fn follow_prints_the_recent_tail_then_only_new_messages_irc_style() {
         .find("] <mad-hatter·codex> Off with their heads!")
         .expect(&text);
     assert!(cups < heads, "{text}");
+}
+
+// Kills: alias skips canonical name resolution, accepts invitations, ACKs reads,
+// ignores compatible options, or treats no-thread machine input as a picker.
+#[test]
+fn public_follow_alias_resolves_names_streams_and_leaves_obligations_untouched() {
+    let root = PathBuf::from(format!(
+        "/private/tmp/htfo-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..10]
+    ));
+    fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+    let _scratch = Scratch(root.clone());
+    let socket = root.join("herdr.sock");
+    let _host = FakeHost::start(
+        &socket,
+        vec![
+            labeled("w1:p1", "term-a", "alice"),
+            labeled("w1:p2", "term-b", "bob"),
+        ],
+    );
+    let plugin = Plugin {
+        state: root.join("state"),
+        host: socket,
+    };
+    plugin.ok(None, &["daemon", "ensure"]);
+    let alice_seat = plugin.ok(None, &["seat", "resolve", "--pane", "w1:p1"])["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bob_seat = plugin.ok(None, &["seat", "resolve", "--pane", "w1:p2"])["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let alice = (alice_seat.as_str(), "w1:p1", "claude");
+    let bob = (bob_seat.as_str(), "w1:p2", "codex");
+    for agent in [alice, bob] {
+        plugin.ok(
+            Some(agent),
+            &["check-in", "--lifecycle-event", "agent-start"],
+        );
+    }
+    let thread = plugin.ok(
+        Some(alice),
+        &[
+            "thread",
+            "create",
+            "--name",
+            "alias review",
+            "--topic",
+            "Follow alias",
+        ],
+    )["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    plugin.ok(Some(alice), &["invite", &thread, "--seat", &bob_seat]);
+    let message = plugin.ok(
+        Some(alice),
+        &[
+            "send",
+            &thread,
+            "--body",
+            "alias initial",
+            "--require-ack",
+            &bob_seat,
+        ],
+    )["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let participants_before = plugin.ok(None, &["participants", &thread]);
+    let receipts_before = plugin.ok(None, &["delivery", "inspect", &message]);
+
+    let mut exact = plugin.follow_from(
+        Some("w1:p2"),
+        &[
+            "--machine",
+            "follow",
+            &thread,
+            "--recent",
+            "1",
+            "--no-system",
+            "--max-bytes",
+            "512",
+        ],
+    );
+    exact.wait_for("alias initial");
+    let mut named = plugin.follow_from(
+        Some("w1:p2"),
+        &[
+            "--json",
+            "follow",
+            "alias review",
+            "--recent",
+            "1",
+            "--no-system",
+        ],
+    );
+    named.wait_for("alias initial");
+    let mut original = plugin.follow_from(
+        Some("w1:p2"),
+        &[
+            "--json",
+            "read",
+            &thread,
+            "--follow",
+            "--recent",
+            "1",
+            "--no-system",
+        ],
+    );
+    original.wait_for("alias initial");
+    // A real topic event must be skipped by every --no-system follower.
+    plugin.ok(
+        Some(alice),
+        &["thread", "topic", &thread, "--set", "Updated alias topic"],
+    );
+    plugin.send(alice, &thread, "alias appended");
+    for follower in [&mut exact, &mut named, &mut original] {
+        follower.wait_for("alias appended");
+        follower.interrupt();
+        assert_eq!(follower.count("alias initial"), 1);
+        assert_eq!(follower.count("alias appended"), 1);
+    }
+    let parse_records = |lines: &[String]| {
+        lines
+            .iter()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let named_records = parse_records(&named.seen);
+    assert_eq!(named_records, parse_records(&original.seen));
+    let machine_records = parse_records(&exact.seen);
+    assert_eq!(machine_records.len(), 2);
+    for (machine, json) in machine_records.iter().zip(&named_records) {
+        // Continuation argv intentionally keeps each requested output format.
+        for field in [
+            "thread",
+            "message",
+            "sequence",
+            "kind",
+            "author",
+            "preview_data",
+        ] {
+            assert_eq!(machine[field], json[field], "{field}");
+        }
+    }
+    assert_eq!(named_records.len(), 2);
+    assert!(
+        named_records
+            .iter()
+            .all(|record| record["thread"].as_str() == Some(thread.as_str()))
+    );
+    let sequence = named_records[0]["sequence"].as_u64().unwrap().to_string();
+    let mut after = plugin.follow(&[
+        "--json",
+        "follow",
+        "alias review",
+        "--after",
+        &sequence,
+        "--no-system",
+    ]);
+    after.wait_for("alias appended");
+    after.interrupt();
+    assert_eq!(after.count("alias initial"), 0);
+    assert_eq!(after.count("alias appended"), 1);
+
+    for args in [
+        &["--machine", "follow"][..],
+        &["--json", "follow"][..],
+        &["follow"][..],
+    ] {
+        let output = plugin.command().args(args).output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "{:?}", output);
+        assert!(output.stdout.is_empty(), "{:?}", output);
+    }
+    assert_eq!(
+        participants_before,
+        plugin.ok(None, &["participants", &thread]),
+        "read/follow must not accept the invitation"
+    );
+    assert_eq!(
+        receipts_before,
+        plugin.ok(None, &["delivery", "inspect", &message]),
+        "read/follow must not ACK the requested receipt"
+    );
 }

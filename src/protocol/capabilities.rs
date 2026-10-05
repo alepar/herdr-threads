@@ -5,6 +5,8 @@
 
 use std::collections::BTreeSet;
 
+pub const PICKER_DIRECTORY_V1: &str = "picker.directory_v1";
+
 pub const HISTORY_FULL_BODIES: &str = "history.full_bodies";
 pub const HOOK_PARSE_FAILURE_REPORT: &str = "hook.parse_failure_report";
 pub const SERVICE_SEND_V1: &str = "service.send_v1";
@@ -39,6 +41,7 @@ pub const ADVERTISED: &[&str] = &[
     INBOX_BATCH,
     INVITATION_REJECT,
     PARTICIPANT_LOCATIONS,
+    PICKER_DIRECTORY_V1,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set
