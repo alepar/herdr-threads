@@ -1,0 +1,22 @@
+   Compiling herdr-threads v0.2.3 (/Users/alepar/AleCode/herdr-threads/.worktrees/harness-adapters/.worktrees/harness-adapters--task-ht-3bi.6.2)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.26s
+     Running unittests src/lib.rs (/Users/alepar/AleCode/herdr-threads/.worktrees/harness-adapters/target/debug/deps/herdr_threads-1c2d7f4b9aaa457a)
+
+running 1 test
+test harness::hermes::assets::tests::interrupted_directory_publication_recovers_recorded_staging_inode ... FAILED
+
+failures:
+
+---- harness::hermes::assets::tests::interrupted_directory_publication_recovers_recorded_staging_inode stdout ----
+
+thread 'harness::hermes::assets::tests::interrupted_directory_publication_recovers_recorded_staging_inode' (61762817) panicked at src/harness/hermes/assets.rs:958:62:
+called `Result::unwrap()` on an `Err` value: Conflict
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    harness::hermes::assets::tests::interrupted_directory_publication_recovers_recorded_staging_inode
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2700 filtered out; finished in 0.13s
+
+error: test failed, to rerun pass `--lib`
