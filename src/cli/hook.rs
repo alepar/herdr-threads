@@ -2239,6 +2239,29 @@ pub fn run_hook(
         Ok(registration) => registration,
         Err(detail) => return quiet_outcome(detail),
     };
+    run_hook_registered(
+        registration,
+        args,
+        installed,
+        stdin,
+        env,
+        deadline,
+        clock,
+        ensure_executable,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_hook_registered(
+    registration: &'static Registration,
+    args: &HookArgs,
+    installed: &InstalledHarness,
+    stdin: &[u8],
+    env: &HookEnv,
+    deadline: Instant,
+    clock: Arc<dyn Clock>,
+    ensure_executable: Option<&Path>,
+) -> HookOutcome {
     if registration.callback_admission() && (!env.herdr_env || env.pane.is_none()) {
         return HookOutcome::default();
     }
@@ -2269,14 +2292,16 @@ pub fn run_hook(
     let decoded = match registration.decode(&admitted, &input) {
         Ok(event) => event,
         Err(error) => {
-            report_parse_failure_to_daemon(
-                args,
-                installed_compat(&request.installed).as_ref().unwrap(),
-                &native_decode_error(&error),
-                env,
-                deadline,
-                clock,
-            );
+            if let Some(installed) = installed_compat(&request.installed) {
+                report_parse_failure_to_daemon(
+                    args,
+                    &installed,
+                    &native_decode_error(&error),
+                    env,
+                    deadline,
+                    clock,
+                );
+            }
             return quiet_outcome(format!("unsupported hook payload: {error:?}"));
         }
     };

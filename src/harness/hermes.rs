@@ -2124,6 +2124,133 @@ mod adapter_tests {
             EventKind::Startup
         );
     }
+    // Admit real valid Hermes fixture bytes, then deterministically model the
+    // decode-time refusal caused by deadline expiry after admission. No native
+    // execution or real-wall-clock race is needed to exercise the consumer.
+    #[cfg(feature = "test-support")]
+    struct CallbackDecodeFailure;
+    #[cfg(feature = "test-support")]
+    impl HarnessAdapter for CallbackDecodeFailure {
+        type Admission = HermesAdmission;
+        fn metadata(&self) -> &'static AdapterMetadata {
+            HermesAdapter.metadata()
+        }
+        fn contracts(&self) -> &'static [ContractDescriptor] {
+            CONTRACTS
+        }
+        fn observe_install(&self, e: &InstallEnvironment, b: &CallBudget) -> InstallObservation {
+            HermesAdapter.observe_install(e, b)
+        }
+        fn admit(
+            &self,
+            r: &AdmissionRequest,
+            b: &CallBudget,
+        ) -> AdmissionDecision<Self::Admission> {
+            HermesAdapter.admit(r, b)
+        }
+        fn version_ladder(&self, r: &RuntimeIdentity) -> Ladder {
+            HermesAdapter.version_ladder(r)
+        }
+        fn classify(&self, i: &HookInput) -> ContractObservation {
+            HermesAdapter.classify(i)
+        }
+        fn callback_admission(&self) -> bool {
+            true
+        }
+        fn decode(
+            &self,
+            _: &HermesAdmission,
+            _: &HookInput,
+        ) -> Result<DecodedEvent, DecodeFailure> {
+            Err(DecodeFailure::Native(
+                super::super::context::ContextError::Conflict,
+            ))
+        }
+        fn encode(
+            &self,
+            a: &HermesAdmission,
+            e: &DecodedEvent,
+            o: &NeutralOffer,
+        ) -> Result<EncodedOutput, EncodeFailure> {
+            HermesAdapter.encode(a, e, o)
+        }
+        fn attribute_runtime(&self, i: &HookInput, b: &CallBudget) -> RuntimeAttribution {
+            HermesAdapter.attribute_runtime(i, b)
+        }
+        fn resolve_setup_scope(
+            &self,
+            r: &SetupScopeRequest,
+            e: &SetupEnvironment,
+        ) -> Result<ResolvedSetupScope, SetupFailure> {
+            HermesAdapter.resolve_setup_scope(r, e)
+        }
+        fn setup(&self, r: &SetupRequest, b: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
+            HermesAdapter.setup(r, b)
+        }
+        fn status(&self, r: &StatusRequest, b: &CallBudget) -> SetupStatus {
+            HermesAdapter.status(r, b)
+        }
+        fn unsetup(
+            &self,
+            r: &UnsetupRequest,
+            b: &CallBudget,
+        ) -> Result<RemovalOutcome, SetupFailure> {
+            HermesAdapter.unsetup(r, b)
+        }
+    }
+    #[test]
+    #[cfg(feature = "test-support")]
+    fn callback_admitted_decode_failure_quietly_refuses_without_consumption() {
+        let iso = crate::test_support::isolation::TestIsolation::new("hermes-decode-refusal");
+        let input = fixture("pre_llm_call");
+        let (clock, _) = timing();
+        let args = crate::cli::hook::HookArgs {
+            harness: super::super::registry::OccupantHarness::Agent(
+                super::super::registry::builtins().agent("hermes").unwrap(),
+            )
+            .into(),
+            state_dir: Some(iso.path("state")),
+            host_endpoint: Some(iso.path("host.sock")),
+            event: None,
+        };
+        static ADAPTER: CallbackDecodeFailure = CallbackDecodeFailure;
+        let registrations = Box::leak(Box::new([super::super::registry::Registration::new(
+            &ADAPTER,
+        )]));
+        let registry = super::super::registry::Registry::new(registrations).unwrap();
+        let registration = registry.by_id(registry.agent("hermes").unwrap()).unwrap();
+        // Reintroducing the optional-compatibility unwrap must panic here;
+        // refusal before admission would fail the decode diagnostic assertion.
+        let outcome = crate::cli::hook::run_hook_registered(
+            registration,
+            &args,
+            &crate::cli::hook::InstalledHarness::Claude("9.9.9".into()),
+            &input.bytes,
+            &crate::cli::hook::HookEnv {
+                herdr_env: true,
+                pane: Some("w1:p1".into()),
+            },
+            Instant::now() + Duration::from_secs(1),
+            clock,
+            Some(&iso.path("must-not-start-daemon")),
+        );
+        assert!(
+            outcome.stdout.is_empty(),
+            "refused callback emitted context or an ACK"
+        );
+        assert!(
+            outcome.attention.is_none(),
+            "refused callback consumed attention"
+        );
+        assert_eq!(
+            outcome.diagnostic.as_deref(),
+            Some("unsupported hook payload: Native(Conflict)")
+        );
+        assert!(
+            !iso.path("state").exists(),
+            "refused callback wrote journal/evidence or started a daemon"
+        );
+    }
     struct InvalidProjection(u8);
     impl HarnessAdapter for InvalidProjection {
         type Admission = HermesAdmission;
