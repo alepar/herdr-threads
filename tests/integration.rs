@@ -111,3 +111,8 @@ mod wire_compat;
 
 #[path = "integration/channel_activation.rs"]
 mod channel_activation;
+
+/// README named handoffs and conversation on a real private daemon; model-free.
+#[cfg(feature = "test-support")]
+#[path = "integration/readme_tryout.rs"]
+mod readme_tryout;

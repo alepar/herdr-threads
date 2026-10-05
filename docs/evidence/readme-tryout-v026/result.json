@@ -1,0 +1,27 @@
+{
+  "status": "PASS",
+  "date": "2026-10-04",
+  "scenario": "README Try it yourself",
+  "client_version": "0.2.6",
+  "daemon_version": "0.2.5",
+  "wire": 6,
+  "claude_version": "2.1.289",
+  "codex_version": "0.160.0",
+  "actual_interactive_models": true,
+  "invitations_accepted": 2,
+  "required_receipts_acked": 4,
+  "receipt_provenance": "cooperative_top_level",
+  "action_provenance": "cooperative_inbox_display",
+  "both_agents_recommended": true,
+  "follow_machine_exit": 0,
+  "follow_terminal_exit": 0,
+  "owned_actor_survivors": 0,
+  "shared_server_restarted": false,
+  "user_configuration_modified": false,
+  "canonical_result_sha256": "3d229b2dc35e9ea75763b3bb7c0a4df1fcc01f4d5e1056e09ccac571bbdba9b9",
+  "scope_limits": [
+    "Native initial-prompt scenario only; no prompt-less recovery claim.",
+    "Matching wire6 daemon remained v0.2.5; candidate CLI/installed ordinary binary was v0.2.6.",
+    "Model-free suite regression is separate from the live model measurement."
+  ]
+}

@@ -597,7 +597,7 @@ fn bootstrap(
     let expected = super::hook::CommandRouting::from_context(instance, context);
     let expected = serde_json::to_string(&expected).unwrap_or_else(|_| "null".into());
     format!(
-        "Expected handoff command routing (JSON data): {expected}\nPrefer a startup hook command group only when its instance UUID, canonical state directory and canonical host endpoint exactly match every expected routing field above. Missing (null), different or ambiguous routing cannot supersede this handoff's target. Open your durable inbox, then read thread {} using that matching group. Otherwise use the exact fallback: `{}`, then `{}`. The task is stored there. Launch does not accept invitations or ACK messages. Accept invitations separately; default text inbox ACKs fully displayed messages.",
+        "Expected handoff command routing (JSON data): {expected} Prefer a startup hook command group only when its instance UUID, canonical state directory and canonical host endpoint exactly match every expected routing field above. Missing (null), different or ambiguous routing cannot supersede this handoff's target. Open your durable inbox, then read thread {} using that matching group. Otherwise use the exact fallback: `{}`, then `{}`. The task is stored there. Launch does not accept invitations or ACK messages. Accept invitations separately; default text inbox ACKs fully displayed messages.",
         thread.as_str(),
         crate::protocol::output::format_command_argv(&inbox),
         crate::protocol::output::format_command_argv(&read)
