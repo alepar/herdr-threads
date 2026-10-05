@@ -129,6 +129,22 @@ fn set(lanes: &[Lane]) -> LaneSet {
 /// A minimal row per mapped table. Rejections use their guarded setup below;
 /// the other rows isolate update hooks with foreign keys and triggers off.
 const INSERTS: &[(&str, &str)] = &[
+    (
+        "archival_instances",
+        "INSERT INTO archival_instances(instance_id,runtime_boot) VALUES ('i','b')",
+    ),
+    (
+        "channel_archival",
+        "INSERT INTO channel_archival(thread_id,instance_id) VALUES ('t','i')",
+    ),
+    (
+        "seat_archival",
+        "INSERT INTO seat_archival(seat_id,instance_id) VALUES ('s1','i')",
+    ),
+    (
+        "channel_handoff_fences",
+        "INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,origin,state,created_at) VALUES ('i','seat:s1','c',printf('%064d',0),'{}','s2','create','invite','send','cooperative_pending_claim','live',0)",
+    ),
     ("wake_work", "INSERT INTO wake_work(seat_id) VALUES ('s1')"),
     (
         "wake_batches",
@@ -507,6 +523,7 @@ fn per_origin_counter_counts_commits() {
         "observation",
         "retention",
         "admission-observer",
+        "archival",
         "request",
     ];
     assert!(keys.iter().all(|key| fixture.count(key) == 0));

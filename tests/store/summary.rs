@@ -35,6 +35,7 @@ const BODY: usize = 170;
 
 struct Fx {
     db: Connection,
+    context: StoreContext,
     settings: SummarySettings,
     now: i64,
     next_seq: u64,
@@ -45,9 +46,8 @@ impl Fx {
     /// `eb`) and thread `t`; instance `o` with seat `x`.
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!("summary-{}.db", uuid::Uuid::new_v4()));
-        let db = StoreContext::new(path, Arc::new(FixedClock))
-            .open_writer()
-            .unwrap();
+        let context = StoreContext::new(path, Arc::new(FixedClock));
+        let db = context.open_writer().unwrap();
         db.execute_batch(
             "\
             INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,100000),('o',0,'host',1,100000);\
@@ -58,6 +58,7 @@ impl Fx {
         .unwrap();
         Self {
             db,
+            context,
             settings: SummarySettings {
                 chunk_bytes: 512,
                 ..SummarySettings::default()
@@ -68,20 +69,31 @@ impl Fx {
     }
 
     fn add(&mut self, role: &str, relays: bool, body: &str) -> u64 {
+        self.add_intent(role, relays, None, body)
+    }
+
+    fn add_intent(
+        &mut self,
+        role: &str,
+        relays: bool,
+        intent: Option<UserIntent>,
+        body: &str,
+    ) -> u64 {
         let seq = self.next_seq;
         self.next_seq += 1;
         self.db
             .execute(
                 "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,\
-                 decision_at,decision_seq,author_role,relays_user) \
-                 VALUES (?1,'i','t',?2,'ordinary','a',?3,?4,?2,?5,?6)",
+                 decision_at,decision_seq,author_role,relays_user,user_intent) \
+                 VALUES (?1,'i','t',?2,'ordinary','a',?3,?4,?2,?5,?6,?7)",
                 params![
                     format!("m{seq}"),
                     seq as i64,
                     body,
                     60_000 * seq as i64,
                     role,
-                    relays
+                    relays,
+                    intent.map(UserIntent::as_str)
                 ],
             )
             .unwrap();
@@ -241,7 +253,7 @@ impl Fx {
 
 fn valid(narrative: String) -> serde_json::Value {
     json!({
-        "submission_schema": 1,
+        "submission_schema": SUBMISSION_SCHEMA,
         "narrative": narrative,
         "prompt_version": "p1",
         "model": "m1",
@@ -788,7 +800,7 @@ fn level0_bundle_contents() {
 
     // Store chunk 0 with a decision and a transition that closes the instruction.
     let submission = json!({
-        "submission_schema": 1,
+        "submission_schema": SUBMISSION_SCHEMA,
         "narrative": "chunk zero",
         "new_decisions": [{"ref": "d1", "seq": 1, "by_seat": "a", "text": "use sqlite"}],
         "transitions": [{"target": "i.2", "new_status": "done", "cite_seq": 3}],
@@ -897,9 +909,12 @@ fn rollup_bundle_contents() {
     assert_eq!(bundle.pinned[0].text_ref, None);
     assert!(!bundle.oversized);
 
-    // Above `bundle_bytes` the raw text spills to a reference and the bundle
-    // is reported oversized.
+    // Compatible settings leave a fetched lease unchanged. A replacement
+    // lease captures the smaller budget and spills its raw pinned text.
     fx.settings.bundle_bytes = 1_000;
+    assert_eq!(fx.bundle("a", &ticket), bundle);
+    fx.now = snapshot_state(&fx, &ticket).1.unwrap();
+    let ticket = fx.work("a").jobs[0].clone();
     let small = fx.bundle("a", &ticket);
     assert_eq!(small.pinned[0].text, None);
     assert_eq!(small.pinned[0].text_ref, Some(1));
@@ -957,7 +972,7 @@ fn valid_level0_submit_stores_block_items_and_transitions() {
     fx.bundle("a", &ticket);
     fx.now += 7_000;
     let submission = json!({
-        "submission_schema": 1,
+        "submission_schema": SUBMISSION_SCHEMA,
         "narrative": "they talked",
         "new_decisions": [{"ref": "d1", "seq": 1, "by_seat": "a", "text": "use sqlite", "quote": "xxx"}],
         "new_open_items": [{"ref": "o1", "seq": 2, "kind": "ask", "from_seat": "a", "text": "who?"}],
@@ -1106,7 +1121,7 @@ fn human_seat_event_cannot_supersede_an_instruction() {
     fx.bundle("a", &ticket);
     fx.now += 1_000;
     let submission = json!({
-        "submission_schema": 1,
+        "submission_schema": SUBMISSION_SCHEMA,
         "narrative": "n",
         "transitions": [{"target": "i.2", "new_status": "superseded", "cite_seq": 3}],
         "prompt_version": "pv",
@@ -1135,7 +1150,7 @@ fn stored_records_round_trip_into_the_fold() {
     fx.bundle("a", &ticket);
     fx.now += 1_000;
     let submission = json!({
-        "submission_schema": 1,
+        "submission_schema": SUBMISSION_SCHEMA,
         "narrative": "n",
         "new_decisions": [{"ref": "d1", "seq": 1, "by_seat": "a", "text": "go"}],
         "transitions": [{"target": "i.2", "new_status": "done", "cite_seq": 3}],
@@ -1144,7 +1159,7 @@ fn stored_records_round_trip_into_the_fold() {
     fx.submit("a", &ticket, submission).unwrap();
     let thread = ThreadId::new(T);
     let version = render::chunking_version(&fx.settings);
-    let loaded = load_level0_records(&fx.db, &thread, &version, 10, None).unwrap();
+    let loaded = load_level0_records(&fx.db, &thread, &version, 10).unwrap();
     assert_eq!(loaded.len(), 1);
     let (range, records) = &loaded[0];
     assert_eq!((range.first_seq, range.last_seq), (1, 3));
@@ -1152,12 +1167,6 @@ fn stored_records_round_trip_into_the_fold() {
     assert_eq!(records.transitions.len(), 1);
     assert_eq!(records.transitions[0].target_id, "i.2");
     assert!(records.identifiers.iter().any(|i| i.value == "ht-12"));
-    // Created-at filtering for bundles: nothing stored at or before T0.
-    assert!(
-        load_level0_records(&fx.db, &thread, &version, 10, Some(T0))
-            .unwrap()
-            .is_empty()
-    );
 }
 
 #[test]
@@ -1215,7 +1224,7 @@ fn first_rejection_then_fallback() {
     fx.bundle("a", &ticket);
     fx.now += 1_000;
 
-    let bad = json!({"submission_schema": 1, "narrative": "n", "prompt_version": "", "model": "m"});
+    let bad = json!({"submission_schema": SUBMISSION_SCHEMA, "narrative": "n", "prompt_version": "", "model": "m"});
     let first = fx.submit("a", &ticket, bad.clone()).unwrap();
     let SubmitOutcome::Rejected { reasons } = &first else {
         panic!("expected Rejected, got {first:?}");
@@ -1238,8 +1247,7 @@ fn first_rejection_then_fallback() {
     assert_eq!(fx.count("SELECT count(*) FROM summary_blocks"), 0);
 
     // A different invalid body is the second rejection: a final fallback block.
-    let worse =
-        json!({"submission_schema": 1, "narrative": "n", "prompt_version": "p", "model": ""});
+    let worse = json!({"submission_schema": SUBMISSION_SCHEMA, "narrative": "n", "prompt_version": "p", "model": ""});
     let SubmitOutcome::Stored { block_id, fallback } = fx.submit("a", &ticket, worse).unwrap()
     else {
         panic!("expected Stored");
@@ -1258,7 +1266,7 @@ fn first_rejection_then_fallback() {
         (
             String::new(),
             "none".into(),
-            "daemon-fallback-v1".into(),
+            "daemon-fallback-v2".into(),
             1,
             "a".into()
         )
@@ -1454,15 +1462,14 @@ fn rollup_fallback_has_an_empty_narrative_and_no_records() {
     fx.now += 1_000;
     // A rollup that tries to add ledger records is invalid.
     let with_records = json!({
-        "submission_schema": 1, "narrative": "n", "prompt_version": "p", "model": "m",
+        "submission_schema": SUBMISSION_SCHEMA, "narrative": "n", "prompt_version": "p", "model": "m",
         "new_decisions": [{"ref": "d", "seq": 1, "by_seat": "a", "text": "t"}],
     });
     assert!(matches!(
         fx.submit("a", &ticket, with_records).unwrap(),
         SubmitOutcome::Rejected { .. }
     ));
-    let still_bad =
-        json!({"submission_schema": 1, "narrative": "n", "prompt_version": "", "model": "m"});
+    let still_bad = json!({"submission_schema": SUBMISSION_SCHEMA, "narrative": "n", "prompt_version": "", "model": "m"});
     let SubmitOutcome::Stored { block_id, fallback } = fx.submit("a", &ticket, still_bad).unwrap()
     else {
         panic!("expected Stored");
@@ -1490,4 +1497,930 @@ fn rollup_fallback_has_an_empty_narrative_and_no_records() {
         )
         .unwrap();
     assert_eq!(rows, 0);
+}
+
+fn intent_entry(fold: &Fold, seq: u64) -> &crate::protocol::summary::FoldEntry {
+    let id = format!("i.{seq}");
+    let entries: Vec<_> = fold.entries.iter().filter(|e| e.item.id == id).collect();
+    assert_eq!(entries.len(), 1, "source {seq}: {fold:?}");
+    entries[0]
+}
+
+/// Two deliberately sized chunks: sources A #1..2, answer/completion B #3.
+fn classified_two_chunks() -> (Fx, Vec<JobTicket>) {
+    let mut fx = Fx::new();
+    fx.add_intent(
+        "human",
+        false,
+        Some(UserIntent::Query),
+        &format!("What is progress? {}", "q".repeat(280)),
+    );
+    fx.add_intent(
+        "agent",
+        true,
+        Some(UserIntent::Request),
+        &format!("Cut a build. {}", "r".repeat(280)),
+    );
+    fx.add(
+        "agent",
+        false,
+        &format!("Progress is complete; build shipped. {}", "a".repeat(520)),
+    );
+    let jobs = fx.work("a").jobs;
+    assert_eq!(
+        jobs.iter().map(|j| j.range).collect::<Vec<_>>(),
+        vec![
+            SeqRange {
+                first_seq: 1,
+                last_seq: 2
+            },
+            SeqRange {
+                first_seq: 3,
+                last_seq: 3
+            }
+        ]
+    );
+    (fx, jobs)
+}
+
+fn close_classified() -> serde_json::Value {
+    let mut submission = valid("Progress answered and build completed".into());
+    submission["transitions"] = json!([
+        {"target":"i.1", "new_status":"resolved", "cite_seq":3},
+        {"target":"i.2", "new_status":"resolved", "cite_seq":3}
+    ]);
+    submission
+}
+
+#[test]
+fn user_intent_crosschunk_query_request_b_before_a() {
+    let (mut fx, jobs) = classified_two_chunks();
+    let b = fx.bundle("a", &jobs[1]);
+    for seq in [1, 2] {
+        assert_eq!(intent_entry(&b.fold, seq).status, ItemStatus::Open);
+    }
+    fx.now += 1_000;
+    assert!(matches!(
+        fx.submit("a", &jobs[1], close_classified()).unwrap(),
+        SubmitOutcome::Stored {
+            fallback: false,
+            ..
+        }
+    ));
+    let a = fx.bundle("a", &jobs[0]);
+    assert_eq!(
+        intent_entry(&a.fold, 1).status,
+        ItemStatus::Open,
+        "B's later citation cannot enter A's frontier"
+    );
+    fx.submit("a", &jobs[0], valid("Original human work".into()))
+        .unwrap();
+    let ready = fx.ready("a");
+    for seq in [1, 2] {
+        let entry = intent_entry(&ready.fold, seq);
+        assert_eq!(
+            (entry.status, entry.closed_at_seq),
+            (ItemStatus::Resolved, Some(3))
+        );
+    }
+    assert_eq!(
+        fx.count("SELECT count(*) FROM summary_items WHERE kind='user_instruction'"),
+        2
+    );
+    assert_eq!(fx.count("SELECT count(*) FROM summary_items i JOIN summary_blocks b ON b.id=i.block_id WHERE i.seq NOT BETWEEN b.first_seq AND b.last_seq"), 0);
+}
+
+#[test]
+fn user_intent_crosschunk_missing_a_fallback_and_unanswered() {
+    let mut fx = Fx::new();
+    fx.settings.chunk_bytes = 1_600;
+    for (intent, text) in [
+        (UserIntent::Query, "progress"),
+        (UserIntent::Request, "cut a build"),
+        (UserIntent::Query, "unanswered"),
+        (UserIntent::Request, "incomplete"),
+        (UserIntent::Rule, "always test"),
+    ] {
+        fx.add_intent(
+            "human",
+            false,
+            Some(intent),
+            &format!("{text} {}", "x".repeat(300)),
+        );
+    }
+    fx.add(
+        "agent",
+        false,
+        &format!("Progress answered and build shipped. {}", "x".repeat(1_600)),
+    );
+    let jobs = fx.work("a").jobs;
+    assert_eq!(
+        jobs.iter().map(|j| j.range).collect::<Vec<_>>(),
+        vec![
+            SeqRange {
+                first_seq: 1,
+                last_seq: 5
+            },
+            SeqRange {
+                first_seq: 6,
+                last_seq: 6
+            },
+        ]
+    );
+    fx.bundle("a", &jobs[1]);
+    fx.now += 1_000;
+    let mut closure = close_classified();
+    for transition in closure["transitions"].as_array_mut().unwrap() {
+        transition["cite_seq"] = json!(6);
+    }
+    fx.submit("a", &jobs[1], closure).unwrap();
+    fx.bundle("a", &jobs[0]);
+    let mut bad = valid("invalid first".into());
+    bad["model"] = json!("");
+    assert!(matches!(
+        fx.submit("a", &jobs[0], bad.clone()).unwrap(),
+        SubmitOutcome::Rejected { .. }
+    ));
+    bad["narrative"] = json!("invalid second");
+    assert!(matches!(
+        fx.submit("a", &jobs[0], bad).unwrap(),
+        SubmitOutcome::Stored { fallback: true, .. }
+    ));
+    let ready = fx.finish_all("a");
+    for seq in [1, 2] {
+        assert_eq!(
+            (
+                intent_entry(&ready.fold, seq).status,
+                intent_entry(&ready.fold, seq).closed_at_seq
+            ),
+            (ItemStatus::Resolved, Some(6))
+        );
+    }
+    for (seq, status) in [
+        (3, ItemStatus::Open),
+        (4, ItemStatus::Open),
+        (5, ItemStatus::Active),
+    ] {
+        assert_eq!(intent_entry(&ready.fold, seq).status, status);
+    }
+    assert_eq!(
+        fx.count("SELECT count(*) FROM summary_items WHERE kind='user_instruction'"),
+        5
+    );
+    assert_eq!(
+        fx.count("SELECT count(*) FROM summary_items WHERE kind='open_item'"),
+        0
+    );
+    assert_eq!(fx.count("SELECT count(*) FROM summary_items i JOIN summary_blocks b ON b.id=i.block_id WHERE i.seq NOT BETWEEN b.first_seq AND b.last_seq"), 0);
+}
+
+#[test]
+fn user_intent_rule_change_store_replay() {
+    for (change, role, relay) in [
+        (RuleChange::Withdrawn, "human", false),
+        (RuleChange::Replaced, "agent", true),
+    ] {
+        let mut fx = Fx::new();
+        fx.settings.chunk_bytes = 1_000;
+        fx.add_intent(
+            "human",
+            false,
+            Some(UserIntent::Rule),
+            &format!("Always test {}", "x".repeat(280)),
+        );
+        fx.add(
+            role,
+            relay,
+            &format!(
+                "Withdraw that rule; use the new rule instead. {}",
+                "x".repeat(680)
+            ),
+        );
+        let ticket = fx.work("a").jobs[0].clone();
+        assert_eq!(
+            ticket.range,
+            SeqRange {
+                first_seq: 1,
+                last_seq: 2
+            }
+        );
+        fx.bundle("a", &ticket);
+        let mut submission = valid("Rule changed".into());
+        submission["transitions"] = json!([{"target":"i.1", "new_status":"superseded", "cite_seq":2, "rule_change":change, "quote":"Withdraw that rule"}]);
+        assert!(matches!(
+            fx.submit("a", &ticket, submission).unwrap(),
+            SubmitOutcome::Stored {
+                fallback: false,
+                ..
+            }
+        ));
+        let records = load_level0_records(
+            &fx.db,
+            &ThreadId::new(T),
+            &render::chunking_version(&fx.settings),
+            2,
+        )
+        .unwrap();
+        assert_eq!(records[0].1.transitions[0].rule_change, Some(change));
+        let ready = fx.ready("a");
+        assert_eq!(
+            (
+                intent_entry(&ready.fold, 1).status,
+                intent_entry(&ready.fold, 1).closed_at_seq
+            ),
+            (ItemStatus::Superseded, Some(2))
+        );
+    }
+}
+
+#[test]
+fn user_intent_active_rule_pinned_and_budgeted() {
+    let mut fx = Fx::new();
+    fx.settings.display_bytes = 1;
+    fx.settings.bundle_bytes = 512;
+    for intent in [UserIntent::Query, UserIntent::Request, UserIntent::Rule] {
+        fx.add_intent("human", false, Some(intent), &"long source ".repeat(200));
+    }
+    fx.add_plain(16); // five more full chunks plus tail: FAN_IN level-0 blocks.
+    loop {
+        let work = fx.work("a");
+        if work.jobs.iter().any(|j| j.level > 0) {
+            let ticket = work.jobs.iter().find(|j| j.level > 0).unwrap();
+            let rollup = fx.bundle("a", ticket);
+            assert_eq!(
+                rollup.children.len(),
+                crate::protocol::summary::FAN_IN as usize
+            );
+            for (seq, intent, status) in [
+                (1, UserIntent::Query, ItemStatus::Open),
+                (2, UserIntent::Request, ItemStatus::Open),
+                (3, UserIntent::Rule, ItemStatus::Active),
+            ] {
+                let entry = intent_entry(&rollup.fold, seq);
+                assert_eq!(entry.status, status);
+                assert!(
+                    matches!(&entry.item.body, ItemBody::UserInstruction { user_intent: Some(i), text_ref: Some(s), message_id: Some(id), .. } if *i == intent && *s == seq && id.as_str() == format!("m{seq}"))
+                );
+                let pinned = rollup
+                    .pinned
+                    .iter()
+                    .find(|p| p.seq == seq)
+                    .expect("live source pinned");
+                assert_eq!(
+                    (&pinned.item_id, pinned.text_ref, &pinned.text),
+                    (&format!("i.{seq}"), Some(seq), &None)
+                );
+            }
+            assert!(rollup.oversized);
+            assert_eq!(
+                rollup.size_bytes as usize,
+                serde_json::to_vec(&rollup).unwrap().len()
+            );
+            fx.submit("a", ticket, valid("rollup".into())).unwrap();
+            break;
+        }
+        for ticket in work.jobs {
+            let bundle = fx.bundle("a", &ticket);
+            assert_eq!(
+                bundle.size_bytes as usize,
+                serde_json::to_vec(&bundle).unwrap().len()
+            );
+            fx.submit("a", &ticket, valid("n".repeat(100))).unwrap();
+        }
+    }
+    let ready = fx.finish_all("a");
+    assert!(ready.over_budget);
+    for (seq, status) in [
+        (1, ItemStatus::Open),
+        (2, ItemStatus::Open),
+        (3, ItemStatus::Active),
+    ] {
+        assert_eq!(intent_entry(&ready.fold, seq).status, status);
+    }
+}
+
+#[test]
+fn user_intent_generation2_and_schema1_refusal() {
+    assert_eq!(SUBMISSION_SCHEMA, 2);
+    assert_eq!(render::RENDERER_VERSION, 2);
+    assert_eq!(
+        crate::cli::skill::SUMMARY_PROMPT_VERSION,
+        "thread-summary-v2"
+    );
+    let (mut fx, jobs) = classified_two_chunks();
+    let bundle = fx.bundle("a", &jobs[0]);
+    assert_eq!(bundle.submission_schema, 2);
+    let mut old = valid("old schema first".into());
+    old["submission_schema"] = json!(1);
+    let SubmitOutcome::Rejected { reasons } = fx.submit("a", &jobs[0], old.clone()).unwrap() else {
+        panic!("schema1 must reject")
+    };
+    assert_eq!(reasons, vec!["unknown submission_schema 1"]);
+    old["narrative"] = json!("old schema second");
+    let SubmitOutcome::Stored {
+        block_id,
+        fallback: true,
+    } = fx.submit("a", &jobs[0], old).unwrap()
+    else {
+        panic!("second distinct rejection must fallback")
+    };
+    let block = block_by_id(&fx.db, block_id.as_str()).unwrap();
+    assert_eq!(block.header.prompt_version, "daemon-fallback-v2");
+}
+
+#[test]
+fn user_intent_partial_and_ack_do_not_complete() {
+    use crate::{
+        protocol::{
+            authority::{MutationPermit, ObligationRef},
+            commands::Ack,
+            ids::OperationId,
+            time::CallBudget,
+        },
+        store::{receipts, schema},
+    };
+    let mut fx = Fx::new();
+    for (intent, text) in [
+        (UserIntent::Query, "Question"),
+        (UserIntent::Request, "Build requested"),
+        (UserIntent::Rule, "Always test"),
+    ] {
+        fx.add_intent(
+            "human",
+            false,
+            Some(intent),
+            &format!("{text} {}", "x".repeat(520)),
+        );
+    }
+    fx.add(
+        "agent",
+        false,
+        &format!(
+            "Partial answer; I will build tomorrow; this release complied. {}",
+            "x".repeat(520)
+        ),
+    );
+    fx.db.execute_batch("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m1','t','b','pending',800); INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pane-b','host',1,1,0,'fresh','term-b','inc-b','coherent_enumeration',1);").unwrap();
+    let receipt_before: String = fx
+        .db
+        .query_row(
+            "SELECT state FROM receipts WHERE message_id='m1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    for ticket in fx.work("a").jobs {
+        fx.bundle("a", &ticket);
+        let submission = valid(
+            "Partial answer; promised build; compliant release. No completion transition.".into(),
+        );
+        assert!(matches!(
+            fx.submit("a", &ticket, submission).unwrap(),
+            SubmitOutcome::Stored {
+                fallback: false,
+                ..
+            }
+        ));
+    }
+    let ready = fx.ready("a");
+    for (seq, status) in [
+        (1, ItemStatus::Open),
+        (2, ItemStatus::Open),
+        (3, ItemStatus::Active),
+    ] {
+        assert_eq!(intent_entry(&ready.fold, seq).status, status);
+    }
+    assert_eq!(
+        fx.db
+            .query_row(
+                "SELECT state FROM receipts WHERE message_id='m1'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        receipt_before
+    );
+    assert_eq!(
+        fx.count("SELECT count(*) FROM receipts WHERE acked_at IS NOT NULL"),
+        0
+    );
+    fx.db.execute("UPDATE occupant_bindings SET execution_id='00000000-0000-4000-8000-0000000000bb' WHERE seat_id='b'", []).unwrap();
+    let mut claim = fx.claim("b", CallerRole::TopLevel);
+    claim.execution = ExecutionId::new("00000000-0000-4000-8000-0000000000bb");
+    let request = Ack {
+        messages: vec![MessageId::new("m1")],
+        operation: OperationId::new("intent-ack"),
+        claim,
+    };
+    let budget = CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let mut permit = MutationPermit::cooperative(
+        request.claim.clone(),
+        request.operation.clone(),
+        ObligationRef::CheckIn(request.claim.seat.clone()),
+        schema::canonical_digest(&receipts::ack_payload(&request)).unwrap(),
+        MonoInstant(100),
+        (1, 0),
+        budget.clone(),
+    );
+    receipts::ack(&fx.context, &mut fx.db, &budget, &request, &mut permit).unwrap();
+    assert_eq!(
+        fx.db
+            .query_row(
+                "SELECT state FROM receipts WHERE message_id='m1'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        "acked"
+    );
+    assert_eq!(
+        fx.count("SELECT count(*) FROM receipts WHERE acked_at IS NOT NULL"),
+        1
+    );
+    assert_eq!(fx.count("SELECT count(*) FROM summary_transitions"), 0);
+    assert_eq!(
+        fx.ready("a").fold,
+        ready.fold,
+        "ACK events do not change intent state"
+    );
+}
+
+#[test]
+fn user_intent_old_generation_readable_but_not_mixed() {
+    let mut fx = Fx::new();
+    // Genuine old renderer digest; legacy source carries no classification.
+    let old_input = format!(
+        "renderer=1\nchunk_bytes={}\ntracker_prefixes={}\n",
+        fx.settings.chunk_bytes,
+        fx.settings.tracker_prefixes.join(",")
+    );
+    let old_version = format!("cv1-{}", hex(&Sha256::digest(old_input.as_bytes())[..8]));
+    fx.add_sized("human", "old unclassified work");
+    fx.add_plain(24);
+    let jobs = fx.work("a").jobs;
+    let mut old_bundle = fx.bundle("a", &jobs[0]);
+    old_bundle.chunking_version = old_version.clone();
+    old_bundle.submission_schema = 1;
+    let mut old_hasher = Sha256::new();
+    for message in &old_bundle.messages {
+        old_hasher.update(render::render_message(message).as_bytes());
+    }
+    let old_hash = hex(&old_hasher.finalize()); // renderer1 hashed raw rendered sources only
+    fx.bundle("a", &jobs[1]);
+    let mut bad = valid("cached old rejection".into());
+    bad["model"] = json!("");
+    assert!(matches!(
+        fx.submit("a", &jobs[1], bad.clone()).unwrap(),
+        SubmitOutcome::Rejected { .. }
+    ));
+    fx.db
+        .execute(
+            "UPDATE summary_jobs SET chunking_version=?1",
+            [&old_version],
+        )
+        .unwrap();
+    let old_id = SummaryBlockId::new("historical-block");
+    fx.db.execute("INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at,job_id) VALUES (?1,'i','t',?2,0,0,1,3,?3,'historical closure','a','old-model','thread-summary-v1',0,?4)", params![old_id.as_str(), old_version, old_hash, jobs[0].job_id.as_str()]).unwrap();
+    let old_body = format!(
+        r#"{{"type":"user_instruction", "author_seat":"a", "author_role":"human", "relays_user":false, "text":{}, "text_ref":null}}"#,
+        serde_json::to_string(&old_bundle.messages[0].text).unwrap()
+    );
+    fx.db.execute("INSERT INTO summary_items(block_id,kind,item_id,seq,body_json,thread_id,chunking_version) VALUES (?1,'user_instruction','i.1',1,?2,'t',?3)", params![old_id.as_str(), &old_body, old_version]).unwrap();
+    fx.db.execute("INSERT INTO summary_transitions(block_id,ordinal,target_id,new_status,cite_seq,thread_id,chunking_version) VALUES (?1,0,'i.1','done',2,'t',?2)", params![old_id.as_str(), old_version]).unwrap();
+    fx.db
+        .execute(
+            "UPDATE summary_jobs SET block_id=?1 WHERE id=?2",
+            params![old_id.as_str(), jobs[0].job_id.as_str()],
+        )
+        .unwrap();
+    let closure = valid("historical retry".into());
+    let old_block = block_by_id(&fx.db, old_id.as_str()).unwrap();
+    let old_records = load_level0_records(&fx.db, &ThreadId::new(T), &old_version, 25).unwrap();
+    let old_inputs: Vec<_> = old_records
+        .iter()
+        .map(|(range, records)| BlockRecords {
+            range: *range,
+            records,
+        })
+        .collect();
+    assert_eq!(
+        fold::compute(&old_inputs, 25, &|_| false).entries[0].status,
+        ItemStatus::Done
+    );
+    let old_json: String = fx
+        .db
+        .query_row(
+            "SELECT body_json FROM summary_items WHERE kind='user_instruction'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let claims_before: Vec<(Option<String>, i64, Option<String>)> = fx
+        .db
+        .prepare("SELECT author_role,relays_user,user_intent FROM messages ORDER BY sequence")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for (ticket, body) in [
+        (&jobs[0], closure),
+        (&jobs[1], bad),
+        (&jobs[2], valid("never fetched".into())),
+    ] {
+        assert_eq!(fx.fetch("a", ticket).unwrap_err().code, ErrorCode::Conflict);
+        let err = fx.submit("a", ticket, body).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Conflict);
+        assert!(err.detail.contains("older chunking_version"));
+    }
+    assert_eq!(
+        load_level0_records(
+            &fx.db,
+            &ThreadId::new(T),
+            &render::chunking_version(&fx.settings),
+            25
+        )
+        .unwrap()
+        .len(),
+        0
+    );
+    fx.settings.display_bytes = 1; // require rollup and its current-generation children
+    let ready = fx.finish_all("a");
+    assert_eq!(intent_entry(&ready.fold, 1).status, ItemStatus::Open);
+    assert!(
+        ready
+            .cover
+            .iter()
+            .all(|b| b.header.chunking_version != old_version)
+    );
+    assert_eq!(fx.count("SELECT count(*) FROM summary_blocks b, json_each(b.children_json) c JOIN summary_blocks child ON child.id=c.value WHERE b.level>0 AND b.chunking_version!=child.chunking_version"), 0);
+    let new_id: String = fx
+        .db
+        .query_row(
+            "SELECT id FROM summary_blocks WHERE level=0 AND idx=0 AND chunking_version!=?1",
+            [&old_version],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let new_block = block_by_id(&fx.db, &new_id).unwrap();
+    assert_ne!(new_block.header.source_hash, old_block.header.source_hash);
+    assert_eq!(block_by_id(&fx.db, old_id.as_str()).unwrap(), old_block);
+    assert_eq!(
+        fx.db
+            .query_row(
+                "SELECT body_json FROM summary_items WHERE block_id=?1 AND kind='user_instruction'",
+                [old_id.as_str()],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        old_json
+    );
+    let claims_after: Vec<(Option<String>, i64, Option<String>)> = fx
+        .db
+        .prepare("SELECT author_role,relays_user,user_intent FROM messages ORDER BY sequence")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(claims_after, claims_before);
+    assert_eq!(fx.count("SELECT count(*) FROM receipts"), 0);
+}
+
+fn snapshot_state(fx: &Fx, ticket: &JobTicket) -> (Option<i64>, Option<i64>, Option<String>) {
+    fx.db
+        .query_row(
+            "SELECT fetched_at,lease_until,fetched_bundle_json FROM summary_jobs WHERE id=?1",
+            [ticket.job_id.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+}
+
+#[test]
+fn user_intent_snapshot_repeat_fetch_and_settings() {
+    let mut fx = Fx::new();
+    fx.add_sized("human", "keep this source");
+    fx.add_plain(3);
+    let ticket = fx.work("a").jobs[0].clone();
+    let bundle = fx.bundle("a", &ticket);
+    let bytes = serde_json::to_string(&bundle).unwrap();
+    let state = snapshot_state(&fx, &ticket);
+    assert_eq!(state.2.as_deref(), Some(bytes.as_str()));
+    fx.now += 1_000;
+    assert_eq!(
+        serde_json::to_string(&fx.bundle("a", &ticket)).unwrap(),
+        bytes
+    );
+    assert_eq!(snapshot_state(&fx, &ticket), state);
+    fx.settings.narrative_bytes = 8;
+    fx.settings.bundle_bytes = 1;
+    fx.settings.display_bytes = 1;
+    assert_eq!(
+        serde_json::to_string(&fx.bundle("a", &ticket)).unwrap(),
+        bytes
+    );
+    assert_eq!(snapshot_state(&fx, &ticket), state);
+    let SubmitOutcome::Stored { block_id, fallback } =
+        fx.submit("a", &ticket, valid("n".repeat(100))).unwrap()
+    else {
+        panic!("frozen budget must accept submission")
+    };
+    assert!(!fallback);
+    assert_eq!(
+        block_by_id(&fx.db, block_id.as_str())
+            .unwrap()
+            .header
+            .source_hash,
+        source_hash(&bundle)
+    );
+}
+
+fn snapshot_intervening_commit(rollback: bool) {
+    let mut fx = Fx::new();
+    fx.settings.chunk_bytes = 1_000;
+    fx.settings.max_new_leases = 1;
+    fx.add_intent(
+        "human",
+        false,
+        Some(UserIntent::Query),
+        &format!("Progress? {}", "x".repeat(300)),
+    );
+    fx.add(
+        "agent",
+        false,
+        &format!("First answer. {}", "x".repeat(650)),
+    );
+    fx.add(
+        "agent",
+        false,
+        &format!("More complete answer. {}", "x".repeat(1_000)),
+    );
+    let a = fx.work("a").jobs[0].clone();
+    let b = fx.work("b").jobs[0].clone();
+    assert_eq!((a.range.last_seq, b.range.first_seq), (2, 3));
+    let before = fx.bundle("b", &b);
+    assert_eq!(intent_entry(&before.fold, 1).status, ItemStatus::Open);
+    let bytes = serde_json::to_string(&before).unwrap();
+    fx.bundle("a", &a);
+    if rollback {
+        fx.now -= 1_000;
+    }
+    let mut closure = valid("first answer".into());
+    closure["transitions"] = json!([{"target":"i.1","new_status":"resolved","cite_seq":2}]);
+    closure["new_open_items"] =
+        json!([{"ref":"ordinary","seq":2,"kind":"question","from_seat":"a","text":"Other work?"}]);
+    assert!(matches!(
+        fx.submit("a", &a, closure).unwrap(),
+        SubmitOutcome::Stored {
+            fallback: false,
+            ..
+        }
+    ));
+    let repeat = fx.bundle("b", &b);
+    assert_eq!(serde_json::to_string(&repeat).unwrap(), bytes);
+    assert_eq!(snapshot_state(&fx, &b).2.as_deref(), Some(bytes.as_str()));
+    assert!(
+        !repeat
+            .fold
+            .entries
+            .iter()
+            .any(|e| matches!(e.item.body, ItemBody::OpenItem { .. }))
+    );
+    let mut closure = valid("second answer".into());
+    closure["transitions"] = json!([{"target":"i.1","new_status":"resolved","cite_seq":3}]);
+    assert!(matches!(
+        fx.submit("b", &b, closure).unwrap(),
+        SubmitOutcome::Stored {
+            fallback: false,
+            ..
+        }
+    ));
+    let ready = fx.ready("b");
+    assert_eq!(ready.cover.len(), 2);
+    assert_eq!(
+        (
+            intent_entry(&ready.fold, 1).status,
+            intent_entry(&ready.fold, 1).closed_at_seq
+        ),
+        (ItemStatus::Resolved, Some(2))
+    );
+    assert_eq!(
+        ready
+            .fold
+            .entries
+            .iter()
+            .filter(|e| e.item.id == "i.1")
+            .count(),
+        1
+    );
+    assert!(
+        ready
+            .fold
+            .entries
+            .iter()
+            .any(|e| matches!(e.item.body, ItemBody::OpenItem { .. }))
+    );
+}
+
+#[test]
+fn user_intent_snapshot_equal_timestamp_intervening_commit() {
+    snapshot_intervening_commit(false);
+}
+#[test]
+fn user_intent_snapshot_clock_rollback_intervening_commit() {
+    snapshot_intervening_commit(true);
+}
+
+#[test]
+fn user_intent_snapshot_capture_rolls_back() {
+    let mut fx = Fx::new();
+    fx.add_plain(4);
+    let ticket = fx.work("a").jobs[0].clone();
+    let before = snapshot_state(&fx, &ticket);
+    fx.now += 5_000;
+    let request = SummaryJobRequest {
+        job_id: ticket.job_id.clone(),
+        lease_token: ticket.lease_token.clone(),
+        claim: fx.claim("a", CallerRole::TopLevel),
+    };
+    let err=fx.run(|tx,settings,now| {
+        let version=render::chunking_version(settings);
+        tx.execute("INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at,job_id) VALUES ('malformed','i','t',?1,0,0,1,3,'hash','bad','a','model','prompt',0,?2)", params![version,ticket.job_id.as_str()]).unwrap();
+        tx.execute("INSERT INTO summary_items(block_id,kind,item_id,seq,body_json,thread_id,chunking_version) VALUES ('malformed','open_item','bad',1,'{bad','t',?1)", [&version]).unwrap();
+        summary_job(tx,"i",&request,settings,now)
+    }).unwrap_err();
+    assert_eq!(err.code, ErrorCode::StoreCorrupt);
+    assert_eq!(snapshot_state(&fx, &ticket), before);
+    assert_eq!(fx.count("SELECT count(*) FROM summary_blocks"), 0);
+    let bundle = fx.bundle("a", &ticket);
+    let mut wrong_job = serde_json::to_value(&bundle).unwrap();
+    wrong_job["job_id"] = json!("another-job");
+    for value in [
+        Some("{malformed".to_owned()),
+        None,
+        Some(wrong_job.to_string()),
+    ] {
+        fx.db
+            .execute(
+                "UPDATE summary_jobs SET fetched_bundle_json=?1 WHERE id=?2",
+                params![value, ticket.job_id.as_str()],
+            )
+            .unwrap();
+        for err in [
+            fx.fetch("a", &ticket).unwrap_err(),
+            fx.submit("a", &ticket, valid("no rebuild".into()))
+                .unwrap_err(),
+        ] {
+            assert_eq!(err.code, ErrorCode::StoreCorrupt);
+            assert!(err.detail.len() < 160);
+        }
+    }
+    assert_eq!(fx.count("SELECT count(*) FROM summary_blocks"), 0);
+}
+
+#[test]
+fn user_intent_snapshot_lease_reset_and_fences() {
+    let mut fx = Fx::new();
+    fx.add_plain(7);
+    let jobs = fx.work("a").jobs;
+    let ticket = &jobs[1];
+    assert_eq!(
+        fx.submit("a", ticket, valid("unfetched".into()))
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    let first = fx.bundle("a", ticket);
+    let first_state = snapshot_state(&fx, ticket);
+    assert!(matches!(
+        fx.fetch("b", ticket).unwrap(),
+        SummaryJobOutcome::ReservationLapsed { .. }
+    ));
+    assert_eq!(
+        fx.submit("b", ticket, valid("foreign".into()))
+            .unwrap_err()
+            .code,
+        ErrorCode::Unauthorized
+    );
+    let mut foreign = ticket.clone();
+    foreign.lease_token = LeaseToken::new("foreign-token");
+    assert_eq!(
+        fx.fetch("a", &foreign).unwrap_err().code,
+        ErrorCode::Unauthorized
+    );
+    assert_eq!(
+        fx.submit("a", &foreign, valid("foreign".into()))
+            .unwrap_err()
+            .code,
+        ErrorCode::Unauthorized
+    );
+    let mut bad = valid("cached rejection".into());
+    bad["model"] = json!("");
+    let rejected = fx.submit("a", ticket, bad.clone()).unwrap();
+    assert!(matches!(rejected, SubmitOutcome::Rejected { .. }));
+    assert_eq!(fx.submit("a", ticket, bad.clone()).unwrap(), rejected);
+    // Invalid callers and expired/stale leases are fenced before snapshot decode
+    // or cached rejection replay, even when persistence is corrupt.
+    fx.db
+        .execute(
+            "UPDATE summary_jobs SET fetched_bundle_json='{bad' WHERE id=?1",
+            [ticket.job_id.as_str()],
+        )
+        .unwrap();
+    for sql in [
+        "UPDATE occupant_bindings SET generation=2 WHERE seat_id='a'",
+        "UPDATE occupant_bindings SET execution_id='changed' WHERE seat_id='a'",
+    ] {
+        fx.db.execute(sql, []).unwrap();
+        assert_eq!(
+            fx.fetch("a", ticket).unwrap_err().code,
+            ErrorCode::CallerUnverified
+        );
+        assert_eq!(
+            fx.submit("a", ticket, bad.clone()).unwrap_err().code,
+            ErrorCode::CallerUnverified
+        );
+        fx.db
+            .execute(
+                "UPDATE occupant_bindings SET generation=1,execution_id='ea' WHERE seat_id='a'",
+                [],
+            )
+            .unwrap();
+    }
+    fx.settings.chunk_bytes += 1;
+    assert_eq!(fx.fetch("a", ticket).unwrap_err().code, ErrorCode::Conflict);
+    assert_eq!(
+        fx.submit("a", ticket, bad.clone()).unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    fx.settings.chunk_bytes -= 1;
+    fx.now = first_state.1.unwrap();
+    assert_eq!(fx.fetch("a", ticket).unwrap_err().code, ErrorCode::Conflict);
+    assert_eq!(
+        fx.submit("a", ticket, bad).unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    let new = fx
+        .work("b")
+        .jobs
+        .into_iter()
+        .find(|j| j.job_id == ticket.job_id)
+        .unwrap();
+    assert_ne!(new.lease_token, ticket.lease_token);
+    let cleared = snapshot_state(&fx, &new);
+    assert_eq!((cleared.0, cleared.2), (None, None));
+    // A new lease captures a changed current fold, while the old snapshot was stable.
+    let other = fx
+        .work("b")
+        .jobs
+        .into_iter()
+        .find(|j| j.job_id == jobs[0].job_id)
+        .unwrap();
+    fx.bundle("b", &other);
+    let mut item = valid("new work".into());
+    item["new_open_items"] =
+        json!([{"ref":"new","seq":1,"kind":"ask","from_seat":"a","text":"New work?"}]);
+    fx.submit("b", &other, item).unwrap();
+    let second = fx.bundle("b", &new);
+    assert_ne!(second, first);
+    assert_eq!(fx.bundle("b", &new), second);
+    let stored = fx.submit("b", &new, valid("stored".into())).unwrap();
+    assert_eq!(fx.submit("b", &new, valid("retry".into())).unwrap(), stored);
+    fx.db
+        .execute(
+            "UPDATE occupant_bindings SET execution_id='changed' WHERE seat_id='b'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        fx.submit("b", &new, valid("stored retry".into()))
+            .unwrap_err()
+            .code,
+        ErrorCode::CallerUnverified
+    );
+    fx.db
+        .execute(
+            "UPDATE occupant_bindings SET execution_id='eb' WHERE seat_id='b'",
+            [],
+        )
+        .unwrap();
+    fx.settings.chunk_bytes += 1;
+    assert_eq!(
+        fx.submit("b", &new, valid("stored retry".into()))
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    fx.settings.chunk_bytes -= 1;
+    fx.now = snapshot_state(&fx, &new).1.unwrap();
+    assert_eq!(
+        fx.submit("b", &new, valid("stored retry".into()))
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
 }

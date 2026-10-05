@@ -5059,7 +5059,7 @@ fn recent_activity_writer_rejects_missing_or_null_default() {
 // and incomplete public migration chaining from any supported historical version.
 #[test]
 fn adapter_migration_preserves_all_supported_history_and_rejection_overlay() {
-    for version in 1..=21 {
+    for version in 1..=23 {
         let db = adapter_historical_database(version);
         db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0); INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (7,'s',1,'p','b',0,'codex','session','execution','cooperative_top_level',1,1,'term','inc');").unwrap();
         db.execute_batch("INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,ended_at) VALUES (90,'s',2,'p','b',0,'codex','deleted','deleted','cooperative_top_level',2,3); DELETE FROM occupant_bindings WHERE ordinal=90;").unwrap();
@@ -5073,7 +5073,7 @@ fn adapter_migration_preserves_all_supported_history_and_rejection_overlay() {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            22,
+            24,
             "from {version}"
         );
         let history:(i64,String,String,String)=db.query_row("SELECT ordinal,native_session,execution_id,observation_provenance FROM occupant_bindings WHERE seat_id='s'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
@@ -5259,6 +5259,8 @@ fn adapter_historical_database(version: usize) -> Connection {
         include_str!("../../migrations/0019_thread_names.sql"),
         include_str!("../../migrations/0020_recent_activity.sql"),
         include_str!("../../migrations/0021_invitation_rejections.sql"),
+        include_str!("../../migrations/0022_user_message_intent.sql"),
+        include_str!("../../migrations/0023_channel_archival.sql"),
     ];
     let db = Connection::open_in_memory().unwrap();
     db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
@@ -5272,7 +5274,7 @@ fn adapter_historical_database(version: usize) -> Connection {
 
 #[test]
 fn adapter_migration_failure_rolls_back_rebuilt_tables_and_schema_version() {
-    let db = adapter_historical_database(21);
+    let db = adapter_historical_database(23);
     db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0); INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at) VALUES (7,'s',1,'p','b',0,'codex','launch:n','launch:e','managed_launch',0); UPDATE sqlite_sequence SET seq=90 WHERE name='occupant_bindings'; CREATE TABLE harness_runtime_identities(collision INTEGER);").unwrap();
     let original: String = db
         .query_row(
@@ -5281,11 +5283,13 @@ fn adapter_migration_failure_rolls_back_rebuilt_tables_and_schema_version() {
             |r| r.get(0),
         )
         .unwrap();
+    let guards = binding_archival_guards(&db);
     assert!(schema::initialize(&db, || UtcMillis(0)).is_err());
+    assert_eq!(binding_archival_guards(&db), guards);
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        21
+        23
     );
     assert_eq!(
         db.query_row(
@@ -5348,4 +5352,567 @@ fn adapter_migration_reopen_rejects_weakened_lexical_tables_and_missing_indexes(
             ErrorCode::IncompatibleSchema
         );
     }
+}
+
+#[test]
+fn archival_commit_counter_origin_does_not_collide_with_requests() {
+    let hooks = KickHooks::default();
+    hooks.on_update("threads");
+    hooks.on_commit();
+    {
+        let _origin = kicks::enter_lane(kicks::Lane::Archival);
+        hooks.on_update("threads");
+        hooks.on_commit();
+    }
+    assert_eq!(hooks.commit_counts()["request"], 1);
+    assert_eq!(
+        hooks.commits[kicks::Lane::Archival as usize].load(Ordering::SeqCst),
+        1
+    );
+    assert_eq!(
+        hooks.commit_counts().contains_key("archival"),
+        crate::protocol::wire::PROTOCOL_VERSION >= 6
+    );
+}
+
+fn user_intent_v21_fixture() -> Connection {
+    let db = Connection::open_in_memory().unwrap();
+    for migration in [
+        include_str!("../../migrations/0001_initial.sql"),
+        include_str!("../../migrations/0002_service_substrate.sql"),
+        include_str!("../../migrations/0003_invitation_cancellations.sql"),
+        include_str!("../../migrations/0004_voluntary_membership.sql"),
+        include_str!("../../migrations/0005_service_notifications.sql"),
+        include_str!("../../migrations/0006_retirement_health.sql"),
+        include_str!("../../migrations/0007_attention_digest.sql"),
+        include_str!("../../migrations/0008_digest_pending_paths.sql"),
+        include_str!("../../migrations/0009_human_occupant.sql"),
+        include_str!("../../migrations/0010_b5_trust_guards.sql"),
+        include_str!("../../migrations/0011_cooperative_only.sql"),
+        include_str!("../../migrations/0012_harness_version_evidence.sql"),
+        include_str!("../../migrations/0013_thread_summaries.sql"),
+        include_str!("../../migrations/0014_catch_up_release.sql"),
+        include_str!("../../migrations/0015_preparation_retention.sql"),
+        include_str!("../../migrations/0016_human_receipt_waivers.sql"),
+        include_str!("../../migrations/0017_wake_batches.sql"),
+        include_str!("../../migrations/0018_warning_conditions.sql"),
+        include_str!("../../migrations/0019_thread_names.sql"),
+        include_str!("../../migrations/0020_recent_activity.sql"),
+        include_str!("../../migrations/0021_invitation_rejections.sql"),
+    ] {
+        db.execute_batch(migration).unwrap();
+    }
+    db.pragma_update(None, "user_version", 21).unwrap();
+    db
+}
+
+fn user_intent_seed(db: &Connection) {
+    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0);
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0);
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',11,12);
+        INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at) VALUES ('b','i','t','c1',0,0,1,2,'hash','old summary','s','m1','p1',15);
+        INSERT INTO summary_jobs(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,fetched_at,created_at) VALUES ('j','i','t','c1',0,0,1,2,42,14);").unwrap();
+}
+
+// Catches accidental history rewrites or unequal fresh/upgrade schema shapes.
+#[test]
+fn user_intent_schema22_fresh_and_v21_upgrade() {
+    fn snapshots(db: &Connection) -> (Vec<String>, Vec<(String, i64)>) {
+        let rows = [
+            "SELECT json_array(id,author_role,relays_user,author_role_backfilled,body,decision_at) FROM messages ORDER BY id",
+            "SELECT json_array(block_id,ordinal,target_id,new_status,cite_seq) FROM summary_transitions ORDER BY ordinal",
+            "SELECT json_array(id,fetched_at,created_at) FROM summary_jobs ORDER BY id",
+        ].into_iter().flat_map(|sql| db.prepare(sql).unwrap().query_map([], |r| r.get::<_,String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()).collect();
+        let roots = db
+            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences') ORDER BY name")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        (rows, roots)
+    }
+    fn shape(db: &Connection) -> Vec<(String, String, String)> {
+        db.prepare(
+            "SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name",
+        )
+        .unwrap()
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get::<_, String>(2)?
+                    .split_whitespace()
+                    .collect::<String>()
+                    .to_ascii_lowercase(),
+            ))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+    }
+    let upgraded = user_intent_v21_fixture();
+    user_intent_seed(&upgraded);
+    upgraded.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role) VALUES ('mh','i','t',1,'ordinary','s','old human',13,1,'human'),('ma','i','t',2,'ordinary','s','old agent',14,2,'agent'); INSERT INTO summary_transitions(block_id,ordinal,thread_id,chunking_version,target_id,new_status,cite_seq) VALUES ('b',0,'t','c1','i.1','superseded',2);").unwrap();
+    let before = snapshots(&upgraded);
+    // Preserve the explicit historical22 assertion: intent is additive and rebuilds no tables.
+    upgraded
+        .execute_batch(include_str!(
+            "../../migrations/0022_user_message_intent.sql"
+        ))
+        .unwrap();
+    upgraded.pragma_update(None, "user_version", 22).unwrap();
+    assert_eq!(snapshots(&upgraded), before);
+    schema::initialize(&upgraded, || UtcMillis(100)).unwrap();
+    assert_eq!(
+        upgraded
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        schema::LATEST_VERSION
+    );
+    let after = snapshots(&upgraded);
+    assert_eq!(
+        after.0, before.0,
+        "all intent and summary history remains exact"
+    );
+    // Forward24 intentionally rebuilds these three tables and adds three evidence tables.
+    // Every other historical table must retain its original root page.
+    let adapter_tables = [
+        "occupant_bindings",
+        "harness_version_evidence",
+        "harness_unattributed",
+        "harness_runtime_identities",
+        "harness_contract_evidence_v2",
+        "harness_unattributed_v2",
+    ];
+    let unchanged = |roots: &Vec<(String, i64)>| {
+        roots
+            .iter()
+            .filter(|(name, _)| !adapter_tables.contains(&name.as_str()))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(unchanged(&after.1), unchanged(&before.1));
+    for (table, column) in [
+        ("messages", "user_intent"),
+        ("summary_transitions", "rule_change"),
+        ("summary_jobs", "fetched_bundle_json"),
+    ] {
+        assert_eq!(
+            upgraded
+                .query_row(
+                    &format!("SELECT count(*) FROM {table} WHERE {column} IS NOT NULL"),
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+    }
+    let fresh = Connection::open_in_memory().unwrap();
+    schema::initialize(&fresh, || UtcMillis(100)).unwrap();
+    assert_eq!(shape(&upgraded), shape(&fresh));
+    schema::initialize(&fresh, || UtcMillis(200)).unwrap();
+    schema::initialize(&upgraded, || UtcMillis(200)).unwrap();
+    assert_eq!(snapshots(&upgraded), after);
+}
+
+// Catches a CHECK weakened to accept unknown claims or SQL NULL bypassing attribution.
+#[test]
+fn user_intent_schema22_checks_and_eligibility() {
+    let db = Connection::open_in_memory().unwrap();
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    user_intent_seed(&db);
+    db.execute(
+        "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('svc','i',0)",
+        [],
+    )
+    .unwrap();
+    let mut seq = 0;
+    for kind in ["ordinary", "info", "warn"] {
+        for role in [Some("human"), Some("agent"), Some("service"), None] {
+            for relay in [0, 1] {
+                for intent in [Some("query"), Some("request"), Some("rule"), None] {
+                    seq += 1;
+                    // Use canonical programmatic author shape for services.
+                    let result=db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,event_json,decision_at,decision_seq,author_role,relays_user,user_intent,author_kind,author_service_id,actor_label) VALUES (?1,'i','t',?2,?3,?9,?4,?5,0,?2,?6,?7,?8,?10,?11,?12)",params![format!("m{seq}"),seq,kind,if kind=="ordinary"{Some("body")}else{None},if kind=="ordinary"{None}else{Some("{}")},role,relay,intent,if role==Some("service"){None}else{Some("s")},if role==Some("service"){"programmatic"}else{"native"},if role==Some("service"){Some("svc")}else{None},if role==Some("service"){Some("herdr-graph")}else{None}]);
+                    let eligible = kind == "ordinary"
+                        && (role == Some("human") || (role == Some("agent") && relay == 1));
+                    assert_eq!(
+                        result.is_ok(),
+                        (intent.is_none() || eligible) && !(role == Some("service") && relay == 1),
+                        "{kind}/{role:?}/{relay}/{intent:?}: {result:?}"
+                    );
+                    if let Err(error) = result {
+                        if !eligible && intent.is_some() {
+                            assert!(
+                                error
+                                    .to_string()
+                                    .contains("invalid user intent attribution")
+                            );
+                        }
+                    } else {
+                        assert_eq!(
+                            db.query_row(
+                                "SELECT user_intent FROM messages WHERE id=?1",
+                                [format!("m{seq}")],
+                                |r| r.get::<_, Option<String>>(0)
+                            )
+                            .unwrap()
+                            .as_deref(),
+                            intent
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,user_intent) VALUES ('bad','i','t',1000,'ordinary','s','body',0,1000,'human','instruction')",[]).is_err());
+    for (ordinal, change) in [None, Some("withdrawn"), Some("replaced")]
+        .into_iter()
+        .enumerate()
+    {
+        db.execute("INSERT INTO summary_transitions(block_id,ordinal,thread_id,chunking_version,target_id,new_status,cite_seq,rule_change) VALUES ('b',?1,'t','c1','i.1','superseded',2,?2)",params![ordinal as i64,change]).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT rule_change FROM summary_transitions WHERE block_id='b' AND ordinal=?1",
+                [ordinal as i64],
+                |r| r.get::<_, Option<String>>(0)
+            )
+            .unwrap()
+            .as_deref(),
+            change
+        );
+    }
+    assert!(db.execute("INSERT INTO summary_transitions(block_id,ordinal,thread_id,chunking_version,target_id,new_status,cite_seq,rule_change) VALUES ('b',9,'t','c1','i.1','superseded',2,'completed')",[]).is_err());
+}
+
+// Catches startup accepting a present but altered column domain, shape, or guard.
+#[test]
+fn user_intent_schema22_rejects_column_or_guard_tampering() {
+    for replacement in [
+        None,
+        Some(
+            "CREATE TRIGGER messages_user_intent_insert BEFORE INSERT ON messages BEGIN SELECT 1; END;",
+        ),
+    ] {
+        let db = Connection::open_in_memory().unwrap();
+        schema::initialize(&db, || UtcMillis(0)).unwrap();
+        db.execute_batch("DROP TRIGGER messages_user_intent_insert")
+            .unwrap();
+        if let Some(sql) = replacement {
+            db.execute_batch(sql).unwrap();
+        }
+        assert_eq!(
+            schema::initialize(&db, || UtcMillis(1)).unwrap_err().code,
+            ErrorCode::IncompatibleSchema
+        );
+    }
+    for (table, column, domain) in [
+        (
+            "messages",
+            "user_intent",
+            "CHECK (user_intent IN ('query', 'request', 'rule'))",
+        ),
+        (
+            "summary_transitions",
+            "rule_change",
+            "CHECK (rule_change IN ('withdrawn', 'replaced'))",
+        ),
+        ("summary_jobs", "fetched_bundle_json", ""),
+    ] {
+        let original_declaration = format!(
+            "{column} TEXT{}",
+            if domain.is_empty() {
+                String::new()
+            } else {
+                format!(" {domain}")
+            }
+        );
+        let mut replacements = vec![
+            String::new(),
+            format!("{column} BLOB {domain}"),
+            format!("{column} TEXT NOT NULL {domain}"),
+            format!("{column} TEXT DEFAULT NULL {domain}"),
+        ];
+        if !domain.is_empty() {
+            replacements.push(format!("{column} TEXT"));
+            replacements.push(format!(
+                "{column} TEXT {}",
+                domain.replace(
+                    "))",
+                    if column == "user_intent" {
+                        ", 'instruction'))"
+                    } else {
+                        ", 'completed'))"
+                    }
+                )
+            ));
+        }
+        for replacement in replacements {
+            let path = std::env::temp_dir()
+                .join(format!("ht-intent-tamper-{}.sqlite3", uuid::Uuid::new_v4()));
+            let db = Connection::open(&path).unwrap();
+            schema::initialize(&db, || UtcMillis(0)).unwrap();
+            let original: String = db
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let normalize = |sql: &str| sql.split_whitespace().collect::<Vec<_>>().join(" ");
+            let original = normalize(&original);
+            let declaration = normalize(&original_declaration);
+            let altered = if replacement.is_empty() {
+                original.replace(&format!(", {declaration}"), "")
+            } else {
+                original.replace(&declaration, &replacement)
+            };
+            assert_ne!(original, altered, "{table}/{column}/{replacement}");
+            db.execute_batch("PRAGMA writable_schema=ON").unwrap();
+            db.execute(
+                "UPDATE sqlite_schema SET sql=?1 WHERE type='table' AND name=?2",
+                params![altered, table],
+            )
+            .unwrap();
+            db.execute_batch("PRAGMA writable_schema=OFF").unwrap();
+            drop(db);
+            let db = Connection::open(&path).unwrap();
+            let result = schema::initialize(&db, || UtcMillis(1));
+            assert!(
+                matches!(result,Err(ref e) if e.code==ErrorCode::IncompatibleSchema),
+                "{table}/{replacement}: {result:?}"
+            );
+            drop(db);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+}
+
+#[test]
+fn archival_schema_upgrade_21_and_22_preserves_history_and_starts_unqualified() {
+    for version in [21, 22] {
+        let db = user_intent_v21_fixture();
+        user_intent_seed(&db);
+        if version == 22 {
+            db.execute_batch(include_str!(
+                "../../migrations/0022_user_message_intent.sql"
+            ))
+            .unwrap();
+            db.pragma_update(None, "user_version", 22).unwrap();
+            db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,user_intent) VALUES('intent','i','t',1,'ordinary','s','keep',13,1,'human','rule')").unwrap();
+        }
+        schema::initialize(&db, || UtcMillis(9_000_000)).unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            24
+        );
+        // The bounded worker seeds historical rows. Migration cannot backdate eligibility.
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM channel_archival WHERE quiet_mono IS NOT NULL",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row("SELECT topic FROM threads WHERE id='t'", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "topic"
+        );
+        if version == 22 {
+            assert_eq!(
+                db.query_row(
+                    "SELECT user_intent FROM messages WHERE id='intent'",
+                    [],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+                "rule"
+            );
+        }
+        schema::initialize(&db, || UtcMillis(10_000_000)).unwrap();
+    }
+}
+#[test]
+fn archival_schema_refuses_missing_or_weakened_guards_before_writing() {
+    for change in [
+        "DROP TRIGGER channel_handoff_terminal",
+        "DROP INDEX seat_archival_due",
+        "DROP TRIGGER archival_operation_activity; CREATE TRIGGER archival_operation_activity AFTER INSERT ON operations BEGIN SELECT 1; END",
+    ] {
+        let db = Connection::open_in_memory().unwrap();
+        schema::initialize(&db, || UtcMillis(0)).unwrap();
+        db.execute_batch(change).unwrap();
+        assert!(
+            matches!(schema::initialize(&db, || UtcMillis(1)), Err(e) if e.code == ErrorCode::IncompatibleSchema)
+        );
+    }
+}
+
+#[test]
+fn archival_schema_audit_preserves_case_sensitive_terminal_state_literals() {
+    let db = Connection::open_in_memory().unwrap();
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    let sql: String = db
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name='channel_handoff_terminal'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    db.execute_batch("DROP TRIGGER channel_handoff_terminal")
+        .unwrap();
+    db.execute_batch(&sql.replace("OLD.state='completed'", "OLD.state='COMPLETED'"))
+        .unwrap();
+    assert!(
+        matches!(schema::initialize(&db,||UtcMillis(1)),Err(e) if e.code==ErrorCode::IncompatibleSchema),
+        "uppercasing the state literal disables absorbing completion and must fail the audit"
+    );
+}
+
+// A binding table rebuild must retain canonical archival invalidation and queue producers.
+#[test]
+fn adapter_migration_23_to_24_preserves_archival_guards_and_intent_history() {
+    let db = adapter_historical_database(23);
+    user_intent_seed(&db);
+    db.execute_batch(r#"INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES(7,'s',1,'p','host',1,'codex','session','execution','cooperative_top_level',0,1);
+        UPDATE sqlite_sequence SET seq=90 WHERE name='occupant_bindings';
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,user_intent) VALUES('intent','i','t',1,'ordinary','s','keep rule',13,1,'human','rule');
+        UPDATE summary_jobs SET fetched_bundle_json='{"frozen":true}';
+        INSERT INTO summary_transitions(block_id,ordinal,thread_id,chunking_version,target_id,new_status,cite_seq,rule_change) VALUES('b',0,'t','c1','i.1','superseded',2,'withdrawn');
+        INSERT INTO archival_instances(instance_id,runtime_boot,mutation_revision,bootstrap_veto) VALUES('i','boot',41,0);
+        UPDATE seat_archival SET activity_revision=7,idle_mono=10,samples=3,next_mono=999 WHERE seat_id='s';
+        UPDATE channel_archival SET activity_revision=9,quiet_mono=10,quiet_utc=11,runtime_boot='boot',evidence_epoch=0 WHERE thread_id='t';
+        INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,thread_id,origin,state,created_at,completed_at) VALUES('i','s','compound','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','{}','s','create','invite','send','t','cooperative_pending_claim','completed',1,2);
+        "#).unwrap();
+    let guards = binding_archival_guards(&db);
+    assert_eq!(guards.len(), 6);
+    schema::initialize(&db, || UtcMillis(100)).unwrap();
+    assert_eq!(binding_archival_guards(&db), guards);
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        24
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT seq FROM sqlite_sequence WHERE name='occupant_bindings'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        90
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT user_intent FROM messages WHERE id='intent'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "rule"
+    );
+    assert_eq!(
+        db.query_row("SELECT fetched_bundle_json FROM summary_jobs", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap(),
+        r#"{"frozen":true}"#
+    );
+    assert_eq!(
+        db.query_row("SELECT rule_change FROM summary_transitions", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap(),
+        "withdrawn"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT activity_revision,quiet_mono FROM channel_archival WHERE thread_id='t'",
+            [],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        )
+        .unwrap(),
+        (9, 10)
+    );
+    assert_eq!(db.query_row("SELECT activity_revision,idle_mono,samples,next_mono FROM seat_archival WHERE seat_id='s'",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?))).unwrap(),(7,10,3,999));
+    assert!(
+        db.execute(
+            "UPDATE channel_handoff_fences SET state='live',completed_at=NULL",
+            []
+        )
+        .is_err()
+    );
+    let revision = || {
+        db.query_row(
+            "SELECT mutation_revision FROM archival_instances WHERE instance_id='i'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+    let before = revision();
+    db.execute(
+        "UPDATE occupant_bindings SET harness='future_agent' WHERE ordinal=7",
+        [],
+    )
+    .unwrap();
+    assert_eq!(revision(), before + 1);
+    assert_eq!(db.query_row("SELECT activity_revision,idle_mono,samples,next_mono FROM seat_archival WHERE seat_id='s'",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,Option<i64>>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?))).unwrap(),(8,None,0,0));
+    db.execute_batch("UPDATE occupant_bindings SET ended_at=100 WHERE ordinal=7; UPDATE seat_archival SET next_mono=999;").unwrap();
+    let before = revision();
+    db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at) VALUES('s',2,'p','host',1,'future_agent','new','new','cooperative_top_level',101);").unwrap();
+    assert_eq!(revision(), before + 1);
+    assert_eq!(
+        db.query_row(
+            "SELECT next_mono FROM seat_archival WHERE seat_id='s'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    db.execute("UPDATE seat_archival SET next_mono=999", [])
+        .unwrap();
+    let before = revision();
+    db.execute("DELETE FROM occupant_bindings WHERE generation=2", [])
+        .unwrap();
+    assert_eq!(revision(), before + 1);
+    assert_eq!(
+        db.query_row(
+            "SELECT next_mono FROM seat_archival WHERE seat_id='s'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    let fresh = Connection::open_in_memory().unwrap();
+    schema::initialize(&fresh, || UtcMillis(0)).unwrap();
+    assert_eq!(binding_archival_guards(&fresh), guards);
+    // A lost guard on an already-upgraded database must refuse reopening.
+    for (name, _) in guards {
+        let fresh = Connection::open_in_memory().unwrap();
+        schema::initialize(&fresh, || UtcMillis(0)).unwrap();
+        fresh
+            .execute_batch(&format!("DROP TRIGGER {name}"))
+            .unwrap();
+        assert_eq!(
+            schema::initialize(&fresh, || UtcMillis(0))
+                .unwrap_err()
+                .code,
+            ErrorCode::IncompatibleSchema
+        );
+    }
+}
+
+fn binding_archival_guards(db: &Connection) -> Vec<(String, String)> {
+    db.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name='occupant_bindings' ORDER BY name").unwrap()
+        .query_map([],|r|Ok((r.get(0)?,r.get(1)?))).unwrap().map(Result::unwrap).collect()
 }

@@ -1320,6 +1320,16 @@ struct HungWakeHost {
     release: Arc<std::sync::atomic::AtomicBool>,
 }
 impl herdr_threads::ports::HostPort for HungWakeHost {
+    fn observe_current_target_for_archival(
+        &self,
+        _: &herdr_threads::protocol::ids::HostTargetId,
+        _: &herdr_threads::ports::HostCallContext,
+    ) -> Result<herdr_threads::ports::ComposerObservation, herdr_threads::protocol::results::ApiError>
+    {
+        Err(herdr_threads::protocol::results::ApiError::unsupported(
+            "test adapter has no composer-aware archival observation",
+        ))
+    }
     fn native_launch_capability(&self) -> herdr_threads::ports::NativeLaunchCapability {
         herdr_threads::ports::NativeLaunchCapability::Unsupported
     }

@@ -185,6 +185,7 @@ fn ordinary_body_and_system_event_render_distinct_complete_routes() {
         event_author: None,
         author_role: None,
         relays_user: false,
+        user_intent: None,
         author_role_backfilled: false,
         kind: MessageKind::Ordinary,
         sequence: 7,
@@ -302,6 +303,7 @@ fn untrusted_system_json_cannot_create_a_continuation_command() {
             event_author: None,
             author_role: None,
             relays_user: false,
+            user_intent: None,
             author_role_backfilled: false,
             kind: MessageKind::Warn,
             sequence: 1,
@@ -358,6 +360,7 @@ fn body_text_with(body: &str, complete: bool, next_argv: Option<Vec<String>>) ->
             event_author: None,
             author_role: None,
             relays_user: false,
+            user_intent: None,
             author_role_backfilled: false,
             kind: MessageKind::Ordinary,
             sequence: 12,
@@ -608,6 +611,7 @@ fn preview_snippet_and_full_thread_detail_use_distinct_routes() {
         event_author: None,
         author_role: None,
         relays_user: false,
+        user_intent: None,
         author_role_backfilled: false,
         kind: MessageKind::Warn,
         sequence: 9,
@@ -855,6 +859,7 @@ fn text_escapes_c1_and_unicode_separators_in_every_peer_field() {
             event_author: None,
             author_role: None,
             relays_user: false,
+            user_intent: None,
             author_role_backfilled: false,
             kind: MessageKind::Ordinary,
             sequence: 1,
@@ -1252,4 +1257,228 @@ fn thread_names_legacy_summary_is_omitted_and_named_scalar_is_escaped() {
         String::from_utf8(encode_selected(&unnamed, &text).unwrap()).unwrap(),
         "thread_name t-old: unnamed\n"
     );
+}
+
+#[test]
+fn user_intent_contract_message_result_roundtrip() {
+    use crate::protocol::summary::UserIntent;
+    let mut summary = MessageSummary {
+        message: MessageId::new("m-1"),
+        thread: ThreadId::new("t-1"),
+        author: Some(SeatId::new("s-1")),
+        event_author: None,
+        author_role: None,
+        relays_user: false,
+        user_intent: None,
+        author_role_backfilled: false,
+        kind: MessageKind::Ordinary,
+        sequence: 7,
+        created_at: UtcMillis(88),
+        actor_label: Some("agent\npeer".into()),
+        preview_data: "雪".into(),
+        preview_omitted: false,
+        preview_detail_argv: None,
+    };
+    let mut old = serde_json::to_value(&summary).unwrap();
+    old.as_object_mut().unwrap().remove("user_intent");
+    let decoded: MessageSummary = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(decoded.user_intent, None);
+    assert_eq!(serde_json::to_value(decoded).unwrap(), old);
+    for intent in [UserIntent::Query, UserIntent::Request, UserIntent::Rule] {
+        summary.user_intent = Some(intent);
+        let raw = serde_json::to_value(&summary).unwrap();
+        assert_eq!(raw["user_intent"], intent.as_str());
+        assert_eq!(
+            serde_json::from_value::<MessageSummary>(raw)
+                .unwrap()
+                .user_intent,
+            Some(intent)
+        );
+    }
+}
+
+#[test]
+fn user_intent_output_markers_are_independent() {
+    use crate::protocol::results::{SearchHit, SearchPage};
+    use crate::protocol::summary::{AuthorRole, UserIntent};
+    fn page<T>(items: Vec<T>) -> Page<T> {
+        Page {
+            items,
+            next_cursor: None,
+            next_argv: None,
+            high_water_ordinal: 7,
+            scope_revision: None,
+            has_more: false,
+            stop_reason: StopReason::Complete,
+            consistency: Consistency::BoundedLive,
+        }
+    }
+    for (role, relay, source) in [
+        (AuthorRole::Human, false, " [human]"),
+        (AuthorRole::Human, true, " [human] [relays user]"),
+        (AuthorRole::Agent, true, " [relays user]"),
+    ] {
+        for intent in [
+            None,
+            Some(UserIntent::Query),
+            Some(UserIntent::Request),
+            Some(UserIntent::Rule),
+        ] {
+            let row = MessageSummary {
+                message: MessageId::new("m7"),
+                thread: ThreadId::new("t1"),
+                author: Some(SeatId::new("S1")),
+                event_author: None,
+                author_role: Some(role),
+                relays_user: relay,
+                user_intent: intent,
+                author_role_backfilled: false,
+                kind: MessageKind::Ordinary,
+                sequence: 7,
+                created_at: UtcMillis(0),
+                actor_label: None,
+                preview_data: "quoted rule".into(),
+                preview_omitted: false,
+                preview_detail_argv: None,
+            };
+            let markers = format!(
+                "{source}{}",
+                intent.map_or(String::new(), |i| format!(" [{}]", i.as_str()))
+            );
+            let details = CommandResult::Message(MessageDetails {
+                summary: row.clone(),
+                content: MessageContent::Ordinary {
+                    body_data: "quoted rule".into(),
+                    body_offset: 0,
+                    body_total_bytes: 11,
+                    body_complete: true,
+                    body_next_cursor: None,
+                    body_next_argv: None,
+                },
+            });
+            for result in [CommandResult::History(page(vec![row.clone()])), details] {
+                let text = String::from_utf8(
+                    encode_selected(
+                        &result,
+                        &OutputSpec {
+                            format: OutputFormat::Text,
+                            ..OutputSpec::default()
+                        },
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+                assert!(text.contains(&format!("00:00Z{markers}")), "{text}");
+                let raw: serde_json::Value = serde_json::from_slice(
+                    &encode_selected(&result, &OutputSpec::default()).unwrap(),
+                )
+                .unwrap();
+                let encoded = raw.to_string();
+                if let Some(i) = intent {
+                    assert!(
+                        encoded.contains(&format!("\"user_intent\":\"{}\"", i.as_str())),
+                        "{raw}"
+                    );
+                } else {
+                    assert!(!encoded.contains("user_intent"), "{raw}");
+                }
+            }
+            let inbox = CommandResult::InboxBatch(page(vec![
+                crate::protocol::results::InboxBatchItem::Message {
+                    thread: ThreadId::new("t1"),
+                    topic_data: "topic".into(),
+                    message: MessageId::new("m7"),
+                    sequence: 7,
+                    sender: Some(SeatId::new("S1")),
+                    author_role: Some(role),
+                    relays_user: relay,
+                    user_intent: intent,
+                    author_role_backfilled: false,
+                    body: "quoted rule".into(),
+                    body_start: 0,
+                    body_end: 11,
+                    body_len: 11,
+                    ack_candidate: None,
+                },
+            ]));
+            let text = String::from_utf8(
+                encode_selected(
+                    &inbox,
+                    &OutputSpec {
+                        format: OutputFormat::Text,
+                        ..OutputSpec::default()
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert!(text.contains(&format!("from S1{markers} bytes")), "{text}");
+            let raw = serde_json::to_value(&inbox).unwrap();
+            assert_eq!(
+                raw["data"]["items"][0]["user_intent"],
+                intent
+                    .map(|i| serde_json::json!(i.as_str()))
+                    .unwrap_or(serde_json::Value::Null)
+            );
+            let human_body = CommandResult::Message(MessageDetails {
+                summary: row.clone(),
+                content: MessageContent::Ordinary {
+                    body_data: "quoted rule".into(),
+                    body_offset: 0,
+                    body_total_bytes: 11,
+                    body_complete: true,
+                    body_next_cursor: None,
+                    body_next_argv: None,
+                },
+            });
+            let human = crate::cli::human::render(&human_body, &OutputSpec::default()).unwrap();
+            assert!(human.contains(&format!("{markers}\n\n")), "{human}");
+            let search = CommandResult::Search(SearchPage {
+                matches: page(vec![SearchHit::Body(row)]),
+                examined_candidates: 1,
+                examined_utf8_bytes: 11,
+            });
+            let raw: serde_json::Value =
+                serde_json::from_slice(&encode_selected(&search, &OutputSpec::default()).unwrap())
+                    .unwrap();
+            let human = crate::cli::human::render(&search, &OutputSpec::default()).unwrap();
+            assert!(
+                human.contains(&format!("{markers}: quoted rule")),
+                "{human}"
+            );
+            let body = &raw["result"]["data"]["matches"]["items"][0]["data"];
+            assert_eq!(
+                body["user_intent"],
+                intent
+                    .map(|i| serde_json::json!(i.as_str()))
+                    .unwrap_or(serde_json::Value::Null)
+            );
+        }
+    }
+    let ordinary: MessageSummary = serde_json::from_value(serde_json::json!({
+        "message":"m1","thread":"t1","author":"S1","kind":"ordinary","sequence":1,
+        "created_at":0,"actor_label":null,"preview_data":"Always run tests.",
+        "preview_omitted":false,"preview_detail_argv":null}))
+    .unwrap();
+    assert_eq!(ordinary.author_markers(), "");
+    let mut system = ordinary;
+    system.kind = MessageKind::Info;
+    system.author_role = Some(AuthorRole::Human);
+    system.relays_user = true;
+    system.user_intent = Some(UserIntent::Rule);
+    assert_eq!(
+        system.author_markers(),
+        "",
+        "event rows have no ordinary-input markers"
+    );
+}
+
+#[test]
+fn user_intent_inbox_old_json_remains_readable_and_omits_absent_claims() {
+    let old = serde_json::json!({"kind":"message", "thread":"t1", "topic_data":"topic", "message":"m1",
+        "sequence":1, "sender":null, "body":"Always run tests.", "body_start":0, "body_end":17,
+        "body_len":17, "ack_candidate":null});
+    let item: crate::protocol::results::InboxBatchItem =
+        serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(serde_json::to_value(item).unwrap(), old);
 }

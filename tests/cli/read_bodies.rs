@@ -43,6 +43,7 @@ fn summary(sequence: u64, body: &str, inline: bool) -> MessageSummary {
         event_author: None,
         author_role: None,
         relays_user: false,
+        user_intent: None,
         author_role_backfilled: false,
         kind: MessageKind::Ordinary,
         sequence,

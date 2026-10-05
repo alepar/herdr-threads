@@ -16,7 +16,7 @@ impl Clock for TestClock {
 }
 fn claim() -> CallerClaim {
     CallerClaim {
-        instance: "instance".into(),
+        instance: "00000000-0000-0000-0000-0000000000b1".into(),
         seat: SeatId::new("sender"),
         binding_generation: 1,
         role: CallerRole::TopLevel,
@@ -71,6 +71,19 @@ impl LocalClient for Client {
         self.call(c, b)
     }
     fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        if let Command::BeginHandoff(q) | Command::CompleteHandoff(q) = &command {
+            return Ok(CommandResult::Handoff(
+                crate::protocol::handoff::HandoffResult {
+                    compound: q.identity.compound.clone(),
+                    thread: Some(ThreadId::new("t1")),
+                    state: if matches!(command, Command::CompleteHandoff(_)) {
+                        crate::protocol::handoff::HandoffState::Completed
+                    } else {
+                        crate::protocol::handoff::HandoffState::Live
+                    },
+                },
+            ));
+        }
         if let Command::Directory(query) = &command {
             assert_eq!(query.membership, Some(claim().seat));
             assert_eq!(
@@ -146,6 +159,7 @@ impl LocalClient for Client {
 struct Launcher {
     preflights: usize,
     starts: usize,
+    submitted_argv: Vec<String>,
     refuse: bool,
     confirmed_refusal: bool,
     unknown: bool,
@@ -174,6 +188,7 @@ impl HandoffLauncher for Launcher {
         if self.refuse {
             return Err(ApiError::new(ErrorCode::TargetUnsafe, "occupied").into());
         }
+        self.submitted_argv = request.argv.clone();
         gate(true)?;
         if self.confirmed_refusal {
             gate(false)?;
@@ -211,7 +226,7 @@ fn reference(journal: &Journal) -> IntentRef {
 }
 fn scope() -> IntentScope {
     IntentScope::Cooperative {
-        instance: "instance".into(),
+        instance: "00000000-0000-0000-0000-0000000000b1".into(),
         seat: SeatId::new("sender"),
     }
 }
@@ -364,7 +379,7 @@ fn handoff_broken_output_replays_report_without_relaunch_or_wrong_scope() {
     );
     let reference = reference(&journal);
     let wrong = IntentScope::Cooperative {
-        instance: "instance".into(),
+        instance: "00000000-0000-0000-0000-0000000000b1".into(),
         seat: SeatId::new("other"),
     };
     assert!(
@@ -603,4 +618,530 @@ fn handoff_crash_after_native_start_before_result_never_repeats_start() {
         Err(RunError::Exit(5))
     ));
     assert_eq!(launcher.starts, 1);
+}
+
+// The launched recipient must use its own startup proof, while journal replay
+// retains the sender's exact durable target and the frozen task channel.
+#[test]
+fn handoff_bootstrap_prefers_recipient_hook_commands_and_replays_exact_fallback() {
+    let (_temp, journal) = journal();
+    let client = Client::new(Some("send"));
+    let mut launcher = Launcher::default();
+    let pinned = OutputSpec {
+        context: crate::protocol::output::ContinuationContext {
+            state_dir: Some("/tmp/handoff state".into()),
+            host: Some("/tmp/handoff.sock".into()),
+        },
+        ..OutputSpec::default()
+    };
+    assert!(
+        start(
+            &journal,
+            request(),
+            claim(),
+            "bob",
+            &client,
+            &mut launcher,
+            &TestClock,
+            &pinned,
+            &mut Vec::new(),
+        )
+        .is_err()
+    );
+    let reference = reference(&journal);
+    let before = journal.load(&reference).unwrap();
+    resume(
+        &journal,
+        &reference,
+        &scope(),
+        &client,
+        &mut launcher,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let prompt = launcher.submitted_argv.last().unwrap();
+    assert!(
+        prompt.starts_with("Expected handoff command routing (JSON data): "),
+        "{prompt}"
+    );
+    assert!(
+        prompt.lines().next().unwrap().ends_with("null"),
+        "unknown paths require exact fallback"
+    );
+    let fallback = prompt
+        .split_once("Otherwise use the exact fallback:")
+        .unwrap()
+        .1;
+    assert!(
+        fallback.contains(
+            "herdr-threads --state-dir '/tmp/handoff state' --host-endpoint /tmp/handoff.sock inbox"
+        ),
+        "{fallback}"
+    );
+    assert!(fallback.contains("herdr-threads --state-dir '/tmp/handoff state' --host-endpoint /tmp/handoff.sock read t1"), "{fallback}");
+    assert!(!prompt.contains("secret durable task"));
+    assert!(
+        matches!(before.semantic, SemanticMutation::Frozen { mutation, .. }
+        if matches!(mutation.as_ref(), SemanticMutation::Handoff(plan) if plan.context == pinned.context))
+    );
+}
+
+// A handoff's expected routing is derived from its frozen claim and durable
+// pair, never from whichever startup hook happens to emit ordinary commands.
+#[test]
+fn handoff_bootstrap_binds_hook_preference_to_frozen_expected_instance_and_pair() {
+    let (_temp, journal) = journal();
+    let state = journal.root().parent().unwrap().join("state");
+    fs::create_dir(&state).unwrap();
+    let host = state.parent().unwrap().join("herdr.sock");
+    let context = crate::protocol::output::ContinuationContext {
+        state_dir: Some(state.display().to_string()),
+        host: Some(host.display().to_string()),
+    };
+    let client = Client::new(Some("send"));
+    let mut launcher = Launcher::default();
+    let output = OutputSpec {
+        context: context.clone(),
+        ..OutputSpec::default()
+    };
+    assert!(
+        start(
+            &journal,
+            request(),
+            claim(),
+            "bob",
+            &client,
+            &mut launcher,
+            &TestClock,
+            &output,
+            &mut Vec::new()
+        )
+        .is_err()
+    );
+    resume(
+        &journal,
+        &reference(&journal),
+        &scope(),
+        &client,
+        &mut launcher,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let prompt = launcher.submitted_argv.last().unwrap();
+    let record = prompt
+        .lines()
+        .find_map(|line| line.strip_prefix("Expected handoff command routing (JSON data): "))
+        .expect("bootstrap must identify its expected hook group");
+    let expected: serde_json::Value = serde_json::from_str(record).unwrap();
+    assert_eq!(
+        expected,
+        serde_json::json!({"instance":"00000000-0000-0000-0000-0000000000b1", "state_dir":state.display().to_string(), "host_endpoint":host.display().to_string()})
+    );
+}
+struct FencedClient {
+    inner: Client,
+    terminal: std::sync::atomic::AtomicBool,
+    events: std::sync::Arc<Mutex<Vec<&'static str>>>,
+}
+impl LocalClient for FencedClient {
+    fn call_with_output(
+        &self,
+        c: Command,
+        _: &OutputSpec,
+        b: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.call(c, b)
+    }
+    fn call(&self, c: Command, b: &CallBudget) -> Result<CommandResult, ApiError> {
+        use crate::protocol::handoff::{HandoffResult, HandoffState};
+        match c {
+            Command::BeginHandoff(q) => {
+                self.events.lock().unwrap().push("begin");
+                Ok(CommandResult::Handoff(HandoffResult {
+                    compound: q.identity.compound,
+                    thread: Some(ThreadId::new("t1")),
+                    state: if self.terminal.load(std::sync::atomic::Ordering::Relaxed) {
+                        HandoffState::Completed
+                    } else {
+                        HandoffState::Live
+                    },
+                }))
+            }
+            Command::CompleteHandoff(q) => {
+                let mut events = self.events.lock().unwrap();
+                assert_eq!(events.last(), Some(&"flush"));
+                events.push("complete");
+                self.terminal
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                Ok(CommandResult::Handoff(HandoffResult {
+                    compound: q.identity.compound,
+                    thread: Some(ThreadId::new("t1")),
+                    state: HandoffState::Completed,
+                }))
+            }
+            c => {
+                assert_eq!(
+                    self.events.lock().unwrap().first(),
+                    Some(&"begin"),
+                    "durable Begin precedes child effects"
+                );
+                self.inner.call(c, b)
+            }
+        }
+    }
+}
+struct Output {
+    events: std::sync::Arc<Mutex<Vec<&'static str>>>,
+    fail_flush: bool,
+}
+impl Write for Output {
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        if self.fail_flush {
+            return Err(io::Error::other("flush failed"));
+        }
+        self.events.lock().unwrap().push("flush");
+        Ok(())
+    }
+}
+fn selected_context(journal: &Journal) -> crate::protocol::output::ContinuationContext {
+    let root = journal.root().parent().unwrap();
+    crate::protocol::output::ContinuationContext {
+        state_dir: Some(root.to_string_lossy().into_owned()),
+        host: Some(root.join("host.sock").to_string_lossy().into_owned()),
+    }
+}
+fn frozen(journal: &Journal) -> IntentRef {
+    frozen_in(journal, selected_context(journal))
+}
+fn frozen_in(
+    journal: &Journal,
+    context: crate::protocol::output::ContinuationContext,
+) -> IntentRef {
+    journal
+        .record(
+            scope(),
+            SemanticMutation::freeze(
+                SemanticMutation::Handoff(Box::new(HandoffPlan {
+                    request: request(),
+                    context,
+                    recipient: SeatId::new("recipient"),
+                    create_key: OperationId::new("create"),
+                    invite_key: OperationId::new("invite"),
+                    send_key: OperationId::new("send"),
+                })),
+                claim(),
+            )
+            .unwrap(),
+            0,
+        )
+        .unwrap()
+}
+#[test]
+fn handoff_fenced_begin_precedes_effects_complete_follows_successful_flush() {
+    for fail_flush in [true, false] {
+        let (_temp, journal) = journal();
+        let reference = frozen(&journal);
+        let events = std::sync::Arc::new(Mutex::new(vec![]));
+        let client = FencedClient {
+            inner: Client::new(None),
+            terminal: false.into(),
+            events: events.clone(),
+        };
+        let mut launcher = Launcher::default();
+        let mut output = Output { events, fail_flush };
+        let result = resume(
+            &journal,
+            &reference,
+            &scope(),
+            &client,
+            &mut launcher,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut output,
+        );
+        if fail_flush {
+            assert!(result.is_err());
+            assert!(!client.terminal.load(std::sync::atomic::Ordering::Relaxed));
+            assert!(journal.load(&reference).is_ok());
+        } else {
+            result.unwrap();
+            assert!(client.terminal.load(std::sync::atomic::Ordering::Relaxed));
+            assert!(journal.load(&reference).is_err());
+        }
+    }
+}
+#[test]
+fn handoff_fenced_terminal_retry_only_reprints_and_cleans_retained_intent() {
+    let (_temp, journal) = journal();
+    let reference = frozen(&journal);
+    let events = std::sync::Arc::new(Mutex::new(vec![]));
+    let client = FencedClient {
+        inner: Client::new(None),
+        terminal: true.into(),
+        events: events.clone(),
+    };
+    let mut launcher = Launcher::default();
+    let mut output = Output {
+        events,
+        fail_flush: false,
+    };
+    save(
+        &journal,
+        &reference,
+        &Progress {
+            thread: Some(ThreadId::new("t1")),
+            launch: Some(serde_json::json!({"outcome":"started"})),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    resume(
+        &journal,
+        &reference,
+        &scope(),
+        &client,
+        &mut launcher,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut output,
+    )
+    .unwrap();
+    assert!(client.inner.calls.lock().unwrap().is_empty());
+    assert_eq!(launcher.starts, 0);
+    assert_eq!(&*client.events.lock().unwrap(), &["begin", "flush"]);
+    assert!(journal.load(&reference).is_err());
+}
+#[test]
+fn handoff_fenced_early_terminal_retry_uses_frozen_selection_without_live_inspection() {
+    for pane in ["w1:p1", "w9:p9"] {
+        let (_temp, journal) = journal();
+        let reference = frozen(&journal);
+        let events = std::sync::Arc::new(Mutex::new(vec![]));
+        let client = FencedClient {
+            inner: Client::new(None),
+            terminal: true.into(),
+            events: events.clone(),
+        };
+        let mut output = Output {
+            events,
+            fail_flush: false,
+        };
+        save(
+            &journal,
+            &reference,
+            &Progress {
+                thread: Some(ThreadId::new("t1")),
+                launch: Some(serde_json::json!({"outcome":"started"})),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let parsed = crate::cli::commands::parse_argv(["ht", "retry", "local:1"]).unwrap();
+        let result = try_completed_retry(
+            &parsed,
+            &journal,
+            &claim().instance,
+            Some(pane),
+            &selected_context(&journal),
+            &client,
+            &TestClock,
+            &mut output,
+        );
+        if pane == "w1:p1" {
+            assert!(
+                result.unwrap(),
+                "terminal cleanup must precede current SeatInspect/generation guards"
+            );
+            assert!(journal.load(&reference).is_err());
+        } else {
+            assert!(result.is_err());
+            assert!(client.events.lock().unwrap().is_empty());
+            assert!(journal.load(&reference).is_ok());
+        }
+    }
+}
+#[test]
+fn handoff_fenced_early_live_alias_defers_without_calls_or_refusal() {
+    let (_temp, journal) = journal();
+    let reference = frozen(&journal);
+    let events = std::sync::Arc::new(Mutex::new(vec![]));
+    let client = FencedClient {
+        inner: Client::new(None),
+        terminal: false.into(),
+        events: events.clone(),
+    };
+    let mut output = Output {
+        events,
+        fail_flush: false,
+    };
+    let mut parsed = crate::cli::commands::parse_argv(["ht", "retry", "local:1"]).unwrap();
+    parsed.cooperative = Some(crate::cli::commands::CooperativeSelection {
+        seat: claim().seat,
+        target: HostTargetId::new("worker-name"),
+        harness: crate::harness::context::Harness::Human,
+        role: crate::harness::context::Role::TopLevel,
+    });
+    parsed.cooperative_selector = Some(crate::cli::panes::PaneSelector {
+        pane: Some("worker-name".into()),
+        ..Default::default()
+    });
+    assert!(
+        !try_completed_retry(
+            &parsed,
+            &journal,
+            &claim().instance,
+            None,
+            &selected_context(&journal),
+            &client,
+            &TestClock,
+            &mut output
+        )
+        .expect("unresolved locator must reach normal pane resolver")
+    );
+    assert!(client.events.lock().unwrap().is_empty());
+    assert!(journal.load(&reference).is_ok());
+}
+#[test]
+fn handoff_fenced_early_namespace_alias_is_canonical_but_copied_uuid_is_not() {
+    for foreign in [false, true] {
+        let (temp, journal) = journal();
+        let alias = temp.0.join("alias");
+        std::os::unix::fs::symlink(&temp.0, &alias).unwrap();
+        let context = crate::protocol::output::ContinuationContext {
+            state_dir: Some(alias.to_string_lossy().into_owned()),
+            host: Some(alias.join("host.sock").to_string_lossy().into_owned()),
+        };
+        let reference = frozen_in(&journal, context);
+        let mut current = selected_context(&journal);
+        if foreign {
+            let root = temp.0.join("other");
+            fs::create_dir(&root).unwrap();
+            current.state_dir = Some(root.to_string_lossy().into_owned());
+        }
+        let events = std::sync::Arc::new(Mutex::new(vec![]));
+        let client = FencedClient {
+            inner: Client::new(None),
+            terminal: true.into(),
+            events: events.clone(),
+        };
+        let mut output = Output {
+            events,
+            fail_flush: false,
+        };
+        save(
+            &journal,
+            &reference,
+            &Progress {
+                thread: Some(ThreadId::new("t1")),
+                launch: Some(serde_json::json!({"outcome":"started"})),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let parsed = crate::cli::commands::parse_argv(["ht", "retry", "local:1"]).unwrap();
+        let result = try_completed_retry(
+            &parsed,
+            &journal,
+            &claim().instance,
+            Some("w1:p1"),
+            &current,
+            &client,
+            &TestClock,
+            &mut output,
+        );
+        if foreign {
+            assert!(result.is_err());
+            assert!(client.events.lock().unwrap().is_empty());
+            assert!(journal.load(&reference).is_ok());
+        } else {
+            assert!(result.expect("canonical alias selects same full instance pair"));
+            assert!(journal.load(&reference).is_err());
+        }
+    }
+}
+#[test]
+fn handoff_fenced_complete_survives_local_removal_failure_then_cleanup_only_retry() {
+    use std::os::unix::fs::PermissionsExt;
+    struct RemovalFailure {
+        inner: Output,
+        root: std::path::PathBuf,
+    }
+    impl Write for RemovalFailure {
+        fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+            self.inner.write(b)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.inner.flush()?;
+            fs::set_permissions(&self.root, fs::Permissions::from_mode(0o500))
+        }
+    }
+    impl Drop for RemovalFailure {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700));
+        }
+    }
+    let (_temp, journal) = journal();
+    let reference = frozen(&journal);
+    let events = std::sync::Arc::new(Mutex::new(vec![]));
+    let client = FencedClient {
+        inner: Client::new(None),
+        terminal: false.into(),
+        events: events.clone(),
+    };
+    let mut launcher = Launcher::default();
+    {
+        let mut output = RemovalFailure {
+            inner: Output {
+                events: events.clone(),
+                fail_flush: false,
+            },
+            root: journal.root().to_owned(),
+        };
+        assert!(
+            resume(
+                &journal,
+                &reference,
+                &scope(),
+                &client,
+                &mut launcher,
+                &TestClock,
+                &OutputSpec::default(),
+                &mut output
+            )
+            .is_err()
+        );
+        assert!(
+            client.terminal.load(std::sync::atomic::Ordering::Relaxed),
+            "Complete commits before failed local removal"
+        );
+    }
+    assert!(journal.load(&reference).is_ok());
+    client.inner.calls.lock().unwrap().clear();
+    events.lock().unwrap().clear();
+    let mut output = Output {
+        events: events.clone(),
+        fail_flush: false,
+    };
+    resume(
+        &journal,
+        &reference,
+        &scope(),
+        &client,
+        &mut launcher,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut output,
+    )
+    .unwrap();
+    assert_eq!(launcher.starts, 1);
+    assert!(client.inner.calls.lock().unwrap().is_empty());
+    assert_eq!(&*events.lock().unwrap(), &["begin", "flush"]);
+    assert!(journal.load(&reference).is_err());
 }

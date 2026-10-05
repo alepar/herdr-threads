@@ -16,6 +16,7 @@
 //!   spacing between wake attempts.
 //! - `"wake_batch_delay_ms"` (default 0, zero disables): initial
 //!   ordinary attention batching, separate from retry spacing.
+//! - `"auto_archive_after_ms"` (default 3600000, zero disables): quiet-channel grace.
 //! - `"summary"`: thread summary, catch-up and soft-deadline poke settings
 //!   (`crate::protocol::summary::SummarySettings`; every key optional,
 //!   unknown keys rejected, validated by `ServiceConfig::from_settings`).
@@ -46,6 +47,8 @@ pub struct InstanceSettings {
     pub receipt_default_ms: u64,
     pub minimum_wake_delay_ms: u64,
     pub wake_batch_delay_ms: u64,
+    #[serde(rename = "auto_archive_after_ms")]
+    pub archive_after_ms: u64,
     pub summary: crate::protocol::summary::SummarySettings,
 }
 
@@ -57,6 +60,7 @@ impl Default for InstanceSettings {
             receipt_default_ms: DEFAULT_RECEIPT_MS,
             minimum_wake_delay_ms: DEFAULT_MINIMUM_WAKE_DELAY_MS,
             wake_batch_delay_ms: DEFAULT_WAKE_BATCH_DELAY_MS,
+            archive_after_ms: crate::store::archival::DEFAULT_AFTER_MS,
             summary: crate::protocol::summary::SummarySettings::default(),
         }
     }
@@ -264,5 +268,29 @@ mod tests {
         let text = load(dir.path()).unwrap_err().to_string();
         assert!(text.contains(SETTINGS_FILE), "{text}");
         assert!(text.contains("invalid minimum wake spacing"), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod archival_tests {
+    #[test]
+    fn archival_setting_defaults_to_one_hour_zero_disables_and_overflow_refuses() {
+        let defaults = super::parse(b"{}").unwrap();
+        assert_eq!(
+            crate::service::config::ServiceConfig::from_settings(&defaults)
+                .unwrap()
+                .archive_after_ms(),
+            3_600_000
+        );
+        let off = super::parse(br#"{"auto_archive_after_ms":0}"#).unwrap();
+        assert_eq!(
+            crate::service::config::ServiceConfig::from_settings(&off)
+                .unwrap()
+                .archive_after_ms(),
+            0
+        );
+        let invalid = super::parse(br#"{"auto_archive_after_ms":18446744073709551615}"#).unwrap();
+        assert!(crate::service::config::ServiceConfig::from_settings(&invalid).is_err());
+        assert!(super::parse(br#"{"auto_archive_after_ms":-1}"#).is_err());
     }
 }

@@ -1,0 +1,9 @@
+{
+  "findings": [
+    {
+      "key": "[Should-fix] src/store/summary.rs:1388",
+      "disposition": "punch-list",
+      "reason": "Punch-list \u2014 bounded cleanup of completed worker snapshots is a storage quality improvement; the goal requires correct human-intent attribution, summary lifetime and cross-chunk visibility, and does not name post-replay snapshot retention bounds."
+    }
+  ]
+}

@@ -106,6 +106,16 @@ impl PausedHost {
     }
 }
 impl HostPort for PausedHost {
+    fn observe_current_target_for_archival(
+        &self,
+        _: &herdr_threads::protocol::ids::HostTargetId,
+        _: &herdr_threads::ports::HostCallContext,
+    ) -> Result<herdr_threads::ports::ComposerObservation, herdr_threads::protocol::results::ApiError>
+    {
+        Err(herdr_threads::protocol::results::ApiError::unsupported(
+            "test adapter has no composer-aware archival observation",
+        ))
+    }
     fn native_launch_capability(&self) -> herdr_threads::ports::NativeLaunchCapability {
         herdr_threads::ports::NativeLaunchCapability::Unsupported
     }
@@ -319,7 +329,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         for (key, claim) in [("claim-service-author", service_claim), ("claim-built-in-author", builtin_claim)] {
             let denied = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::SendMessage(SendMessage {
                 thread: thread.clone(), body: "forged authority".into(), invited_recipients: vec![],
-                deadline_millis: None, operation: OperationId::new(key), claim, relays_user: false,
+                deadline_millis: None, operation: OperationId::new(key), claim, relays_user: false, user_intent: None,
             }), &budget())).join().unwrap()).unwrap_err();
             assert_eq!(denied.code, ErrorCode::CallerUnverified, "{key}: {}", denied.detail);
             let staged: i64 = db.query_row("SELECT count(*) FROM operations WHERE operation_key=?1", [key], |row| row.get(0)).unwrap();
@@ -392,7 +402,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         let CommandResult::CheckedIn(checked_recipient) = checked_recipient else { panic!("missing recipient check-in") };
         let sent = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::SendMessage(SendMessage {
             thread: thread.clone(), body: "native system mail".into(), invited_recipients: vec![],
-            deadline_millis: None, operation: OperationId::new("native-system-send"), claim: native.clone(), relays_user: false,
+            deadline_millis: None, operation: OperationId::new("native-system-send"), claim: native.clone(), relays_user: false, user_intent: None,
         }), &budget())).join().unwrap()).unwrap();
         let CommandResult::MessageSent(sent) = sent else { panic!("missing system message") };
         let (kind, actor, author_kind, author_service): (String, Option<String>, Option<String>, Option<String>) = db.query_row("SELECT kind,actor_seat_id,author_kind,author_service_id FROM messages WHERE id=?1", [sent.as_str()], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).unwrap();

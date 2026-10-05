@@ -107,6 +107,9 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                             message,
                             sequence,
                             sender,
+                            author_role,
+                            relays_user,
+                            user_intent,
                             body,
                             body_start,
                             body_end,
@@ -114,11 +117,17 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                             ..
                         } => {
                             out.push_str(&format!(
-                                "message {} {}#{} from {} bytes {}..{}/{}: {}\n",
+                                "message {} {}#{} from {}{} bytes {}..{}/{}: {}\n",
                                 message.as_str(),
                                 thread.as_str(),
                                 sequence,
                                 sender.as_ref().map_or("service", |s| s.as_str()),
+                                crate::protocol::results::author_markers(
+                                    MessageKind::Ordinary,
+                                    *author_role,
+                                    *relays_user,
+                                    *user_intent,
+                                ),
                                 body_start,
                                 body_end,
                                 body_len,
@@ -753,6 +762,7 @@ fn message_body(details: &MessageDetails, out: &mut String) {
             body_next_argv,
             ..
         } => {
+            out.push_str(&summary.author_markers());
             let end = body_offset + body_data.len() as u64;
             if *body_offset > 0 || !body_complete {
                 out.push_str(&format!(" bytes={body_offset}-{end}/{body_total_bytes}"));
@@ -837,6 +847,10 @@ mod inbox_batch_tests {
                     message: MessageId::new("full-message-id"),
                     sequence: 1,
                     sender: None,
+                    author_role: None,
+                    relays_user: false,
+                    user_intent: None,
+                    author_role_backfilled: false,
                     body: "part".into(),
                     body_start: 0,
                     body_end: 4,

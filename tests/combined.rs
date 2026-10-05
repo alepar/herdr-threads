@@ -9,10 +9,18 @@
 //! changes process-wide state gets its own `[[test]]` target instead, like
 //! `hook_entrypoint`, `integration`, `package` and `service`.
 
+#[path = "store/archival_legacy.rs"]
+mod archival_legacy;
+#[path = "store/archival_worker.rs"]
+mod archival_worker;
 #[path = "canary_manifest_writer.rs"]
 mod canary_manifest_writer;
+#[path = "store/channel_archival.rs"]
+mod channel_archival;
 #[path = "contracts.rs"]
 mod contracts;
+#[path = "store/handoff_fences.rs"]
+mod handoff_fences;
 #[path = "host_adapter.rs"]
 mod host_adapter;
 #[path = "lifecycle_ux.rs"]

@@ -372,6 +372,7 @@ fn cooperative_send_uses_claim_context_and_keeps_exact_replay() {
         deadline_millis: None,
         operation: OperationId::new("send"),
         relays_user: false,
+        user_intent: None,
     };
     loop {
         match store
@@ -1377,6 +1378,7 @@ fn independent_current_and_issuance_budgets_stop_accountable_sqlite_waits() {
                         deadline_millis: None,
                         operation: OperationId::new("send"),
                         relays_user: false,
+                        user_intent: None,
                     };
                     loop {
                         match store

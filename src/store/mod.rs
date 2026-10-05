@@ -1,9 +1,11 @@
 //! SQLite-backed production store dispatch.
+pub mod archival;
 pub mod attention;
 pub mod catch_up;
 pub mod connection;
 pub mod control;
 pub mod effective;
+pub mod handoff;
 pub mod harness_evidence;
 pub mod invitation_due;
 pub mod materialization;
@@ -1202,6 +1204,30 @@ fn wake_candidates_page(
 }
 
 impl StorePort for SqliteStore {
+    fn archival_pass(
+        &self,
+        runtime: &archival::Runtime,
+        hints: &[crate::archival_legacy::Hint],
+        budget: &CallBudget,
+    ) -> Result<archival::Progress, ApiError> {
+        archival::store_pass(self, runtime, hints, budget)
+    }
+    fn archival_next(
+        &self,
+        runtime: &archival::Runtime,
+        budget: &CallBudget,
+    ) -> Result<archival::ObservationWork, ApiError> {
+        archival::store_next(self, runtime, budget)
+    }
+    fn archival_sample(
+        &self,
+        runtime: &archival::Runtime,
+        ticket: &archival::ObservationTicket,
+        sample: Option<&crate::ports::ComposerObservation>,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        archival::store_sample(self, runtime, ticket, sample, budget)
+    }
     fn clock(&self) -> &dyn Clock {
         self.context.clock()
     }
@@ -1454,6 +1480,12 @@ impl StorePort for SqliteStore {
                 ErrorCode::InvalidRequest,
                 "check-in requires verified registration and read context",
             )),
+            PermitMutation::BeginHandoff(v) => {
+                handoff::mutate(&self.context, &mut writer, budget, &v, permit, false)
+            }
+            PermitMutation::CompleteHandoff(v) => {
+                handoff::mutate(&self.context, &mut writer, budget, &v, permit, true)
+            }
             PermitMutation::CreateThread(v) => {
                 control::create_thread(&self.context, &mut writer, budget, &v, permit)
             }
@@ -2684,6 +2716,20 @@ pub fn cooperative_permit_request(
             ObligationRef::CheckIn(v.claim.seat.clone()),
             schema::canonical_digest(&seats::check_in_payload(v))?,
             Some(v.mode),
+        ),
+        PermitMutation::BeginHandoff(v) => (
+            v.identity.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.identity.claim.seat.clone()),
+            control::cooperative_payload_hash("begin_handoff", v)?,
+            None,
+        ),
+        PermitMutation::CompleteHandoff(v) => (
+            v.identity.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.identity.claim.seat.clone()),
+            control::cooperative_payload_hash("complete_handoff", v)?,
+            None,
         ),
         PermitMutation::CreateThread(v) => (
             v.claim.clone(),

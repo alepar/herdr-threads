@@ -912,6 +912,14 @@ fn startup_offer(
     instruction: &str,
     threads: &[String],
 ) -> (String, OverviewRows, AttentionDigest, Vec<String>) {
+    startup_offer_with_topic(instruction, threads, None)
+}
+
+fn startup_offer_with_topic(
+    instruction: &str,
+    threads: &[String],
+    topic: Option<&str>,
+) -> (String, OverviewRows, AttentionDigest, Vec<String>) {
     use crate::protocol::{
         ids::ThreadId,
         pagination::{Consistency, Page, StopReason},
@@ -925,9 +933,14 @@ fn startup_offer(
                 name: None,
                 thread: ThreadId::new(thread.clone()),
                 managed_owner: None,
-                topic_data: format!(
-                    "ht native demo ht-demo-claude-20260929T234009-{}",
-                    &thread[7..13]
+                topic_data: topic.map_or_else(
+                    || {
+                        format!(
+                            "ht native demo ht-demo-claude-20260929T234009-{}",
+                            &thread[7..13]
+                        )
+                    },
+                    str::to_owned,
                 ),
                 topic_omitted: false,
                 topic_detail_argv: None,
@@ -4339,4 +4352,496 @@ fn child_lifecycle_codex_subagentstart_keeps_guidance_without_skill_pointer() {
         !context.contains(crate::cli::skill::HOOK_SKILL_HINT),
         "{context}"
     );
+}
+
+// A concise startup must explain the recipient-local proof in the trusted
+// instruction section, and must never grant the native permission decision.
+#[test]
+fn concise_native_context_explains_verified_recipient_routing() {
+    let (dir, pane) = scratch_pane();
+    let state = default_state(&dir);
+    let host = dir.join("herdr.sock");
+    let instruction = render_context(Role::TopLevel, &[], true).unwrap();
+    for (target, concise) in [(&state, true), (&dir.join("private"), false)] {
+        let selectors = pane_selectors(Some(target), Some(&host), &pane);
+        let prefix = cli_prefix(&selectors);
+        let fallback = [
+            prefix.clone(),
+            vec!["inbox".into(), "--seat".into(), "seat-1".into()],
+        ]
+        .concat();
+        let actions = next_actions(&prefix, None);
+        let routing = CommandRouting::from_context(
+            "00000000-0000-0000-0000-0000000000a1",
+            &ContinuationContext {
+                state_dir: Some(target.display().to_string()),
+                host: Some(host.display().to_string()),
+            },
+        );
+        let encoded = encode_native_for_routing(
+            &event(CLAUDE_START),
+            instruction.as_bytes(),
+            &fallback,
+            None,
+            Some(&actions),
+            None,
+            None,
+            routing.as_ref(),
+        );
+        let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        let context = additional_context(&encoded);
+        let fixed = context.split("untrusted_peer_data:").next().unwrap();
+        assert_eq!(fixed.contains("verified that ordinary commands in this pane reach this command group's state directory and host endpoint"), concise, "{fixed}");
+        assert!(
+            value["hookSpecificOutput"]
+                .get("permissionDecision")
+                .is_none()
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn stored_commands_require_both_selectors_and_flag_free_recipient_proof() {
+    let (dir, pane) = scratch_pane();
+    let state = default_state(&dir);
+    let host = dir.join("herdr.sock");
+    let target = ContinuationContext {
+        state_dir: Some(state.display().to_string()),
+        host: Some(host.display().to_string()),
+    };
+    let mut pinned = cli_prefix(&target);
+    pinned.extend([
+        "--json".into(),
+        "warnings".into(),
+        "--cursor".into(),
+        "exact-cursor".into(),
+    ]);
+    assert_eq!(
+        recipient_argv(&pinned, &target, &pane),
+        [
+            "herdr-threads",
+            "--json",
+            "warnings",
+            "--cursor",
+            "exact-cursor"
+        ]
+    );
+    let mut flags_only_match = pane.clone();
+    flags_only_match.env_state = Some(dir.join("other-state"));
+    flags_only_match.state_flag = Some(state.clone());
+    flags_only_match.host_flag = Some(host.clone());
+    assert_eq!(recipient_argv(&pinned, &target, &flags_only_match), pinned);
+    for incomplete in [
+        vec![
+            "herdr-threads",
+            "--state-dir",
+            state.to_str().unwrap(),
+            "warnings",
+            "--cursor",
+            "exact-cursor",
+        ],
+        vec![
+            "herdr-threads",
+            "--host-endpoint",
+            host.to_str().unwrap(),
+            "warnings",
+            "--cursor",
+            "exact-cursor",
+        ],
+        vec![
+            "herdr-threads",
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--host-endpoint",
+            host.to_str().unwrap(),
+            "warnings",
+        ],
+    ] {
+        let original: Vec<String> = incomplete.into_iter().map(str::to_owned).collect();
+        assert_eq!(recipient_argv(&original, &target, &pane), original);
+    }
+    // Resolve a directory alias and a socket through its aliased parent;
+    // do not require a listening socket for canonical endpoint identity.
+    std::os::unix::fs::symlink(&dir, dir.join("alias")).unwrap();
+    let alias = ContinuationContext {
+        state_dir: Some(
+            dir.join("alias/home/.local/state/herdr/plugins/herdr-threads")
+                .display()
+                .to_string(),
+        ),
+        host: Some(dir.join("alias/herdr.sock").display().to_string()),
+    };
+    assert_eq!(
+        recipient_argv(&pinned, &alias, &pane),
+        [
+            "herdr-threads",
+            "--json",
+            "warnings",
+            "--cursor",
+            "exact-cursor"
+        ]
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+// Both real owned installations are allowed on one native config and host.
+// The A group must identify A even though its ordinary commands are verified;
+// B's handoff can choose only B's exact group, which remains pinned here.
+#[test]
+fn two_installed_state_targets_share_endpoint_but_have_distinct_command_routing_groups() {
+    use crate::harness::setup::{SettingsKind, install_user_settings};
+    let (dir, pane) = scratch_pane();
+    let state_a = default_state(&dir);
+    let state_b = dir.join("private-b");
+    std::fs::create_dir(&state_b).unwrap();
+    let host = dir.join("herdr.sock");
+    let config = dir.join("settings.json");
+    std::fs::write(&config, b"{}").unwrap();
+    let instruction = render_context(Role::TopLevel, &[], true).unwrap();
+    let mut groups = Vec::new();
+    for (state, id) in [
+        (&state_a, "00000000-0000-0000-0000-0000000000a1"),
+        (&state_b, "00000000-0000-0000-0000-0000000000b1"),
+    ] {
+        let target = ContinuationContext {
+            state_dir: Some(state.display().to_string()),
+            host: Some(host.display().to_string()),
+        };
+        let mut hook_argv = cli_prefix(&target);
+        hook_argv.extend(["hook".into(), "claude".into()]);
+        install_user_settings(
+            SettingsKind::ClaudeUser,
+            &config,
+            &state.join("manifest.json"),
+            &hook_argv,
+            &std::fs::read(&config).unwrap(),
+        )
+        .unwrap();
+        let prefix = cli_prefix(&pane_selectors(Some(state), Some(&host), &pane));
+        let fallback = [
+            prefix.clone(),
+            vec!["inbox".into(), "--seat".into(), "seat-1".into()],
+        ]
+        .concat();
+        let actions = next_actions(&prefix, None);
+        let routing = CommandRouting::from_context(id, &target);
+        let encoded = encode_native_for_routing(
+            &event(CLAUDE_START),
+            instruction.as_bytes(),
+            &fallback,
+            None,
+            Some(&actions),
+            None,
+            None,
+            routing.as_ref(),
+        );
+        let text = additional_context(&encoded);
+        let record = text
+            .lines()
+            .find_map(|line| line.strip_prefix("Hook command routing (JSON data): "))
+            .expect("ready commands must be scoped to actual hook target");
+        let routing: serde_json::Value = serde_json::from_str(record).unwrap();
+        assert_eq!(
+            routing,
+            serde_json::json!({"instance":id, "state_dir":state.display().to_string(), "host_endpoint":host.display().to_string()})
+        );
+        groups.push(routing);
+    }
+    let config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+    assert_eq!(config["hooks"]["SessionStart"].as_array().unwrap().len(), 2);
+    let expected_b = serde_json::json!({"instance":"00000000-0000-0000-0000-0000000000b1", "state_dir":state_b.display().to_string(), "host_endpoint":host.display().to_string()});
+    assert_ne!(
+        groups[0], expected_b,
+        "a verified ordinary A group cannot supersede B"
+    );
+    assert_eq!(
+        groups[1], expected_b,
+        "B pinned group identifies the expected target"
+    );
+    let recipient_b = InstanceInputs {
+        env_state: Some(state_b.clone()),
+        ..pane.clone()
+    };
+    let selectors_b = pane_selectors(Some(&state_b), Some(&host), &recipient_b);
+    assert_eq!(cli_prefix(&selectors_b), ["herdr-threads"]);
+    let target_b = ContinuationContext {
+        state_dir: Some(state_b.display().to_string()),
+        host: Some(host.display().to_string()),
+    };
+    let b_routing =
+        CommandRouting::from_context("00000000-0000-0000-0000-0000000000b1", &target_b).unwrap();
+    assert_eq!(
+        serde_json::to_value(&b_routing).unwrap(),
+        expected_b,
+        "a verified ordinary B group matches the handoff"
+    );
+    let prefix_b = cli_prefix(&selectors_b);
+    let actions_b = next_actions(&prefix_b, None);
+    let fallback_b = [
+        prefix_b,
+        vec!["inbox".into(), "--seat".into(), "seat-1".into()],
+    ]
+    .concat();
+    let matching = additional_context(&encode_native_for_routing(
+        &event(CLAUDE_START),
+        instruction.as_bytes(),
+        &fallback_b,
+        None,
+        Some(&actions_b),
+        None,
+        None,
+        Some(&b_routing),
+    ));
+    let record = matching
+        .lines()
+        .find_map(|line| line.strip_prefix("Hook command routing (JSON data): "))
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(record).unwrap(),
+        expected_b
+    );
+    assert!(
+        matching.contains(
+            "- all pending: herdr-threads inbox; receipts: herdr-threads pending-receipts"
+        )
+    );
+    assert!(!matching.contains("--state-dir"));
+
+    let target_a = ContinuationContext {
+        state_dir: Some(state_a.display().to_string()),
+        host: Some(host.display().to_string()),
+    };
+    let same_uuid_other_pair =
+        CommandRouting::from_context("00000000-0000-0000-0000-0000000000b1", &target_a).unwrap();
+    assert_ne!(
+        serde_json::to_value(same_uuid_other_pair).unwrap(),
+        expected_b,
+        "UUID alone does not establish the exact target pair"
+    );
+    assert_ne!(groups[0], groups[1]);
+    assert_eq!(groups[0]["host_endpoint"], groups[1]["host_endpoint"]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn unresolved_or_oversized_routing_metadata_never_claims_a_matching_group() {
+    let (dir, pane) = scratch_pane();
+    let state = default_state(&dir);
+    let host = dir.join("herdr.sock");
+    let target = ContinuationContext {
+        state_dir: Some(state.display().to_string()),
+        host: Some(host.display().to_string()),
+    };
+    let missing = ContinuationContext {
+        host: None,
+        ..target.clone()
+    };
+    assert!(
+        CommandRouting::from_context("00000000-0000-0000-0000-0000000000a1", &missing).is_none()
+    );
+    assert!(CommandRouting::from_context("unknown", &target).is_none());
+    let long = CommandRouting {
+        instance: uuid::Uuid::nil(),
+        state_dir: "s".repeat(5000),
+        host_endpoint: "h".repeat(5000),
+    };
+    let instruction = render_context(Role::TopLevel, &[], true).unwrap();
+    let fallback = [
+        cli_prefix(&pane_selectors(Some(&state), Some(&host), &pane)),
+        vec!["inbox".into()],
+    ]
+    .concat();
+    let actions = next_actions(&["herdr-threads".into()], None);
+    for routing in [None, Some(&long)] {
+        let bytes = encode_native_for_routing(
+            &event(CLAUDE_START),
+            instruction.as_bytes(),
+            &fallback,
+            None,
+            Some(&actions),
+            None,
+            None,
+            routing,
+        );
+        let context = additional_context(&bytes);
+        assert!(context.len() <= MAX_CONTEXT);
+        assert_eq!(
+            context
+                .lines()
+                .find_map(|line| line.strip_prefix("Hook command routing (JSON data): ")),
+            Some("null")
+        );
+        assert!(!context.contains("The hook verified that ordinary commands"));
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            value["hookSpecificOutput"]
+                .get("permissionDecision")
+                .is_none()
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+// Optional handoff routing cannot evict pinned commands that fit without it,
+// including legal peer topics whose JSON representation is escaped twice.
+#[test]
+fn routing_metadata_yields_to_escaped_main_thread_commands() {
+    let instruction = render_context(Role::TopLevel, &[], true).unwrap();
+    let threads: Vec<String> = (0..6)
+        .map(|n| format!("thread-12345678-abcd-4000-8000-123456789ab{n}"))
+        .collect();
+    let (offer, overview, digest, _) =
+        startup_offer_with_topic(&instruction, &threads, Some(&"\"".repeat(120)));
+    let mut compared = 0;
+    for harness in [Harness::Claude, Harness::Codex] {
+        let mut ev = event(CLAUDE_START);
+        ev.harness = harness;
+        for depth in 0..450 {
+            let root = format!("/private/tmp/{}/state", "d".repeat(depth));
+            let prefix = prefix(&root);
+            let actions = next_actions(&prefix, Some(&digest));
+            let routing = CommandRouting {
+                instance: uuid::Uuid::parse_str("00000000-0000-0000-0000-0000000000a1").unwrap(),
+                state_dir: root,
+                host_endpoint: "/private/tmp/herdr.sock".to_owned(),
+            };
+            let encode = |routing| {
+                additional_context(&encode_native_for_routing(
+                    &ev,
+                    offer.as_bytes(),
+                    &prefix,
+                    Some(&digest.summary()),
+                    Some(&actions),
+                    Some(&overview),
+                    None,
+                    routing,
+                ))
+            };
+            let baseline = encode(None);
+            if actions
+                .items
+                .iter()
+                .take(actions.pinned)
+                .all(|line| baseline.contains(line))
+            {
+                compared += 1;
+                let routed = encode(Some(&routing));
+                assert!(routed.len() <= MAX_CONTEXT);
+                for line in actions.items.iter().take(actions.pinned) {
+                    assert!(
+                        routed.contains(line),
+                        "{harness:?} depth={depth} lost {line}: {routed}"
+                    );
+                }
+                let (_, peer) = routed.split_once("\nuntrusted_peer_data: ").unwrap();
+                let peer: String = serde_json::from_str(peer).unwrap();
+                assert!(peer.contains(&overview.rows[0]), "main row missing: {peer}");
+                if harness == Harness::Codex {
+                    assert!(routed.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE));
+                }
+            }
+        }
+    }
+    assert!(
+        compared > 100,
+        "the fixture did not cover the fitting boundary"
+    );
+}
+
+// Generic composition must deliver canonical routing through the registered Hermes
+// codec while preserving the immutable prepared mode and callback attribution.
+#[test]
+fn hermes_codec_keeps_canonical_routing_and_immutable_prepared_kind() {
+    use crate::harness::adapter::{AdmissionRequest, HookInput, InstallObservation};
+    let mut payload: serde_json::Value =
+        serde_json::from_slice(include_bytes!("../fixtures/hermes/envelopes.json")).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    payload["started_at"] = now.into();
+    payload["deadline_at"] = (now + 1200).into();
+    payload["observation_order"]["observed_at_millis"] = now.into();
+    let input = HookInput {
+        bytes: serde_json::to_vec(&payload).unwrap(),
+        registered_event: None,
+    };
+    let registry = crate::harness::registry::builtins();
+    let registration = registry.by_id(registry.agent("hermes").unwrap()).unwrap();
+    let budget = crate::protocol::time::CallBudget {
+        deadline: crate::protocol::time::MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let admitted = registration
+        .admit(
+            &AdmissionRequest {
+                installed: InstallObservation::Unavailable {
+                    diagnostic: "PATH observation is not callback admission".into(),
+                },
+                input: Some(HookInput {
+                    bytes: input.bytes.clone(),
+                    registered_event: None,
+                }),
+                runtime_candidate: None,
+            },
+            &budget,
+        )
+        .unwrap();
+    let decoded = registration.decode(&admitted, &input).unwrap();
+    let event = decoded.context_event().unwrap();
+    let (root, _) = scratch_pane();
+    let target = ContinuationContext {
+        state_dir: Some(root.display().to_string()),
+        host: Some(root.join("herdr.sock").display().to_string()),
+    };
+    let routing =
+        CommandRouting::from_context("00000000-0000-0000-0000-0000000000a1", &target).unwrap();
+    let standing = render_context(Role::TopLevel, &[], true).unwrap();
+    let context = compose_context(
+        &event,
+        &registration.output_policy(),
+        decoded.metadata.skill_pointer,
+        standing.as_bytes(),
+        &[],
+        None,
+        None,
+        None,
+        None,
+        Some(&routing),
+    );
+    let (bytes, consumes, diagnostic) = encode_prepared_result(
+        registration,
+        &admitted,
+        &decoded,
+        Some(EventKind::Clear),
+        context,
+    );
+    assert!(consumes, "{diagnostic:?}");
+    assert_eq!(diagnostic, None);
+    let output: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let context = output["context"].as_str().unwrap();
+    let line = context
+        .lines()
+        .find_map(|line| line.strip_prefix("Hook command routing (JSON data): "))
+        .unwrap();
+    let actual: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert_eq!(actual["instance"], "00000000-0000-0000-0000-0000000000a1");
+    assert_eq!(actual["state_dir"], routing.state_dir);
+    assert_eq!(actual["host_endpoint"], routing.host_endpoint);
+    assert!(context.contains("No permissions granted."));
+    assert_eq!(output["lifecycle_ack"]["mode"], "clear");
+    assert_eq!(output["lifecycle_ack"]["event_id"], "fixture-event");
+    assert_eq!(output["lifecycle_ack"]["session_id"], "fixture-session");
+    assert!(matches!(
+        decoded.intent,
+        crate::harness::adapter::EventIntent::QualifiedTurn(_)
+    ));
+    assert_eq!(decoded.event_id, "fixture-event");
+    assert_eq!(decoded.native_session.as_deref(), Some("fixture-session"));
+    assert!(bytes.len() <= 8192);
+    std::fs::remove_dir_all(root).unwrap();
 }

@@ -1688,6 +1688,7 @@ mod tests {
             )),
             author_role: Some(crate::protocol::summary::AuthorRole::Service),
             relays_user: false,
+            user_intent: None,
             author_role_backfilled: false,
             kind: crate::protocol::results::MessageKind::Ordinary,
             sequence: 4,

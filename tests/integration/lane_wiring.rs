@@ -344,7 +344,7 @@ pub(crate) fn kicks_since(s: &Session, from: usize) -> Vec<KickRecord> {
     s.probe.kick_log().split_off(from)
 }
 
-/// The production factory registers all five lanes with the commit-kick
+/// The production factory registers all registered lanes with the commit-kick
 /// registry the store's hooks kick through, and attaches each lane's Pacer to
 /// the `WorkerStatus` Health reads. A kick sent through the registry makes the
 /// lane thread itself finish a pass, so the registered Pacer is the one the
@@ -698,7 +698,7 @@ fn spawn_blocking_revoke_counts_as_request_origin() {
     runtime.block_on(client.disconnect());
 }
 
-/// With all five lanes running on the production worker set and nothing to do
+/// With all registered lanes running on the production worker set and nothing to do
 /// for 30 s: the per-origin counter shows no deadline, wake, request or
 /// admission-observer commit; the wake lane makes at most one pass per 5 s
 /// window; and retention (kicked every 5 s, since it has no commit-driven

@@ -103,7 +103,7 @@ fn join_hint_then_summary() {
             let bundle = fx.fetch(caller_c, &ticket);
             assert_eq!(bundle["status"], "bundle", "{bundle}");
             let submission = json!({
-                "submission_schema": 1,
+                "submission_schema": herdr_threads::protocol::summary::SUBMISSION_SCHEMA,
                 "narrative": format!("messages #{}-#{}", ticket.first, ticket.last),
                 "prompt_version": "integration-1",
                 "model": "scripted",

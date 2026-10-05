@@ -66,6 +66,7 @@ pub enum CommandResult {
     /// Local presentation of an immutable completed CheckIn fragment.
     #[serde(skip_deserializing)]
     CachedCheckInPage(crate::harness::cache::CachedCheckInPage),
+    Handoff(crate::protocol::handoff::HandoffResult),
     ThreadCreated(ThreadId),
     Invitation(InvitationId),
     AlreadyJoined(AlreadyJoined),
@@ -964,6 +965,14 @@ pub enum InboxBatchItem {
         message: MessageId,
         sequence: u64,
         sender: Option<SeatId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        author_role: Option<crate::protocol::summary::AuthorRole>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        relays_user: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_intent: Option<crate::protocol::summary::UserIntent>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        author_role_backfilled: bool,
         body: String,
         body_start: u64,
         body_end: u64,
@@ -1058,6 +1067,8 @@ pub struct ThreadDetails {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MessageSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_intent: Option<crate::protocol::summary::UserIntent>,
     pub message: MessageId,
     pub thread: ThreadId,
     pub author: Option<SeatId>,
@@ -1081,20 +1092,42 @@ pub struct MessageSummary {
     pub preview_detail_argv: Option<Vec<String>>,
 }
 impl MessageSummary {
-    /// Fixed-text authorship markers for renderers: `[human]` and/or
-    /// `[relays user]`, each preceded by one space; empty when neither applies.
-    /// Never derived from peer data.
+    /// Fixed source markers followed by independent recorded intent, each
+    /// preceded by one space. Ordinary messages only; never derived from text.
     pub fn author_markers(&self) -> String {
-        let mut markers = String::new();
-        if self.author_role == Some(crate::protocol::summary::AuthorRole::Human) {
-            markers.push_str(" [human]");
-        }
-        if self.relays_user {
-            markers.push_str(" [relays user]");
-        }
-        markers
+        author_markers(
+            self.kind,
+            self.author_role,
+            self.relays_user,
+            self.user_intent,
+        )
     }
 }
+
+/// Shared fixed-text message markers for transcripts, bodies and bundles.
+/// Source claims and intent are independent; events retain their event form.
+pub(crate) fn author_markers(
+    kind: MessageKind,
+    author_role: Option<crate::protocol::summary::AuthorRole>,
+    relays_user: bool,
+    user_intent: Option<crate::protocol::summary::UserIntent>,
+) -> String {
+    if kind != MessageKind::Ordinary {
+        return String::new();
+    }
+    let mut markers = String::new();
+    if author_role == Some(crate::protocol::summary::AuthorRole::Human) {
+        markers.push_str(" [human]");
+    }
+    if relays_user {
+        markers.push_str(" [relays user]");
+    }
+    if let Some(intent) = user_intent {
+        markers.push_str(&format!(" [{}]", intent.as_str()));
+    }
+    markers
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageKind {

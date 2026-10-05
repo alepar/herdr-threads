@@ -284,12 +284,20 @@ fn ledger_line(entry: &FoldEntry, thread: &ThreadId, prefix: &[String]) -> Strin
             author_seat,
             author_role,
             relays_user,
+            user_intent,
             ..
         } => {
             let role = author_role.map_or("agent", |role| role.as_str());
             let relayed = if *relays_user { " relays-user" } else { "" };
             let author = author_seat.as_ref().map_or("?", |seat| seat.as_str());
-            ("instruction", format!("[{role}{relayed}] {author}"))
+            let kind = match user_intent {
+                Some(crate::protocol::summary::UserIntent::Query) => "question",
+                Some(crate::protocol::summary::UserIntent::Request) => "ask",
+                Some(crate::protocol::summary::UserIntent::Rule) => "rule",
+                None => "unclassified human input",
+            };
+            let intent = user_intent.map_or(String::new(), |i| format!(" [{}]", i.as_str()));
+            (kind, format!("[{role}{relayed}]{intent} {author}"))
         }
         ItemBody::Decision { by_seat, .. } => ("decision", by_seat.as_str().to_owned()),
         ItemBody::OpenItem {
@@ -311,7 +319,12 @@ fn ledger_line(entry: &FoldEntry, thread: &ThreadId, prefix: &[String]) -> Strin
         let closed = entry
             .closed_at_seq
             .map_or(String::new(), |seq| format!(" at #{seq}"));
-        return format!("{kind} {} {status}{closed}", esc(&item.id));
+        let source = if matches!(item.body, ItemBody::UserInstruction { .. }) {
+            format!(" {head}")
+        } else {
+            String::new()
+        };
+        return format!("{kind} {} {status}{closed}{source}", esc(&item.id));
     }
     let text = match &item.body {
         ItemBody::UserInstruction {
@@ -398,8 +411,15 @@ fn tail_line(message: &BundleMessage) -> String {
     } else {
         ""
     };
+    let intent = if message.kind == MessageKind::Ordinary {
+        message
+            .user_intent
+            .map_or(String::new(), |i| format!(" [{}]", i.as_str()))
+    } else {
+        String::new()
+    };
     format!(
-        "#{} {kind} {author} [{role}{relayed}] {}: {}",
+        "#{} {kind} {author} [{role}{relayed}]{intent} {}: {}",
         message.sequence,
         hhmm(message.created_at),
         esc(&message.text)

@@ -24,6 +24,7 @@ fn summary(seq: u64, author: &str, body: &str) -> MessageSummary {
         event_author: None,
         author_role: None,
         relays_user: false,
+        user_intent: None,
         author_role_backfilled: false,
         kind: MessageKind::Ordinary,
         sequence: seq,
@@ -438,4 +439,36 @@ fn relative_nick_expanded_escaped_parents_reserve_pane_budget() {
         );
         assert!(!nick.contains('\x1b') && !nick.contains('\u{202e}'));
     }
+}
+
+#[test]
+fn user_intent_irc_markers_are_independent() {
+    use crate::protocol::summary::{AuthorRole, UserIntent};
+    for (role, relay, source) in [
+        (AuthorRole::Human, false, "[human]"),
+        (AuthorRole::Human, true, "[human] [relays user]"),
+        (AuthorRole::Agent, true, "[relays user]"),
+    ] {
+        for intent in [
+            None,
+            Some(UserIntent::Query),
+            Some(UserIntent::Request),
+            Some(UserIntent::Rule),
+        ] {
+            let mut row = summary(1, "seat-Alice001", "quoted rule");
+            row.author_role = Some(role);
+            row.relays_user = relay;
+            row.user_intent = intent;
+            let marks = format!(
+                "{source}{}",
+                intent.map_or(String::new(), |i| format!(" [{}]", i.as_str()))
+            );
+            let text = render(&row, &mut party());
+            assert!(text.contains(&format!("> {marks} quoted rule\n")), "{text}");
+        }
+    }
+    assert_eq!(
+        render(&summary(1, "seat-Alice001", "Always test."), &mut party()),
+        "[12:34] <alice·claude> Always test.\n"
+    );
 }

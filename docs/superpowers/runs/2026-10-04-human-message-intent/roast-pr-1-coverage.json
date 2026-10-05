@@ -1,0 +1,23 @@
+{
+  "triageDead": false,
+  "scoutsDispatched": 11,
+  "scoutsDead": 0,
+  "unknownLanes": [],
+  "domainsDropped": [],
+  "rawFindings": 2,
+  "dedupedFindings": 1,
+  "dedupeOrphans": 0,
+  "beyondCap": 0,
+  "beyondPanelCap": 0,
+  "dedupeDead": false,
+  "panelCount": 1,
+  "spotCount": 0,
+  "promotedCount": 0,
+  "judgeLost": 0,
+  "spotLost": 0,
+  "judgeCompletionPct": 100,
+  "lowCoverage": false,
+  "panelCappedTag": "",
+  "emptyLateRound": false,
+  "convergenceEligible": false
+}

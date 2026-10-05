@@ -1,0 +1,6 @@
+shape: leaves 9 · depth 5 · width 1.8 · critical path: ht-nmp.1 → ht-nmp.3 → ht-nmp.4 → ht-nmp.6 → ht-nmp.7
+edge: ht-nmp.9 <- ht-nmp.4 · leaf · critical yes · depth 5→5
+edge: ht-nmp.8 <- ht-nmp.4 · leaf · critical yes · depth 5→5
+edge: ht-nmp.6 <- ht-nmp.4 · leaf · critical yes · depth 5→5
+edge: ht-nmp.4 <- ht-nmp.3 · leaf · critical yes · depth 5→4
+summary: edges 20 · exempt 13 · candidates 4 (critical 4, epic-level 0)

@@ -91,3 +91,24 @@ CREATE TABLE harness_unattributed_v2 (
     at INTEGER NOT NULL,
     PRIMARY KEY(harness, domain, origin)
 ) STRICT, WITHOUT ROWID;
+
+-- The binding rebuild drops table-owned archival triggers. Retain the exact
+-- historical v23 guards after rebuilding, within the same migration transaction.
+CREATE TRIGGER archival_fence_occupant_bindings_insert AFTER INSERT ON occupant_bindings BEGIN
+ UPDATE archival_instances SET mutation_revision=mutation_revision+1;
+END;
+CREATE TRIGGER archival_fence_occupant_bindings_update AFTER UPDATE ON occupant_bindings BEGIN
+ UPDATE archival_instances SET mutation_revision=mutation_revision+1;
+END;
+CREATE TRIGGER archival_fence_occupant_bindings_delete AFTER DELETE ON occupant_bindings BEGIN
+ UPDATE archival_instances SET mutation_revision=mutation_revision+1;
+END;
+CREATE TRIGGER archival_binding_activity AFTER UPDATE OF registered_at,ended_at,generation,harness,native_session,execution_id,target_id,host_boot,host_epoch,observation_provenance ON occupant_bindings BEGIN
+ UPDATE seat_archival SET activity_revision=activity_revision+1,idle_mono=NULL,samples=0,next_mono=0 WHERE seat_id=NEW.seat_id;
+END;
+CREATE TRIGGER archival_binding_queue_insert AFTER INSERT ON occupant_bindings BEGIN
+ UPDATE seat_archival SET next_mono=0 WHERE seat_id=NEW.seat_id;
+END;
+CREATE TRIGGER archival_binding_queue_delete AFTER DELETE ON occupant_bindings BEGIN
+ UPDATE seat_archival SET next_mono=0 WHERE seat_id=OLD.seat_id;
+END;

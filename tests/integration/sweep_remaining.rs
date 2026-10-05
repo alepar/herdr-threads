@@ -426,7 +426,7 @@ fn lane_failure_surfaces_through_remedy_text_within_the_health_line_budget() {
         .collect();
     assert_eq!(scheduler.len(), 1, "one folded summary line: {lines:?}");
     assert!(
-        scheduler[0].contains("5 lanes degraded")
+        scheduler[0].contains(&format!("{} lanes degraded", Lane::ALL.len()))
             && Lane::ALL
                 .iter()
                 .all(|lane| scheduler[0].contains(lane.name()))

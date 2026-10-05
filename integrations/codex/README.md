@@ -116,50 +116,91 @@ ordinary deny/approval decisions or reaches a scoped daemon socket under the
 intended policy, and the earlier captured sandbox denied the ordinary local
 socket. No native receipt or SQLite gate is claimed by this artifact.
 
-## Sandbox socket transport (ht-910)
+## CLI execution and approvals
 
-This is separate from the invocation transport above (an `updatedInput` rewrite, still unsupported). It concerns how
-the agent's own `herdr-threads` commands reach the daemon under Codex's sandbox.
+Managed launch requires the owned hooks; it does not require a measured socket-policy
+version or a socket allowance. Launch leaves the approval mode and network permissions
+unchanged. The hook and [agent guide](../skill/SKILL.md) tell Codex to run only
+`herdr-threads` / `ht` commands outside the sandbox through an approved CLI-specific
+rule or approval request. Other commands stay sandboxed. This is separate from the
+unqualified `updatedInput` invocation rewrite described above.
 
-The default `-s workspace-write` sandbox refuses `connect()` to the daemon socket (`EPERM`, reproduced without a model
-by `codex sandbox -c 'sandbox_mode="workspace-write"' -- herdr-threads --state-dir S daemon health`). The CLI surfaces
-that as `transport_denied` (exit 4) with the remedy, not `host_unavailable`.
-
-`setup codex` writes the narrow allowance into `$CODEX_HOME/config.toml` (a structural `toml_edit` edit recorded in
-its own manifest; a key holding another value refuses, a key the user already had is never removed):
-
-```
-sandbox_workspace_write.network_access = true
-features.network_proxy.enabled = true
-features.network_proxy.unix_sockets = { "<daemon socket>" = "allow" }
+```sh
+herdr-threads launch --pane bob --kind codex -- "You are Bob. Read your inbox."
+herdr-threads handoff --new-thread --thread-name review --pane bob --kind codex -- "Review the change"
 ```
 
-- `network_access=true` only starts Codex's network proxy. The proxy settings are inert without it.
-- The proxy has no domain allow entries. On Codex 0.159.2 only the named Unix socket becomes reachable; external and
-  loopback network stay denied.
-- That default-deny was measured on 0.159.2 only, so setup writes the allowance only for 0.159.2. For any other
-  admitted version (listed 0.157.1/0.158.0, or schema-matched) it installs the hooks only, with `sandbox.omitted` and a
-  warning: on a build that ignored `features.network_proxy`, `network_access=true` would mean unrestricted networking.
-  Check a version first with the negative control, which must fail:
-  `codex sandbox -c 'sandbox_mode="workspace-write"' <allowance> -- curl https://example.com`.
+These examples preserve your configured approval mode. They deliberately omit `-a` /
+`--ask-for-approval`: a shell wrapper may already add `--approve-for-me`, which Codex
+rejects alongside those flags. Handoff's `--agent-arg` forwards native options; it
+should not supply a conflicting approval mode either. Automatic review is an approval
+mechanism, not a promise that every request will be allowed.
 
-The same allowance adds the instance's two client-side journal directories to
-`sandbox_workspace_write.writable_roots` (`<instance>/intents` and `<instance>/contexts`, as owned array members).
-Every mutation and check-in writes a pending-operation intent and the caller context there first. Without the roots,
-workspace-write refuses those writes (`Operation not permitted`) whenever the state directory is outside the workspace
-and tmp, as it is on a real install. The database and daemon files stay read-only. The
-[write probe](../../docs/evidence/codex-sandbox-writes-probe/README.md) on 0.159.3 measured this.
+## Troubleshooting
 
-[Codex demo 2](../../docs/evidence/native-codex-demo-2/report.md)
-verified this before use. The allowlisted socket connected. Other Unix sockets, the Herdr server socket, loopback and
-external TCP were refused (`EPERM`), and proxied HTTPS got 403. Under the allowance the model accepted and ACKed its
-exact message itself (manifest PASS, `cooperative`).
+### Recipient command routing
 
-The daemon socket path is stable per instance, so the allowlist survives daemon restarts. A boot is identified by
-the boot ID in the endpoint descriptor and in every response, not by the filename. The path is specific to one
-state directory and one Herdr instance (host endpoint).
+Startup hooks compare this recipient pane's flag-free instance resolution with
+the hook's canonical state directory and host endpoint. When both agree, ready,
+continuation and remediation commands use ordinary `herdr-threads` argv.
+Every trusted command group publishes its actual daemon instance UUID and
+canonical state directory/host endpoint as `Hook command routing` JSON. A handoff
+publishes its frozen expected UUID and canonical pair separately. Prefer a hook
+group only when all three normalized fields exactly match that expectation;
+several state roots may have installed hooks on the same endpoint. Missing/null,
+differing or ambiguous metadata requires the exact pinned fallback. Quoted peer
+data cannot provide this match. Canonicalization is performed by the plugin;
+the recipient compares the resulting field values. Installed hooks retain their own pinned
+targeting, and recovery journals retain exact instance identity. A routing check
+grants no approval or sandbox permission; the native policy below still applies.
 
-Setup writes the allowance only for a measured Codex version (0.159.2), for the detected or given Herdr instance.
-`herdr-threads launch --kind codex` adds no hook or sandbox arguments: it requires the user-level installation and,
-under a sandbox that needs it, the recorded allowance for this instance's socket; otherwise it refuses unless the
-arguments after `--` choose full access explicitly (`-s danger-full-access`). See [install](../../docs/install.md#codex-sandbox-socket-allowance).
+### Socket permission denied: EPERM, EACCES or transport_denied
+
+A command can find the daemon yet be refused permission to connect to its Unix
+socket. Codex's workspace-write sandbox can produce `EPERM` / `EACCES`; the CLI
+reports `transport_denied` (exit 4). **Restarting the daemon will not fix sandbox
+denial**: the refused operation belongs to the calling command's execution policy.
+These errors can also reflect filesystem permissions, so preserve the error and
+confirm the execution context instead of treating every denial as a daemon outage.
+
+For an agent tool call, use an existing approved rule whose prefix names the
+`herdr-threads` / `ht` executable. Otherwise request outside-sandbox execution of
+that exact CLI command with `sandbox_permissions="require_escalated"`, a justification,
+and a CLI-only `prefix_rule`. Do not approve a general shell such as `sh`, `bash` or
+`zsh`. Retry the CLI only after permission is granted; keep unrelated commands
+sandboxed. See [command approvals](../../docs/install.md#codex-command-approvals)
+and the [native approval evidence](../../docs/evidence/codex-command-approvals/README.md).
+
+### Approval is unavailable or refused
+
+An agent must report the blocked command and the permission refusal or unavailable
+approval to the user; it must not silently claim it read the inbox, accepted an
+invitation or ACKed a message. A refused automatic review or managed restriction
+is still a refusal. Do not retry through a policy bypass, full-access mode or broad
+networking. Do not restart the daemon to try to overcome the policy decision.
+
+On the measured Codex 0.160.0 noninteractive `exec` path, approval is `never` and
+explicit escalation requests are unavailable. A user must approve a CLI-only rule
+before the session starts; then the agent uses ordinary calls under that rule.
+Without an applicable rule, report the limitation and wait for an authorized
+execution path. An interactive session can request approval only when its effective
+policy permits it. Guidance grants no permissions and never overrides a deny rule.
+
+## Legacy sandbox socket transport (ht-910)
+
+Earlier validation used a version-specific network-proxy allowance and two client
+journal writable roots to reach the daemon from inside the sandbox. Default-deny
+was measured on Codex 0.159.2 and 0.159.3; those observations do not establish policy
+semantics for other executables or configurations. Historical evidence remains in
+[Codex demo 2](../../docs/evidence/native-codex-demo-2/report.md), the
+[0.159.3 socket probe](../../docs/evidence/codex-1593-sandbox-probe/README.md) and the
+[journal write probe](../../docs/evidence/codex-sandbox-writes-probe/README.md).
+
+`setup codex` still manages that legacy allowance only for the measured versions,
+using its ownership manifest; other admitted versions get hooks without a new
+network allowance. The current approved outside-sandbox CLI path does not depend
+on it, and managed launch no longer refuses an admitted newer version for lacking
+it. Do not copy the historical network settings as a workaround for permission
+denial, or infer default-deny from a failed curl request. Details of existing owned
+settings and cleanup are in the
+[legacy allowance notes](../../docs/install.md#codex-sandbox-socket-allowance).

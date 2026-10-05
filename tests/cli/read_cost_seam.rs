@@ -102,6 +102,7 @@ fn message(sequence: u64, full_bodies: bool) -> MessageSummary {
         event_author: None,
         author_role: None,
         relays_user: false,
+        user_intent: None,
         author_role_backfilled: false,
         kind: MessageKind::Ordinary,
         sequence,

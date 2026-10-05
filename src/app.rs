@@ -648,8 +648,8 @@ pub type KickRecord = (crate::service::kicks::LaneSet, Option<Lane>, Instant);
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct LaneFaults {
-    codes: Mutex<[Option<crate::protocol::results::ErrorCode>; 5]>,
-    hits: [std::sync::atomic::AtomicU64; 5],
+    codes: Mutex<[Option<crate::protocol::results::ErrorCode>; 6]>,
+    hits: [std::sync::atomic::AtomicU64; 6],
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -957,6 +957,7 @@ where
     );
     let manifest_cache_dir = crate::harness::manifest::cache_dir(&paths.instance_dir);
     let database_path = paths.database_path.clone();
+    let archival_paths = paths.clone();
     let factory_log_path = crate::daemon::logs::daemon_log_path(paths);
     let factory_clock = Arc::clone(&clock);
     let worker_slot = Arc::new(Mutex::new(Vec::new()));
@@ -970,6 +971,7 @@ where
     let wake_status = Arc::new(WorkerStatus::default());
     let factory_wake_status = Arc::clone(&wake_status);
     let factory_retention_status = Arc::new(WorkerStatus::default());
+    let factory_archival_status = Arc::new(WorkerStatus::default());
     let admission_status = Arc::new(WorkerStatus::default());
     let factory_admission_status = Arc::clone(&admission_status);
     // One rate-limited logger for the daemon; every lane's status reports to it.
@@ -986,6 +988,7 @@ where
         &observation_status,
         &wake_status,
         &factory_retention_status,
+        &factory_archival_status,
         &admission_status,
     ] {
         status.set_error_log(Arc::clone(&lane_log));
@@ -1113,7 +1116,7 @@ where
                 crate::identity::repair::OrdinaryIdentity::new(
                     instance.to_string(),
                     Arc::clone(&store),
-                    host,
+                    Arc::clone(&host),
                     Arc::clone(&factory_clock),
                     Arc::clone(&writer),
                 )
@@ -1193,6 +1196,34 @@ where
                 ),
                 &factory_admission_status,
             ));
+            {
+                let archival_context = crate::protocol::output::ContinuationContext {
+                    state_dir: archival_paths
+                        .instance_dir
+                        .parent()
+                        .and_then(|p| p.parent())
+                        .map(|p| p.to_string_lossy().into_owned()),
+                    host: Some(archival_paths.locator.clone()),
+                };
+                workers.push(crate::service::archival::start(
+                    crate::service::archival::ArchivalWorker {
+                        store: Arc::clone(&store),
+                        host: Arc::clone(&host),
+                        writer: Arc::clone(&writer),
+                        reachability: Arc::clone(&reachability),
+                        source: crate::archival_legacy::Source::new(
+                            &archival_paths,
+                            instance.to_string(),
+                            archival_context,
+                        ),
+                        boot: boot.to_string(),
+                        after_ms: config.archive_after_ms(),
+                        cancellation: factory_stop.clone(),
+                    },
+                    register_lane(Lane::Archival),
+                    Arc::clone(&factory_archival_status),
+                )?);
+            }
             workers.push(start_observation_worker(
                 Arc::clone(&identity),
                 Arc::clone(&store),
@@ -1204,17 +1235,15 @@ where
                 reachability,
             )?);
             drop(workers);
-            factory_probe.attach_registry(
-                &kicks,
-                vec![
-                    // `Lane::ALL` order.
-                    factory_status.clone(),
-                    factory_wake_status.clone(),
-                    factory_observation_status.clone(),
-                    factory_retention_status.clone(),
-                    factory_admission_status.clone(),
-                ],
-            );
+            let mut lane_statuses = vec![
+                factory_status.clone(),
+                factory_wake_status.clone(),
+                factory_observation_status.clone(),
+                factory_retention_status.clone(),
+                factory_admission_status.clone(),
+            ];
+            lane_statuses.push(factory_archival_status.clone());
+            factory_probe.attach_registry(&kicks, lane_statuses.clone());
             let health_store = Arc::clone(&store);
             let evidence_store = Arc::clone(&store);
             let states_store = Arc::clone(&store);
@@ -1234,14 +1263,7 @@ where
                 config.health_settings(),
                 health_clock,
                 health_store,
-                vec![
-                    factory_status.clone(),
-                    factory_wake_status.clone(),
-                    factory_observation_status.clone(),
-                    // `Lane::ALL` order is the slice order.
-                    factory_retention_status.clone(),
-                    factory_admission_status.clone(),
-                ],
+                lane_statuses,
                 ElectedHostEvidence {
                     status: factory_host_evidence.clone(),
                     incarnation_witness,

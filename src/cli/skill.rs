@@ -16,7 +16,7 @@ pub const HOOK_SKILL_HINT: &str =
     "Agent guide: run herdr-threads skill; command syntax: herdr-threads <command> --help.";
 
 /// The `prompt_version` summary workers send; the skill's worker prompt names it.
-pub const SUMMARY_PROMPT_VERSION: &str = "thread-summary-v1";
+pub const SUMMARY_PROMPT_VERSION: &str = "thread-summary-v2";
 
 /// Whether `text` carries the thread-summary procedure section (a line equal
 /// to `## ` plus the contract's `SUMMARY_PROCEDURE_REF`).

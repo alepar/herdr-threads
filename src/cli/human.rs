@@ -579,9 +579,10 @@ fn message(details: &MessageDetails, out: &mut String) {
         summary.sequence
     ));
     out.push_str(&format!(
-        "From {} at {}\n\n",
+        "From {} at {}{}\n\n",
         author(summary),
-        timestamp(summary.created_at)
+        timestamp(summary.created_at),
+        summary.author_markers()
     ));
     match &details.content {
         MessageContent::Ordinary {

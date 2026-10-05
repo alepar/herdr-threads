@@ -109,6 +109,8 @@ pub enum SemanticMutation {
         expected_revision: u64,
     },
     SendMessage {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_intent: Option<crate::protocol::summary::UserIntent>,
         thread: ThreadId,
         body: String,
         invited_recipients: Vec<SeatId>,
@@ -470,6 +472,7 @@ impl SemanticMutation {
                 invited_recipients,
                 deadline_millis,
                 relays_user,
+                user_intent,
             } => Command::SendMessage(SendMessage {
                 thread: thread.clone(),
                 body: body.clone(),
@@ -478,6 +481,7 @@ impl SemanticMutation {
                 operation,
                 claim: native()?,
                 relays_user: *relays_user,
+                user_intent: *user_intent,
             }),
             Self::Ack { messages } => Command::Ack(Ack {
                 messages: messages.clone(),

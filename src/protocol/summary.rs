@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 /// the skill titles its worker procedure with (ht-1ip.11).
 pub const SUMMARY_PROCEDURE_REF: &str = "Thread summaries";
 /// Submission wire schema accepted by `SummarySubmit` (spec §6).
-pub const SUBMISSION_SCHEMA: u32 = 1;
+pub const SUBMISSION_SCHEMA: u32 = 2;
 /// Rollup fan-in; fixed in this version (spec §3).
 pub const FAN_IN: u32 = 8;
 /// `prompt_version` and `model` bound (spec §5): non-empty, at most this many bytes.
@@ -55,6 +55,52 @@ impl AuthorRole {
             "human" => Some(Self::Human),
             "agent" => Some(Self::Agent),
             "service" => Some(Self::Service),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserIntent {
+    Query,
+    Request,
+    Rule,
+}
+impl UserIntent {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Query => "query",
+            Self::Request => "request",
+            Self::Rule => "rule",
+        }
+    }
+    pub fn from_column(value: &str) -> Option<Self> {
+        match value {
+            "query" => Some(Self::Query),
+            "request" => Some(Self::Request),
+            "rule" => Some(Self::Rule),
+            _ => None,
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleChange {
+    Withdrawn,
+    Replaced,
+}
+impl RuleChange {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Withdrawn => "withdrawn",
+            Self::Replaced => "replaced",
+        }
+    }
+    pub fn from_column(value: &str) -> Option<Self> {
+        match value {
+            "withdrawn" => Some(Self::Withdrawn),
+            "replaced" => Some(Self::Replaced),
             _ => None,
         }
     }
@@ -217,6 +263,8 @@ pub enum ItemBody {
         author_role: Option<AuthorRole>,
         relays_user: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_intent: Option<UserIntent>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text_ref: Option<u64>,
@@ -256,6 +304,8 @@ pub struct Identifier {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Transition {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_change: Option<RuleChange>,
     pub target_id: String,
     pub new_status: NewStatus,
     pub cite_seq: u64,
@@ -331,6 +381,8 @@ pub struct Block {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BundleMessage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_intent: Option<UserIntent>,
     pub sequence: u64,
     pub message: MessageId,
     pub kind: MessageKind,
@@ -511,6 +563,8 @@ pub struct NewOpenItem {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProposedTransition {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_change: Option<RuleChange>,
     pub target: String,
     pub new_status: NewStatus,
     pub cite_seq: u64,
@@ -551,6 +605,72 @@ impl Submission {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn user_intent_contract_bundle_roundtrip() {
+        let old = json!({"sequence":1,"message":"m1","kind":"ordinary","author":"sa","author_role":"human","relays_user":false,"created_at":1,"text":"input"});
+        let mut message: BundleMessage = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(message.user_intent, None);
+        assert_eq!(serde_json::to_value(&message).unwrap(), old);
+        for intent in [UserIntent::Query, UserIntent::Request, UserIntent::Rule] {
+            message.user_intent = Some(intent);
+            let json = serde_json::to_value(&message).unwrap();
+            assert_eq!(json["user_intent"], intent.as_str());
+            assert_eq!(
+                serde_json::from_value::<BundleMessage>(json)
+                    .unwrap()
+                    .user_intent,
+                Some(intent)
+            );
+        }
+    }
+    #[test]
+    fn user_intent_contract_old_item_and_transition_omit_new_fields() {
+        use serde_json::json;
+        let old_item = json!({"type":"user_instruction","relays_user":false,"text":"old"});
+        let item: ItemBody = serde_json::from_value(old_item.clone()).unwrap();
+        assert!(matches!(
+            &item,
+            ItemBody::UserInstruction {
+                user_intent: None,
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_value(&item).unwrap(), old_item);
+        let old_transition = json!({"target_id":"i.1","new_status":"superseded","cite_seq":2});
+        let transition: Transition = serde_json::from_value(old_transition.clone()).unwrap();
+        assert_eq!(transition.rule_change, None);
+        assert_eq!(serde_json::to_value(transition).unwrap(), old_transition);
+    }
+    #[test]
+    fn user_intent_contract_enum_spellings_and_some_roundtrip() {
+        use serde_json::json;
+        for (intent, spelling) in [
+            (UserIntent::Query, "query"),
+            (UserIntent::Request, "request"),
+            (UserIntent::Rule, "rule"),
+        ] {
+            assert_eq!(intent.as_str(), spelling);
+            assert_eq!(UserIntent::from_column(spelling), Some(intent));
+            assert_eq!(serde_json::to_value(intent).unwrap(), json!(spelling));
+            let raw = json!({"type":"user_instruction","relays_user":true,"user_intent":spelling});
+            let item: ItemBody = serde_json::from_value(raw.clone()).unwrap();
+            assert_eq!(serde_json::to_value(item).unwrap(), raw);
+        }
+        for (change, spelling) in [
+            (RuleChange::Withdrawn, "withdrawn"),
+            (RuleChange::Replaced, "replaced"),
+        ] {
+            assert_eq!(change.as_str(), spelling);
+            assert_eq!(RuleChange::from_column(spelling), Some(change));
+            let raw = json!({"target":"i.1","new_status":"superseded","cite_seq":2,"rule_change":spelling});
+            let proposed: ProposedTransition = serde_json::from_value(raw.clone()).unwrap();
+            assert_eq!(proposed.rule_change, Some(change));
+            assert_eq!(serde_json::to_value(proposed).unwrap(), raw);
+        }
+        assert!(serde_json::from_value::<UserIntent>(json!("instruction")).is_err());
+        assert!(serde_json::from_value::<RuleChange>(json!("completed")).is_err());
+    }
 
     #[test]
     fn priority_is_human_author_or_relayed_user_ask() {
@@ -637,6 +757,7 @@ mod tests {
                         author_seat: Some(SeatId::new("sh")),
                         author_role: Some(AuthorRole::Human),
                         relays_user: false,
+                        user_intent: None,
                         text: Some("do the thing".into()),
                         text_ref: None,
                         message_id: None,
@@ -706,6 +827,7 @@ mod tests {
                 author: Some(SeatId::new("sa")),
                 author_role: Some(AuthorRole::Agent),
                 relays_user: true,
+                user_intent: None,
                 created_at: UtcMillis(90),
                 text: "hi".into(),
             }],
@@ -831,9 +953,9 @@ mod tests {
     }
 
     #[test]
-    fn submission_parses_schema_1_and_refuses_unknown_schemas() {
+    fn user_intent_generation2_parses_schema2_and_refuses_schema1() {
         let full = json!({
-            "submission_schema": 1,
+            "submission_schema": SUBMISSION_SCHEMA,
             "narrative": "n",
             "new_decisions": [{"ref": "d1", "seq": 4, "by_seat": "sa", "text": "use sqlite"}],
             "new_open_items": [{"ref": "o1", "seq": 5, "kind": "ask", "from_seat": "sa", "text": "who?"}],
@@ -848,20 +970,22 @@ mod tests {
         assert_eq!(parsed.transitions[0].target, "i.3");
         assert_eq!(parsed.transitions[0].new_status, NewStatus::Done);
 
-        let rollup =
-            json!({"submission_schema": 1, "narrative": "n", "prompt_version": "p", "model": "m"});
+        let rollup = json!({"submission_schema": SUBMISSION_SCHEMA, "narrative": "n", "prompt_version": "p", "model": "m"});
         let parsed = Submission::parse(&rollup).unwrap();
         assert!(parsed.new_decisions.is_empty());
         assert!(parsed.new_open_items.is_empty());
         assert!(parsed.transitions.is_empty());
 
-        let mut v2 = rollup.clone();
-        v2["submission_schema"] = json!(2);
+        let mut v1 = rollup.clone();
+        v1["submission_schema"] = json!(1);
         assert!(
-            Submission::parse(&v2)
+            Submission::parse(&v1)
                 .unwrap_err()
-                .contains("unknown submission_schema 2")
+                .contains("unknown submission_schema 1")
         );
+        let mut unknown = rollup.clone();
+        unknown["submission_schema"] = json!(SUBMISSION_SCHEMA + 1);
+        assert!(Submission::parse(&unknown).is_err());
         let missing = json!({"narrative": "n", "prompt_version": "p", "model": "m"});
         assert!(Submission::parse(&missing).is_err());
         assert!(Submission::parse(&json!("text")).is_err());

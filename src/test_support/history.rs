@@ -226,6 +226,7 @@ fn send_one(
         operation: OperationId::new(operation),
         claim: from.claim(),
         relays_user: false,
+        user_intent: None,
     };
     loop {
         match messages::prepare_send_step(

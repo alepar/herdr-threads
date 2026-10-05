@@ -340,6 +340,7 @@ impl Matrix {
             operation: OperationId::new(op),
             claim: claim.clone(),
             relays_user: false,
+            user_intent: None,
         }))
         .map(|result| match result {
             CommandResult::MessageSent(id) => id,
@@ -1589,6 +1590,15 @@ impl FlakyHost {
     }
 }
 impl crate::ports::HostPort for FlakyHost {
+    fn observe_current_target_for_archival(
+        &self,
+        _: &crate::protocol::ids::HostTargetId,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<crate::ports::ComposerObservation, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "test adapter has no composer-aware archival observation",
+        ))
+    }
     fn native_launch_capability(&self) -> crate::ports::NativeLaunchCapability {
         crate::ports::NativeLaunchCapability::Unsupported
     }
@@ -2651,6 +2661,7 @@ fn failpoints_cannot_be_armed_through_requests_or_foreign_scopes() {
             operation: OperationId::new("wire"),
             claim: s.clone(),
             relays_user: false,
+            user_intent: None,
         }),
     };
     let encoded = serde_json::to_value(&base).unwrap();

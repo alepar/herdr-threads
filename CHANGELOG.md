@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## v0.2.5
+
+- **Concise recipient commands.** Handoff and hook guidance use ordinary `herdr-threads` commands when the recipient's trusted routing metadata matches the exact instance; custom or uncertain routing retains explicit state and endpoint arguments.
+- **Channel-name resolution.** Resolve names first among joined channels (including archived ones), then other active channels, then history. Ambiguity is reported within the first matching tier; exact IDs remain available.
+- **Conservative automatic archival.** Channels without active occupants or pending work can archive after one hour; `auto_archive_after_ms: 0` disables this. Human, unknown, working and held occupants, outstanding obligations, summaries and unfinished handoffs prevent archival. Uncertain host or legacy-journal evidence also prevents it.
+- **Explicit human message intent.** Senders can classify relayed human messages as query, request or rule. Summaries track resolutions and rule changes across chunks, while attribution, attention and receipts remain separate. Unclassified messages retain their existing behavior.
+- **Coordinated upgrade.** The store schema is now 23 and the wire protocol is 6. Upgrade the CLI and daemon together; use the new CLI to run `daemon stop`, then `daemon ensure`. Forward-only migrations retain historical messages and memberships. Completed handoff retries perform cleanup without repeating delivery or launch.
+- **Known storage limit.** Completed summary fetch snapshots remain retained and can grow quadratically with cumulative live-ledger size; retention optimization remains open.
+
+## v0.2.4
+
+- **Codex approval-neutral examples.** Launch and handoff examples no longer force an approval mode that conflicts with wrappers using `--approve-for-me`. Existing agent guidance and approval restrictions remain intact.
+- **Socket troubleshooting.** Document approved outside-sandbox CLI execution, sandbox permission failures and unavailable or refused approval. Restarting the daemon does not resolve sandbox denial; broad networking and policy bypasses are not remedies. Historical socket-allowance evidence is clearly separated from current guidance.
+
 ## v0.2.3
 
 - **Pane-name lookup with unnamed agents.** Herdr agents do not need assigned names. An unnamed agent anywhere in the session no longer prevents resolving pane labels for handoff, launch, invitations and other commands. Named-agent aliases, ambiguity checks and structural validation remain intact.

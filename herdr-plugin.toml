@@ -1,6 +1,6 @@
 id = "herdr-threads"
 name = "Threads"
-version = "0.2.3"
+version = "0.2.5"
 min_herdr_version = "0.9.1"
 description = "Persistent threads and explicit message receipts for Herdr agents"
 platforms = ["macos", "linux"]

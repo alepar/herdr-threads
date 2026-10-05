@@ -2307,6 +2307,24 @@ impl PriorLadder {
 /// methods have no caller-provided UTC decision time.
 pub trait StorePort: Send + Sync {
     fn clock(&self) -> &dyn Clock;
+    fn archival_pass(
+        &self,
+        runtime: &crate::store::archival::Runtime,
+        hints: &[crate::archival_legacy::Hint],
+        budget: &CallBudget,
+    ) -> Result<crate::store::archival::Progress, ApiError>;
+    fn archival_next(
+        &self,
+        runtime: &crate::store::archival::Runtime,
+        budget: &CallBudget,
+    ) -> Result<crate::store::archival::ObservationWork, ApiError>;
+    fn archival_sample(
+        &self,
+        runtime: &crate::store::archival::Runtime,
+        ticket: &crate::store::archival::ObservationTicket,
+        sample: Option<&ComposerObservation>,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError>;
     /// Called after the live authority slot is revoked; never holds its guard.
     fn audit_service_disconnect(
         &self,
@@ -2804,6 +2822,11 @@ pub enum AgentComposerState {
     Unknown,
 }
 
+/// Explicit adapter contract for a current structural observation plus composer
+/// classification. Plain current-target reads and snapshots never imply this.
+#[derive(Debug, Clone)]
+pub struct ComposerObservation(pub HostObservation);
+
 pub trait HostPort: Send + Sync {
     /// Adapter-owned, verified support; callers cannot assert a launch capability.
     fn native_launch_capability(&self) -> NativeLaunchCapability;
@@ -2825,6 +2848,14 @@ pub trait HostPort: Send + Sync {
     ) -> Result<HostObservation, ApiError> {
         self.observe_current_target(target, context)
     }
+    /// Archival requires an explicit composer-aware adapter. Each adapter must
+    /// provide composer evidence or explicitly refuse this observation; ordinary
+    /// Idle status alone cannot qualify a target for archival.
+    fn observe_current_target_for_archival(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<ComposerObservation, ApiError>;
     fn enumerate_targets(&self, context: &HostCallContext) -> Result<HostSnapshot, ApiError>;
     fn safe_wake_target(
         &self,
@@ -3725,6 +3756,15 @@ mod contract_adapter_tests {
         }
     }
     impl HostPort for Adapter {
+        fn observe_current_target_for_archival(
+            &self,
+            _: &crate::protocol::ids::HostTargetId,
+            _: &crate::ports::HostCallContext,
+        ) -> Result<crate::ports::ComposerObservation, crate::protocol::results::ApiError> {
+            Err(crate::protocol::results::ApiError::unsupported(
+                "test adapter has no composer-aware archival observation",
+            ))
+        }
         fn native_launch_capability(&self) -> NativeLaunchCapability {
             NativeLaunchCapability::Unsupported
         }
@@ -3844,6 +3884,29 @@ mod contract_adapter_tests {
         }
     }
 
+    #[test]
+    fn archival_adapter_refusal_does_not_read_plain_idle() {
+        let adapter = Adapter {
+            clock: FakeClock,
+            observations: AtomicUsize::new(0),
+        };
+        let context = HostCallContext {
+            budget: CallBudget {
+                deadline: MonoInstant(200),
+                cancellation: Cancellation::default(),
+            },
+            expected_boot: None,
+            expected_epoch: None,
+        };
+        assert_eq!(
+            adapter
+                .observe_current_target_for_archival(&HostTargetId::new("p"), &context)
+                .unwrap_err()
+                .code,
+            crate::protocol::results::ErrorCode::Unsupported
+        );
+        assert_eq!(adapter.observations.load(Ordering::SeqCst), 0);
+    }
     #[test]
     fn all_ports_accept_typed_adapter_calls() {
         let adapter = Adapter {

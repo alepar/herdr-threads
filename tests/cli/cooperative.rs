@@ -1117,6 +1117,10 @@ fn inbox_display_ack_waits_for_complete_write_and_flush() {
                             sequence: 1,
                             topic_data: "topic".into(),
                             sender: Some(SeatId::new("sender-original")),
+                            author_role: None,
+                            relays_user: false,
+                            user_intent: None,
+                            author_role_backfilled: false,
                             body: "full body".into(),
                             body_start: 0,
                             body_end: 9,
@@ -2064,6 +2068,10 @@ mod scoped_runtime {
                                 message: MessageId::new("m123"),
                                 sequence: 1,
                                 sender: Some(SeatId::new("sender")),
+                                author_role: None,
+                                relays_user: false,
+                                user_intent: None,
+                                author_role_backfilled: false,
                                 body: "hello".into(),
                                 body_start: 0,
                                 body_end: 5,
@@ -2368,6 +2376,73 @@ mod scoped_runtime {
                 .iter()
                 .any(|entry| entry["semantic"]["thread"] == "review")
         );
+    }
+
+    // Kills composing name lookup with an inherited pane instead of the explicit caller.
+    #[test]
+    fn thread_names_runtime_cooperative_caller_overrides_inherited_pane() {
+        let runtime = Runtime::new(snapshot());
+        runtime
+            .run(&[
+                "--cooperative-seat",
+                "recipient",
+                "--cooperative-target",
+                "w1:p2",
+                "--cooperative-harness",
+                "codex",
+                "--cooperative-role",
+                "top-level",
+                "thread",
+                "name",
+                "team café",
+            ])
+            .unwrap();
+        let calls = runtime.calls.lock().unwrap();
+        assert!(
+            matches!(calls.first(), Some(Command::ResolveThread(q))
+            if q.caller == Some(SeatId::new("recipient"))
+                && q.caller_target == Some(HostTargetId::new("w1:p2"))),
+            "{calls:?}"
+        );
+        assert!(
+            matches!(calls.last(), Some(Command::ThreadName(q)) if q.thread == ThreadId::new("t123"))
+        );
+    }
+
+    // Kills treating a foreign read scope as the joined-name caller.
+    #[test]
+    fn thread_names_runtime_foreign_read_scope_keeps_actual_caller() {
+        for args in [
+            vec![
+                "pending-receipts",
+                "--thread",
+                "team café",
+                "--seat",
+                "foreign",
+            ],
+            vec![
+                "pending-receipts",
+                "--thread",
+                "team café",
+                "--pane",
+                "w1:p2",
+            ],
+        ] {
+            let runtime = Runtime::new(snapshot());
+            runtime.run_mode_in_pane(&args, true, "w1:p99").unwrap();
+            let calls = runtime.calls.lock().unwrap();
+            assert!(
+                matches!(calls.first(), Some(Command::ResolveThread(q))
+                if q.caller.is_none() && q.caller_target == Some(HostTargetId::new("w1:p99"))),
+                "{calls:?}"
+            );
+            assert!(
+                matches!(calls.last(), Some(Command::PendingReceipts(q))
+                if q.thread == Some(ThreadId::new("t123"))
+                    && q.seat.as_ref().is_some_and(|seat| matches!(seat.as_str(), "foreign" | "recipient"))),
+                "{calls:?}"
+            );
+        }
     }
 
     #[test]

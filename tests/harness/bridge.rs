@@ -2234,6 +2234,7 @@ fn qualified_turn_dispatch_and_overview_are_clamped_to_observation_deadline() {
         &Default::default(),
         &mut output,
         &mut None,
+        None,
     )
     .unwrap();
     assert!(!output.is_empty());
@@ -2269,7 +2270,8 @@ fn qualified_turn_flush_loss_retains_exact_response_and_operation() {
             &Clock,
             &Default::default(),
             &mut Broken,
-            &mut None
+            &mut None,
+            None,
         )
         .is_err()
     );
@@ -2293,6 +2295,7 @@ fn qualified_turn_flush_loss_retains_exact_response_and_operation() {
         &Default::default(),
         &mut output,
         &mut None,
+        None,
     )
     .unwrap();
     assert!(!output.is_empty());
@@ -2391,7 +2394,8 @@ fn qualified_turn_historical_current_retires_only_rejected_hint_and_keeps_exact_
             &Clock,
             &Default::default(),
             &mut output,
-            &mut None
+            &mut None,
+            None,
         ),
         Err(BridgeError::Context(ContextError::LifecycleRequired))
     ));
@@ -2416,6 +2420,221 @@ fn qualified_turn_historical_current_retires_only_rejected_hint_and_keeps_exact_
         .unwrap()
         .unwrap(),
         historical.0
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+// Saved selectors may be shortened only with the recipient's flag-free proof
+// AND an exact canonical match of both saved selectors to this hook's target.
+#[test]
+fn cached_pinned_continuations_use_verified_recipient_presentation_without_changing_cache() {
+    cached_pinned_continuations_preserve_cache(false);
+}
+
+// Qualified turns must receive exactly the same recipient routing without mutating replay.
+#[test]
+fn qualified_cached_continuations_keep_recipient_routing_and_immutable_replay() {
+    cached_pinned_continuations_preserve_cache(true);
+}
+
+fn cached_pinned_continuations_preserve_cache(qualified: bool) {
+    use crate::{
+        cli::instance::InstanceInputs,
+        protocol::{
+            output::{ContinuationContext, OutputSpec},
+            pagination::StopReason,
+            results::{ApiError, CommandResult},
+            time::CallBudget,
+        },
+    };
+    struct PinnedTransport {
+        inner: Transport,
+    }
+    impl crate::ports::LocalClient for PinnedTransport {
+        fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
+            self.inner.call(command, budget)
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            spec: &OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            let mut result = self.call(command, budget)?;
+            if let CommandResult::CheckedIn(check) = &mut result {
+                for (argv, command) in [
+                    (&mut check.warnings.next_argv, "warnings"),
+                    (&mut check.inbox.next_argv, "inbox"),
+                ] {
+                    *argv = Some(vec![
+                        "herdr-threads".into(),
+                        "--state-dir".into(),
+                        spec.context.state_dir.clone().unwrap(),
+                        "--host-endpoint".into(),
+                        spec.context.host.clone().unwrap(),
+                        command.into(),
+                        "--seat".into(),
+                        "seat".into(),
+                        "--cursor".into(),
+                        "saved-cursor".into(),
+                    ]);
+                }
+                check.warnings.has_more = true;
+                check.warnings.next_cursor = Some("saved-cursor".into());
+                check.warnings.stop_reason = StopReason::Work;
+                check.inbox.has_more = true;
+                check.inbox.next_cursor = Some("saved-cursor".into());
+                check.inbox.stop_reason = StopReason::Work;
+            }
+            Ok(result)
+        }
+    }
+    let (root, j, cj, seed, mut event) = fixture();
+    let observation = if qualified {
+        event.native_session = Some("qualified-session".into());
+        Some(turn(&event, 9, 1, 0, 1000))
+    } else {
+        None
+    };
+    let state = root.join("state");
+    fs::create_dir(&state).unwrap();
+    let endpoint = root.join("host.sock");
+    let target = ContinuationContext {
+        state_dir: Some(state.display().to_string()),
+        host: Some(endpoint.display().to_string()),
+    };
+    let client = PinnedTransport {
+        inner: Transport::new(),
+    };
+    if let Some(observation) = &observation {
+        run_qualified_hook_event_reporting_notices(
+            &j,
+            &cj,
+            &event,
+            observation,
+            Some(&seed),
+            1,
+            &client,
+            &Clock,
+            &OutputSpec {
+                context: target.clone(),
+                ..OutputSpec::default()
+            },
+            &mut Vec::new(),
+            &mut None,
+            None,
+        )
+        .unwrap();
+    } else {
+        run_event(
+            &j,
+            &cj,
+            &event,
+            Some(&seed),
+            1,
+            &client,
+            &Clock,
+            &OutputSpec {
+                context: target.clone(),
+                ..OutputSpec::default()
+            },
+            &mut Vec::new(),
+        )
+        .unwrap();
+    }
+    let saved = cj
+        .dispatch(&event.event_id, &mut |_: &PendingCheckIn| {
+            panic!("saved request must not replay")
+        })
+        .unwrap()
+        .output;
+    let pane = InstanceInputs {
+        env_state: Some(state.clone()),
+        env_host: Some(endpoint.clone()),
+        ..InstanceInputs::default()
+    };
+    let mut missing_host = target.clone();
+    missing_host.host = None;
+    let mut other_host = target.clone();
+    other_host.host = Some(root.join("other.sock").display().to_string());
+    let mut other_state = target.clone();
+    other_state.state_dir = Some(root.join("other-state").display().to_string());
+    let foreign_pane = InstanceInputs {
+        env_host: Some(root.join("foreign.sock")),
+        ..pane.clone()
+    };
+    for (current, recipient, concise) in [
+        (&target, &pane, true),
+        (&target, &foreign_pane, false),
+        (&missing_host, &pane, false),
+        (&other_host, &pane, false),
+        (&other_state, &pane, false),
+    ] {
+        let mut output = Vec::new();
+        if let Some(observation) = &observation {
+            run_qualified_hook_event_reporting_notices(
+                &j,
+                &cj,
+                &event,
+                observation,
+                Some(&seed),
+                2,
+                &client,
+                &Clock,
+                &OutputSpec::default(),
+                &mut output,
+                &mut None,
+                Some(&RecipientRouting {
+                    target: current,
+                    pane: recipient,
+                }),
+            )
+            .unwrap();
+        } else {
+            run_hook_event_reporting_notices(
+                &j,
+                &cj,
+                &event,
+                Some(&seed),
+                2,
+                &client,
+                &Clock,
+                &OutputSpec::default(),
+                OverviewReason::None,
+                &mut output,
+                &mut None,
+                Some(&RecipientRouting {
+                    target: current,
+                    pane: recipient,
+                }),
+            )
+            .unwrap();
+        }
+        let text = String::from_utf8(output).unwrap();
+        assert_eq!(text.matches("saved-cursor").count(), 4);
+        if concise {
+            assert!(text.contains("[\"herdr-threads\",\"warnings\",\"--seat\",\"seat\",\"--cursor\",\"saved-cursor\"]"), "{text}");
+            assert!(text.contains("[\"herdr-threads\",\"inbox\",\"--seat\",\"seat\",\"--cursor\",\"saved-cursor\"]"), "{text}");
+        }
+        assert_eq!(text.contains("--state-dir"), !concise, "{text}");
+        assert_eq!(text.contains("--host-endpoint"), !concise, "{text}");
+        assert_eq!(
+            cj.dispatch(&event.event_id, &mut |_: &PendingCheckIn| panic!("cached"))
+                .unwrap()
+                .output,
+            saved
+        );
+    }
+    assert_eq!(
+        client
+            .inner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| matches!(c, Command::CheckIn(_)))
+            .count(),
+        1
     );
     fs::remove_dir_all(root).unwrap();
 }

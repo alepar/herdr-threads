@@ -384,6 +384,30 @@ pub(crate) fn event_budget(
     })
 }
 
+/// Canonical target of one trusted hook command group. This is routing
+/// metadata, not caller attribution or permission. Missing canonical paths
+/// or an unknown daemon UUID cannot establish a handoff target match.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct CommandRouting {
+    instance: uuid::Uuid,
+    state_dir: String,
+    host_endpoint: String,
+}
+impl CommandRouting {
+    pub(crate) fn from_context(instance: &str, context: &ContinuationContext) -> Option<Self> {
+        let state = Path::new(context.state_dir.as_deref()?)
+            .canonicalize()
+            .ok()?;
+        let host = Path::new(context.host.as_deref()?);
+        let endpoint = host.parent()?.canonicalize().ok()?.join(host.file_name()?);
+        Some(Self {
+            instance: uuid::Uuid::parse_str(instance).ok()?,
+            state_dir: state.to_str()?.to_owned(),
+            host_endpoint: endpoint.to_str()?.to_owned(),
+        })
+    }
+}
+
 /// Wrap bridge text in the native context envelope. Fixed plugin instructions
 /// stay outside the escaped `untrusted_peer_data` container; peer-controlled
 /// check-in data only ever appears JSON-escaped inside it. The server digest
@@ -416,6 +440,22 @@ pub fn encode_native(
     overview: Option<&OverviewRows>,
     recovery: Option<&RecoveryRows>,
 ) -> Vec<u8> {
+    encode_native_for_routing(
+        event, text, fallback, summary, actions, overview, recovery, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn encode_native_for_routing(
+    event: &LifecycleEvent,
+    text: &[u8],
+    fallback: &[String],
+    summary: Option<&str>,
+    actions: Option<&NextActions>,
+    overview: Option<&OverviewRows>,
+    recovery: Option<&RecoveryRows>,
+    command_routing: Option<&CommandRouting>,
+) -> Vec<u8> {
     let Ok(registration) = registration_for(event.harness) else {
         return vec![];
     };
@@ -430,6 +470,7 @@ pub fn encode_native(
         actions,
         overview,
         recovery,
+        command_routing,
     );
     output_bytes(crate::harness::adapter::encode_context(
         &decoded,
@@ -449,6 +490,7 @@ fn compose_context(
     actions: Option<&NextActions>,
     overview: Option<&OverviewRows>,
     recovery: Option<&RecoveryRows>,
+    command_routing: Option<&CommandRouting>,
 ) -> String {
     let codex_start = policy.empty_lifecycle
         && event.kind.mode() == crate::harness::context::CheckInMode::Lifecycle;
@@ -456,10 +498,51 @@ fn compose_context(
         return String::new();
     }
     let base_instruction = render_context(event.role, &[], true).unwrap_or_default();
-    let instruction = if !policy.extra_guidance.is_empty() {
-        format!("{base_instruction}\n{}", policy.extra_guidance)
+    let group_rule = if command_routing.is_some() {
+        "\nFor handoffs, match every routing field; otherwise use the pinned fallback. No permissions granted."
     } else {
-        base_instruction.clone()
+        ""
+    };
+    let metadata = serde_json::to_string(&command_routing).unwrap_or_else(|_| "null".into());
+    let mut routing = format!("\nHook command routing (JSON data): {metadata}{group_rule}");
+    if command_routing.is_some()
+        && fallback.first().is_some_and(|word| word == CLI_ARGV0)
+        && fallback.get(1).is_some_and(|word| word == "inbox")
+    {
+        routing.push_str("\nThe hook verified that ordinary commands in this pane reach this command group's state directory and host endpoint.");
+    }
+    // Optional routing metadata must not crowd out the pinned ready commands
+    // and their main overview row. Withhold it as a whole, never abbreviate
+    // identity into a false match; exact pinned commands still select the target.
+    let pinned_commands = actions.map_or(0, |actions| {
+        actions
+            .render_with(actions.pinned.min(actions.items.len()), true)
+            .len()
+    });
+    let main_row = overview.map_or(0, |overview| {
+        overview
+            .rows
+            .iter()
+            // Compact rows are JSON strings inside the outer peer-data string.
+            .map(|row| serde_json::to_string(row).unwrap_or_default().len())
+            .max()
+            .unwrap_or(0)
+    });
+    if base_instruction.len()
+        + routing.len()
+        + policy.extra_guidance.len()
+        + pinned_commands
+        + main_row
+        + PEER_DATA_NOTICE.len()
+        + 512
+        > MAX_CONTEXT
+    {
+        routing = "\nHook command routing (JSON data): null".to_owned();
+    }
+    let instruction = if !policy.extra_guidance.is_empty() {
+        format!("{base_instruction}{routing}\n{}", policy.extra_guidance)
+    } else {
+        format!("{base_instruction}{routing}")
     };
     let text = String::from_utf8_lossy(text);
     let offer = text
@@ -980,6 +1063,69 @@ pub fn cli_prefix(selectors: &ContinuationContext) -> Vec<String> {
     argv
 }
 
+/// Present a stored daemon-authored command using ordinary argv only when
+/// both stored selectors identify this exact target and the recipient's own
+/// flag-free resolution reaches it. Missing or foreign selectors stay exact.
+pub(crate) fn recipient_argv(
+    argv: &[String],
+    target: &ContinuationContext,
+    pane: &InstanceInputs,
+) -> Vec<String> {
+    if argv.first().is_none_or(|word| word != CLI_ARGV0) {
+        return argv.to_vec();
+    }
+    let (Some(target_state), Some(target_host)) = (&target.state_dir, &target.host) else {
+        return argv.to_vec();
+    };
+    let (mut state, mut host) = (None, None);
+    let mut retained = Vec::new();
+    let mut index = 1;
+    while let Some(word) = argv.get(index) {
+        let slot = match word.as_str() {
+            "--state-dir" => &mut state,
+            "--host-endpoint" => &mut host,
+            "--json" => {
+                retained.push(word.clone());
+                index += 1;
+                continue;
+            }
+            _ => break,
+        };
+        let Some(value) = argv.get(index + 1).filter(|value| !value.is_empty()) else {
+            return argv.to_vec();
+        };
+        if slot.replace(value.as_str()).is_some() {
+            return argv.to_vec();
+        }
+        index += 2;
+    }
+    let (Some(state), Some(host)) = (state, host) else {
+        return argv.to_vec();
+    };
+    if !same_dir(Path::new(state), Path::new(target_state))
+        || !same_endpoint(Path::new(host), Path::new(target_host))
+    {
+        return argv.to_vec();
+    }
+    let flag_free = InstanceInputs {
+        state_flag: None,
+        host_flag: None,
+        ..pane.clone()
+    };
+    let selectors = pane_selectors(
+        Some(Path::new(target_state)),
+        Some(Path::new(target_host)),
+        &flag_free,
+    );
+    if selectors != ContinuationContext::default() {
+        return argv.to_vec();
+    }
+    let mut presented = cli_prefix(&selectors);
+    presented.extend(retained);
+    presented.extend_from_slice(&argv[index..]);
+    presented
+}
+
 /// Diagnose/remediation argv, under the same rule as the ready commands:
 /// bare when the pane's auto-detection reaches the hook's instance, else
 /// explicit (pane agents do not inherit HERDR_PLUGIN_STATE_DIR).
@@ -1209,6 +1355,7 @@ fn pending_event(pending: &PendingCheckIn) -> LifecycleEvent {
 /// commit once the text is delivered.
 struct CheckedIn {
     prepared_kind: Option<EventKind>,
+    command_routing: Option<CommandRouting>,
     text: Vec<u8>,
     fallback: Vec<String>,
     summary: Option<String>,
@@ -1321,6 +1468,16 @@ fn check_in(
         instance,
         Some(descriptor.boot_id),
     );
+    let stamp = |mut done: CheckedIn| {
+        done.command_routing = CommandRouting::from_context(
+            &instance.to_string(),
+            &ContinuationContext {
+                state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
+                host: Some(context.host_endpoint.to_string_lossy().into_owned()),
+            },
+        );
+        done
+    };
     let call = PaneCall {
         context: &context,
         paths: &paths,
@@ -1349,7 +1506,7 @@ fn check_in(
         // owned) and takes the ordinary check-in below; the stale mapping
         // never does. This probe never replays an earlier intent's result.
         PaneSeat::Resolved(seat, generation) => match call.reattach_by_continuity(event, true) {
-            Reattach::Done(done) => return Ok(*done),
+            Reattach::Done(done) => return Ok(stamp(*done)),
             Reattach::Declined => (seat, generation),
             Reattach::InstallFailed(detail) => return Err(install_failed(&detail)),
             Reattach::Pending => {
@@ -1359,12 +1516,13 @@ fn check_in(
             }
         },
         absent => match call.reattach_by_continuity(event, false) {
-            Reattach::Done(done) => return Ok(*done),
+            Reattach::Done(done) => return Ok(stamp(*done)),
             Reattach::InstallFailed(detail) => return Err(install_failed(&detail)),
             Reattach::Declined | Reattach::Pending => return Err(absent.refusal(pane)),
         },
     };
     call.check_in_seat_with_turn(event, turn, &seat, generation)
+        .map(stamp)
 }
 
 /// One hook invocation's connection to the daemon for one pane.
@@ -1690,6 +1848,7 @@ impl PaneCall<'_> {
             .check_in_seat(&presented, &seat, reattached.binding_generation)
             .unwrap_or_else(|_| CheckedIn {
                 prepared_kind: None,
+                command_routing: None,
                 text: Vec::new(),
                 fallback: self.fallback_for(&seat),
                 summary: None,
@@ -1743,11 +1902,20 @@ impl PaneCall<'_> {
         let (instance, deadline) = (self.instance, self.deadline);
         let clock = Arc::clone(&self.clock);
         let lifecycle = event.kind.mode() == crate::harness::context::CheckInMode::Lifecycle;
+        let pane = pane_inputs();
         let selectors = pane_selectors(
             Some(&context.state_dir),
             Some(&context.host_endpoint),
-            &pane_inputs(),
+            &pane,
         );
+        let target_context = ContinuationContext {
+            state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
+            host: Some(context.host_endpoint.to_string_lossy().into_owned()),
+        };
+        let routing = bridge::RecipientRouting {
+            target: &target_context,
+            pane: &pane,
+        };
         let mut fallback = cli_prefix(&selectors);
         // The pane derives the caller, so the agent's commands carry no seat.
         let prefix = fallback.clone();
@@ -1764,6 +1932,7 @@ impl PaneCall<'_> {
                     .map_err(|e| Failure::Unavailable(format!("render: {e:?}")))?;
                 return Ok(CheckedIn {
                     prepared_kind: None,
+                    command_routing: None,
                     text: text.into_bytes(),
                     fallback,
                     summary: None,
@@ -1775,6 +1944,7 @@ impl PaneCall<'_> {
             }
             return Ok(CheckedIn {
                 prepared_kind: None,
+                command_routing: None,
                 text: Vec::new(),
                 fallback,
                 summary: None,
@@ -1817,6 +1987,7 @@ impl PaneCall<'_> {
             });
             return Ok(CheckedIn {
                 prepared_kind: None,
+                command_routing: None,
                 actions: Some(next_actions(&prefix, boundary.digest.as_ref())),
                 text: boundary.text,
                 fallback,
@@ -1842,6 +2013,7 @@ impl PaneCall<'_> {
             clock,
             fallback,
             prefix,
+            &routing,
         )?;
         done.recovery = self.recovery_rows(event, seat);
         Ok(done)
@@ -1988,6 +2160,7 @@ fn lifecycle_check_in(
     clock: Arc<dyn Clock>,
     fallback: Vec<String>,
     prefix: Vec<String>,
+    routing: &bridge::RecipientRouting<'_>,
 ) -> Result<CheckedIn, Failure> {
     let journal = super::journal::Journal::open(paths.instance_dir.join("intents"))
         .map_err(|e| Failure::Unavailable(format!("intent journal: {:?}", e.kind())))?;
@@ -2044,6 +2217,7 @@ fn lifecycle_check_in(
                 output,
                 writer,
                 &mut carried.borrow_mut(),
+                Some(routing),
             );
         }
         bridge::run_hook_event_reporting_notices(
@@ -2058,6 +2232,7 @@ fn lifecycle_check_in(
             bridge::OverviewReason::None,
             writer,
             &mut carried.borrow_mut(),
+            Some(routing),
         )
     };
     // A request left pending by an earlier interrupted hook keeps its operation
@@ -2214,6 +2389,7 @@ fn lifecycle_check_in(
     });
     Ok(CheckedIn {
         prepared_kind,
+        command_routing: None,
         text,
         fallback,
         summary,
@@ -2556,6 +2732,7 @@ fn run_admitted_hook_since(
                     None,
                     None,
                     None,
+                    None,
                 )
             })
         } else {
@@ -2600,6 +2777,7 @@ fn run_admitted_hook_since(
     ) {
         Ok(CheckedIn {
             prepared_kind,
+            command_routing,
             text,
             fallback,
             summary,
@@ -2618,6 +2796,7 @@ fn run_admitted_hook_since(
                 actions.as_ref(),
                 overview.as_ref(),
                 recovery.as_ref(),
+                command_routing.as_ref(),
             );
             let (stdout, consumes, diagnostic) =
                 encode_prepared_result(registration, admitted, decoded, prepared_kind, context);

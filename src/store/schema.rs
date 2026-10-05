@@ -57,8 +57,10 @@ const V18: &str = include_str!("../../migrations/0018_warning_conditions.sql");
 const V19: &str = include_str!("../../migrations/0019_thread_names.sql");
 const V20: &str = include_str!("../../migrations/0020_recent_activity.sql");
 const V21: &str = include_str!("../../migrations/0021_invitation_rejections.sql");
-const V22: &str = include_str!("../../migrations/0022_harness_adapters.sql");
-pub(crate) const LATEST_VERSION: i64 = 22;
+const V22: &str = include_str!("../../migrations/0022_user_message_intent.sql");
+const V23: &str = include_str!("../../migrations/0023_channel_archival.sql");
+const V24: &str = include_str!("../../migrations/0024_harness_adapters.sql");
+pub(crate) const LATEST_VERSION: i64 = 24;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -154,6 +156,8 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V20))
                 .and_then(|_| conn.execute_batch(V21))
                 .and_then(|_| conn.execute_batch(V22))
+                .and_then(|_| conn.execute_batch(V23))
+                .and_then(|_| conn.execute_batch(V24))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -394,7 +398,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=22 => verify_existing(conn),
+        18..=24 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -459,7 +463,81 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    verify_existing_v22(conn)
+    verify_existing_v22(conn)?;
+    if (1..=22).contains(&version) {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V23)
+            .and_then(|_| conn.pragma_update(None, "user_version", 23));
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(store_error(error));
+            }
+        }
+    }
+    verify_existing_v23(conn)?;
+    if (1..=23).contains(&version) {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V24)
+            .map_err(store_error)
+            .and_then(|_| verify_existing_v23(conn))
+            .and_then(|_| verify_existing_v24(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 24)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_existing_v23(conn)?;
+    verify_existing_v24(conn)
+}
+
+/// Audit every additive archival object, including immutable/absorbing guards.
+/// V23 is DDL only; each statement starts with CREATE on its own line. Splitting
+/// on those boundaries retains trigger bodies (which contain semicolons).
+fn verify_existing_v23(conn: &Connection) -> Result<(), ApiError> {
+    let ddl = V23
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Preserve quoted literals and predicate bytes: case/whitespace folding
+    // inside a SQL string can silently turn a guard into a different condition.
+    let normalize = |sql: &str| sql.trim().trim_end_matches(';').trim().to_owned();
+    for object in ddl.trim().split("\nCREATE ") {
+        let sql = if object.starts_with("CREATE ") {
+            object.to_owned()
+        } else {
+            format!("CREATE {object}")
+        };
+        let mut words = sql.split_whitespace().skip(1);
+        let kind = words.next().unwrap_or_default().to_ascii_lowercase();
+        let name = words.next().unwrap_or_default();
+        let installed: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, name],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if installed.as_deref().map(normalize) != Some(normalize(&sql)) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered archival {kind} {name}"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn verify_existing_v22(conn: &Connection) -> Result<(), ApiError> {
@@ -467,10 +545,104 @@ fn verify_existing_v22(conn: &Connection) -> Result<(), ApiError> {
         sql.split_whitespace()
             .collect::<String>()
             .trim_end_matches(';')
+            .to_ascii_lowercase()
+    };
+    let trigger = "messages_user_intent_insert";
+    let installed: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?1",
+            [trigger],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let marker = format!("CREATE TRIGGER {trigger}");
+    let expected = V22.split_once(&marker).and_then(|(_, tail)| {
+        tail.rfind("END;")
+            .map(|end| format!("{marker}{}", &tail[..end + 4]))
+    });
+    if installed.as_deref().map(normalize) != expected.as_deref().map(normalize) {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "missing or altered user intent insertion guard",
+        ));
+    }
+    for (table, column) in [
+        ("messages", "user_intent"),
+        ("summary_transitions", "rule_change"),
+        ("summary_jobs", "fetched_bundle_json"),
+    ] {
+        let shape: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2 AND upper(type)='TEXT' AND [notnull]=0 AND dflt_value IS NULL AND pk=0)",
+            params![table,column],|r|r.get(0)
+        ).map_err(store_error)?;
+        let installed: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        let marker = format!("ALTER TABLE {table} ADD COLUMN ");
+        let expected = V22.split_once(&marker).and_then(|(_, tail)| {
+            tail.split_once(';')
+                .map(|(declaration, _)| normalize(declaration))
+        });
+        let sql = normalize(&installed);
+        // SQLite inserts appended columns before existing table constraints.
+        // Split only at top-level commas to retain each complete CHECK domain.
+        let body = sql
+            .split_once('(')
+            .and_then(|(_, body)| body.strip_suffix(")strict"));
+        let declaration = body.and_then(|body| {
+            let mut depth = 0u32;
+            let mut quoted = false;
+            let mut start = 0;
+            let mut found = None;
+            for (offset, ch) in body
+                .char_indices()
+                .chain(std::iter::once((body.len(), ',')))
+            {
+                if ch == '\'' {
+                    quoted = !quoted;
+                }
+                if quoted {
+                    continue;
+                }
+                match ch {
+                    '(' => depth += 1,
+                    ')' => depth = depth.saturating_sub(1),
+                    ',' if depth == 0 => {
+                        let candidate = &body[start..offset];
+                        if candidate.starts_with(&format!("{column}text")) {
+                            found = Some(candidate.to_owned());
+                        }
+                        start = offset + 1;
+                    }
+                    _ => {}
+                }
+            }
+            found
+        });
+        if !shape || declaration != expected {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered user intent column {table}.{column}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_existing_v24(conn: &Connection) -> Result<(), ApiError> {
+    let normalize = |sql: &str| {
+        sql.split_whitespace()
+            .collect::<String>()
+            .trim_end_matches(';')
             .replace('"', "")
             .to_ascii_lowercase()
     };
-    for statement in V22.split(';') {
+    for statement in V24.split(';') {
         let clean = statement
             .lines()
             .filter(|line| !line.trim_start().starts_with("--"))
@@ -511,7 +683,7 @@ fn verify_existing_v22(conn: &Connection) -> Result<(), ApiError> {
         if actual.as_deref().map(normalize) != Some(normalize(&expected)) {
             return Err(api_error(
                 ErrorCode::IncompatibleSchema,
-                format!("incompatible v22 {kind} {installed_name}"),
+                format!("incompatible v24 {kind} {installed_name}"),
             ));
         }
     }
@@ -830,9 +1002,9 @@ fn verify_v12_harness_evidence(conn: &Connection) -> Result<(), ApiError> {
     if conn
         .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
         .map_err(store_error)?
-        >= 22
+        >= 24
     {
-        return verify_existing_v22(conn);
+        return verify_existing_v24(conn);
     }
     let normalize = |sql: &str| {
         sql.trim()
@@ -1395,9 +1567,9 @@ fn verify_existing_v9(conn: &Connection) -> Result<(), ApiError> {
     if conn
         .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
         .map_err(store_error)?
-        >= 22
+        >= 24
     {
-        return verify_existing_v22(conn);
+        return verify_existing_v24(conn);
     }
     let sql: Option<String> = conn
         .query_row(
@@ -3432,7 +3604,7 @@ pub fn execute_budgeted_idempotent_transaction(
 
 // Allowed: idempotent transaction skeleton: identity, budgets and its phase closures.
 #[allow(clippy::too_many_arguments)]
-fn execute_budgeted_idempotent_transaction_with_constraints(
+pub(crate) fn execute_budgeted_idempotent_transaction_with_constraints(
     context: &StoreContext,
     conn: &mut Connection,
     budget: &crate::protocol::time::CallBudget,

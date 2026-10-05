@@ -1,0 +1,12 @@
+{
+  "findings": [
+    {
+      "claim": "The design provides no honest closure path for a query that the human explicitly withdraws or replaces before it is answered.",
+      "location": "Summary lifecycle table; Final implementation contracts / Deterministic record and transition contract",
+      "category": "completeness",
+      "external": false,
+      "evidence": "The lifecycle table says a query resolves when a later cited message answers it, whereas a request may resolve on explicit cancellation and a rule may be withdrawn or replaced. The finalized status contract says 'Query and Request start Open and accept only Resolved' and explicitly defines cancellation only for requests: 'Explicit cancellation of a request is a resolution.' Consequently, after a query such as 'What is our progress?' is followed by human input saying 'Never mind that question; report blockers instead,' the design neither permits Superseded nor defines cancellation as a valid query resolution. Leaving it open preserves work the human withdrew; marking it answered misrepresents the stated resolution semantics. The required worker guidance and tests also omit this case.",
+      "kind": "GAP"
+    }
+  ]
+}

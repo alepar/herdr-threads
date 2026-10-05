@@ -1550,6 +1550,7 @@ fn public_facade_creates_invites_sends_accepts_acks_and_archives_with_stable_ids
         operation: OperationId::new("send"),
         claim: fixture_claim("s1", "s1"),
         relays_user: false,
+        user_intent: None,
     };
     loop {
         match StorePort::prepare_send_step(

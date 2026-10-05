@@ -88,7 +88,8 @@ fn lane_set_is_a_set_over_all_lanes() {
             "wake",
             "observation",
             "retention",
-            "admission-observer"
+            "admission-observer",
+            "archival"
         ]
     );
 }

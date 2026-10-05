@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Default)]
 pub struct HostReachability {
     down: AtomicBool,
+    archival: Mutex<ArchivalReachability>,
     /// Down-to-up transitions so far; the wake lane drops its in-memory
     /// refusal backoff when this moves, so its first pass after recovery
     /// attempts every due seat promptly.
@@ -46,6 +47,7 @@ impl HostReachability {
     /// A capture was frozen for unavailability.
     pub fn mark_down(&self) {
         self.down.store(true, Ordering::SeqCst);
+        self.mark_archival_uncertain();
     }
 
     /// Herdr answered a capture. On the down-to-up transition this counts a
@@ -58,5 +60,85 @@ impl HostReachability {
                 pacer.kick();
             }
         }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ArchivalReachability {
+    pub generation: u64,
+    pub coherent: bool,
+    pub published_at: Option<u64>,
+}
+impl HostReachability {
+    pub fn archival_state(&self, now: u64) -> ArchivalReachability {
+        self.with_archival_state(now, |state| state)
+    }
+    /// Hold only local evidence synchronization across the short deciding store
+    /// transaction. No host or journal I/O is permitted inside this closure.
+    pub fn with_archival_state<R>(
+        &self,
+        now: u64,
+        work: impl FnOnce(ArchivalReachability) -> R,
+    ) -> R {
+        let guard = self.archival.lock();
+        let mut state = guard.as_ref().map(|v| **v).unwrap_or_default();
+        state.coherent &= state
+            .published_at
+            .is_some_and(|at| now >= at && now - at <= crate::store::archival::MAX_GAP_MS as u64);
+        work(state)
+    }
+    pub fn mark_archival_published(&self, now: u64) {
+        if let Ok(mut state) = self.archival.lock() {
+            if !state.coherent
+                || state.published_at.is_none_or(|at| {
+                    now < at || now - at > crate::store::archival::MAX_GAP_MS as u64
+                })
+            {
+                state.generation = state.generation.saturating_add(1);
+            }
+            state.coherent = true;
+            state.published_at = Some(now);
+        }
+    }
+    pub fn mark_archival_uncertain(&self) {
+        if let Ok(mut state) = self.archival.lock() {
+            if state.coherent {
+                state.generation = state.generation.saturating_add(1);
+            }
+            state.coherent = false;
+        }
+    }
+}
+
+#[cfg(test)]
+mod archival_tests {
+    use super::*;
+    #[test]
+    fn archival_reachability_requires_publication_and_resets_on_every_outage() {
+        let state = HostReachability::default();
+        assert!(!state.archival_state(0).coherent);
+        state.mark_up();
+        assert!(
+            !state.archival_state(0).coherent,
+            "wake's initial-up convention is not archival evidence"
+        );
+        state.mark_archival_published(10);
+        let good = state.archival_state(10);
+        assert!(good.coherent);
+        assert!(
+            !state.archival_state(120_011).coherent,
+            "stale capture vetoes even without explicit down"
+        );
+        state.mark_down();
+        let down = state.archival_state(11);
+        assert!(!down.coherent);
+        assert!(down.generation > good.generation);
+        state.mark_up();
+        assert!(!state.archival_state(12).coherent);
+        state.mark_archival_published(13);
+        assert!(state.archival_state(13).coherent);
+        assert!(state.archival_state(13).generation > down.generation);
+        state.mark_archival_uncertain();
+        assert!(!state.archival_state(14).coherent);
     }
 }

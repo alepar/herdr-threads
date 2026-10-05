@@ -1,9 +1,9 @@
 //! Submission validation (spec §6). Deterministic; the first failure rejects
 //! with its reason. Rules run in order across the whole submission.
 use crate::protocol::summary::{
-    ItemBody, ItemStatus, JobBundle, NewStatus, Submission, valid_provenance_label,
+    ItemBody, ItemStatus, JobBundle, NewStatus, Submission, UserIntent, valid_provenance_label,
 };
-use crate::summary::fold::status_allowed;
+use crate::summary::fold::{evidence_allowed, status_allowed};
 use std::collections::HashMap;
 
 /// What a `target` resolves to: where the item was introduced and its kind.
@@ -30,7 +30,8 @@ impl Target<'_> {
 }
 
 /// Validate a raw submission against its job bundle. `priority_at(seq)` reads
-/// `is_priority` of the message at `seq`; `text_at(seq)` is that message's text.
+/// ordinary canonical human/relayed priority at `seq`; `text_at(seq)` is that
+/// message's text. The worker judges meaning; these checks bound its evidence.
 pub fn validate(
     bundle: &JobBundle,
     submission: &serde_json::Value,
@@ -111,6 +112,23 @@ pub fn validate(
             return Err(out_of_range(
                 &format!("open item {} seq", o.reference),
                 o.seq,
+            ));
+        }
+    }
+    for o in &parsed.new_open_items {
+        if bundle.fold.entries.iter().any(|e| {
+            e.item.seq == o.seq
+                && matches!(
+                    e.item.body,
+                    ItemBody::UserInstruction {
+                        user_intent: Some(_),
+                        ..
+                    }
+                )
+        }) {
+            return Err(format!(
+                "open item {} duplicates classified source {}",
+                o.reference, o.seq
             ));
         }
     }
@@ -205,6 +223,32 @@ pub fn validate(
                 t.new_status, t.target
             ));
         }
+        match target.body {
+            TargetBody::Fold(body) => {
+                evidence_allowed(body, t.new_status, t.rule_change, priority_at(t.cite_seq))
+                    .map_err(|reason| format!("transition on {}: {reason}", t.target))?;
+                if matches!(
+                    body,
+                    ItemBody::UserInstruction {
+                        user_intent: Some(UserIntent::Rule),
+                        ..
+                    }
+                ) && t.quote.as_ref().is_none_or(|q| q.trim().is_empty())
+                {
+                    return Err(format!(
+                        "transition on {}: rule supersession needs a nonempty quote",
+                        t.target
+                    ));
+                }
+            }
+            _ if t.rule_change.is_some() => {
+                return Err(format!(
+                    "transition on {}: rule_change is allowed only for a rule",
+                    t.target
+                ));
+            }
+            _ => {}
+        }
     }
     Ok(parsed)
 }
@@ -239,6 +283,7 @@ mod tests {
             author_seat: None,
             author_role: Some(AuthorRole::Human),
             relays_user: false,
+            user_intent: None,
             text: Some("do it".into()),
             text_ref: None,
             message_id: None,
@@ -297,7 +342,7 @@ mod tests {
 
     fn good() -> Value {
         json!({
-            "submission_schema": 1,
+            "submission_schema": SUBMISSION_SCHEMA,
             "narrative": "sa decided things",
             "new_decisions": [{"ref": "d1", "seq": 13, "by_seat": "sa", "text": "go", "quote": "hello 13"}],
             "new_open_items": [{"ref": "o1", "seq": 14, "kind": "ask", "from_seat": "sa", "text": "who?"}],
@@ -343,8 +388,14 @@ mod tests {
     fn rule1_schema_and_shape() {
         let b = bundle(0);
         assert!(
-            reject(&b, &edit(|v| v["submission_schema"] = json!(2)))
-                .contains("unknown submission_schema 2")
+            reject(
+                &b,
+                &edit(|v| v["submission_schema"] = json!(SUBMISSION_SCHEMA + 1))
+            )
+            .contains(&format!(
+                "unknown submission_schema {}",
+                SUBMISSION_SCHEMA + 1
+            ))
         );
         assert!(reject(&b, &json!([1])).contains("not a JSON object"));
         assert!(reject(&b, &edit(|v| v["surprise"] = json!(1))).contains("invalid submission"));
@@ -355,16 +406,14 @@ mod tests {
         let shadow = edit(|v| v["new_open_items"][0]["ref"] = json!("i.3"));
         assert!(reject(&b, &shadow).contains("collides with a fold item id"));
         // Positive: a minimal submission.
-        let minimal =
-            json!({"submission_schema": 1, "narrative": "n", "prompt_version": "p", "model": "m"});
+        let minimal = json!({"submission_schema": SUBMISSION_SCHEMA, "narrative": "n", "prompt_version": "p", "model": "m"});
         assert!(check(&b, &minimal).is_ok());
     }
 
     #[test]
     fn rule1_rollups_carry_only_narrative() {
         let b = bundle(1);
-        let narrative_only =
-            json!({"submission_schema": 1, "narrative": "n", "prompt_version": "p", "model": "m"});
+        let narrative_only = json!({"submission_schema": SUBMISSION_SCHEMA, "narrative": "n", "prompt_version": "p", "model": "m"});
         assert!(check(&b, &narrative_only).is_ok());
         let expected = "rollup submissions carry only narrative, prompt_version and model";
         for field in [
@@ -395,7 +444,7 @@ mod tests {
         let mut r = bundle(1);
         r.narrative_bytes = 100;
         r.budget_bytes = 200;
-        let big_labels = json!({"submission_schema": 1, "narrative": "n", "prompt_version": "p".repeat(64), "model": "m".repeat(64)});
+        let big_labels = json!({"submission_schema": SUBMISSION_SCHEMA, "narrative": "n", "prompt_version": "p".repeat(64), "model": "m".repeat(64)});
         assert!(check(&r, &big_labels).is_ok());
         r.budget_bytes = 150;
         assert!(reject(&r, &big_labels).contains("byte budget"));
@@ -497,7 +546,7 @@ mod tests {
     fn rule5_status_allowed_for_kind() {
         let b = bundle(0);
         let transition = |target: &str, status: &str| {
-            json!({"submission_schema": 1, "narrative": "n", "prompt_version": "p", "model": "m",
+            json!({"submission_schema": SUBMISSION_SCHEMA, "narrative": "n", "prompt_version": "p", "model": "m",
                    "new_open_items": [{"ref": "o1", "seq": 12, "kind": "ask", "from_seat": "sa", "text": "q"}],
                    "new_decisions": [{"ref": "d1", "seq": 12, "by_seat": "sa", "text": "t"}],
                    "transitions": [{"target": target, "new_status": status, "cite_seq": 19}]})
@@ -540,5 +589,137 @@ mod tests {
             v["transitions"][1]["target"] = json!("nope");
         });
         assert!(reject(&bundle(0), &v).contains("outside the job range"));
+    }
+    fn intent_bundle(intent: crate::protocol::summary::UserIntent) -> JobBundle {
+        let mut b = bundle(0);
+        let e = b
+            .fold
+            .entries
+            .iter_mut()
+            .find(|e| e.item.id == "i.12")
+            .unwrap();
+        if let ItemBody::UserInstruction { user_intent, .. } = &mut e.item.body {
+            *user_intent = Some(intent);
+        }
+        e.status = if intent == crate::protocol::summary::UserIntent::Rule {
+            ItemStatus::Active
+        } else {
+            ItemStatus::Open
+        };
+        b
+    }
+    fn intent_transition() -> Value {
+        json!({"submission_schema": SUBMISSION_SCHEMA, "narrative": "n", "prompt_version": "p", "model": "m",
+            "transitions": [{"target": "i.12", "new_status": "superseded", "cite_seq": 16,
+                "rule_change": "withdrawn", "quote": "hello 16"}]})
+    }
+
+    #[test]
+    fn user_intent_rule_evidence_guards() {
+        use crate::protocol::summary::UserIntent::{Query, Request, Rule};
+        let b = intent_bundle(Rule);
+        let valid = intent_transition();
+        for change in ["withdrawn", "replaced"] {
+            let mut v = valid.clone();
+            v["transitions"][0]["rule_change"] = json!(change);
+            assert!(check(&b, &v).is_ok(), "{change}");
+        }
+        // Quotes must exist, be nonblank and exactly match the cited source.
+        for quote in [Value::Null, json!(""), json!(" "), json!("Hello 16")] {
+            let mut v = valid.clone();
+            v["transitions"][0]["quote"] = quote.clone();
+            assert!(check(&b, &v).is_err(), "quote {quote}");
+        }
+        let mut v = valid.clone();
+        v["transitions"][0].as_object_mut().unwrap().remove("quote");
+        assert!(check(&b, &v).is_err());
+        v = valid.clone();
+        v["transitions"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("rule_change");
+        assert!(check(&b, &v).is_err());
+        for status in ["resolved", "done"] {
+            let mut v = valid.clone();
+            v["transitions"][0]["new_status"] = json!(status);
+            assert!(check(&b, &v).is_err(), "{status}");
+        }
+        for cite in [10, 11, 12, 21] {
+            let mut v = valid.clone();
+            v["transitions"][0]["cite_seq"] = json!(cite);
+            v["transitions"][0]["quote"] = json!(format!("hello {cite}"));
+            assert!(check(&b, &v).is_err(), "cite {cite}");
+        }
+        // The callback contract excludes system events independently of role
+        // and relay. All sources have the same exact quote, so only recorded
+        // source kind and priority determine acceptance.
+        use crate::protocol::{results::MessageKind, summary::is_priority};
+        for (role, relay, kind, accepted) in [
+            (AuthorRole::Human, false, MessageKind::Ordinary, true),
+            (AuthorRole::Agent, true, MessageKind::Ordinary, true),
+            (AuthorRole::Agent, false, MessageKind::Ordinary, false),
+            (AuthorRole::Human, false, MessageKind::Info, false),
+            (AuthorRole::Agent, true, MessageKind::Warn, false),
+        ] {
+            let priority =
+                |seq| seq == 16 && kind == MessageKind::Ordinary && is_priority(Some(role), relay);
+            assert_eq!(
+                validate(&b, &valid, &priority, &text_at).is_ok(),
+                accepted,
+                "{role:?} relay={relay} {kind:?}"
+            );
+        }
+        for intent in [Query, Request] {
+            let b = intent_bundle(intent);
+            let mut v = valid.clone();
+            v["transitions"][0] =
+                json!({"target": "i.12", "new_status": "resolved", "cite_seq": 15});
+            assert!(check(&b, &v).is_ok(), "agent answer/completion {intent:?}");
+            v["transitions"][0]["rule_change"] = json!("replaced");
+            assert!(check(&b, &v).is_err(), "non-rule {intent:?}");
+        }
+        for (target, status) in [
+            ("i.3", "done"),
+            ("cv.0.1", "resolved"),
+            ("cv.0.2", "superseded"),
+        ] {
+            let mut v = valid.clone();
+            v["transitions"][0] = json!({"target": target, "new_status": status, "cite_seq": 16, "rule_change": "withdrawn"});
+            assert!(check(&bundle(0), &v).is_err(), "non-rule {target}");
+        }
+        for (field, item, status) in [
+            (
+                "new_decisions",
+                json!({"ref": "d", "seq": 13, "by_seat": "sa", "text": "d"}),
+                "superseded",
+            ),
+            (
+                "new_open_items",
+                json!({"ref": "d", "seq": 13, "kind": "ask", "from_seat": "sa", "text": "q"}),
+                "resolved",
+            ),
+        ] {
+            let mut v = valid.clone();
+            v[field] = json!([item]);
+            v["transitions"][0] = json!({"target": "d", "new_status": status, "cite_seq": 16, "rule_change": "withdrawn"});
+            assert!(check(&bundle(0), &v).is_err(), "proposed non-rule {field}");
+        }
+    }
+
+    #[test]
+    fn user_intent_duplicate_classified_open_item_rejected() {
+        use crate::protocol::summary::UserIntent::{Query, Request, Rule};
+        for intent in [Query, Request, Rule] {
+            let b = intent_bundle(intent);
+            for kind in ["ask", "question", "commitment", "blocker"] {
+                let v = json!({"submission_schema": SUBMISSION_SCHEMA, "narrative": "n", "prompt_version": "p", "model": "m",
+                    "new_open_items": [{"ref": "other-id", "seq": 12, "kind": kind, "from_seat": "sa", "text": "duplicate"}]});
+                assert!(check(&b, &v).is_err(), "{intent:?} {kind}");
+                assert!(check(&bundle(0), &v).is_ok(), "unclassified {kind}");
+                let mut agent = v.clone();
+                agent["new_open_items"][0]["seq"] = json!(14);
+                assert!(check(&b, &agent).is_ok(), "agent discovered {kind}");
+            }
+        }
     }
 }

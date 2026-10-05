@@ -4196,42 +4196,212 @@ fn thread_names_resolve_all_memberships_archives_ids_and_instances() {
     .unwrap();
     db.execute("UPDATE seats SET target_id='p-own' WHERE id='s'", [])
         .unwrap();
-    let target_error = query(
-        &store,
+    assert_eq!(
+        query(
+            &store,
+            "i",
+            &Command::ResolveThread(crate::protocol::commands::ResolveThreadQuery {
+                selector: "team café".into(),
+                caller: None,
+                caller_target: Some(crate::protocol::ids::HostTargetId::new("p-own")),
+            }),
+            &budget(),
+        )
+        .unwrap(),
+        CommandResult::ThreadResolved(ThreadId::new("t"))
+    );
+    assert_eq!(
+        resolve("team café").unwrap(),
+        CommandResult::ThreadResolved(ThreadId::new("t"))
+    );
+}
+
+fn named_thread(db: &rusqlite::Connection, id: &str, archived: bool, membership: Option<&str>) {
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,name,archived) VALUES (?1,'i','topic','goal',0,0,'team café',?2)",params![id, archived]).unwrap();
+    if let Some(state) = membership {
+        db.execute(
+            "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES (?1,'s',?2,0)",
+            params![id, state],
+        )
+        .unwrap();
+    }
+}
+
+fn resolve_name(
+    store: &super::super::connection::StoreContext,
+    caller: Option<&str>,
+    target: Option<&str>,
+) -> Result<CommandResult, crate::protocol::results::ApiError> {
+    query(
+        store,
         "i",
         &Command::ResolveThread(crate::protocol::commands::ResolveThreadQuery {
             selector: "team café".into(),
-            caller: None,
-            caller_target: Some(crate::protocol::ids::HostTargetId::new("p-own")),
+            caller: caller.map(SeatId::new),
+            caller_target: target.map(crate::protocol::ids::HostTargetId::new),
         }),
         &budget(),
     )
-    .unwrap_err();
-    assert!(
-        target_error.detail.contains("membership=joined"),
-        "{}",
-        target_error.detail
-    );
-    let error = resolve("team café").unwrap_err();
-    assert_eq!(error.code, ErrorCode::Conflict);
-    assert!(
-        error.detail.contains("tABC12345")
-            && error.detail.contains("archived=true")
-            && error.detail.contains("membership=joined")
-            && error.detail.contains("membership=none"),
-        "{}",
-        error.detail
-    );
-    // Conflict detection is independent of directory paging and bounded even for many matches.
-    for n in 0..12 {
-        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,name) VALUES (?1,'i',?2,'goal',0,0,'team café')",params![format!("tn{n}"),"hostile\n\u{1b}[31m".repeat(50)]).unwrap();
+}
+
+// Kills pooled resolution and applying the nine-row bound before selecting a tier.
+#[test]
+fn thread_names_joined_match_wins_over_large_lower_tiers() {
+    let (store, db) = fixture();
+    for n in 0..1000 {
+        named_thread(&db, &format!("lower{n}"), n % 2 == 0, Some("left"));
     }
-    let error = resolve("team café").unwrap_err();
-    assert!(error.detail.contains("additional candidates omitted"));
-    assert!(!error.detail.contains('\u{1b}'));
-    assert!(error.detail.len() < 6000);
-    let plan: String = db.query_row("EXPLAIN QUERY PLAN SELECT id FROM threads INDEXED BY threads_instance_name WHERE instance_id='i' AND name='team café' LIMIT 9", [], |r|r.get(3)).unwrap();
-    assert!(plan.contains("threads_instance_name"), "{plan}");
+    named_thread(&db, "late-joined", false, Some("joined"));
+    assert_eq!(
+        resolve_name(&store, Some("s"), None).unwrap(),
+        CommandResult::ThreadResolved(ThreadId::new("late-joined"))
+    );
+}
+
+#[test]
+fn thread_names_archived_joined_match_wins_over_active_matches() {
+    let (store, db) = fixture();
+    named_thread(&db, "old-joined", true, Some("joined"));
+    named_thread(&db, "active", false, None);
+    named_thread(&db, "active-invite", false, Some("invited"));
+    assert_eq!(
+        resolve_name(&store, Some("s"), None).unwrap(),
+        CommandResult::ThreadResolved(ThreadId::new("old-joined"))
+    );
+}
+
+#[test]
+fn thread_names_no_caller_skips_archived_joined_tier() {
+    let (store, db) = fixture();
+    named_thread(&db, "old-joined", true, Some("joined"));
+    named_thread(&db, "active", false, None);
+    assert_eq!(
+        resolve_name(&store, None, None).unwrap(),
+        CommandResult::ThreadResolved(ThreadId::new("active"))
+    );
+}
+
+#[test]
+fn thread_names_active_match_wins_over_archived_history_without_joined_caller() {
+    let (store, db) = fixture();
+    named_thread(&db, "old", true, Some("left"));
+    named_thread(&db, "old-invite", true, Some("invited"));
+    named_thread(&db, "active", false, Some("left"));
+    for caller in [None, Some("s"), Some("missing")] {
+        assert_eq!(
+            resolve_name(&store, caller, None).unwrap(),
+            CommandResult::ThreadResolved(ThreadId::new("active"))
+        );
+    }
+}
+
+// Kills skipping archived joins, falling through conflicts, and unbounded/raw diagnostics.
+#[test]
+fn thread_names_conflicts_are_bounded_escaped_and_limited_to_winning_tier() {
+    for (tier, archived, membership) in [
+        ("joined", true, Some("joined")),
+        ("active", false, Some("invited")),
+        ("history", true, Some("left")),
+    ] {
+        let (store, db) = fixture();
+        for n in 0..12 {
+            named_thread(&db, &format!("candidate{n}"), archived, membership);
+        }
+        if tier == "joined" {
+            named_thread(&db, "lower-tier", false, None);
+        } else if tier == "active" {
+            named_thread(&db, "lower-tier", true, None);
+        }
+        db.execute(
+            "UPDATE threads SET topic=?1 WHERE name='team café'",
+            ["hostile\n\u{1b}[31m".repeat(40)],
+        )
+        .unwrap();
+        let error = resolve_name(&store, Some("s"), None).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert!(
+            error.detail.contains(&format!("{tier} tier")),
+            "{}",
+            error.detail
+        );
+        assert!(error.detail.contains("additional candidates omitted"));
+        assert_eq!(
+            error
+                .detail
+                .lines()
+                .filter(|line| line.contains("topic="))
+                .count(),
+            8
+        );
+        assert!(!error.detail.contains("lower-tier"), "{}", error.detail);
+        assert!(!error.detail.contains('\u{1b}'));
+        assert!(error.detail.len() < 6000);
+    }
+}
+
+// Kills treating an unresolved/retired/foreign seat claim as a canonical joined caller.
+#[test]
+fn thread_names_joined_tier_requires_resolved_instance_scoped_caller() {
+    for state in ["unresolved", "retired", "foreign", "missing"] {
+        let (store, db) = fixture();
+        named_thread(&db, "old-joined", true, Some("joined"));
+        named_thread(&db, "active", false, None);
+        if state == "foreign" {
+            db.execute(
+                "INSERT INTO host_instances(id,created_at) VALUES ('other',0)",
+                [],
+            )
+            .unwrap();
+            db.execute("UPDATE seats SET instance_id='other' WHERE id='s'", [])
+                .unwrap();
+        } else if state != "missing" {
+            db.execute(
+                "UPDATE seats SET state=?1,retired_at=?2 WHERE id='s'",
+                params![state, (state == "retired").then_some(1)],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            resolve_name(
+                &store,
+                Some(if state == "missing" { "missing" } else { "s" }),
+                None
+            )
+            .unwrap(),
+            CommandResult::ThreadResolved(ThreadId::new("active")),
+            "{state}"
+        );
+    }
+}
+
+#[test]
+fn thread_names_actual_caller_beats_inherited_target_and_foreign_target_is_ignored() {
+    let (store, db) = fixture();
+    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('other',0);
+        UPDATE seats SET target_id='own' WHERE id='s';
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at,target_id) VALUES ('inherited','i','resolved','native',1,0,'inherited-pane'),('foreign','other','resolved','native',1,0,'foreign-pane');").unwrap();
+    named_thread(&db, "own-joined", true, Some("joined"));
+    named_thread(&db, "inherited-joined", true, None);
+    named_thread(&db, "foreign-joined", true, None);
+    named_thread(&db, "active", false, None);
+    db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('inherited-joined','inherited','joined',0),('foreign-joined','foreign','joined',0)").unwrap();
+    assert_eq!(
+        resolve_name(&store, Some("s"), Some("inherited-pane")).unwrap(),
+        CommandResult::ThreadResolved(ThreadId::new("own-joined"))
+    );
+    assert_eq!(
+        resolve_name(&store, None, Some("own")).unwrap(),
+        CommandResult::ThreadResolved(ThreadId::new("own-joined"))
+    );
+    assert_eq!(
+        resolve_name(&store, None, Some("foreign-pane")).unwrap(),
+        CommandResult::ThreadResolved(ThreadId::new("active"))
+    );
+    // An explicit unavailable caller never adopts the inherited pane's joined channels.
+    assert_eq!(
+        resolve_name(&store, Some("missing"), Some("inherited-pane")).unwrap(),
+        CommandResult::ThreadResolved(ThreadId::new("active"))
+    );
 }
 
 #[test]
@@ -4613,5 +4783,138 @@ fn adapter_inbox_batch_candidates_require_canonical_registered_agent() {
                 .unwrap(),
             None
         );
+    }
+}
+
+#[test]
+fn user_intent_inbox_canonical_claims_survive_full_and_chunked_output() {
+    use crate::protocol::{
+        results::InboxBatchItem,
+        summary::{AuthorRole, UserIntent},
+    };
+    for (role, relay) in [
+        (Some(AuthorRole::Human), false),
+        (Some(AuthorRole::Human), true),
+        (Some(AuthorRole::Agent), true),
+        (Some(AuthorRole::Service), false),
+        (None, false),
+    ] {
+        let intents = if matches!(role, Some(AuthorRole::Human)) || relay {
+            vec![
+                None,
+                Some(UserIntent::Query),
+                Some(UserIntent::Request),
+                Some(UserIntent::Rule),
+            ]
+        } else {
+            vec![None]
+        };
+        for intent in intents {
+            for long in [false, true] {
+                let (store, db) = fixture();
+                bind_query_agent(&db);
+                let body = if long {
+                    "α".repeat(900)
+                } else {
+                    "quoted rule".to_owned()
+                };
+                // Seed a migrated historical claim. The ordinary insert guard forbids
+                // fresh sends from manufacturing backfill; restore it before querying.
+                let insert_guard: String = db.query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='messages_summary_author_insert'",
+                    [], |r| r.get(0)).unwrap();
+                db.execute_batch("DROP TRIGGER messages_summary_author_insert")
+                    .unwrap();
+                db.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at,author_role,relays_user,user_intent,author_role_backfilled) VALUES ('i',1,'m-intent','t',1,'ordinary',?5,?1,0,?2,?3,?4,?6)",
+                    rusqlite::params![body, role.map(AuthorRole::as_str), relay, intent.map(UserIntent::as_str),
+                        if role == Some(AuthorRole::Service) { None } else { Some("s") }, role.is_some() && intent.is_none()]).unwrap();
+                db.execute_batch(&insert_guard).unwrap();
+                db.execute_batch("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m-intent','t','s','pending',300); UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
+                let mut request = PageRequest {
+                    cursor: None,
+                    limit: 1,
+                    max_bytes: 1024,
+                };
+                let mut assembled = String::new();
+                let mut chunks = 0;
+                loop {
+                    let result = query(
+                        &store,
+                        "i",
+                        &Command::InboxBatch(InboxQuery {
+                            seat: Some(SeatId::new("s")),
+                            page: request.clone(),
+                        }),
+                        &budget(),
+                    )
+                    .unwrap();
+                    let CommandResult::InboxBatch(batch) = &result else {
+                        panic!("wrong result")
+                    };
+                    let InboxBatchItem::Message {
+                        author_role,
+                        relays_user,
+                        user_intent,
+                        author_role_backfilled,
+                        body: chunk,
+                        ..
+                    } = &batch.items[0]
+                    else {
+                        panic!("wrong item")
+                    };
+                    assert_eq!(
+                        (*author_role, *relays_user, *user_intent),
+                        (role, relay, intent)
+                    );
+                    assert_eq!(*author_role_backfilled, role.is_some() && intent.is_none());
+                    let json = serde_json::to_value(&result).unwrap();
+                    let fields = &json["data"]["items"][0];
+                    if *author_role_backfilled {
+                        assert_eq!(fields["author_role_backfilled"], true);
+                    } else {
+                        assert!(fields.get("author_role_backfilled").is_none());
+                    }
+                    let text = String::from_utf8(
+                        crate::protocol::output::encode_selected(
+                            &result,
+                            &OutputSpec {
+                                format: OutputFormat::Text,
+                                ..OutputSpec::default()
+                            },
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                    let source = if role == Some(AuthorRole::Human) {
+                        " [human]"
+                    } else {
+                        ""
+                    };
+                    let relayed = if relay { " [relays user]" } else { "" };
+                    let marker = intent.map_or(String::new(), |i| format!(" [{}]", i.as_str()));
+                    assert!(
+                        text.contains(&format!(
+                            "from {}{source}{relayed}{marker} bytes",
+                            if role == Some(AuthorRole::Service) {
+                                "service"
+                            } else {
+                                "s"
+                            }
+                        )),
+                        "{text}"
+                    );
+                    assert!(text.len() <= 1024, "claims included in byte accounting");
+                    assembled.push_str(chunk);
+                    chunks += 1;
+                    if !batch.has_more {
+                        break;
+                    }
+                    request.cursor = batch.next_cursor.clone();
+                    assert!(chunks < 20, "continuation must advance");
+                }
+                assert_eq!(assembled, body);
+                assert_eq!(chunks > 1, long, "exercise full and chunked producers");
+            }
+        }
     }
 }
