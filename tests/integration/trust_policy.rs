@@ -226,7 +226,7 @@ struct World {
     root: PathBuf,
     state: PathBuf,
     herdr: Herdr,
-    claude_hook: String,
+    claude_hooks: Value,
     codex_hook: String,
     /// The reconciliation marker recorded before the latest restart, so a
     /// wait cannot be satisfied by the previous daemon's stale marker.
@@ -250,30 +250,20 @@ impl World {
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let scratch = Scratch(root.clone());
         let state = root.join("state");
-        // The installed hook parses only under a harness version it can observe
-        // on PATH: pinned reporters stand in for the installed `claude`/`codex`.
+        // Executable availability is metadata only; these wrappers must not
+        // be invoked to admit installed lifecycle/tool registrations.
         let bin = root.join("bin");
         fs::create_dir_all(&bin).unwrap();
-        for (name, line) in [
-            ("claude", "2.1.283 (Claude Code)"),
-            ("codex", "codex-cli 0.157.1"),
-        ] {
+        for name in ["claude", "codex"] {
             use std::os::unix::fs::PermissionsExt;
             let path = bin.join(name);
-            fs::write(&path, format!("#!/bin/sh\necho '{line}'\n")).unwrap();
+            fs::write(&path, "#!/bin/sh\nexit 99\n").unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-            // A freshly written script's first exec can outlast the hook's
-            // version-observation deadline on macOS: warm it here.
-            let warm = Command::new(&path).arg("--version").output().unwrap();
-            assert!(warm.status.success());
         }
         let argv = installed_argv(BIN, Some(state.to_str().unwrap()), None, Harness::Claude);
         let plan = plan_claude(b"{}", &argv).unwrap();
         let settings: Value = serde_json::from_slice(&plan.proposed_bytes).unwrap();
-        let claude_hook = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-            .as_str()
-            .unwrap()
-            .to_owned();
+        let claude_hooks = settings["hooks"].clone();
         let codex_argv = installed_argv(BIN, Some(state.to_str().unwrap()), None, Harness::Codex);
         let codex_hook = herdr_threads::harness::setup::shell_command(&codex_argv).unwrap();
         let herdr = Herdr::start(&root, panes);
@@ -281,7 +271,7 @@ impl World {
             root,
             state,
             herdr,
-            claude_hook,
+            claude_hooks,
             codex_hook,
             stale_marker: std::cell::RefCell::new(None),
             _scratch: scratch,
@@ -411,9 +401,13 @@ impl World {
     /// native JSON on stdin and the pane identity from `HERDR_*`.
     fn hook(&self, harness: &str, pane: &str, stdin: &[u8]) -> (i32, String, String) {
         let command = if harness == "codex" {
-            &self.codex_hook
+            self.codex_hook.as_str()
         } else {
-            &self.claude_hook
+            let payload = serde_json::from_slice::<Value>(stdin).unwrap();
+            let event = payload["hook_event_name"].as_str().unwrap();
+            self.claude_hooks[event][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap_or_else(|| panic!("no installed Claude registration for {event}"))
         };
         let mut child = Command::new("/bin/sh")
             .envs([herdr_threads::daemon::lifecycle::test_owner_env()])

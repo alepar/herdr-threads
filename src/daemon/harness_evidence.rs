@@ -62,14 +62,9 @@ pub trait EvidenceWrites: Send + Sync {
 
     fn record_contract_diagnostic(
         &self,
-        _record: &DiagnosticRecord<'_>,
-        _budget: &CallBudget,
-    ) -> Result<(), ApiError> {
-        Err(ApiError::new(
-            crate::protocol::results::ErrorCode::Unsupported,
-            "contract diagnostic persistence unavailable",
-        ))
-    }
+        record: &DiagnosticRecord<'_>,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError>;
 
     fn record_unattributed(
         &self,

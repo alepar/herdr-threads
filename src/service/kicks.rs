@@ -135,6 +135,8 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "human_receipt_reconciliation_bounds",
     "digest_programmatic_warnings",
     "filter_revisions",
+    // Advisory diagnostics do not alter canonical state or schedule work.
+    "harness_contract_diagnostics",
     "harness_unattributed",
     "harness_version_evidence",
     "host_instances",

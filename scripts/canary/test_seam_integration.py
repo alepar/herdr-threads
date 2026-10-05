@@ -4,7 +4,7 @@
 Crosses three seams with the real scripts and the real gated Rust test (only npm and the harness binaries are
 fakes, so no network and no model call):
   harness-canary.sh --probe -> HT_CANARY_PLANT_TIER1_FAIL -> bisect.py's retry policy;
-  --versions-json -> canary-probe.json expected_admission == versions.py -> the gated Rust test's refusal rule;
+  --versions-json -> canary-probe.json expected_admission == versions.py -> separate historical recipe diagnostic;
   a Codex probe -> help/codex.txt -> canary-rust.json launch_tables.
 
 Run: python3 -m unittest discover -s scripts/canary -p 'test_*.py'
@@ -124,7 +124,7 @@ class SeamIntegration(unittest.TestCase):
         self.assertEqual(res["status"], "all_pass", "a pass after the planted count is exhausted is flaky, not a break")
         self.assertEqual(self.claude_calls(), [], "the planted path makes no model call")
 
-    # -- 2. expected_admission across the --versions-json seam, honoured by the gated Rust test
+    # -- 2. declared historical expectations stay separate from operational contract parsing
 
     def test_expected_admission_matches_versions_py_and_the_gated_test_honours_it(self):
         if not shutil.which("cargo"):
@@ -141,13 +141,24 @@ class SeamIntegration(unittest.TestCase):
             self.assertEqual(probe["expected_admission"], expected, version)
             self.assertEqual((probe["harness"], probe["version"]), ("claude", version))
             self.assertTrue(os.path.exists(probe["binary"]), "the binary named by canary-probe.json exists")
-        # the refusal rule: the known_broken version's observation is refused, which is not a failure
+        # Core contract selection does not identify the runtime or inherit a
+        # historical recipe refusal. The diagnostic classifies only explicit
+        # probe metadata, never an operational/native witness.
         cp = self.gated_cargo(dirs[CLAUDE_BROKEN], fixture)
         self.assertEqual(cp.returncode, 0, cp.stdout[-2000:] + cp.stderr[-2000:])
         self.assertIn("test result: ok. 1 passed", cp.stdout)
         rust = json.loads((dirs[CLAUDE_BROKEN] / "canary-rust.json").read_text())
-        self.assertTrue(rust["observation"].startswith("refused"), rust["observation"])
-        # ... but the same refusal, with the probe expecting anything else, fails the run
+        self.assertEqual(rust["observation"], "ok")
+        self.assertEqual(rust.get("observation_scope"), "operational_contract")
+        self.assertIsNone(rust.get("runtime_version", "missing"))
+        historical = rust["historical_diagnostic"]
+        self.assertEqual(historical["classification"], "refused")
+        self.assertEqual(historical["version"], CLAUDE_BROKEN)
+        self.assertEqual(historical["version_source"], "canary-probe.json.version")
+        self.assertEqual(historical["scope"], "recipe_history_only")
+        self.assertFalse(historical["runtime_qualified"])
+        self.assertFalse(historical["native_qualified"])
+        # The separate historical refusal with a wrong expectation fails the diagnostic.
         wrong = self.t / "wrong-expectation"
         shutil.copytree(dirs[CLAUDE_BROKEN], wrong, symlinks=True)
         probe_file = wrong / "canary-probe.json"
@@ -156,13 +167,39 @@ class SeamIntegration(unittest.TestCase):
         probe["binary"] = str(dirs[CLAUDE_BROKEN] / "bin" / "claude")
         probe_file.write_text(json.dumps(probe))
         cp = self.gated_cargo(wrong, fixture)
-        self.assertNotEqual(cp.returncode, 0, "a refusal the probe did not expect must fail")
-        self.assertIn("observation refused", cp.stdout + cp.stderr)
-        # a listed version is observed, not refused
-        cp = self.gated_cargo(dirs[CLAUDE_LISTED], fixture)
-        self.assertEqual(cp.returncode, 0, cp.stdout[-2000:] + cp.stderr[-2000:])
-        rust = json.loads((dirs[CLAUDE_LISTED] / "canary-rust.json").read_text())
+        self.assertNotEqual(cp.returncode, 0, "an unexpected historical refusal must fail its diagnostic")
+        self.assertIn("historical recipe diagnostic refused", cp.stdout + cp.stderr)
+        wrong_rust = json.loads((wrong / "canary-rust.json").read_text())
+        self.assertEqual(wrong_rust["observation"], "ok")
+        self.assertEqual(wrong_rust["historical_diagnostic"]["classification"], "refused")
+        # Listed and newer history remains independently classified while
+        # operational runtime metadata remains absent for both.
+        for version in [CLAUDE_LISTED, CLAUDE_NEWER]:
+            cp = self.gated_cargo(dirs[version], fixture)
+            self.assertEqual(cp.returncode, 0, cp.stdout[-2000:] + cp.stderr[-2000:])
+            rust = json.loads((dirs[version] / "canary-rust.json").read_text())
+            self.assertEqual(rust["observation"], "ok")
+            self.assertEqual(rust["observation_scope"], "operational_contract")
+            self.assertIsNone(rust["runtime_version"])
+            self.assertEqual(rust["historical_diagnostic"]["classification"], want[version])
+            self.assertFalse(rust["historical_diagnostic"]["runtime_qualified"])
+            self.assertFalse(rust["historical_diagnostic"]["native_qualified"])
+
+        # An expected historical refusal must never hide a real captured
+        # payload's core parser failure.
+        bad = self.t / "bad-core-payload"
+        shutil.copytree(dirs[CLAUDE_BROKEN], bad, symlinks=True)
+        captures = bad / "capture" / "tier0"
+        captures.mkdir(parents=True, exist_ok=True)
+        (captures / "bad.stdin").write_text('{"hook_event_name":"Bogus"}')
+        (captures / "bad.argv").write_text("hook\nclaude\n--event\nSessionStart\n")
+        cp = self.gated_cargo(bad, fixture)
+        self.assertNotEqual(cp.returncode, 0, "historical refusal masked core payload error")
+        self.assertIn("capture/tier0/bad.stdin", cp.stdout + cp.stderr)
+        rust = json.loads((bad / "canary-rust.json").read_text())
+        self.assertEqual(rust["historical_diagnostic"]["classification"], "refused")
         self.assertEqual(rust["observation"], "ok")
+        self.assertFalse(rust["payloads"][0]["ok"])
 
     # -- 3. help/*.txt written by the probe, read by launch_tables
 
