@@ -1,0 +1,20 @@
+{
+  "findings": [
+    {
+      "claim": "The query lifecycle provides no cancellation path, so a withdrawn question has no specified evidence that can close its deterministic open entry.",
+      "location": "Summary lifecycle table; Final implementation contracts / Deterministic record and transition contract",
+      "category": "premortem",
+      "external": false,
+      "kind": "GAP",
+      "evidence": "The lifecycle table allows a query to resolve 'when a later cited message answers it', whereas a request may resolve on 'completion or explicit cancellation'. The precise contract repeats 'Explicit cancellation of a request is a resolution' and permits Query only Resolved. Consider a classified question followed by human input saying 'Never mind; withdraw that question' and no answer: the cancellation is not an answer, and neither supersession nor a query-cancellation exception is specified. The original question therefore remains open under the documented semantic closure rules despite the human withdrawing it."
+    },
+    {
+      "claim": "The design does not specify how final folding handles multiple independently valid closure proposals for the same deterministic item from concurrently fetched chunks.",
+      "location": "Visibility across chunks; Final implementation contracts / Deterministic record and transition contract",
+      "category": "premortem",
+      "external": false,
+      "kind": "GAP",
+      "evidence": "Every worker receives earlier deterministic sources even before earlier chunks store, submission validation reconstructs the fetched_at snapshot, and final folding applies transitions in message sequence order. Thus B and C can both fetch an Open query i.12 before either submission, then independently submit Resolved citing answers in their own chunks at 27 and 42. Both satisfy their fetched snapshot, later-source citation and current-chunk requirements. The contract defines allowed statuses and shared transition guards but gives no policy for the second transition after the first has already closed the item: idempotent acceptance, ignoring it, rejecting its block, or choosing its closure evidence. Source-record deduplication by i.<sequence> does not define transition deduplication. Without that policy, parallel submissions can pass individually while the final ledger encounters an unspecified state transition."
+    }
+  ]
+}

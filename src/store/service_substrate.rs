@@ -318,6 +318,7 @@ pub fn service_message_summary(
         event_author: Some(EventAuthor::Programmatic(author)),
         author_role: Some(crate::protocol::summary::AuthorRole::Service),
         relays_user: false,
+        user_intent: None,
         author_role_backfilled: false,
         kind,
         sequence,

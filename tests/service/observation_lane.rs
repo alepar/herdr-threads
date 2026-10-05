@@ -91,6 +91,15 @@ impl LaneHost {
     }
 }
 impl HostPort for LaneHost {
+    fn observe_current_target_for_archival(
+        &self,
+        _: &crate::protocol::ids::HostTargetId,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<crate::ports::ComposerObservation, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "test adapter has no composer-aware archival observation",
+        ))
+    }
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         NativeLaunchCapability::Unsupported
     }

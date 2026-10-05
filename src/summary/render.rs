@@ -2,15 +2,13 @@
 //! bundle size bound (spec §2, §3). Pure.
 use crate::protocol::{
     results::MessageKind,
-    summary::{
-        AuthorRole, BundleMessage, FoldDisplay, ItemBody, ItemStatus, JobBundle, SummarySettings,
-    },
+    summary::{BundleMessage, FoldDisplay, ItemBody, ItemStatus, JobBundle, SummarySettings},
 };
 use sha2::{Digest, Sha256};
 
 /// Version of the rendering format; part of `chunking_version`, so any change
 /// to `render_message` must bump it.
-pub const RENDERER_VERSION: u32 = 1;
+pub const RENDERER_VERSION: u32 = 2;
 
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
@@ -44,7 +42,7 @@ fn single_line(text: &str) -> String {
         .collect()
 }
 
-/// One message as a bundle line: `#<seq> <message id> <author|system>[ [human]][ [relays user]]
+/// One message as a bundle line: `#<seq> <message id> <author|system>[ [human]][ [relays user]][ [query|request|rule]]
 /// <RFC3339 UTC seconds>\n<body>\n`; info/warn render as one compact line
 /// `#<seq> info|warn <text>\n`.
 pub fn render_message(message: &BundleMessage) -> String {
@@ -54,18 +52,14 @@ pub fn render_message(message: &BundleMessage) -> String {
                 .author
                 .as_ref()
                 .map_or("system", |seat| seat.as_str());
-            let human = if message.author_role == Some(AuthorRole::Human) {
-                " [human]"
-            } else {
-                ""
-            };
-            let relays = if message.relays_user {
-                " [relays user]"
-            } else {
-                ""
-            };
+            let markers = crate::protocol::results::author_markers(
+                message.kind,
+                message.author_role,
+                message.relays_user,
+                message.user_intent,
+            );
             format!(
-                "#{} {} {author}{human}{relays} {}\n{}\n",
+                "#{} {} {author}{markers} {}\n{}\n",
                 message.sequence,
                 message.message.as_str(),
                 rfc3339_seconds(message.created_at.0),
@@ -164,6 +158,7 @@ pub fn bound_bundle(bundle: &mut JobBundle, bundle_bytes: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::summary::AuthorRole;
     use crate::protocol::{
         ids::{MessageId, SeatId, SummaryBlockId, SummaryJobId, ThreadId},
         summary::{
@@ -180,6 +175,7 @@ mod tests {
             author: None,
             author_role: None,
             relays_user: false,
+            user_intent: None,
             created_at: UtcMillis(60_000),
             text: text.to_string(),
         }
@@ -249,6 +245,7 @@ mod tests {
                     author_seat: None,
                     author_role: Some(AuthorRole::Human),
                     relays_user: false,
+                    user_intent: None,
                     text: Some("t".repeat(300)),
                     text_ref: None,
                     message_id: None,

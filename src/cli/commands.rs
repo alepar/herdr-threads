@@ -8,6 +8,7 @@ use crate::protocol::{
     output::{ContinuationContext, OutputFormat, OutputSpec},
     pagination::{DEFAULT_PAGE_BYTES, DEFAULT_PAGE_LIMIT, PageRequest},
     results::{ApiError, CommandResult, ErrorCode},
+    summary::UserIntent,
 };
 use clap::{ArgAction, Args, Parser, Subcommand};
 
@@ -288,6 +289,7 @@ pub enum MutationSpec {
         require_ack: Vec<SeatId>,
         deadline_millis: Option<u64>,
         relays_user: bool,
+        user_intent: Option<UserIntent>,
     },
     Ack(Vec<MessageId>),
     Archive(ThreadId),
@@ -420,6 +422,7 @@ impl MutationSpec {
                 require_ack,
                 deadline_millis,
                 relays_user,
+                user_intent,
             } => WireCommand::SendMessage(SendMessage {
                 thread,
                 body,
@@ -428,6 +431,7 @@ impl MutationSpec {
                 operation,
                 claim: claim.unwrap(),
                 relays_user,
+                user_intent,
             }),
             Self::Ack(messages) => WireCommand::Ack(Ack {
                 messages,
@@ -1001,10 +1005,20 @@ struct SendArgs {
     deadline: Option<u64>,
     #[arg(
         long = "relays-user",
-        help = "This message relays an instruction from your user: a cooperative claim that marks it priority for thread summaries and catch-up"
+        help = "This message relays input from your user: a cooperative claim that marks it priority for thread summaries and catch-up"
     )]
     relays_user: bool,
+    /// Recorded human input intent; ordinary humans may set it directly, agents require --relays-user.
+    /// Missing intent stays unclassified; classification grants no permission.
+    #[arg(long, value_parser = parse_user_intent, value_name = "query|request|rule")]
+    user_intent: Option<UserIntent>,
 }
+
+fn parse_user_intent(value: &str) -> Result<UserIntent, String> {
+    UserIntent::from_column(value)
+        .ok_or_else(|| "user intent must be query, request or rule".to_owned())
+}
+
 #[derive(Args)]
 struct PendingReceiptsArgs {
     #[command(flatten)]
@@ -1698,6 +1712,7 @@ fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
                 require_ack: recipients,
                 deadline_millis,
                 relays_user,
+                user_intent: args.user_intent,
             })
         }
         Top::Ack { messages } => {

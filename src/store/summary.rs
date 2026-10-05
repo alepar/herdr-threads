@@ -10,10 +10,10 @@ use crate::protocol::{
         AuthorRole, Block, BlockHeader, BlockProvenance, BundleMessage, ChildNarrative, CoverSizes,
         Fold, Identifier, ItemBody, ItemStatus, JobBundle, JobRef, JobTicket, LEASE_MAX_MS,
         LEASE_MIN_MS, LedgerItem, Level0Records, NewStatus, P99_CLAMP_MAX_MS, P99_CLAMP_MIN_MS,
-        P99_MIN_SAMPLES, P99_SAMPLE_WINDOW, PinnedText, RESERVATION_LAPSE_MS, SUBMISSION_SCHEMA,
-        SeqRange, SubmitOutcome, SummaryJobOutcome, SummaryJobRequest, SummaryOutcome,
-        SummaryReady, SummaryRequest, SummarySettings, SummarySubmitRequest, SummaryWork,
-        Transition, is_priority, submission_budget_bytes,
+        P99_MIN_SAMPLES, P99_SAMPLE_WINDOW, PinnedText, RESERVATION_LAPSE_MS, RuleChange,
+        SUBMISSION_SCHEMA, SeqRange, SubmitOutcome, SummaryJobOutcome, SummaryJobRequest,
+        SummaryOutcome, SummaryReady, SummaryRequest, SummarySettings, SummarySubmitRequest,
+        SummaryWork, Transition, UserIntent, is_priority, submission_budget_bytes,
     },
     time::UtcMillis,
 };
@@ -36,7 +36,7 @@ use std::collections::HashSet;
 
 /// Fallback block provenance labels (the daemon wrote it, not a model).
 const FALLBACK_MODEL: &str = "none";
-const FALLBACK_PROMPT_VERSION: &str = "daemon-fallback-v1";
+const FALLBACK_PROMPT_VERSION: &str = "daemon-fallback-v2";
 
 /// p99 of the latest `P99_SAMPLE_WINDOW` fetch-to-submit durations of Stored
 /// jobs on the instance (nearest rank); `settings.p99_cold_ms`, unclamped,
@@ -157,9 +157,10 @@ fn physical_message(conn: &Connection, id: &str, sequence: u64) -> Result<Bundle
         i64,
         Option<String>,
         i64,
+        Option<String>,
     ) = conn
         .query_row(
-            "SELECT kind, actor_seat_id, body, event_json, decision_at, author_role, relays_user \
+            "SELECT kind, actor_seat_id, body, event_json, decision_at, author_role, relays_user, user_intent \
              FROM messages WHERE id=?1",
             [id],
             |r| {
@@ -171,11 +172,12 @@ fn physical_message(conn: &Connection, id: &str, sequence: u64) -> Result<Bundle
                     r.get(4)?,
                     r.get(5)?,
                     r.get(6)?,
+                    r.get(7)?,
                 ))
             },
         )
         .map_err(store_error)?;
-    let (kind, actor, body, event_json, decision_at, role, relays) = row;
+    let (kind, actor, body, event_json, decision_at, role, relays, intent) = row;
     let (kind, text) = match kind.as_str() {
         "ordinary" => (MessageKind::Ordinary, body.unwrap_or_default()),
         "info" => (MessageKind::Info, system_text(event_json.as_deref())),
@@ -191,6 +193,11 @@ fn physical_message(conn: &Connection, id: &str, sequence: u64) -> Result<Bundle
             .transpose()?,
         author_role: role.as_deref().and_then(AuthorRole::from_column),
         relays_user: relays != 0,
+        user_intent: intent
+            .map(|value| {
+                UserIntent::from_column(&value).ok_or_else(|| bad_row("invalid user intent"))
+            })
+            .transpose()?,
         created_at: UtcMillis(decision_at),
         text,
     })
@@ -217,6 +224,7 @@ fn published_warning_message(
         author: None,
         author_role: None,
         relays_user: false,
+        user_intent: None,
         created_at: UtcMillis(decision_at),
         text: system_text(Some(&warning.event_json)),
     })
@@ -385,6 +393,7 @@ struct JobRow {
     lease_seat: Option<String>,
     lease_token: Option<String>,
     fetched_at: Option<i64>,
+    fetched_bundle_json: Option<String>,
     lease_until: Option<i64>,
     rejections: u32,
     last_submit_token: Option<String>,
@@ -395,7 +404,7 @@ struct JobRow {
 
 const JOB_COLUMNS: &str = "id, thread_id, chunking_version, level, idx, first_seq, last_seq, \
      lease_seat_id, lease_token, fetched_at, lease_until, rejections, last_submit_token, \
-     last_submit_digest, last_submit_result, block_id";
+     last_submit_digest, last_submit_result, block_id, fetched_bundle_json";
 
 fn job_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(JobRow, String)> {
     let thread: String = r.get(1)?;
@@ -418,6 +427,7 @@ fn job_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(JobRow, String)> {
             lease_seat: r.get(7)?,
             lease_token: r.get(8)?,
             fetched_at: r.get(9)?,
+            fetched_bundle_json: r.get(16)?,
             lease_until: r.get(10)?,
             rejections: u32::try_from(rejections).unwrap_or(u32::MAX),
             last_submit_token: r.get(12)?,
@@ -569,27 +579,25 @@ fn status_from(value: &str) -> Result<NewStatus, ApiError> {
 }
 
 /// The level-0 records of the thread's current-version blocks whose range
-/// starts at or below `up_to_seq` (and, for bundles, stored at or before
-/// `created_at_le`), oldest first.
+/// starts at or below `up_to_seq`, oldest first. Timestamps are provenance;
+/// the deciding transaction determines membership.
 fn load_level0_records(
     conn: &Connection,
     thread: &ThreadId,
     version: &str,
     up_to_seq: u64,
-    created_at_le: Option<i64>,
 ) -> Result<Vec<(SeqRange, Level0Records)>, ApiError> {
     let mut stmt = conn
         .prepare(
             "SELECT id, first_seq, last_seq FROM summary_blocks \
              WHERE thread_id=?1 AND chunking_version=?2 AND level=0 AND first_seq<=?3 \
-             AND (?4 IS NULL OR created_at<=?4) ORDER BY first_seq",
+             ORDER BY first_seq",
         )
         .map_err(store_error)?;
     let blocks: Vec<(String, i64, i64)> = stmt
-        .query_map(
-            params![thread.as_str(), version, to_i64(up_to_seq), created_at_le],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
+        .query_map(params![thread.as_str(), version, to_i64(up_to_seq)], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
         .map_err(store_error)?
         .collect::<Result<_, _>>()
         .map_err(store_error)?;
@@ -634,7 +642,7 @@ fn load_level0_records(
         }
         let mut transitions = conn
             .prepare(
-                "SELECT target_id, new_status, cite_seq FROM summary_transitions \
+                "SELECT target_id, new_status, cite_seq, rule_change FROM summary_transitions \
                  WHERE block_id=?1 ORDER BY ordinal",
             )
             .map_err(store_error)?;
@@ -644,15 +652,22 @@ fn load_level0_records(
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, i64>(2)?,
+                    r.get::<_, Option<String>>(3)?,
                 ))
             })
             .map_err(store_error)?;
         for row in rows {
-            let (target_id, status, cite) = row.map_err(store_error)?;
+            let (target_id, status, cite, change) = row.map_err(store_error)?;
             records.transitions.push(Transition {
                 target_id,
                 new_status: status_from(&status)?,
                 cite_seq: seq_u64(cite)?,
+                rule_change: change
+                    .map(|value| {
+                        RuleChange::from_column(&value)
+                            .ok_or_else(|| bad_row("invalid rule change"))
+                    })
+                    .transpose()?,
             });
         }
         out.push((
@@ -1074,13 +1089,15 @@ fn lease_pass(
         let until = now.0.saturating_add(to_i64(RESERVATION_LAPSE_MS));
         tx.execute(
             "UPDATE summary_jobs SET lease_seat_id=?1, lease_token=?2, reserved_at=?3, \
-             fetched_at=NULL, lease_until=?4, attempts=attempts+1 WHERE id=?5",
+             fetched_at=NULL, fetched_bundle_json=NULL, lease_until=?4, attempts=attempts+1 WHERE id=?5",
             params![seat.as_str(), token, now.0, until, id],
         )
         .map_err(store_error)?;
         job.lease_seat = Some(seat.as_str().to_string());
         job.lease_token = Some(token);
         job.lease_until = Some(until);
+        job.fetched_at = None;
+        job.fetched_bundle_json = None;
         tickets.push(job.ticket(settings)?);
     }
     Ok((tickets, elsewhere))
@@ -1113,7 +1130,7 @@ fn assemble_ready(
             block_by_key(tx, thread, version, *key)?.ok_or_else(|| bad_row("cover block missing"))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let records = load_level0_records(tx, thread, version, frontier, None)?;
+    let records = load_level0_records(tx, thread, version, frontier)?;
     let priority = priority_sequences(tx, thread, frontier)?;
     let inputs: Vec<BlockRecords<'_>> = records
         .iter()
@@ -1167,18 +1184,14 @@ fn assemble_ready(
     })
 }
 
-/// The fold of the stored level-0 records up to `up_to`, rendered for `window_first`.
-/// `extra` stands in for chunks not yet stored (the prefill of their priority
-/// messages).
-fn bundle_fold(
-    conn: &Connection,
-    job: &JobRow,
-    fetched_at: i64,
-    with_prefill: bool,
-) -> Result<Fold, ApiError> {
+/// A level-0 visibility view seeds every canonical priority source through the
+/// chunk end, including sources whose local block is still outstanding. Stored
+/// introductions and transitions fold by message sequence. Persistence remains
+/// local: submit stores prefill only from the current chunk's messages.
+fn bundle_fold(conn: &Connection, job: &JobRow, with_prefill: bool) -> Result<Fold, ApiError> {
     let range = job.range;
     let thread = &job.thread;
-    let stored = load_level0_records(conn, thread, &job.version, range.last_seq, Some(fetched_at))?;
+    let stored = load_level0_records(conn, thread, &job.version, range.last_seq)?;
     let prefill = Level0Records {
         items: if with_prefill {
             ledger::prefill(&priority_messages(conn, thread, range.last_seq)?)
@@ -1210,12 +1223,10 @@ fn bundle_fold(
     Ok(fold::render(&state, range.first_seq))
 }
 
-/// The bundle of a job as of `fetched_at`: deterministic, so submit rebuilds
-/// the one the worker was shown.
+/// Build the complete worker input visible in the first-fetch transaction.
 fn build_bundle(
     conn: &Connection,
     job: &JobRow,
-    fetched_at: i64,
     settings: &SummarySettings,
 ) -> Result<JobBundle, ApiError> {
     let thread = &job.thread;
@@ -1226,7 +1237,7 @@ fn build_bundle(
     let fold;
     if job.level == 0 {
         messages = bundle_messages(conn, thread, range.first_seq, range.last_seq)?;
-        fold = bundle_fold(conn, job, fetched_at, true)?;
+        fold = bundle_fold(conn, job, true)?;
     } else {
         let key = BlockKey {
             level: job.level,
@@ -1244,14 +1255,14 @@ fn build_bundle(
                 fallback: block.header.fallback,
             });
         }
-        fold = bundle_fold(conn, job, fetched_at, false)?;
+        fold = bundle_fold(conn, job, false)?;
         for entry in &fold.entries {
             if let ItemBody::UserInstruction {
                 text: None,
                 text_ref: Some(_),
                 ..
             } = &entry.item.body
-                && entry.status == ItemStatus::Open
+                && matches!(entry.status, ItemStatus::Open | ItemStatus::Active)
             {
                 let raw = bundle_messages(conn, thread, entry.item.seq, entry.item.seq)?
                     .into_iter()
@@ -1302,6 +1313,29 @@ fn stale_version(job: &JobRow, settings: &SummarySettings) -> Result<(), ApiErro
     Ok(())
 }
 
+/// Never invent worker input for a fetched lease with missing or corrupt state.
+fn fetched_bundle(job: &JobRow) -> Result<JobBundle, ApiError> {
+    let encoded = job
+        .fetched_bundle_json
+        .as_deref()
+        .ok_or_else(|| bad_row("summary fetched bundle snapshot missing"))?;
+    let bundle: JobBundle = serde_json::from_str(encoded)
+        .map_err(|_| bad_row("summary fetched bundle snapshot invalid"))?;
+    if bundle.job_id.as_str() != job.id
+        || bundle.thread != job.thread
+        || bundle.chunking_version != job.version
+        || bundle.level != job.level
+        || bundle.index != job.index
+        || bundle.range != job.range
+        || bundle.submission_schema != SUBMISSION_SCHEMA
+    {
+        return Err(bad_row(
+            "summary fetched bundle snapshot does not match job",
+        ));
+    }
+    Ok(bundle)
+}
+
 /// `SummaryJob`: the fetch starts the lease clock and returns the bundle.
 pub fn summary_job(
     tx: &Transaction<'_>,
@@ -1310,8 +1344,14 @@ pub fn summary_job(
     settings: &SummarySettings,
     now: UtcMillis,
 ) -> Result<SummaryJobOutcome, ApiError> {
-    let mut job = load_job(tx, instance, request.job_id.as_str())?;
+    let job = load_job(tx, instance, request.job_id.as_str())?;
     let caller = check_caller(tx, instance, &request.claim, &job.thread)?;
+    if !caller.current {
+        return Err(api_error(
+            ErrorCode::CallerUnverified,
+            "summary caller binding is no longer current",
+        ));
+    }
     if !holds_lease(&job, &caller.seat, request.lease_token.as_str()) {
         // A reservation that lapsed and was taken by another seat.
         if job.block_id.is_none()
@@ -1327,34 +1367,29 @@ pub fn summary_job(
             "lease token was not issued to this seat",
         ));
     }
+    stale_version(&job, settings)?;
     if job.block_id.is_some() {
         return Err(api_error(ErrorCode::Conflict, "summary job already stored"));
     }
-    stale_version(&job, settings)?;
-    let fetched_at = match job.fetched_at {
-        // An unfetched reservation is honoured while still free, lapsed or not.
-        None => {
-            let len = lease_len_ms(tx, instance, settings)?;
-            let until = now.0.saturating_add(to_i64(len));
-            tx.execute(
-                "UPDATE summary_jobs SET fetched_at=?1, lease_until=?2 WHERE id=?3",
-                params![now.0, until, job.id],
-            )
-            .map_err(store_error)?;
-            job.fetched_at = Some(now.0);
-            job.lease_until = Some(until);
-            now.0
+    if job.fetched_at.is_some() {
+        if !job.live(now.0) {
+            return Err(api_error(ErrorCode::Conflict, "summary lease expired"));
         }
-        Some(fetched) => {
-            if !job.live(now.0) {
-                return Err(api_error(ErrorCode::Conflict, "summary lease expired"));
-            }
-            fetched
-        }
-    };
-    Ok(SummaryJobOutcome::Bundle(build_bundle(
-        tx, &job, fetched_at, settings,
-    )?))
+        return Ok(SummaryJobOutcome::Bundle(fetched_bundle(&job)?));
+    }
+    // Build and encode before updating any fetch state. Failure leaves the
+    // reservation untouched, even before the caller rolls back its transaction.
+    let bundle = build_bundle(tx, &job, settings)?;
+    let encoded = serde_json::to_string(&bundle)
+        .map_err(|_| bad_row("unencodable summary bundle snapshot"))?;
+    let len = lease_len_ms(tx, instance, settings)?;
+    let until = now.0.saturating_add(to_i64(len));
+    tx.execute(
+        "UPDATE summary_jobs SET fetched_at=?1, lease_until=?2, fetched_bundle_json=?3 WHERE id=?4",
+        params![now.0, until, encoded, job.id],
+    )
+    .map_err(store_error)?;
+    Ok(SummaryJobOutcome::Bundle(bundle))
 }
 
 struct NewBlock<'a> {
@@ -1441,7 +1476,7 @@ fn insert_block(
         for (ordinal, transition) in records.transitions.iter().enumerate() {
             tx.execute(
                 "INSERT INTO summary_transitions(block_id, ordinal, thread_id, chunking_version, \
-                 target_id, new_status, cite_seq) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 target_id, new_status, cite_seq, rule_change) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     id,
                     ordinal as i64,
@@ -1449,7 +1484,8 @@ fn insert_block(
                     job.version,
                     transition.target_id,
                     status_str(transition.new_status),
-                    to_i64(transition.cite_seq)
+                    to_i64(transition.cite_seq),
+                    transition.rule_change.map(RuleChange::as_str)
                 ],
             )
             .map_err(store_error)?;
@@ -1460,6 +1496,10 @@ fn insert_block(
 
 fn source_hash(bundle: &JobBundle) -> String {
     let mut hasher = Sha256::new();
+    // The digest names the current rendered generation, even when every
+    // source is legacy and its visible message text is unchanged.
+    hasher.update(bundle.chunking_version.as_bytes());
+    hasher.update([0]);
     for message in &bundle.messages {
         hasher.update(render::render_message(message).as_bytes());
     }
@@ -1497,7 +1537,7 @@ fn record_submit(
     Ok(())
 }
 
-/// `SummarySubmit`: validate against the rebuilt bundle and store the block.
+/// `SummarySubmit`: validate against the frozen fetched bundle and store the block.
 /// Idempotent per (job_id, lease_token): the same body returns the same result;
 /// a stored job returns its block without counting progress. The first
 /// rejection is returned; the second stores a final ledger-only fallback block.
@@ -1510,6 +1550,12 @@ pub fn summary_submit(
 ) -> Result<SubmitOutcome, ApiError> {
     let job = load_job(tx, instance, request.job_id.as_str())?;
     let caller = check_caller(tx, instance, &request.claim, &job.thread)?;
+    if !caller.current {
+        return Err(api_error(
+            ErrorCode::CallerUnverified,
+            "summary caller binding is no longer current",
+        ));
+    }
     let token = request.lease_token.as_str();
     if !holds_lease(&job, &caller.seat, token) {
         return Err(api_error(
@@ -1517,6 +1563,17 @@ pub fn summary_submit(
             "no lease token issued to this seat for the job",
         ));
     }
+    stale_version(&job, settings)?;
+    let Some(fetched_at) = job.fetched_at else {
+        return Err(api_error(
+            ErrorCode::Conflict,
+            "summary job was not fetched",
+        ));
+    };
+    if !job.live(now.0) {
+        return Err(api_error(ErrorCode::Conflict, "summary lease expired"));
+    }
+    let bundle = fetched_bundle(&job)?;
     if let Some(block_id) = &job.block_id {
         let block = block_by_id(tx, block_id)?;
         return Ok(SubmitOutcome::Stored {
@@ -1534,17 +1591,6 @@ pub fn summary_submit(
     {
         return serde_json::from_str(result).map_err(|_| bad_row("invalid stored result"));
     }
-    stale_version(&job, settings)?;
-    let Some(fetched_at) = job.fetched_at else {
-        return Err(api_error(
-            ErrorCode::Conflict,
-            "summary job was not fetched",
-        ));
-    };
-    if !job.live(now.0) {
-        return Err(api_error(ErrorCode::Conflict, "summary lease expired"));
-    }
-    let bundle = build_bundle(tx, &job, fetched_at, settings)?;
     let at = |seq: u64| bundle.messages.iter().find(|m| m.sequence == seq);
     let verdict = validate::validate(
         &bundle,
@@ -1690,6 +1736,118 @@ mod loader_tests {
         ThreadId::new(id)
     }
 
+    // Catches physical and virtual bundle projections discarding or manufacturing intent.
+    #[test]
+    fn user_intent_bundle_loader_roundtrip() {
+        use crate::protocol::summary::UserIntent;
+        let db = db();
+        for (n, intent) in [UserIntent::Query, UserIntent::Request, UserIntent::Rule]
+            .into_iter()
+            .enumerate()
+        {
+            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,user_intent) VALUES (?1,'i','t1',?2,'ordinary','s','new',0,?2,'human',?3)",params![format!("mi{n}"),(n+4) as i64,intent.as_str()]).unwrap();
+        }
+        let loaded = bundle_messages(&db, &t("t1"), 1, 6).unwrap();
+        assert_eq!(
+            loaded.iter().map(|m| m.user_intent).collect::<Vec<_>>(),
+            [
+                None,
+                None,
+                None,
+                Some(UserIntent::Query),
+                Some(UserIntent::Request),
+                Some(UserIntent::Rule)
+            ]
+        );
+        assert!(
+            bundle_messages(&db, &t("t3"), 1, 2)
+                .unwrap()
+                .iter()
+                .all(|m| m.user_intent.is_none())
+        );
+        db.execute_batch("PRAGMA ignore_check_constraints=ON")
+            .unwrap();
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,user_intent) VALUES ('bad-intent','i','t1',7,'ordinary','s','bad',0,7,'human','instruction')",[]).unwrap();
+        assert_eq!(
+            bundle_messages(&db, &t("t1"), 7, 7).unwrap_err().code,
+            ErrorCode::StoreCorrupt
+        );
+    }
+
+    // Catches transitions losing rule_change while stored and loaded independently of validation.
+    #[test]
+    fn user_intent_transition_storage_roundtrip() {
+        use crate::protocol::summary::RuleChange;
+        let db = db();
+        for (n, change) in [
+            None,
+            Some(RuleChange::Withdrawn),
+            Some(RuleChange::Replaced),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let job = JobRow {
+                id: format!("j{n}"),
+                thread: t("t1"),
+                version: "c1".into(),
+                level: 0,
+                index: n as u64,
+                range: SeqRange {
+                    first_seq: 1,
+                    last_seq: 3,
+                },
+                lease_seat: None,
+                lease_token: None,
+                fetched_at: None,
+                fetched_bundle_json: None,
+                lease_until: None,
+                rejections: 0,
+                last_submit_token: None,
+                last_submit_digest: None,
+                last_submit_result: None,
+                block_id: None,
+            };
+            let records = Level0Records {
+                items: vec![],
+                identifiers: vec![],
+                transitions: vec![Transition {
+                    target_id: "i.1".into(),
+                    new_status: NewStatus::Superseded,
+                    cite_seq: 2,
+                    rule_change: change,
+                }],
+            };
+            insert_block(
+                &db,
+                "i",
+                &job,
+                &NewBlock {
+                    seat: &SeatId::new("s"),
+                    narrative: "n",
+                    fallback: false,
+                    model: "m1",
+                    prompt_version: "p1",
+                    children: vec![],
+                    source_hash: "hash".into(),
+                    records: Some(&records),
+                },
+                UtcMillis(n as i64),
+            )
+            .unwrap();
+            let loaded = load_level0_records(&db, &t("t1"), "c1", 3).unwrap();
+            assert_eq!(loaded[n].1, records);
+        }
+        db.execute_batch("PRAGMA ignore_check_constraints=ON")
+            .unwrap();
+        db.execute("INSERT INTO summary_transitions(block_id,ordinal,thread_id,chunking_version,target_id,new_status,cite_seq,rule_change) SELECT id,9,thread_id,chunking_version,'i.1','superseded',2,'completed' FROM summary_blocks WHERE idx=0",[]).unwrap();
+        assert_eq!(
+            load_level0_records(&db, &t("t1"), "c1", 3)
+                .unwrap_err()
+                .code,
+            ErrorCode::StoreCorrupt
+        );
+    }
     #[test]
     fn published_head_is_next_sequence_minus_one() {
         let db = db();

@@ -1,0 +1,478 @@
+use herdr_threads::{
+    ports::*,
+    protocol::{
+        ids::*,
+        results::{ApiError, ErrorCode},
+        time::*,
+    },
+    service::{
+        archival::ArchivalWorker, fair_writer::FairWriter, host_reachability::HostReachability,
+    },
+};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+struct Host {
+    path: std::path::PathBuf,
+    writer: Arc<FairWriter>,
+    calls: AtomicUsize,
+    cancel: Cancellation,
+    cancel_on_read: std::sync::atomic::AtomicBool,
+    negative_failure: AtomicUsize,
+}
+impl HostPort for Host {
+    fn native_launch_capability(&self) -> NativeLaunchCapability {
+        NativeLaunchCapability::Unsupported
+    }
+    fn observe_current_target(
+        &self,
+        _: &HostTargetId,
+        _: &HostCallContext,
+    ) -> Result<HostObservation, ApiError> {
+        panic!("plain observation cannot qualify archival")
+    }
+    fn observe_current_target_for_archival(
+        &self,
+        _: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<ComposerObservation, ApiError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(
+            context.expected_boot.as_ref().map(HostBootId::as_str),
+            Some("b")
+        );
+        assert_eq!(context.expected_epoch, Some(1));
+        let probe_clock = RunningClock(std::time::Instant::now());
+        let probe_budget = CallBudget {
+            deadline: MonoInstant(200),
+            cancellation: context.budget.cancellation.clone(),
+        };
+        let _turn = self
+            .writer
+            .enter_foreground(&probe_budget, &probe_clock)
+            .expect("composer read must not own FairWriter");
+        let db = rusqlite::Connection::open(&self.path).unwrap();
+        db.busy_timeout(std::time::Duration::ZERO).unwrap();
+        db.execute_batch("BEGIN IMMEDIATE; ROLLBACK")
+            .expect("composer read must not own SQLite writer");
+        let negative = self.negative_failure.load(Ordering::SeqCst);
+        if negative == 3 {
+            return Ok(super::channel_archival::sample(
+                context.budget.deadline.0.saturating_sub(5_000) as i64,
+                HostUiState::ActiveTurn,
+            ));
+        }
+        if negative != 0 {
+            db.execute_batch("CREATE TRIGGER fail_archival_sample BEFORE UPDATE OF idle_mono ON seat_archival BEGIN SELECT RAISE(ABORT,'injected sample write failure'); END").unwrap();
+            if negative == 2 {
+                return Err(ApiError::new(ErrorCode::NotFound, "target vanished"));
+            }
+            return Ok(super::channel_archival::sample(
+                100,
+                HostUiState::HumanInput,
+            ));
+        }
+        if self.cancel_on_read.load(Ordering::SeqCst) {
+            self.cancel.cancel();
+            Err(ApiError::new(
+                ErrorCode::Cancelled,
+                "owned host read cancelled",
+            ))
+        } else {
+            Err(ApiError::new(
+                ErrorCode::Unsupported,
+                "unsupported composer",
+            ))
+        }
+    }
+    fn enumerate_targets(&self, _: &HostCallContext) -> Result<HostSnapshot, ApiError> {
+        unreachable!()
+    }
+    fn safe_wake_target(&self, _: &SeatId, _: &HostObservation) -> Option<SafeWakeTarget> {
+        None
+    }
+    fn submit_prompt(
+        &self,
+        _: &SafeWakeTarget,
+        _: &str,
+        _: &HostCallContext,
+    ) -> Result<PromptOutcome, ApiError> {
+        unreachable!()
+    }
+    fn launch_native(
+        &self,
+        _: NativeLaunchRequest,
+        _: &HostCallContext,
+    ) -> Result<NativeLaunchOutcome, ApiError> {
+        unreachable!()
+    }
+    fn pane_agent_state(
+        &self,
+        _: &SafeWakeTarget,
+        _: &HostCallContext,
+    ) -> Result<AgentComposerState, ApiError> {
+        unreachable!()
+    }
+    fn send_submit_key(&self, _: &SafeWakeTarget, _: &HostCallContext) -> Result<(), ApiError> {
+        unreachable!()
+    }
+}
+struct RunningClock(std::time::Instant);
+impl Clock for RunningClock {
+    fn utc_now(&self) -> UtcMillis {
+        UtcMillis(100)
+    }
+    fn monotonic_now(&self) -> MonoInstant {
+        MonoInstant(self.0.elapsed().as_millis() as u64)
+    }
+}
+fn worker_fixture() -> (
+    ArchivalWorker,
+    Arc<Host>,
+    rusqlite::Connection,
+    super::handoff_fences::Directory,
+) {
+    worker_fixture_from_store(super::handoff_fences::store_fixture())
+}
+fn worker_fixture_from_store(
+    fixture: super::handoff_fences::StoreFixture,
+) -> (
+    ArchivalWorker,
+    Arc<Host>,
+    rusqlite::Connection,
+    super::handoff_fences::Directory,
+) {
+    let writer = Arc::new(FairWriter::new(32));
+    let cancellation = Cancellation::default();
+    let host = Arc::new(Host {
+        path: fixture._directory.0.join("store.db"),
+        writer: writer.clone(),
+        calls: AtomicUsize::new(0),
+        cancel: cancellation.clone(),
+        cancel_on_read: true.into(),
+        negative_failure: AtomicUsize::new(0),
+    });
+    let context = herdr_threads::daemon::paths::RuntimeContext::explicit(
+        fixture._directory.0.clone(),
+        fixture._directory.0.join("host.sock"),
+        None,
+    )
+    .unwrap();
+    let paths = herdr_threads::daemon::paths::InstancePaths::resolve_read_only(&context).unwrap();
+    std::fs::create_dir_all(&paths.instance_dir).unwrap();
+    let source =
+        herdr_threads::archival_legacy::Source::new(&paths, "i".into(), Default::default());
+    let reachability = Arc::new(HostReachability::default());
+    reachability.mark_archival_published(100);
+    let worker = ArchivalWorker {
+        store: Arc::new(fixture.store),
+        host: host.clone(),
+        writer,
+        reachability,
+        source,
+        boot: "worker".into(),
+        after_ms: 3_600_000,
+        cancellation,
+    };
+    (worker, host, fixture.db, fixture._directory)
+}
+#[test]
+fn archival_worker_host_read_releases_both_writers_and_shutdown_owns_cancellation() {
+    let (mut worker, host, db, _directory) = worker_fixture();
+    assert_eq!(worker.run_page().unwrap_err().code, ErrorCode::Cancelled);
+    assert_eq!(host.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM seat_archival WHERE idle_mono IS NOT NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+#[test]
+fn archival_worker_initial_unknown_does_not_read_host_and_parked_lane_stops() {
+    let (mut worker, host, _db, _directory) = worker_fixture();
+    worker.reachability.mark_archival_uncertain();
+    assert!(!worker.run_page().unwrap());
+    assert_eq!(host.calls.load(Ordering::SeqCst), 0);
+    worker.after_ms = 0;
+    let cancellation = worker.cancellation.clone();
+    let status = Arc::new(herdr_threads::service::workers::WorkerStatus::default());
+    let pacer = Arc::new(herdr_threads::service::pacer::Pacer::new(
+        "archival",
+        Arc::new(RunningClock(std::time::Instant::now())),
+        cancellation.clone(),
+    ));
+    let handle = herdr_threads::service::archival::start(worker, pacer, status.clone()).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while status.last_tick().is_none() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    cancellation.cancel();
+    handle.join().unwrap();
+    assert!(status.last_tick().is_some());
+    assert!(!status.lane_dead());
+    assert_eq!(host.calls.load(Ordering::SeqCst), 0);
+}
+#[test]
+fn archival_worker_failure_reports_health_and_cancellation_ends_backoff() {
+    let (worker, host, db, _directory) = worker_fixture();
+    host.cancel_on_read.store(false, Ordering::SeqCst);
+    let cancellation = worker.cancellation.clone();
+    let status = Arc::new(herdr_threads::service::workers::WorkerStatus::default());
+    let pacer = Arc::new(herdr_threads::service::pacer::Pacer::new(
+        "archival",
+        Arc::new(RunningClock(std::time::Instant::now())),
+        cancellation.clone(),
+    ));
+    let handle = herdr_threads::service::archival::start(worker, pacer, status.clone()).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while status.health().is_none() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    cancellation.cancel();
+    handle.join().unwrap();
+    assert!(status.health().is_some());
+    assert!(!status.lane_dead());
+    assert!(host.calls.load(Ordering::SeqCst) > 0);
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM seat_archival WHERE idle_mono IS NOT NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn archival_worker_negative_survives_failed_persistence_before_next_final_decision() {
+    use herdr_threads::store::archival::{self, Runtime};
+    for negative in [1, 2] {
+        let (mut worker, host, mut db, _directory) = worker_fixture();
+        worker.after_ms = 100;
+        let mut rt = Runtime {
+            boot: "worker".into(),
+            mono: 0,
+            utc: UtcMillis(0),
+            after_ms: 100,
+            host_generation: 1,
+            coherent: true,
+            valid_until_mono: None,
+            legacy_source: Some("covered".into()),
+        };
+        archival::advance(&db, "i", &rt).unwrap();
+        for at in [0, 100] {
+            rt.mono = at;
+            rt.utc = UtcMillis(at);
+            let ticket = archival::observation_ticket(&db, "i", "s", &rt)
+                .unwrap()
+                .unwrap();
+            let mut sample = super::channel_archival::sample(at, HostUiState::Idle);
+            sample.0.observation_sequence = at as u64 + 2;
+            assert!(archival::record_sample(&mut db, &ticket, &rt, &sample).unwrap());
+        }
+        for _ in 0..10 {
+            let phase: i64 = db
+                .query_row(
+                    "SELECT scan_phase FROM channel_archival WHERE thread_id='t'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            if phase == 4 {
+                break;
+            }
+            archival::advance(&db, "i", &rt).unwrap();
+        }
+        assert_eq!(
+            db.query_row(
+                "SELECT scan_phase FROM channel_archival WHERE thread_id='t'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            4
+        );
+        db.execute(
+            "UPDATE seat_archival SET next_mono=100 WHERE seat_id='s'",
+            [],
+        )
+        .unwrap();
+        host.negative_failure.store(negative, Ordering::SeqCst);
+        let error = worker.run_page().unwrap_err();
+        assert_ne!(
+            error.code,
+            ErrorCode::NotFound,
+            "sample persistence must be the injected failure"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT idle_mono,last_mono,samples FROM seat_archival WHERE seat_id='s'",
+                [],
+                |r| Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?
+                ))
+            )
+            .unwrap(),
+            (0, 100, 2),
+            "failed deciding write must actually leave the old positive sample durable"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT scan_phase FROM channel_archival WHERE thread_id='t'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            5
+        );
+        db.execute_batch("DROP TRIGGER fail_archival_sample")
+            .unwrap();
+        host.negative_failure.store(0, Ordering::SeqCst);
+        host.cancel_on_read.store(false, Ordering::SeqCst);
+        // Even a coherent observer publication between turns must not erase the negative generation.
+        worker.reachability.mark_archival_published(100);
+        let _ = worker.run_page();
+        assert!(
+            !db.query_row("SELECT archived FROM threads WHERE id='t'", [], |r| r
+                .get::<_, bool>(0))
+                .unwrap(),
+            "negative {negative} was lost across failed write"
+        );
+    }
+}
+
+#[test]
+fn archival_worker_negative_recovery_cycles_do_not_rediscover_retained_history() {
+    use herdr_threads::store::archival::{self, Runtime};
+    struct TestClock(std::sync::atomic::AtomicU64);
+    impl Clock for TestClock {
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(self.0.load(Ordering::SeqCst))
+        }
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(self.monotonic_now().0 as i64)
+        }
+    }
+    fn measure(size: usize) -> (u64, i64) {
+        let clock = Arc::new(TestClock(100.into()));
+        let fixture = super::handoff_fences::store_fixture_with_clock(clock.clone());
+        let (mut worker, host, db, _directory) = worker_fixture_from_store(fixture);
+        host.negative_failure.store(3, Ordering::SeqCst);
+        db.execute_batch("BEGIN").unwrap();
+        for n in 0..size {
+            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at) VALUES(?1,'i','retired','native',1,0,0)",[format!("history{n:08}")]).unwrap();
+            db.execute("INSERT INTO threads(id,instance_id,topic,goal,archived,created_at,updated_at) VALUES(?1,'i','history','done',1,0,0)",[format!("history{n:08}")]).unwrap();
+        }
+        db.execute_batch("COMMIT").unwrap();
+        let rt = Runtime {
+            boot: "worker".into(),
+            mono: 100,
+            utc: UtcMillis(100),
+            after_ms: 3_600_000,
+            host_generation: 1,
+            coherent: true,
+            valid_until_mono: None,
+            legacy_source: Some("covered".into()),
+        };
+        for _ in 0..size / archival::PAGE + 3 {
+            archival::advance(&db, "i", &rt).unwrap();
+        }
+        let original_epoch: i64 = db
+            .query_row(
+                "SELECT evidence_epoch FROM seat_archival WHERE seat_id='history00000000'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mut turns = 0;
+        for cycle in 1..=3 {
+            let now = 100 + cycle * 60_000;
+            clock.0.store(now, Ordering::SeqCst);
+            worker.reachability.mark_archival_published(now);
+            // One stable working read followed by committed negative/recovery and
+            // all advertised continuation passes, through the actual worker.
+            let before = host.calls.load(Ordering::SeqCst);
+            for _ in 0..size / archival::PAGE + 8 {
+                turns += 1;
+                if !worker.run_page().unwrap() {
+                    break;
+                }
+            }
+            assert_eq!(host.calls.load(Ordering::SeqCst), before + 1);
+            worker.reachability.mark_archival_published(now);
+            for _ in 0..size / archival::PAGE + 8 {
+                turns += 1;
+                if !worker.run_page().unwrap() {
+                    break;
+                }
+            }
+            assert!(
+                !db.query_row("SELECT archived FROM threads WHERE id='t'", [], |r| r
+                    .get::<_, bool>(0))
+                    .unwrap()
+            );
+        }
+        let touched:i64=db.query_row("SELECT (SELECT count(*) FROM seat_archival WHERE seat_id LIKE 'history%' AND evidence_epoch!=?1)+(SELECT count(*) FROM channel_archival WHERE thread_id LIKE 'history%' AND evidence_epoch!=?1)",[original_epoch],|r|r.get(0)).unwrap();
+        (turns, touched)
+    }
+    let small = measure(64);
+    let large = measure(10_000);
+    eprintln!(
+        "full worker negative/recovery cycles (turns,rewritten history rows): {small:?} -> {large:?}"
+    );
+    assert!(
+        large.0 <= small.0 + 2 && large.1 <= small.1 + 8,
+        "recurring worker work must exclude retained history"
+    );
+}
+
+#[test]
+fn archival_worker_busy_member_does_not_reset_unrelated_all_left_grace() {
+    struct TestClock(std::sync::atomic::AtomicU64);
+    impl Clock for TestClock {
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(self.0.load(Ordering::SeqCst))
+        }
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(self.monotonic_now().0 as i64)
+        }
+    }
+    let clock = Arc::new(TestClock(100.into()));
+    let fixture = super::handoff_fences::store_fixture_with_clock(clock.clone());
+    let (mut worker, host, db, _directory) = worker_fixture_from_store(fixture);
+    host.negative_failure.store(3, Ordering::SeqCst);
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('quiet','i','quiet','done',0,0)", []).unwrap();
+    for minute in 0..=60 {
+        let now = 100 + minute * 60_000;
+        clock.0.store(now, Ordering::SeqCst);
+        worker.reachability.mark_archival_published(now);
+        for turn in 0..32 {
+            if !worker.run_page().unwrap() {
+                break;
+            }
+            assert!(turn < 31, "bounded continuations must settle");
+        }
+        assert!(
+            !db.query_row("SELECT archived FROM threads WHERE id='t'", [], |r| r
+                .get::<_, bool>(0))
+                .unwrap()
+        );
+        assert_eq!(
+            db.query_row("SELECT archived FROM threads WHERE id='quiet'", [], |r| {
+                r.get::<_, bool>(0)
+            })
+            .unwrap(),
+            minute == 60,
+            "unrelated working member must not restart all-left grace at minute {minute}"
+        );
+    }
+    assert_eq!(host.calls.load(Ordering::SeqCst), 61);
+}

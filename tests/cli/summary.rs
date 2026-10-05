@@ -381,7 +381,7 @@ fn job_bundle_outcome_round_trips_through_the_printed_line() {
             first_seq: 1,
             last_seq: 2,
         },
-        submission_schema: 1,
+        submission_schema: crate::protocol::summary::SUBMISSION_SCHEMA,
         budget_bytes: 11_264,
         narrative_bytes: 3072,
         messages: vec![message(1, "hello\u{1b}[2J\nworld")],
@@ -407,7 +407,7 @@ fn job_bundle_outcome_round_trips_through_the_printed_line() {
 fn submit_sends_the_stdin_json_unchanged_and_exits_one_on_rejection() {
     let fixture = Fixture::new(reply);
     fixture.check_in();
-    let file = br#"{ "submission_schema": 1, "narrative": "n", "new_decisions": [],
+    let file = br#"{ "submission_schema": 2, "narrative": "n", "new_decisions": [],
         "new_open_items": [], "transitions": [], "prompt_version": "p", "model": "m" }"#;
     let (result, out) = fixture.run(
         &["herdr-threads", "summary", "submit", "j2", "--lease", "tok"],
@@ -460,6 +460,7 @@ fn message(sequence: u64, text: &str) -> BundleMessage {
         author: Some(SeatId::new("S1")),
         author_role: Some(AuthorRole::Human),
         relays_user: false,
+        user_intent: None,
         created_at: UtcMillis(9 * 3_600_000 + 7 * 60_000 + 33_000),
         text: text.into(),
     }
@@ -504,6 +505,7 @@ fn instruction(
             author_seat: Some(SeatId::new("S1")),
             author_role: Some(AuthorRole::Human),
             relays_user: false,
+            user_intent: None,
             text: text.map(Into::into),
             text_ref,
             message_id: message_id.map(MessageId::new),
@@ -614,11 +616,11 @@ block L1 #1-#320 B1
 block L0 #321-#360 B9 fallback
   (fallback: no narrative)
 ledger:
-  instruction i.12 open [human] S1: ship it
-  instruction i.20 open [human] S1: (long; herdr-threads body m20)
+  unclassified human input i.12 open [human] S1: ship it
+  unclassified human input i.20 open [human] S1: (long; herdr-threads body m20)
   decision c1.0.1 active S2: use sqlite
   open_item c1.0.2 ask S1->S2 open: which db?
-  instruction i.5 done at #30
+  unclassified human input i.5 done at #30 [human] S1
 identifiers: path src/x.rs (#3,#9); bead ht-1ip.4 (#7)
 tail #361-#362 (complete):
 #361 MSG S1 [human] 09:07Z: hi there
@@ -838,4 +840,105 @@ fn long_instruction_without_a_message_id_falls_back_to_a_real_read() {
     assert_eq!(query.thread, thread());
     assert_eq!(query.initial, Some(HistoryRange::After { sequence: 19 }));
     assert_eq!(query.page.limit, 1);
+}
+
+#[test]
+fn user_intent_summary_ledger_labels() {
+    use crate::protocol::summary::UserIntent;
+    let prefix = vec!["herdr-threads".to_owned()];
+    for (intent, kind, status, status_label) in [
+        (
+            Some(UserIntent::Query),
+            "question",
+            ItemStatus::Open,
+            "open",
+        ),
+        (Some(UserIntent::Request), "ask", ItemStatus::Open, "open"),
+        (Some(UserIntent::Rule), "rule", ItemStatus::Active, "active"),
+        (None, "unclassified human input", ItemStatus::Open, "open"),
+    ] {
+        for (role, relay, source) in [
+            (AuthorRole::Human, false, "[human]"),
+            (AuthorRole::Agent, true, "[agent relays-user]"),
+            (AuthorRole::Human, true, "[human relays-user]"),
+        ] {
+            let mut item = instruction("i.7", 7, Some("source\ntext"), None, Some("m7"));
+            if let ItemBody::UserInstruction {
+                user_intent,
+                author_role,
+                relays_user,
+                ..
+            } = &mut item.body
+            {
+                *user_intent = intent;
+                *author_role = Some(role);
+                *relays_user = relay;
+            }
+            let marks = format!(
+                "{source}{}",
+                intent.map_or(String::new(), |i| format!(" [{}]", i.as_str()))
+            );
+            let full = entry(item.clone(), status, None, FoldDisplay::Full);
+            assert_eq!(
+                ledger_line(&full, &thread(), &prefix),
+                format!("{kind} i.7 {} {marks} S1: source\\ntext", status_label)
+            );
+            let mut spilled = full.clone();
+            spilled.display = FoldDisplay::TextRef;
+            if let ItemBody::UserInstruction { text, text_ref, .. } = &mut spilled.item.body {
+                *text = None;
+                *text_ref = Some(7);
+            }
+            assert!(
+                ledger_line(&spilled, &thread(), &prefix)
+                    .contains(&format!("{marks} S1: (long; herdr-threads body m7)"))
+            );
+            let (closed_status, closed_label) = match intent {
+                Some(UserIntent::Rule) => (ItemStatus::Superseded, "superseded"),
+                Some(UserIntent::Query | UserIntent::Request) => (ItemStatus::Resolved, "resolved"),
+                None => (ItemStatus::Done, "done"),
+            };
+            let closed = entry(item, closed_status, Some(10), FoldDisplay::OneLine);
+            assert_eq!(
+                ledger_line(&closed, &thread(), &prefix),
+                format!("{kind} i.7 {} at #10 {marks} S1", closed_label)
+            );
+            let state = crate::summary::fold::FoldState {
+                entries: vec![full.clone(), closed],
+                identifiers: vec![],
+                dropped: vec![],
+            };
+            let old = crate::summary::fold::render(&state, 11);
+            assert_eq!(
+                old.entries,
+                vec![full],
+                "old closed source omitted, live source retained"
+            );
+            let mut tail = message(7, "source\ntext");
+            tail.author_role = Some(role);
+            tail.relays_user = relay;
+            tail.user_intent = intent;
+            assert!(tail_line(&tail).contains(&format!("{marks} 09:07Z: source\\ntext")));
+            let bundle = crate::summary::render::render_message(&tail);
+            let bundle_source = if role == AuthorRole::Human {
+                " [human]"
+            } else {
+                ""
+            };
+            let bundle_relay = if relay { " [relays user]" } else { "" };
+            let marker = intent.map_or(String::new(), |i| format!(" [{}]", i.as_str()));
+            assert!(
+                bundle.starts_with(&format!("#7 m7 S1{bundle_source}{bundle_relay}{marker} ")),
+                "{bundle}"
+            );
+            assert!(
+                bundle.ends_with("\nsource\ntext\n"),
+                "canonical bundle source text preserved"
+            );
+            assert_eq!(
+                crate::summary::render::rendered_size(&tail),
+                bundle.len() as u64
+            );
+        }
+    }
 }

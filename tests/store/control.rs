@@ -4088,6 +4088,8 @@ fn ordinary_allocation_replay_returns_original_seat_after_retirement() {
         store::seats,
     };
     let (context, mut conn, path, _) = fixture(100);
+    // Remove this fixture's derived archival children before its seeded seats.
+    conn.execute("DELETE FROM seat_archival", []).unwrap();
     conn.execute("DELETE FROM seats", []).unwrap();
     let observation = HostObservation {
         focused: false,
@@ -4193,6 +4195,8 @@ fn ordinary_empty_allocation_retains_structural_identity_without_occupant_bindin
         store::seats,
     };
     let (context, mut conn, path, _) = fixture(100);
+    // Remove this fixture's derived archival children before its seeded seats.
+    conn.execute("DELETE FROM seat_archival", []).unwrap();
     conn.execute("DELETE FROM seats", []).unwrap();
     let budget = CallBudget {
         deadline: MonoInstant(1000),
@@ -5950,6 +5954,8 @@ fn ordinary_resolution_fixture() -> (
 ) {
     use crate::protocol::time::{CallBudget, Cancellation};
     let (context, mut conn, path, clock) = fixture(100);
+    // Remove this fixture's derived archival children before its seeded seats.
+    conn.execute("DELETE FROM seat_archival", []).unwrap();
     conn.execute("DELETE FROM seats", []).unwrap();
     let budget = CallBudget {
         deadline: MonoInstant(1000),
@@ -7361,6 +7367,8 @@ fn daemon_start_clears_stuck_flag_and_open_holds_when_marker_matches() {
     }
     // A fresh store without the instance row starts cleanly.
     let (context, conn, path, _) = fixture(100);
+    // Remove this fixture's derived archival children before its seeded seats.
+    conn.execute("DELETE FROM seat_archival", []).unwrap();
     conn.execute("DELETE FROM seats", []).unwrap();
     conn.execute("DELETE FROM observed_targets", []).unwrap();
     conn.execute("DELETE FROM host_instances", []).unwrap();

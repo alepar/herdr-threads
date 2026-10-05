@@ -43,6 +43,29 @@ impl RuntimeContext {
                 "Herdr binary path must be absolute before detach",
             ));
         }
+        // Resolve the selected root before deriving socket/descriptor identities.
+        // Missing state directories keep their suffix under the nearest existing
+        // canonical ancestor, so first startup and subsequent clients agree too.
+        let mut ancestor = state_dir.as_path();
+        let mut suffix = Vec::new();
+        let state_dir = loop {
+            match ancestor.canonicalize() {
+                Ok(mut canonical) => {
+                    for component in suffix.iter().rev() {
+                        canonical.push(component);
+                    }
+                    break canonical;
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    let Some(name) = ancestor.file_name() else {
+                        return Err(error);
+                    };
+                    suffix.push(name);
+                    ancestor = ancestor.parent().ok_or(error)?;
+                }
+                Err(error) => return Err(error),
+            }
+        };
         let parent = host_endpoint.parent().unwrap().canonicalize()?;
         let host_endpoint = parent.join(host_endpoint.file_name().unwrap());
         Ok(Self {

@@ -81,6 +81,7 @@ fn oversized_unicode_body_is_rejected_before_writing() {
             event_author: None,
             author_role: None,
             relays_user: false,
+            user_intent: None,
             author_role_backfilled: false,
             kind: MessageKind::Ordinary,
             sequence: 7,

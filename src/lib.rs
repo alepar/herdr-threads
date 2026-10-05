@@ -13,6 +13,7 @@ macro_rules! failpoint {
 }
 
 pub mod app;
+pub mod archival_legacy;
 pub mod cli;
 pub mod client;
 pub mod daemon;

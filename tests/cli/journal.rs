@@ -37,6 +37,7 @@ fn send() -> SemanticMutation {
         invited_recipients: vec![],
         deadline_millis: None,
         relays_user: false,
+        user_intent: None,
     }
 }
 fn scope() -> IntentScope {
@@ -847,6 +848,7 @@ fn invalid_semantic_batch_does_not_reserve_ordinal_or_publish_intent() {
                         .collect(),
                     deadline_millis: None,
                     relays_user: false,
+                    user_intent: None,
                 },
                 2
             )
@@ -1302,6 +1304,7 @@ fn send_relays_user_is_journaled_only_when_set_and_old_intents_still_load() {
             body,
             invited_recipients,
             deadline_millis,
+            user_intent,
             ..
         } => SemanticMutation::SendMessage {
             thread,
@@ -1309,6 +1312,7 @@ fn send_relays_user_is_journaled_only_when_set_and_old_intents_still_load() {
             invited_recipients,
             deadline_millis,
             relays_user: true,
+            user_intent,
         },
         _ => unreachable!(),
     };
@@ -1484,4 +1488,94 @@ fn invitation_rejection_journal_freezes_exact_id_reason_and_binding() {
     oversized.reason = "é".repeat(2049);
     assert!(Command::Reject(oversized).validate().is_err());
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn user_intent_journal_roundtrip_and_legacy_omission() {
+    use crate::protocol::summary::UserIntent;
+    let old = serde_json::to_value(send()).unwrap();
+    assert!(old.get("user_intent").is_none());
+    let legacy: SemanticMutation = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(serde_json::to_value(legacy).unwrap(), old);
+    for intent in [UserIntent::Query, UserIntent::Request, UserIntent::Rule] {
+        let mut json = old.clone();
+        json["relays_user"] = serde_json::json!(true);
+        json["user_intent"] = serde_json::json!(intent);
+        let restored: SemanticMutation = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&restored).unwrap(), json);
+        let Command::SendMessage(request) = restored
+            .to_command(
+                crate::protocol::ids::OperationId::new("op-intent"),
+                Some(claim()),
+            )
+            .unwrap()
+        else {
+            panic!("wrong command")
+        };
+        assert_eq!(request.user_intent, Some(intent));
+    }
+}
+
+// Exercises the CLI-to-journal seam and retries the durable frozen claim after
+// reopening, so a dropped classification or refreshed claim fails the test.
+#[test]
+fn user_intent_send_retry_preserves_recorded_claim() {
+    use crate::cli::commands::{CliAction, parse_argv};
+    use crate::protocol::summary::UserIntent;
+    for (spelling, intent) in [
+        ("query", UserIntent::Query),
+        ("request", UserIntent::Request),
+        ("rule", UserIntent::Rule),
+    ] {
+        let parsed = parse_argv([
+            "herdr-threads",
+            "send",
+            "t1",
+            "--body",
+            "user input",
+            "--relays-user",
+            "--user-intent",
+            spelling,
+        ])
+        .unwrap();
+        let CliAction::Mutation(spec) = parsed.action else {
+            panic!("not a mutation")
+        };
+        let semantic = crate::cli::cooperative_semantic(spec).unwrap();
+        let frozen = SemanticMutation::freeze(semantic, claim()).unwrap();
+        let selected_scope = IntentScope::Cooperative {
+            instance: "i".into(),
+            seat: claim().seat,
+        };
+        let dir = temp();
+        let journal = Journal::open(&dir).unwrap();
+        let reference = journal
+            .record(selected_scope.clone(), frozen.clone(), 123)
+            .unwrap();
+        drop(journal);
+        let journal = Journal::open(&dir).unwrap();
+        assert_eq!(journal.load(&reference).unwrap().semantic, frozen);
+        for _ in 0..2 {
+            // Retain the intent after response output loss, then retry it again.
+            let result = run_retry(
+                &journal,
+                &reference,
+                &selected_scope,
+                || panic!("frozen claim must not be refreshed"),
+                |command| {
+                    let Command::SendMessage(sent) = command else {
+                        panic!("wrong command")
+                    };
+                    assert_eq!(sent.user_intent, Some(intent));
+                    assert!(sent.relays_user);
+                    assert_eq!(sent.claim, claim());
+                    assert_eq!(sent.operation, reference.operation);
+                    Ok(CommandResult::MessageSent(MessageId::new("published")))
+                },
+                |_| Err(io::Error::new(io::ErrorKind::BrokenPipe, "lost output")),
+            );
+            assert!(result.is_err());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

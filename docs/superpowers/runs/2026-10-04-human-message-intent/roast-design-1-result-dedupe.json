@@ -1,0 +1,37 @@
+{
+  "groups": [
+    {
+      "ids": [4],
+      "suggestedSeverity": "Blocking",
+      "rank": 1
+    },
+    {
+      "ids": [1, 5],
+      "suggestedSeverity": "Blocking",
+      "rank": 2,
+      "mergedClaim": "Concurrent workers can submit independently valid closures of the same deterministic source, but final folding has no specified policy for the later closure after the first changes its status."
+    },
+    {
+      "ids": [7, 8],
+      "suggestedSeverity": "Blocking",
+      "rank": 3,
+      "mergedClaim": "Stable fetched-bundle reconstruction relies on unverified fetched_at snapshot rules excluding post-fetch commits even when their timestamps equal or precede the fetch timestamp."
+    },
+    {
+      "ids": [6],
+      "suggestedSeverity": "Should-fix",
+      "rank": 4
+    },
+    {
+      "ids": [0, 2],
+      "suggestedSeverity": "Should-fix",
+      "rank": 5,
+      "mergedClaim": "The query lifecycle specifies no honest closure path for a question that the human explicitly withdraws or replaces before it is answered."
+    },
+    {
+      "ids": [3],
+      "suggestedSeverity": "Nit",
+      "rank": 6
+    }
+  ]
+}

@@ -133,6 +133,16 @@ impl WakeHost {
     }
 }
 impl HostPort for WakeHost {
+    fn observe_current_target_for_archival(
+        &self,
+        _: &herdr_threads::protocol::ids::HostTargetId,
+        _: &herdr_threads::ports::HostCallContext,
+    ) -> Result<herdr_threads::ports::ComposerObservation, herdr_threads::protocol::results::ApiError>
+    {
+        Err(herdr_threads::protocol::results::ApiError::unsupported(
+            "test adapter has no composer-aware archival observation",
+        ))
+    }
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         NativeLaunchCapability::Unsupported
     }
@@ -271,7 +281,7 @@ fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
 }
 
 #[test]
-fn service_ack_required_request_flow() {
+fn user_intent_service_send_stays_unclassified() {
     let _daemon_lock = super::IN_PROCESS_DAEMON
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -470,6 +480,25 @@ fn service_ack_required_request_flow() {
             )
             .await
             .unwrap();
+        assert_eq!(sent.summary.user_intent, None);
+        assert!(!sent.summary.relays_user);
+        let stored: (String, bool, Option<String>) = db.query_row(
+            "SELECT author_role,relays_user,user_intent FROM messages WHERE id=?1",
+            [sent.summary.message.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+        assert_eq!(stored, ("service".into(), false, None));
+        // The service contract has no native user-intent/relay option.
+        let service_send = ServiceSend {
+            thread: thread.clone(), body: "service input".into(), recipients: vec![],
+            deadline_millis: None, operation: OperationId::new("intent-injection"),
+        };
+        let mut injected = serde_json::to_value(service_send).unwrap();
+        assert!(injected.get("user_intent").is_none());
+        for intent in ["query", "request", "rule"] {
+            injected["user_intent"] = serde_json::json!(intent);
+            assert!(serde_json::from_value::<ServiceSend>(injected.clone()).is_err());
+        }
         assert_eq!(sent.recipient_count, 1);
         assert_eq!(sent.author, registration.author);
         let req_1 = sent.summary.message.clone();
@@ -548,6 +577,7 @@ fn service_ack_required_request_flow() {
             operation: OperationId::new("worker-reply"),
             claim: worker.clone(),
             relays_user: false,
+            user_intent: None,
         }))
         .unwrap() else {
             panic!("missing reply");
@@ -743,6 +773,7 @@ fn service_ack_required_request_flow() {
         let ServiceResult::MessageSent(replayed) = replayed else {
             panic!("replay did not return MessageSent");
         };
+        assert_eq!(replayed.summary.user_intent, None);
         assert_eq!(replayed.recipient_count, 1, "worker only; retiree is retired");
         assert_eq!(
             count("SELECT count(*) FROM messages WHERE body=?1", "do Z once"),
@@ -807,6 +838,11 @@ fn service_ack_required_request_flow() {
         );
         drop(v1);
         wait_revoked();
+
+        assert_eq!(db.query_row(
+            "SELECT count(*) FROM messages WHERE author_role='service' AND (user_intent IS NOT NULL OR relays_user<>0)",
+            [], |r| r.get::<_, i64>(0),
+        ).unwrap(), 0);
 
         // 9. No receipt row ever names the service author as a seat.
         for table in ["receipt_state", "receipts", "prepared_recipients"] {

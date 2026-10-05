@@ -1625,6 +1625,15 @@ impl ContendedTimingHost {
     }
 }
 impl HostPort for ContendedTimingHost {
+    fn observe_current_target_for_archival(
+        &self,
+        _: &crate::protocol::ids::HostTargetId,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<crate::ports::ComposerObservation, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "test adapter has no composer-aware archival observation",
+        ))
+    }
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         self.host.native_launch_capability()
     }
@@ -2400,6 +2409,15 @@ fn sqlite_repeated_completion_failures_keep_bounded_capacity_and_retry_work() {
     std::fs::remove_file(path).unwrap();
 }
 impl HostPort for SqliteTimingHost {
+    fn observe_current_target_for_archival(
+        &self,
+        _: &crate::protocol::ids::HostTargetId,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<crate::ports::ComposerObservation, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "test adapter has no composer-aware archival observation",
+        ))
+    }
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         NativeLaunchCapability::Unsupported
     }
@@ -2946,6 +2964,15 @@ impl FakeNativeHost {
     }
 }
 impl HostPort for FakeNativeHost {
+    fn observe_current_target_for_archival(
+        &self,
+        _: &crate::protocol::ids::HostTargetId,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<crate::ports::ComposerObservation, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "test adapter has no composer-aware archival observation",
+        ))
+    }
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         NativeLaunchCapability::Unsupported
     }
@@ -3261,6 +3288,15 @@ struct LateReadHost {
     clock: Arc<FakeClock>,
 }
 impl HostPort for LateReadHost {
+    fn observe_current_target_for_archival(
+        &self,
+        _: &crate::protocol::ids::HostTargetId,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<crate::ports::ComposerObservation, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "test adapter has no composer-aware archival observation",
+        ))
+    }
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         self.inner.native_launch_capability()
     }
@@ -4226,6 +4262,15 @@ fn submit_prompt_error_keeps_todays_mapping() {
     // backoff untouched).
     struct SubmitErrHost(SqliteTimingHost);
     impl HostPort for SubmitErrHost {
+        fn observe_current_target_for_archival(
+            &self,
+            _: &crate::protocol::ids::HostTargetId,
+            _: &crate::ports::HostCallContext,
+        ) -> Result<crate::ports::ComposerObservation, crate::protocol::results::ApiError> {
+            Err(crate::protocol::results::ApiError::unsupported(
+                "test adapter has no composer-aware archival observation",
+            ))
+        }
         fn send_submit_key(
             &self,
             target: &SafeWakeTarget,
@@ -4565,6 +4610,15 @@ struct ErrObserveHost {
     error: ApiError,
 }
 impl HostPort for ErrObserveHost {
+    fn observe_current_target_for_archival(
+        &self,
+        _: &crate::protocol::ids::HostTargetId,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<crate::ports::ComposerObservation, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "test adapter has no composer-aware archival observation",
+        ))
+    }
     fn send_submit_key(
         &self,
         target: &SafeWakeTarget,
@@ -4689,6 +4743,15 @@ struct CooperativeRecordingHost {
     prompted: std::sync::Mutex<Vec<SafeWakeTarget>>,
 }
 impl HostPort for CooperativeRecordingHost {
+    fn observe_current_target_for_archival(
+        &self,
+        _: &crate::protocol::ids::HostTargetId,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<crate::ports::ComposerObservation, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "test adapter has no composer-aware archival observation",
+        ))
+    }
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         NativeLaunchCapability::HostGuardedStart
     }
@@ -4869,6 +4932,15 @@ impl ComposerReadHost {
     }
 }
 impl HostPort for ComposerReadHost {
+    fn observe_current_target_for_archival(
+        &self,
+        _: &crate::protocol::ids::HostTargetId,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<crate::ports::ComposerObservation, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "test adapter has no composer-aware archival observation",
+        ))
+    }
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         self.inner.native_launch_capability()
     }
@@ -5253,6 +5325,15 @@ impl PokeHost {
     }
 }
 impl HostPort for PokeHost {
+    fn observe_current_target_for_archival(
+        &self,
+        _: &crate::protocol::ids::HostTargetId,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<crate::ports::ComposerObservation, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "test adapter has no composer-aware archival observation",
+        ))
+    }
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         NativeLaunchCapability::Unsupported
     }
@@ -5337,6 +5418,15 @@ impl StashingHost {
     }
 }
 impl HostPort for StashingHost {
+    fn observe_current_target_for_archival(
+        &self,
+        _: &crate::protocol::ids::HostTargetId,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<crate::ports::ComposerObservation, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "test adapter has no composer-aware archival observation",
+        ))
+    }
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         self.inner.native_launch_capability()
     }
@@ -6277,6 +6367,15 @@ impl CooperativeStashingHost {
     }
 }
 impl HostPort for CooperativeStashingHost {
+    fn observe_current_target_for_archival(
+        &self,
+        _: &crate::protocol::ids::HostTargetId,
+        _: &crate::ports::HostCallContext,
+    ) -> Result<crate::ports::ComposerObservation, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "test adapter has no composer-aware archival observation",
+        ))
+    }
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         NativeLaunchCapability::HostGuardedStart
     }

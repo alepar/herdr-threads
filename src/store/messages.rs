@@ -75,6 +75,9 @@ pub fn send_payload(request: &SendMessage) -> Value {
     if request.relays_user {
         payload["relays_user"] = json!(true);
     }
+    if let Some(intent) = request.user_intent {
+        payload["user_intent"] = json!(intent);
+    }
     payload
 }
 
@@ -599,6 +602,7 @@ pub(super) enum PublicationAuthor<'a> {
         seat: &'a SeatId,
         observation: &'a str,
         relays_user: bool,
+        user_intent: Option<crate::protocol::summary::UserIntent>,
     },
     /// The registered service author: no seat, label `herdr-graph`.
     Programmatic(&'a ServiceAuthorId),
@@ -628,6 +632,26 @@ pub(super) fn insert_publication(
     body: &str,
     author: PublicationAuthor<'_>,
 ) -> Result<Publication, ApiError> {
+    let author_role = match &author {
+        PublicationAuthor::Native {
+            seat,
+            relays_user,
+            user_intent,
+            ..
+        } => {
+            let author_role = schema::open_binding_role(tx, seat)?;
+            if user_intent.is_some()
+                && !(author_role == Some("human") || (author_role == Some("agent") && *relays_user))
+            {
+                return Err(api_error(
+                    ErrorCode::InvalidRequest,
+                    "human input intent requires a human sender or an agent relaying user input",
+                ));
+            }
+            author_role
+        }
+        PublicationAuthor::Programmatic(_) => None,
+    };
     let (prep_id,instance,high_water,recipient_count,warning_count):(String,String,i64,i64,i64)=tx.query_row(
         "SELECT id,instance_id,interval_high_water,recipient_count,warning_count FROM send_preparations WHERE operation_scope=?1 AND operation_key=?2 AND digest=?3",
         params![scope,key,digest.as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
@@ -669,9 +693,9 @@ pub(super) fn insert_publication(
             seat,
             observation,
             relays_user,
+            user_intent,
         } => {
-            let author_role = schema::open_binding_role(tx, seat)?;
-            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11)",params![id.as_str(),instance,thread.as_str(),base,seat.as_str(),observation,body,utc,decision_seq as i64,author_role,relays_user as i64]).map_err(store_error)?;
+            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user,user_intent) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11,?12)",params![id.as_str(),instance,thread.as_str(),base,seat.as_str(),observation,body,utc,decision_seq as i64,author_role,relays_user as i64,user_intent.map(crate::protocol::summary::UserIntent::as_str)]).map_err(store_error)?;
         }
         PublicationAuthor::Programmatic(author) => {
             tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_label,body,decision_at,decision_seq,author_kind,author_service_id,author_role) VALUES (?1,?2,?3,?4,'ordinary','herdr-graph',?5,?6,?7,'programmatic',?8,'service')",params![id.as_str(),instance,thread.as_str(),base,body,utc,decision_seq as i64,author.as_str()]).map_err(store_error)?;
@@ -820,6 +844,7 @@ pub fn publish_send(
                     seat: &seat,
                     observation: &observation,
                     relays_user: request.relays_user,
+                    user_intent: request.user_intent,
                 },
             )?;
             let id = published.message;

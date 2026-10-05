@@ -254,7 +254,9 @@ impl LocalService for DomainService {
                 ErrorCode::Unauthorized,
                 "verified operation scope required",
             )),
-            command @ (Command::CheckIn(_)
+            command @ (Command::BeginHandoff(_)
+            | Command::CompleteHandoff(_)
+            | Command::CheckIn(_)
             | Command::CreateThread(_)
             | Command::Invite(_)
             | Command::Accept(_)

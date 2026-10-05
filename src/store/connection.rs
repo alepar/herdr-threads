@@ -645,7 +645,7 @@ pub(super) struct KickHooks {
     /// connection). Retention reads it to skip a rescan of unchanged tables.
     generation: std::sync::atomic::AtomicU64,
     #[cfg(any(test, feature = "test-support"))]
-    commits: [std::sync::atomic::AtomicU64; 6],
+    commits: [std::sync::atomic::AtomicU64; kicks::Lane::INTERNAL_ALL.len() + 1],
 }
 
 impl KickHooks {
@@ -696,7 +696,7 @@ impl KickHooks {
         }
         counts.insert(
             "request".to_string(),
-            self.commits[5].load(Ordering::SeqCst),
+            self.commits[kicks::Lane::INTERNAL_ALL.len()].load(Ordering::SeqCst),
         );
         counts
     }
@@ -715,7 +715,8 @@ impl KickHooks {
         self.dirty.store(true, Ordering::SeqCst);
         let origin = kicks::current_origin();
         #[cfg(any(test, feature = "test-support"))]
-        self.commits[origin.map_or(5, |lane| lane as usize)].fetch_add(1, Ordering::SeqCst);
+        self.commits[origin.map_or(kicks::Lane::INTERNAL_ALL.len(), |lane| lane as usize)]
+            .fetch_add(1, Ordering::SeqCst);
         if !kicks::origin_discards_kicks(origin) {
             self.sealed.fetch_or(pending, Ordering::SeqCst);
         }

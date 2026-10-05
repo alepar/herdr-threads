@@ -1343,6 +1343,46 @@ fn send_relays_user_flag_reaches_the_command_and_is_off_by_default() {
     assert_eq!(send_command(&[]), (false, false));
 }
 
+// Catches the CLI dropping classification or incorrectly requiring relay locally.
+#[test]
+fn user_intent_send_cli_parses_and_dispatches() {
+    use crate::protocol::summary::UserIntent;
+    struct SendStub(Option<SendMessage>);
+    impl CliBackend for SendStub {
+        fn call(&mut self, command: WireCommand, _: &OutputSpec) -> Result<CommandResult, ApiError> {
+            let WireCommand::SendMessage(send) = command else { panic!("expected send command") };
+            self.0 = Some(send);
+            Ok(CommandResult::MessageSent(MessageId::new("sent")))
+        }
+    }
+    let dispatch_send = |argv: Vec<&str>, expected, relay| {
+        let parsed = parse_argv(argv).unwrap();
+        assert!(matches!(&parsed.action, CliAction::Mutation(MutationSpec::Send { user_intent, relays_user, .. })
+            if *user_intent == expected && *relays_user == relay));
+        let mut stub = SendStub(None);
+        dispatch(freeze_thread_id(parsed), &mut stub, Some(claim()), Some(OperationId::new("intent-send"))).unwrap();
+        let sent = stub.0.unwrap();
+        assert_eq!(sent.user_intent, expected);
+        assert_eq!(sent.relays_user, relay);
+    };
+    for (spelling, intent) in [
+        ("query", UserIntent::Query),
+        ("request", UserIntent::Request),
+        ("rule", UserIntent::Rule),
+    ] {
+        for relay in [false, true] {
+            let mut argv = vec!["herdr-threads", "send", "t1", "--body", "x", "--user-intent", spelling];
+            if relay { argv.push("--relays-user"); }
+            dispatch_send(argv, Some(intent), relay);
+        }
+    }
+    dispatch_send(vec!["herdr-threads", "send", "t1", "--body", "x"], None, false);
+    for invalid in ["instruction", "Query", "REQUEST", ""] {
+        assert!(parse_argv(["herdr-threads", "send", "t1", "--body", "x", "--user-intent", invalid]).is_err(),
+            "accepted invalid user intent {invalid:?}");
+    }
+}
+
 #[test]
 fn send_help_names_relays_user() {
     use clap::CommandFactory;
@@ -1353,7 +1393,13 @@ fn send_help_names_relays_user() {
         .render_long_help()
         .to_string();
     assert!(help.contains("--relays-user"));
-    assert!(help.contains("instruction from your user"));
+    assert!(help.contains("input from your user"));
+    assert!(help.contains("--user-intent"));
+    assert!(help.contains("ordinary humans may set it directly"));
+    assert!(help.contains("agents require --relays-user"));
+    assert!(help.contains("query|request|rule"));
+    assert!(help.contains("Missing intent stays unclassified"));
+    assert!(help.contains("classification grants no permission"));
 }
 
 #[test]

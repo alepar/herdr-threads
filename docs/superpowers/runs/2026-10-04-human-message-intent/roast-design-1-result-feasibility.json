@@ -1,0 +1,13 @@
+{
+  "findings": [
+    {
+      "claim": "Stable submit-time bundle reconstruction depends on the existing fetched_at snapshot rules distinguishing blocks committed after a fetch even when they share the fetch timestamp, but the design does not establish that property.",
+      "location": "Final implementation contracts \u2192 Deterministic record and transition contract: \u201cReconstruct fetched bundles using the existing fetched_at snapshot rules to keep submit validation stable across other workers' arrivals.\u201d",
+      "category": "feasibility",
+      "external": false,
+      "evidence": "The design permits concurrent workers and requires B to fetch before A submits, while submit validation reconstructs the fetched ledger. A block committed after B's fetch must therefore remain excluded from B's reconstructed ledger. A timestamp cutoff alone cannot distinguish a later commit carrying the same timestamp as the fetch. The quoted contract delegates this load-bearing guarantee to existing fetched_at rules without specifying a tie-breaking commit boundary or establishing that equal-timestamp arrivals are excluded.",
+      "kind": "UNVERIFIED-ASSUMPTION",
+      "spike": "Question: Do fetched_at reconstruction rules exclude every post-fetch block, including blocks whose creation timestamp equals fetched_at? Cheapest test: Use a fixed clock: fetch B, submit A at the same timestamp, then submit B against its originally fetched ledger and compare reconstructed bundle bytes with the fetched bytes. Kill criteria: If the reconstructed ledger includes A's post-fetch records or changes B's valid submission outcome, fetched_at alone is insufficient and a durable commit boundary or persisted snapshot is required."
+    }
+  ]
+}

@@ -56,6 +56,17 @@ fn send(
     key: &str,
     relays_user: bool,
 ) -> MessageId {
+    send_with_intent(store, context, thread, key, relays_user, None)
+}
+
+fn send_with_intent(
+    store: &SqliteStore,
+    context: &CallerClaim,
+    thread: &ThreadId,
+    key: &str,
+    relays_user: bool,
+    user_intent: Option<crate::protocol::summary::UserIntent>,
+) -> MessageId {
     let send = SendMessage {
         claim: context.clone(),
         thread: thread.clone(),
@@ -64,6 +75,7 @@ fn send(
         deadline_millis: None,
         operation: OperationId::new(key),
         relays_user,
+        user_intent,
     };
     loop {
         match store
@@ -163,6 +175,7 @@ fn relays_user_flag_is_recorded_and_priority() {
         deadline_millis: None,
         operation: OperationId::new("digest"),
         relays_user: false,
+        user_intent: None,
     };
     let without = schema::canonical_digest(&send_payload(&request)).unwrap();
     request.relays_user = true;
@@ -198,4 +211,198 @@ fn system_events_follow_the_author() {
     tx.commit().unwrap();
     assert_eq!(row(&conn, &native), (Some("agent".to_owned()), 0, 0));
     assert_eq!(row(&conn, &built_in), (None, 0, 0));
+}
+
+// Catches physical INSERT or public message/history projections dropping intent.
+#[test]
+fn user_intent_storage_roundtrip() {
+    use crate::protocol::{
+        commands::{BodyReadRequest, Command, HistoryQuery, MessageQuery},
+        output::OutputSpec,
+        summary::UserIntent,
+    };
+    for human in [false, true] {
+        let (store, conn, _) = fixture();
+        let c = if human {
+            human_claim(&claim(), 0)
+        } else {
+            claim()
+        };
+        let context = check_in(&store, lifecycle(c, "intent-author"))
+            .unwrap()
+            .context;
+        let thread = create_thread(&store, &context, "create");
+        for (n, intent) in [
+            None,
+            Some(UserIntent::Query),
+            Some(UserIntent::Request),
+            Some(UserIntent::Rule),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = send_with_intent(
+                &store,
+                &context,
+                &thread,
+                &format!("send-{n}"),
+                !human,
+                intent,
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT user_intent FROM messages WHERE id=?1",
+                    [id.as_str()],
+                    |r| r.get::<_, Option<String>>(0)
+                )
+                .unwrap()
+                .as_deref(),
+                intent.map(UserIntent::as_str)
+            );
+            let CommandResult::Message(details) = store
+                .query(
+                    &Command::Message(MessageQuery {
+                        message: id.clone(),
+                        body: BodyReadRequest {
+                            cursor: None,
+                            offset: None,
+                            max_bytes: 16384,
+                        },
+                    }),
+                    &crate::ports::ReadContext {
+                        instance: "i".into(),
+                        output: OutputSpec::default(),
+                        operation_scope: None,
+                    },
+                    &budget(),
+                )
+                .unwrap()
+            else {
+                panic!("not a message")
+            };
+            assert_eq!(details.summary.user_intent, intent);
+            let mut json = serde_json::to_value(&details.summary).unwrap();
+            json.as_object_mut().unwrap().remove("user_intent");
+            assert_eq!(
+                serde_json::from_value::<crate::protocol::results::MessageSummary>(json)
+                    .unwrap()
+                    .user_intent,
+                None
+            );
+        }
+        let CommandResult::History(history) = store
+            .query(
+                &Command::History(HistoryQuery {
+                    thread: thread.clone(),
+                    page: Default::default(),
+                    initial: None,
+                    full_bodies: false,
+                }),
+                &crate::ports::ReadContext {
+                    instance: "i".into(),
+                    output: OutputSpec::default(),
+                    operation_scope: None,
+                },
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("not history")
+        };
+        assert_eq!(
+            history
+                .items
+                .iter()
+                .filter(|m| m.kind == crate::protocol::results::MessageKind::Ordinary)
+                .map(|m| m.user_intent)
+                .collect::<Vec<_>>(),
+            [
+                Some(UserIntent::Rule),
+                Some(UserIntent::Request),
+                Some(UserIntent::Query),
+                None
+            ]
+        );
+        conn.execute_batch("PRAGMA ignore_check_constraints=ON")
+            .unwrap();
+        conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,user_intent) VALUES ('bad-intent','i',?1,100,'ordinary',?2,'bad',0,100,'human','instruction')",rusqlite::params![thread.as_str(),context.seat.as_str()]).unwrap();
+        assert_eq!(
+            store
+                .query(
+                    &Command::Message(MessageQuery {
+                        message: MessageId::new("bad-intent"),
+                        body: BodyReadRequest {
+                            cursor: None,
+                            offset: None,
+                            max_bytes: 16384
+                        }
+                    }),
+                    &crate::ports::ReadContext {
+                        instance: "i".into(),
+                        output: OutputSpec::default(),
+                        operation_scope: None
+                    },
+                    &budget()
+                )
+                .unwrap_err()
+                .code,
+            crate::protocol::results::ErrorCode::StoreCorrupt
+        );
+    }
+}
+
+// Catches the daemon using caller hints rather than the live binding for intent.
+#[test]
+fn user_intent_send_canonical_eligibility() {
+    use crate::protocol::summary::UserIntent;
+    for (human, relay) in [(true, false), (true, true), (false, true), (false, false)] {
+        let (store, conn, _) = fixture();
+        let initial = if human {
+            human_claim(&claim(), 0)
+        } else {
+            claim()
+        };
+        let context = check_in(&store, lifecycle(initial, "eligible-intent"))
+            .unwrap()
+            .context;
+        let thread = create_thread(&store, &context, "create");
+        for (n, intent) in [
+            None,
+            Some(UserIntent::Query),
+            Some(UserIntent::Request),
+            Some(UserIntent::Rule),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            // Unrelayed agents retain unclassified sending; refusal cases are tested at publication.
+            if !human && !relay && intent.is_some() {
+                continue;
+            }
+            let id = send_with_intent(
+                &store,
+                &context,
+                &thread,
+                &format!("intent-{n}"),
+                relay,
+                intent,
+            );
+            assert_eq!(
+                row(&conn, &id),
+                (
+                    Some(if human { "human" } else { "agent" }.into()),
+                    i64::from(relay),
+                    0
+                )
+            );
+            let recorded: Option<String> = conn
+                .query_row(
+                    "SELECT user_intent FROM messages WHERE id=?1",
+                    [id.as_str()],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(recorded.as_deref(), intent.map(UserIntent::as_str));
+        }
+    }
 }

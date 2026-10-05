@@ -1,0 +1,13 @@
+{
+  "findings": [
+    {
+      "claim": "The fetched-bundle replay guarantee depends on an unverified assumption that fetched_at excludes every post-fetch block commit, including commits with the same timestamp or an earlier clock value.",
+      "location": "Final implementation contracts \u2192 Deterministic record and transition contract, line 108: \u201cReconstruct fetched bundles using the existing fetched_at snapshot rules to keep submit validation stable across other workers' arrivals.\u201d",
+      "category": "domain:distributed-systems",
+      "external": false,
+      "evidence": "The spec requires B to fetch before A submits and requires submit validation to reconstruct the fetched bundle, but it names fetched_at as the snapshot mechanism without specifying a commit-ordered cutoff or captured block membership. A timestamp cutoff does not distinguish B's fetch from a later A commit with the same timestamp; replay could then include A's transitions even though B never saw them. For example, if A closes an earlier query, adding A during B's replay changes the target from Open to Resolved and can invalidate a structurally valid B submission. The promised stability therefore requires the existing snapshot rules to exclude such post-fetch commits; the specified B-before-A tests do not explicitly exercise equal timestamps or clock rollback.",
+      "kind": "UNVERIFIED-ASSUMPTION",
+      "spike": "Question: Does fetched_at replay preserve exactly the fetched stored-transition set when subsequent commits receive the same or an earlier timestamp?\nCheapest test: Freeze the clock, fetch B with an earlier classified query Open, store A with a transition resolving that query at the same timestamp, then refetch and submit B's original valid transition; repeat with A's commit clock below fetched_at.\nKill criteria: A's post-fetch transition appears in B's reconstructed bundle, or B's originally valid submission is rejected because its target is now closed."
+    }
+  ]
+}

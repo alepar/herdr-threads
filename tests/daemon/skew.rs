@@ -3,7 +3,7 @@
 //! real process holding the real owner lock, socket and descriptor) with a
 //! `daemon run --state-dir <state>` command line, which is what the skew-tolerant
 //! `daemon stop` identifies an owner by. "Old" is the real release skew pair:
-//! a protocol-3 daemon or CLI against this protocol-4 build; the protocol-1 CLI
+//! a protocol-3 daemon or CLI against this protocol-6 build; the protocol-1 CLI
 //! frame is still exercised by `old_cli_gets_a_decodable_skew_error` and by the
 //! frozen frames in `wire_compat`.
 //! Mounted from tests/integration.rs.
@@ -40,14 +40,14 @@ const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
 const FAKE_ENV: &str = "HT_FAKE_OTHER_VERSION_DAEMON";
 const FAKE_SOFTWARE: &str = "0.2.1";
 /// Frozen v0.2.1 wire protocol: thread summaries moved it to 3.
-/// v0.2.2 moves to 4 for human targets and durable handoff.
+/// Current wire6 also carries recorded user intent and rule-change evidence.
 const OLD_PROTOCOL: u16 = 3;
 
 /// Kills: a protocol bump that leaves the skew tests on a synthetic pair.
 #[test]
 fn skew_tests_use_the_real_release_pair() {
-    assert_eq!(PROTOCOL_VERSION, 4);
-    assert_eq!(OLD_PROTOCOL, PROTOCOL_VERSION - 1);
+    assert_eq!(PROTOCOL_VERSION, 6);
+    const { assert!(OLD_PROTOCOL < PROTOCOL_VERSION) };
 }
 
 /// The re-exec entry point. A normal test run returns at once; the helper
@@ -276,9 +276,9 @@ fn old_cli_gets_a_decodable_skew_error() {
     assert_eq!(descriptor.protocol_version, PROTOCOL_VERSION);
     // One exchange per frame, one connection each: the reply decodes with the
     // response type an older CLI uses and echoes that frame's own version.
-    let exchange = |version: u16, request_id: &str, extra: &str| {
+    let exchange = |version: u16, request_id: &str, extra: &str, kind: &str| {
         let body = format!(
-            r#"{{"version":{version},"request_id":"{request_id}","expected_instance":"{}"{extra},"command":{{"kind":"health"}}}}"#,
+            r#"{{"version":{version},"request_id":"{request_id}","expected_instance":"{}"{extra},"command":{{"kind":"{kind}","args":{{"unrecognized_old_payload":true}}}}}}"#,
             descriptor.instance_uuid
         );
         let mut stream = UnixStream::connect(&descriptor.endpoint).unwrap();
@@ -304,13 +304,32 @@ fn old_cli_gets_a_decodable_skew_error() {
         assert!(error.detail.contains("daemon stop"), "{}", error.detail);
     };
     // Protocol 1: no `output`, no `expected_boot`.
-    exchange(1, "old-cli-1", "");
+    exchange(1, "old-cli-1", "", "health");
     // Protocol 2: the same body plus `expected_boot`. The version check runs
     // first, so the boot never matters.
     exchange(
         OLD_PROTOCOL,
         "old-cli-2",
         &format!(r#","expected_boot":"{}""#, descriptor.boot_id),
+        "health",
+    );
+    let db = rusqlite::Connection::open(scratch.paths().database_path).unwrap();
+    let count = || {
+        db.query_row("SELECT count(*) FROM operations", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap()
+    };
+    let before = count();
+    for version in [4, 5] {
+        for kind in ["create_thread", "invite", "send_message"] {
+            exchange(version, "old-compound", "", kind);
+        }
+    }
+    assert_eq!(
+        count(),
+        before,
+        "old compound envelopes must never dispatch"
     );
 }
 

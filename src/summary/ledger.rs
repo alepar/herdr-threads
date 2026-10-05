@@ -25,6 +25,7 @@ pub fn prefill(messages: &[BundleMessage]) -> Vec<LedgerItem> {
                     author_seat: m.author.clone(),
                     author_role: m.author_role,
                     relays_user: m.relays_user,
+                    user_intent: m.user_intent,
                     text: verbatim.then(|| m.text.clone()),
                     text_ref: (!verbatim).then_some(m.sequence),
                     message_id: Some(m.message.clone()),
@@ -89,6 +90,7 @@ pub fn level0_records(
                 .unwrap_or_else(|| t.target.clone()),
             new_status: t.new_status,
             cite_seq: t.cite_seq,
+            rule_change: t.rule_change,
         })
         .collect();
     Level0Records {
@@ -115,7 +117,7 @@ mod tests {
         ids::{MessageId, SeatId},
         summary::{
             AuthorRole, IdentifierKind, NewDecision, NewOpenItem, NewStatus, OpenItemKind,
-            ProposedTransition,
+            ProposedTransition, SUBMISSION_SCHEMA,
         },
         time::UtcMillis,
     };
@@ -128,6 +130,7 @@ mod tests {
             author: Some(SeatId::new("sa")),
             author_role: role,
             relays_user: relays,
+            user_intent: None,
             created_at: UtcMillis(0),
             text: text.into(),
         }
@@ -158,6 +161,7 @@ mod tests {
             author_seat,
             author_role,
             relays_user,
+            user_intent: None,
             text,
             text_ref,
             message_id,
@@ -191,7 +195,7 @@ mod tests {
 
     fn submission() -> Submission {
         Submission {
-            submission_schema: 1,
+            submission_schema: SUBMISSION_SCHEMA,
             narrative: "n".into(),
             new_decisions: vec![
                 NewDecision {
@@ -223,18 +227,21 @@ mod tests {
                     target: "d1".into(),
                     new_status: NewStatus::Superseded,
                     cite_seq: 32,
+                    rule_change: None,
                     quote: None,
                 },
                 ProposedTransition {
                     target: "o1".into(),
                     new_status: NewStatus::Resolved,
                     cite_seq: 34,
+                    rule_change: None,
                     quote: None,
                 },
                 ProposedTransition {
                     target: "i.31".into(),
                     new_status: NewStatus::Done,
                     cite_seq: 34,
+                    rule_change: None,
                     quote: None,
                 },
             ],
@@ -297,6 +304,105 @@ mod tests {
                 .items
                 .iter()
                 .all(|i| matches!(i.body, ItemBody::UserInstruction { .. }))
+        );
+    }
+    fn intent_messages() -> Vec<BundleMessage> {
+        use crate::protocol::summary::UserIntent::{Query, Request, Rule};
+        let mut messages = Vec::new();
+        for role in [AuthorRole::Human, AuthorRole::Agent] {
+            for intent in [None, Some(Query), Some(Request), Some(Rule)] {
+                let seq = messages.len() as u64 + 1;
+                let mut message = msg(
+                    seq,
+                    Some(role),
+                    role == AuthorRole::Agent,
+                    &"x".repeat(PREFILL_TEXT_MAX_BYTES + 1),
+                );
+                message.user_intent = intent;
+                messages.push(message);
+            }
+        }
+        messages.push(msg(
+            9,
+            Some(AuthorRole::Agent),
+            false,
+            "quoted: always test",
+        ));
+        let mut event = msg(10, Some(AuthorRole::Human), true, "joined");
+        event.kind = MessageKind::Info;
+        messages.push(event);
+        messages
+    }
+
+    #[test]
+    fn user_intent_prefill_stable_source_and_spill() {
+        let messages = intent_messages();
+        let items = prefill(&messages);
+        assert_eq!(items.len(), 8);
+        let sliced: Vec<_> = messages.chunks(3).flat_map(prefill).collect();
+        assert_eq!(items, sliced);
+        for (item, message) in items.iter().zip(&messages) {
+            assert_eq!(item.id, format!("i.{}", message.sequence));
+            assert_eq!(item.seq, message.sequence);
+            assert_eq!(
+                item.body,
+                ItemBody::UserInstruction {
+                    author_seat: message.author.clone(),
+                    author_role: message.author_role,
+                    relays_user: message.relays_user,
+                    user_intent: message.user_intent,
+                    text: None,
+                    text_ref: Some(message.sequence),
+                    message_id: Some(message.message.clone()),
+                }
+            );
+        }
+        let mut short = messages[1].clone();
+        short.text = "question?".into();
+        assert!(matches!(&prefill(&[short])[0].body,
+            ItemBody::UserInstruction { text: Some(text), text_ref: None, .. } if text == "question?"));
+    }
+
+    #[test]
+    fn user_intent_fallback_preserves_classification() {
+        let pre = prefill(&intent_messages());
+        let fallback = fallback_records(&pre, &[]);
+        assert_eq!(fallback.items, pre);
+        assert!(fallback.transitions.is_empty());
+        assert_eq!(
+            fallback
+                .items
+                .iter()
+                .filter(|i| matches!(
+                    i.body,
+                    ItemBody::UserInstruction {
+                        user_intent: Some(_),
+                        ..
+                    }
+                ))
+                .count(),
+            6
+        );
+        let mut submitted = submission();
+        submitted.new_decisions.clear();
+        submitted.new_open_items.clear();
+        submitted.transitions = vec![ProposedTransition {
+            target: "i.4".into(),
+            new_status: NewStatus::Superseded,
+            cite_seq: 8,
+            rule_change: Some(crate::protocol::summary::RuleChange::Replaced),
+            quote: Some("exact submission-only evidence".into()),
+        }];
+        let stored = level0_records(&pre, &[], &submitted, "cv", 0);
+        assert_eq!(stored.items, pre);
+        assert_eq!(
+            stored.transitions[0].rule_change,
+            Some(crate::protocol::summary::RuleChange::Replaced)
+        );
+        assert!(
+            !serde_json::to_string(&stored)
+                .unwrap()
+                .contains("submission-only")
         );
     }
 }

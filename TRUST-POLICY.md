@@ -128,6 +128,8 @@ Client-local state (`contexts/`, `intents/`) only selects what to ask; it never 
 | `cooperative_continuity` | seat rebinds only | The seat was reattached because a resumed harness session id matched (C1). Never on receipts. |
 | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. |
 | `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), only on a seat with no open binding, decided against the effective observation (A2). Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, and it starts no availability or receipt timer. |
+| `daemon_lifecycle` | automatic archive events only | The daemon applied the configured quiet-channel lifecycle policy after complete canonical validation. No actor seat, binding or receipt claim; no membership or continuity change. |
+| `legacy_local_journal_hint` | handoff archival vetoes only | A bounded read-only scan found a pending compound in this instance's intents directory. It can only prevent automatic archival; it authorizes no action and claims no native execution. |
 | `derived_summary` | summary blocks only | The block was written by an agent acting for the seat (the top-level agent or a child summary worker, which the CLI cannot tell apart) under the seat's claim, with the model it declared. Never on receipts, never delivery, and never authority for any state change other than storing that block. Submission validation bounds what a block can claim. |
 
 **Recorded message claims.** `messages.author_role` (`human`, `agent`, `service`) and `messages.relays_user`
@@ -140,6 +142,27 @@ covering the message's decision time, and none (read as `agent`) where no bindin
 set by `send --relays-user`; like everything an agent sends it is a cooperative claim (A1); service sends
 record 0 and pre-migration rows are 0. Neither field authorizes anything; together they only rank a message as
 *priority* for summaries and for the catch-up hold bypass.
+
+**Recorded human intent.** Optional `messages.user_intent` (`query`, `request`, `rule`) is a
+cooperative send-time claim under the existing caller provenance, independently of author role and
+`relays_user`. The daemon decides eligibility against the canonical send-time binding: ordinary Human
+may classify with or without relay, ordinary Agent needs relay; services and system events cannot
+classify. Missing intent remains unclassified, including every historical message; there is no
+historical inference, body parsing or adversarial verification. Intent changes neither attention
+priority nor receipt attribution, and grants no permission or authority.
+
+Under `derived_summary`, classified query/request sources are deterministic open work and rules are
+active constraints within their thread. Workers compare supplied live sources (including earlier
+unstored chunks) with current chunk messages. Query/request resolution cites a later answer/completion
+or explicit human/relayed cancellation/withdrawal/replacement; an agent can report an answer or
+completion, but cannot unilaterally withdraw a human question. A replacement question has its own
+source. Partial answers, promises, silence and ACKs are insufficient completion evidence. Rules can
+only be superseded by later ordinary human/relayed input with `rule_change: withdrawn|replaced` and an
+exact nonempty quote; compliant behavior does not end a rule. The worker judges semantic closure and
+the daemon validates structure, status and citation evidence, under the existing `derived_summary`
+provenance. Unclassified sources retain legacy Done/Superseded behavior without being labeled rules.
+No send or inbox operation automatically resolves this work, no classified source is duplicated as
+model open work, and summary closure never changes receipt state or installs global instructions.
 
 **A4. Binding-kind transitions.**
 - *Human to agent*: a hooked agent's lifecycle check-in replaces a human binding. Allowed.
@@ -227,7 +250,17 @@ record 0 and pre-migration rows are 0. Neither field authorizes anything; togeth
 | rebind, fresh seat, retire, replace, orphan-thread invite | operator |
 | service-authored send, notify, and managed-thread controls (ensure, invite, topic, release, archive, reopen) | the registered service connection |
 | summary, summary job, summary submit | the seat's binding or its children (summary workers), all under the seat's claim: read-mostly; submit only stores a validated block for a live lease issued to the seat |
+| automatic quiet-channel archive | daemon lifecycle policy, after fresh complete eligibility and protected-work validation; never service-owned channels |
 | anything else on behalf of another seat | nobody by design; possible by spoofing (Accepted limits) |
+
+Automatic archival changes only the channel archive flag and appends a seatless lifecycle event. It
+never retires or moves a seat, leaves a membership, settles a receipt or invitation, or releases a
+requirement. Explicit reopen starts fresh grace. Human, unregistered, unresolved, held and uncertain
+joined occupants block automatic cleanup. Pending compound handoffs remain protected indefinitely;
+completed compound identities are absorbing tombstones. Exact historical completed retry may present
+and clean up its retained local intent, even after archival or binding change, but cannot resume any
+create/invite/send/launch side effect or revive protection. A legacy hint is reconciled only by exact
+immutable compound identity; absence or removal of a local file never completes a canonical fence.
 
 The operator never ACKs, accepts, rejects invitations, sends or advances a checkpoint.
 The service never ACKs, accepts or rejects invitations and is never a receipt recipient.
@@ -342,6 +375,16 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   Claude placeholder exactly reads as empty the same way. A Claude placeholder that was never captured reads
   as unknown, so that pane is not poked (only the hard-deadline warning reaches it) until the placeholder is
   captured and listed.
+- **Conservative archival liveness.** Repeated composer-aware idle observations use a 60-second cadence
+  with a maximum 120-second gap and fresh evidence window. Boot changes, outages, clock discontinuities
+  and missed observations restart qualification. Partial/malformed/inaccessible legacy journal coverage
+  vetoes cleanup. Every published noncompound intent, even a valid Send or ACK, also vetoes
+  coverage until recovered or absent in a fresh scan. This creates no canonical hint and the importer
+  never deletes intents. Fully verified compounds alone may create veto hints, with completed canonical
+  identity taking precedence transactionally. Published records follow the journal's immutable/rename
+  contract; source generation tracks directory publication/removal/replacement. Bounded validation uses a global canonical mutation fence, so continuous unrelated
+  activity or a channel too large to refresh within that window can keep it open indefinitely. Structural
+  snapshots alone never prove idle; the existing composer visibility limits apply to archival too.
 - **Probabilistic identifiers.** Pagination cursor binding tags are 48 bits (about 2^-48 acceptance per forged
   or stale cursor; scope, direction and order are still compared exactly). Send-preparation ids are drawn from
   62^8 ≈ 2^47.6; reuse of a retired id has probability about (retired ids) × 2^-47.6 and is harmless once

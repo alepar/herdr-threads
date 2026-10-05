@@ -391,6 +391,34 @@ where
     };
     let host =
         crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(&clock));
+    // Canonical terminal cleanup precedes caller selection,
+    // SeatInspect and local selected-generation guards. Exact IDs need no host I/O.
+    let historical_retry = matches!(&parsed.action, CliAction::Retry(_));
+    let deferred_locator = parsed
+        .cooperative_selector
+        .as_ref()
+        .is_some_and(|selector| selector.direct_id().is_none());
+    let try_completed = |parsed: &commands::ParsedCli, writer: &mut W| -> Result<bool, RunError> {
+        let (instance, _, client) = connect(&paths, &clock)?;
+        let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
+        let selected_context = crate::protocol::output::ContinuationContext {
+            state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
+            host: Some(context.host_endpoint.to_string_lossy().into_owned()),
+        };
+        handoff::try_completed_retry(
+            parsed,
+            &journal,
+            &instance.to_string(),
+            caller_pane,
+            &selected_context,
+            &client,
+            clock.as_ref(),
+            writer,
+        )
+    };
+    if historical_retry && try_completed(&parsed, writer)? {
+        return Ok(());
+    }
     panes::resolve_cli_targets(
         &mut parsed,
         || host.topology(&budget()),
@@ -401,6 +429,11 @@ where
                 .transpose()
         },
     )?;
+    // A deferred name now denotes an exact canonical target; terminal replay
+    // still precedes every live caller/SeatInspect/binding-generation guard.
+    if historical_retry && deferred_locator && try_completed(&parsed, writer)? {
+        return Ok(());
+    }
     let connection = LazyConnection::new(|| {
         connect(&paths, &clock).map(|(instance, _, client)| (instance, client))
     });
@@ -408,6 +441,15 @@ where
         .cooperative
         .as_ref()
         .map(|selection| selection.seat.clone());
+    let thread_caller_target = parsed
+        .cooperative
+        .as_ref()
+        .map(|selection| selection.target.clone())
+        .or_else(|| {
+            caller_pane
+                .filter(|pane| !pane.is_empty())
+                .map(crate::protocol::ids::HostTargetId::new)
+        });
     threads::resolve_cli_threads(&mut parsed, |selector| {
         let (_, client) = connection.get()?;
         let result = client
@@ -415,9 +457,7 @@ where
                 Command::ResolveThread(crate::protocol::commands::ResolveThreadQuery {
                     selector: selector.to_owned(),
                     caller: thread_caller.clone(),
-                    caller_target: caller_pane
-                        .filter(|pane| !pane.is_empty())
-                        .map(crate::protocol::ids::HostTargetId::new),
+                    caller_target: thread_caller_target.clone(),
                 }),
                 &budget(),
             )
@@ -2267,12 +2307,14 @@ fn cooperative_semantic(mutation: MutationSpec) -> io::Result<SemanticMutation> 
             require_ack,
             deadline_millis,
             relays_user,
+            user_intent,
         } => SemanticMutation::SendMessage {
             thread,
             body,
             invited_recipients: require_ack,
             deadline_millis,
             relays_user,
+            user_intent,
         },
         MutationSpec::Ack(messages) => SemanticMutation::Ack { messages },
         MutationSpec::Archive(thread) => SemanticMutation::Archive { thread },

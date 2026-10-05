@@ -1947,3 +1947,160 @@ fn read_hot_threads_asks_for_the_seat_and_validates_the_answer() {
         ErrorCode::ReadBudgetExhausted
     );
 }
+
+// Saved selectors may be shortened only with the recipient's flag-free proof
+// AND an exact canonical match of both saved selectors to this hook's target.
+#[test]
+fn cached_pinned_continuations_use_verified_recipient_presentation_without_changing_cache() {
+    use crate::{
+        cli::instance::InstanceInputs,
+        protocol::{
+            output::{ContinuationContext, OutputSpec},
+            pagination::StopReason,
+            results::{ApiError, CommandResult},
+            time::CallBudget,
+        },
+    };
+    struct PinnedTransport {
+        inner: Transport,
+    }
+    impl crate::ports::LocalClient for PinnedTransport {
+        fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
+            self.inner.call(command, budget)
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            spec: &OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            let mut result = self.call(command, budget)?;
+            if let CommandResult::CheckedIn(check) = &mut result {
+                for (argv, command) in [
+                    (&mut check.warnings.next_argv, "warnings"),
+                    (&mut check.inbox.next_argv, "inbox"),
+                ] {
+                    *argv = Some(vec![
+                        "herdr-threads".into(),
+                        "--state-dir".into(),
+                        spec.context.state_dir.clone().unwrap(),
+                        "--host-endpoint".into(),
+                        spec.context.host.clone().unwrap(),
+                        command.into(),
+                        "--seat".into(),
+                        "seat".into(),
+                        "--cursor".into(),
+                        "saved-cursor".into(),
+                    ]);
+                }
+                check.warnings.has_more = true;
+                check.warnings.next_cursor = Some("saved-cursor".into());
+                check.warnings.stop_reason = StopReason::Work;
+                check.inbox.has_more = true;
+                check.inbox.next_cursor = Some("saved-cursor".into());
+                check.inbox.stop_reason = StopReason::Work;
+            }
+            Ok(result)
+        }
+    }
+    let (root, j, cj, seed, event) = fixture();
+    let state = root.join("state");
+    fs::create_dir(&state).unwrap();
+    let endpoint = root.join("host.sock");
+    let target = ContinuationContext {
+        state_dir: Some(state.display().to_string()),
+        host: Some(endpoint.display().to_string()),
+    };
+    let client = PinnedTransport {
+        inner: Transport::new(),
+    };
+    run_event(
+        &j,
+        &cj,
+        &event,
+        Some(&seed),
+        1,
+        &client,
+        &Clock,
+        &OutputSpec {
+            context: target.clone(),
+            ..OutputSpec::default()
+        },
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let saved = cj
+        .dispatch(&event.event_id, &mut |_: &PendingCheckIn| {
+            panic!("saved request must not replay")
+        })
+        .unwrap()
+        .output;
+    let pane = InstanceInputs {
+        env_state: Some(state.clone()),
+        env_host: Some(endpoint.clone()),
+        ..InstanceInputs::default()
+    };
+    let mut missing_host = target.clone();
+    missing_host.host = None;
+    let mut other_host = target.clone();
+    other_host.host = Some(root.join("other.sock").display().to_string());
+    let mut other_state = target.clone();
+    other_state.state_dir = Some(root.join("other-state").display().to_string());
+    let foreign_pane = InstanceInputs {
+        env_host: Some(root.join("foreign.sock")),
+        ..pane.clone()
+    };
+    for (current, recipient, concise) in [
+        (&target, &pane, true),
+        (&target, &foreign_pane, false),
+        (&missing_host, &pane, false),
+        (&other_host, &pane, false),
+        (&other_state, &pane, false),
+    ] {
+        let mut output = Vec::new();
+        run_hook_event_reporting_notices(
+            &j,
+            &cj,
+            &event,
+            Some(&seed),
+            2,
+            &client,
+            &Clock,
+            &OutputSpec::default(),
+            OverviewReason::None,
+            &mut output,
+            &mut None,
+            Some(&RecipientRouting {
+                target: current,
+                pane: recipient,
+            }),
+        )
+        .unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert_eq!(text.matches("saved-cursor").count(), 4);
+        if concise {
+            assert!(text.contains("[\"herdr-threads\",\"warnings\",\"--seat\",\"seat\",\"--cursor\",\"saved-cursor\"]"), "{text}");
+            assert!(text.contains("[\"herdr-threads\",\"inbox\",\"--seat\",\"seat\",\"--cursor\",\"saved-cursor\"]"), "{text}");
+        }
+        assert_eq!(text.contains("--state-dir"), !concise, "{text}");
+        assert_eq!(text.contains("--host-endpoint"), !concise, "{text}");
+        assert_eq!(
+            cj.dispatch(&event.event_id, &mut |_: &PendingCheckIn| panic!("cached"))
+                .unwrap()
+                .output,
+            saved
+        );
+    }
+    assert_eq!(
+        client
+            .inner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| matches!(c, Command::CheckIn(_)))
+            .count(),
+        1
+    );
+    fs::remove_dir_all(root).unwrap();
+}

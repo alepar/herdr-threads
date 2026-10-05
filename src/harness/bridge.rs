@@ -77,6 +77,13 @@ pub enum OverviewPresentation<'a> {
     Failed(&'a [String]),
 }
 
+/// Recipient-local proof used only to re-render saved command selectors.
+/// The durable request and immutable cached response remain unchanged.
+pub struct RecipientRouting<'a> {
+    pub target: &'a crate::protocol::output::ContinuationContext,
+    pub pane: &'a crate::cli::instance::InstanceInputs,
+}
+
 pub struct HookInput<'a> {
     pub instruction: &'a str,
     pub original: OriginalOffer<'a>,
@@ -656,6 +663,7 @@ pub fn run_hook_event_with_reason<C: LocalClient + ?Sized, W: Write>(
         reason,
         writer,
         &mut None,
+        None,
     )
 }
 
@@ -686,6 +694,7 @@ pub fn run_hook_event_reporting_notices<C: LocalClient + ?Sized, W: Write>(
     reason: OverviewReason,
     writer: &mut W,
     presented: &mut Option<Presented>,
+    routing: Option<&RecipientRouting<'_>>,
 ) -> Result<(), BridgeError> {
     let reason = if event.kind.mode() == CheckInMode::Lifecycle {
         OverviewReason::Lifecycle
@@ -724,6 +733,15 @@ pub fn run_hook_event_reporting_notices<C: LocalClient + ?Sized, W: Write>(
     else {
         return Ok(());
     };
+    let mut result = result;
+    if let (Some(routing), CommandResult::CheckedIn(check)) = (routing, &mut result) {
+        for argv in [&mut check.warnings.next_argv, &mut check.inbox.next_argv]
+            .into_iter()
+            .flatten()
+        {
+            *argv = crate::cli::hook::recipient_argv(argv, routing.target, routing.pane);
+        }
+    }
     let CommandResult::CheckedIn(check) = &result else {
         return Err(ContextError::Invalid.into());
     };

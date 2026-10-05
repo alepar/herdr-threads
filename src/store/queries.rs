@@ -2117,8 +2117,8 @@ fn literal_contains_bounded(
     Ok(false)
 }
 
-/// Exact ID wins; otherwise a nonunique name index reads at most nine candidates.
-/// The ninth row proves omitted matches without scanning or counting the remainder.
+/// Exact IDs win, then the first nonempty joined/active/history name tier.
+/// Each indexed tier returns at most nine matches; the ninth proves omissions.
 fn resolve_thread(
     db: &QueryConnection,
     instance: &str,
@@ -2134,47 +2134,77 @@ fn resolve_thread(
     {
         return Ok(CommandResult::ThreadResolved(ThreadId::new(&q.selector)));
     }
+    // Explicit cooperative selection wins over an inherited pane, but only
+    // the canonical resolved mapping in this instance supplies a joined tier.
     let caller = match (&q.caller, &q.caller_target) {
-        (Some(seat), _) => Some(seat.as_str().to_owned()),
+        (Some(seat), _) => db
+            .query_row(
+                "SELECT id FROM seats WHERE id=?1 AND instance_id=?2 AND state='resolved'",
+                params![seat.as_str(), instance],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| db.map_error(e))?,
         (None, Some(target)) => db.query_row("SELECT id FROM seats INDEXED BY seats_live_target WHERE instance_id=?1 AND target_id=?2 AND state='resolved' AND target_id IS NOT NULL", params![instance,target.as_str()], |r|r.get::<_,String>(0)).optional().map_err(|e|db.map_error(e))?,
         _ => None,
     };
-    let mut stmt = db.prepare("SELECT t.id,t.topic,t.archived,COALESCE((SELECT state FROM memberships WHERE thread_id=t.id AND seat_id=?3),'none') FROM threads t INDEXED BY threads_instance_name WHERE t.instance_id=?1 AND t.name=?2 LIMIT 9").map_err(|e|db.map_error(e))?;
-    let candidates = stmt
-        .query_map(params![instance, q.selector, caller], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, bool>(2)?,
-                r.get::<_, String>(3)?,
-            ))
-        })
-        .map_err(|e| db.map_error(e))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| db.map_error(e))?;
-    match candidates.as_slice() {
-        [] => Err(api_error(
-            ErrorCode::NotFound,
-            format!("thread {:?} not found", q.selector),
-        )),
-        [(id, _, _, _)] => Ok(CommandResult::ThreadResolved(ThreadId::new(id))),
-        _ => {
-            let mut detail = format!(
-                "thread name {:?} is ambiguous; use an exact thread ID:",
-                q.selector
-            );
-            for (id, topic, archived, membership) in candidates.iter().take(8) {
-                let bounded: String = topic.chars().take(80).collect();
-                detail.push_str(&format!(
-                    "\n  {id}: topic={bounded:?} archived={archived} membership={membership}"
-                ));
+    for (tier, sql) in [
+        (
+            "joined",
+            "SELECT t.id,t.topic,t.archived,COALESCE(m.state,'none') FROM threads t INDEXED BY threads_instance_name LEFT JOIN memberships m ON m.thread_id=t.id AND m.seat_id=?3 WHERE t.instance_id=?1 AND t.name=?2 AND m.state='joined' LIMIT 9",
+        ),
+        (
+            "active",
+            "SELECT t.id,t.topic,t.archived,COALESCE(m.state,'none') FROM threads t INDEXED BY threads_instance_name LEFT JOIN memberships m ON m.thread_id=t.id AND m.seat_id=?3 WHERE t.instance_id=?1 AND t.name=?2 AND t.archived=0 LIMIT 9",
+        ),
+        (
+            "history",
+            "SELECT t.id,t.topic,t.archived,COALESCE(m.state,'none') FROM threads t INDEXED BY threads_instance_name LEFT JOIN memberships m ON m.thread_id=t.id AND m.seat_id=?3 WHERE t.instance_id=?1 AND t.name=?2 LIMIT 9",
+        ),
+    ] {
+        if tier == "joined" && caller.is_none() {
+            continue;
+        }
+        db.check_budget()?;
+        let mut stmt = db.prepare(sql).map_err(|e| db.map_error(e))?;
+        let candidates = stmt
+            .query_map(params![instance, q.selector, caller], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, bool>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|e| db.map_error(e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| db.map_error(e))?;
+        match candidates.as_slice() {
+            [] => continue,
+            [(id, _, _, _)] => return Ok(CommandResult::ThreadResolved(ThreadId::new(id))),
+            _ => {
+                let mut detail = format!(
+                    "thread name {:?} is ambiguous in the {tier} tier; use an exact thread ID:",
+                    q.selector
+                );
+                for (id, topic, archived, membership) in candidates.iter().take(8) {
+                    let bounded_id: String = id.chars().take(128).collect();
+                    let bounded_topic: String = topic.chars().take(80).collect();
+                    detail.push_str(&format!(
+                        "\n  {bounded_id:?}: topic={bounded_topic:?} archived={archived} membership={membership}"
+                    ));
+                }
+                if candidates.len() > 8 {
+                    detail.push_str("\n  additional candidates omitted");
+                }
+                return Err(api_error(ErrorCode::Conflict, detail));
             }
-            if candidates.len() > 8 {
-                detail.push_str("\n  additional candidates omitted");
-            }
-            Err(api_error(ErrorCode::Conflict, detail))
         }
     }
+    Err(api_error(
+        ErrorCode::NotFound,
+        format!("thread {:?} not found", q.selector),
+    ))
 }
 
 fn thread_summary(
@@ -3100,29 +3130,31 @@ fn message_summary(
             |r| r.get(0),
         )
         .map_err(|e| db.map_error(e))?;
-    let (author_role, relays_user, author_role_backfilled) = if physical {
+    let (author_role, relays_user, author_role_backfilled, user_intent) = if physical {
         db.query_row(
-            "SELECT author_role,relays_user,author_role_backfilled FROM messages WHERE id=?1",
+            "SELECT author_role,relays_user,author_role_backfilled,user_intent FROM messages WHERE id=?1",
             [id],
             |r| {
                 Ok((
                     r.get::<_, Option<String>>(0)?,
                     r.get::<_, i64>(1)? != 0,
                     r.get::<_, i64>(2)? != 0,
+                    r.get::<_, Option<String>>(3)?,
                 ))
             },
         )
         .map_err(|e| db.map_error(e))
-        .map(|(role, relays, backfilled)| {
-            (
+        .and_then(|(role, relays, backfilled, intent)| {
+            Ok((
                 role.as_deref()
                     .and_then(crate::protocol::summary::AuthorRole::from_column),
                 relays,
                 backfilled,
-            )
+                intent.map(|value| crate::protocol::summary::UserIntent::from_column(&value).ok_or_else(||api_error(ErrorCode::StoreCorrupt,"invalid user intent"))).transpose()?,
+            ))
         })?
     } else {
-        (None, false, false)
+        (None, false, false, None)
     };
     let event_author = if physical {
         Some(super::service_substrate::message_author(
@@ -3147,6 +3179,7 @@ fn message_summary(
         event_author,
         author_role,
         relays_user,
+        user_intent,
         author_role_backfilled,
         kind,
         sequence: seq as u64,
@@ -5090,11 +5123,35 @@ fn inbox_batch(
                         r.state == EffectiveReceiptState::Pending
                             && r.decision_seq.unwrap_or(0) <= decision_high
                     }) {
-                        let row: Option<(String, i64, Option<String>, String)> = db.query_row(
-                            "SELECT m.thread_id,m.sequence,m.actor_seat_id,m.body FROM messages m WHERE m.id=?1 AND m.kind='ordinary'",
-                            [&receipt.message_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
+                        let row = db.query_row(
+                            "SELECT m.thread_id,m.sequence,m.actor_seat_id,m.body,m.author_role,m.relays_user,m.user_intent,m.author_role_backfilled FROM messages m WHERE m.id=?1 AND m.kind='ordinary'",
+                            [&receipt.message_id], |r| Ok((r.get::<_, String>(0)?,r.get::<_, i64>(1)?,r.get::<_, Option<String>>(2)?,r.get::<_, String>(3)?,r.get::<_, Option<String>>(4)?,r.get::<_, bool>(5)?,r.get::<_, Option<String>>(6)?,r.get::<_, bool>(7)?)),
                         ).optional().map_err(store_error)?;
-                        if let Some((thread, sequence, sender, body)) = row {
+                        if let Some((
+                            thread,
+                            sequence,
+                            sender,
+                            body,
+                            role,
+                            relays_user,
+                            intent,
+                            author_role_backfilled,
+                        )) = row
+                        {
+                            let author_role = role
+                                .as_deref()
+                                .and_then(crate::protocol::summary::AuthorRole::from_column);
+                            let user_intent = intent
+                                .map(|value| {
+                                    crate::protocol::summary::UserIntent::from_column(&value)
+                                        .ok_or_else(|| {
+                                            api_error(
+                                                ErrorCode::StoreCorrupt,
+                                                "invalid user intent",
+                                            )
+                                        })
+                                })
+                                .transpose()?;
                             let body_len = body.len() as u64;
                             let offset = if cursor.last_examined_key.as_deref()
                                 == Some(receipt.message_id.as_str())
@@ -5121,6 +5178,10 @@ fn inbox_batch(
                                 message: MessageId::new(&receipt.message_id),
                                 sequence: sequence as u64,
                                 sender: sender.clone().map(SeatId::new),
+                                author_role,
+                                relays_user,
+                                user_intent,
+                                author_role_backfilled,
                                 body: body[offset as usize..].to_owned(),
                                 body_start: offset,
                                 body_end: body_len,
@@ -5166,6 +5227,10 @@ fn inbox_batch(
                                         message: MessageId::new(&receipt.message_id),
                                         sequence: sequence as u64,
                                         sender: sender.clone().map(SeatId::new),
+                                        author_role,
+                                        relays_user,
+                                        user_intent,
+                                        author_role_backfilled,
                                         body: body[offset as usize..end].to_owned(),
                                         body_start: offset,
                                         body_end: end as u64,

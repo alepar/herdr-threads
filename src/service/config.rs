@@ -24,6 +24,7 @@ pub struct ServiceConfig {
     timing: SchedulerTiming,
     minimum_wake_delay_ms: u64,
     wake_batch_delay_ms: u64,
+    archive_after_ms: u64,
     summary: SummarySettings,
 }
 
@@ -33,12 +34,24 @@ impl Default for ServiceConfig {
             timing: SchedulerTiming::default(),
             minimum_wake_delay_ms: crate::daemon::settings::DEFAULT_MINIMUM_WAKE_DELAY_MS,
             wake_batch_delay_ms: crate::daemon::settings::DEFAULT_WAKE_BATCH_DELAY_MS,
+            archive_after_ms: crate::store::archival::DEFAULT_AFTER_MS,
             summary: SummarySettings::default(),
         }
     }
 }
 
 impl ServiceConfig {
+    pub fn archive_after_ms(&self) -> u64 {
+        self.archive_after_ms
+    }
+    pub fn with_archive_after(mut self, after_ms: u64) -> Result<Self, &'static str> {
+        if after_ms > (i64::MAX - crate::store::archival::MAX_GAP_MS) as u64 {
+            return Err("invalid archive grace");
+        }
+        self.archive_after_ms = after_ms;
+        Ok(self)
+    }
+
     /// Load optional, private settings for one resolved host instance. A restart
     /// applies edits; the running owner keeps its validated in-memory values.
     pub fn load(paths: &InstancePaths) -> io::Result<Self> {
@@ -165,6 +178,7 @@ impl ServiceConfig {
         )
         .and_then(|config| config.with_wake_batch_delay(settings.wake_batch_delay_ms))
         .and_then(|config| config.with_summary(settings.summary.clone()))
+        .and_then(|config| config.with_archive_after(settings.archive_after_ms))
     }
 
     pub fn new(
@@ -180,6 +194,7 @@ impl ServiceConfig {
             timing,
             minimum_wake_delay_ms,
             wake_batch_delay_ms: crate::daemon::settings::DEFAULT_WAKE_BATCH_DELAY_MS,
+            archive_after_ms: crate::store::archival::DEFAULT_AFTER_MS,
             summary: SummarySettings::default(),
         })
     }

@@ -239,6 +239,7 @@ mod tests {
             author: None,
             author_role: None,
             relays_user: false,
+            user_intent: None,
             created_at: UtcMillis(0),
             text: text.into(),
         }

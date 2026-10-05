@@ -108,3 +108,6 @@ mod trust_policy;
 /// the CLI/daemon seam: old and new daemon, old CLI frames, skewed protocol_version.
 #[path = "integration/wire_compat.rs"]
 mod wire_compat;
+
+#[path = "integration/channel_activation.rs"]
+mod channel_activation;

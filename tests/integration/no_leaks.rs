@@ -105,7 +105,10 @@ fn leak_probe_child() {
         "daemon ensure: {}",
         String::from_utf8_lossy(&ensured.stderr)
     );
-    let needle = format!("daemon run --state-dir {}", state.display());
+    // RuntimeContext canonicalizes aliases before spawning the daemon. Search
+    // its actual argv path rather than the caller's /var or /tmp alias.
+    let daemon_state = state.canonicalize().expect("canonical daemon state");
+    let needle = format!("daemon run --state-dir {}", daemon_state.display());
     wait_for("detached daemon", Duration::from_secs(20), || {
         Command::new("pgrep")
             .args(["-f", &needle])

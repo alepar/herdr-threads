@@ -35,6 +35,7 @@ fn summary(seq: u64, preview: &str) -> MessageSummary {
         event_author: None,
         author_role: None,
         relays_user: false,
+        user_intent: None,
         author_role_backfilled: false,
         kind: MessageKind::Ordinary,
         sequence: seq,

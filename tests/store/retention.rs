@@ -691,6 +691,7 @@ fn rerunning_send_attention_producer_does_not_reenqueue() {
         operation: OperationId::new("send"),
         claim: fixture_claim("s1"),
         relays_user: false,
+        user_intent: None,
     };
     loop {
         match StorePort::prepare_send_step(
@@ -936,9 +937,9 @@ fn candidate_and_job_queries_use_the_retention_indexes() {
 #[test]
 fn triggers_allow_discard_then_delete() {
     let fx = Fx::new("triggers");
-    // The audit: no trigger is defined on a table retention updates or
-    // deletes from. The two host_instances pointer triggers guard updates
-    // retention never makes; every trigger is still installed.
+    // Only these observational archival triggers may touch pruned tables.
+    // Exercise their live effects below: pruning must succeed, invalidate
+    // archival certificates for removed releases, and retain every trigger.
     let triggers: Vec<(String, String)> = {
         let db = fx.db();
         let mut stmt = db
@@ -964,9 +965,27 @@ fn triggers_allow_discard_then_delete() {
         .iter()
         .filter(|(_, table)| touched.contains(&table.as_str()))
         .collect();
-    assert!(
-        on_touched.is_empty(),
-        "triggers on pruned tables: {on_touched:?}"
+    assert_eq!(
+        on_touched
+            .iter()
+            .map(|(name, table)| (name.as_str(), table.as_str()))
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            (
+                "archival_fence_recovery_baseline_releases_insert",
+                "recovery_baseline_releases"
+            ),
+            (
+                "archival_fence_recovery_baseline_releases_update",
+                "recovery_baseline_releases"
+            ),
+            (
+                "archival_fence_recovery_baseline_releases_delete",
+                "recovery_baseline_releases"
+            ),
+            ("archival_snapshot_structure", "snapshot_targets"),
+        ]),
+        "unexpected triggers on pruned tables"
     );
     for pointer in [
         "host_active_snapshot_published",
@@ -985,12 +1004,52 @@ fn triggers_allow_discard_then_delete() {
         .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
         .unwrap();
     assert_eq!(foreign_keys, 1);
-    for sequence in 1..=4u64 {
-        publish(&fx.store, sequence, 2);
-    }
+    let generations: Vec<_> = (1..=4u64)
+        .map(|sequence| publish(&fx.store, sequence, 2))
+        .collect();
+    let pruned = generations[1].as_str();
+    fx.db().execute(
+        "INSERT INTO archival_instances(instance_id,runtime_boot) VALUES ('i','test-retention')",
+        [],
+    ).unwrap();
+    fx.db().execute(
+        "INSERT INTO recovery_baseline_releases(instance_id,baseline_generation_id,target_id,decision_seq) VALUES ('i',?1,'p0',1),('i',?2,'p0',1)",
+        params![generations[0].as_str(), pruned],
+    ).unwrap();
+    let revision = || -> i64 {
+        fx.db()
+            .query_row(
+                "SELECT mutation_revision FROM archival_instances WHERE instance_id='i'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let before = revision();
     let total = fx.drain();
     assert_eq!(total.generations, 1, "one superseded generation");
+    assert_eq!(
+        total.targets, 2,
+        "superseded targets deleted with triggers live"
+    );
     assert_eq!(fx.count("snapshot_generations"), 3);
+    assert!(!fx.generations().contains(pruned));
+    assert_eq!(fx.count("snapshot_targets"), 6);
+    assert_eq!(
+        fx.ids("SELECT baseline_generation_id FROM recovery_baseline_releases"),
+        BTreeSet::from([generations[0].as_str().to_owned()]),
+        "only the retained baseline's release survives"
+    );
+    assert_eq!(
+        revision(),
+        before + 1,
+        "release deletion invalidates archival evidence"
+    );
+    let remaining: BTreeSet<String> = fx.ids("SELECT name FROM sqlite_master WHERE type='trigger'");
+    assert_eq!(
+        remaining,
+        triggers.into_iter().map(|(name, _)| name).collect()
+    );
 }
 
 #[test]

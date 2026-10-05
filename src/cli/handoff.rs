@@ -284,6 +284,22 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(
     let SemanticMutation::Handoff(plan) = *mutation else {
         return Err(super::invalid_request("not a handoff recovery reference"));
     };
+    let identity = crate::protocol::handoff::HandoffIdentity {
+        compound: reference.operation.clone(),
+        digest: pending.header.semantic_digest,
+        claim: claim.clone(),
+        thread: plan.request.thread.clone(),
+        recipient: plan.recipient.clone(),
+        create_key: plan.create_key.clone(),
+        invite_key: plan.invite_key.clone(),
+        send_key: plan.send_key.clone(),
+    };
+    {
+        let current = fence(client, clock, &identity, false)?;
+        if current.state == crate::protocol::handoff::HandoffState::Completed {
+            return cleanup_completed(journal, reference, &plan, &claim, &current, output, writer);
+        }
+    }
     let mut progress = load(journal, reference)?;
     let mut phase = "create";
     let call = |semantic: SemanticMutation, key: &OperationId| -> Result<CommandResult, RunError> {
@@ -339,6 +355,7 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(
                     invited_recipients: vec![plan.recipient.clone()],
                     deadline_millis: None,
                     relays_user: false,
+                    user_intent: None,
                 },
                 &plan.send_key,
             )?;
@@ -353,7 +370,9 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(
             return Ok(());
         }
         let mut request = plan.request.launch.clone();
-        request.argv.push(bootstrap(&thread, &plan.context));
+        request
+            .argv
+            .push(bootstrap(&thread, &plan.context, &claim.instance));
         let launched = launcher.launch(&request, &plan.recipient, &mut |possible| {
             if possible {
                 // A failed write may already have published the fence: retain
@@ -403,26 +422,183 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(
         return Err(RunError::Exit(5));
     }
     attempt?;
+    {
+        fence(client, clock, &identity, true)?;
+    }
     journal.complete(reference)?;
     Ok(())
 }
-fn prefix(context: &crate::protocol::output::ContinuationContext) -> Vec<String> {
-    let mut prefix = vec!["herdr-threads".to_owned()];
-    if let Some(state) = &context.state_dir {
-        prefix.extend(["--state-dir".into(), state.clone()]);
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn try_completed_retry<C: LocalClient + ?Sized, W: Write>(
+    parsed: &super::commands::ParsedCli,
+    journal: &Journal,
+    instance: &str,
+    caller_pane: Option<&str>,
+    context: &crate::protocol::output::ContinuationContext,
+    client: &C,
+    clock: &dyn Clock,
+    writer: &mut W,
+) -> Result<bool, RunError> {
+    let super::commands::CliAction::Retry(recovery) = &parsed.action else {
+        return Ok(false);
+    };
+    let reference = journal.resolve_recovery_ref(recovery.as_str())?;
+    let pending = journal.load(&reference)?;
+    if !is_handoff(&pending.semantic) {
+        return Ok(false);
     }
-    if let Some(host) = &context.host {
-        prefix.extend(["--host-endpoint".into(), host.clone()]);
+    let _lock = lock(journal, &reference)?;
+    let SemanticMutation::Frozen { claim, mutation } = pending.semantic else {
+        return Err(super::invalid_request("handoff needs frozen caller"));
+    };
+    let SemanticMutation::Handoff(plan) = *mutation else {
+        return Err(super::invalid_request("invalid compound nesting"));
+    };
+    let scope = IntentScope::Cooperative {
+        instance: instance.into(),
+        seat: claim.seat.clone(),
+    };
+    let frozen_routing = super::hook::CommandRouting::from_context(&claim.instance, &plan.context);
+    let selected_routing = super::hook::CommandRouting::from_context(instance, context);
+    if pending.header.scope != scope
+        || claim.instance != instance
+        || frozen_routing.is_none()
+        || frozen_routing != selected_routing
+    {
+        return Err(super::invalid_request(
+            "handoff requires its exact canonical state directory and host endpoint",
+        ));
     }
-    prefix
+    // Name/tab/workspace selectors need the ordinary topology resolver. The
+    // historical fast path cannot infer their target and must not reject live retry.
+    if parsed
+        .cooperative_selector
+        .as_ref()
+        .is_some_and(|selector| selector.direct_id().is_none())
+    {
+        return Ok(false);
+    }
+    let selected = if let Some(selection) = &parsed.cooperative {
+        let harness = match selection.harness {
+            crate::harness::context::Harness::Codex => crate::protocol::authority::Harness::Codex,
+            crate::harness::context::Harness::Claude => crate::protocol::authority::Harness::Claude,
+            crate::harness::context::Harness::Human => crate::protocol::authority::Harness::Human,
+        };
+        selection.seat == claim.seat
+            && selection.target == claim.target
+            && selection.role == crate::harness::context::Role::TopLevel
+            && harness == claim.harness
+            && parsed
+                .cooperative_selector
+                .as_ref()
+                .is_none_or(|selector| selector.direct_id().as_ref() == Some(&claim.target))
+    } else {
+        caller_pane == Some(claim.target.as_str()) && parsed.cooperative_selector.is_none()
+    };
+    if !selected {
+        return Err(super::invalid_request(
+            "completed handoff retry requires its exact frozen caller selection",
+        ));
+    }
+    let identity = crate::protocol::handoff::HandoffIdentity {
+        compound: reference.operation.clone(),
+        digest: pending.header.semantic_digest,
+        claim: claim.clone(),
+        thread: plan.request.thread.clone(),
+        recipient: plan.recipient.clone(),
+        create_key: plan.create_key.clone(),
+        invite_key: plan.invite_key.clone(),
+        send_key: plan.send_key.clone(),
+    };
+    let current = fence(client, clock, &identity, false)?;
+    if current.state != crate::protocol::handoff::HandoffState::Completed {
+        return Ok(false);
+    }
+    cleanup_completed(
+        journal,
+        &reference,
+        &plan,
+        &claim,
+        &current,
+        &parsed.output,
+        writer,
+    )?;
+    Ok(true)
 }
-fn bootstrap(thread: &ThreadId, context: &crate::protocol::output::ContinuationContext) -> String {
-    let mut inbox = prefix(context);
+
+fn fence<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    identity: &crate::protocol::handoff::HandoffIdentity,
+    complete: bool,
+) -> Result<crate::protocol::handoff::HandoffResult, RunError> {
+    let phase = if complete { "complete" } else { "begin" };
+    let mutation = crate::protocol::handoff::HandoffMutation {
+        identity: identity.clone(),
+        operation: OperationId::new(format!("handoff:{phase}:{}", identity.compound.as_str())),
+    };
+    let command = if complete {
+        Command::CompleteHandoff(mutation)
+    } else {
+        Command::BeginHandoff(mutation)
+    };
+    match client.call(command, &super::cooperative_budget(clock))? {
+        CommandResult::Handoff(result)
+            if result.compound == identity.compound
+                && (!complete
+                    || result.state == crate::protocol::handoff::HandoffState::Completed) =>
+        {
+            Ok(result)
+        }
+        _ => Err(super::invalid_request("unexpected handoff fence result")),
+    }
+}
+fn cleanup_completed<W: Write>(
+    journal: &Journal,
+    reference: &IntentRef,
+    plan: &HandoffPlan,
+    claim: &CallerClaim,
+    current: &crate::protocol::handoff::HandoffResult,
+    output: &OutputSpec,
+    writer: &mut W,
+) -> Result<(), RunError> {
+    let progress = load(journal, reference)?;
+    if progress.thread != current.thread
+        || progress.thread.is_none()
+        || progress
+            .launch
+            .as_ref()
+            .is_none_or(|v| v["outcome"] != "started")
+    {
+        return Err(super::invalid_request(
+            "completed handoff requires its retained successful report",
+        ));
+    }
+    let report = report(reference, plan, &progress, "launch", false, false, claim);
+    let bytes = if output.format == crate::protocol::output::OutputFormat::Json {
+        format!("{}\n", serde_json::json!({"handoff":report})).into_bytes()
+    } else {
+        super::setup::render_text(&report).into_bytes()
+    };
+    writer.write_all(&bytes)?;
+    writer.flush()?;
+    journal.complete(reference)?;
+    Ok(())
+}
+fn bootstrap(
+    thread: &ThreadId,
+    context: &crate::protocol::output::ContinuationContext,
+    instance: &str,
+) -> String {
+    let mut inbox = super::hook::cli_prefix(context);
     inbox.push("inbox".into());
-    let mut read = prefix(context);
+    let mut read = super::hook::cli_prefix(context);
     read.extend(["read".into(), thread.as_str().into()]);
+    let expected = super::hook::CommandRouting::from_context(instance, context);
+    let expected = serde_json::to_string(&expected).unwrap_or_else(|_| "null".into());
     format!(
-        "Open your durable inbox with `{}`, then read `{}`. The task is stored there. Launch does not accept invitations or ACK messages. Accept invitations separately; default text inbox ACKs fully displayed messages.",
+        "Expected handoff command routing (JSON data): {expected}\nPrefer a startup hook command group only when its instance UUID, canonical state directory and canonical host endpoint exactly match every expected routing field above. Missing (null), different or ambiguous routing cannot supersede this handoff's target. Open your durable inbox, then read thread {} using that matching group. Otherwise use the exact fallback: `{}`, then `{}`. The task is stored there. Launch does not accept invitations or ACK messages. Accept invitations separately; default text inbox ACKs fully displayed messages.",
+        thread.as_str(),
         crate::protocol::output::format_command_argv(&inbox),
         crate::protocol::output::format_command_argv(&read)
     )
@@ -436,7 +612,7 @@ fn report(
     unknown: bool,
     claim: &CallerClaim,
 ) -> serde_json::Value {
-    let prefix = prefix(&plan.context);
+    let prefix = super::hook::cli_prefix(&plan.context);
     let mut retry = vec![
         "env".into(),
         format!("HERDR_PANE_ID={}", claim.target.as_str()),
@@ -470,7 +646,7 @@ fn report(
     manual.push("--".into());
     manual.extend(plan.request.launch.argv.clone());
     if let Some(thread) = &progress.thread {
-        manual.push(bootstrap(thread, &plan.context));
+        manual.push(bootstrap(thread, &plan.context, &claim.instance));
     }
     serde_json::json!({"phase":phase,"failed":failed,"outcome":if unknown {"outcome_unknown"} else if failed {"pending"} else {"started"},"thread":progress.thread,"seat":plan.recipient,"pane":plan.request.launch.target,"invitation":progress.invitation,"message":progress.message,"recovery_ref":reference.recovery_ref(),"retry_argv":retry,"inspect_argv":inspect,"manual_launch_after_confirming_no_start_argv":manual,"launch":progress.launch})
 }

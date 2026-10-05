@@ -3,8 +3,8 @@
 //! so rolling up never changes it. Pure: dropped transitions are returned for
 //! the caller to log.
 use crate::protocol::summary::{
-    Fold, FoldDisplay, FoldEntry, Identifier, ItemBody, ItemStatus, Level0Records, NewStatus,
-    SeqRange, Transition,
+    Fold, FoldDisplay, FoldEntry, Identifier, ItemBody, ItemStatus, LedgerItem, Level0Records,
+    NewStatus, RuleChange, SeqRange, Transition, UserIntent,
 };
 use crate::summary::identifiers;
 use std::collections::{BTreeMap, HashMap};
@@ -26,12 +26,45 @@ pub struct FoldState {
 /// Which statuses a transition may set, by item kind (spec §5).
 pub fn status_allowed(body: &ItemBody, status: NewStatus) -> bool {
     match body {
-        ItemBody::UserInstruction { .. } => {
-            matches!(status, NewStatus::Done | NewStatus::Superseded)
-        }
+        ItemBody::UserInstruction { user_intent, .. } => match user_intent {
+            None => matches!(status, NewStatus::Done | NewStatus::Superseded),
+            Some(UserIntent::Query | UserIntent::Request) => status == NewStatus::Resolved,
+            Some(UserIntent::Rule) => status == NewStatus::Superseded,
+        },
         ItemBody::OpenItem { .. } => matches!(status, NewStatus::Resolved | NewStatus::Superseded),
         ItemBody::Decision { .. } => status == NewStatus::Superseded,
     }
+}
+
+/// Structural evidence shared by submit validation and persisted-record folding.
+/// `priority` must describe an ordinary canonical human or relayed message.
+/// Exact rule quotes are checked only at submission and are not persisted.
+pub(super) fn evidence_allowed(
+    body: &ItemBody,
+    status: NewStatus,
+    rule_change: Option<RuleChange>,
+    priority: bool,
+) -> Result<(), &'static str> {
+    let rule = matches!(
+        body,
+        ItemBody::UserInstruction {
+            user_intent: Some(UserIntent::Rule),
+            ..
+        }
+    );
+    if rule && rule_change.is_none() {
+        return Err("rule supersession needs rule_change");
+    }
+    if !rule && rule_change.is_some() {
+        return Err("rule_change is allowed only for a rule");
+    }
+    if matches!(body, ItemBody::UserInstruction { .. })
+        && status == NewStatus::Superseded
+        && !priority
+    {
+        return Err("superseded instruction needs a priority citing message");
+    }
+    Ok(())
 }
 
 fn item_status(status: NewStatus) -> ItemStatus {
@@ -42,17 +75,15 @@ fn item_status(status: NewStatus) -> ItemStatus {
     }
 }
 
-/// Spec §5: blocks in ascending range order up to `up_to_seq` (items and
-/// transitions beyond it are ignored); `priority_at(seq)` reads `is_priority`
-/// of the message at `seq`.
+/// Introductions and transitions are applied in message-sequence order,
+/// independently of block arrival or cumulative source blocks' ranges.
+/// Equal-sequence introductions precede transitions; ties retain range order
+/// and then each record array's order. Identifiers merge independently.
 ///
-/// A transition applies only when all of these hold, else it is dropped with a
-/// reason: its `cite_seq` lies in its own block's range; its target was
-/// introduced at a sequence below `cite_seq` (an earlier block, or earlier in
-/// the same block: the guard reads the item's own `seq`); the target is still
-/// open at that point; and, for an instruction marked `superseded`, the message
-/// at `cite_seq` is a priority message. A status not allowed for the target's
-/// kind is dropped too (the validator already refuses it on submit).
+/// Every transition keeps its own block's citation range. Its target must be
+/// introduced strictly below the cite, remain open/active, accept the proposed
+/// status, and satisfy the shared structural evidence guards. Priority reads
+/// ordinary canonical human/relayed sources, never text or system events.
 pub fn compute(
     blocks: &[BlockRecords<'_>],
     up_to_seq: u64,
@@ -64,61 +95,87 @@ pub fn compute(
         .collect();
     ordered.sort_by_key(|b| (b.range.first_seq, b.range.last_seq));
 
-    let mut entries: Vec<FoldEntry> = Vec::new();
-    let mut index: HashMap<String, usize> = HashMap::new();
-    let mut dropped = Vec::new();
+    enum Event<'a> {
+        Introduce(&'a LedgerItem),
+        Transition(SeqRange, &'a Transition),
+    }
+    let mut events = Vec::new();
     let mut identifier_sets: Vec<&[Identifier]> = Vec::new();
-
     for block in ordered {
         identifier_sets.push(&block.records.identifiers);
         for item in &block.records.items {
-            if item.seq > up_to_seq || index.contains_key(&item.id) {
-                continue;
+            if item.seq <= up_to_seq {
+                events.push(Event::Introduce(item));
             }
-            let status = match item.body {
-                ItemBody::Decision { .. } => ItemStatus::Active,
-                _ => ItemStatus::Open,
-            };
-            index.insert(item.id.clone(), entries.len());
-            entries.push(FoldEntry {
-                item: item.clone(),
-                status,
-                closed_at_seq: None,
-                display: FoldDisplay::Full,
-            });
         }
         for transition in &block.records.transitions {
-            let cite = transition.cite_seq;
-            let verdict = if cite < block.range.first_seq || cite > block.range.last_seq {
-                Err("cite_seq outside block")
-            } else if cite > up_to_seq {
-                Err("cite_seq beyond the fold frontier")
-            } else if let Some(&at) = index.get(&transition.target_id) {
-                let entry = &entries[at];
-                if entry.item.seq >= cite {
-                    Err("target not introduced below cite_seq")
-                } else if !matches!(entry.status, ItemStatus::Open | ItemStatus::Active) {
-                    Err("target not open")
-                } else if !status_allowed(&entry.item.body, transition.new_status) {
-                    Err("new_status not allowed for target kind")
-                } else if matches!(entry.item.body, ItemBody::UserInstruction { .. })
-                    && transition.new_status == NewStatus::Superseded
-                    && !priority_at(cite)
-                {
-                    Err("superseded instruction needs a priority citing message")
-                } else {
-                    Ok(at)
+            events.push(Event::Transition(block.range, transition));
+        }
+    }
+    events.sort_by_key(|event| match event {
+        Event::Introduce(item) => (item.seq, 0),
+        Event::Transition(_, transition) => (transition.cite_seq, 1),
+    });
+
+    let mut entries: Vec<FoldEntry> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut dropped = Vec::new();
+    for event in events {
+        let (range, transition) = match event {
+            Event::Introduce(item) => {
+                if index.contains_key(&item.id) {
+                    continue;
                 }
-            } else {
-                Err("unknown target")
-            };
-            match verdict {
-                Ok(at) => {
-                    entries[at].status = item_status(transition.new_status);
-                    entries[at].closed_at_seq = Some(cite);
-                }
-                Err(reason) => dropped.push((transition.clone(), reason)),
+                let status = match item.body {
+                    ItemBody::Decision { .. }
+                    | ItemBody::UserInstruction {
+                        user_intent: Some(UserIntent::Rule),
+                        ..
+                    } => ItemStatus::Active,
+                    _ => ItemStatus::Open,
+                };
+                index.insert(item.id.clone(), entries.len());
+                entries.push(FoldEntry {
+                    item: item.clone(),
+                    status,
+                    closed_at_seq: None,
+                    display: FoldDisplay::Full,
+                });
+                continue;
             }
+            Event::Transition(range, transition) => (range, transition),
+        };
+        let cite = transition.cite_seq;
+        let verdict = if cite < range.first_seq || cite > range.last_seq {
+            Err("cite_seq outside block")
+        } else if cite > up_to_seq {
+            Err("cite_seq beyond the fold frontier")
+        } else if let Some(&at) = index.get(&transition.target_id) {
+            let entry = &entries[at];
+            if entry.item.seq >= cite {
+                Err("target not introduced below cite_seq")
+            } else if !matches!(entry.status, ItemStatus::Open | ItemStatus::Active) {
+                Err("target not open")
+            } else if !status_allowed(&entry.item.body, transition.new_status) {
+                Err("new_status not allowed for target kind")
+            } else {
+                evidence_allowed(
+                    &entry.item.body,
+                    transition.new_status,
+                    transition.rule_change,
+                    priority_at(cite),
+                )
+                .map(|()| at)
+            }
+        } else {
+            Err("unknown target")
+        };
+        match verdict {
+            Ok(at) => {
+                entries[at].status = item_status(transition.new_status);
+                entries[at].closed_at_seq = Some(cite);
+            }
+            Err(reason) => dropped.push((transition.clone(), reason)),
         }
     }
 
@@ -226,6 +283,7 @@ mod tests {
                 author_seat: None,
                 author_role: Some(AuthorRole::Human),
                 relays_user: false,
+                user_intent: None,
                 text: Some(format!("do {seq}")),
                 text_ref: None,
                 message_id: None,
@@ -259,6 +317,7 @@ mod tests {
             target_id: target.into(),
             new_status: status,
             cite_seq: cite,
+            rule_change: None,
         }
     }
     #[test]
@@ -684,5 +743,350 @@ mod tests {
         // Omitting entries shrinks it.
         let empty = render(&compute(&[], 10, NONE_PRIORITY), 1);
         assert_eq!(empty.rendered_bytes, 2 + 2);
+    }
+    fn classified(seq: u64, intent: crate::protocol::summary::UserIntent) -> LedgerItem {
+        let mut item = instruction(seq);
+        if let ItemBody::UserInstruction {
+            user_intent,
+            message_id,
+            ..
+        } = &mut item.body
+        {
+            *user_intent = Some(intent);
+            *message_id = Some(crate::protocol::ids::MessageId::new(format!("m{seq}")));
+        }
+        item
+    }
+
+    #[test]
+    fn user_intent_status_matrix() {
+        use crate::protocol::summary::{
+            RuleChange,
+            UserIntent::{Query, Request, Rule},
+        };
+        let cases = [
+            (
+                instruction(1),
+                ItemStatus::Open,
+                vec![NewStatus::Done, NewStatus::Superseded],
+            ),
+            (
+                classified(1, Query),
+                ItemStatus::Open,
+                vec![NewStatus::Resolved],
+            ),
+            (
+                classified(1, Request),
+                ItemStatus::Open,
+                vec![NewStatus::Resolved],
+            ),
+            (
+                classified(1, Rule),
+                ItemStatus::Active,
+                vec![NewStatus::Superseded],
+            ),
+            (
+                open_item("o", 1),
+                ItemStatus::Open,
+                vec![NewStatus::Resolved, NewStatus::Superseded],
+            ),
+            (
+                decision("d", 1),
+                ItemStatus::Active,
+                vec![NewStatus::Superseded],
+            ),
+        ];
+        for (item, initial, allowed) in cases {
+            let rec = records(vec![item.clone()], vec![]);
+            let blocks = [BlockRecords {
+                range: range(1, 9),
+                records: &rec,
+            }];
+            assert_eq!(
+                status_of(&compute(&blocks, 9, &|_| true), &item.id),
+                (initial, None)
+            );
+            for status in [NewStatus::Done, NewStatus::Resolved, NewStatus::Superseded] {
+                let applies = allowed.contains(&status);
+                assert_eq!(
+                    status_allowed(&item.body, status),
+                    applies,
+                    "{:?} {status:?}",
+                    item.body
+                );
+                let mut transition = tr(&item.id, status, 8);
+                if matches!(
+                    item.body,
+                    ItemBody::UserInstruction {
+                        user_intent: Some(Rule),
+                        ..
+                    }
+                ) {
+                    transition.rule_change = Some(RuleChange::Withdrawn);
+                }
+                let rec = records(vec![item.clone()], vec![transition]);
+                let blocks = [BlockRecords {
+                    range: range(1, 9),
+                    records: &rec,
+                }];
+                let state = compute(&blocks, 9, &|_| true);
+                assert_eq!(state.dropped.len(), usize::from(!applies));
+                assert_eq!(
+                    status_of(&state, &item.id),
+                    if applies {
+                        (item_status(status), Some(8))
+                    } else {
+                        (initial, None)
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn user_intent_fold_uses_source_sequence_not_block_arrival() {
+        use crate::protocol::summary::UserIntent::Query;
+        let mut seed = records(vec![classified(2, Query)], vec![]);
+        seed.identifiers.push(Identifier {
+            value: "src/a.rs".into(),
+            kind: IdentifierKind::Path,
+            seqs: vec![2],
+        });
+        let late_a = records(vec![classified(2, Query), classified(2, Query)], vec![]);
+        let b = records(vec![], vec![tr("i.2", NewStatus::Resolved, 8)]);
+        // Duplicate local introductions and a cumulative seed share one ID,
+        // independently of block input order.
+        let blocks = [
+            BlockRecords {
+                range: range(8, 8),
+                records: &b,
+            },
+            BlockRecords {
+                range: range(2, 2),
+                records: &late_a,
+            },
+            BlockRecords {
+                range: range(1, 9),
+                records: &seed,
+            },
+        ];
+        let state = compute(&blocks, 9, NONE_PRIORITY);
+        let reversed: Vec<_> = blocks.into_iter().rev().collect();
+        assert_eq!(state, compute(&reversed, 9, NONE_PRIORITY));
+        assert_eq!(state.entries.len(), 1);
+        assert_eq!(status_of(&state, "i.2"), (ItemStatus::Resolved, Some(8)));
+        assert_eq!(state.identifiers[0].seqs, vec![2]);
+        // The source seed spans #1..9 but its local display range sorts after
+        // B; introductions must use source sequence instead of that range.
+        let cumulative = records(
+            vec![instruction(1), classified(2, Query), classified(9, Query)],
+            vec![],
+        );
+        let blocks = [
+            BlockRecords {
+                range: range(8, 8),
+                records: &b,
+            },
+            BlockRecords {
+                range: range(8, 9),
+                records: &cumulative,
+            },
+        ];
+        let state = compute(&blocks, 9, NONE_PRIORITY);
+        assert_eq!(
+            state.entries.iter().filter(|e| e.item.id == "i.2").count(),
+            1
+        );
+        assert_eq!(status_of(&state, "i.2"), (ItemStatus::Resolved, Some(8)));
+        assert_eq!(status_of(&state, "i.9"), (ItemStatus::Open, None));
+        let reversed: Vec<_> = blocks.into_iter().rev().collect();
+        assert_eq!(state, compute(&reversed, 9, NONE_PRIORITY));
+
+        // The first closure in message sequence wins, even when the broader
+        // block containing the later closure sorts first.
+        let later = records(
+            vec![classified(2, Query)],
+            vec![tr("i.2", NewStatus::Resolved, 9)],
+        );
+        let earlier = records(vec![], vec![tr("i.2", NewStatus::Resolved, 8)]);
+        let blocks = [
+            BlockRecords {
+                range: range(1, 9),
+                records: &later,
+            },
+            BlockRecords {
+                range: range(8, 8),
+                records: &earlier,
+            },
+        ];
+        let state = compute(&blocks, 9, NONE_PRIORITY);
+        assert_eq!(status_of(&state, "i.2"), (ItemStatus::Resolved, Some(8)));
+        assert_eq!(state.dropped[0].0.cite_seq, 9);
+        for cite in [1, 2, 10] {
+            let bad = records(
+                vec![classified(2, Query)],
+                vec![tr("i.2", NewStatus::Resolved, cite)],
+            );
+            let blocks = [BlockRecords {
+                range: range(1, 9),
+                records: &bad,
+            }];
+            let state = compute(&blocks, 9, NONE_PRIORITY);
+            assert_eq!(state.dropped.len(), 1);
+            assert_eq!(status_of(&state, "i.2"), (ItemStatus::Open, None));
+        }
+    }
+
+    fn worker_keeps_open(items: Vec<LedgerItem>, narrative: &str) -> Level0Records {
+        let submission = crate::protocol::summary::Submission::parse(&serde_json::json!({
+            "submission_schema": crate::protocol::summary::SUBMISSION_SCHEMA,
+            "narrative": narrative, "prompt_version": "p", "model": "m",
+            "transitions": [],
+        }))
+        .unwrap();
+        crate::summary::ledger::level0_records(&items, &[], &submission, "cv", 0)
+    }
+
+    #[test]
+    fn user_intent_partial_ack_no_transition_stays_open() {
+        use crate::protocol::summary::UserIntent::{Query, Request};
+        for intent in [Query, Request] {
+            for reply in ["partial answer", "promise to finish", "ACK"] {
+                let messages = worker_keeps_open(vec![classified(1, intent)], reply);
+                let blocks = [BlockRecords {
+                    range: range(1, 2),
+                    records: &messages,
+                }];
+                assert_eq!(
+                    status_of(&compute(&blocks, 2, NONE_PRIORITY), "i.1"),
+                    (ItemStatus::Open, None),
+                    "{reply}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn user_intent_rule_compliance_no_transition_stays_active() {
+        use crate::protocol::summary::UserIntent::Rule;
+        let rec = worker_keeps_open(
+            vec![classified(1, Rule)],
+            "Released after running tests; ACK received",
+        );
+        let blocks = [BlockRecords {
+            range: range(1, 3),
+            records: &rec,
+        }];
+        assert_eq!(
+            status_of(&compute(&blocks, 3, NONE_PRIORITY), "i.1"),
+            (ItemStatus::Active, None)
+        );
+    }
+
+    #[test]
+    fn user_intent_closed_display_window() {
+        use crate::protocol::summary::{
+            RuleChange,
+            UserIntent::{Query, Request, Rule},
+        };
+        let mut items = vec![
+            classified(1, Query),
+            classified(2, Request),
+            classified(3, Rule),
+            classified(4, Query),
+            classified(5, Request),
+            classified(6, Rule),
+        ];
+        for item in &mut items[3..] {
+            if let ItemBody::UserInstruction { text, text_ref, .. } = &mut item.body {
+                *text = None;
+                *text_ref = Some(item.seq);
+            }
+        }
+        let mut rule_close = tr("i.3", NewStatus::Superseded, 9);
+        rule_close.rule_change = Some(RuleChange::Replaced);
+        let rec = records(
+            items.clone(),
+            vec![
+                tr("i.1", NewStatus::Resolved, 7),
+                tr("i.2", NewStatus::Resolved, 8),
+                rule_close,
+            ],
+        );
+        let blocks = [BlockRecords {
+            range: range(1, 10),
+            records: &rec,
+        }];
+        let state = compute(&blocks, 10, &|_| true);
+        assert!(state.dropped.is_empty());
+        let recent = render(&state, 7);
+        assert_eq!(
+            recent.entries.iter().map(|e| e.display).collect::<Vec<_>>(),
+            [
+                FoldDisplay::OneLine,
+                FoldDisplay::OneLine,
+                FoldDisplay::OneLine,
+                FoldDisplay::TextRef,
+                FoldDisplay::TextRef,
+                FoldDisplay::TextRef
+            ]
+        );
+        let old = render(&state, 10);
+        assert_eq!(
+            old.entries.iter().map(|e| &e.item).collect::<Vec<_>>(),
+            items[3..].iter().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn user_intent_rule_persisted_evidence_guards() {
+        use crate::protocol::summary::{
+            RuleChange,
+            UserIntent::{Query, Request, Rule},
+        };
+        let rule = classified(2, Rule);
+        for (change, priority, applies) in [
+            (None, true, false),
+            (Some(RuleChange::Withdrawn), false, false),
+            (Some(RuleChange::Withdrawn), true, true),
+            (Some(RuleChange::Replaced), true, true),
+        ] {
+            let mut transition = tr("i.2", NewStatus::Superseded, 8);
+            transition.rule_change = change;
+            let rec = records(vec![rule.clone()], vec![transition]);
+            let blocks = [BlockRecords {
+                range: range(1, 9),
+                records: &rec,
+            }];
+            let state = compute(&blocks, 9, &|_| priority);
+            assert_eq!(state.dropped.len(), usize::from(!applies));
+            assert_eq!(
+                status_of(&state, "i.2"),
+                if applies {
+                    (ItemStatus::Superseded, Some(8))
+                } else {
+                    (ItemStatus::Active, None)
+                }
+            );
+        }
+        for (item, status) in [
+            (instruction(2), NewStatus::Done),
+            (classified(2, Query), NewStatus::Resolved),
+            (classified(2, Request), NewStatus::Resolved),
+            (open_item("o", 2), NewStatus::Resolved),
+            (decision("d", 2), NewStatus::Superseded),
+        ] {
+            let mut transition = tr(&item.id, status, 8);
+            transition.rule_change = Some(RuleChange::Replaced);
+            let rec = records(vec![item.clone()], vec![transition]);
+            let blocks = [BlockRecords {
+                range: range(1, 9),
+                records: &rec,
+            }];
+            let state = compute(&blocks, 9, &|_| true);
+            assert_eq!(state.dropped.len(), 1, "{:?}", item.body);
+            assert_eq!(state.dropped[0].1, "rule_change is allowed only for a rule");
+            assert_eq!(status_of(&state, &item.id).1, None);
+        }
     }
 }

@@ -1,0 +1,452 @@
+[
+  {
+    "id": "ht-nmp.9",
+    "title": "Freeze first-fetched summary worker input",
+    "description": "Persist and reuse the first-fetched JobBundle per valid fetch/lease so intervening equal-timestamp or clock-rollback commits cannot change validation input.\nowns: frozen fetch snapshot capture/replay/reset and concurrency regressions.\nconsumes: nullable fetched_bundle_json column and cumulative job runtime.\nfiles: src/store/summary.rs; tests/store/summary.rs; tests/integration/summary_flow.rs.\nDesign fix round1. Report: docs/superpowers/runs/2026-10-04-human-message-intent/2026-10-04-human-message-intent-roast-design-1.md; step-back: same name with -step-back.md. No prior applied redesigns.\nblocked-by ht-nmp.1: consumes boundary contract\nblocked-by ht-nmp.4: consumes cumulative job runtime\nboundary contract: ht-nmp.1\nCapture snapshot once; repeat fetch returns identical serialized bundle regardless of otherwise compatible settings changes. Lease acquisition/replacement resets snapshot; livecaller/lease/generation fences remain authoritative.",
+    "acceptance_criteria": "Equal-timestamp and rollback A-after-B-fetch commits cannot invalidate B's valid submission; retries reuse exact bundle; live caller/lease/generation checks still reject invalid calls; reset snapshot on lease lifecycle; final fold sees all canonical stored records.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-04T21:26:22Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-04T21:28:31Z",
+    "labels": [
+      "sp:ht-nmp"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-nmp.9",
+        "depends_on_id": "ht-nmp.4",
+        "type": "blocks",
+        "created_at": "2026-10-04T21:26:23Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-nmp.9",
+        "depends_on_id": "ht-nmp",
+        "type": "parent-child",
+        "created_at": "2026-10-04T21:26:22Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-nmp.9",
+        "depends_on_id": "ht-nmp.1",
+        "type": "blocks",
+        "created_at": "2026-10-04T21:26:22Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-nmp"
+  },
+  {
+    "id": "ht-nmp.8",
+    "title": "Withdrawn or replaced query closure regression",
+    "description": "Exercise explicit human withdrawal/replacement of unanswered queries through the worker contract and final summary fold, with the replacement separately classified and no daemon semantic inference.\nowns: query withdrawal/replacement scenario tests and corrective guidance assertions.\nconsumes: cumulative summary runtime and worker guidance.\nfiles: tests/integration/summary_flow.rs; integrations/skill/SKILL.md; docs/agent-usage.md; small corrections only.\nDesign fix round1. Report: docs/superpowers/runs/2026-10-04-human-message-intent/2026-10-04-human-message-intent-roast-design-1.md; step-back: same name with -step-back.md. No prior applied redesigns.\nblocked-by ht-nmp.4: consumes cumulative summary runtime\nblocked-by ht-nmp.5: consumes worker guidance\nExplicit authority: withdrawal/replacement must cite ordinary Human or relaying-Agent priority source; ordinary unrelayed agent cannot cancel a human question. Worker judges meaning, daemon does not infer cancellation from text.",
+    "acceptance_criteria": "Later human cancellation/replacement resolves original query; new query has separate i.seq; ordinary unanswered/partial/no-transition stays Open. Prompt and guidance describe human withdrawal without machine semantic claims.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-04T21:26:18Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-04T21:28:30Z",
+    "labels": [
+      "sp:ht-nmp"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-nmp.8",
+        "depends_on_id": "ht-nmp.5",
+        "type": "blocks",
+        "created_at": "2026-10-04T21:26:19Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-nmp.8",
+        "depends_on_id": "ht-nmp.4",
+        "type": "blocks",
+        "created_at": "2026-10-04T21:26:19Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-nmp.8",
+        "depends_on_id": "ht-nmp",
+        "type": "parent-child",
+        "created_at": "2026-10-04T21:26:18Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-nmp"
+  },
+  {
+    "id": "ht-nmp.7",
+    "title": "Integration sweep: human message intent",
+    "description": "Verify main flows end to end, add uncovered seam tests and fix small gaps, then run only focused tests and required fmt/clippy/default-feature checks.\nowns: terminal uncovered-seam tests and merge-ready focused verification.\nconsumes: all leaves (integration sweep).\nfiles: tests/integration/summary_flow.rs; tests/integration/summary_sweep.rs; tests/store/summary.rs; small seam fixes only.\nNo full suite/live models/shared Herdr control/real config; coordinator owns combined suite/main merge/release. Stop every owned helper.\nSpec: docs/superpowers/specs/2026-10-04-user-message-intent-design.md.\nblocked-by ht-nmp.1: consumes all leaves (integration sweep)\nblocked-by ht-nmp.2: consumes all leaves (integration sweep)\nblocked-by ht-nmp.3: consumes all leaves (integration sweep)\nblocked-by ht-nmp.4: consumes all leaves (integration sweep)\nblocked-by ht-nmp.5: consumes all leaves (integration sweep)\nblocked-by ht-nmp.6: consumes all leaves (integration sweep)\nblocked-by ht-nmp.8: consumes all leaves (integration sweep)\nblocked-by ht-nmp.9: consumes all leaves (integration sweep)",
+    "acceptance_criteria": "Uncovered query/request/rule send→summary→output seam tests pass; cargo fmt --check; nice cargo clippy --locked --all-targets --all-features -- -D warnings; nice scripts/check-default-features; focused nice cargo test --locked --all-features filters. No full-suite invocation. Owned processes stopped; frozen SHA/check handoff is caller-owned.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-04T21:12:34Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-04T21:26:25Z",
+    "labels": [
+      "sp:ht-nmp"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-nmp.7",
+        "depends_on_id": "ht-nmp.6",
+        "type": "blocks",
+        "created_at": "2026-10-04T21:12:39Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-nmp.7",
+        "depends_on_id": "ht-nmp.2",
+        "type": "blocks",
+        "created_at": "2026-10-04T21:12:35Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-nmp.7",
+        "depends_on_id": "ht-nmp",
+        "type": "parent-child",
+        "created_at": "2026-10-04T21:12:34Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-nmp.7",
+        "depends_on_id": "ht-nmp.8",
+        "type": "blocks",
+        "created_at": "2026-10-04T21:26:21Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-nmp.7",
+        "depends_on_id": "ht-nmp.4",
+        "type": "blocks",
+        "created_at": "2026-10-04T21:12:37Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-nmp.7",
+        "depends_on_id": "ht-nmp.9",
+        "type": "blocks",
+        "created_at": "2026-10-04T21:26:24Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-nmp.7",
+        "depends_on_id": "ht-nmp.5",
+        "type": "blocks",
+        "created_at": "2026-10-04T21:12:38Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-nmp.7",
+        "depends_on_id": "ht-nmp.3",
+        "type": "blocks",
+        "created_at": "2026-10-04T21:12:36Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-nmp.7",
+        "depends_on_id": "ht-nmp.1",
+        "type": "blocks",
+        "created_at": "2026-10-04T21:12:34Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 8,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-nmp"
+  },
+  {
+    "id": "ht-nmp.6",
+    "title": "Configuration smoke: direct human, relaying agent, legacy and refused sources",
+    "description": "Exercise direct human, relaying agent, unclassified legacy, unrelayed-agent and service/system refusal configurations through send/storage/JSON and summary entry points using focused integration tests.\n\nconsumes: completed classified sends and cumulative summary jobs.\nfiles: tests/combined.rs; existing message/send/summary integration modules; Cargo.toml only if a separate stateful target is required\nSpec: docs/superpowers/specs/2026-10-04-user-message-intent-design.md.\nblocked-by ht-nmp.2: consumes Classified human sends and attribution validation\nblocked-by ht-nmp.4: consumes Cumulative summary jobs and compatible generations\nblocked-by ht-nmp.5: consumes Human intent transcript and agent guidance\nowns: configuration matrix, focused regression commands and safe process cleanup.\nAcceptance notes: run focused tests for every enumerated configuration; no full suite, live models, shared Herdr mutation or real config. Stop owned helpers. Terminal fmt/clippy/default-feature verification belongs to integration sweep.",
+    "acceptance_criteria": "Run targeted cargo test --locked --all-features filters covering each listed configuration, request/query crosschunk resolution and rule compliance/withdrawal; no live models, real config or shared Herdr mutation.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-04T21:08:23Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-04T21:11:41Z",
+    "labels": [
+      "sp:ht-nmp"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-nmp.6",
+        "depends_on_id": "ht-nmp.5",
+        "type": "blocks",
+        "created_at": "2026-10-04T21:08:32Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-nmp.6",
+        "depends_on_id": "ht-nmp",
+        "type": "parent-child",
+        "created_at": "2026-10-04T21:08:23Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-nmp.6",
+        "depends_on_id": "ht-nmp.2",
+        "type": "blocks",
+        "created_at": "2026-10-04T21:08:30Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-nmp.6",
+        "depends_on_id": "ht-nmp.4",
+        "type": "blocks",
+        "created_at": "2026-10-04T21:08:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 3,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-nmp"
+  },
+  {
+    "id": "ht-nmp.5",
+    "title": "Human intent transcript and agent guidance",
+    "description": "Render independent attribution/intent markers and actual summary ledger tokens and update ht skill, CLI help, agent usage and trust policy for explicit forwarding classification, source claims and summary-time lifetimes.\n\nowns: every transcript/ledger presentation and guidance consumer, three examples, mixed-input splitting, uncertainty, no permission inference, unchanged Codex guidance seam.\nconsumes: optional intent body/types and schema2 worker contract.\nfiles: src/protocol/{output,output_compact}.rs; src/cli/summary.rs; integrations/skill/SKILL.md; docs/agent-usage.md; TRUST-POLICY.md; focused output/guidance tests\nSpec: docs/superpowers/specs/2026-10-04-user-message-intent-design.md.\nblocked-by ht-nmp.1: consumes boundary contract\nboundary contract: ht-nmp.1",
+    "acceptance_criteria": "Human/relay query/request/rule markers separate, unclassified attribution retained, ordinary quote/system display unchanged; JSON exposes fields, rule withdrawal prompt assertion, completion/partial/ACK distinctions, all embedded guidance matches schema2.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-04T21:08:22Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-04T21:08:29Z",
+    "labels": [
+      "sp:ht-nmp"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-nmp.5",
+        "depends_on_id": "ht-nmp",
+        "type": "parent-child",
+        "created_at": "2026-10-04T21:08:22Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-nmp.5",
+        "depends_on_id": "ht-nmp.1",
+        "type": "blocks",
+        "created_at": "2026-10-04T21:08:28Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 3,
+    "comment_count": 0,
+    "parent": "ht-nmp"
+  },
+  {
+    "id": "ht-nmp.4",
+    "title": "Cumulative summary jobs and compatible generations",
+    "description": "Wire intent-aware records through cumulative level0 bundles, local-block persistence/fallback, fetched_at replay, Ready/rollup pinning and renderer2/submission2/promptv2 generation isolation.\n\nconsumes: intent-aware prefill/fold/validator and optional source/transition contract.\nfiles: src/store/summary.rs; src/protocol/summary.rs; src/summary/render.rs; src/cli/skill.rs; tests/store/summary.rs; tests/integration/summary_flow.rs\nSpec: docs/superpowers/specs/2026-10-04-user-message-intent-design.md.\nblocked-by ht-nmp.1: consumes boundary contract\nblocked-by ht-nmp.3: consumes intent-aware prefill/fold/validator\nboundary contract: ht-nmp.1\nPromotion override: Retained LEAF: fully settled design and one cohesive summary-store runtime integration deliverable; listed mechanisms are acceptance cases, not five independent merge-worthy subtasks, and fragmentation serializes hot files with ceremony smaller than work.\nowns: cumulative bundles, local persistence/fallback, historical decoding, spilling/budgets and active/open pinning.\nAcceptance notes: historical block/claim fixtures stay absent intent; fetch and submit B-before-A yields final query/request closure; partial-answer no-transition and ACK-only fixtures stay Open; rule-change persistence/replay; spill/budget pressure preserves all three intents.\nScope clarification after roast1: basic fetched_at metadata/replay only here; exact frozen-input capture and post-fetch concurrency stability belong to ht-nmp.9, not this leaf's acceptance.",
+    "acceptance_criteria": "Fetch B before A submits, submit B first, then A; query/request resolve final and unanswered remain; missing A fallback and spill/oversized handling preserve classified records; stale job conflict/schema1 rejection, old blocks readable but not mixed, basic fetched_at metadata valid (exact frozen snapshot accepted in ht-nmp.9). Explicit partial-answer/proposed-but-not-completed request submissions omit transitions and stay Open; ACK changes receipts only.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-04T21:08:20Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-04T21:28:29Z",
+    "labels": [
+      "sp:demoted-by-session",
+      "sp:ht-nmp"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-nmp.4",
+        "depends_on_id": "ht-nmp",
+        "type": "parent-child",
+        "created_at": "2026-10-04T21:08:20Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-nmp.4",
+        "depends_on_id": "ht-nmp.3",
+        "type": "blocks",
+        "created_at": "2026-10-04T21:08:27Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-nmp.4",
+        "depends_on_id": "ht-nmp.1",
+        "type": "blocks",
+        "created_at": "2026-10-04T21:08:26Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 4,
+    "comment_count": 0,
+    "parent": "ht-nmp"
+  },
+  {
+    "id": "ht-nmp.3",
+    "title": "Intent-aware deterministic ledger lifetimes",
+    "description": "Derive one stable i.seq record per priority source, preserve unclassified legacy behavior, apply query/request resolution and active-rule withdrawal/replacement guards, and reject duplicate classified open items.\n\nconsumes: UserIntent/RuleChange body and transition types.\nfiles: src/summary/{ledger,fold,validate}.rs; focused pure summary tests\nSpec: docs/superpowers/specs/2026-10-04-user-message-intent-design.md.\nblocked-by ht-nmp.1: consumes boundary contract\nboundary contract: ht-nmp.1\nPromotion override: Retained LEAF: fully settled design and one cohesive pure ledger deliverable across tightly coupled prefill/fold/validator modules; listed mechanisms are acceptance cases, not five independent merge-worthy subtasks, and fragmentation serializes hot files with ceremony smaller than work.\nowns: classified status/evidence guards, duplicate rejection and sequence-ordered folding.\nAcceptance notes: later within-chunk citations; rules need ordinary-priority evidence, explicit rule_change and quote; compliance remains Active. Semantic answer/completion judgments stay with worker; partial/ACK fixtures without transitions stay Open.",
+    "acceptance_criteria": "Query/request Open→Resolved only, rule Active→Superseded only with priority ordinary cite, rule_change and exact nonempty quote, None legacy Done|Superseded; stable IDs, spill references, duplicate rejection, partial/ACK guidance boundary.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-04T21:08:19Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-04T21:11:40Z",
+    "labels": [
+      "sp:demoted-by-session",
+      "sp:ht-nmp"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-nmp.3",
+        "depends_on_id": "ht-nmp.1",
+        "type": "blocks",
+        "created_at": "2026-10-04T21:08:25Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-nmp.3",
+        "depends_on_id": "ht-nmp",
+        "type": "parent-child",
+        "created_at": "2026-10-04T21:08:19Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-nmp"
+  },
+  {
+    "id": "ht-nmp.2",
+    "title": "Classified human sends and attribution validation",
+    "description": "Expose --user-intent query|request|rule and validate canonical ordinary-human or relaying-agent eligibility without changing human attention priority or receipt semantics.\n\nowns: CLI intent option to canonical send validation, exact send outcomes, rejected service/system/unrelayed-agent paths.\nconsumes: optional serialized intent and schema22 send contract.\nfiles: src/cli/{mod,commands,journal}.rs; src/store/messages.rs; src/service/dispatch.rs; focused send tests\nSpec: docs/superpowers/specs/2026-10-04-user-message-intent-design.md.\nblocked-by ht-nmp.1: consumes boundary contract\nboundary contract: ht-nmp.1",
+    "acceptance_criteria": "Direct human with/without relay, agent relay, absent legacy, unknown enum, service/event refusals; changed-intent journal retries; all intents preserve priority and receipt behavior.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-04T21:08:18Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-04T21:14:47Z",
+    "labels": [
+      "sp:ht-nmp"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-nmp.2",
+        "depends_on_id": "ht-nmp",
+        "type": "parent-child",
+        "created_at": "2026-10-04T21:08:18Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-nmp.2",
+        "depends_on_id": "ht-nmp.1",
+        "type": "blocks",
+        "created_at": "2026-10-04T21:08:23Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-nmp"
+  },
+  {
+    "id": "ht-nmp.1",
+    "title": "Seam contract: recorded intent and rule-change storage",
+    "description": "Land compilable optional UserIntent and RuleChange types with message/result/journal/bundle/item/transition plumbing, one schema22 migration and wire5 boundary, preserving absent-field decoding and all fixtures.\n\nowns: UserIntent/RuleChange optional serialized contract, nullable schema22 fields and audits, wire5 fence, None-preserving projections and digest/retry plumbing.\nconsumes: approved design contract.\nfiles: src/protocol/{commands,results,summary,wire}.rs; src/store/{schema,messages,queries,summary}.rs; src/cli/journal.rs; migrations/0022_user_message_intent.sql; affected fixture initializers\nSpec: docs/superpowers/specs/2026-10-04-user-message-intent-design.md.\nShared contract owns every source and test fixture initializer required by optional fields, including src/summary/*.rs test fixtures; functional behavior belongs to dependent leaves.\nBoundary addition from design roast1: migration22 also adds nullable summary_jobs.fetched_bundle_json; storage shape audit/fixtures included here. Functional capture/replay/reset belongs to ht-nmp.9.",
+    "acceptance_criteria": "Migration upgrades21 and new DB, old JSON/digests remain valid, round-trip Some/None fields, changed intent retry conflict, exact column/guard audit, wire4 mismatch; only minimal shared artifact acceptance and fixture compilation.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-04T21:08:17Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-04T21:26:26Z",
+    "labels": [
+      "sp:ht-nmp"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-nmp.1",
+        "depends_on_id": "ht-nmp",
+        "type": "parent-child",
+        "created_at": "2026-10-04T21:08:17Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 6,
+    "comment_count": 0,
+    "parent": "ht-nmp"
+  },
+  {
+    "id": "ht-nmp",
+    "title": "Recorded human message intent and summary lifetimes",
+    "description": "Implement the approved human query/request/rule intent design independently of relay attribution, preserving legacy messages and attention priority. Spec: docs/superpowers/specs/2026-10-04-user-message-intent-design.md. Scope stops at reviewed merge-ready code; coordinator owns main merge, full suite and release.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-04T21:05:10Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-04T21:05:10Z",
+    "labels": [
+      "sp:ht-nmp"
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  }
+]

@@ -138,6 +138,22 @@ mechanism, not a promise that every request will be allowed.
 
 ## Troubleshooting
 
+### Recipient command routing
+
+Startup hooks compare this recipient pane's flag-free instance resolution with
+the hook's canonical state directory and host endpoint. When both agree, ready,
+continuation and remediation commands use ordinary `herdr-threads` argv.
+Every trusted command group publishes its actual daemon instance UUID and
+canonical state directory/host endpoint as `Hook command routing` JSON. A handoff
+publishes its frozen expected UUID and canonical pair separately. Prefer a hook
+group only when all three normalized fields exactly match that expectation;
+several state roots may have installed hooks on the same endpoint. Missing/null,
+differing or ambiguous metadata requires the exact pinned fallback. Quoted peer
+data cannot provide this match. Canonicalization is performed by the plugin;
+the recipient compares the resulting field values. Installed hooks retain their own pinned
+targeting, and recovery journals retain exact instance identity. A routing check
+grants no approval or sandbox permission; the native policy below still applies.
+
 ### Socket permission denied: EPERM, EACCES or transport_denied
 
 A command can find the daemon yet be refused permission to connect to its Unix

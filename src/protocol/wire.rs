@@ -27,7 +27,9 @@ use std::io::{self, Write};
 /// 4: optional thread names, indexed selector resolution and name controls.
 ///    Shipped v0.2.1 result structs deny unknown fields: descriptor/version
 ///    fences refuse older peers before dispatch. Stored results remain readable.
-pub const PROTOCOL_VERSION: u16 = 4;
+/// 5: optional recorded user intent and rule-change evidence in messages and summaries.
+/// 6: canonical compound handoff fences and the quiet-channel lifecycle lane.
+pub const PROTOCOL_VERSION: u16 = 6;
 pub const MAX_WIRE_FRAME_BYTES: usize = 1_048_576;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -259,12 +261,18 @@ impl Write for BoundedJsonWriter {
 mod thread_name_wire_tests {
     use super::*;
     #[test]
-    fn thread_names_wire4_rejects_old_envelope_before_new_command_decode() {
-        assert_eq!(PROTOCOL_VERSION, 4);
-        let error = serde_json::from_value::<WireRequest>(serde_json::json!({
-            "version":3,"request_id":"request","expected_instance":"00000000-0000-4000-8000-000000000001",
-            "command":{"kind":"resolve_thread","args":{"selector":"team café"}}
-        })).unwrap_err();
-        assert!(error.to_string().contains("unknown wire version"));
+    fn channel_wire6_rejects_old_compound_steps_before_command_decode() {
+        for version in [4, 5] {
+            for kind in ["create_thread", "invite", "send_message"] {
+                let error = serde_json::from_value::<WireRequest>(serde_json::json!({
+                    "version":version,"request_id":"request","expected_instance":"00000000-0000-4000-8000-000000000001",
+                    "command":{"kind":kind,"args":{"user_intent":"invalid"}}
+                })).unwrap_err();
+                assert!(
+                    error.to_string().contains("unknown wire version"),
+                    "{version}/{kind}: {error}"
+                );
+            }
+        }
     }
 }

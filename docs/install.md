@@ -126,7 +126,8 @@ Instance-wide defaults come from an optional `settings.json` in the instance dir
 - All keys are optional; unknown keys are rejected. One schema covers every key, so the same file may mix them freely.
 - The file must be a regular file you own, mode 0600, at most 4096 bytes. These rules apply to all keys.
 - `harness_manifest`: `auto` (default) or `off`; `off` stops the daemon fetching the harness version manifest ([docs/compatibility/harnesses.md](compatibility/harnesses.md), "Manifest").
-- Durations must be positive. `minimum_wake_delay_ms` must be at least 30000.
+- Invitation and receipt durations must be positive. `minimum_wake_delay_ms` must be at least 30000.
+- `auto_archive_after_ms` defaults to `3600000`; `0` disables automatic channel archival. See [channel lifecycle](channel-archival.md) for protected work, composer evidence and conservative legacy-journal coverage. This feature activates with the combined schema23/wire6 integration.
 - The daemon reads it at start. Edits apply after `daemon stop` then `daemon ensure`. `daemon health` prints the effective `settings`.
 - The chosen duration is frozen on each invitation and message when it is created.
 

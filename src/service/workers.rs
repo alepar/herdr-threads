@@ -1877,6 +1877,7 @@ where
                             }
                             match &outcome {
                                 crate::identity::reconcile::ObservationOutcome::Published(_) => {
+                                    reachability.mark_archival_published(port.clock().monotonic_now().0);
                                     host_evidence.record_published();
                                     pacer.on_success();
                                 }
@@ -1885,6 +1886,7 @@ where
                                     cause,
                                     ..
                                 } => {
+                                    reachability.mark_archival_uncertain();
                                     host_evidence.record_invalidated(*reason, cause.as_ref());
                                     pacer.on_failure();
                                 }
@@ -1896,6 +1898,7 @@ where
                                     reason,
                                     cause,
                                 } => {
+                                    reachability.mark_archival_uncertain();
                                     host_evidence.record_invalidated(*reason, cause.as_ref());
                                     pacer.on_failure();
                                 }
@@ -1920,6 +1923,7 @@ where
                         // No durable outcome: never leave an earlier
                         // publication reported as verified host evidence.
                         Err(error) => {
+                            reachability.mark_archival_uncertain();
                             host_evidence.record_capture_failed(&error);
                             pacer.on_failure();
                         }

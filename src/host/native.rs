@@ -867,6 +867,21 @@ impl HostPort for NativeCli {
         self.observe_target(target, context, true)
     }
 
+    fn observe_current_target_for_archival(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<ports::ComposerObservation, ApiError> {
+        let started = Instant::now();
+        let observation = self.observe_target(target, context, true)?;
+        // Composer I/O happens after pane.get's first fence. A concurrent host
+        // failure or cancellation during that read must not earn idle evidence.
+        self.check_epoch(observation.epoch)?;
+        self.check_context(context)?;
+        self.check_after_parse_unfenced(&context.budget, started, Duration::from_secs(5))?;
+        Ok(ports::ComposerObservation(observation))
+    }
+
     /// Herdr 0.9.1 builds `session.snapshot` in one `&self` call on its
     /// single app loop (`src/app/api/session.rs` `session_snapshot`, routed
     /// from `src/app/api.rs` `Method::SessionSnapshot`), so one response is a
@@ -3684,6 +3699,45 @@ mod tests {
         fs::remove_file(socket).unwrap();
         let methods = methods.lock().unwrap().clone();
         (observation.ui, methods)
+    }
+
+    #[test]
+    fn archival_observation_uses_composer_and_rejects_cancel_or_epoch_change() {
+        for mode in ["idle", "draft", "cancel", "epoch"] {
+            let context = pane_agent_context();
+            let cancellation = context.budget.cancellation.clone();
+            let slot: CliSlot = Arc::default();
+            let bump = slot.clone();
+            let detection = detection_exchange(if mode == "draft" {
+                CLAUDE_DRAFT
+            } else {
+                CLAUDE_EMPTY
+            });
+            let exchange: Exchange = Box::new(move |stream, request| {
+                if mode == "cancel" {
+                    assert_eq!(request["method"], "agent.read");
+                    cancellation.cancel();
+                    return; // Client cancellation may close before a reply is written.
+                }
+                if mode == "epoch" {
+                    bump.get().unwrap().epoch.fetch_add(1, Ordering::AcqRel);
+                }
+                detection(stream, request);
+            });
+            let (socket, cli, worker) = serve_sequence(vec![pane_exchange_with("idle"), exchange]);
+            let cli = Arc::new(cli);
+            assert!(slot.set(cli.clone()).is_ok());
+            let result =
+                cli.observe_current_target_for_archival(&HostTargetId::new("w4:p1"), &context);
+            worker.join().unwrap();
+            fs::remove_file(socket).unwrap();
+            match mode {
+                "idle" => assert_eq!(result.unwrap().0.ui, HostUiState::Idle),
+                "draft" => assert_eq!(result.unwrap().0.ui, HostUiState::HumanInput),
+                "cancel" => assert_eq!(result.unwrap_err().code, ErrorCode::Cancelled),
+                _ => assert_eq!(result.unwrap_err().code, ErrorCode::StaleHostObservation),
+            }
+        }
     }
 
     /// An ordinary wake's observation is one `pane.get`: no composer read for

@@ -13,16 +13,28 @@ pub enum Lane {
     Observation,
     Retention,
     AdmissionObserver,
+    Archival,
 }
 
 impl Lane {
-    pub const ALL: [Lane; 5] = [
+    pub const COUNT: usize = 6;
+    pub const INTERNAL_ALL: [Lane; 6] = [
         Lane::Deadlines,
         Lane::Wakes,
         Lane::Observation,
         Lane::Retention,
         Lane::AdmissionObserver,
+        Lane::Archival,
     ];
+    pub const ALL: [Lane; Self::COUNT] = {
+        let mut lanes = [Lane::Deadlines; Self::COUNT];
+        let mut i = 0;
+        while i < Self::COUNT {
+            lanes[i] = Self::INTERNAL_ALL[i];
+            i += 1;
+        }
+        lanes
+    };
 
     pub fn name(self) -> &'static str {
         match self {
@@ -31,6 +43,7 @@ impl Lane {
             Lane::Observation => "observation",
             Lane::Retention => "retention",
             Lane::AdmissionObserver => "admission-observer",
+            Lane::Archival => "archival",
         }
     }
 
@@ -65,15 +78,21 @@ impl LaneSet {
         self.0
     }
     pub(crate) fn from_bits(bits: u8) -> Self {
-        Self(bits & ((1 << Lane::ALL.len()) - 1))
+        Self(bits & ((1 << Lane::INTERNAL_ALL.len()) - 1))
     }
     pub fn iter(self) -> impl Iterator<Item = Lane> {
-        Lane::ALL
+        Lane::INTERNAL_ALL
             .into_iter()
             .filter(move |lane| self.contains(*lane))
     }
 }
 
+const ARCHIVAL_TABLES: &[&str] = &[
+    "archival_instances",
+    "channel_archival",
+    "seat_archival",
+    "channel_handoff_fences",
+];
 /// Tables whose commits wake the wake lane (spec D1).
 const WAKE_TABLES: &[&str] = &[
     "wake_work",
@@ -163,6 +182,9 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
 /// `EMPTY` and trips a debug assertion.
 pub fn lanes_for_table(table: &str) -> LaneSet {
     let mut set = LaneSet::EMPTY;
+    if ARCHIVAL_TABLES.contains(&table) {
+        set = set.with(Lane::Archival);
+    }
     if WAKE_TABLES.contains(&table) {
         set = set.with(Lane::Wakes);
     }
@@ -178,17 +200,21 @@ pub fn lanes_for_table(table: &str) -> LaneSet {
 
 /// Every table named by the D1 map (test and audit support).
 pub fn mapped_tables() -> impl Iterator<Item = &'static str> {
-    WAKE_TABLES.iter().chain(DEADLINE_TABLES).copied()
+    WAKE_TABLES
+        .iter()
+        .chain(DEADLINE_TABLES)
+        .chain(ARCHIVAL_TABLES)
+        .copied()
 }
 
 /// Registry of lane Pacers. A kick to an unregistered lane is a no-op.
 #[derive(Default)]
 pub struct CommitKicks {
-    pacers: Mutex<[Option<Arc<Pacer>>; 5]>,
+    pacers: Mutex<[Option<Arc<Pacer>>; 6]>,
 }
 
 impl CommitKicks {
-    fn slots(&self) -> std::sync::MutexGuard<'_, [Option<Arc<Pacer>>; 5]> {
+    fn slots(&self) -> std::sync::MutexGuard<'_, [Option<Arc<Pacer>>; 6]> {
         self.pacers.lock().unwrap_or_else(|e| e.into_inner())
     }
 

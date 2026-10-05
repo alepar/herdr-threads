@@ -163,6 +163,21 @@ impl World {
         self.exec(caller, None, args, false)
     }
     fn exec(&self, caller: Option<Caller>, stdin: Option<&str>, args: &[&str], json: bool) -> Out {
+        self.exec_in_pane(caller, None, stdin, args, json)
+    }
+    /// A person's actual pane context, initialized by `me init`; no agent
+    /// caller claim is relabeled as human.
+    fn person(&self, pane: &str, args: &[&str]) -> Out {
+        self.exec_in_pane(None, Some(pane), None, args, true)
+    }
+    fn exec_in_pane(
+        &self,
+        caller: Option<Caller>,
+        pane: Option<&str>,
+        stdin: Option<&str>,
+        args: &[&str],
+        json: bool,
+    ) -> Out {
         let mut command = crate::scrubbed_command(BIN);
         if json {
             command.arg("--json");
@@ -195,6 +210,8 @@ impl World {
             .env_remove("HERDR_BIN_PATH")
             .env_remove("HERDR_ENV")
             .env("PATH", self.path())
+            .env("HOME", self.root.join("home"))
+            .env("CODEX_HOME", self.root.join("codex-config"))
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude-config"))
             .stdin(if stdin.is_some() {
                 Stdio::piped()
@@ -203,6 +220,9 @@ impl World {
             })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(pane) = pane {
+            command.env("HERDR_PANE_ID", pane).env("HERDR_ENV", "1");
+        }
         let mut child = command.spawn_owned().unwrap();
         if let Some(text) = stdin {
             child
@@ -252,6 +272,61 @@ impl World {
         .unwrap();
         db.busy_timeout(Duration::from_secs(5)).unwrap();
         db
+    }
+    /// The real compact message API as JSON. Public `--json inbox` is a
+    /// thread-count aggregate; own text inbox uses this API and may then ACK.
+    /// Calling its read boundary directly keeps this test free of display ACKs.
+    fn inbox_batch_json(&self, seat: &str) -> Value {
+        use herdr_threads::{
+            app::SystemClock,
+            client::local::LocalSocketClient,
+            daemon::ownership::{read_descriptor, read_existing_namespace},
+            protocol::{
+                commands::{Command, InboxQuery},
+                ids::SeatId,
+                output::{OutputFormat, OutputSpec, encode_selected},
+                pagination::PageRequest,
+                time::{CallBudget, Cancellation, Clock, MonoInstant},
+            },
+        };
+        use std::sync::Arc;
+
+        let paths = InstancePaths::resolve(
+            &RuntimeContext::explicit(self.state.clone(), self.host.clone(), None).unwrap(),
+        )
+        .unwrap();
+        let instance = read_existing_namespace(&paths).unwrap().unwrap();
+        let descriptor = read_descriptor(&paths, instance).unwrap();
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        let client = LocalSocketClient::new(
+            descriptor.endpoint,
+            Arc::clone(&clock),
+            instance,
+            Some(descriptor.boot_id),
+        );
+        let spec = OutputSpec {
+            format: OutputFormat::Json,
+            ..Default::default()
+        };
+        let result = client
+            .call_with_output(
+                Command::InboxBatch(InboxQuery {
+                    seat: Some(SeatId::new(seat)),
+                    page: PageRequest {
+                        limit: 100,
+                        ..Default::default()
+                    },
+                }),
+                &spec,
+                &CallBudget {
+                    deadline: MonoInstant(clock.monotonic_now().0 + 5_000),
+                    cancellation: Cancellation::default(),
+                },
+            )
+            .unwrap();
+        let encoded = encode_selected(&result, &spec).unwrap();
+        let envelope: Value = serde_json::from_slice(&encoded).unwrap();
+        envelope["result"]["data"].clone()
     }
     /// `(state, end_reason, frontier, extension_until, ended_at)` of the
     /// seat's catch-up row on the thread.
@@ -578,7 +653,7 @@ impl Fixture {
     fn good_submission(&self, ticket: &Ticket, bundle: &Value) -> Value {
         let (first, last) = (ticket.first, ticket.last);
         let mut submission = json!({
-            "submission_schema": 1,
+            "submission_schema": herdr_threads::protocol::summary::SUBMISSION_SCHEMA,
             "narrative": format!("{} sent messages #{first}-#{last}.", self.a),
             "prompt_version": "integration-1",
             "model": "scripted",
@@ -650,7 +725,7 @@ impl Fixture {
             if ticket.index == FALLBACK_CHUNK {
                 let invalid = [
                     json!({"submission_schema": 9}),
-                    json!({"submission_schema": 1, "narrative": "n",
+                    json!({"submission_schema": herdr_threads::protocol::summary::SUBMISSION_SCHEMA, "narrative": "n",
                            "prompt_version": "integration-1", "model": "scripted",
                            "transitions": [{"target": "nope", "new_status": "done", "cite_seq": 999}]}),
                 ];
@@ -920,7 +995,7 @@ fn workers_to_ready_with_fallback_and_fold() {
         "{text}"
     );
     // The fold closes: chunk 0's item by chunk 1's transition (item ids are
-    // `<chunking_version>.<chunk>.<n>`), chunk 2's own instruction through
+    // `<chunking_version>.<chunk>.<n>`), chunk 2's unclassified human input through
     // the fold, chunk 3's item through its same-chunk ref.
     let ledger = |kind: &str, status: &str, at: u64| {
         text.lines().any(|line| {
@@ -933,9 +1008,11 @@ fn workers_to_ready_with_fallback_and_fold() {
         "cross-chunk close: {text}"
     );
     assert!(
-        ledger("instruction", "done", 10)
-            && text.contains(&format!("instruction i.{PRIORITY_SEQ} done at #10")),
-        "same-chunk instruction: {text}"
+        text.lines()
+            .any(|line| line.trim_start().starts_with(&format!(
+                "unclassified human input i.{PRIORITY_SEQ} done at #10 [agent relays-user]"
+            ))),
+        "same-chunk unclassified human input: {text}"
     );
     assert!(
         ledger("open_item", "resolved", 12),
@@ -1490,3 +1567,910 @@ fn programmatic_rows_map_to_service() {
 
 #[path = "summary_sweep.rs"]
 mod summary_sweep;
+
+impl Fixture {
+    /// One private daemon for the whole configuration matrix. C declares its
+    /// human binding through the real pane-context path; D stays unbound.
+    fn intent_configuration() -> Self {
+        let world = World::start(vec![
+            claude(PANE_A, "term-a", "SA"),
+            claude(PANE_B, "term-b", SESSION_B),
+            pane(PANE_C, "term-c"),
+            pane(PANE_D, "term-d"),
+        ]);
+        let resolve = |pane: &str| {
+            world
+                .cli(None, None, &["seat", "resolve", "--pane", pane])
+                .text("seat resolve")
+        };
+        let (a, b, c) = (resolve(PANE_A), resolve(PANE_B), resolve(PANE_C));
+        for (pane, session) in [(PANE_A, "SA"), (PANE_B, SESSION_B)] {
+            let started = world.hook("claude", pane, &session_start("claude", session, "startup"));
+            assert_eq!(started.code, 0, "{}", started.stderr);
+        }
+        world.person(PANE_C, &["me", "init"]).data("human me init");
+        let author = Caller {
+            seat: &a,
+            pane: PANE_A,
+        };
+        let thread = world
+            .cli(
+                Some(author),
+                None,
+                &["thread", "create", "--topic", "intent configuration"],
+            )
+            .text("thread create");
+        for seat in [&b, &c] {
+            world
+                .cli(Some(author), None, &["invite", &thread, "--seat", seat])
+                .data("invite");
+        }
+        world
+            .cli(
+                Some(Caller {
+                    seat: &b,
+                    pane: PANE_B,
+                }),
+                None,
+                &["accept", &thread],
+            )
+            .data("agent accept");
+        world
+            .person(PANE_C, &["accept", &thread])
+            .data("human accept");
+        Self {
+            world,
+            a,
+            b,
+            c,
+            thread,
+            ack: String::new(),
+        }
+    }
+    fn intent_send(&self, human: bool, relay: bool, intent: Option<&str>, text: &str) -> String {
+        let mut args = vec![
+            "send",
+            &self.thread,
+            "--body",
+            text,
+            "--require-ack",
+            &self.b,
+        ];
+        if relay {
+            args.push("--relays-user");
+        }
+        if let Some(intent) = intent {
+            args.extend(["--user-intent", intent]);
+        }
+        if human {
+            self.world.person(PANE_C, &args)
+        } else {
+            self.world.cli(Some(self.caller_a()), None, &args)
+        }
+        .text("configured send")
+    }
+    fn sequence(&self, message: &str) -> u64 {
+        self.world
+            .db()
+            .query_row(
+                "SELECT sequence FROM messages WHERE id=?1",
+                [message],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+            .try_into()
+            .unwrap()
+    }
+    fn assert_pending_intent_receipt(&self, message: &str) {
+        self.world.pending_for(&self.b, message);
+        let receipt = || {
+            self.world.db().query_row(
+                "SELECT state,ack_actor_seat_id,ack_observation,acked_at FROM receipt_state WHERE seat_id=?1 AND message_id=?2",
+                [self.b.as_str(), message],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Option<i64>>(3)?)),
+            )
+        };
+        wait_until("configured receipt row", Duration::from_secs(10), || {
+            receipt().is_ok()
+        });
+        assert_eq!(receipt().unwrap(), ("pending".to_owned(), None, None, None));
+    }
+}
+
+fn assert_intent_claim(row: &Value, human: bool, relay: bool, intent: Option<&str>) {
+    assert_eq!(
+        row["author_role"],
+        if human { "human" } else { "agent" },
+        "{row}"
+    );
+    assert_eq!(
+        row.get("relays_user")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        relay,
+        "{row}"
+    );
+    assert_eq!(
+        row.get("user_intent"),
+        intent.map(|value| json!(value)).as_ref(),
+        "{row}"
+    );
+}
+
+#[test]
+fn user_intent_configuration_smoke() {
+    let fx = Fixture::intent_configuration();
+    let mut sent = Vec::new();
+    for (human, relay) in [(true, false), (true, true), (false, true)] {
+        for intent in [Some("query"), Some("request"), Some("rule"), None] {
+            let text = format!(
+                "configuration-{human}-{relay}-{}",
+                intent.unwrap_or("legacy")
+            );
+            let message = fx.intent_send(human, relay, intent, &text);
+            sent.push((message, text, human, relay, intent));
+        }
+    }
+    let history = fx
+        .world
+        .cli(
+            Some(fx.caller_b()),
+            None,
+            &["read", &fx.thread, "--limit", "100"],
+        )
+        .data("read");
+    let aggregate = fx
+        .world
+        .cli(Some(fx.caller_b()), None, &["inbox", "--limit", "100"])
+        .data("inbox");
+    assert_eq!(
+        aggregate["items"].as_array().unwrap().len(),
+        1,
+        "{aggregate}"
+    );
+    assert_eq!(aggregate["items"][0]["thread"], fx.thread);
+    assert_eq!(aggregate["items"][0]["pending_receipts"], sent.len());
+    let inbox = fx.world.inbox_batch_json(&fx.b);
+    for (message, text, human, relay, intent) in &sent {
+        let find = |page: &Value| {
+            page["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["message"] == *message)
+                .unwrap_or_else(|| panic!("missing {message} in {page}"))
+                .clone()
+        };
+        let row = find(&history);
+        assert_intent_claim(&row, *human, *relay, *intent);
+        assert_eq!(row["preview_data"], *text);
+        let row = find(&inbox);
+        assert_intent_claim(&row, *human, *relay, *intent);
+        assert_eq!(row["body"], *text);
+        let body = fx.world.cli(None, None, &["body", message]).data("body");
+        assert_intent_claim(&body["summary"], *human, *relay, *intent);
+        assert_eq!(body["content"]["body_data"], *text, "{body}");
+        let search = fx
+            .world
+            .cli(None, None, &["search", text, "--thread", &fx.thread])
+            .data("search");
+        let matches = search["matches"]["items"].as_array().unwrap();
+        assert_eq!(matches.len(), 1, "{search}");
+        assert_eq!(matches[0]["data"]["message"], *message);
+        assert_intent_claim(&matches[0]["data"], *human, *relay, *intent);
+    }
+    // JSON inbox is read-only: every real receipt remains pending and no ACK
+    // actor or provenance is manufactured by displaying any classification.
+    for (message, ..) in &sent {
+        fx.assert_pending_intent_receipt(message);
+    }
+    let unbound = fx
+        .world
+        .cli(None, None, &["seat", "resolve", "--pane", PANE_D])
+        .text("unbound seat");
+    let count = |sql: &str| -> i64 { fx.world.db().query_row(sql, [], |r| r.get(0)).unwrap() };
+    let published = count("SELECT count(*) FROM messages WHERE kind='ordinary'");
+    let operations = count("SELECT count(*) FROM operations");
+    let manifests = count("SELECT count(*) FROM send_manifests");
+    for (name, caller, relay) in [
+        ("unrelayed-agent", fx.caller_a(), false),
+        (
+            "unbound",
+            Caller {
+                seat: &unbound,
+                pane: PANE_D,
+            },
+            true,
+        ),
+        (
+            "mismatched",
+            Caller {
+                seat: &fx.a,
+                pane: PANE_B,
+            },
+            true,
+        ),
+    ] {
+        let mut args = vec![
+            "send",
+            &fx.thread,
+            "--body",
+            name,
+            "--user-intent",
+            "query",
+            "--require-ack",
+            &fx.b,
+        ];
+        if relay {
+            args.push("--relays-user");
+        }
+        let refused = fx.world.cli(Some(caller), None, &args);
+        assert_ne!(refused.code, 0, "{name}: {}", refused.stdout);
+        assert_eq!(
+            count("SELECT count(*) FROM messages WHERE kind='ordinary'"),
+            published
+        );
+        assert_eq!(count("SELECT count(*) FROM operations"), operations);
+        assert_eq!(count("SELECT count(*) FROM send_manifests"), manifests);
+        assert_eq!(count("SELECT count(*) FROM summary_items"), 0);
+    }
+    assert_eq!(
+        count(
+            "SELECT count(*) FROM (SELECT acked_at,ack_actor_seat_id,ack_observation FROM receipts UNION ALL SELECT acked_at,ack_actor_seat_id,ack_observation FROM receipt_state) WHERE acked_at IS NOT NULL OR ack_actor_seat_id IS NOT NULL OR ack_observation IS NOT NULL"
+        ),
+        0
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM occupant_bindings WHERE harness='human'"),
+        1
+    );
+    let after = fx
+        .world
+        .cli(
+            Some(fx.caller_b()),
+            None,
+            &["read", &fx.thread, "--limit", "100"],
+        )
+        .data("refused history");
+    assert_eq!(
+        after["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["kind"] == "ordinary")
+            .count(),
+        sent.len()
+    );
+    // Unknown canonical roles and service/event attempts are exercised by
+    // user_intent_schema22_checks_and_eligibility and the service-send test;
+    // the public service protocol deliberately has no intent send option.
+}
+
+fn intent_submission(transitions: Value) -> Value {
+    json!({"submission_schema": herdr_threads::protocol::summary::SUBMISSION_SCHEMA,
+        "narrative": "Scripted configuration lifetime evidence.", "prompt_version": "configuration-v2",
+        "model": "scripted", "transitions": transitions})
+}
+
+fn intent_fold_entry(fold: &Value, sequence: u64) -> &Value {
+    let id = format!("i.{sequence}");
+    let entries = fold["entries"].as_array().unwrap();
+    let matches: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry["item"]["id"] == id)
+        .collect();
+    assert_eq!(matches.len(), 1, "one stable source {id}: {fold}");
+    matches[0]
+}
+
+#[test]
+fn user_intent_configuration_summary_lifetimes() {
+    let fx = Fixture::intent_configuration();
+    let mut sources = Vec::new();
+    for (human, relay, intent, text) in [
+        (true, false, Some("query"), "What is our progress?"),
+        (false, true, Some("request"), "Cut a build."),
+        (false, true, Some("rule"), "Always test before releasing."),
+        (true, false, None, "Legacy human task."),
+        (false, true, None, "Legacy forwarded task."),
+    ] {
+        let message = fx.intent_send(
+            human,
+            relay,
+            intent,
+            &format!("{text} {}", body(sources.len())),
+        );
+        sources.push((fx.sequence(&message), message, human, relay, intent));
+    }
+    let completion = fx.intent_send(
+        false,
+        false,
+        None,
+        &format!(
+            "Progress answered, build cut, tests passed before release. {}",
+            body(6)
+        ),
+    );
+    let completion_seq = fx.sequence(&completion);
+    let incidental_quote = fx.intent_send(
+        false,
+        false,
+        None,
+        &format!(
+            "Discussing the quote: ‘Always test before releasing.’ {}",
+            body(7)
+        ),
+    );
+    let quote_seq = fx.sequence(&incidental_quote);
+    fx.intent_send(false, false, None, "raw tail");
+    let history_before = query_history(&fx);
+    for (_, message, human, relay, intent) in &sources {
+        let row = history_before
+            .iter()
+            .find(|row| row["message"] == message.as_str())
+            .unwrap();
+        assert_eq!(
+            row["author"],
+            if *human { fx.c.as_str() } else { fx.a.as_str() }
+        );
+        assert_intent_claim(row, *human, *relay, *intent);
+        fx.assert_pending_intent_receipt(message);
+    }
+    let quoted_row = history_before
+        .iter()
+        .find(|row| row["message"] == incidental_quote.as_str())
+        .unwrap();
+    assert_intent_claim(quoted_row, false, false, None);
+    assert_eq!(quoted_row["author"], fx.a);
+    let work = fx.summary(fx.caller_b());
+    let jobs = tickets(&work);
+    let b = jobs
+        .iter()
+        .find(|ticket| ticket.first <= completion_seq && completion_seq <= ticket.last)
+        .expect("completion is in a full chunk");
+    let a = jobs
+        .iter()
+        .find(|ticket| ticket.first <= sources[0].0 && sources[0].0 <= ticket.last)
+        .unwrap();
+    assert!(
+        a.last < b.first,
+        "sources and completion must cross chunks: {jobs:?}"
+    );
+    let bundle_b = fx.fetch(fx.caller_b(), b);
+    assert_eq!(bundle_b["status"], "bundle", "{bundle_b}");
+    for (sequence, message, human, relay, intent) in &sources {
+        let entry = intent_fold_entry(&bundle_b["data"]["fold"], *sequence);
+        assert_eq!(
+            entry["status"],
+            if *intent == Some("rule") {
+                "active"
+            } else {
+                "open"
+            }
+        );
+        assert_eq!(entry["item"]["body"]["message_id"], *message);
+        assert_intent_claim(&entry["item"]["body"], *human, *relay, *intent);
+    }
+    assert_eq!(
+        fx.world
+            .db()
+            .query_row("SELECT count(*) FROM summary_blocks", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0,
+        "B sees sources before A stores"
+    );
+    // The same actual CLI fetch is frozen in the canonical job row, including
+    // the earlier unstored sources, rather than reconstructed from timestamps.
+    let frozen: String = fx
+        .world
+        .db()
+        .query_row(
+            "SELECT fetched_bundle_json FROM summary_jobs WHERE id=?1",
+            [&b.job],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&frozen).unwrap(),
+        bundle_b["data"]
+    );
+    assert_eq!(fx.fetch(fx.caller_b(), b), bundle_b);
+    let closing = json!([
+        {"target":format!("i.{}", sources[0].0), "new_status":"resolved", "cite_seq":completion_seq},
+        {"target":format!("i.{}", sources[1].0), "new_status":"resolved", "cite_seq":completion_seq},
+        {"target":format!("i.{}", sources[3].0), "new_status":"done", "cite_seq":completion_seq}
+    ]);
+    let (code, stored) = fx.submit(fx.caller_b(), b, &intent_submission(closing));
+    assert_eq!((code, &stored["status"]), (0, &json!("stored")), "{stored}");
+    assert_eq!(stored["data"]["fallback"], false);
+    // A fetches only after B stores, yet its earlier frontier keeps work open.
+    let bundle_a = fx.fetch(fx.caller_b(), a);
+    assert_eq!(
+        intent_fold_entry(&bundle_a["data"]["fold"], sources[0].0)["status"],
+        "open"
+    );
+    for ticket in jobs.iter().filter(|ticket| ticket.job != b.job) {
+        fx.fetch(fx.caller_b(), ticket);
+        if ticket.job == a.job {
+            // A's deterministic Query survives fallback while B's earlier
+            // stored resolution still wins in the final sequence-ordered fold.
+            let mut invalid = intent_submission(json!([]));
+            invalid["submission_schema"] = json!(1);
+            let (code, rejected) = fx.submit(fx.caller_b(), ticket, &invalid);
+            assert_eq!(
+                (code, &rejected["status"]),
+                (1, &json!("rejected")),
+                "{rejected}"
+            );
+            invalid["narrative"] = json!("Second distinct schema1 rejection.");
+            let (code, stored) = fx.submit(fx.caller_b(), ticket, &invalid);
+            assert_eq!((code, &stored["status"]), (0, &json!("stored")), "{stored}");
+            assert_eq!(stored["data"]["fallback"], true);
+            let prompt: String = fx
+                .world
+                .db()
+                .query_row(
+                    "SELECT prompt_version FROM summary_blocks WHERE id=?1",
+                    [stored["data"]["block_id"].as_str().unwrap()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(prompt, "daemon-fallback-v2");
+        } else {
+            let (code, stored) = fx.submit(fx.caller_b(), ticket, &intent_submission(json!([])));
+            assert_eq!((code, &stored["status"]), (0, &json!("stored")), "{stored}");
+            assert_eq!(stored["data"]["fallback"], false);
+        }
+    }
+    let ready = fx.summary(fx.caller_b());
+    assert_eq!(ready["status"], "ready", "{ready}");
+    assert!(
+        !ready["data"]["fold"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["item"]["seq"] == quote_seq),
+        "ordinary quotations must not invent human work: {ready}"
+    );
+    for (sequence, message, human, relay, intent) in &sources {
+        let entry = intent_fold_entry(&ready["data"]["fold"], *sequence);
+        assert_eq!(
+            entry["item"]["body"]["author_seat"],
+            if *human { fx.c.as_str() } else { fx.a.as_str() }
+        );
+        assert_eq!(entry["item"]["body"]["message_id"], message.as_str());
+        assert_intent_claim(&entry["item"]["body"], *human, *relay, *intent);
+    }
+    for index in [0, 1, 3] {
+        let entry = intent_fold_entry(&ready["data"]["fold"], sources[index].0);
+        assert_eq!(
+            entry["status"],
+            if index == 3 { "done" } else { "resolved" }
+        );
+        assert_eq!(entry["closed_at_seq"], completion_seq);
+        assert_eq!(entry["item"]["body"]["message_id"], sources[index].1);
+    }
+    let rule = intent_fold_entry(&ready["data"]["fold"], sources[2].0);
+    assert_eq!(
+        rule["status"], "active",
+        "compliance must leave the rule active"
+    );
+    assert!(rule["closed_at_seq"].is_null());
+    assert_eq!(
+        intent_fold_entry(&ready["data"]["fold"], sources[4].0)["status"],
+        "open"
+    );
+    let displayed = fx
+        .world
+        .human(Some(fx.caller_b()), &["summary", &fx.thread]);
+    assert_eq!(displayed.code, 0, "{}", displayed.stderr);
+    for marker in [
+        "[query]",
+        "[request]",
+        "[agent relays-user] [rule]",
+        "unclassified human input",
+    ] {
+        assert!(
+            displayed.stdout.contains(marker),
+            "{marker}: {}",
+            displayed.stdout
+        );
+    }
+    for (index, kind, status) in [
+        (0, "question", "resolved"),
+        (1, "ask", "resolved"),
+        (2, "rule", "active"),
+        (3, "unclassified human input", "done"),
+        (4, "unclassified human input", "open"),
+    ] {
+        let line = format!("{kind} i.{} {status}", sources[index].0);
+        assert!(
+            displayed.stdout.contains(&line),
+            "{line}: {}",
+            displayed.stdout
+        );
+    }
+    let active_rule_line = format!(
+        "rule i.{} active [agent relays-user] [rule] {}: Always test before releasing.",
+        sources[2].0, fx.a
+    );
+    assert!(
+        displayed.stdout.contains(&active_rule_line),
+        "{active_rule_line}: {}",
+        displayed.stdout
+    );
+    let quote = "Withdraw the testing rule and replace the legacy forwarded task.";
+    let withdrawal = fx.intent_send(false, true, None, &format!("{quote} {}", body(8)));
+    let withdrawal_seq = fx.sequence(&withdrawal);
+    fx.intent_send(false, false, None, &body(9));
+    fx.intent_send(false, false, None, "next raw tail");
+    let work = fx.summary(fx.caller_b());
+    let jobs = tickets(&work);
+    for ticket in &jobs {
+        fx.fetch(fx.caller_b(), ticket);
+        let transitions = if ticket.first <= withdrawal_seq && withdrawal_seq <= ticket.last {
+            json!([
+                {"target":format!("i.{}", sources[2].0), "new_status":"superseded", "cite_seq":withdrawal_seq, "rule_change":"withdrawn", "quote":quote},
+                {"target":format!("i.{}", sources[4].0), "new_status":"superseded", "cite_seq":withdrawal_seq}
+            ])
+        } else {
+            json!([])
+        };
+        let (code, stored) = fx.submit(fx.caller_b(), ticket, &intent_submission(transitions));
+        assert_eq!((code, &stored["status"]), (0, &json!("stored")), "{stored}");
+        assert_eq!(stored["data"]["fallback"], false);
+    }
+    let ready = fx.summary(fx.caller_b());
+    assert_eq!(ready["status"], "ready", "{ready}");
+    for index in [2, 4] {
+        let entry = intent_fold_entry(&ready["data"]["fold"], sources[index].0);
+        assert_eq!(entry["status"], "superseded");
+        assert_eq!(entry["closed_at_seq"], withdrawal_seq);
+        assert_eq!(entry["item"]["body"]["message_id"], sources[index].1);
+    }
+    // Summary closure is independent of receipt settlement, including Query
+    // and Request resolution and explicit Rule withdrawal.
+    for (_, message, ..) in &sources {
+        fx.assert_pending_intent_receipt(message);
+    }
+    let history_after = query_history(&fx);
+    for original in &history_before {
+        let after = history_after
+            .iter()
+            .find(|row| row["message"] == original["message"]);
+        assert_eq!(
+            after,
+            Some(original),
+            "original source must remain unchanged"
+        );
+    }
+    let displayed = fx
+        .world
+        .human(Some(fx.caller_b()), &["summary", &fx.thread]);
+    assert_eq!(displayed.code, 0, "{}", displayed.stderr);
+    let rule_line = format!(
+        "rule i.{} superseded at #{withdrawal_seq} [agent relays-user] [rule] {}",
+        sources[2].0, fx.a
+    );
+    assert!(
+        displayed.stdout.contains(&rule_line),
+        "{rule_line}: {}",
+        displayed.stdout
+    );
+    assert_eq!(fx.world.db().query_row("SELECT count(*) FROM (SELECT acked_at,ack_actor_seat_id,ack_observation FROM receipts UNION ALL SELECT acked_at,ack_actor_seat_id,ack_observation FROM receipt_state) WHERE acked_at IS NOT NULL OR ack_actor_seat_id IS NOT NULL OR ack_observation IS NOT NULL", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+}
+
+// ---- query withdrawal/replacement: scripted semantic judgments ----
+
+fn query_history(fx: &Fixture) -> Vec<Value> {
+    fx.world
+        .cli(
+            Some(fx.caller_b()),
+            None,
+            &["read", &fx.thread, "--limit", "100"],
+        )
+        .data("query source history")["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["kind"] == "ordinary")
+        .cloned()
+        .collect()
+}
+
+fn query_later_bundle(fx: &Fixture, jobs: &[Ticket], source: u64, later: u64) -> Value {
+    let containing = |sequence| {
+        jobs.iter()
+            .find(|job| job.first <= sequence && sequence <= job.last)
+            .expect("query and later evidence belong to full chunks")
+    };
+    let (a, b) = (containing(source), containing(later));
+    assert!(a.last < b.first, "A must precede B: {jobs:?}");
+    assert_eq!(
+        fx.world
+            .db()
+            .query_row("SELECT count(*) FROM summary_blocks", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0,
+        "fetch B before A or any other chunk stores"
+    );
+    let bundle = fx.fetch(fx.caller_b(), b);
+    assert_eq!(bundle["status"], "bundle", "{bundle}");
+    assert_eq!(
+        intent_fold_entry(&bundle["data"]["fold"], source)["status"],
+        "open"
+    );
+    assert!(
+        bundle["data"]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["sequence"] == later),
+        "later evidence must be in B's current chunk: {bundle}"
+    );
+    bundle
+}
+
+fn query_finish_jobs(fx: &Fixture, jobs: &[Ticket], resolutions: &[(u64, u64)]) -> Value {
+    let mut ordered = jobs.to_vec();
+    ordered.sort_by_key(|job| std::cmp::Reverse(job.first));
+    for job in &ordered {
+        fx.fetch(fx.caller_b(), job);
+        let transitions: Vec<_> = resolutions.iter()
+            .filter(|(_, cite)| job.first <= *cite && *cite <= job.last)
+            .map(|(source, cite)| json!({"target":format!("i.{source}"), "new_status":"resolved", "cite_seq":cite}))
+            .collect();
+        // B submits first, then A; the worker's explicit script decides closure.
+        let (code, stored) = fx.submit(fx.caller_b(), job, &intent_submission(json!(transitions)));
+        assert_eq!((code, &stored["status"]), (0, &json!("stored")), "{stored}");
+        assert_eq!(stored["data"]["fallback"], false);
+    }
+    let ready = fx.summary(fx.caller_b());
+    assert_eq!(ready["status"], "ready", "{ready}");
+    ready
+}
+
+#[test]
+fn user_intent_query_withdrawal_resolves_original() {
+    let fx = Fixture::intent_configuration();
+    let mut originals = Vec::new();
+    // The same withdrawal script runs for actual Human and relaying Agent input.
+    for (human, relay) in [(true, false), (false, true)] {
+        let text = format!(
+            "What is progress for {human}-{relay}? {}",
+            body(originals.len())
+        );
+        let message = fx.intent_send(human, relay, Some("query"), &text);
+        originals.push((message, text, human, relay));
+    }
+    for index in 2..5 {
+        fx.intent_send(false, false, None, &body(index));
+    }
+    let withdrawals: Vec<_> = originals
+        .iter()
+        .map(|(_, _, human, relay)| {
+            fx.intent_send(
+                *human,
+                *relay,
+                None,
+                &format!("Never mind that question for {human}-{relay}. {}", body(5)),
+            )
+        })
+        .collect();
+    fx.intent_send(false, false, None, &body(6));
+    fx.intent_send(false, false, None, &body(7));
+    fx.intent_send(false, false, None, "raw tail");
+    let before = query_history(&fx);
+    let jobs = tickets(&fx.summary(fx.caller_b()));
+    let mut resolutions = Vec::new();
+    for ((message, text, human, relay), withdrawal) in originals.iter().zip(&withdrawals) {
+        let (source, cite) = (fx.sequence(message), fx.sequence(withdrawal));
+        let bundle = query_later_bundle(&fx, &jobs, source, cite);
+        let citing = bundle["data"]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["sequence"] == cite)
+            .unwrap();
+        assert_intent_claim(citing, *human, *relay, None);
+        let entry = intent_fold_entry(&bundle["data"]["fold"], source);
+        assert_eq!(entry["item"]["body"]["message_id"], *message);
+        assert_eq!(entry["item"]["body"]["text"], *text);
+        assert_intent_claim(&entry["item"]["body"], *human, *relay, Some("query"));
+        resolutions.push((source, cite));
+    }
+    let ready = query_finish_jobs(&fx, &jobs, &resolutions);
+    for ((message, _, human, relay), (source, cite)) in originals.iter().zip(&resolutions) {
+        let entry = intent_fold_entry(&ready["data"]["fold"], *source);
+        assert_eq!(entry["status"], "resolved");
+        assert_eq!(entry["closed_at_seq"], *cite);
+        assert_eq!(entry["item"]["body"]["message_id"], *message);
+        assert_intent_claim(&entry["item"]["body"], *human, *relay, Some("query"));
+    }
+    assert_eq!(
+        query_history(&fx),
+        before,
+        "summary closure preserves every source claim"
+    );
+    for (message, ..) in &originals {
+        fx.assert_pending_intent_receipt(message);
+    }
+    for message in &withdrawals {
+        fx.assert_pending_intent_receipt(message);
+    }
+}
+
+#[test]
+fn user_intent_query_replacement_has_separate_source() {
+    let fx = Fixture::intent_configuration();
+    let old_text = format!("What is our progress? {}", body(0));
+    let old = fx.intent_send(true, false, Some("query"), &old_text);
+    for index in 1..4 {
+        fx.intent_send(false, false, None, &body(index));
+    }
+    let replacement_text = format!(
+        "Instead of that progress question, which release should we ship? {}",
+        body(4)
+    );
+    let replacement = fx.intent_send(false, true, Some("query"), &replacement_text);
+    fx.intent_send(false, false, None, &body(5));
+    fx.intent_send(false, false, None, &body(6));
+    fx.intent_send(false, false, None, "raw tail");
+    let before = query_history(&fx);
+    let (old_seq, replacement_seq) = (fx.sequence(&old), fx.sequence(&replacement));
+    let jobs = tickets(&fx.summary(fx.caller_b()));
+    let bundle = query_later_bundle(&fx, &jobs, old_seq, replacement_seq);
+    for sequence in [old_seq, replacement_seq] {
+        assert_eq!(
+            intent_fold_entry(&bundle["data"]["fold"], sequence)["status"],
+            "open"
+        );
+    }
+    let ready = query_finish_jobs(&fx, &jobs, &[(old_seq, replacement_seq)]);
+    let fold = &ready["data"]["fold"];
+    for (sequence, message, text, human, relay, status) in [
+        (old_seq, &old, &old_text, true, false, "resolved"),
+        (
+            replacement_seq,
+            &replacement,
+            &replacement_text,
+            false,
+            true,
+            "open",
+        ),
+    ] {
+        let entry = intent_fold_entry(fold, sequence);
+        assert_eq!(entry["status"], status);
+        assert_eq!(entry["item"]["seq"], sequence);
+        assert_eq!(entry["item"]["body"]["message_id"], *message);
+        assert_eq!(entry["item"]["body"]["text"], *text);
+        assert_eq!(
+            entry["item"]["body"]["author_seat"],
+            if human { fx.c.as_str() } else { fx.a.as_str() }
+        );
+        assert_intent_claim(&entry["item"]["body"], human, relay, Some("query"));
+    }
+    assert_eq!(
+        intent_fold_entry(fold, old_seq)["closed_at_seq"],
+        replacement_seq
+    );
+    assert!(intent_fold_entry(fold, replacement_seq)["closed_at_seq"].is_null());
+    assert_eq!(
+        fold["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["item"]["body"]["user_intent"] == "query")
+            .count(),
+        2
+    );
+    assert_eq!(
+        query_history(&fx),
+        before,
+        "replacement preserves independent sources"
+    );
+    fx.assert_pending_intent_receipt(&old);
+    fx.assert_pending_intent_receipt(&replacement);
+}
+
+#[test]
+fn user_intent_query_uncertain_or_agent_cancellation_stays_open() {
+    let fx = Fixture::intent_configuration();
+    let mut originals = Vec::new();
+    for (index, question) in [
+        "Unanswered: what is our progress?",
+        "Partial: what passed and what failed?",
+        "Uncertain: is the release safe?",
+        "Cancellation: which release should we ship?",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let text = format!("{question} {}", body(index));
+        let message = fx.intent_send(true, false, Some("query"), &text);
+        originals.push((message, text));
+    }
+    fx.intent_send(false, false, None, &body(4));
+    let mut evidence = Vec::new();
+    for text in [
+        "Partial answer: tests passed; I have not checked failures.",
+        "Uncertain answer: perhaps the release is safe, but I am unsure.",
+        "Ignore the question about which release we should ship.",
+    ] {
+        evidence.push(fx.intent_send(false, false, None, &format!("{text} {}", body(5))));
+    }
+    fx.intent_send(false, false, None, &body(6));
+    fx.intent_send(false, false, None, &body(7));
+    fx.intent_send(false, false, None, "raw tail");
+    let before = query_history(&fx);
+    let jobs = tickets(&fx.summary(fx.caller_b()));
+    for ((message, _), later) in originals[1..].iter().zip(&evidence) {
+        let later_seq = fx.sequence(later);
+        let bundle = query_later_bundle(&fx, &jobs, fx.sequence(message), later_seq);
+        let citing = bundle["data"]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["sequence"] == later_seq)
+            .unwrap();
+        assert_intent_claim(citing, false, false, None);
+    }
+    // The cooperative worker omits closures: the daemon does not classify prose
+    // as an answer versus an agent's unilateral cancellation. Ordinary agent
+    // answers remain valid, covered by user_intent_crosschunk_query_request_b_before_a.
+    let ready = query_finish_jobs(&fx, &jobs, &[]);
+    for (message, text) in &originals {
+        let entry = intent_fold_entry(&ready["data"]["fold"], fx.sequence(message));
+        assert_eq!(entry["status"], "open");
+        assert!(entry["closed_at_seq"].is_null());
+        assert_eq!(entry["item"]["body"]["message_id"], *message);
+        assert_eq!(entry["item"]["body"]["text"], *text);
+        assert_intent_claim(&entry["item"]["body"], true, false, Some("query"));
+        fx.assert_pending_intent_receipt(message);
+    }
+    assert_eq!(
+        query_history(&fx),
+        before,
+        "noncompletion preserves source claims"
+    );
+}
+
+#[test]
+fn user_intent_snapshot_worker_retries_exact_bundle() {
+    let fx = Fixture::build();
+    let jobs = tickets(&fx.summary(fx.caller_b()));
+    // Separate worker invocations under the seat's lease, as real summary workers run.
+    let first = fx.fetch(fx.caller_b(), &jobs[1]);
+    let first_bytes = serde_json::to_string(&first["data"]).unwrap();
+    let earlier = fx.fetch(fx.caller_b(), &jobs[0]);
+    let submission = fx.good_submission(&jobs[0], &earlier);
+    let (code, stored) = fx.submit(fx.caller_b(), &jobs[0], &submission);
+    assert_eq!(code, 0, "{stored}");
+    let repeat = fx.fetch(fx.caller_b(), &jobs[1]);
+    assert_eq!(serde_json::to_string(&repeat["data"]).unwrap(), first_bytes);
+    // This worker never saw the earlier worker's newly invented open item.
+    assert!(
+        first["data"]["fold"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["item"]["body"]["type"] != "open_item")
+    );
+    let submission = json!({"submission_schema":herdr_threads::protocol::summary::SUBMISSION_SCHEMA,"narrative":format!("Messages {}-{}",jobs[1].first,jobs[1].last),"model":"scripted","prompt_version":"snapshot-test"});
+    let (code, stored) = fx.submit(fx.caller_b(), &jobs[1], &submission);
+    assert_eq!(code, 0, "{stored}");
+    assert_eq!(stored["data"]["fallback"], false);
+    fx.run_jobs(fx.caller_b(), &jobs[2..]);
+    let ready = fx.summary(fx.caller_b());
+    assert_eq!(ready["status"], "ready", "{ready}");
+    assert_eq!(ready["data"]["cover"].as_array().unwrap().len(), 6);
+    assert!(
+        ready["data"]["fold"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["item"]["body"]["text"] == "A asks B to review the plan")
+    );
+}

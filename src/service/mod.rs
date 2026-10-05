@@ -1,4 +1,5 @@
 //! Domain service composition: configuration, dispatch and workers.
+pub mod archival;
 pub mod config;
 pub mod dispatch;
 pub mod fair_writer;

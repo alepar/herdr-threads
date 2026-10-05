@@ -72,6 +72,8 @@ pub enum Command {
     /// Person check-in over an agent's binding, as the local account
     /// (TRUST-POLICY A4 override). Human lifecycle only.
     OperatorCheckIn(CheckIn),
+    BeginHandoff(crate::protocol::handoff::HandoffMutation),
+    CompleteHandoff(crate::protocol::handoff::HandoffMutation),
     CreateThread(CreateThread),
     Invite(Invite),
     Accept(Accept),
@@ -611,6 +613,8 @@ impl AcceptRequired {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SendMessage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_intent: Option<crate::protocol::summary::UserIntent>,
     pub thread: ThreadId,
     pub body: String,
     pub invited_recipients: Vec<SeatId>,
@@ -742,6 +746,7 @@ impl Command {
         }
         let claim = match self {
             Self::CheckIn(v) | Self::OperatorCheckIn(v) => Some(&v.claim),
+            Self::BeginHandoff(v) | Self::CompleteHandoff(v) => Some(&v.identity.claim),
             Self::CreateThread(v) => Some(&v.claim),
             Self::Invite(v) => Some(&v.claim),
             Self::Accept(v) => Some(&v.claim),
@@ -911,6 +916,8 @@ impl TryFrom<Command> for OperatorCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PermitMutation {
     CheckIn(CheckIn),
+    BeginHandoff(crate::protocol::handoff::HandoffMutation),
+    CompleteHandoff(crate::protocol::handoff::HandoffMutation),
     CreateThread(CreateThread),
     Invite(Invite),
     Accept(Accept),
@@ -930,6 +937,8 @@ impl TryFrom<Command> for PermitMutation {
     fn try_from(command: Command) -> Result<Self, Self::Error> {
         match command {
             Command::CheckIn(v) => Ok(Self::CheckIn(v)),
+            Command::BeginHandoff(v) => Ok(Self::BeginHandoff(v)),
+            Command::CompleteHandoff(v) => Ok(Self::CompleteHandoff(v)),
             Command::CreateThread(v) => Ok(Self::CreateThread(v)),
             Command::Invite(v) => Ok(Self::Invite(v)),
             Command::Accept(v) => Ok(Self::Accept(v)),

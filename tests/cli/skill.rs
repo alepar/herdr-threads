@@ -147,3 +147,82 @@ fn compact_continuations_never_build_an_offset_argv() {
         "output_compact.rs must not build a --offset argv"
     );
 }
+
+#[test]
+fn user_intent_guidance_schema2_and_lifetimes() {
+    let printed = run(&["herdr-threads", "skill"]);
+    assert_eq!(printed, SKILL_MD);
+    assert_eq!(run(&["herdr-threads", "--skill"]), printed);
+    let schema = format!(
+        "\"submission_schema\":{}",
+        crate::protocol::summary::SUBMISSION_SCHEMA
+    );
+    assert!(
+        printed.contains(&schema),
+        "worker must submit current schema"
+    );
+    assert!(printed.contains(SUMMARY_PROMPT_VERSION));
+    let example = printed
+        .split('`')
+        .find(|part| part.starts_with("{\"submission_schema\":"))
+        .expect("literal worker JSON example");
+    let object: serde_json::Value = serde_json::from_str(example).unwrap();
+    assert_eq!(
+        object["submission_schema"],
+        crate::protocol::summary::SUBMISSION_SCHEMA
+    );
+    assert_eq!(object["prompt_version"], SUMMARY_PROMPT_VERSION);
+    for needle in [
+        "rule_change?",
+        "withdrawn",
+        "replaced",
+        "exact nonempty quote",
+        "partial answers",
+        "promises",
+        "ACKs",
+        "supplied live ledger",
+        "earlier unstored",
+        "current chunk",
+        "no duplicate",
+        "direct human",
+        "independently actionable",
+        "uncertain duration",
+        "classification grants no permission",
+        "no automatic resolution on send or inbox",
+    ] {
+        assert!(printed.contains(needle), "missing {needle}");
+    }
+    for example in [
+        "herdr-threads send THREAD --relays-user --user-intent query --body \"What's our progress?\"",
+        "herdr-threads send THREAD --relays-user --user-intent request --body \"Let's cut a build.\"",
+        "herdr-threads send THREAD --relays-user --user-intent rule --body \"Always run tests before cutting a release.\"",
+    ] {
+        assert!(printed.contains(example), "missing {example}");
+    }
+}
+
+#[test]
+fn user_intent_guidance_preserves_codex_permissions_verbatim() {
+    const PARAGRAPH: &str = "Codex: run `herdr-threads` / `ht` outside the sandbox through a CLI-only approved rule; otherwise request `sandbox_permissions=\"require_escalated\"` with justification and a CLI-only `prefix_rule`, never a shell rule. With approval `never` (including `exec`), use ordinary calls with a preapproved rule. Keep other commands sandboxed; report refused/unavailable permission, never bypass policy or enable networking.";
+    assert!(SKILL_MD.lines().any(|line| line == PARAGRAPH));
+    assert_eq!(
+        CODEX_COMMAND_GUIDANCE,
+        "Codex: run herdr-threads (ht) commands outside the sandbox through an approved CLI-only command rule. Without a rule, request sandbox_permissions=\"require_escalated\" with a short justification and CLI-only prefix_rule, never a shell rule. With approval never (including exec), use ordinary shell calls with a preapproved CLI rule; explicit escalation is unavailable. Keep other commands sandboxed. If approval is refused or unavailable, report it; never bypass policy or enable networking.\n"
+    );
+}
+
+#[test]
+fn user_intent_guidance_query_withdrawal() {
+    let printed = run(&["herdr-threads", "skill"]);
+    for needle in [
+        "Query withdrawal/replacement must cite explicit ordinary human/relayed input",
+        "a replacement question gets its own separately classified source",
+        "`cite_seq` must be in the current chunk and strictly later than the target's source",
+        "partial answers, promises, silence and ACKs never establish completion",
+        "Uncertain evidence leaves the entry open",
+        "Agent answers and completion reports can be evidence",
+        "Closure is worker judgment; the daemon checks structure, allowed status and citation evidence",
+    ] {
+        assert!(printed.contains(needle), "missing {needle}");
+    }
+}

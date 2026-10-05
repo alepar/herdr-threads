@@ -76,6 +76,7 @@ fn send_request(explicit: Vec<&str>) -> SendMessage {
             target: HostTargetId::new("pa"),
         },
         relays_user: false,
+        user_intent: None,
     }
 }
 

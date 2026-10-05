@@ -164,6 +164,10 @@ The daemon's retention lane keeps the database bounded without touching anything
 - **Unpublished native and service sends expire after 24 hours without successful preparation progress.** Deadline expiry and cancellation preserve partial progress for same-key retries within that window. Expiry discards the preparation and queues bounded recipient/warning cleanup; a same-key retry can rebuild only after cleanup finishes. Digest headers and completed cleanup markers remain, so changing a payload under an old key is still rejected. Published manifests never expire. Existing unpublished preparations receive a fresh 24-hour grace period during the v15 upgrade; opening an upgraded database again does not reset it.
 - **Health:** a failed pass backs off (100 ms doubling to 30 s) and shows on the existing scheduler line as `lane retention failed: CODE; retrying (attempt N, next ≤ Ss)`; the next good pass clears it. There is no separate retention line.
 
+## Channel archival
+
+The staged [automatic channel lifecycle](channel-archival.md) uses `auto_archive_after_ms` (default one hour, zero disables) and preserves memberships and obligations. Human or uncertain occupants, active protected work and incomplete legacy-journal coverage keep channels open. A valid pending noncompound intent also vetoes coverage until recovered or absent; the importer never changes it. The dedicated lane reports failures through ordinary scheduler health and stops with its daemon. Production activation follows combined schema23/wire6 integration.
+
 ## Bounded reads and continuations
 
 Every collection (`thread list`, `thread show`, `thread participants`, `inbox`, `warnings`, `pending-receipts`, `read`, `search`, `seat list`, `seat inspect`, `seat retirements`, `delivery inspect`, `delivery recipients`, `overdue`, `diagnostics`, `pending-ops`, `view`) takes `--limit`, `--max-bytes` and `--cursor`. `body MESSAGE` returns bounded chunks with `--offset` and `--max-bytes`.

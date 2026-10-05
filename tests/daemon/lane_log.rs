@@ -148,7 +148,7 @@ fn injected_failure_in_each_lane_lands_rate_limited() {
             "{lines:?}"
         );
     }
-    assert_eq!(lines.len(), 10, "{lines:?}");
+    assert_eq!(lines.len(), 2 * Lane::ALL.len(), "{lines:?}");
 }
 
 /// Kills: an unthrottled verification line (one per wake), a limiter shared

@@ -4,6 +4,7 @@ Columns: date · title · relative link · one-line summary · status · tags.
 
 | Date | Title | Design | Summary | Status | Tags |
 |---|---|---|---|---|---|
+| 2026-10-04 | Human message attribution and intent | [Design](2026-10-04-user-message-intent-design.md) | Separate relay attribution from query, request and rule intent; define reviewed summary lifetimes and compatibility. | implemented | messages, attribution, summaries, rules |
 | 2026-10-03 | Daily thread overhead | [Design](2026-10-03-thread-overhead-design.md) | Batched inbox display ACKs, wake batching, warning transitions, and measured native scenarios. | implemented | inbox, scheduler, warnings |
 | 2026-09-27 | Herdr persistent threads | [Root design](../../design/herdr-threads/2026-09-27-herdr-threads-design.md) | Pane-bound seats, prelaunch handoffs, explicit receipts and compact native delivery. | draft | herdr-threads, root |
 | 2026-09-27 | Native caller attribution | [Design](../../design/herdr-threads/2026-09-27-herdr-threads--caller-attribution-design.md) | Prove top-level call attribution for Codex and Claude. | draft | herdr-threads, caller-attribution |
@@ -28,3 +29,5 @@ Columns: date · title · relative link · one-line summary · status · tags.
 | 2026-10-02 | Thread summaries for compaction survival | [Design](../../design/herdr-threads/thread-summaries/2026-10-02-thread-summaries-compaction-survival-design.md) | Daemon-planned shared thread summaries (ledger + narrative, index-aligned rollups), catch-up hold with progress-based deadline extension, and safe soft-deadline pokes. | implemented | herdr-threads, summaries, compaction, scheduler |
 
 | 2026-10-03 | CLI names and durable handoff | [Design](2026-10-03-cli-names-handoff-design.md) | Scoped human pane targets, optional thread names, recent-channel picker and recoverable handoff; [evidence](../../evidence/cli-names-handoff/report.md). | implemented | cli, names, handoff, picker |
+
+| 2026-10-04 | Channel UX | [Design](2026-10-04-channel-ux-design.md) | Recipient-local commands, joined/active/history resolution and conservative one-hour archival. | implemented | cli, channels, lifecycle |
