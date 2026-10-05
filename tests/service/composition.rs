@@ -1670,6 +1670,11 @@ impl ActualNativeFixture {
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
                 let mut request = String::new();
                 BufReader::new(&mut stream).read_line(&mut request).unwrap();
+                // Cancellation can close a connected peer before it writes a
+                // complete line. This is not a malformed completed request.
+                if !request.ends_with('\n') {
+                    continue;
+                }
                 // The held snapshot polls for stop between short reads. macOS
                 // rejects this (EINVAL) only once the peer closed, and the held
                 // read then observes that EOF immediately.
@@ -1940,6 +1945,35 @@ impl Drop for ActualNativeFixture {
         {
             eprintln!("{log}");
         }
+    }
+}
+
+#[test]
+fn actual_native_private_host_survives_cancellation_before_request_write() {
+    use std::io::Write;
+    let fixture = ActualNativeFixture::start_with(false, 0, vec![actual_pane("w4:p1", "term_a")]);
+    // Both a connected-but-unwritten request and a cancelled partial frame
+    // must leave the private host alive for the next real native operation.
+    for fragment in [b"".as_slice(), b"{\"method\":"] {
+        let mut abandoned = std::os::unix::net::UnixStream::connect(&fixture.endpoint).unwrap();
+        abandoned.write_all(fragment).unwrap();
+        abandoned.shutdown(std::net::Shutdown::Both).unwrap();
+        drop(abandoned);
+        let native = fixture.native.upgrade().unwrap();
+        let snapshot = herdr_threads::ports::HostPort::enumerate_targets(
+            native.as_ref(),
+            &herdr_threads::ports::HostCallContext {
+                budget: fixture.budget(),
+                expected_boot: None,
+                expected_epoch: None,
+            },
+        );
+        assert!(
+            snapshot.is_ok(),
+            "cancelled connection killed private host: {snapshot:?}"
+        );
+        assert_eq!(snapshot.unwrap().targets.len(), 1);
+        assert!(!fixture.server.as_ref().unwrap().is_finished());
     }
 }
 

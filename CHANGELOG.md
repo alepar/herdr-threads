@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v0.2.6
+
+- **Handoff launch fix.** Generated recipient guidance stays on one line, so Herdr can launch Claude and Codex from the named-channel README walkthrough. Exact routing and durable retry safeguards remain unchanged.
+- **Permanent walkthrough regression.** A model-free public CLI test covers both named handoffs, invitation acceptance, display-only inbox ACKs, pending receipts and a followed conversation against a private daemon. Live Claude/Codex rehearsal remains a separate release check.
+- **CI cancellation fixture.** The private host survives connections cancelled before a complete request is written, preventing a spurious daemon-restart test failure. CI uses six worker slots while retaining serialized groups and the five-minute suite budget.
+
 ## v0.2.5
 
 - **Concise recipient commands.** Handoff and hook guidance use ordinary `herdr-threads` commands when the recipient's trusted routing metadata matches the exact instance; custom or uncertain routing retains explicit state and endpoint arguments.

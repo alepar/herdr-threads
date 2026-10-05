@@ -667,7 +667,11 @@ fn handoff_bootstrap_prefers_recipient_hook_commands_and_replays_exact_fallback(
         "{prompt}"
     );
     assert!(
-        prompt.lines().next().unwrap().ends_with("null"),
+        prompt
+            .split_once(" Prefer a startup hook")
+            .unwrap()
+            .0
+            .ends_with("null"),
         "unknown paths require exact fallback"
     );
     let fallback = prompt
@@ -733,8 +737,12 @@ fn handoff_bootstrap_binds_hook_preference_to_frozen_expected_instance_and_pair(
     .unwrap();
     let prompt = launcher.submitted_argv.last().unwrap();
     let record = prompt
-        .lines()
-        .find_map(|line| line.strip_prefix("Expected handoff command routing (JSON data): "))
+        .strip_prefix("Expected handoff command routing (JSON data): ")
+        .and_then(|record| {
+            record
+                .split_once(" Prefer a startup hook")
+                .map(|(routing, _)| routing)
+        })
         .expect("bootstrap must identify its expected hook group");
     let expected: serde_json::Value = serde_json::from_str(record).unwrap();
     assert_eq!(
@@ -1144,4 +1152,19 @@ fn handoff_fenced_complete_survives_local_removal_failure_then_cleanup_only_retr
     assert!(client.inner.calls.lock().unwrap().is_empty());
     assert_eq!(&*events.lock().unwrap(), &["begin", "flush"]);
     assert!(journal.load(&reference).is_err());
+}
+
+#[test]
+fn handoff_bootstrap_is_one_native_shell_argument() {
+    let prompt = bootstrap(
+        &ThreadId::new("tReview01"),
+        &crate::protocol::output::ContinuationContext::default(),
+        "00000000-0000-0000-0000-0000000000b1",
+    );
+    assert!(
+        !prompt.contains(['\n', '\r']),
+        "Herdr rejects native launch arguments containing a line break: {prompt:?}"
+    );
+    assert!(prompt.contains("inbox") && prompt.contains("read tReview01"));
+    assert!(prompt.contains("Launch does not accept invitations or ACK messages"));
 }
