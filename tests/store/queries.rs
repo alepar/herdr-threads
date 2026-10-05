@@ -4824,3 +4824,371 @@ fn user_intent_inbox_canonical_claims_survive_full_and_chunked_output() {
         }
     }
 }
+
+// Picker regressions use the public wire shape, so an old daemon rejects the
+// optional command without changing the shipped Directory response.
+fn picker_command(page: PageRequest) -> Command {
+    serde_json::from_value(serde_json::json!({
+        "kind": "picker_directory", "args": {"page": page}
+    }))
+    .expect("picker directory is an optional supported read")
+}
+
+fn picker_value(
+    store: &super::super::connection::StoreContext,
+    page: PageRequest,
+) -> serde_json::Value {
+    serde_json::to_value(query(store, "i", &picker_command(page), &budget()).unwrap()).unwrap()["data"].clone()
+}
+
+#[test]
+fn picker_directory_empty_thread_reports_creation_and_minimum_window() {
+    let (store, _db) = fixture();
+    let result = picker_value(&store, page(None));
+    let row = &result["items"][0];
+    assert_eq!(row["thread"], "t");
+    assert_eq!(row["participant_count"], 0);
+    assert_eq!(row["sample_positions"], 0);
+    assert_eq!(row["recent_ordinary_count"], 0);
+    assert_eq!(row["activity_window_ms"], 60_000);
+    assert_eq!(row["last_activity"], 0);
+    assert!(row["last_message"].is_null());
+}
+
+#[test]
+fn picker_directory_counts_only_effective_joined_nonretired_members() {
+    let (store, db) = fixture();
+    db.execute_batch(
+        "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('graph:i','i',0);
+        UPDATE threads SET managed_owner_author_id='graph:i' WHERE id='t';",
+    )
+    .unwrap();
+    for (seat, state, voluntary) in [
+        ("joined", "joined", None),
+        ("unresolved", "joined", None),
+        ("required-absent", "invited", Some("absent")),
+        ("required-left", "invited", Some("left")),
+        ("pending", "invited", Some("absent")),
+        ("left", "left", None),
+        ("retired", "joined", None),
+        ("marker-retired", "invited", Some("retired")),
+        ("released-left", "invited", Some("left")),
+        ("released-joined", "joined", None),
+    ] {
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i',?2,'native',1,0)",params![seat,if seat=="unresolved" {"unresolved"} else {"resolved"}]).unwrap();
+        db.execute("INSERT INTO memberships(thread_id,seat_id,state,episode,joined_at,voluntary_state) VALUES ('t',?1,?2,1,0,?3)",params![seat,state,voluntary]).unwrap();
+    }
+    for (seat, state) in [
+        ("required-absent", "accepted"),
+        ("required-left", "accepted"),
+        ("pending", "pending"),
+        ("joined", "accepted"),
+        ("marker-retired", "accepted"),
+        ("released-left", "released"),
+        ("released-joined", "released"),
+    ] {
+        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES (?1,'t',?2,1,'pending',0,1,1000,1000)",params![format!("i-{seat}"),seat]).unwrap();
+        let accepted = state != "pending";
+        db.execute("INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at,accepted_by_seat_id,accepted_generation,accepted_observation,accepted_at,released_at) VALUES (?1,'t',?2,'graph:i',?3,?4,1,0,?5,?6,?7,?8,?9)",params![format!("r-{seat}"),seat,format!("i-{seat}"),state,accepted.then_some(seat),accepted.then_some(1),accepted.then_some("cooperative_top_level"),accepted.then_some(0),(state=="released").then_some(0)]).unwrap();
+    }
+    db.execute(
+        "UPDATE seats SET state='retired',retired_at=0,retired_seq=1 WHERE id='retired'",
+        [],
+    )
+    .unwrap();
+    let result = picker_value(&store, page(None));
+    assert_eq!(
+        result["items"][0]["participant_count"], 5,
+        "joined, unresolved, accepted absent/left requirements, and voluntarily joined released requirement; no duplicates or retired markers"
+    );
+}
+
+#[test]
+fn picker_directory_samples_latest_512_positions_and_keeps_quiet_elapsed_time() {
+    let (store, db) = fixture();
+    db.execute_batch("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10000)
+        INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,event_json,decision_at)
+        SELECT 'i',x,'m'||x,'t',x,CASE WHEN x%2=0 THEN 'ordinary' ELSE 'info' END,'s',CASE WHEN x%2=0 THEN 'body' ELSE NULL END,CASE WHEN x%2=1 THEN '{}' ELSE NULL END,-120000 FROM n;
+        UPDATE threads SET next_sequence=10001 WHERE id='t';").unwrap();
+    let result = picker_value(&store, page(None));
+    let row = &result["items"][0];
+    assert_eq!(row["sample_positions"], 512);
+    assert_eq!(row["recent_ordinary_count"], 256);
+    assert_eq!(row["activity_window_ms"], 120_100);
+    assert_eq!(row["last_message"]["sequence"], 10_000);
+    assert_eq!(row["last_message"]["preview_data"], "body");
+}
+
+#[test]
+fn picker_directory_uses_virtual_warning_at_latest_canonical_position() {
+    let (store, db) = fixture();
+    db.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p','i','actor','o',zeroblob(32),'t',0,0,0,0,0,0,0,'sealed');
+        INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES ('p','key','warn-id','s',1,1,'{}');
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('i','m','t',1,'ordinary','s','body',10,10);
+        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i','p','m','t',10,10,1,0,0,1);
+        UPDATE threads SET next_sequence=3 WHERE id='t';").unwrap();
+    let result = picker_value(&store, page(None));
+    let row = &result["items"][0];
+    assert_eq!(row["last_message"]["kind"], "warn");
+    assert_eq!(row["last_message"]["sequence"], 2);
+    assert_eq!(row["last_activity"], 10);
+    assert_eq!(row["recent_ordinary_count"], 1);
+    assert_eq!(row["sample_positions"], 2);
+}
+
+#[test]
+fn picker_directory_paging_is_bounded_and_anchor_excludes_new_threads() {
+    let (store, db) = fixture();
+    for n in 1..=5 {
+        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i',?2,'g',0,0)",params![format!("t{n}"),"x".repeat(1000)]).unwrap();
+    }
+    let mut request = page(None);
+    request.limit = 2;
+    let first = picker_value(&store, request.clone());
+    assert_eq!(first["items"].as_array().unwrap().len(), 2);
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('late','i','late','g',0,0)",[]).unwrap();
+    let mut ids = Vec::new();
+    let mut result = first;
+    loop {
+        ids.extend(
+            result["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["thread"].as_str().unwrap().to_owned()),
+        );
+        let Some(cursor) = result["next_cursor"].as_str() else {
+            break;
+        };
+        request.cursor = Some(cursor.to_owned());
+        result = picker_value(&store, request.clone());
+    }
+    assert_eq!(ids, ["t", "t1", "t2", "t3", "t4", "t5"]);
+    request.cursor = None;
+    request.limit = 100;
+    request.max_bytes = 1800;
+    let result = query_with_output(
+        &store,
+        "i",
+        &picker_command(request.clone()),
+        &OutputSpec {
+            format: OutputFormat::Json,
+            ..OutputSpec::default()
+        },
+        &budget(),
+    )
+    .unwrap();
+    assert!(
+        crate::protocol::output::encode_selected(
+            &result,
+            &OutputSpec {
+                format: OutputFormat::Json,
+                ..OutputSpec::default()
+            }
+        )
+        .unwrap()
+        .len()
+            <= 1800
+    );
+    let value = serde_json::to_value(result).unwrap();
+    assert!(value["data"]["has_more"].as_bool().unwrap());
+    request.max_bytes = 1;
+    assert!(picker_command(request).validate().is_err());
+}
+
+#[test]
+fn picker_directory_sql_work_does_not_grow_with_message_history() {
+    use crate::protocol::commands::PickerDirectoryQuery;
+    use crate::test_support::isolation::{CostCounter, count_vm_units};
+    let measure = |history: i64| {
+        let (store, db) = fixture();
+        db.execute("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?1) INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) SELECT 'i',x,'m'||x,'t',x,'ordinary','s','body',-120000 FROM n",[history]).unwrap();
+        db.execute(
+            "UPDATE threads SET next_sequence=?1+1 WHERE id='t'",
+            [history],
+        )
+        .unwrap();
+        let reader = store.open_query(budget()).unwrap();
+        reader.execute_batch("BEGIN DEFERRED").unwrap();
+        let counter = CostCounter::default();
+        let result = count_vm_units(&reader, &counter, || {
+            picker_directory::directory(
+                &reader,
+                "i",
+                &PickerDirectoryQuery { page: page(None) },
+                UtcMillis(100),
+                &OutputSpec::default(),
+            )
+            .unwrap()
+        });
+        let CommandResult::PickerDirectory(result) = result else {
+            panic!()
+        };
+        assert_eq!(result.items[0].recent_ordinary_count, 512);
+        counter.units()
+    };
+    let small = measure(512);
+    let large = measure(20_000);
+    eprintln!("picker bounded history VM units: small={small} large={large}");
+    assert!(
+        large <= small + small / 10 + 100,
+        "picker query scanned full history: {small} -> {large}"
+    );
+}
+
+#[test]
+fn picker_directory_oldest_virtual_position_preserves_window_after_projection() {
+    let (store, db) = fixture();
+    db.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p','i','actor','o',zeroblob(32),'t',0,0,0,0,0,0,0,'sealed');
+        INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES ('p','key','warn-id','s',1,1,'{}');
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('i','m','t',1,'ordinary','s','first',-120000,1);
+        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i','p','m','t',1,-120000,1,0,0,1);
+        WITH RECURSIVE n(x) AS (VALUES(3) UNION ALL SELECT x+1 FROM n WHERE x<513)
+        INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at)
+        SELECT 'i',x,'m'||x,'t',x,'ordinary','s','later',-10000 FROM n;
+        UPDATE threads SET next_sequence=514 WHERE id='t';").unwrap();
+    let before = picker_value(&store, page(None));
+    assert_eq!(before["items"][0]["sample_positions"], 512);
+    assert_eq!(before["items"][0]["recent_ordinary_count"], 511);
+    assert_eq!(
+        before["items"][0]["activity_window_ms"], 120_100,
+        "oldest sampled position is a virtual warning, not the next physical message"
+    );
+    db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset,source_message_id) VALUES ('i','warn-id','t',2,'warn','{}',-120000,1,1,'m')",[]).unwrap();
+    let after = picker_value(&store, page(None));
+    assert_eq!(
+        after, before,
+        "warning projection retains canonical metrics"
+    );
+}
+
+#[test]
+fn picker_directory_keeps_full_topic_and_limits_huge_body_preview() {
+    let (store, db) = fixture();
+    let topic = format!("{}suffix-for-discovery", "a".repeat(900));
+    db.execute(
+        "UPDATE threads SET topic=?1,name='named',archived=1 WHERE id='t'",
+        [&topic],
+    )
+    .unwrap();
+    let body = format!("{}hidden-tail", "☃".repeat(20_000));
+    db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('i','big','t',1,'ordinary','s',?1,1,1)",[body]).unwrap();
+    db.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
+        .unwrap();
+    let result = picker_value(&store, page(None));
+    let row = &result["items"][0];
+    assert_eq!(row["topic_data"], topic);
+    assert_eq!(row["name"], "named");
+    assert_eq!(row["archived"], true);
+    assert_eq!(
+        row["last_message"]["preview_data"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .count(),
+        256
+    );
+    assert_eq!(row["last_message"]["preview_omitted"], true);
+}
+
+#[test]
+fn picker_directory_requirement_scan_skips_terminal_history() {
+    use crate::protocol::commands::PickerDirectoryQuery;
+    use crate::test_support::isolation::{CostCounter, count_vm_units};
+    let measure = |history: i64| {
+        let (store, db) = fixture();
+        db.execute_batch("INSERT INTO service_authors(id,instance_id,created_at) VALUES ('graph:i','i',0);
+            UPDATE threads SET managed_owner_author_id='graph:i' WHERE id='t';
+            INSERT INTO memberships(thread_id,seat_id,state,episode,joined_at) VALUES ('t','s','joined',1,0);").unwrap();
+        db.execute("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?1)
+            INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at)
+            SELECT 'i'||x,'t','s',x,'pending',0,x,1000,1000 FROM n",[history]).unwrap();
+        db.execute("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?1)
+            INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at,released_at)
+            SELECT 'r'||x,'t','s','graph:i','i'||x,'released',x,0,0 FROM n",[history]).unwrap();
+        let reader = store.open_query(budget()).unwrap();
+        let counter = CostCounter::default();
+        let result = count_vm_units(&reader, &counter, || {
+            picker_directory::directory(
+                &reader,
+                "i",
+                &PickerDirectoryQuery { page: page(None) },
+                UtcMillis(100),
+                &OutputSpec::default(),
+            )
+            .unwrap()
+        });
+        let CommandResult::PickerDirectory(page) = result else {
+            panic!()
+        };
+        assert_eq!(page.items[0].participant_count, 1);
+        counter.units()
+    };
+    let small = measure(1);
+    let large = measure(2_000);
+    eprintln!("picker terminal requirements VM units: small={small} large={large}");
+    assert!(
+        large <= small + 100,
+        "picker scanned terminal requirements: {small} -> {large}"
+    );
+}
+
+#[test]
+fn picker_directory_exact_byte_cut_fits_final_bytes_envelope() {
+    let (store, db) = fixture();
+    for id in ["t1", "t2"] {
+        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)",[id]).unwrap();
+    }
+    let mut request = page(None);
+    request.limit = 2;
+    let rows = query(&store, "i", &picker_command(request.clone()), &budget()).unwrap();
+    let bytes = crate::protocol::output::encode_selected(&rows, &OutputSpec::default())
+        .unwrap()
+        .len() as u32;
+    assert_eq!(
+        serde_json::to_value(&rows).unwrap()["data"]["stop_reason"],
+        "rows"
+    );
+    request.limit = 100;
+    request.max_bytes = bytes;
+    let cut = query(&store, "i", &picker_command(request.clone()), &budget())
+        .expect("one row with the actual Bytes envelope fits this budget");
+    let value = serde_json::to_value(&cut).unwrap();
+    assert_eq!(value["data"]["items"].as_array().unwrap().len(), 1);
+    assert_eq!(value["data"]["items"][0]["thread"], "t");
+    assert_eq!(value["data"]["stop_reason"], "bytes");
+    assert!(
+        crate::protocol::output::encode_selected(&cut, &OutputSpec::default())
+            .unwrap()
+            .len()
+            <= bytes as usize
+    );
+    request.cursor = Some(value["data"]["next_cursor"].as_str().unwrap().to_owned());
+    let next = picker_value(&store, request);
+    assert_eq!(
+        next["items"][0]["thread"], "t1",
+        "the first rejected row is not skipped"
+    );
+}
+
+#[test]
+fn picker_directory_exact_complete_envelope_accepts_all_fitting_rows() {
+    let (store, db) = fixture();
+    for id in ["t1", "t2"] {
+        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)",[id]).unwrap();
+    }
+    let mut request = page(None);
+    request.limit = 100;
+    let complete = query(&store, "i", &picker_command(request.clone()), &budget()).unwrap();
+    request.max_bytes = crate::protocol::output::encode_selected(&complete, &OutputSpec::default())
+        .unwrap()
+        .len() as u32;
+    let result = picker_value(&store, request);
+    assert_eq!(
+        result["items"].as_array().unwrap().len(),
+        3,
+        "the final complete envelope has no cursor and fits all rows"
+    );
+    assert_eq!(result["stop_reason"], "complete");
+    assert_eq!(result["has_more"], false);
+}

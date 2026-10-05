@@ -1252,6 +1252,71 @@ fn read_follow_parses_its_options_and_refuses_page_selectors() {
     }
 }
 
+// Kills: follow routed differently, lost selectors/options, or history-only flags admitted.
+#[test]
+fn top_level_follow_matches_read_follow_for_exact_names_and_picker() {
+    let cases: &[&[&str]] = &[
+        &[],
+        &["thread-1"],
+        &["review channel", "--recent", "0"],
+        &[
+            "review channel",
+            "--recent",
+            "30",
+            "--no-system",
+            "--max-bytes",
+            "512",
+        ],
+        &["thread-1", "--after", "7"],
+        &["--recent", "9", "--no-system", "--max-bytes", "512"],
+        &["--after", "7"],
+    ];
+    for executable in ["herdr-threads", "ht"] {
+        for args in cases {
+            for format in [None, Some("--human"), Some("--machine"), Some("--json")] {
+                let mut alias = vec![executable];
+                alias.extend(format);
+                alias.push("follow");
+                alias.extend_from_slice(args);
+                let mut full = vec![executable];
+                full.extend(format);
+                full.extend(["read", "--follow"]);
+                full.extend_from_slice(args);
+                let parsed = parse_argv(alias.clone())
+                    .unwrap_or_else(|error| panic!("{alias:?}: {error:?}"));
+                assert_eq!(parsed, parse_argv(full).unwrap(), "{alias:?}");
+                if let Some(thread) = args.first().filter(|arg| !arg.starts_with("--")) {
+                    assert_eq!(parsed.thread_selector.as_deref(), Some(*thread));
+                    assert!(matches!(parsed.action, CliAction::Follow(_)));
+                } else {
+                    assert!(matches!(
+                        parsed.action,
+                        CliAction::Picker(PickerRequest { follow: true, .. })
+                    ));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn top_level_follow_refuses_history_only_or_conflicting_ranges() {
+    for args in [
+        vec!["--before", "3"],
+        vec!["--limit", "3"],
+        vec!["--cursor", "c3:x"],
+        vec!["--recent", "101"],
+        vec!["--recent", "2", "--after", "7"],
+    ] {
+        for thread in [None, Some("thread-1")] {
+            let mut argv = vec!["herdr-threads", "follow"];
+            argv.extend(thread);
+            argv.extend_from_slice(&args);
+            assert!(parse_argv(argv.clone()).is_err(), "{argv:?}");
+        }
+    }
+}
+
 #[test]
 fn exit_status_help_names_both_exit_3_remedies() {
     use crate::daemon::remedy::{RemedyContext, remedy};

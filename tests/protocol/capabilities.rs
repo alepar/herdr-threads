@@ -275,7 +275,8 @@ fn capability_constants_are_stable() {
             "seat.managed_launch",
             "inbox.batch_v1",
             "invitation.reject_v1",
-            "participants.locations_v1"
+            "participants.locations_v1",
+            "picker.directory_v1"
         ]
     );
 }
@@ -297,6 +298,7 @@ fn every_advertised_capability_has_a_handler() {
             INBOX_BATCH => probe_inbox_batch(),
             INVITATION_REJECT => probe_invitation_reject(),
             PARTICIPANT_LOCATIONS => probe_participant_locations(),
+            PICKER_DIRECTORY_V1 => probe_picker_directory(),
             other => panic!("{other} is advertised but has no handler probe here"),
         }
     }
@@ -983,4 +985,96 @@ fn probe_participant_locations() {
             .code,
         ErrorCode::NotFound
     );
+}
+
+fn probe_picker_directory() {
+    use crate::{
+        ports::{ReadContext, StorePort},
+        protocol::{commands::PickerDirectoryQuery, output::OutputSpec, pagination::PageRequest},
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+        test_support::isolation::TestIsolation,
+    };
+    let iso = TestIsolation::new("cap-picker-directory");
+    let context = StoreContext::new(iso.state_root().join("store.db"), Arc::new(FixedClock));
+    context
+        .open_writer()
+        .unwrap()
+        .execute(
+            "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
+            [],
+        )
+        .unwrap();
+    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let command = Command::PickerDirectory(PickerDirectoryQuery {
+        page: PageRequest::default(),
+    });
+    assert_eq!(
+        serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap()).unwrap(),
+        command
+    );
+    let result = store
+        .query(
+            &command,
+            &ReadContext {
+                instance: "i".into(),
+                output: OutputSpec::default(),
+                operation_scope: None,
+            },
+            &budget(),
+        )
+        .unwrap();
+    let CommandResult::PickerDirectory(page) = result else {
+        panic!("wrong picker route")
+    };
+    assert!(page.items.is_empty());
+    page.validate().unwrap();
+}
+
+#[test]
+fn picker_directory_wire_keeps_old_directory_shape_and_cursor_only_contract() {
+    use crate::protocol::{
+        commands::PickerDirectoryQuery, pagination::PageRequest, results::PickerPage,
+    };
+    let command = Command::PickerDirectory(PickerDirectoryQuery {
+        page: PageRequest::default(),
+    });
+    assert!(command.validate().is_ok());
+    let invalid = PageRequest {
+        limit: 101,
+        ..PageRequest::default()
+    };
+    assert!(
+        Command::PickerDirectory(PickerDirectoryQuery { page: invalid })
+            .validate()
+            .is_err()
+    );
+    let old_command:Command=serde_json::from_value(serde_json::json!({"kind":"directory","args":{"membership":null,"membership_filter":"all","topic_contains":null,"page":{"cursor":null,"limit":19,"max_bytes":65536}}})).unwrap();
+    assert!(old_command.validate().is_ok());
+    let old_result:CommandResult=serde_json::from_value(serde_json::json!({"kind":"directory","data":{"items":[],"next_cursor":null,"next_argv":null,"high_water_ordinal":0,"scope_revision":null,"has_more":false,"stop_reason":"complete","consistency":"bounded_live"}})).unwrap();
+    let old_encoded = serde_json::to_value(old_result).unwrap();
+    assert_eq!(old_encoded["kind"], "directory");
+    assert!(old_encoded["data"].get("next_argv").is_some());
+    let mut page = PickerPage {
+        items: vec![],
+        next_cursor: Some("opaque".into()),
+        high_water_ordinal: 1,
+        scope_revision: None,
+        has_more: true,
+        stop_reason: StopReason::Rows,
+        consistency: Consistency::BoundedLive,
+    };
+    assert!(page.validate().is_ok());
+    let picker = CommandResult::PickerDirectory(page.clone());
+    let encoded = serde_json::to_value(&picker).unwrap();
+    assert!(encoded["data"].get("next_argv").is_none());
+    assert_eq!(
+        serde_json::from_value::<CommandResult>(encoded).unwrap(),
+        picker
+    );
+    page.next_cursor = None;
+    assert!(page.validate().is_err());
+    page.has_more = false;
+    assert!(page.validate().is_err());
+    page.stop_reason = StopReason::Complete;
+    assert!(page.validate().is_ok());
 }

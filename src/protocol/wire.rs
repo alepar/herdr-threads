@@ -210,6 +210,7 @@ fn result_identity_valid(
             health.instance_id == instance && health.boot_id == boot && health.validate().is_ok()
         }
         Ok(CommandResult::StopAccepted(accepted)) => accepted.boot_id == boot,
+        Ok(CommandResult::PickerDirectory(page)) => page.validate().is_ok(),
         Ok(CommandResult::ServiceInspection(inspection)) => {
             inspection.instance == instance
                 && inspection.daemon_boot == boot
