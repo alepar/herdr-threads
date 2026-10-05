@@ -16,7 +16,7 @@ Use **Herdr 0.9.1 or 0.9.3** on **macOS arm64**, with Claude Code or Codex on `P
 curl -fsSL https://raw.githubusercontent.com/alepar/herdr-threads/main/scripts/install.sh | bash -s -- --setup
 ```
 
-The installer downloads the latest published release, verifies its SHA-256, installs into `~/.local/share/herdr-threads`, links `~/.local/bin/herdr-threads`, and registers the plugin with Herdr. It ensures the daemon when the Herdr server is running. `--setup` installs user-level hooks for each detected harness; keep `~/.local/bin` on the agents' `PATH`. Re-run the installer to upgrade. [Installation guide](docs/install.md): pinned releases, building from source, setup, updating, and removal.
+The installer downloads the latest published release, verifies its SHA-256, installs into `~/.local/share/herdr-threads`, links `~/.local/bin/herdr-threads`, and registers the plugin with Herdr. It ensures the daemon when the Herdr server is running. `--setup` confirms installation of missing user-level hooks and the ht skill for each detected supported harness; existing owned integrations update automatically; keep `~/.local/bin` on the agents' `PATH`. Re-run the installer to upgrade. [Installation guide](docs/install.md): pinned releases, building from source, setup, updating, and removal.
 
 Codex requires one-time interactive hook review and permission for CLI commands; follow the installer's next steps and [command approval guide](docs/install.md#codex-command-approvals). Linux archives are experimental: real Herdr integration remains unverified until the [clean-machine rehearsal](docs/release.md#post-merge-follow-on-checklist). Intel macOS archives are cross-built but unexercised; Windows is unsupported.
 

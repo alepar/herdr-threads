@@ -182,7 +182,7 @@ jobs:
           prerelease=()
           case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
           cat > notes.md <<EOF
-          Prebuilt herdr-threads $TAG for Herdr 0.9.1.
+          Prebuilt herdr-threads $TAG for audited Herdr 0.9.1 or 0.9.3.
 
           Install or upgrade:
 
