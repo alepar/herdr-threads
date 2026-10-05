@@ -59,11 +59,11 @@ test-group = "service-daemon"
 # skipped-Herdr summary).
 [profile.ci]
 fail-fast = false
-# The v0.2.5 five-slot CI run passed every test but took 321 s, with
-# 1535 summed test-seconds (a 307 s lower bound even at full utilization).
-# Six slots overlap IPC and clock waits; the latency and daemon groups
-# above still admit only one test each. The workflow retains its 300 s guard.
-test-threads = 6
+# The v0.2.6 six-slot push run accumulated 1809 test-seconds, already
+# over the 300 s budget even at full utilization. Seven slots overlap IPC
+# and clock waits; all three serialized groups above remain unchanged.
+# The workflow retains its strict 300 s wall-clock guard.
+test-threads = 7
 
 [profile.ci.junit]
 path = "junit.xml"

@@ -740,6 +740,29 @@ impl LaneProbe {
             .map(|store| store.commit_counts())
             .unwrap_or_default()
     }
+    /// Observe the next row-changing commit from `lane` on its writer thread,
+    /// after guard release. Observer scheduling must not alter this instant.
+    /// Replaces the test-only writer pause callback; never reenters the writer.
+    pub fn next_commit_instant(&self, lane: Lane) -> Arc<Mutex<Option<Instant>>> {
+        let store = self.state().store.clone().expect("attached store");
+        let baseline = store.commit_counts().get(lane.name()).copied().unwrap_or(0);
+        let weak_store = Arc::downgrade(&store);
+        let instant = Arc::new(Mutex::new(None));
+        let observed = Arc::clone(&instant);
+        store.set_kick_pause(Box::new(move || {
+            let at = Instant::now();
+            if crate::service::kicks::current_origin() == Some(lane)
+                && let Some(store) = weak_store.upgrade()
+                && store.commit_counts().get(lane.name()).copied().unwrap_or(0) > baseline
+            {
+                observed
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .get_or_insert(at);
+            }
+        }));
+        instant
+    }
     /// Every flushed kick so far, oldest first.
     pub fn kick_log(&self) -> Vec<KickRecord> {
         self.state()

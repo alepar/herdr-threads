@@ -21,7 +21,7 @@ use std::{
     os::unix::fs::DirBuilderExt,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
@@ -53,7 +53,7 @@ struct ResolutionHost {
     snapshot_held: AtomicBool,
     /// When false, snapshot captures skip the "no SQLite writer held" probe
     /// (a test holds the writer from outside the daemon on purpose).
-    snapshot_writer_probe: AtomicBool,
+    snapshot_writer_probe: Mutex<bool>,
     active_reads: AtomicU64,
     /// A test that drives a second `OrdinaryIdentity` beside the daemon's own
     /// observation lane has two independent lanes, so overlap of their
@@ -189,9 +189,15 @@ impl HostPort for ResolutionHost {
         let mode = self.snapshot_mode.load(Ordering::SeqCst);
         let db = rusqlite::Connection::open(&self.path).unwrap();
         db.busy_timeout(super::HOST_IO_WRITER_PROBE_WAIT).unwrap();
-        if self.snapshot_writer_probe.load(Ordering::SeqCst) {
-            db.execute_batch("BEGIN IMMEDIATE; ROLLBACK")
-                .expect("snapshot capture held SQLite writer");
+        {
+            // Disabling the probe must drain an already-enabled capture before
+            // the caller takes SQLite's writer. An atomic flag alone leaves a
+            // load -> BEGIN IMMEDIATE race with that deliberate external hold.
+            let probe = self.snapshot_writer_probe.lock().unwrap();
+            if *probe {
+                db.execute_batch("BEGIN IMMEDIATE; ROLLBACK")
+                    .expect("snapshot capture held SQLite writer");
+            }
         }
         if mode == 1 {
             return Err(ApiError::host_unavailable("capture unavailable"));
@@ -354,7 +360,7 @@ impl Fixture {
             snapshots: AtomicU64::new(0),
             snapshot_mode: AtomicU64::new(snapshot_mode),
             snapshot_held: AtomicBool::new(snapshot_mode == 4),
-            snapshot_writer_probe: AtomicBool::new(true),
+            snapshot_writer_probe: Mutex::new(true),
             active_reads: AtomicU64::new(0),
             overlap_allowed: AtomicBool::new(false),
             supersede_reads: AtomicU64::new(0),
@@ -1476,10 +1482,7 @@ fn elected_health_does_not_keep_verified_host_after_errored_capture() {
     // writer, and a capture already admitted cannot publish nor durably
     // invalidate. No `Invalidated` outcome can be recorded while the writer
     // is held, so any change in Health comes from the errored attempt.
-    fixture
-        .host
-        .snapshot_writer_probe
-        .store(false, Ordering::SeqCst);
+    *fixture.host.snapshot_writer_probe.lock().unwrap() = false;
     let db = fixture.db();
     db.execute_batch("BEGIN IMMEDIATE").unwrap();
     let held = HeldSqliteWriterGuard(&db);
@@ -1516,10 +1519,7 @@ fn elected_health_does_not_keep_verified_host_after_errored_capture() {
 
     // Recovery: once the writer is free a later verified publication wins.
     drop(held);
-    fixture
-        .host
-        .snapshot_writer_probe
-        .store(true, Ordering::SeqCst);
+    *fixture.host.snapshot_writer_probe.lock().unwrap() = true;
     wait_verified(&fixture, "after writer release");
 }
 
@@ -1566,10 +1566,7 @@ fn elected_health_keeps_unavailable_host_after_errored_capture() {
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    fixture
-        .host
-        .snapshot_writer_probe
-        .store(false, Ordering::SeqCst);
+    *fixture.host.snapshot_writer_probe.lock().unwrap() = false;
     let db = fixture.db();
     db.execute_batch("BEGIN IMMEDIATE").unwrap();
     let held = HeldSqliteWriterGuard(&db);
@@ -1603,10 +1600,7 @@ fn elected_health_keeps_unavailable_host_after_errored_capture() {
         std::thread::sleep(Duration::from_millis(50));
     }
     drop(held);
-    fixture
-        .host
-        .snapshot_writer_probe
-        .store(true, Ordering::SeqCst);
+    *fixture.host.snapshot_writer_probe.lock().unwrap() = true;
 }
 
 struct HeldSqliteWriterGuard<'a>(&'a rusqlite::Connection);
@@ -2599,10 +2593,7 @@ fn identity_invalidation_compensation_is_bounded_without_shutdown() {
 #[test]
 fn elected_shutdown_is_not_held_by_invalidation_compensation() {
     let mut fixture = Fixture::new(false);
-    fixture
-        .host
-        .snapshot_writer_probe
-        .store(false, Ordering::SeqCst);
+    *fixture.host.snapshot_writer_probe.lock().unwrap() = false;
     fixture.host.held_past_budget.store(true, Ordering::SeqCst);
     let client = fixture.client();
     let budget = fixture.budget();
