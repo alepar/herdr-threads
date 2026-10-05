@@ -405,6 +405,15 @@ impl World {
 impl Drop for World {
     fn drop(&mut self) {
         let _ = self.cli(None, None, &["daemon", "stop"]);
+        if std::thread::panicking()
+            && let Ok(log) = fs::read(self.instance_dir.join("daemon.log"))
+        {
+            let tail = &log[log.len().saturating_sub(16 * 1024)..];
+            eprintln!(
+                "summary fixture daemon log:\n{}",
+                String::from_utf8_lossy(tail)
+            );
+        }
     }
 }
 
@@ -1670,10 +1679,23 @@ impl Fixture {
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Option<i64>>(3)?)),
             )
         };
-        wait_until("configured receipt row", Duration::from_secs(10), || {
-            receipt().is_ok()
-        });
-        assert_eq!(receipt().unwrap(), ("pending".to_owned(), None, None, None));
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            match receipt() {
+                Ok(row) => {
+                    assert_eq!(row, ("pending".to_owned(), None, None, None));
+                    break;
+                }
+                Err(error) => {
+                    assert!(
+                        Instant::now() < until,
+                        "timed out waiting for configured receipt row for {message} at {}: {error}",
+                        self.b
+                    );
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            }
+        }
     }
 }
 
