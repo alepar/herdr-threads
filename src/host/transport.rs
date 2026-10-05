@@ -1,4 +1,4 @@
-//! One bounded Herdr 0.9.1 API exchange. Dropping this future closes its socket.
+//! One bounded audited Herdr API exchange. Dropping this future closes its socket.
 
 use super::continuity::{
     KernelProcessInfo, LocalEndpointWitness, ProcessInfoProvider, capture_peer_witness_with,
@@ -347,8 +347,10 @@ fn request_inner(
                         .get("result")
                         .ok_or_else(|| error(ErrorCode::Unsupported, "host API ping failed"))?;
                     if pong.get("type").and_then(Value::as_str) != Some("pong")
-                        || pong.get("protocol").and_then(Value::as_u64) != Some(22)
-                        || pong.get("version").and_then(Value::as_str) != Some("0.9.1")
+                        || !super::compatibility::supports_json_api(
+                            pong.get("version").and_then(Value::as_str),
+                            pong.get("protocol").and_then(Value::as_u64),
+                        )
                     {
                         return Err(error(
                             ErrorCode::Unsupported,

@@ -155,9 +155,10 @@ pub fn normalize_snapshot(raw: &str) -> Result<NativeSnapshot, ApiError> {
     let snapshot = result
         .get("snapshot")
         .ok_or_else(|| invalid("missing snapshot"))?;
-    if field(snapshot, "version")? != "0.9.1"
-        || snapshot.get("protocol").and_then(Value::as_u64) != Some(22)
-    {
+    if !super::compatibility::supports_json_api(
+        Some(field(snapshot, "version")?),
+        snapshot.get("protocol").and_then(Value::as_u64),
+    ) {
         return Err(ApiError::unsupported(
             "unsupported Herdr snapshot version/protocol",
         ));
