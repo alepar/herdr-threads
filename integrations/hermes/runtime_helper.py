@@ -58,7 +58,10 @@ def inspect(profile):
     if len(raw.encode()) > 16384 or not opaque(profile):
         raise ValueError('scope')
     scope = strict_json(raw)
-    if not isinstance(scope, dict) or set(scope) != {'interpreter', 'source_root', 'profile', 'home'}:
+    discovery = isinstance(scope, dict) and set(scope) == {'mode', 'interpreter', 'profile'} and scope['mode'] == 'discover_selected_profile'
+    if not discovery and (not isinstance(scope, dict) or set(scope) != {'interpreter', 'source_root', 'profile', 'home'}):
+        raise ValueError('scope')
+    if not opaque(scope.get('interpreter'), 4096) or not os.path.isabs(scope['interpreter']):
         raise ValueError('scope')
     if scope['profile'] != profile:
         raise ValueError('scope')
@@ -67,7 +70,7 @@ def inspect(profile):
     bootstrap = sys.modules.get('hermes_bootstrap')
     root = origin(bootstrap).parent
     if (root / 'hermes_bootstrap.py' != origin(bootstrap)
-            or str(root) != scope['source_root'] or str(interpreter) != scope['interpreter']
+            or (not discovery and str(root) != scope['source_root']) or str(interpreter) != scope['interpreter']
             or getattr(bootstrap, '_root', None) != root
             or getattr(bootstrap, '_pm_repair', None) is not False
             or '_launch_python' not in vars(bootstrap) or bootstrap._launch_python is not None
@@ -103,7 +106,7 @@ def inspect(profile):
     if canon != profile:
         raise ValueError('profile')
     home = profiles.resolve_profile_env(profile)
-    if not opaque(home, 4096) or not os.path.isabs(home) or home != scope['home']:
+    if not opaque(home, 4096) or not os.path.isabs(home) or (not discovery and home != scope['home']):
         raise ValueError('profile')
     os.environ['HERMES_HOME'] = home
     constants = importlib.import_module('hermes_constants')

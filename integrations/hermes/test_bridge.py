@@ -207,6 +207,31 @@ class BridgeTests(unittest.TestCase):
     def request(self, callback="pre_llm_call", payload=None):
         return self.ctx.hooks[callback](**(self.callbacks["qualified"] if payload is None else payload))
 
+    def test_startup_and_observed_timeout_facts_reach_real_child_without_recapture(self):
+        self.load()
+        self.assertIsNotNone(self.request())
+        request = self.requests()[-1]["request"]
+        self.assertIn("startup_capture", request, "actual startup facts never reach Rust admission")
+        capture = request["startup_capture"]
+        self.assertEqual(capture["identity_provenance"], "startup_captured_identity")
+        self.assertEqual(capture["api_contract"], "initialized_plugin_context_schema1")
+        self.assertEqual(capture["profile"], "default")
+        self.assertEqual(capture["physical_home"], str(self.home.resolve()))
+        self.assertEqual(set(capture["module_origins"]), {"hermes_bootstrap", "hermes_constants", "hermes_cli.profiles", "hermes_cli.version_info", "hermes_cli.config", "hermes_cli.plugins"})
+        observation = request["timeout_observation"]
+        self.assertEqual(observation["quality"], "ok")
+        self.assertIsNone(observation["fallback_kind"])
+        self.assertEqual(observation["provenance"], "official_effective_config_observation")
+        self.assertEqual(observation["timeout_seconds"], 30.0)
+        self.assertGreaterEqual(observation["age_seconds"], 0)
+        self.assertLessEqual(observation["age_seconds"], 5)
+        self.assertEqual(request["role_association"], {"role":"top", "provenance":"explicit_parent", "session_id":"session-Ω", "turn_id":"turn-1"})
+        self.request("post_tool_call", self.callbacks["tool"])
+        tool = self.requests()[-1]["request"]
+        self.assertEqual(tool["role_association"], {"role":"top", "provenance":"qualified_pre_llm_cache", "session_id":"session-Ω", "turn_id":"turn-1"})
+        self.assertEqual(tool["startup_capture"], capture)
+        self.assertEqual(self.version_reads, 1)
+
     def requests(self):
         path = self.state / "requests"
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
@@ -232,7 +257,7 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(request["runtime_identity"]["commit"], VERSION["commit"])
         self.assertTrue(request["runtime_identity"]["key"].startswith("build:"))
         self.assertEqual(request["runtime_identity"]["distance"], 3962)
-        self.assertEqual(set(request), {"schema_version", "callback", "platform", "session_id", "parent_session_id", "task_id", "turn_id", "tool_call_id", "api_request_id", "event_id", "observation_order", "started_at", "deadline_at", "reset_reason", "runtime_identity", "identity_unavailable_reason", "shape", "bridge_schema_contract_id"})
+        self.assertEqual(set(request), {"schema_version", "callback", "platform", "session_id", "parent_session_id", "task_id", "turn_id", "tool_call_id", "api_request_id", "event_id", "observation_order", "started_at", "deadline_at", "reset_reason", "runtime_identity", "identity_unavailable_reason", "shape", "bridge_schema_contract_id", "startup_capture", "timeout_observation", "role_association"})
         self.assertNotIn("PRIVATE", json.dumps(captured))
         self.assertLessEqual(request["deadline_at"] - request["started_at"], 1200)
         self.assertIsNone(self.request("post_tool_call", self.callbacks["tool"]))

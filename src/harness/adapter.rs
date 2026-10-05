@@ -15,6 +15,28 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn legacy_contract_id(&self) -> Option<String> {
         None
     }
+    /// Only startup-qualified input adapters bypass the installed PATH witness.
+    fn callback_admission(&self) -> bool {
+        false
+    }
+    fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy {
+        super::context::QualifiedTurnPolicy::Strict
+    }
+    fn evidence_observations(&self, input: &HookInput) -> Vec<EvidenceProjection> {
+        let observed = self.classify(input);
+        self.contracts()
+            .iter()
+            .find(|d| d.domain == observed.domain)
+            .map(|d| {
+                vec![EvidenceProjection {
+                    domain: d.domain,
+                    origin: d.origin,
+                    contract_id: d.contract_id_v2().unwrap_or_default(),
+                    classification: observed.classification,
+                }]
+            })
+            .unwrap_or_default()
+    }
     fn contracts(&self) -> &'static [ContractDescriptor];
     fn observe_install(&self, env: &InstallEnvironment, budget: &CallBudget) -> InstallObservation;
     /// None means observation reuse is unsafe. Implementers include every observed
@@ -264,6 +286,12 @@ pub struct EvidenceQualificationRequest<'a> {
     pub runtime: &'a RuntimeIdentity,
     pub descriptor: &'a ContractDescriptor,
 }
+pub struct EvidenceProjection {
+    pub domain: ContractDomain,
+    pub origin: super::evidence::EvidenceOrigin,
+    pub contract_id: String,
+    pub classification: crate::harness::contract::Classification,
+}
 pub struct ContractObservation {
     pub domain: ContractDomain,
     pub classification: crate::harness::contract::Classification,
@@ -274,12 +302,15 @@ pub enum EventRole {
     Subagent,
     Unknown,
 }
+#[derive(Clone)]
 pub enum EventIntent {
     Lifecycle(crate::harness::context::EventKind),
     Current,
     QualifiedTurn(crate::harness::context::QualifiedTurn),
     Observer,
+    DeclaredReset(super::context::DeclaredReset),
 }
+#[derive(Clone)]
 pub struct EventMetadata {
     pub skill_pointer: bool,
     /// An adapter callback can shorten the core end-to-end limit.
@@ -290,15 +321,18 @@ pub struct EventMetadata {
     pub native_event: String,
     pub shape_fields: Vec<String>,
 }
+#[derive(Clone)]
 pub enum DeliveryEligibility {
     Context,
     ObserverOnly,
     Ineligible,
 }
+#[derive(Clone)]
 pub enum RuntimeAttribution {
     Attributed(RuntimeIdentity),
     Unavailable { diagnostic: String },
 }
+#[derive(Clone)]
 pub struct DecodedEvent {
     pub harness: crate::harness::registry::AgentHarnessId,
     pub role: EventRole,
@@ -1017,7 +1051,7 @@ impl DecodedEvent {
                         super::context::EventKind::Startup
                     }
                 }
-                EventIntent::Observer => return None,
+                EventIntent::Observer | EventIntent::DeclaredReset(_) => return None,
             },
             native_session: self.native_session.clone(),
             role: match self.role {

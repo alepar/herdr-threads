@@ -89,7 +89,7 @@ pub struct OccupantContext {
     pub session: SessionReference,
     pub role: Role,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EventKind {
     Startup,
     Restart,
@@ -132,6 +132,53 @@ impl OccupantContext {
         };
         Ok(next)
     }
+}
+/// Conservative default; startup attach is an explicitly declared adapter policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QualifiedTurnPolicy {
+    Strict,
+    StartupAttach,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredReset {
+    pub session: String,
+    pub event_key: String,
+    pub ordering: ObservationOrder,
+}
+const RESET_HINT_TTL: i64 = 600_000;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeclaredResetHint {
+    harness: Harness,
+    target: String,
+    session: String,
+    event_key: String,
+    process_nonce: Uuid,
+    sequence: u64,
+    observed_at_millis: i64,
+    generation: u64,
+    consumed: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PreparedKind {
+    event_id: String,
+    operation_id: Uuid,
+    request_digest: String,
+    kind: EventKind,
+}
+fn request_digest(request: &PendingCheckIn, kind: EventKind) -> Result<String, ContextError> {
+    serde_json::to_vec(&(request, kind))
+        .map(|bytes| super::setup::fingerprint(&bytes))
+        .map_err(|_| ContextError::Corrupt)
+}
+fn qualified_policy(harness: Harness) -> QualifiedTurnPolicy {
+    let registry = super::registry::builtins();
+    registry
+        .agent(harness.as_str())
+        .ok()
+        .and_then(|id| registry.by_id(id).ok())
+        .map_or(QualifiedTurnPolicy::Strict, |r| r.qualified_turn_policy())
 }
 /// Adapter-qualified identity observation, not native attestation or continuity authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -288,6 +335,10 @@ struct State {
     abandoned: Vec<Abandoned>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     observation_watermarks: Vec<ObservationWatermark>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    declared_resets: Vec<DeclaredResetHint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    prepared_kinds: Vec<PreparedKind>,
 }
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
@@ -310,6 +361,25 @@ fn prune(state: &mut State, now: i64) {
     state.completed.drain(..excess);
     let excess = state.abandoned.len().saturating_sub(RETAIN_ABANDONED);
     state.abandoned.drain(..excess);
+    prune_kinds(state);
+}
+fn prune_kinds(state: &mut State) {
+    let retained: Vec<_> = state
+        .completed
+        .iter()
+        .map(|d| (d.request.event_id.clone(), d.request.operation_id))
+        .chain(
+            state
+                .pending
+                .iter()
+                .map(|p| (p.event_id.clone(), p.operation_id)),
+        )
+        .collect();
+    state.prepared_kinds.retain(|saved| {
+        retained
+            .iter()
+            .any(|(event, operation)| *event == saved.event_id && *operation == saved.operation_id)
+    });
 }
 pub struct ContextJournal {
     directory: PathBuf,
@@ -381,6 +451,8 @@ impl ContextJournal {
                 completed: Vec::new(),
                 abandoned: Vec::new(),
                 observation_watermarks: Vec::new(),
+                declared_resets: Vec::new(),
+                prepared_kinds: Vec::new(),
             });
         }
         private_metadata(&path, false)?;
@@ -403,6 +475,16 @@ impl ContextJournal {
             || state.seat != self.seat
             || state.completed.len() > MAX_HISTORY
             || state.abandoned.len() > MAX_HISTORY
+            || state.declared_resets.len() > 32
+            || state.declared_resets.iter().any(|r| {
+                !valid_text(&r.target)
+                    || !valid_text(&r.session)
+                    || !valid_text(&r.event_key)
+                    || r.process_nonce.is_nil()
+                    || r.sequence == 0
+                    || r.generation == 0
+                    || r.observed_at_millis < 0
+            })
             || state.observation_watermarks.len() > RETAIN_COMPLETED
             || state
                 .observation_watermarks
@@ -410,6 +492,26 @@ impl ContextJournal {
                 .any(|w| w.process_nonce.is_nil() || w.sequence == 0 || w.observed_at_millis < 0)
         {
             return Err(ContextError::Corrupt);
+        }
+        if state.prepared_kinds.len() > MAX_HISTORY + 1 {
+            return Err(ContextError::Corrupt);
+        }
+        for (index, saved) in state.prepared_kinds.iter().enumerate() {
+            let request =
+                Self::request_in_state(&state, &saved.event_id).ok_or(ContextError::Corrupt)?;
+            if saved.operation_id != request.operation_id
+                || saved.request_digest != request_digest(request, saved.kind)?
+                || saved.kind.mode() != request.mode
+                || !matches!(
+                    saved.kind,
+                    EventKind::Startup | EventKind::Clear | EventKind::Tool
+                )
+                || state.prepared_kinds[..index].iter().any(|other| {
+                    other.event_id == saved.event_id || other.operation_id == saved.operation_id
+                })
+            {
+                return Err(ContextError::Corrupt);
+            }
         }
         if let Some(c) = &state.current {
             self.validate_context(c)
@@ -671,6 +773,25 @@ impl ContextJournal {
         let state = self.load()?;
         Ok(Self::request_in_state(&state, event_id).cloned())
     }
+    pub fn prepared_kind_for_event(&self, event_id: &str) -> Result<EventKind, ContextError> {
+        if !valid_text(event_id) {
+            return Err(ContextError::Invalid);
+        }
+        let _lock = self.lock()?;
+        let state = self.load()?;
+        let request = Self::request_in_state(&state, event_id).ok_or(ContextError::Invalid)?;
+        state
+            .prepared_kinds
+            .iter()
+            .find(|saved| {
+                saved.event_id == event_id
+                    && saved.operation_id == request.operation_id
+                    && saved.request_digest
+                        == request_digest(request, saved.kind).unwrap_or_default()
+            })
+            .map(|saved| saved.kind)
+            .ok_or(ContextError::Invalid)
+    }
     /// Read an immutable completed CheckIn even after its delivery intent was
     /// removed by a successful output flush.
     pub fn completed_for_event(
@@ -718,6 +839,112 @@ impl ContextJournal {
         self.validate_request(&request)?;
         self.prepare_locked(&mut state, request.clone())?;
         Ok(request)
+    }
+    /// Open only existing private state; an observer never creates a context.
+    pub fn open_existing(
+        directory: &Path,
+        instance: Uuid,
+        timeout: Duration,
+    ) -> Result<Option<Self>, ContextError> {
+        private_metadata(directory, true)?;
+        check_ancestors(directory)?;
+        let path = directory.join("context.json");
+        if !path.try_exists()? {
+            return Ok(None);
+        }
+        private_metadata(&path, false)?;
+        private_metadata(&directory.join("context.lock"), false)?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        secure_options(&mut options);
+        let mut bytes = Vec::new();
+        options
+            .open(path)?
+            .take((MAX_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > MAX_BYTES {
+            return Err(ContextError::TooLarge);
+        }
+        let state: State = serde_json::from_slice(&bytes).map_err(|_| ContextError::Corrupt)?;
+        let journal = Self::open(directory, instance, &state.seat, timeout)?;
+        journal.load()?;
+        Ok(Some(journal))
+    }
+    /// Cooperative metadata only. No predecessor, registration or authority is
+    /// inferred here; qualified preparation resolves it under this same lock.
+    pub fn record_declared_reset(
+        &self,
+        harness: Harness,
+        target: &str,
+        reset: &DeclaredReset,
+        now: i64,
+    ) -> Result<bool, ContextError> {
+        if qualified_policy(harness) != QualifiedTurnPolicy::StartupAttach {
+            return Ok(false);
+        }
+        if !valid_text(target) || !valid_text(&reset.session) || !valid_text(&reset.event_key) {
+            return Err(ContextError::Invalid);
+        }
+        reset.ordering.validate_deadline(now)?;
+        let _lock = self.lock()?;
+        let mut state = self.load()?;
+        let Some(current) = &state.current else {
+            return Ok(false);
+        };
+        if current.harness != harness
+            || current.target != target
+            || current.binding_generation == 0
+            || state.pending.is_some()
+        {
+            return Ok(false);
+        }
+        state
+            .declared_resets
+            .retain(|r| now.saturating_sub(r.observed_at_millis) <= RESET_HINT_TTL);
+        if state.declared_resets.iter().any(|r| {
+            r.event_key == reset.event_key
+                || (r.harness == harness
+                    && r.target == target
+                    && r.observed_at_millis > reset.ordering.observed_at_millis)
+        }) || state.observation_watermarks.iter().any(|w| {
+            w.harness == harness
+                && w.process_nonce == reset.ordering.process_nonce
+                && reset.ordering.sequence <= w.sequence
+        }) {
+            return Ok(false);
+        }
+        if state.declared_resets.len() >= 32 {
+            return Err(ContextError::TooLarge);
+        }
+        state.declared_resets.push(DeclaredResetHint {
+            harness,
+            target: target.into(),
+            session: reset.session.clone(),
+            event_key: reset.event_key.clone(),
+            process_nonce: reset.ordering.process_nonce,
+            sequence: reset.ordering.sequence,
+            observed_at_millis: reset.ordering.observed_at_millis,
+            generation: current.binding_generation,
+            consumed: false,
+        });
+        state.observation_watermarks.retain(|w| {
+            !(w.harness == harness && w.process_nonce == reset.ordering.process_nonce)
+                && now.saturating_sub(w.observed_at_millis) <= RETAIN_AGE_MILLIS
+        });
+        state.observation_watermarks.push(ObservationWatermark {
+            harness,
+            process_nonce: reset.ordering.process_nonce,
+            sequence: reset.ordering.sequence,
+            observed_at_millis: reset.ordering.observed_at_millis,
+        });
+        let excess = state
+            .observation_watermarks
+            .len()
+            .saturating_sub(RETAIN_COMPLETED);
+        state.observation_watermarks.drain(..excess);
+        prune_kinds(&mut state);
+        self.save(&state)?;
+        Ok(true)
     }
     /// Exact replay wins; selection and the bounded ordering watermark are saved
     /// together with the immutable request under the existing context lock.
@@ -769,6 +996,21 @@ impl ContextJournal {
                 return Err(ContextError::Conflict);
             }
         }
+        let reset_hint = state.declared_resets.iter().position(|r| {
+            !r.consumed
+                && r.harness == harness
+                && r.target == target
+                && r.session == turn.session
+                && now.saturating_sub(r.observed_at_millis) <= RESET_HINT_TTL
+                && state.current.as_ref().is_some_and(|c| {
+                    c.binding_generation == r.generation
+                        && c.session != SessionReference::Native(turn.session.clone())
+                })
+                && turn.ordering.as_ref().is_some_and(|o| {
+                    o.observed_at_millis >= r.observed_at_millis
+                        && (o.process_nonce != r.process_nonce || o.sequence > r.sequence)
+                })
+        });
         let kind = match state.current.as_ref() {
             None => EventKind::Startup,
             Some(current) => {
@@ -780,6 +1022,8 @@ impl ContextJournal {
                         return Err(ContextError::Conflict);
                     }
                     EventKind::Tool
+                } else if reset_hint.is_some() {
+                    EventKind::Clear
                 } else if let Some(reset) = &turn.reset {
                     if turn.ordering.is_none()
                         || current.session
@@ -788,6 +1032,8 @@ impl ContextJournal {
                         return Err(ContextError::Conflict);
                     }
                     EventKind::Clear
+                } else if qualified_policy(harness) == QualifiedTurnPolicy::StartupAttach {
+                    EventKind::Startup
                 } else {
                     return Err(ContextError::Conflict);
                 }
@@ -820,7 +1066,13 @@ impl ContextJournal {
                 .saturating_sub(RETAIN_COMPLETED);
             state.observation_watermarks.drain(..excess);
         }
-        self.prepare_locked(&mut state, request.clone())?;
+        if let Some(index) = reset_hint {
+            state.declared_resets[index].consumed = true;
+        }
+        state
+            .declared_resets
+            .retain(|r| now.saturating_sub(r.observed_at_millis) <= RESET_HINT_TTL);
+        self.prepare_locked_kind(&mut state, request.clone(), Some(kind))?;
         Ok(request)
     }
     fn request_in_state<'a>(state: &'a State, event_id: &str) -> Option<&'a PendingCheckIn> {
@@ -847,6 +1099,14 @@ impl ContextJournal {
         &self,
         state: &mut State,
         request: PendingCheckIn,
+    ) -> Result<(), ContextError> {
+        self.prepare_locked_kind(state, request, None)
+    }
+    fn prepare_locked_kind(
+        &self,
+        state: &mut State,
+        request: PendingCheckIn,
+        kind: Option<EventKind>,
     ) -> Result<(), ContextError> {
         if let Some(done) = state.completed.iter().find(|d| {
             d.request.event_id == request.event_id || d.request.operation_id == request.operation_id
@@ -918,7 +1178,16 @@ impl ContextJournal {
                 }
             }
         }
+        if let Some(kind) = kind {
+            state.prepared_kinds.push(PreparedKind {
+                event_id: request.event_id.clone(),
+                operation_id: request.operation_id,
+                request_digest: request_digest(&request, kind)?,
+                kind,
+            });
+        }
         state.pending = Some(request);
+        prune_kinds(state);
         // Reserve worst-case JSON byte-array output plus a complete returned
         // context, dropping the oldest completions (size retention) to make room.
         loop {
@@ -932,6 +1201,7 @@ impl ContextJournal {
                 return Err(ContextError::TooLarge);
             }
             state.completed.remove(0);
+            prune_kinds(state);
         }
         self.save(state)
     }
@@ -985,6 +1255,7 @@ impl ContextJournal {
         });
         state.pending = None;
         prune(&mut state, now_millis());
+        prune_kinds(&mut state);
         self.save(&state)?;
         Ok(response)
     }
@@ -1010,6 +1281,7 @@ impl ContextJournal {
         });
         state.pending = None;
         prune(&mut state, now_millis());
+        prune_kinds(&mut state);
         self.save(&state)?;
         Ok(Some(pending))
     }
@@ -1034,6 +1306,7 @@ impl ContextJournal {
         }
         state.current = Some(context);
         prune(&mut state, now_millis());
+        prune_kinds(&mut state);
         self.save(&state)?;
         Ok(abandoned)
     }
@@ -1047,6 +1320,7 @@ impl ContextJournal {
             return Ok(false);
         }
         state.current = None;
+        prune_kinds(&mut state);
         self.save(&state)?;
         Ok(true)
     }
@@ -1254,6 +1528,8 @@ mod identity_tests {
             completed: vec![],
             abandoned: vec![],
             observation_watermarks: vec![],
+            declared_resets: vec![],
+            prepared_kinds: vec![],
         };
         let bytes = serde_json::to_string(&state)
             .unwrap()

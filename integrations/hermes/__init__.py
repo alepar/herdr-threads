@@ -32,7 +32,7 @@ CHILD_RESTRICTION = "Subagents may discover, read and summarize; never check in 
 # First 16 SHA-256 hex chars of sorted compact JSON of the normalized schema
 # declaration in testdata/callbacks.json. This identifies transport, not the
 # downstream domain descriptor/qualification or native measurement.
-BRIDGE_CONTRACT = "d73f44f51c4ef9dd"
+BRIDGE_CONTRACT = "3f599002572f0efc"
 
 
 def opaque(value, empty=False, limit=256):
@@ -79,7 +79,9 @@ class NativeProvider:
             "hermes_bootstrap", "hermes_constants", "hermes_cli.profiles",
             "hermes_cli.version_info", "hermes_cli.config", "hermes_cli.plugins")}
         plugins = self.modules["hermes_cli.plugins"]
-        if plugins is None or not isinstance(ctx, getattr(plugins, "PluginContext", ())):
+        if (plugins is None or not isinstance(ctx, getattr(plugins, "PluginContext", ()))
+                or not callable(getattr(ctx, "register_hook", None))
+                or not callable(getattr(ctx, "on_unload", None))):
             raise ValueError("native_context_unavailable")
         self.version_api = getattr(self.modules["hermes_cli.version_info"], "get_version_info", None)
         self.profile_api = getattr(self.modules["hermes_cli.profiles"], "current_profile_name", None)
@@ -140,7 +142,9 @@ class NativeProvider:
         canonical = json.dumps({**descriptor, "schema_version": 1}, sort_keys=True,
                                separators=(",", ":"), ensure_ascii=False).encode()
         identity = {"key": "build:" + hashlib.sha256(canonical).hexdigest(), **descriptor}
-        return identity, {"interpreter": interpreter, "module_origins": origins,
+        return identity, {"identity_provenance": "startup_captured_identity",
+                          "api_contract": "initialized_plugin_context_schema1",
+                          "interpreter": interpreter, "module_origins": origins,
                           "profile": profile, "lexical_home": lexical_home,
                           "physical_home": str(Path(home).resolve(strict=True))}
 
@@ -244,7 +248,8 @@ class Reader:
                 return None
             return {"timeout_seconds": self.observed_timeout,
                     "age_seconds": age, "provenance": "official_effective_config_observation",
-                    "identity": self.identity, "generation": self.generation}
+                    "identity": self.identity, "generation": self.generation,
+                    "startup_capture": self.startup}
         finally:
             self.lock.release()
 
@@ -474,6 +479,13 @@ class Bridge:
                     "started_at": started_at, "deadline_at": started_at + budget_ms,
                     "reset_reason": "new_session" if name == "on_session_reset" else None,
                     "runtime_identity": observation["identity"], "identity_unavailable_reason": None,
+                    "startup_capture": observation["startup_capture"],
+                    "timeout_observation": {"quality": "ok", "fallback_kind": None,
+                        "provenance": observation["provenance"], "timeout_seconds": timeout,
+                        "age_seconds": observation["age_seconds"], "generation": observation["generation"]},
+                    "role_association": {"role": "top", "session_id": session, "turn_id": turn,
+                        "provenance": "explicit_parent" if name == "pre_llm_call" else "qualified_pre_llm_cache"}
+                        if name in ("pre_llm_call", "post_tool_call") else None,
                     "shape": shape(kwargs), "bridge_schema_contract_id": BRIDGE_CONTRACT}
         encoded = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
         if len(encoded) > 65536 or not self.child_lock.acquire(blocking=False):

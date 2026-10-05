@@ -1011,6 +1011,79 @@ impl ProfileInspection<'_> {
     }
 }
 
+/// Actual completed-bootstrap discovery supplies asset scope, never admission.
+pub fn discover_selected_profile(
+    launcher: &Path,
+    helper: &Path,
+    profile: &str,
+    env: &crate::harness::adapter::SetupEnvironment,
+    budget: &crate::protocol::time::CallBudget,
+) -> Result<ProfileObservation, ProbeFailure> {
+    let started = Instant::now();
+    let machine =
+        capture_machine_metadata(launcher, helper, profile, env, budget)?.machine_metadata;
+    let interpreter = machine
+        .interpreter
+        .canonicalize()
+        .map_err(|_| ProbeFailure::Unavailable("interpreter_unavailable".into()))?;
+    check_budget(env.clock.as_ref(), budget, started)?;
+    let request = serde_json::json!({"mode":"discover_selected_profile","interpreter":interpreter,"profile":profile});
+    let mut command = Command::new(&machine.interpreter);
+    command
+        .args(&machine.argv[1..])
+        .env_clear()
+        .envs(&env.declared)
+        .env("HOME", env.home.as_ref().ok_or(ProbeFailure::Malformed)?)
+        .env("HERDR_HERMES_INSPECTION_SCOPE", request.to_string())
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .current_dir(&env.cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    if let Some(path) = &env.path {
+        command.env("PATH", path);
+    }
+    #[cfg(feature = "test-support")]
+    crate::test_support::spawn::tag(&mut command);
+    let bytes = run_capture(command, env.clock.as_ref(), budget, started)?;
+    let observed = decode_discovered_profile(&bytes, &interpreter, profile)?;
+    check_budget(env.clock.as_ref(), budget, started)?;
+    Ok(observed)
+}
+/// Root/home are internally consistent produced observations, not caller input.
+pub fn decode_discovered_profile(
+    bytes: &[u8],
+    interpreter: &Path,
+    profile: &str,
+) -> Result<ProfileObservation, ProbeFailure> {
+    if bytes.len() > 16384 || !absolute(interpreter) || !safe(profile, 256) {
+        return Err(ProbeFailure::Malformed);
+    }
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| ProbeFailure::Malformed)?;
+    let (root, home) = if value["status"] == "unavailable" {
+        ("/unavailable", "/unavailable")
+    } else {
+        (
+            value["source_root"]
+                .as_str()
+                .ok_or(ProbeFailure::Malformed)?,
+            value["home"].as_str().ok_or(ProbeFailure::Malformed)?,
+        )
+    };
+    decode_profile_observation(
+        bytes,
+        &MetadataScope {
+            interpreter: interpreter.into(),
+            source_root: root.into(),
+            profile: profile.into(),
+            home: home.into(),
+        },
+    )
+}
+
 /// Capture official argv, then execute it unchanged under ONE caller budget.
 /// No native call is performed by decoding, and no result grants admission.
 pub fn observe_selected_profile(
@@ -1056,6 +1129,19 @@ pub fn observe_selected_profile(
 #[cfg(test)]
 mod profile_observation_tests {
     use super::*;
+    #[test]
+    fn discovered_profile_observation_needs_no_prior_root_or_home() {
+        let bytes = include_bytes!("../../../tests/fixtures/hermes/plugin-assets.json");
+        let result = decode_discovered_profile(
+            bytes,
+            Path::new("/fixture/store python/bin/python3"),
+            "default",
+        );
+        assert!(
+            result.is_ok(),
+            "selected-scope producer requires unavailable prior root/home"
+        );
+    }
     #[test]
     fn startup_profile_schema_is_separate_from_legacy_qualification() {
         let bytes = include_bytes!("../../../tests/fixtures/hermes/plugin-assets.json");

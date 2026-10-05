@@ -400,6 +400,17 @@ pub fn prepare_event_as(
     validate_event(&request, event)?;
     Ok(Some(request))
 }
+/// Observer-only local hint, never a native predecessor or canonical claim.
+pub fn record_declared_reset(
+    contexts: &ContextJournal,
+    harness: crate::harness::context::Harness,
+    target: &str,
+    reset: &crate::harness::context::DeclaredReset,
+    now: i64,
+) -> Result<bool, ContextError> {
+    contexts.record_declared_reset(harness, target, reset, now)
+}
+
 /// Durable adapter-neutral observed turn. Selection does not imply resume or
 /// authorize a seat; the resulting ordinary command retains all daemon guards.
 pub fn prepare_qualified_turn(

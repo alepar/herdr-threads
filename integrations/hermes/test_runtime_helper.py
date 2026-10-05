@@ -43,19 +43,32 @@ class RuntimeHelperTests(unittest.TestCase):
         self.home = self.root / "home with Ω"
         (self.home / "profiles" / "work").mkdir(parents=True)
 
-    def probe(self, profile="default", **extra):
+    def probe(self, profile="default", discovery=False, **extra):
         env = {"HOME": str(self.root), "HERMES_HOME": str(self.home),
                "FIXTURE_HOME": str(self.home), "FIXTURE_DEP": str(self.selected),
                "PYTHONDONTWRITEBYTECODE": "1", **extra}
         env["HERDR_HERMES_INSPECTION_SCOPE"] = json.dumps({
             "interpreter": str(Path(sys.executable).resolve()), "source_root": str(self.native),
             "profile": profile, "home": str(self.home if profile == 'default' else self.home / 'profiles' / profile)})
+        if discovery:
+            env["HERDR_HERMES_INSPECTION_SCOPE"] = json.dumps({"mode":"discover_selected_profile", "interpreter":str(Path(sys.executable).resolve()), "profile":profile})
         child = subprocess.run([sys.executable, "-I", "-c", BOOT.format(root=str(self.native)),
                                 "--count", "--no-report", str(HELPER), "--profile", profile],
                                env=env, capture_output=True, timeout=5)
         self.assertEqual(child.returncode, 0, child.stderr.decode())
         self.assertLessEqual(len(child.stdout), 16384)
         return json.loads(child.stdout)
+
+    def test_discovery_produces_actual_root_and_named_home_without_prior_scope(self):
+        result = self.probe("work", discovery=True)
+        self.assertEqual(result["status"], "observed", "actual-scope discovery producer is missing")
+        self.assertEqual(result["source_root"], str(self.native))
+        self.assertEqual(result["home"], str(self.home / "profiles/work"))
+        self.assertEqual(self.probe("missing", discovery=True)["status"], "unavailable")
+        failed = self.probe(discovery=True, FIXTURE_FAILED="1")
+        self.assertEqual(failed["config_quality"], "failed_config_read")
+        self.assertIsNone(failed["fallback_kind"])
+        self.assertIsNone(failed["enabled"])
 
     def test_official_profile_result_preserves_selected_home_and_config_observation(self):
         # A helper that stays unsupported, uses default for named selection, or
