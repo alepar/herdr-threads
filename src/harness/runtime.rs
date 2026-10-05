@@ -74,9 +74,12 @@ pub(crate) fn token(value: &str, max: usize) -> bool {
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
+pub(crate) fn source_token(value: &str) -> bool {
+    token(value, 32) || value == "commit-build"
+}
 impl RuntimeDescriptor {
     pub fn validate(&self) -> Result<(), String> {
-        if !token(&self.source, 32) {
+        if !source_token(&self.source) {
             return Err("invalid runtime source".into());
         }
         for value in [
@@ -192,6 +195,45 @@ mod tests {
             commit: Some("37daf85b2ad0ee50ed45d7234dc47b7fa24cec09".into()),
             dirty: Some(false),
             distance: Some(3962),
+        }
+    }
+    #[test]
+    fn native_commit_build_source_keeps_exact_hash_and_roundtrip() {
+        let descriptor = RuntimeDescriptor {
+            release_version: None,
+            source: "commit-build".into(),
+            base_version: Some("0.21.5".into()),
+            derived_version: Some("0.21.5+1.g1234567".into()),
+            commit: Some("1234567890abcdef1234567890abcdef12345678".into()),
+            dirty: Some(false),
+            distance: Some(1),
+        };
+        let identity = RuntimeIdentity::build(descriptor)
+            .expect("official commit-build source must remain exact");
+        assert_eq!(identity.source, "commit-build");
+        assert_eq!(
+            identity.key,
+            "build:76cb14547ac985845e53ff3fe103c2dbe4133ff0f316bdca467a18800b214c4d"
+        );
+        assert_eq!(
+            serde_json::from_str::<RuntimeIdentity>(&serde_json::to_string(&identity).unwrap())
+                .unwrap(),
+            identity
+        );
+        assert_eq!(identity.release(), None);
+        assert!(
+            !token("commit-build", 32),
+            "source exception must not widen generic domain grammar"
+        );
+        for source in [
+            "other-build",
+            "commit-buildx",
+            "COMMIT-build",
+            "commit-build\n",
+        ] {
+            let mut invalid = identity.descriptor.clone();
+            invalid.source = source.into();
+            assert!(RuntimeIdentity::build(invalid).is_err());
         }
     }
     #[test]

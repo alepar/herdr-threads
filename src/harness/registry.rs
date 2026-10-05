@@ -175,6 +175,9 @@ trait ErasedAdapter: Send + Sync {
     fn receipt_admission_summary(&self) -> Option<String>;
     fn output_policy(&self) -> OutputPolicy;
     fn legacy_contract_id(&self) -> Option<String>;
+    fn callback_admission(&self) -> bool;
+    fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy;
+    fn evidence_observations(&self, input: &HookInput) -> Vec<EvidenceProjection>;
     fn contracts(&self) -> &'static [ContractDescriptor];
     fn observe_install(&self, env: &InstallEnvironment, budget: &CallBudget) -> InstallObservation;
     fn observation_fingerprint(&self, env: &InstallEnvironment) -> Option<String>;
@@ -256,6 +259,15 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
     }
     fn output_policy(&self) -> OutputPolicy {
         self.0.output_policy()
+    }
+    fn callback_admission(&self) -> bool {
+        self.0.callback_admission()
+    }
+    fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy {
+        self.0.qualified_turn_policy()
+    }
+    fn evidence_observations(&self, input: &HookInput) -> Vec<EvidenceProjection> {
+        self.0.evidence_observations(input)
     }
     fn contracts(&self) -> &'static [ContractDescriptor] {
         self.0.contracts()
@@ -443,6 +455,45 @@ impl Registration {
             return Ladder::Admitted;
         }
         self.adapter.version_ladder(identity)
+    }
+    pub fn callback_admission(&self) -> bool {
+        self.adapter.callback_admission()
+    }
+    pub fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy {
+        self.adapter.qualified_turn_policy()
+    }
+    pub fn evidence_observations(
+        &self,
+        input: &HookInput,
+    ) -> Result<Vec<EvidenceProjection>, String> {
+        let projected = self.adapter.evidence_observations(input);
+        let mut seen = std::collections::HashSet::new();
+        if projected.is_empty() || projected.len() > 8 {
+            return Err("unbounded evidence projection".into());
+        }
+        for p in &projected {
+            let d = self
+                .contracts()
+                .iter()
+                .find(|d| {
+                    d.domain == p.domain
+                        && d.origin == p.origin
+                        && d.contract_id_v2().ok().as_deref() == Some(p.contract_id.as_str())
+                })
+                .ok_or("undeclared evidence projection")?;
+            if !seen.insert(d.domain_id) {
+                return Err("duplicate evidence projection".into());
+            }
+            let event = match p.classification {
+                crate::harness::contract::Classification::Ok { event }
+                | crate::harness::contract::Classification::Violation { event, .. } => Some(event),
+                _ => None,
+            };
+            if event.is_some_and(|e| d.event(e).is_none()) {
+                return Err("undeclared evidence event".into());
+            }
+        }
+        Ok(projected)
     }
     pub fn classify(&self, input: &HookInput) -> ContractObservation {
         self.adapter.classify(input)
@@ -732,7 +783,7 @@ impl Registry {
             if m.runtime_sources.len() > 8
                 || m.runtime_sources
                     .iter()
-                    .any(|source| !super::runtime::token(source, 32))
+                    .any(|source| !super::runtime::source_token(source))
                 || m.runtime_sources
                     .iter()
                     .collect::<std::collections::HashSet<_>>()
@@ -831,6 +882,7 @@ pub fn builtins() -> &'static Registry {
             vec![
                 Registration::new(&crate::harness::claude::ClaudeAdapter),
                 Registration::new(&crate::harness::codex::CodexAdapter),
+                Registration::new(&crate::harness::hermes::HermesAdapter),
             ]
             .into_boxed_slice(),
         );

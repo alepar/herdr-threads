@@ -1208,6 +1208,7 @@ fn pending_event(pending: &PendingCheckIn) -> LifecycleEvent {
 /// Bridge text, fallback read argv, digest summary and the attention mark to
 /// commit once the text is delivered.
 struct CheckedIn {
+    prepared_kind: Option<EventKind>,
     text: Vec<u8>,
     fallback: Vec<String>,
     summary: Option<String>,
@@ -1688,6 +1689,7 @@ impl PaneCall<'_> {
         let mut done = self
             .check_in_seat(&presented, &seat, reattached.binding_generation)
             .unwrap_or_else(|_| CheckedIn {
+                prepared_kind: None,
                 text: Vec::new(),
                 fallback: self.fallback_for(&seat),
                 summary: None,
@@ -1761,6 +1763,7 @@ impl PaneCall<'_> {
                 let text = render_context(event.role, &[], true)
                     .map_err(|e| Failure::Unavailable(format!("render: {e:?}")))?;
                 return Ok(CheckedIn {
+                    prepared_kind: None,
                     text: text.into_bytes(),
                     fallback,
                     summary: None,
@@ -1771,6 +1774,7 @@ impl PaneCall<'_> {
                 });
             }
             return Ok(CheckedIn {
+                prepared_kind: None,
                 text: Vec::new(),
                 fallback,
                 summary: None,
@@ -1812,6 +1816,7 @@ impl PaneCall<'_> {
                 token,
             });
             return Ok(CheckedIn {
+                prepared_kind: None,
                 actions: Some(next_actions(&prefix, boundary.digest.as_ref())),
                 text: boundary.text,
                 fallback,
@@ -2183,6 +2188,20 @@ fn lifecycle_check_in(
     let summary =
         bridge::join_summaries(seeded.as_ref().map(|(_, digest)| digest.summary()), notices);
     let actions = next_actions(&prefix, seeded.as_ref().map(|(_, digest)| digest));
+    let prepared_kind = if turn.is_some()
+        && registration_for(event.harness)
+            .is_ok_and(|registration| registration.callback_admission())
+    {
+        Some(
+            contexts
+                .prepared_kind_for_event(&event.event_id)
+                .map_err(|e| {
+                    Failure::Unavailable(format!("qualified result kind unavailable: {e:?}"))
+                })?,
+        )
+    } else {
+        None
+    };
     let attention = seeded.map(|(execution, digest)| {
         let token = owned
             .attention_mark(execution)
@@ -2194,6 +2213,7 @@ fn lifecycle_check_in(
         }
     });
     Ok(CheckedIn {
+        prepared_kind,
         text,
         fallback,
         summary,
@@ -2219,31 +2239,69 @@ pub fn run_hook(
         Ok(registration) => registration,
         Err(detail) => return quiet_outcome(detail),
     };
-    let installed = installed_observation(installed);
+    run_hook_registered(
+        registration,
+        args,
+        installed,
+        stdin,
+        env,
+        deadline,
+        clock,
+        ensure_executable,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_hook_registered(
+    registration: &'static Registration,
+    args: &HookArgs,
+    installed: &InstalledHarness,
+    stdin: &[u8],
+    env: &HookEnv,
+    deadline: Instant,
+    clock: Arc<dyn Clock>,
+    ensure_executable: Option<&Path>,
+) -> HookOutcome {
+    if registration.callback_admission() && (!env.herdr_env || env.pane.is_none()) {
+        return HookOutcome::default();
+    }
+    let input = HookInput {
+        bytes: stdin.to_vec(),
+        registered_event: args.event.clone(),
+    };
+    let installed = if registration.callback_admission() {
+        InstallObservation::Unsupported(UnsupportedOperation {
+            adapter: registration.metadata().id,
+            operation: "callback startup identity",
+        })
+    } else {
+        installed_observation(installed)
+    };
     let request = AdmissionRequest {
         installed,
-        input: None,
+        input: registration.callback_admission().then(|| HookInput {
+            bytes: input.bytes.clone(),
+            registered_event: input.registered_event.clone(),
+        }),
         runtime_candidate: None,
     };
     let admitted = match registration.admit(&request, &budget(deadline, clock.as_ref())) {
         Ok(handle) => handle,
         Err(error) => return quiet_outcome(error.to_string()),
     };
-    let input = HookInput {
-        bytes: stdin.to_vec(),
-        registered_event: args.event.clone(),
-    };
     let decoded = match registration.decode(&admitted, &input) {
         Ok(event) => event,
         Err(error) => {
-            report_parse_failure_to_daemon(
-                args,
-                installed_compat(&request.installed).as_ref().unwrap(),
-                &native_decode_error(&error),
-                env,
-                deadline,
-                clock,
-            );
+            if let Some(installed) = installed_compat(&request.installed) {
+                report_parse_failure_to_daemon(
+                    args,
+                    &installed,
+                    &native_decode_error(&error),
+                    env,
+                    deadline,
+                    clock,
+                );
+            }
             return quiet_outcome(format!("unsupported hook payload: {error:?}"));
         }
     };
@@ -2287,6 +2345,21 @@ fn output_bytes(output: Result<EncodedOutput, EncodeFailure>) -> (Vec<u8>, bool,
         Err(error) => (vec![], false, Some(error.to_string())),
     }
 }
+/// Encode only the immutable prepared kind; retain the callback's original
+/// admission handle, role, runtime and output eligibility.
+pub(crate) fn encode_prepared_result(
+    registration: &'static Registration,
+    admitted: &crate::harness::registry::AdmittedHandle,
+    decoded: &DecodedEvent,
+    prepared_kind: Option<EventKind>,
+    context: String,
+) -> (Vec<u8>, bool, Option<String>) {
+    let mut encoding_event = decoded.clone();
+    if let Some(kind) = prepared_kind {
+        encoding_event.intent = EventIntent::Lifecycle(kind);
+    }
+    output_bytes(registration.encode(admitted, &encoding_event, &neutral_offer(context)))
+}
 fn quiet_outcome(detail: String) -> HookOutcome {
     HookOutcome {
         stdout: vec![],
@@ -2318,6 +2391,67 @@ fn child_endpoint_available(args: &HookArgs) -> bool {
     };
     read_descriptor(&paths, instance)
         .is_ok_and(|descriptor| crate::daemon::lifecycle::check_protocol(&descriptor).is_ok())
+}
+fn record_observer_reset(
+    args: &HookArgs,
+    decoded: &DecodedEvent,
+    env: &HookEnv,
+    deadline: Instant,
+    clock: &dyn Clock,
+) {
+    let EventIntent::DeclaredReset(reset) = &decoded.intent else {
+        return;
+    };
+    let Some(target) = env.pane.as_deref() else {
+        return;
+    };
+    let Ok(context) =
+        RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
+    else {
+        return;
+    };
+    let Ok(paths) = InstancePaths::resolve_read_only(&context) else {
+        return;
+    };
+    let Ok(Some(instance)) = read_existing_namespace(&paths) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(paths.instance_dir.join("contexts")) else {
+        return;
+    };
+    let mut matching = None;
+    for (index, entry) in entries.enumerate() {
+        if index >= 256 || Instant::now() >= deadline {
+            return;
+        }
+        let Ok(entry) = entry else {
+            return;
+        };
+        let Ok(Some(journal)) = crate::harness::context::ContextJournal::open_existing(
+            &entry.path(),
+            instance,
+            deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(50)),
+        ) else {
+            continue;
+        };
+        if journal
+            .current_snapshot()
+            .ok()
+            .flatten()
+            .is_some_and(|c| c.harness == args.harness && c.target == target)
+        {
+            if matching.is_some() {
+                return;
+            }
+            matching = Some(journal);
+        }
+    }
+    if let Some(journal) = matching {
+        let _ =
+            bridge::record_declared_reset(&journal, args.harness, target, reset, clock.utc_now().0);
+    }
 }
 /// Executes adapter-normalized intent. Ineligible callbacks never reach seat resolution.
 #[allow(clippy::too_many_arguments)]
@@ -2391,6 +2525,10 @@ fn run_admitted_hook_since(
     if !env.herdr_env || env.pane.is_none() {
         return quiet_outcome("not running inside a Herdr pane".into());
     }
+    if matches!(decoded.intent, EventIntent::DeclaredReset(_)) {
+        record_observer_reset(args, decoded, env, deadline, clock.as_ref());
+        return HookOutcome::default();
+    }
     if matches!(decoded.role, EventRole::Unknown)
         || matches!(decoded.delivery, DeliveryEligibility::Ineligible)
     {
@@ -2461,6 +2599,7 @@ fn run_admitted_hook_since(
         ensure_executable,
     ) {
         Ok(CheckedIn {
+            prepared_kind,
             text,
             fallback,
             summary,
@@ -2481,7 +2620,7 @@ fn run_admitted_hook_since(
                 recovery.as_ref(),
             );
             let (stdout, consumes, diagnostic) =
-                output_bytes(registration.encode(admitted, decoded, &neutral_offer(context)));
+                encode_prepared_result(registration, admitted, decoded, prepared_kind, context);
             HookOutcome {
                 stdout,
                 diagnostic,
@@ -2710,6 +2849,15 @@ pub fn run_process_with(
         tool_budget,
         |observe_budget| {
             let registration = registration_for(args.harness)?;
+            if registration.callback_admission() {
+                return Ok((
+                    registration,
+                    InstallObservation::Unsupported(UnsupportedOperation {
+                        adapter: registration.metadata().id,
+                        operation: "callback startup identity",
+                    }),
+                ));
+            }
             let observation = registration.observe_install(
                 &InstallEnvironment {
                     path: std::env::var_os("PATH"),
@@ -2737,7 +2885,10 @@ pub fn run_process_with(
                 };
                 let request = AdmissionRequest {
                     installed: observation,
-                    input: None,
+                    input: registration.callback_admission().then(|| HookInput {
+                        bytes: input.bytes.clone(),
+                        registered_event: input.registered_event.clone(),
+                    }),
                     runtime_candidate: None,
                 };
                 let admitted = match registration

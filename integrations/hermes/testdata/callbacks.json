@@ -87,7 +87,10 @@
       "runtime_identity": "object_or_null",
       "identity_unavailable_reason": "string_or_null",
       "shape": "object",
-      "bridge_schema_contract_id": "string"
+      "bridge_schema_contract_id": "string",
+      "startup_capture": "object",
+      "timeout_observation": "object",
+      "role_association": "object_or_null"
     },
     "shape_fields": [
       "api_request_id",
@@ -113,5 +116,5 @@
       "string"
     ]
   },
-  "bridge_schema_contract_id": "d73f44f51c4ef9dd"
+  "bridge_schema_contract_id": "3f599002572f0efc"
 }

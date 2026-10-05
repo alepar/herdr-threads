@@ -780,92 +780,106 @@ fn run_v2(
         bytes: stdin.to_vec(),
         registered_event: registered_event.map(str::to_owned),
     };
-    let observed = registration.classify(&input);
-    let Some(descriptor) = registration
-        .contracts()
-        .iter()
-        .find(|d| d.domain == observed.domain)
-    else {
-        return Delivery::Unsupported;
+    let projections = match registration.evidence_observations(&input) {
+        Ok(p) => p,
+        Err(_) => return Delivery::Unsupported,
     };
     let payload: Option<Value> = (stdin.len() <= contract::MAX_PAYLOAD)
         .then(|| serde_json::from_slice(stdin).ok())
         .flatten()
         .filter(Value::is_object);
-    let (event, outcome) = match observed.classification {
-        Classification::Ok { event } => (event.to_owned(), Outcome::Ok),
-        Classification::Violation { event, field } => (
-            event.to_owned(),
-            Outcome::Violation {
-                field: field.into(),
-            },
-        ),
-        Classification::Malformed(_) => (
-            registered_event
-                .or_else(|| {
-                    payload
-                        .as_ref()?
-                        .get(descriptor.contract.discriminator)?
-                        .as_str()
-                })
-                .unwrap_or("unknown")
-                .to_owned(),
-            Outcome::Malformed,
-        ),
-    };
     let (runtime, unavailable_reason) = match registration.attribute_runtime(&input, budget) {
-        RuntimeAttribution::Attributed(identity) => (Some(identity), None),
+        RuntimeAttribution::Attributed(r) => (Some(r), None),
         RuntimeAttribution::Unavailable { diagnostic } => (None, Some(diagnostic)),
     };
-    let Ok(contract_id) = descriptor.contract_id_v2() else {
-        return Delivery::Unsupported;
-    };
-    let qualifications = match runtime.as_ref() {
-        Some(runtime) => match registration.evidence_qualifications(
-            &crate::harness::adapter::EvidenceQualificationRequest {
-                input: &input,
-                runtime,
-                descriptor,
+    let mut notes = Vec::new();
+    // Validate ALL projections before connecting or advancing any domain hint.
+    for projection in projections {
+        let Some(descriptor) = registration.contracts().iter().find(|d| {
+            d.domain == projection.domain
+                && d.origin == projection.origin
+                && d.contract_id_v2().ok().as_deref() == Some(projection.contract_id.as_str())
+        }) else {
+            return Delivery::Unsupported;
+        };
+        let (event, outcome) = match projection.classification {
+            Classification::Ok { event } => (event.to_owned(), Outcome::Ok),
+            Classification::Violation { event, field } => (
+                event.to_owned(),
+                Outcome::Violation {
+                    field: field.into(),
+                },
+            ),
+            Classification::Malformed(_) => (
+                registered_event
+                    .or_else(|| {
+                        payload
+                            .as_ref()?
+                            .get(descriptor.contract.discriminator)?
+                            .as_str()
+                    })
+                    .unwrap_or("unknown")
+                    .into(),
+                Outcome::Malformed,
+            ),
+        };
+        let qualifications = match runtime.as_ref() {
+            Some(runtime) => match registration.evidence_qualifications(
+                &crate::harness::adapter::EvidenceQualificationRequest {
+                    input: &input,
+                    runtime,
+                    descriptor,
+                },
+                budget,
+            ) {
+                Ok(f) => f,
+                Err(_) => return Delivery::Unsupported,
             },
-            budget,
-        ) {
-            Ok(facts) => facts,
-            Err(_) => return Delivery::Unsupported,
-        },
-        None => Vec::new(),
-    };
-    let note = HarnessEvidenceV2 {
-        harness: registration.metadata().id.into(),
-        domain: descriptor.domain_id.into(),
-        origin: descriptor.origin,
-        runtime,
-        unavailable_reason,
-        contract_id,
-        event,
-        outcome,
-        session_id: payload
-            .as_ref()
-            .and_then(|p| p.get("session_id"))
-            .and_then(Value::as_str)
-            .filter(|s| crate::harness::runtime::printable(s, 256))
-            .map(str::to_owned),
-        qualifications,
-    };
-    if note.validate().is_err() {
-        return Delivery::Unsupported;
+            None => Vec::new(),
+        };
+        let note = HarnessEvidenceV2 {
+            harness: registration.metadata().id.into(),
+            domain: descriptor.domain_id.into(),
+            origin: descriptor.origin,
+            runtime: runtime.clone(),
+            unavailable_reason: unavailable_reason.clone(),
+            contract_id: projection.contract_id,
+            event,
+            outcome,
+            session_id: payload
+                .as_ref()
+                .and_then(|p| p.get("session_id"))
+                .and_then(Value::as_str)
+                .filter(|s| crate::harness::runtime::printable(s, 256))
+                .map(str::to_owned),
+            qualifications,
+        };
+        if note.validate().is_err() {
+            return Delivery::Unsupported;
+        }
+        notes.push((descriptor, note));
     }
     if let Some(state) = state_dir {
         prune(&v2_gate_dir(state), now_ms);
     }
-    let key = V2GateKey::from_note(&note);
-    let gate_file = state_dir
-        .zip(note.session_id.as_ref())
-        .map(|(state, _)| (state, key.path(state)));
-    let gate = gate_file.as_ref().map_or_else(
-        || V2GateState::fresh(key.clone()),
-        |(_, path)| V2GateState::read(path, key.clone()),
-    );
-    if !gate.should_send(descriptor, &note, now_ms) {
+    let mut pending = Vec::new();
+    let mut all_verified = true;
+    for (descriptor, note) in notes {
+        let key = V2GateKey::from_note(&note);
+        let gate_file = state_dir
+            .zip(note.session_id.as_ref())
+            .map(|(state, _)| (state, key.path(state)));
+        let gate = gate_file.as_ref().map_or_else(
+            || V2GateState::fresh(key.clone()),
+            |(_, path)| V2GateState::read(path, key.clone()),
+        );
+        if gate.should_send(descriptor, &note, now_ms) {
+            pending.push((descriptor, note, gate_file, gate));
+        } else {
+            all_verified &= gate.verified;
+        }
+    }
+    if pending.is_empty() {
         return Delivery::Suppressed;
     }
     if budget.is_exhausted(clock) {
@@ -877,22 +891,36 @@ fn run_v2(
     if !capabilities.supports(HARNESS_EVIDENCE_V2) {
         return Delivery::Unsupported;
     }
-    if budget.is_exhausted(clock) {
-        return Delivery::Unavailable;
-    }
-    let reply = client.call(Command::HarnessEvidenceV2(note.clone()), budget);
-    let verified = match reply {
-        Ok(CommandResult::HarnessEvidenceV2Recorded(recorded)) if !budget.is_exhausted(clock) => {
-            recorded.verified
+    let mut incomplete = false;
+    let mut sent = false;
+    for (descriptor, note, gate_file, gate) in pending {
+        if budget.is_exhausted(clock) {
+            return if sent {
+                Delivery::Sent(None)
+            } else {
+                Delivery::Unavailable
+            };
         }
-        _ => return Delivery::Sent(None),
-    };
-    if let Some((state, path)) = gate_file {
-        let _ = gate
-            .after_send(descriptor, &note, verified, now_ms)
-            .write(state, &path);
+        sent = true;
+        let verified = match client.call(Command::HarnessEvidenceV2(note.clone()), budget) {
+            Ok(CommandResult::HarnessEvidenceV2Recorded(recorded))
+                if !budget.is_exhausted(clock) =>
+            {
+                recorded.verified
+            }
+            _ => {
+                incomplete = true;
+                continue;
+            }
+        };
+        all_verified &= verified;
+        if let Some((state, path)) = gate_file {
+            let _ = gate
+                .after_send(descriptor, &note, verified, now_ms)
+                .write(state, &path);
+        }
     }
-    Delivery::Sent(Some(verified))
+    Delivery::Sent(if incomplete { None } else { Some(all_verified) })
 }
 
 fn unix_ms() -> u64 {
