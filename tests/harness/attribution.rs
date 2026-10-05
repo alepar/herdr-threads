@@ -595,3 +595,29 @@ fn symlinked_transcript_is_unreadable() {
         unattributable(Unattributed::Unreadable)
     );
 }
+
+// The optional creator reader stays usable; production never calls it current runtime.
+#[test]
+fn task3_versionless_codex_creator_is_not_current_runtime_even_at_startup() {
+    let transcript = fixture("codex-fresh.jsonl");
+    assert!(matches!(
+        attribute_transcript("codex", &transcript),
+        Attribution::Attributed { .. }
+    ));
+    for event in ["SessionStart", "PreToolUse"] {
+        let payload =
+            json!({"hook_event_name": event, "source": "startup", "transcript_path": transcript});
+        assert!(
+            matches!(
+                attribute_payload("codex", &payload),
+                Attribution::Unattributable { .. }
+            ),
+            "{event}"
+        );
+    }
+    let payload = json!({"hook_event_name": "SessionStart", "source": "resume", "transcript_path": transcript});
+    assert_eq!(
+        attribute_payload("codex", &payload),
+        unattributable(Unattributed::CodexResumed)
+    );
+}

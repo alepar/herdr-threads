@@ -5125,7 +5125,7 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
             "SELECT json_array(id,fetched_at,created_at) FROM summary_jobs ORDER BY id",
         ].into_iter().flat_map(|sql| db.prepare(sql).unwrap().query_map([], |r| r.get::<_,String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()).collect();
         let roots = db
-            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences') ORDER BY name")
+            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics') ORDER BY name")
             .unwrap()
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap()
@@ -5378,7 +5378,7 @@ fn archival_schema_upgrade_21_and_22_preserves_history_and_starts_unqualified() 
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            23
+            schema::LATEST_VERSION
         );
         // The bounded worker seeds historical rows. Migration cannot backdate eligibility.
         assert_eq!(
@@ -5445,4 +5445,47 @@ fn archival_schema_audit_preserves_case_sensitive_terminal_state_literals() {
         matches!(schema::initialize(&db,||UtcMillis(1)),Err(e) if e.code==ErrorCode::IncompatibleSchema),
         "uppercasing the state literal disables absorbing completion and must fail the audit"
     );
+}
+
+// Catches missing additive migration and accepting incomplete current schemas.
+#[test]
+fn task3_versionless_schema24_upgrades_preserves_history_and_audits_objects() {
+    let db = Connection::open_in_memory().unwrap();
+    schema::initialize(&db, || UtcMillis(1)).unwrap();
+    assert_eq!(
+        db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        24
+    );
+    db.execute_batch("INSERT INTO harness_version_evidence(harness,version,contract_id,first_seen_at,last_seen_at) VALUES ('codex','0.159.3','0123456789abcdef',1,2); DROP TABLE harness_contract_diagnostics; PRAGMA user_version=23;").unwrap();
+    schema::initialize(&db, || UtcMillis(3)).unwrap();
+    assert_eq!(
+        db.query_row("SELECT version FROM harness_version_evidence", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .unwrap(),
+        "0.159.3"
+    );
+    assert_eq!(
+        db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        24
+    );
+    db.execute_batch("DROP TABLE harness_contract_diagnostics")
+        .unwrap();
+    assert!(schema::initialize(&db, || UtcMillis(4)).is_err());
+}
+
+// Catches an altered current table or missing retention index accepted at v24.
+#[test]
+fn task3_versionless_schema24_rejects_altered_table_and_missing_index() {
+    for alteration in [
+        "DROP INDEX harness_contract_diagnostics_recent",
+        "DROP TABLE harness_contract_diagnostics; CREATE TABLE harness_contract_diagnostics(harness TEXT, session_id TEXT, contract_id TEXT, event TEXT, field TEXT, first_seen_at INTEGER, last_seen_at INTEGER)",
+    ] {
+        let db = Connection::open_in_memory().unwrap();
+        schema::initialize(&db, || UtcMillis(1)).unwrap();
+        db.execute_batch(alteration).unwrap();
+        assert!(schema::initialize(&db, || UtcMillis(2)).is_err());
+    }
 }

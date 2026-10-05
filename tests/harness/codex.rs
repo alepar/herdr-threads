@@ -1340,3 +1340,39 @@ fn cancelled_version_run_kills_the_hung_binary_promptly() {
         "hung child {pid} still alive"
     );
 }
+
+// Catches operational parsing that bypasses shape validation or claims native support.
+#[test]
+fn versionless_codex_contract_preserves_strict_shape_and_child_suppression() {
+    let contract = crate::harness::operational::CodexContract::registered();
+    let valid = pre_tool("s", "turn", "tool", "true");
+    let event = codex::parse_event_for_contract(&bytes(&valid), "event", &contract).unwrap();
+    assert_eq!(event.capability, Capability::ContractValidatedInput);
+    assert_eq!(event.kind, EventKind::Tool);
+    assert!(event.can_check_in());
+    let child = subagent_start("parent", "turn", "child", "worker");
+    let event = codex::parse_event_for_contract(&bytes(&child), "event", &contract).unwrap();
+    assert_eq!(event.role, Role::Subagent);
+    assert!(!event.can_check_in());
+    for key in [
+        "session_id",
+        "turn_id",
+        "tool_name",
+        "tool_use_id",
+        "tool_input",
+    ] {
+        let mut invalid = valid.clone();
+        invalid.as_object_mut().unwrap().remove(key);
+        assert!(
+            codex::parse_event_for_contract(&bytes(&invalid), "event", &contract).is_err(),
+            "{key}"
+        );
+    }
+    for command in [json!(null), json!(7), json!("bad\u{0000}command")] {
+        let mut invalid = valid.clone();
+        invalid["tool_input"]["command"] = command;
+        assert!(codex::parse_event_for_contract(&bytes(&invalid), "event", &contract).is_err());
+    }
+    assert!(codex::parse_event_for_contract(&bytes(&valid), "", &contract).is_err());
+    assert!(codex::parse_event_for_contract(&vec![b'x'; 65537], "event", &contract).is_err());
+}

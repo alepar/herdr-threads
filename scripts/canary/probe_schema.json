@@ -44,7 +44,7 @@
       }
     },
     "canaryProbe": {
-      "description": "<P>/canary-probe.json, written by harness-canary.sh from versions.py data (harness-versions.json or --versions-json; never --baseline).",
+      "description": "<P>/canary-probe.json, written by harness-canary.sh from versions.py data (harness-versions.json or --versions-json; never --baseline). expected_admission is the explicit historical ladder/schema diagnostic expectation for capture qualification; ordinary live/saved doctor core admission is checked separately and proves no exact runtime or native capability.",
       "type": "object", "additionalProperties": false,
       "required": ["harness", "version", "binary", "expected_admission"],
       "properties": {

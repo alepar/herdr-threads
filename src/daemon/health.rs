@@ -128,10 +128,9 @@ pub struct HealthInputs {
     /// Completion time of the deadline scheduler's last error-free pass;
     /// None until one completed in this daemon boot.
     pub last_scheduler_tick_at: Option<UtcMillis>,
-    /// The installed `codex` on the daemon's `PATH` and its admission line
-    /// (listed recipe, schema-matched and live-unverified, or refused).
+    /// Executable availability and declared core cooperation on daemon PATH.
     pub codex: HarnessStatus,
-    /// The installed `claude` on the daemon's `PATH` and its admission.
+    /// Claude executable availability and declared core cooperation on daemon PATH.
     pub claude: HarnessStatus,
     pub retirement: RetirementHealth,
     pub settings: Option<HealthSettings>,
@@ -155,8 +154,8 @@ pub struct HealthInputs {
     /// Guarded seat transitions the store refused during reconciliation since
     /// boot (skipped, never fatal).
     pub transitions_refused: u64,
-    /// The version verdict lines (`harness::state`): at most one per harness,
-    /// a `broken` version seen in the last 24 hours. Each is a limitation.
+    /// Actual contract failure lines: at most one per harness in the 24-hour
+    /// Health window. Metadata/version/manifest advice alone adds no limitation.
     /// When the evidence store could not be read this is the single
     /// [`HARNESS_EVIDENCE_UNAVAILABLE_LINE`] (see [`harness_version_lines`]),
     /// so Health is `degraded` rather than silently clean.
@@ -164,7 +163,7 @@ pub struct HealthInputs {
 }
 
 /// The limitation shown while the harness version evidence cannot be read.
-pub const HARNESS_EVIDENCE_UNAVAILABLE_LINE: &str = "harness version evidence unavailable: the evidence store could not be read, so a broken harness version would not show here";
+pub const HARNESS_EVIDENCE_UNAVAILABLE_LINE: &str = "harness contract diagnostics unavailable: the evidence store could not be read, so actual input failures would not show here";
 
 /// Health's version lines from the provider's answer: the lines as read, or
 /// the one unavailable limitation when the evidence store could not be read.
@@ -197,30 +196,10 @@ fn bounded(text: &str, limit: usize) -> String {
 /// execution is unverified.
 pub const COOPERATIVE_WAKE_LINE: &str = "wake cooperative: prompts only Herdr's detected idle/done claude or codex agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified";
 
-/// Health's note stating the cooperative receipt basis while a harness is
-/// `cooperative`: an admitted recipe, but no native-verified model receipt
-/// (no recipe proves one). accept/ACK work through the cooperative caller
-/// contract, recorded as `cooperative_top_level` provenance. The admitted
-/// versions are derived from the recipe tables (never written here); live
-/// demonstrations are recorded in docs/validation/report.md.
+/// Declared core contracts grant cooperative caller claims, never native receipt
+/// or exact-runtime qualification. Historical captures remain diagnostic evidence.
 pub fn cooperative_receipt_line() -> String {
-    use crate::harness::{claude, codex};
-    format!(
-        "receipt cooperative: an admitted recipe without native-verified receipt; accept/ACK is \
-         recorded as cooperative_top_level; admitted: claude {}, codex {}; live runs: \
-         docs/validation/report.md",
-        versions_of(claude::RECIPES),
-        versions_of(codex::RECIPES),
-    )
-}
-
-/// The recipes' version sets, `; `-joined in table order.
-fn versions_of<P>(table: &[crate::harness::recipe::Recipe<P>]) -> String {
-    table
-        .iter()
-        .map(|recipe| recipe.versions.to_string())
-        .collect::<Vec<_>>()
-        .join("; ")
+    "receipt cooperative: declared core contract; accept/ACK is recorded as cooperative_top_level; runtime and native model receipt unverified".into()
 }
 
 /// Health's limitation when the host offers neither native current-execution
@@ -301,25 +280,10 @@ fn push(lines: &mut Vec<String>, line: String) {
 
 /// The harness's limitation or note line.
 ///
-/// Inventory of version-related emitters (ht-xoc.5). Every version verdict now
-/// comes from `harness::state::derive`, through `harness_version_lines` (one
-/// line for a broken version, nothing for working or new); doctor carries the
-/// rest.
-/// - Optimistic admission note: removed (a new version is not a problem).
-/// - `Cooperative { live_unverified: true }` (schema-matched) limitation:
-///   removed, same reason.
-/// - `Cooperative` / `Supported` admission notes: removed; doctor states the
-///   admission and its source.
-/// - `Refused` for a version verdict (known broken, older than supported, no
-///   recipe admits it): now `VersionRefused`, rendered by nothing here; a
-///   below-floor or known-broken version reaches Health through its evidence.
-/// - `Refused` for an unobservable or unrecognizable `--version`: stays a
-///   limitation (it blocks the hook).
-/// - `Unknown` and `NotInstalled`: unchanged.
-/// - `hook_parse_failure_line` note: moved to doctor (the counter and the
-///   rate-limited log line stay; malformed payloads add no Health line).
-/// - `cooperative_receipt_line`: stays; it states the receipt basis, not a
-///   version verdict.
+/// Ordinary declared operation reports executable availability and cooperative
+/// claims. Metadata absence is informational; actual contract failures arrive
+/// separately through harness_version_lines. Historical admission variants remain
+/// available for explicit diagnostic callers, never ordinary runtime gates.
 fn harness_line(
     name: &str,
     status: &HarnessStatus,
@@ -329,13 +293,16 @@ fn harness_line(
     match status {
         HarnessStatus::Unknown => push(
             limitations,
-            format!("harness {name} unknown: the installed version has not been observed yet"),
+            format!("harness {name} unknown: executable availability has not been observed yet"),
         ),
         HarnessStatus::NotInstalled(detail) => {
             push(notes, format!("harness {name} not installed: {detail}"))
         }
         HarnessStatus::Refused(detail) => {
             push(limitations, format!("harness {name} unsupported: {detail}"))
+        }
+        HarnessStatus::Cooperative { detail, .. } if detail.contains("contract_declared") => {
+            push(notes, format!("harness {name}: {detail}"));
         }
         HarnessStatus::VersionRefused(_)
         | HarnessStatus::Cooperative { .. }

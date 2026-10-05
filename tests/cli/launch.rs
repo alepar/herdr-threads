@@ -495,10 +495,9 @@ fn claude_launch_inspects_the_resolved_config_dir_only() {
     assert!(host.submitted().is_empty());
 }
 
-/// Kills: skipping the installed-version recipe gate (nothing is observed,
-/// resolved or started for an uncovered version).
+/// Kills a residual version gate before hook inspection.
 #[test]
-fn uncovered_harness_version_refuses_before_any_host_or_seat_call() {
+fn uncovered_metadata_still_requires_owned_hooks() {
     let s = Scratch::new();
     s.harness("claude", "2.1.200 (Claude Code)", b"");
     let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
@@ -507,12 +506,11 @@ fn uncovered_harness_version_refuses_before_any_host_or_seat_call() {
             &host,
             &seats,
             &handoff,
-            request(ContextHarness::Claude, &[]),
+            request(ContextHarness::Claude, &[])
         )),
-        ErrorCode::UnsupportedHarness
+        ErrorCode::MissingHook
     );
-    assert_eq!(seats.calls.load(Ordering::SeqCst), 0);
-    assert_eq!(host.sequence.load(Ordering::SeqCst), 1);
+    assert!(host.submitted().is_empty());
 }
 
 /// A recovery-held target refuses through the ordinary resolver. Kills:
@@ -591,8 +589,7 @@ fn unknown_outcome_exits_five_and_keeps_handoff_discoverable() {
     assert_eq!(host.submitted().len(), 1);
 }
 
-/// Codex on a version whose sandbox default-deny was measured, set up at
-/// user level: the hooks and the socket allowance are on disk, so launch
+/// Codex set up at user level: owned hooks are on disk, so launch
 /// adds no hook or sandbox arguments, keeps the caller's unchanged and adds
 /// `--no-daemon` exactly once. Command approvals replace the allowance check.
 /// Kills: launching without owned hooks, reordering args or duplicating --no-daemon.
@@ -612,7 +609,7 @@ fn codex_launch_needs_the_user_installation_and_adds_only_no_daemon() {
         ErrorCode::MissingHook
     );
     let report = s.setup(ContextHarness::Codex);
-    assert_eq!(report["sandbox"]["present"], true, "{report}");
+    assert_eq!(report["sandbox"]["present"], false, "{report}");
     let out = s
         .launch(
             &host,
@@ -641,9 +638,8 @@ fn codex_launch_needs_the_user_installation_and_adds_only_no_daemon() {
 
     // A socket policy edit does not prevent approved command execution.
     let config = s.env.codex_home.clone().unwrap().join("config.toml");
-    let text = fs::read_to_string(&config).unwrap();
-    let denied = text.replace("\"allow\"", "\"deny\"");
-    fs::write(&config, &denied).unwrap();
+    let denied = "sandbox_workspace_write.network_access = false\n";
+    fs::write(&config, denied).unwrap();
     let host = FakeHost::new();
     let out = s
         .launch(&host, &seats, &handoff, request(ContextHarness::Codex, &[]))
@@ -690,53 +686,24 @@ fn codex_exec_launch_keeps_no_daemon_before_exec() {
     assert!(host.submitted().is_empty());
 }
 
-/// A cold Codex fingerprint scan (0.159.2 is admitted only by its embedded
-/// hook schemas) is persisted by managed launch, which is not bound by the
-/// hook's time budget, into the hook's private cache `<state>/harness`: the
-/// hook's next observation of the same binary is a cache hit, not a rescan.
-/// Kills: launch observing through the in-memory cache only, so a slow
-/// machine's hook rescans (and refuses) forever.
+/// Kills cold schema-cache warming in the ordinary launch path.
 #[test]
-fn codex_launch_warms_the_hook_fingerprint_cache() {
-    use crate::harness::{codex, codex_evidence, codex_schema};
+fn codex_launch_leaves_the_historical_fingerprint_cache_cold() {
+    use crate::harness::{codex_evidence, codex_schema};
     let s = Scratch::new();
     s.harness("codex", "codex-cli 0.159.2", &committed_codex_schemas());
-    let binary = s.root.join("bin/codex");
     let state = s.env.state_dir.clone().unwrap();
     s.setup(ContextHarness::Codex);
-    codex_schema::forget_memory_entry_for_test(&binary);
+    codex_schema::forget_memory_entry_for_test(&s.root.join("bin/codex"));
     let cache = codex_evidence::cache_path(&codex_evidence::dir(&state));
-    assert!(!cache.exists(), "cache starts cold");
     let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
-    let out = s
-        .launch(&host, &seats, &handoff, request(ContextHarness::Codex, &[]))
-        .unwrap();
-    assert_eq!(out.exit, 0);
     assert_eq!(
-        fs::metadata(&cache).unwrap().permissions().mode() & 0o777,
-        0o600
+        s.launch(&host, &seats, &handoff, request(ContextHarness::Codex, &[]))
+            .unwrap()
+            .exit,
+        0
     );
-
-    // Mark the persisted entry so only a cache hit can report it, then take
-    // the hook's view: a fresh process (no in-memory entry) reading the file.
-    let mut stored: Value = serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
-    let entries = stored["entries"].as_array_mut().unwrap();
-    assert_eq!(entries.len(), 1, "{stored}");
-    let sentinel = "a".repeat(64);
-    entries[0]["binary_sha256"] = Value::String(sentinel.clone());
-    fs::write(&cache, serde_json::to_vec(&stored).unwrap()).unwrap();
-    codex_schema::forget_memory_entry_for_test(&binary);
-    let hook = codex::InstalledAdmission::observe_binary(
-        binary,
-        codex::VERSION_TIMEOUT,
-        codex_schema::FingerprintCache::ReadWrite(&cache),
-    );
-    match hook.result.unwrap().admission() {
-        codex::Admission::SchemaMatched { binary_sha256, .. } => {
-            assert_eq!(*binary_sha256, sentinel, "hook rescanned the binary")
-        }
-        other => panic!("expected a schema-matched admission, got {other:?}"),
-    }
+    assert!(!cache.exists());
 }
 
 /// Even a listed older version can launch without an in-sandbox allowance.
@@ -1263,7 +1230,7 @@ fn launch_reports_the_effective_codex_profile_and_config() {
     s.setup(ContextHarness::Codex);
     let home = s.env.codex_home.clone().unwrap();
     let config = home.join("config.toml");
-    let original = fs::read_to_string(&config).unwrap();
+    let original = fs::read_to_string(&config).unwrap_or_default();
     fs::write(&config, format!("profile = \"work\"\n{original}")).unwrap();
     let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
     let run = |argv: &[&str]| {
@@ -1612,4 +1579,85 @@ fn handoff_native_launcher_checks_frozen_seat_and_propagates_confirmed_refusal()
     assert_eq!(events, vec![true, false]);
     assert!(host.submitted().is_empty());
     assert!(scratch.records().is_empty());
+}
+
+/// Kills launch-time executable probing and uncaptured form acceptance.
+#[test]
+fn versionless_launch_selects_wrapper_and_refuses_resume_without_start() {
+    for harness in [ContextHarness::Claude, ContextHarness::Codex] {
+        let s = Scratch::new();
+        s.harness(
+            harness_word(harness),
+            if harness == ContextHarness::Codex {
+                "codex-cli 0.158.0"
+            } else {
+                "2.1.284 (Claude Code)"
+            },
+            b"",
+        );
+        s.setup(harness);
+        let log = s.root.join("wrapper.log");
+        let wrapper = s.root.join("bin").join(harness_word(harness));
+        fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 93\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
+        let out = s
+            .launch(&host, &seats, &handoff, request(harness, &[]))
+            .unwrap();
+        assert_eq!(out.exit, 0);
+        assert_eq!(
+            out.report["harness_version"]["binary"],
+            wrapper.display().to_string()
+        );
+        assert!(out.report["harness_version"]["version"].is_null());
+        assert_eq!(
+            out.report["harness_version"]["admission"],
+            "contract_declared"
+        );
+        assert_eq!(host.submitted().len(), 1);
+        assert!(!log.exists());
+        if harness == ContextHarness::Codex {
+            let refused = s.launch(
+                &host,
+                &seats,
+                &handoff,
+                request(harness, &["resume", "session"]),
+            );
+            assert!(refused.is_err());
+            assert_eq!(host.submitted().len(), 1);
+            assert!(!log.exists());
+        }
+    }
+}
+
+/// Kills passing an explicit non-executable path into guarded preparation.
+#[test]
+fn versionless_launch_rejects_unusable_explicit_binary_before_host_calls() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)", b"");
+    s.setup_claude();
+    let missing = s.root.join("missing");
+    let directory = s.root.join("directory");
+    fs::create_dir(&directory).unwrap();
+    let plain = s.root.join("plain");
+    fs::write(&plain, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&plain, fs::Permissions::from_mode(0o600)).unwrap();
+    for path in [&missing, &directory, &plain] {
+        let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
+        let mut req = request(ContextHarness::Claude, &[]);
+        req.harness_binary = Some(path.display().to_string());
+        assert_eq!(
+            code(s.launch(&host, &seats, &handoff, req)),
+            ErrorCode::UnsupportedHarness
+        );
+        assert_eq!(host.sequence.load(Ordering::SeqCst), 1);
+        assert_eq!(seats.calls.load(Ordering::SeqCst), 0);
+        assert!(host.submitted().is_empty());
+    }
 }

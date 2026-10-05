@@ -74,7 +74,7 @@ fn doctor_fix_keeps_codex_global_sandbox_setup_explicit() {
             && row["outcome"] == "manual"
             && row["detail"]
                 .as_str()
-                .is_some_and(|text| text.contains("global socket policy is unvalidated"))),
+                .is_some_and(|text| text.contains("hooks are not installed"))),
         "{outcomes:?}"
     );
 
@@ -88,7 +88,7 @@ fn doctor_fix_keeps_codex_global_sandbox_setup_explicit() {
     assert!(
         outcomes
             .iter()
-            .any(|row| row["action"] == "Codex socket policy" && row["outcome"] == "manual"),
+            .all(|row| row["action"] != "Codex socket policy"),
         "{outcomes:?}"
     );
 }
@@ -130,7 +130,10 @@ fn compact_doctor_shows_newly_detected_version_over_older_session() {
         }]}
     });
     let text = render_text(&report);
-    assert!(text.contains("codex version 0.160.0: new"), "{text}");
+    assert!(
+        text.contains("codex advisory history 0.160.0: new"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -366,7 +369,7 @@ fn doctor_text_pins_the_verdict_block_for_every_state() {
     assert_eq!(
         block(&text),
         [
-            "harness claude: working 2.1.286 \u{2014} local evidence (lifecycle + tool payloads)",
+            "harness claude advisory history: working 2.1.286 \u{2014} local evidence (lifecycle + tool payloads)",
             "  note: known broken in >= 2.1.290 per the recipe tables; it has worked here",
             "  claude 2.1.290: broken \u{2014} canary manifest row",
             "  harness claude 2.1.290 broken: the canary manifest row reports SessionStart payload field source; report: https://example.test/i",
@@ -436,4 +439,23 @@ fn doctor_text_says_why_there_are_no_states_and_escapes_daemon_text() {
          "unattributed": null, "hook_parse_failures": 0}
     ]));
     assert!(!render_debug_text(&hostile).contains('\u{1b}'));
+}
+
+// Metadata absence alone offers no fix; real missing configuration does.
+#[test]
+fn task3_versionless_doctor_metadata_unknown_is_informational_not_repairable() {
+    let mut report = json!({"context": {"ok": true}, "state_dir": {"safe": true},
+    "daemon": {"state": "healthy"}, "hooks": {"claude": {
+        "setup": {"installed": true}, "installed": {"binary": "/bin/wrapper", "version": null, "admission": "contract_declared"}
+    }}});
+    assert!(repair_plan(&report).is_empty());
+    let mut repairs = Vec::new();
+    add_manual_repairs(&report, &mut repairs);
+    assert!(
+        !repairs
+            .iter()
+            .any(|repair| repair["action"] == "claude version")
+    );
+    report["hooks"]["claude"]["setup"]["installed"] = json!(false);
+    assert_eq!(repair_plan(&report), vec![Repair::SetupClaude]);
 }

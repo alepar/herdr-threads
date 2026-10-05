@@ -1,7 +1,17 @@
-# Harness transcripts as the version source (ht-xoc.8)
+# Harness transcript metadata: current scope and historical capture (ht-xoc.8)
 
 Evidence for the transcript-based attribution in
 `docs/design/herdr-threads/2026-10-02-harness-version-evidence-design.md` (Attribution). Captured 2026-10-02.
+
+## Current operational scope (2026-10-05)
+
+Codex and Claude registered core contracts do not require transcript or installed version metadata. Ordinary paths do not probe versions. Codex `session_meta.cli_version` describes the rollout creator only; even a startup header does not identify the current managed wrapper target. The creator reader remains an explicit diagnostic/fixture API. Known-resume suppression retains its reason, and no unknown Codex startup is held or credited from a creator header.
+
+Claude's newest runtime-written transcript entry remains optional, source-scoped metadata, with the existing held-start qualification. Missing metadata is ordinary absence. Neither it nor historical capture evidence grants compact recovery, composer stash, turn-time poke, native receipt or exact current-runtime qualification; default rich capabilities remain `NONE`.
+
+## Historical capture (2026-10-02)
+
+The original findings and verdicts below are preserved at their capture scope. In particular, the original fresh-Codex attribution verdict is superseded for current managed operation by the conservative creator-only rule above. No new live capture was performed for this change.
 
 ## Claude Code (2.1.288, and 2.1.250 installed under a prefix)
 

@@ -2543,6 +2543,24 @@ pub trait StorePort: Send + Sync {
         harness: &str,
         budget: &CallBudget,
     ) -> Result<Vec<crate::store::harness_evidence::EvidenceRow>, ApiError>;
+    /// Advisory unavailable-runtime failures, never exact-version evidence.
+    fn record_contract_diagnostic(
+        &self,
+        _record: &crate::store::harness_evidence::DiagnosticRecord<'_>,
+        _budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        Err(ApiError::new(
+            crate::protocol::results::ErrorCode::Unsupported,
+            "contract diagnostic persistence unavailable",
+        ))
+    }
+    fn contract_diagnostics(
+        &self,
+        _harness: &str,
+        _budget: &CallBudget,
+    ) -> Result<Vec<crate::store::harness_evidence::DiagnosticRow>, ApiError> {
+        Ok(Vec::new())
+    }
     /// Keeps the latest reason a payload of `harness` was unattributable.
     fn record_unattributed(
         &self,

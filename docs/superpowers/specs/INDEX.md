@@ -31,3 +31,5 @@ Columns: date · title · relative link · one-line summary · status · tags.
 | 2026-10-03 | CLI names and durable handoff | [Design](2026-10-03-cli-names-handoff-design.md) | Scoped human pane targets, optional thread names, recent-channel picker and recoverable handoff; [evidence](../../evidence/cli-names-handoff/report.md). | implemented | cli, names, handoff, picker |
 
 | 2026-10-04 | Channel UX | [Design](2026-10-04-channel-ux-design.md) | Recipient-local commands, joined/active/history resolution and conservative one-hour archival. | implemented | cli, channels, lifecycle |
+
+| 2026-10-05 | Harness version independence | [Design](2026-10-05-harness-versionless-design.md) | Contract-based core admission; optional honest metadata, strict payload decoding and scoped operational diagnostics. | Task1–3 source reviewed; final review/merge pending | harness, wrappers, admission, evidence |

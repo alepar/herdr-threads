@@ -305,6 +305,18 @@ pub fn health_capability() -> CapabilityState {
     }
 }
 
+/// Decode the registered core hooks contract without executable metadata.
+/// Optional compact handling requires separate native qualification.
+pub fn parse_event_for_contract(
+    bytes: &[u8],
+    event_id: &str,
+    _: &super::operational::ClaudeContract,
+) -> Result<LifecycleEvent, ContextError> {
+    let mut event = parse_hooks_2_1_283(bytes, event_id, NativeSupport::Unsupported)?;
+    event.capability = Capability::ContractValidatedInput;
+    Ok(event)
+}
+
 /// The version comes from the installed Claude executable, never peer hook JSON.
 /// A version the ladder refuses is refused with
 /// [`ContextError::UnsupportedVersion`] carrying [`check_version`]'s

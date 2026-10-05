@@ -38,6 +38,8 @@ const HEALTH_BUDGET_MS: u64 = 2_000;
 /// The closed set of doctor admission strings (ht-p03.47).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum AdmissionState {
+    #[serde(rename = "contract_declared")]
+    ContractDeclared,
     #[serde(rename = "listed")]
     Listed,
     /// Emitted for Codex only.
@@ -53,7 +55,8 @@ pub enum AdmissionState {
 }
 
 impl AdmissionState {
-    pub const ALL: [AdmissionState; 5] = [
+    pub const ALL: [AdmissionState; 6] = [
+        AdmissionState::ContractDeclared,
         AdmissionState::Listed,
         AdmissionState::SchemaMatched,
         AdmissionState::Optimistic,
@@ -63,6 +66,7 @@ impl AdmissionState {
 
     pub fn as_str(self) -> &'static str {
         match self {
+            AdmissionState::ContractDeclared => "contract_declared",
             AdmissionState::Listed => "listed",
             AdmissionState::SchemaMatched => crate::harness::codex::SCHEMA_MATCHED_LABEL,
             AdmissionState::Optimistic => crate::harness::codex::OPTIMISTIC_LABEL,
@@ -111,6 +115,7 @@ fn claude_installed_on(
 /// the ladder admits, or the known-broken refusal text naming the broken
 /// range and the newest working version. `None` for listed, other refusals
 /// and an absent `claude`.
+#[cfg(test)]
 fn claude_installed_with_warning(
     path: Option<&std::ffi::OsStr>,
     lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
@@ -171,6 +176,25 @@ fn claude_installed_with_warning(
     )
 }
 
+/// Executable availability and the declared contract; no runtime observation.
+fn installed_declared(harness: &str, path: Option<&std::ffi::OsStr>) -> InstalledHarnessJson {
+    let binary = super::hook::resolve_on_path(harness, path);
+    let recipe = binary.as_ref().map(|_| match harness {
+        "claude" => crate::harness::claude::RECIPES[0].id.to_owned(),
+        _ => crate::harness::codex::RECIPES[0].id.to_owned(),
+    });
+    InstalledHarnessJson {
+        admission: if binary.is_some() {
+            AdmissionState::ContractDeclared
+        } else {
+            AdmissionState::NotFound
+        },
+        binary: binary.map(|binary| binary.display().to_string()),
+        version: None,
+        recipe,
+    }
+}
+
 /// The one text line for the Claude PATH check.
 fn claude_path_line(installed: &Value) -> String {
     match installed["binary"].as_str() {
@@ -188,6 +212,7 @@ fn claude_path_line(installed: &Value) -> String {
     }
 }
 
+#[cfg(test)]
 fn codex_installed_json(codex: &crate::harness::codex::InstalledAdmission) -> InstalledHarnessJson {
     use crate::harness::codex::{Admission, InstalledRefusal};
     let (admission, version, recipe) = match &codex.result {
@@ -480,7 +505,7 @@ fn harness_states_text(report: &Value) -> String {
         let detected = &harness["detected"];
         if let Some(newest) = versions.first() {
             out.push_str(&format!(
-                "harness {name}: {} {} \u{2014} {}\n",
+                "harness {name} advisory history: {} {} \u{2014} {}\n",
                 scalar(&newest["state"]),
                 scalar(&newest["version"]),
                 scalar(&newest["source"])
@@ -691,12 +716,12 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
     let mut claude = json!({
         "scope": "user",
         "recipes": crate::harness::recipe::describe(crate::harness::claude::RECIPES),
-        "compaction_recovery": crate::harness::claude::compaction_recovery(),
+        "compaction_recovery": "unavailable until current runtime is separately qualified; use resume/clear or herdr-threads summary",
         "observed": observed_claude,
     });
     // Problems found in this environment (the one the harnesses run in):
-    // an installed harness whose hooks are missing, a refused codex, or a
-    // Codex sandbox warning. Each makes the result `degraded`.
+    // Missing/invalid hook configuration or existing unsafe sandbox settings
+    // are actionable. Runtime metadata absence is informational.
     let mut limitations: Vec<String> = Vec::new();
     if let Some(leftover) = source["state_dir_leftover"].as_str() {
         limitations.push(format!("state directory: {leftover}"));
@@ -739,13 +764,8 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
             claude["error"] = json!(error);
         }
     }
-    let (claude_installed, claude_warning) =
-        claude_installed_with_warning(path.as_deref(), |key| std::env::var_os(key));
-    claude["installed"] = json!(claude_installed);
-    // With the daemon's answer the PATH version's verdict is the
-    // detected-version line of the harness block; without it the admission
-    // warning stands as before.
-    claude["admission_warning"] = json!(if states.is_ok() { None } else { claude_warning });
+    claude["installed"] = json!(installed_declared("claude", path.as_deref()));
+    claude["admission_warning"] = Value::Null;
     let codex_inspection = super::setup::user_inspection(Harness::Codex, &env);
     let codex_setup = match &codex_inspection {
         Ok((file, inspection)) => json!({
@@ -767,81 +787,35 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
     if codex_trust["status"] == "review_required" {
         limitations.push("Codex hook review required; start codex interactively and review herdr-threads hooks in /hooks".into());
     }
-    // The `codex` a hook would resolve on this PATH, observed read-only and
-    // bounded by the version-observation deadline. A listed version is
-    // admitted exactly; an unlisted one only when its embedded hook schemas
-    // hash-match a recipe (schema-matched, live-unverified).
-    // The hook's private fingerprint cache is consulted read-only (a warm
-    // cache answers without rescanning; doctor never writes it), and the
-    // admission evidence the latest hook stored is shown beside it.
+    // Existing admission cache is historical diagnostic data only.
     let private = crate::harness::codex_evidence::existing(&context.state_dir).ok();
-    let cache = private
-        .as_deref()
-        .map(crate::harness::codex_evidence::cache_path);
-    let codex = match crate::harness::codex::resolve_on_path(path.as_deref()) {
-        Some(binary) => crate::harness::codex::InstalledAdmission::observe_binary(
-            binary,
-            crate::harness::codex::VERSION_TIMEOUT,
-            cache.as_deref().map_or(
-                crate::harness::codex_schema::FingerprintCache::Memory,
-                crate::harness::codex_schema::FingerprintCache::ReadOnly,
-            ),
-        ),
-        None => crate::harness::codex::InstalledAdmission::observe_on_path(
-            None,
-            crate::harness::codex::VERSION_TIMEOUT,
-        ),
-    };
-    let mut installed = json!(codex_installed_json(&codex));
-    installed["evidence"] = json!(codex.line());
-    if let Some(source) = codex
-        .result
-        .as_ref()
-        .ok()
-        .and_then(|version| version.fingerprinted())
-    {
-        installed["fingerprint_source"] = json!(source.display().to_string());
-    }
+    let codex = installed_declared("codex", path.as_deref());
+    let mut installed = json!(codex);
+    installed["evidence"] = json!(if codex.binary.is_some() {
+        "contract_declared; runtime metadata unavailable; rich optional capabilities unavailable"
+    } else {
+        "no executable codex on PATH"
+    });
     let last_hook = private.as_deref().and_then(|private| {
         crate::harness::codex_evidence::read(&crate::harness::codex_evidence::admission_path(
             private,
         ))
     });
-    match &codex.result {
-        Ok(_) => (),
-        Err(refusal) => installed["error"] = json!(refusal.to_string()),
-    }
-    let sandbox_warning = super::setup::codex_unmeasured_allowance_warning(
-        &env,
-        codex.result.as_ref().ok().map(|version| version.as_str()),
-    );
-    let socket_policy_validation = codex.result.as_ref().ok().map(|_| "not_run");
+    let sandbox_warning = super::setup::codex_unmeasured_allowance_warning(&env, None);
+    let socket_policy_validation = codex.binary.as_ref().map(|_| "not_run");
     if let Some(binary) = &codex.binary {
-        match &codex.result {
-            Err(_) => limitations.push(format!(
-                "codex on PATH ({}) is not admitted: {}",
-                binary.display(),
-                codex.line()
-            )),
-            Ok(_) => match &codex_inspection {
-                Ok((file, inspection)) if !inspection.installed => limitations.push(format!(
-                    "codex is on PATH ({}) but its hooks are not installed in {}: run \
-                     `herdr-threads setup codex` with this CODEX_HOME",
-                    binary.display(),
-                    file.display()
-                )),
-                Ok(_) => (),
-                Err(error) => limitations.push(format!("codex hooks cannot be inspected: {error}")),
-            },
+        match &codex_inspection {
+            Ok((file, inspection)) if !inspection.installed => limitations.push(format!(
+                "codex is on PATH ({}) but its hooks are not installed in {}: run `herdr-threads setup codex` with this CODEX_HOME",
+                binary, file.display())),
+            Ok(_) => (),
+            Err(error) => limitations.push(format!("codex hooks cannot be inspected: {error}")),
         }
     }
     if let Some(warning) = &sandbox_warning {
         limitations.push(format!("codex sandbox: {warning}"));
     }
-    let roots_warning = super::setup::codex_missing_roots_warning(
-        &env,
-        codex.result.as_ref().ok().map(|version| version.as_str()),
-    );
+    let roots_warning = super::setup::codex_missing_roots_warning(&env, None);
     if let Some(warning) = &roots_warning {
         limitations.push(format!("codex sandbox: {warning}"));
     }
@@ -849,24 +823,31 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
     for warning in &proxy_warnings {
         limitations.push(format!("codex sandbox: {warning}"));
     }
-    // A broken verdict is a limitation like it is in Health (a line Health
-    // already shows is not repeated); working and new verdicts are not.
+    // Only actual payload failures are actionable; exact-version ladders and
+    // manifests remain advisory historical diagnostics.
     if let Ok(states) = &states {
         for harness in &states.harnesses {
-            let broken = |state: &str| state == "broken";
-            let lines = harness
-                .detected
+            let local = harness
+                .versions
                 .iter()
-                .filter(|detected| broken(&detected.state))
-                .map(|detected| detected.line.clone())
-                .chain(
-                    harness
-                        .versions
-                        .iter()
-                        .filter(|row| row.in_health_window && broken(&row.state))
-                        .map(|row| row.line.clone()),
-                );
-            for line in lines {
+                .filter(|row| {
+                    row.in_health_window && row.source.starts_with("local evidence: violation")
+                })
+                .map(|row| {
+                    format!(
+                        "harness {} {} contract input failure: {}",
+                        harness.harness, row.version, row.source
+                    )
+                });
+            let scoped = harness
+                .unattributed
+                .iter()
+                .filter(|row| {
+                    row.reason.contains("contract input failure")
+                        || row.reason.contains("contract input malformed")
+                })
+                .map(|row| row.reason.clone());
+            for line in local.chain(scoped) {
                 if !daemon_limitations.contains(&line) {
                     limitations.push(line);
                 }
@@ -1263,6 +1244,11 @@ pub fn render_text(report: &Value) -> String {
             "hooks missing"
         };
         out.push_str(&format!("{name}: {admission}, {setup}\n"));
+        if harness["installed"]["binary"].is_string() && harness["installed"]["version"].is_null() {
+            out.push_str(&format!(
+                "{name}: runtime metadata unavailable; rich optional capabilities unavailable\n"
+            ));
+        }
     }
     if report["hooks"]["codex"]["setup"]["installed"] == json!(true) {
         match report["hooks"]["codex"]["trust"]["status"].as_str() {
@@ -1291,7 +1277,7 @@ pub fn render_text(report: &Value) -> String {
             };
             if let Some(row) = row {
                 out.push_str(&format!(
-                    "{name} version {}: {}\n",
+                    "{name} advisory history {}: {}\n",
                     scalar(&row["version"]),
                     scalar(&row["state"])
                 ));
@@ -1355,7 +1341,7 @@ fn repair_plan(report: &Value) -> Vec<Repair> {
         && claude["installed"]["binary"].is_string()
         && matches!(
             claude["installed"]["admission"].as_str(),
-            Some("listed" | "optimistic")
+            Some("contract_declared" | "listed" | "optimistic")
         )
     {
         repairs.push(Repair::SetupClaude);
@@ -1388,7 +1374,7 @@ fn add_manual_repairs(report: &Value, repairs: &mut Vec<Value>) {
         && codex["installed"]["binary"].is_string()
         && matches!(
             codex["installed"]["admission"].as_str(),
-            Some("listed" | "schema-matched, live-unverified" | "optimistic")
+            Some("contract_declared" | "listed" | "schema-matched, live-unverified" | "optimistic")
         )
     {
         if !codex["setup"]["error"].is_null() {
@@ -1400,26 +1386,12 @@ fn add_manual_repairs(report: &Value, repairs: &mut Vec<Value>) {
             repairs.push(json!({
                 "action": "setup codex",
                 "outcome": "manual",
-                "detail": "global socket policy is unvalidated for the effective Codex configuration; run `herdr-threads setup codex` explicitly after reviewing its sandbox changes"
+                "detail": "hooks are not installed; run `herdr-threads setup codex` explicitly"
             }));
         }
     }
-    if codex["setup"]["installed"] == json!(true)
-        && codex["installed"]["version"]
-            .as_str()
-            .is_some_and(|version| {
-                !super::setup::CODEX_SANDBOX_MEASURED_VERSIONS.contains(&version)
-            })
-    {
-        repairs.push(json!({"action": "Codex socket policy", "outcome": "manual", "detail": "legacy in-sandbox socket policy unvalidated; managed launch uses approved outside-sandbox CLI execution instead; global auto repair withheld"}));
-    }
     if !report["hooks"]["claude"]["error"].is_null() {
         repairs.push(json!({"action": "setup claude", "outcome": "refused", "detail": "hook ownership could not be inspected; inspect doctor --debug before setup"}));
-    }
-    for name in ["claude", "codex"] {
-        if report["hooks"][name]["installed"]["admission"] == "refused" {
-            repairs.push(json!({"action": format!("{name} version"), "outcome": "manual", "detail": "installed harness version was refused; inspect doctor --debug and install an admitted version"}));
-        }
     }
     if repairs.is_empty() {
         repairs.push(

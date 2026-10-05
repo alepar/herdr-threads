@@ -273,17 +273,13 @@ fn parse_failure_is_rate_limited_in_daemon_log_and_counted() {
     );
 }
 
-/// Kills: the cooperative receipt line naming versions of its own instead of
-/// the recipe tables', and a line past the Health line bound.
+// Cooperative receipt wording cannot claim a version-qualified runtime.
 #[test]
-fn receipt_line_is_derived_from_the_recipe_tables() {
+fn receipt_line_names_the_cooperative_claim_without_runtime_admission() {
     let line = cooperative_receipt_line();
-    for recipe in claude::RECIPES.iter() {
-        assert!(line.contains(&recipe.versions.to_string()), "{line}");
-    }
-    for recipe in crate::harness::codex::RECIPES.iter() {
-        assert!(line.contains(&recipe.versions.to_string()), "{line}");
-    }
+    assert!(line.contains("cooperative_top_level"));
+    assert!(line.contains("runtime and native model receipt unverified"));
+    assert!(!has_version(&line));
     assert!(line.len() <= 256, "{} bytes: {line}", line.len());
 }
 

@@ -603,10 +603,10 @@ fn unlisted_new_version_is_silent_then_working() {
 }
 
 /// Kills: a payload missing a required field that is not degraded, or whose
-/// line misses the "upgrade herdr-threads to X" action drawn from the manifest.
+/// line hides the actual failed input or turns release advice into repair.
 #[test]
-fn missing_required_field_degrades_with_upgrade_action() {
-    if !tools_or_skip("missing_required_field_degrades_with_upgrade_action") {
+fn missing_required_field_degrades_without_release_repair_action() {
+    if !tools_or_skip("missing_required_field_degrades_without_release_repair_action") {
         return;
     }
     let mut rig = Rig::new(Some(NEW_VERSION));
@@ -649,12 +649,13 @@ fn missing_required_field_degrades_with_upgrade_action() {
     });
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(
-        lines[0].starts_with("harness claude 2.1.999 broken: PreToolUse payload field tool_use_id"),
+        lines[0]
+            .starts_with("harness claude 2.1.999 contract input failure: PreToolUse/tool_use_id"),
         "{}",
         lines[0]
     );
     assert!(
-        lines[0].ends_with("upgrade herdr-threads to 99.0.0 (supports claude 2.1.999)"),
+        !lines[0].contains("upgrade") && !lines[0].contains("pin"),
         "{}",
         lines[0]
     );
@@ -662,45 +663,32 @@ fn missing_required_field_degrades_with_upgrade_action() {
     assert_eq!(state["state"], "broken");
 }
 
-/// Kills: a canary `known_broken` row for a never-verified version that does
-/// not reach Health (manifest fetched at runtime, unchanged binary), or that
-/// loses the row's action.
+// A captured canary verdict remains diagnostic evidence and cannot veto core Health.
 #[test]
-fn manifest_known_broken_for_unseen_version_is_broken_with_action() {
-    if !tools_or_skip("manifest_known_broken_for_unseen_version_is_broken_with_action") {
+fn manifest_known_broken_for_unseen_version_is_advisory() {
+    if !tools_or_skip("manifest_known_broken_for_unseen_version_is_advisory") {
         return;
     }
     let mut rig = Rig::new(Some(NEW_VERSION));
     let manifest = rig.canary_manifest("branch", "2.1.900", &[NEW_VERSION]);
     rig.start(&[("HT_TEST_MANIFEST_URL", &Rig::manifest_url(&manifest))]);
-    assert_eq!(rig.version_lines(NEW_VERSION), Vec::<String>::new());
-
-    // Only SessionStart: not enough to verify the version.
     let transcript = rig.transcript("s-mk", NEW_VERSION);
     let start = Rig::payload("SessionStart", &transcript, "s-mk", &[]);
     assert_eq!(
         rig.hook(Some("SessionStart"), &start, false, true).code,
         Some(0)
     );
-
-    let lines = wait_for(
-        "the manifest-driven broken line",
+    let state = wait_for(
+        "the historical manifest verdict",
         Duration::from_secs(15),
         || {
-            let lines = rig.version_lines(NEW_VERSION);
-            (!lines.is_empty()).then_some(lines)
+            rig.version_state("claude", NEW_VERSION)
+                .filter(|state| state["state"] == "broken")
         },
     );
-    assert_eq!(
-        lines,
-        vec![
-            "harness claude 2.1.999 broken: the canary manifest row reports SessionStart payload field session_id; pin claude to <= 2.1.900"
-                .to_owned()
-        ]
-    );
-    let state = rig.version_state("claude", NEW_VERSION).unwrap();
-    assert_eq!(state["state"], "broken");
     assert_eq!(state["source"], "canary manifest row");
+    assert!(rig.version_lines(NEW_VERSION).is_empty());
+    assert!(!state["line"].as_str().unwrap().contains("pin"));
 }
 
 /// Kills: a manifest `known_broken` row overriding what has worked on this
@@ -721,11 +709,16 @@ fn locally_verified_version_stays_working_despite_manifest_known_broken() {
         rig.hook(Some("SessionStart"), &start, false, true).code,
         Some(0)
     );
-    // Control: with the lifecycle payload alone the manifest row is in force.
-    wait_for("the broken line (control)", Duration::from_secs(15), || {
-        let lines = rig.version_lines(NEW_VERSION);
-        (lines.len() == 1 && lines[0].contains("broken")).then_some(())
-    });
+    // Control: the recorded manifest verdict is intact but only advisory.
+    wait_for(
+        "the historical broken verdict (control)",
+        Duration::from_secs(15),
+        || {
+            rig.version_state("claude", NEW_VERSION)
+                .filter(|state| state["state"] == "broken")
+        },
+    );
+    assert!(rig.version_lines(NEW_VERSION).is_empty());
 
     let tool = Rig::payload("PreToolUse", &transcript, "s-lv", &[]);
     assert_eq!(
@@ -886,23 +879,29 @@ fn malformed_only_version_with_canary_known_broken_is_broken() {
     let run = rig.hook(None, &serde_json::to_vec(&payload).unwrap(), false, true);
     assert_eq!(run.code, Some(0), "{}", run.stdout);
 
-    let lines = wait_for("the broken line", Duration::from_secs(15), || {
-        let lines = rig.version_lines(OTHER_VERSION);
-        (!lines.is_empty()).then_some(lines)
-    });
-    assert_eq!(lines.len(), 1, "{lines:?}");
-    assert!(
-        lines[0].starts_with("harness claude 2.1.998 broken: the canary manifest row reports"),
-        "{}",
-        lines[0]
+    let state = wait_for(
+        "the historical broken verdict",
+        Duration::from_secs(15),
+        || {
+            rig.version_state("claude", OTHER_VERSION)
+                .filter(|state| state["state"] == "broken")
+        },
     );
-    assert!(
-        lines[0].ends_with("pin claude to <= 2.1.900"),
-        "{}",
-        lines[0]
-    );
-    let state = rig.version_state("claude", OTHER_VERSION).unwrap();
-    assert_eq!(state["state"], "broken");
+    assert_eq!(state["source"], "canary manifest row");
+    assert!(rig.version_lines(OTHER_VERSION).is_empty());
+    let db = rusqlite::Connection::open(
+        rig.instance_dir()
+            .join(herdr_threads::daemon::paths::DATABASE_FILE),
+    )
+    .unwrap();
+    let milestones: (Option<i64>, Option<i64>) = db
+        .query_row(
+            "SELECT lifecycle_ok_at,tool_ok_at FROM harness_version_evidence WHERE version=?1",
+            [OTHER_VERSION],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(milestones, (None, None));
 }
 
 /// Kills: an unreachable manifest URL that loses the evidence, skips the
@@ -1043,57 +1042,47 @@ fn hook_never_waits_for_the_manifest_fetch() {
     );
 }
 
-/// Kills: the doctor's PATH-detected version and the attributed evidence row
-/// naming different version strings for the same stand-in harness.
+// Runtime-written metadata remains optional and cannot become a PATH witness.
 #[test]
-fn attributed_version_equals_daemon_detected_version() {
+fn attributed_version_does_not_invent_daemon_detected_metadata() {
     let mut rig = Rig::new(Some(NEW_VERSION));
     rig.start(&[]);
-    let detected = wait_for(
-        "the daemon to detect the stand-in",
-        Duration::from_secs(15),
-        || {
-            rig.states("claude")["detected"]["version"]
-                .as_str()
-                .map(str::to_owned)
-        },
-    );
+    assert!(rig.states("claude")["detected"].is_null());
     session_start_then_tool(&rig, NEW_VERSION, "s-det");
-    let attributed = wait_for("the attributed row", Duration::from_secs(10), || {
-        rig.states("claude")["versions"][0]["version"]
-            .as_str()
-            .map(str::to_owned)
+    let row = wait_for("the attributed row", Duration::from_secs(10), || {
+        rig.states("claude")["versions"][0]
+            .is_object()
+            .then(|| rig.states("claude")["versions"][0].clone())
     });
-    assert_eq!(attributed, detected);
-    assert_eq!(attributed, NEW_VERSION);
+    assert_eq!(row["version"], NEW_VERSION);
+    assert!(
+        row["notes"]
+            .to_string()
+            .contains("runtime-written Claude transcript")
+    );
+    assert!(rig.states("claude")["detected"].is_null());
 }
 
-/// Kills: a below-floor version that the hook refuses and that therefore never
-/// reaches Health (evidence is sent regardless of the ladder verdict).
+// Historical floor classification is retained without refusing core callbacks.
 #[test]
-fn below_floor_version_reaches_health_through_evidence() {
+fn below_floor_version_evidence_is_advisory() {
     const OLD: &str = "1.0.0";
-    let min = match herdr_threads::harness::state::ladder_for("claude", OLD) {
-        Ladder::BelowFloor { min } => min,
-        other => panic!("{OLD} is not below the recipe floor: {other:?}"),
-    };
+    assert!(matches!(
+        herdr_threads::harness::state::ladder_for("claude", OLD),
+        Ladder::BelowFloor { .. }
+    ));
     let mut rig = Rig::new(Some(OLD));
     rig.start(&[]);
     let transcript = rig.transcript("s-old", OLD);
     let start = Rig::payload("SessionStart", &transcript, "s-old", &[]);
-    // Inside a (stand-in) pane the hook runs its admission check, which
-    // refuses this version, and still sends the evidence.
     let run = rig.hook(Some("SessionStart"), &start, true, true);
     assert_eq!(run.code, Some(0), "{}", run.stdout);
-
-    let lines = wait_for("the below-floor line", Duration::from_secs(10), || {
-        let lines = rig.version_lines(OLD);
-        (!lines.is_empty()).then_some(lines)
-    });
-    assert_eq!(
-        lines,
-        vec![format!(
-            "claude {OLD} is below the supported floor {min}; upgrade claude"
-        )]
+    let state = wait_for(
+        "the historical below-floor verdict",
+        Duration::from_secs(10),
+        || rig.version_state("claude", OLD),
     );
+    assert_eq!(state["state"], "broken");
+    assert_eq!(state["source"], "below the recipe floor");
+    assert!(rig.version_lines(OLD).is_empty());
 }

@@ -652,6 +652,7 @@ impl InstalledVersion {
 /// Run `<absolute binary> --version` under one deadline covering process exit
 /// and reading stdout to EOF; the process group is killed on expiry. Shared by
 /// every adapter that gates on an observed installed version.
+#[cfg(test)]
 pub(crate) fn version_output(binary: &Path, timeout: Duration) -> Result<Vec<u8>, VersionError> {
     version_output_by(binary, Instant::now() + external_bound(timeout), None)
 }
@@ -845,16 +846,6 @@ impl InstalledAdmission {
         Self::observe_on_path_with(path, timeout, None)
     }
 
-    /// [`Self::observe_on_path`] whose `--version` run is killed once
-    /// `cancel` fires.
-    pub(crate) fn observe_on_path_cancellable(
-        path: Option<&std::ffi::OsStr>,
-        timeout: Duration,
-        cancel: &Cancellation,
-    ) -> Self {
-        Self::observe_on_path_with(path, timeout, Some(cancel))
-    }
-
     fn observe_on_path_with(
         path: Option<&std::ffi::OsStr>,
         timeout: Duration,
@@ -1036,9 +1027,22 @@ fn required(value: &Value, key: &str) -> Result<String, ContextError> {
     field(value, key)?.ok_or(ContextError::Invalid)
 }
 
-/// The sole parser entry. The version witness can only come from observing
-/// the installed binary, so no caller can parse native input unmeasured. The
-/// witness's recipe selects the input schema.
+/// Decode the registered operational contract without executable metadata.
+/// Validation proves only this input, never native transport or receipt.
+pub fn parse_event_for_contract(
+    bytes: &[u8],
+    event_id: &str,
+    _: &super::operational::CodexContract,
+) -> Result<LifecycleEvent, ContextError> {
+    let value = input(bytes, event_id)?;
+    check_hooks_v1(&value)?;
+    let mut event = parse_shape(&value, event_id)?;
+    event.capability = Capability::ContractValidatedInput;
+    Ok(event)
+}
+
+/// Diagnostic/fixture compatibility parser. The version witness selects the
+/// captured recipe; production hooks use [`parse_event_for_contract`].
 pub fn parse_event_for_version(
     bytes: &[u8],
     event_id: &str,

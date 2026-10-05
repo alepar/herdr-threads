@@ -547,6 +547,14 @@ impl EvidenceWrites for FlakyWrites {
         self.inner.record_harness_evidence(record, budget)
     }
 
+    fn record_contract_diagnostic(
+        &self,
+        record: &DiagnosticRecord<'_>,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        self.inner.record_contract_diagnostic(record, budget)
+    }
+
     fn record_unattributed(
         &self,
         harness: &str,
@@ -718,4 +726,20 @@ fn restore_yields_to_a_newer_hold() {
         "the oldest was evicted"
     );
     assert!(pending.take("claude", "s0", T0 + 20).is_some());
+}
+
+// Catches crediting a held Codex startup to later creator metadata.
+#[test]
+fn task3_versionless_codex_start_is_never_credited_to_creator_metadata() {
+    let fx = Fx::new("task3-no-codex-hold");
+    let mut start = note(None, "SessionStart", ok(), Some("s"));
+    start.harness = "codex".into();
+    start.unattributed_reason = Some("runtime metadata unavailable".into());
+    assert!(!fx.recorder.record(&start, &budget()).unwrap());
+    start.version = Some("0.159.3".into());
+    start.event = "PreToolUse".into();
+    assert!(
+        !fx.recorder.record(&start, &budget()).unwrap(),
+        "unknown startup must not verify a later creator row"
+    );
 }

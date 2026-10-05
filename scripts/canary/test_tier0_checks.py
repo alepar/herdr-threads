@@ -21,7 +21,7 @@ SCRIPT = HERE.parent / "harness-canary.sh"
 FAKE_HT = """#!/bin/sh
 case "$1" in
   unsetup) echo '{"setup":{"action":"removed"}}' ;;
-  doctor) echo '{"doctor":{"hooks":{"claude":{"installed":{"admission":"optimistic"}}}}}'; exit 3 ;;
+  doctor) echo '{"doctor":{"hooks":{"claude":{"installed":{"admission":"contract_declared","version":null}}}}}'; exit 3 ;;
   hook) cat >/dev/null ;;
 esac
 """
@@ -87,6 +87,19 @@ build_env "$P"
 
     def tier0_files(self):
         return sorted(f.name for f in (self.p / "capture/tier0").iterdir() if not f.name.startswith("."))
+
+    # Setup's core declaration cannot replace this explicit diagnostic check.
+    def test_final_fix_version_diagnostic_keeps_exact_output_and_exit_checks(self):
+        for harness, version, line in (("claude", "2.1.287", "2.1.287 (Claude Code)"),
+                                       ("codex", "0.160.0", "codex-cli 0.160.0")):
+            binary = self.p / "bin" / harness
+            binary.parent.mkdir(exist_ok=True)
+            for output, code, want in ((line, 0, "pass"), ("different version", 0, "fail"),
+                                       (line, 93, "fail")):
+                with self.subTest(harness=harness, output=output, code=code):
+                    self._exe(binary, f"#!/bin/sh\n[ \"$1\" = --version ] || exit 94\nprintf '%s\\n' '{output}'\nexit {code}\n")
+                    self.bash(f"H={harness}; V={version}; run_check t0.version")
+                    self.assertEqual(self.checks()["t0.version"][0], want, self.checks())
 
     # ---- t0.payload-parse
 
@@ -180,6 +193,31 @@ ht_xrun doctor-after 30 doctor
         status, detail = self.checks()["t0.admission"]
         self.assertEqual(status, "pass", detail)
         self.assertEqual(self.tier0_files(), [])
+
+    def test_task3_r1_live_core_admission_ignores_historical_ladder_and_schema(self):
+        for expected in ("listed", "refused", "optimistic", "schema-matched-or-optimistic", "unasserted"):
+            for schema in ("match", "drift", ""):
+                with self.subTest(expected=expected, schema=schema):
+                    self.bash(f"EXPECTED_ADMISSION='{expected}'; SCHEMA_RESULT='{schema}'; run_check t0.admission")
+                    status, detail = self.checks()["t0.admission"]
+                    self.assertEqual(status, "pass", detail)
+                    self.assertIn("no exact-runtime/native proof", detail)
+
+    def test_task3_r1_live_core_admission_retains_errors_and_infra(self):
+        for value, want, infra in (("unknown", "fail", "0"), ("listed", "fail", "0"),
+                                   (None, "fail", "0"), ("not_found", "fail", "1")):
+            with self.subTest(value=value):
+                import json
+                doc = json.dumps({"doctor": {"hooks": {"claude": {"installed": {"admission": value}}}}})
+                self._exe(self.p / "ht/herdr-threads", f"#!/bin/sh\nprintf '%s\\n' '{doc}'\nexit 3\n")
+                proc = self.bash("EXPECTED_ADMISSION=listed; run_check t0.admission; printf 'infra=%s\\n' \"$INFRA\"")
+                self.assertEqual(self.checks()["t0.admission"][0], want)
+                self.assertIn(f"infra={infra}", proc.stdout)
+        for bad in ("{}", "not json"):
+            with self.subTest(bad=bad):
+                self._exe(self.p / "ht/herdr-threads", f"#!/bin/sh\nprintf '%s\\n' '{bad}'\nexit 3\n")
+                self.bash("EXPECTED_ADMISSION=listed; run_check t0.admission")
+                self.assertEqual(self.checks()["t0.admission"][0], "fail")
 
     def test_unsetup_that_leaves_settings_behind_fails(self):
         conf = self.p / "home/.claude"

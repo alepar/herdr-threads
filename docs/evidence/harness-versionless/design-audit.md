@@ -1,0 +1,81 @@
+# Harness version independence: design audit and approval preview
+
+## Goal and status
+
+Allow the user's company-managed, self-updating Codex wrapper to work without executing `codex --version`, bypassing that wrapper, or inventing runtime identity. Separate operational contracts from optional descriptive metadata across harnesses.
+
+Status: **proposal awaiting user approval; no product implementation**. Audited main baseline `f04676cb` (v0.2.7), clean at start. Isolated branch `harness-versionless-design`. Adapter source inspected at `70d3dc9b48bb6fcc4653617d90a9feec61a2281f`; that lane remains unfinished. This is a repository-source audit, not a native qualification or a formal independent roast. No harness probes, config changes, tests, daemons, or shared-server changes were performed.
+
+## Findings grounded in current sources
+
+| Boundary | Current dependency | Required design change |
+| --- | --- | --- |
+| Setup | `src/cli/setup.rs:867` observes versions; Codex setup at line 2431 requires the witness. `src/harness/setup.rs:802` takes `InstalledVersion` even though its composition delegates to one common planner. | Resolve the executable and select a registered setup contract; retain owned-file transactions, layered configuration and duplicate checks. Installation means hooks configured, not hooks delivered or runtime verified. |
+| Launch | `src/cli/launch.rs:788` calls the same admission observer before guarded native start. | Check declared launch forms, hook configuration and actual host startup; do not require a version probe. Retain the user's wrapper/PATH and launch argument restrictions, including the uncaptured Codex resume refusal. |
+| Hook | `src/cli/hook.rs:272,2448` resolves and probes PATH before parsing. | Select the registered hook contract directly. A running hook must not depend on a separately resolved executable being present or supporting diagnostic commands. |
+| Parser | `src/harness/codex.rs:1042` needs `InstalledVersion`; `check_hooks_v1` applies real field and value checks. Claude `parse_versioned_event` selects input and compact support through admission. | Replace the version witness with a registration-bound operational contract handle. Preserve bounded JSON, event, source, role pairing, session, tool and command checks. Contract classification alone does not replace semantic decoding. |
+| Doctor | `src/cli/doctor.rs:118,782` probes versions and combines install status, version verdicts and config repair. | Report executable availability, configuration, contract observations and optional metadata independently; metadata unavailable is informational. Do not repair based on a version verdict. |
+| Daemon and poke | `src/app.rs:439,451` probes versions in its admission observer; `src/harness/recipe.rs:42` selects rich poke capabilities from the observed version. | Remove background version probes as operational prerequisites. Retain observation invalidation and explicit capability qualification; unknown metadata supplies no rich capabilities. |
+| Local admission cache | `src/harness/codex_evidence.rs` stores schema/admission evidence based on installed binary identity. | Existing cache is historical diagnostic data, never the replacement operational authority. Wrapper bytes do not identify its target. Preserve useful configuration/asset fingerprints separately. |
+| Evidence and health | `src/harness/state.rs`, `src/store/harness_evidence.rs`, `src/cli/hook_evidence.rs` derive evidence by version and contract. | Preserve historical rows; separate current operational diagnostics from release/runtime verification. Unknown runtime must not aggregate successful sessions into a synthetic verified runtime. |
+| Transcript attribution | `src/harness/attribution.rs` reads Codex rollout-head `cli_version`; known resume suppresses attribution. | Treat creator metadata as creator metadata. Never use it to identify a managed wrapper's current target. Preserve known-resume suppression and honest absence reasons. |
+
+The 2026-10-02 [version evidence design](../../design/herdr-threads/2026-10-02-harness-version-evidence-design.md) already adopted contract-first behavior and silent routine upgrades, but retained the version ladder and version-keyed verification. This proposal changes that operational boundary; its historical native captures remain useful evidence rather than admission requirements.
+
+## Approaches for approval
+
+1. **Contract-based operation with optional metadata (recommended).** Codex and Claude core setup/launch/hooks use declared contracts, independent of version availability or ordering. Adapter identity and exact-runtime evidence remain separate. Missing metadata is ordinary and honest. This addresses the wrapper without introducing a wrapper exception and gives other adapters the same interface separation.
+2. **Codex-only separation first.** Same behavior for the affected wrapper, leaving Claude admission in place. Smaller initial patch, but users and future adapters still encounter inconsistent admission behavior. The adapter interface should still separate metadata to avoid another rewrite.
+3. **Version-probe failure fallback.** Try the existing ladder, then assume a recipe when probing fails. Smallest patch but retains operational probing, stale PATH attribution, version-dependent behavior and misleading optimistic classifications. Not recommended.
+
+## Recommended operational contract
+
+Resolve install/launch executables using existing lookup and retain the selected managed wrapper; do not inspect an underlying target or execute help, schema extraction or diagnostic flags as fallback admission. Setup validates its owned registration/configuration plan. Launch validates its supported form and configured-hook fingerprint, then uses the existing guarded host start. Neither predicts that future callbacks will arrive.
+
+A hook selects a registered adapter and explicit event contract from its installed command. Parse the actual payload with the existing strict shape and semantic checks before producing context, check-in, state or receipts. Unknown event/schema or ambiguous contract selection refuses that event quietly with bounded diagnostics; do not try permissive schemas until something parses. Extra fields retain existing treatment. Legacy registrations without `--event` retain the existing discriminator fallback and doctor guidance to rerun setup.
+
+Use a distinct admission label such as `contract_declared`, rather than manufacturing `Listed`, `SchemaMatched`, a numeric version, or an optimistic recipe witness. It describes the adapter contract selected for an attempt; successful decoding validates only that input. Basic cooperative operation is not native model delivery or exact-runtime verification. Keep diagnostic metadata out of the operational handle.
+
+Version/build observations may be shown with source and scope when already available. An explicitly requested metadata diagnostic may perform a bounded probe; ordinary setup, launch, hooks, doctor and daemon observation do not. Missing metadata is represented as absence plus a reason. A binary/config fingerprint is an observation-cache key, never a runtime identity. Transcript creator identity is not promoted to current-runtime attribution.
+
+## Capabilities and trust
+
+Preserve canonical daemon identity and receipt decisions, binding generations, expected boot, role suppression, restore holds, host harness rechecks and honest `cooperative_top_level`/`managed_launch` provenance. No new receipt provenance or adversarial caller verification is proposed.
+
+Versionless base admission grants no composer stash, poke during a turn, native receipt or model-delivery capability. All Codex rich poke capabilities stay unsupported. Claude's richer 2.1.287 behavior and compact handling remain a separate captured capability qualification: an unknown runtime cannot inherit that recipe merely because ordinary hooks decode. Until a safe qualifier is available, those optional paths stay unavailable; this can reduce richer behavior for metadata-free Claude sessions and must be explicit in doctor. Valid ordinary startup/clear/resume/tool handling stays independent of this optional qualification. Existing idle/empty-composer poke checks and ordinary wake policy remain intact.
+
+Stop installing the obsolete Codex sandbox allowance and do not replace it with global networking access. Preserve ownership manifests and unsetup/revert behavior for previously installed values; migration removes only proven owned changes with the existing conflict checks, never foreign or managed settings. No actual user config changes are authorized by this design audit.
+
+Implementation must amend TRUST-POLICY.md alongside any change to its A4 capability-selection wording or accepted limits. The invariants themselves remain unchanged.
+
+## Evidence, health and migration
+
+Keep exact attributed release/build evidence, domain, origin, contract hash, required milestones and qualifications intact. Runtime-unavailable notes do not satisfy runtime verification and do not create an all-null build hash or an `unknown` release row. Manifest/canary version verdicts become advisory diagnostics for exact attributable runtimes, not operational vetoes or permissions for Codex/Claude core contracts. Actual invalid payloads still refuse their event and are reported independently of metadata availability.
+
+An identified implementation gap: the adapter v2 unavailable-runtime path retains attribution reasons but is not sufficient by itself to preserve a scoped contract-violation history. Add a bounded, capability-negotiated operational diagnostics projection if needed, keyed by harness/session/domain/origin/contract, with no runtime identity. It reports failed event/field and time, never `runtime verified` or `Working`. Missing session identity uses the bounded parse-failure report. A later successful payload does not erase a same-session violation; explicit diagnostic reset or retention expiry may retire it. A new session does not grant a capability. Operational diagnostics never authorize account mutations.
+
+No rewrites of historical evidence, provenance, migrations or contract IDs. Existing version admission cache records are displayed as historical diagnostics, not current refusal evidence. New wire/report shapes must be capability-negotiated: older daemons get only compatible notes and truthful local diagnostics, without fabricated legacy versions. If persistence changes, append a migration after the integrated adapter baseline and test upgrade/downgrade refusal behavior; do not guess a migration number while that lane is unfinished. Separate daemon software/protocol version checks from harness metadata; they remain necessary.
+
+## Adapter and host coordination
+
+Owner w4:pCC supplied [source-bound interface seams](../../../../harness-adapters/target/coordinator/adapter-versionless-interface-seams.md). Generic registry admission already separates runtime attribution, but concrete Codex `InstallObservation::CodexWitness(InstalledVersion)` must be replaced honestly. Preserve registry-owned typed admission and configured-hook fingerprints. Existing v2 `runtime=None` and `unavailable_reason` support metadata absence with empty qualifications. Domain lifecycle+tool verification remains exact-runtime scoped.
+
+Pending adapter Task30 overlaps admission/launch interfaces. Freeze this contract with its owner after user approval and reconcile against the integrated baseline before editing shared seams. Do not duplicate that lane or its external Task29 process-hint implementation.
+
+Hermes is broader audit context, not a silently enabled generic fallback: its actual startup-captured callback, lifetime association and observed timeout are operational qualifiers; its exact build and native/bridge evidence domains have separate approved semantics. This proposal does not remove those qualifiers or rename its evidence. Removing Hermes identity requirements would need a separately reviewed bridge contract migration, not a Codex-wrapper fix.
+
+The Herdr 0.9.3 lane w4:pD9 owns official host API/version qualification and bounded compatibility fixes. Host protocol compatibility is distinct from optional harness identity. This lane does not edit host gates or update/restart the shared server.
+
+## Meaningful implementation acceptance
+
+- A stand-in managed wrapper logs arguments and fails or hangs on diagnostic flags: ordinary setup, launch, hooks, doctor and daemon observation never invoke those flags; managed launch still uses the original wrapper and PATH. Tests use isolated config roots and named Herdr sessions where needed.
+- Valid Codex/Claude core callbacks without a version or installed PATH witness reach the same cooperative flow; invalid session/role/tool/source fields, registered-event mismatch and unknown schemas produce no context/check-in/state/receipt mutation. Classifier/parser drift stays tested.
+- Setup configured but no callback delivered remains unobserved; setup does not assert functional hooks. First lifecycle/tool observations do not verify an unattributed runtime or native model receipt.
+- Unknown metadata never grants compact/rich poke or native capability. Existing captured qualification paths remain explicit; contract validity, old caches and manifest `verified` rows cannot upgrade them.
+- Wrapper replacement and resumed rollout creator metadata do not misattribute the current runtime. Unavailable-runtime contract failures remain visible without a fake evidence key; subsequent success does not silently clear the failure.
+- Existing config ownership manifests support safe status/unsetup and conflict refusal. Upgrade preserves historical evidence; legacy registration, old-daemon capability fallback, mixed-contract notes and old admission cache rendering remain truthful.
+- Run focused tests, `cargo fmt`, per-change clippy and pre-merge default-feature checks only when implementation is approved. Coordinator owns integrated sweeps. All test processes must be owned and stopped; no full suite or competing heavy build was run in this audit.
+
+## Approval boundary and post-implementation notes
+
+This audit proposes interfaces and acceptance criteria for review. User approval of an approach is required before product implementation, as requested by the task brief and brainstorming skill. No implementation plan or native-support completion is asserted. Once approved, write the final spec and freeze adapter seams before implementation.

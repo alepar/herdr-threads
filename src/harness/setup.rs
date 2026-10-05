@@ -728,7 +728,7 @@ pub fn uninstall_json(bytes: &[u8], entries: &[OwnedEntry]) -> Result<Vec<u8>, S
 /// these `-c` values (hooks/list on 0.157.1, 0.158.0 and 0.159.2), so copying
 /// them in would register them twice. Each session override includes the
 /// supplied existing groups. hooks.state is untouched and must be measured separately.
-/// Internal composition only: production callers go through `plan_codex_for_version`.
+/// Internal composition shared by contract planning and historical diagnostics.
 fn plan_codex(
     existing: &[EventGroups],
     hook_argv: &[String],
@@ -796,9 +796,17 @@ fn plan_codex(
     Ok(plan)
 }
 
-/// The production setup boundary. The witness exists only after observing the
-/// installed binary report a version some recipe covers, so this cannot plan
-/// unmeasured. The witness's recipe must still be a registered recipe.
+/// Compose the registered Codex setup contract without executable metadata.
+/// The handle declares registration, never runtime support or native delivery.
+pub fn plan_codex_for_contract(
+    existing: &[EventGroups],
+    hook_argv: &[String],
+    _: &super::operational::CodexContract,
+) -> Result<CodexSetupPlan, SetupError> {
+    plan_codex(existing, hook_argv)
+}
+
+/// Diagnostic/fixture compatibility for historical installed-version callers.
 pub fn plan_codex_for_version(
     existing: &[EventGroups],
     hook_argv: &[String],

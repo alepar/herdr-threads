@@ -187,10 +187,13 @@ model open work, and summary closure never changes receipt state or installs glo
   harness. It is decided from a fresh observation immediately before the prompt, only when the pane is not
   focused and the agent is idle, or in an active turn or with typed input only where the harness recipe
   declares `poke_during_turn` or `composer_stash` from captured evidence
-  (`docs/evidence/poke-spike/findings.md`; the recipe that lists the installed version the daemon's
-  admission observer last observed, re-observed when the binary changes, so an unobserved version or one
-  the admission ladder admits only optimistically, or one it refuses, declares neither; harness version
-  evidence (verified by use) never adds a declaration). It is never sent in an approval or
+  (`docs/evidence/poke-spike/findings.md`). Existing exact-version recipe declarations remain
+  historical captured qualification, not operational admission. Ordinary daemon observation resolves
+  executables without probing runtime metadata; absent current-runtime qualification declares neither
+  capability. Valid contract input, historical version evidence and manifest/release ladders cannot
+  qualify the current runtime or grant compact recovery, composer stash, turn-time poke or native
+  receipts. Until a separately safe current-runtime qualifier exists, richer behavior remains unavailable.
+  It is never sent in an approval or
   question state or an unknown state. A poke carries no authority and changes no receipt state other than
   `soft_poked_at`, which is set only when the host accepts the prompt; the hard-deadline warning stays the
   backstop. When an ordinary wake is due for the same seat, one prompt goes out with the poke text, and only
@@ -350,12 +353,21 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   worker calls never move it.
 - **Summary blocks name the seat, not the invocation.** A block records its author seat and declared model;
   it does not record whether a child wrote it, because the CLI cannot know.
-- **No poke into typed input or a running turn where no recipe declares it.** A harness version whose
-  recipe declares neither `composer_stash` nor `poke_during_turn` (every Codex version, and every Claude
-  version except 2.1.287; see docs/evidence/poke-spike/findings.md): a seat whose agent is working or whose
-  composer holds typed input is skipped, and only the hard-deadline warning reaches it. Where `composer_stash`
-  is declared, a draft with an image or pasted-text placeholder, a row whose display width is near the pane width or cannot be determined, or an unknown
-  pane width (Codex shows no rule to infer it from) is skipped the same way.
+- **Optional runtime qualification may be absent.** Core contracts can operate cooperatively without
+  runtime metadata. Unknown metadata inherits no optional compact, composer, turn-time poke or native
+  receipt capability. Historical captured declarations (Claude 2.1.287's richer behavior; every Codex
+  version declares neither rich poke capability) remain evidence for their exact captures, never a grant
+  to an unidentified current runtime. A working agent or typed draft is skipped without separate safe
+  qualification; the hard-deadline warning remains the backstop. Where `composer_stash` is qualified,
+  an image or pasted-text placeholder, uncertain display width or unknown pane width still skips it.
+- **Unavailable-runtime diagnostics are bounded advisory history.** Failures use only the existing
+  harness/session/contract producer scope, never an invented version/build key or account authority.
+  The first event/field stays sticky across later successful inputs. Storage keeps at most 256 rows per
+  harness with deterministic eviction, a 30-day retention projection and at most 20 rows per read;
+  Health shows a failure only in its 24-hour window. Retention expiry or bounded eviction can retire a
+  failure; success cannot clear it. Empty or missing session identity records a bounded parse diagnostic
+  without inventing a session. Codex rollout creator metadata never identifies the current runtime,
+  including startup and known resume. Exact attributed historical evidence remains unchanged.
 - **Pokes skip Claude panes that show composer text.** A Claude pane whose composer shows a prompt
   suggestion (or any typed text) is not poked: the suggestion cannot be told from a draft without captured
   styling. The skip is for that poke only and is retried after the wake retry spacing; only the

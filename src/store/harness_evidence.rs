@@ -297,6 +297,107 @@ pub fn last_unattributed(
     .map_err(store_error)
 }
 
+/// Fixed producer scope: an unavailable-runtime violation under one hook contract.
+/// No diagnostic row can qualify a runtime, capability, receipt or binding.
+#[derive(Debug, Clone, Copy)]
+pub struct DiagnosticRecord<'a> {
+    pub harness: &'a str,
+    pub session_id: &'a str,
+    pub contract_id: &'a str,
+    pub event: &'a str,
+    pub field: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticRow {
+    pub harness: String,
+    pub session_id: String,
+    pub contract_id: String,
+    pub event: String,
+    pub field: String,
+    pub first_seen_at: u64,
+    pub last_seen_at: u64,
+}
+
+impl DiagnosticRow {
+    pub fn line(&self) -> String {
+        format!(
+            "harness {} contract input failure: {}/{}; runtime metadata unavailable",
+            self.harness, self.event, self.field
+        )
+    }
+}
+
+/// Hard storage cap per harness, separate from historical version retention.
+pub const DIAGNOSTIC_KEEP_PER_HARNESS: i64 = 256;
+/// At most this many scoped failures are read/projected, newest first.
+pub const DIAGNOSTIC_READ_CAP: i64 = 20;
+/// Expired failures leave the projection even without another write.
+pub const DIAGNOSTIC_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+
+/// Preserve the first event/field; only another violation touches last_seen_at.
+/// Creation prunes expiry and evicts deterministically in the same transaction.
+pub fn record_diagnostic(
+    context: &StoreContext,
+    writer: &mut Connection,
+    record: &DiagnosticRecord<'_>,
+) -> Result<(), ApiError> {
+    let now = now_ms(context);
+    let tx = writer
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(store_error)?;
+    tx.execute(
+        "DELETE FROM harness_contract_diagnostics WHERE harness=?1 AND last_seen_at < ?2",
+        params![record.harness, now.saturating_sub(DIAGNOSTIC_RETENTION_MS)],
+    )
+    .map_err(store_error)?;
+    tx.execute("INSERT INTO harness_contract_diagnostics
+        (harness,session_id,contract_id,event,field,first_seen_at,last_seen_at)
+        VALUES (?1,?2,?3,?4,?5,?6,?6)
+        ON CONFLICT(harness,session_id,contract_id) DO UPDATE SET last_seen_at=MAX(last_seen_at,excluded.last_seen_at)",
+        params![record.harness,record.session_id,record.contract_id,record.event,record.field,now]).map_err(store_error)?;
+    tx.execute("DELETE FROM harness_contract_diagnostics WHERE harness=?1 AND (session_id,contract_id) NOT IN (
+        SELECT session_id,contract_id FROM harness_contract_diagnostics WHERE harness=?1
+        ORDER BY last_seen_at DESC,first_seen_at DESC,session_id,contract_id LIMIT ?2)",
+        params![record.harness, DIAGNOSTIC_KEEP_PER_HARNESS]).map_err(store_error)?;
+    tx.commit().map_err(store_error)
+}
+
+pub fn diagnostics(
+    db: &Connection,
+    harness: &str,
+    now: UtcMillis,
+) -> Result<Vec<DiagnosticRow>, ApiError> {
+    let mut stmt = db
+        .prepare(
+            "SELECT harness,session_id,contract_id,event,field,first_seen_at,last_seen_at
+        FROM harness_contract_diagnostics WHERE harness=?1 AND last_seen_at >= ?2
+        ORDER BY last_seen_at DESC,first_seen_at DESC,session_id,contract_id LIMIT ?3",
+        )
+        .map_err(store_error)?;
+    stmt.query_map(
+        params![
+            harness,
+            now.0.saturating_sub(DIAGNOSTIC_RETENTION_MS),
+            DIAGNOSTIC_READ_CAP
+        ],
+        |row| {
+            Ok(DiagnosticRow {
+                harness: row.get(0)?,
+                session_id: row.get(1)?,
+                contract_id: row.get(2)?,
+                event: row.get(3)?,
+                field: row.get(4)?,
+                first_seen_at: ms(row.get(5)?),
+                last_seen_at: ms(row.get(6)?),
+            })
+        },
+    )
+    .map_err(store_error)?
+    .collect::<Result<_, _>>()
+    .map_err(store_error)
+}
+
 #[cfg(test)]
 #[path = "../../tests/store/harness_evidence.rs"]
 mod tests;

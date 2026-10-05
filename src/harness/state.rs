@@ -1,15 +1,15 @@
 //! Contract-first state derivation (ht-xoc.5): one pure function turns what
 //! this machine and the manifest know about a (harness, version, contract id)
-//! into `working`, `new` or `broken`, with the action that fixes a broken one.
-//! Health and doctor both render from it; nothing else decides a version
-//! verdict.
+//! into historical `working`, `new` or `broken`, with diagnostic action advice.
+//! Doctor renders historical advice from it; core operation never uses a version
+//! verdict as admission. Health projects only actual local payload failures.
 //!
 //! First match wins:
 //!
 //! 1. a local violation: broken;
-//! 2. the version is below the recipe floor: broken (upgrade the harness);
-//! 3. the recipe tables report it broken: broken, even when verified here (the
-//!    hook's B6 ladder refuses it, so "working" would be false; doctor notes it);
+//! 2. the historical version is below the recipe floor: diagnostic broken;
+//! 3. the historical recipe verdict is known broken, even when verified here;
+//!    doctor notes both recorded facts without refusing current core hooks;
 //! 4. local evidence verified it: working (a manifest `known_broken` is a
 //!    doctor note only: it has worked here);
 //! 5. the manifest reports it broken (same contract): broken;
@@ -19,8 +19,9 @@
 //!    new, which adds nothing to Health.
 //!
 //! [`roll_up`] applies the function to every evidence row under the harness's
-//! contract id the hooks send now; Health shows the broken version seen most recently
-//! within the last 24 hours.
+//! contract id the hooks send now; Health projects only actual local payload
+//! violations in the last 24 hours. Historical actions remain explicit diagnostic
+//! advice, never current-operation refusal, repair or capability authority.
 use super::{
     admission::{self, ISSUES_URL, Refusal, Row},
     manifest::{Manifest, ManifestRow, ReleasePointers, RowEvidence, RowSource, RowStatus},
@@ -251,7 +252,7 @@ pub fn derive(input: &StateInput) -> Derived {
     } else if let Ladder::RecipeKnownBroken { range, .. } = &input.ladder {
         if input.local.is_some_and(EvidenceRow::verified) {
             notes.push(format!(
-                "it has worked here, but the recipe tables mark {range} known broken and the hook refuses it"
+                "it has worked here; historical recipe verdict marks {range} known broken (advisory, core hooks use the declared contract)"
             ));
         }
         broken(BrokenCause::RecipeKnownBroken {
@@ -409,14 +410,20 @@ pub struct HarnessRollup {
 }
 
 impl HarnessRollup {
-    /// Health's one line for this harness: the broken version seen most
-    /// recently within the window; `working` and `new` add nothing.
+    /// Health reports actual local payload failures only. Runtime ladders and
+    /// manifest verdicts remain advisory, independent of core admission.
     pub fn health_line(&self) -> Option<String> {
         self.versions
             .iter()
             .filter(|verdict| verdict.in_health_window)
             .find_map(|verdict| match &verdict.derived.state {
-                State::Broken(broken) => Some(broken_line(self.harness, &verdict.version, broken)),
+                State::Broken(Broken {
+                    cause: BrokenCause::LocalViolation { event, field },
+                    ..
+                }) => Some(format!(
+                    "harness {} {} contract input failure: {event}/{field}",
+                    self.harness, verdict.version
+                )),
                 _ => None,
             })
     }

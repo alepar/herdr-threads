@@ -91,7 +91,12 @@ fn codex_inline_flags_preserve_groups_and_do_not_invent_trust() {
         event: "SessionStart".into(),
         groups: vec![json!({"hooks":[{"type":"command","command":"user-hook"}]})],
     }];
-    let plan = plan_codex_for_version(&groups, &["/tmp/space 雪/owned".into()], &pinned()).unwrap();
+    let plan = plan_codex_for_contract(
+        &groups,
+        &["/tmp/space 雪/owned".into()],
+        &crate::harness::operational::CodexContract::registered(),
+    )
+    .unwrap();
     assert_eq!(plan.launch_argv[0], "--no-daemon");
     let flag = &plan.launch_argv[2];
     assert!(flag.starts_with("hooks.SessionStart=["));
@@ -100,9 +105,13 @@ fn codex_inline_flags_preserve_groups_and_do_not_invent_trust() {
     assert!(!plan.launch_argv.iter().any(|s| s.contains("trusted_hash")));
     assert_eq!(plan.events[0].groups.len(), 2);
     assert_eq!(
-        plan_codex_for_version(&plan.events, &["/tmp/space 雪/owned".into()], &pinned())
-            .unwrap()
-            .events,
+        plan_codex_for_contract(
+            &plan.events,
+            &["/tmp/space 雪/owned".into()],
+            &crate::harness::operational::CodexContract::registered()
+        )
+        .unwrap()
+        .events,
         plan.events
     );
 }

@@ -10,9 +10,8 @@
 //!   (default `~/.claude/settings.json`), merged with the hooks already there.
 //! - Codex: the declared hook groups (SessionStart, SubagentStart, Bash
 //!   PreToolUse) go into `$CODEX_HOME/hooks.json` (default
-//!   `~/.codex/hooks.json`), and, for a Codex version whose network-proxy
-//!   default-deny was measured, the narrow sandbox socket allowance goes into
-//!   `$CODEX_HOME/config.toml`.
+//!   `~/.codex/hooks.json`). No sandbox allowance is installed. Historical
+//!   config.toml ownership remains inspectable and removable by unsetup.
 //!
 //! Every write is owned: groups carry an installation marker, a private
 //! manifest under `<state-dir>/setup/` records exactly what was added, a
@@ -29,19 +28,14 @@
 //! records both, and the hook stays silent in any session that is not a pane
 //! of that instance.
 //!
-//! Every install observes the installed harness version by running
-//! `<binary> --version` and refuses one the admission ladder refuses
-//! (unparsable, known-broken, older than every recipe); a newer unlisted
-//! version is admitted optimistically.
+//! Setup resolves the selected executable without invoking it and declares
+//! the registered contract. Runtime metadata and native delivery remain unknown.
 //! The installed hook command is exactly the hook entrypoint's
 //! [`hook::installed_argv`], which its `parse_hook_argv` accepts.
 
 use super::{RunError, hook};
 use crate::{
-    daemon::paths::{
-        RuntimeContext, ensure_owned_state_root, ensure_private_dir, instance_dir,
-        stable_socket_path,
-    },
+    daemon::paths::{RuntimeContext, ensure_owned_state_root, ensure_private_dir, instance_dir},
     harness::{
         claude, codex, codex_config,
         context::Harness,
@@ -73,10 +67,10 @@ use std::{
 pub const SETUP_HELP: &str =
     "No harness named: every harness. `setup` sets up every detected harness (each
 of claude and codex found on PATH) and prints one line per harness: installed, already
-installed, skipped (not on PATH) or refused (version covered by no recipe, with the reason);
+installed or skipped (not on PATH);
 `unsetup` removes both recorded installations (on PATH or not); `setup-status` reports
 both. The Codex hook-trust reminder is printed once at the end. The exit status is that
-of the first harness that failed; skipped and refused are not failures.
+of the first harness that failed; skipped harnesses are not failures.
 
 Scope (user level, like Herdr's own agent hooks):
   claude  $CLAUDE_CONFIG_DIR/settings.json (default ~/.claude/settings.json), created as `{}`
@@ -87,21 +81,13 @@ Scope (user level, like Herdr's own agent hooks):
           already have is left as yours. Re-running setup on an older installation replaces its
           owned `Bash(export HERDR_THREADS_CALLER_CONTEXT=*)` rule, which allowed nothing in use.
   codex   $CODEX_HOME/hooks.json (default ~/.codex/hooks.json) for the hook groups
-          (SessionStart, SubagentStart, Bash PreToolUse), and $CODEX_HOME/config.toml for the
-          workspace-write sandbox allowance of this instance's stable daemon socket:
-            sandbox_workspace_write.network_access = true
-            features.network_proxy.enabled = true
-            features.network_proxy.unix_sockets = { \"<socket>\" = \"allow\" }
-            sandbox_workspace_write.writable_roots += [\"<instance>/intents\", \"<instance>/contexts\"]
-          network_access=true only starts Codex's proxy; with no allowed domain, other network
-          access stays denied and only that one socket is reachable. The two writable roots are
-          the instance's client-side journals (pending-operation intents and caller contexts),
-          which every mutation and check-in writes; the database and daemon files stay
-          read-only. An earlier allowance without the roots is upgraded by setup. This default-deny was
-          measured on a short list of Codex versions only (setup names them when it declines):
-          for any other admitted version the allowance is not written (a warning says so). Codex runs user hooks only once you trust them: the next
-          interactive `codex` start lists them for review (or use /hooks); Codex then records
-          their hashes in config.toml [hooks.state]. setup never writes trust.
+          (SessionStart, SubagentStart, Bash PreToolUse). Setup installs no sandbox socket,
+          writable-root or network allowance. Run herdr-threads commands through Codex's
+          approved outside-sandbox execution; a denied approval is a policy refusal.
+          Historical owned allowances remain inspectable; unsetup removes only unchanged
+          owned values and refuses edited ownership records. Codex runs user hooks only once
+          you trust them: the next interactive `codex` start lists them for review (or use
+          /hooks); Codex records their hashes in config.toml [hooks.state]. setup never writes trust.
 
 Claude prompt suggestions: Claude shows a dim prompt suggestion in its input box after every
 turn, which herdr-threads cannot tell from typed text, so it never pokes a Claude pane that shows
@@ -130,25 +116,20 @@ adopted: setup records a manifest for it and leaves the file byte-identical (act
 `adopted`), setup-status and doctor report it installed (adopted), and unsetup removes only
 those groups from that file.
 
-Setup observes `<harness> --version` and places it on the admission ladder: listed (a recipe
-covers it); schema-matched, live-unverified (Codex only: unlisted, but its hook schemas match
-a recipe); optimistic (newer than the verified range, or unlisted inside it: admitted on an
-assumed recipe; doctor shows it as new until it is verified by use, and Health adds no line);
-or refused (unparsable, inside a known-broken range, or older than every recipe). Every
-admitted version installs; a refused one exits 4. `doctor` prints the recipe registries.
-Installed is not observed: only native evidence (see `doctor`) proves hook delivery.
+Setup resolves the selected executable without invoking --version, --help or schema probes.
+Admission is contract_declared: the registered hook contract is configured, runtime metadata
+is unknown. Installation does not prove hook delivery, native support or receipt.
 
 Exit status:
   0  installed / removed / nothing to remove / status reported
   1  refused: the file changed concurrently, an owned entry was edited or removed by hand,
      the recorded allow rule was removed by hand, an unowned identical hook exists (for
-     codex also in another Codex config layer), a config.toml key the allowance needs holds
-     another value, or a file could not be written
+     codex also in another Codex config layer), a recorded legacy allowance is partial or
+     edited, or a file could not be written
   2  invalid arguments, undetectable Herdr instance, or invalid settings file (not a JSON
      object / not valid TOML, symlink, over 1 MiB)
-  4  the named harness is missing from PATH, or its version is refused (unparsable, inside a
-     known-broken range, or older than every recipe); with no harness named this is reported
-     as refused, not a failure";
+  4  the named harness is missing from PATH or --harness-binary is not an executable file;
+     with no harness named an absent harness is skipped";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupVerb {
@@ -532,7 +513,7 @@ pub fn run<W: Write>(
 
 /// Run one setup command and return its report; errors carry the exit status.
 pub fn execute(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
-    // A malformed argument is invalid (status 2), never a version refusal.
+    // A malformed argument is invalid (status 2), never an executable refusal.
     harness_binary(request, env)?;
     // A state directory left behind by an uninstalled plugin must not silently take new
     // installations (unsetup, status and every other command keep working on it).
@@ -626,8 +607,7 @@ fn verb_name(verb: SetupVerb) -> &'static str {
 /// Run one setup command for every harness and return the combined report.
 ///
 /// - `setup` installs for each harness found on PATH. One that is absent is
-///   `skipped`; one whose version no recipe admits is `refused` (with the
-///   reason). Neither is a failure.
+///   `skipped`, without failing the combined command.
 /// - `unsetup` removes the recorded installation of both harnesses, whether
 ///   or not the harness is still on PATH (removal never depends on it).
 /// - `setup-status` reports both harnesses.
@@ -730,14 +710,10 @@ pub fn render_all_text(report: &Value) -> String {
         let inner = &entry["report"];
         let version = || {
             let observed = &inner["harness_version"];
-            if observed["supported"] == true {
-                format!(
-                    "{name} {} (recipe {})",
-                    scalar(&observed["version"]),
-                    scalar(&observed["recipe"])
-                )
+            if observed["admission"] == "contract_declared" {
+                format!("{name} contract declared ({})", scalar(&observed["recipe"]))
             } else {
-                format!("version refused: {}", scalar(&observed["refusal"]))
+                format!("executable unavailable: {}", scalar(&observed["refusal"]))
             }
         };
         let file = || {
@@ -810,7 +786,7 @@ pub fn render_all_text(report: &Value) -> String {
     out
 }
 
-// ---------------------------------------------------------------- versions
+// ----------------------------------------------------- executable selection
 
 fn harness_binary(request: &SetupRequest, env: &SetupEnv) -> Result<Option<PathBuf>, RunError> {
     match &request.harness_binary {
@@ -828,121 +804,64 @@ fn harness_binary(request: &SetupRequest, env: &SetupEnv) -> Result<Option<PathB
     }
 }
 
-/// Bound for `<binary> --version` observation (the hook's own helper also
-/// caps output size and kills the process group on expiry).
-const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// One printable line of unrecognized `--version` output for a refusal.
-fn printable_line(stdout: &[u8]) -> String {
-    let text = String::from_utf8_lossy(stdout);
-    let line = text.strip_suffix('\n').unwrap_or(&text);
-    if line.is_empty() {
-        return "<empty --version output>".into();
-    }
-    line.chars().filter(|c| !c.is_control()).take(80).collect()
-}
-
-/// An accepted installed-version observation.
+/// Executable selection and declared contract, without runtime metadata.
 #[derive(Debug, Clone)]
 pub(crate) struct Observed {
     pub(crate) binary: PathBuf,
-    pub(crate) version: String,
+    pub(crate) version: Option<String>,
     pub(crate) recipe: &'static str,
 }
 
-/// Observe the installed harness and select its recipe, or return the
-/// actionable recipe-naming refusal. Codex obtains its witness only through
-/// `InstalledVersion::observe`, which the Codex planner requires.
+/// Resolve the selected wrapper without invoking it. The handle declares only
+/// the registered input/setup contract, not runtime support or native delivery.
 pub(crate) fn observe(
     request: &SetupRequest,
     env: &SetupEnv,
-) -> Result<(Observed, Option<codex::InstalledVersion>), String> {
-    observe_with_cache(request, env, None)
-}
-
-/// [`observe`] with an optional persistent Codex schema-fingerprint cache
-/// file (inside `<state>/harness`). Managed `launch` passes the hook's cache
-/// so a cold fingerprint scan, which can exceed the hook's time budget, is
-/// done once outside that budget and the hook answers from the warm cache.
-pub(crate) fn observe_with_cache(
-    request: &SetupRequest,
-    env: &SetupEnv,
-    codex_cache: Option<&Path>,
-) -> Result<(Observed, Option<codex::InstalledVersion>), String> {
+) -> Result<(Observed, Option<crate::harness::operational::CodexContract>), String> {
+    use crate::harness::operational::{ClaudeContract, CodexContract};
     let name = harness_name(request.harness);
-    let binary = harness_binary(request, env).map_err(|error| error.to_string())?;
-    let Some(binary) = binary else {
-        return Err(match request.harness {
-            Harness::Claude => claude::check_version("").unwrap_err(),
-            Harness::Codex => codex::VersionError::Unavailable.to_string(),
-            Harness::Human => NO_HUMAN_SETUP.to_owned(),
-        } + &format!(" (no executable `{name}` on PATH; pass --harness-binary)"));
-    };
-    match request.harness {
-        Harness::Claude => {
-            // The hook entrypoint's own observation and parser, so setup
-            // accepts exactly what the installed hook will accept.
-            let version = match codex::version_output(&binary, VERSION_TIMEOUT) {
-                Err(_) => String::new(),
-                Ok(out) => match claude::version_from_output(&out) {
-                    Some(version) => version,
-                    None => {
-                        let line = printable_line(&out);
-                        return Err(recipe::refusal_message(
-                            "claude",
-                            &line,
-                            claude::RECIPES,
-                            &recipe::LookupError::Unrecognized,
-                        ));
-                    }
-                },
-            };
-            let recipe = claude::check_version(&version)?;
-            Ok((
-                Observed {
-                    binary,
-                    version,
-                    recipe: recipe.id,
-                },
-                None,
-            ))
-        }
-        Harness::Codex => {
-            let witness = codex::InstalledVersion::observe_with(
-                &binary,
-                codex::VERSION_TIMEOUT,
-                codex_cache.map_or(
-                    crate::harness::codex_schema::FingerprintCache::Memory,
-                    crate::harness::codex_schema::FingerprintCache::ReadWrite,
-                ),
-            )
-            .map_err(|error| error.to_string())?;
-            Ok((
-                Observed {
-                    binary,
-                    version: witness.as_str().to_owned(),
-                    recipe: witness.recipe().id,
-                },
-                Some(witness),
-            ))
-        }
-        Harness::Human => Err(NO_HUMAN_SETUP.to_owned()),
+    let binary = harness_binary(request, env)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("no executable `{name}` on PATH; pass --harness-binary"))?;
+    use std::os::unix::fs::PermissionsExt;
+    if !fs::metadata(&binary)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    {
+        return Err(format!("{} is not an executable file", binary.display()));
     }
+    let (recipe, contract) = match request.harness {
+        Harness::Claude => {
+            let _contract = ClaudeContract::registered();
+            ("claude-hooks-2.1.283", None)
+        }
+        Harness::Codex => ("codex-hooks-v1", Some(CodexContract::registered())),
+        Harness::Human => return Err(NO_HUMAN_SETUP.to_owned()),
+    };
+    Ok((
+        Observed {
+            binary,
+            version: None,
+            recipe,
+        },
+        contract,
+    ))
 }
 
-fn observation_json(result: &Result<(Observed, Option<codex::InstalledVersion>), String>) -> Value {
+fn observation_json(
+    result: &Result<(Observed, Option<crate::harness::operational::CodexContract>), String>,
+) -> Value {
     match result {
         Ok((observed, _)) => json!({
-            "supported": true,
+            "admission": "contract_declared",
             "binary": observed.binary.display().to_string(),
             "version": observed.version,
             "recipe": observed.recipe,
         }),
-        Err(refusal) => json!({"supported": false, "refusal": refusal}),
+        Err(refusal) => json!({"admission": "unavailable", "version": null, "refusal": refusal}),
     }
 }
 
-pub(crate) fn refuse_version(refusal: String) -> RunError {
+pub(crate) fn refuse_executable(refusal: String) -> RunError {
     api(ErrorCode::UnsupportedHarness, refusal)
 }
 
@@ -1383,7 +1302,7 @@ pub fn claude_paths(env: &SetupEnv) -> Result<(PathBuf, PathBuf), RunError> {
 fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
     let settings = env.claude_settings()?;
     env.hook_argv(Harness::Claude)?;
-    let (observed, _) = observe(request, env).map_err(refuse_version)?;
+    let (observed, _) = observe(request, env).map_err(refuse_executable)?;
     prepare_state(env)?;
     let manifest = claude_manifest(env, &settings)?;
     let mut file = OwnedFile::new(settings.clone(), manifest.clone(), b"{}");
@@ -1994,29 +1913,9 @@ pub(crate) fn codex_owned_command(env: &SetupEnv) -> Result<String, RunError> {
         .map_err(|_| invalid("the hook command cannot be quoted for Codex"))
 }
 
-/// What the Codex sandbox allowance enables, reported with it.
+/// Historical allowance explanation for inspection only; no new allowance is installed.
 pub fn codex_sandbox_note() -> String {
-    let measured = CODEX_SANDBOX_MEASURED_VERSIONS.join(" and ");
-    format!(
-        "Codex's default `-s workspace-write` sandbox refuses \
-     connect() to the herdr-threads daemon socket (EPERM), so sandboxed herdr-threads commands \
-     cannot reach the daemon (transport_denied). These three config.toml keys add this one \
-     Unix socket to the sandbox's allowed sockets: sandbox_workspace_write.network_access=true is what makes Codex start its \
-     network proxy (without it the proxy settings do nothing); features.network_proxy.enabled=true \
-     turns on the proxy's enforcement; features.network_proxy.unix_sockets gains only the named \
-     daemon socket (sockets already listed there stay allowed). No domain is allowed, so other network access from sandboxed commands stays \
-     denied: measured on Codex {measured} only, the only versions setup writes this \
-     allowance for. In the Codex demo and sandbox-probe runs other Unix sockets, \
-     the Herdr server socket, loopback and external TCP were refused (EPERM) and proxied HTTPS \
-     got 403. The socket path \
-     is stable across daemon restarts but belongs to this state directory and Herdr instance. \
-     workspace-write also refuses writes outside the workspace and tmp (EPERM), and every \
-     mutation (send, ack, accept, leave, invite, check-in) records a pending-operation intent \
-     and the caller's context locally first, so sandbox_workspace_write.writable_roots gains \
-     exactly this instance's two client-side journal directories, <instance>/intents and \
-     <instance>/contexts; the instance directory, the SQLite database and the daemon's files \
-     stay read-only (measured in codex-sandbox-writes-probe)"
-    )
+    "A legacy owned config.toml allowance may enable sandbox networking, a daemon socket and client journal roots. Setup installs none of these values. Run commands through approved outside-sandbox execution; unsetup removes only unchanged owned values.".to_owned()
 }
 
 /// Codex versions on which the allowance's default-deny was measured: the
@@ -2027,8 +1926,8 @@ pub fn codex_sandbox_note() -> String {
 /// docs/evidence/codex-1593-sandbox-probe/). The
 /// dangerous half of the allowance is `network_access=true`: on a build that
 /// ignored or did not enforce `features.network_proxy`, it would leave
-/// workspace-write with unrestricted networking. So setup writes the
-/// allowance only for a measured version, never merely an admitted one.
+/// workspace-write with unrestricted networking. Historical setup admitted
+/// only measured versions; current setup installs no allowance.
 pub const CODEX_SANDBOX_MEASURED_VERSIONS: &[&str] = codex::SANDBOX_MEASURED_VERSIONS;
 
 /// The loud warning for a recorded sandbox allowance that outlived the
@@ -2053,7 +1952,7 @@ pub(crate) fn codex_unmeasured_allowance_warning(
     }
     let observed = match version {
         Some(version) => format!("Codex {version}"),
-        None => "a Codex version that was not observed or not admitted".to_owned(),
+        None => "a Codex runtime whose metadata is unavailable".to_owned(),
     };
     Some(format!(
         "WARNING: sandbox_workspace_write.network_access=true is installed in {} for an \
@@ -2064,63 +1963,6 @@ pub(crate) fn codex_unmeasured_allowance_warning(
         paths.config.display(),
         CODEX_SANDBOX_MEASURED_VERSIONS.join(", ")
     ))
-}
-
-/// The stable daemon socket of this state directory and host endpoint that
-/// the allowance names, or why it is withheld for this version. Computed
-/// only: nothing is created.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CodexSocketPolicyError {
-    /// Hook admission succeeded, but this build's effective socket policy has
-    /// no conclusive default-deny evidence. This is not a version refusal.
-    Unvalidated {
-        version: String,
-    },
-    Unavailable(String),
-}
-
-impl std::fmt::Display for CodexSocketPolicyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unvalidated { version } => write!(
-                f,
-                "Codex {version} socket policy is unvalidated for this installation (measured: \
-                 {}). No new global network allowance is authorized. This does not establish \
-                 incompatibility. Legacy in-sandbox transport needs controlled allow/deny evidence \
-                 bound to the target executable and effective configuration; managed launch \
-                 uses approved outside-sandbox CLI commands instead",
-                CODEX_SANDBOX_MEASURED_VERSIONS.join(", ")
-            ),
-            Self::Unavailable(reason) => write!(f, "socket path unavailable: {reason}"),
-        }
-    }
-}
-
-pub(crate) fn codex_sandbox_socket(
-    env: &SetupEnv,
-    witness: &codex::InstalledVersion,
-) -> Result<String, CodexSocketPolicyError> {
-    let version = witness.as_str();
-    if !CODEX_SANDBOX_MEASURED_VERSIONS.contains(&version) {
-        return Err(CodexSocketPolicyError::Unvalidated {
-            version: version.to_owned(),
-        });
-    }
-    let state = env
-        .state_dir()
-        .map_err(|error| CodexSocketPolicyError::Unavailable(error.to_string()))?;
-    let host = env
-        .host_endpoint()
-        .map_err(|error| CodexSocketPolicyError::Unavailable(error.to_string()))?;
-    let context = RuntimeContext::explicit(state.to_path_buf(), host, None).map_err(|error| {
-        CodexSocketPolicyError::Unavailable(format!("invalid host endpoint: {error}"))
-    })?;
-    let socket = stable_socket_path(&instance_dir(&context)).map_err(|error| {
-        CodexSocketPolicyError::Unavailable(format!("daemon socket path: {error}"))
-    })?;
-    socket.to_str().map(str::to_owned).ok_or_else(|| {
-        CodexSocketPolicyError::Unavailable("the daemon socket path is not UTF-8".to_owned())
-    })
 }
 
 /// The client-side directories a sandboxed herdr-threads command writes, which the allowance
@@ -2184,7 +2026,7 @@ pub(crate) fn codex_missing_roots_warning(env: &SetupEnv, version: Option<&str>)
         return None;
     }
     Some(format!(
-        "the Codex sandbox allowance in {} does not list this instance's writable roots ({}) in sandbox_workspace_write.writable_roots: under the workspace-write sandbox herdr-threads send, ack, accept, leave, invite and check-in fail with `Operation not permitted`. Run `herdr-threads setup codex` to add them",
+        "the Codex sandbox allowance in {} does not list this instance's writable roots ({}) in sandbox_workspace_write.writable_roots: under the workspace-write sandbox herdr-threads send, ack, accept, leave, invite and check-in fail with `Operation not permitted`. Run commands through approved outside-sandbox execution; `herdr-threads unsetup codex` removes the legacy allowance",
         paths.config.display(),
         roots.join(", ")
     ))
@@ -2360,60 +2202,15 @@ fn allowance_error(error: codex_config::AllowanceError, config: &Path) -> RunErr
     }
 }
 
-/// `error` with `note` appended to its message.
-fn with_note(error: RunError, note: &str) -> RunError {
-    match error {
-        RunError::Api(mut api) => {
-            api.detail = format!("{}; {note}", api.detail);
-            RunError::Api(api)
-        }
-        RunError::Io(error) => failed(format!("{error}; {note}")),
-        other => other,
-    }
-}
-
-fn allowance_json(
-    socket: &Result<String, CodexSocketPolicyError>,
-    roots: &[String],
-    inspection: Option<&codex_config::AllowanceInspection>,
-) -> Value {
-    match socket {
-        Ok(socket) => json!({
-            "socket_path": socket,
-            "keys": codex_config::allowance_keys(socket, roots)
-                .iter()
-                .map(|(path, _)| path.join("."))
-                .fold(Vec::<String>::new(), |mut keys, key| {
-                    if !keys.contains(&key) {
-                        keys.push(key);
-                    }
-                    keys
-                }),
-            "writable_roots": roots,
-            "recorded": inspection.is_some_and(|i| i.recorded.is_some()),
-            "present": inspection.is_some_and(|i| i.present),
-            "writable_roots_present": inspection.is_some_and(|i| i.roots_present(roots)),
-            "pre_existing": inspection
-                .and_then(|i| i.recorded.as_ref())
-                .map(|m| m.keys.iter().filter(|k| k.pre_existing).map(|k| k.path.join(".")).collect::<Vec<_>>()),
-            "scope": format!(
-                "this state directory and Herdr instance; stable across daemon restarts; \
-                 default-deny measured on Codex {} only",
-                CODEX_SANDBOX_MEASURED_VERSIONS.join(" and ")
-            ),
-            "note": codex_sandbox_note(),
-        }),
-        Err(reason) => json!({
-            "socket_path": null,
-            "omitted": reason.to_string(),
-            "validation": if matches!(reason, CodexSocketPolicyError::Unvalidated { .. }) {
-                "unvalidated"
-            } else {
-                "unavailable"
-            },
-            "recorded": inspection.is_some_and(|i| i.recorded.is_some()),
-        }),
-    }
+/// Historical ownership remains inspectable; setup never adds an allowance.
+fn allowance_json(inspection: Option<&codex_config::AllowanceInspection>) -> Value {
+    json!({
+        "socket_path": inspection.and_then(|i| i.recorded.as_ref()).map(|m| &m.socket),
+        "validation": "unvalidated",
+        "omitted": "setup uses approved outside-sandbox commands and installs no sandbox allowance",
+        "recorded": inspection.is_some_and(|i| i.recorded.is_some()),
+        "present": inspection.is_some_and(|i| i.present),
+    })
 }
 
 /// Attach the unmeasured-allowance warning to a `sandbox` report.
@@ -2428,35 +2225,46 @@ fn with_unmeasured(mut sandbox: Value, warning: Option<String>) -> Value {
 fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
     env.hook_argv(Harness::Codex)?;
     let paths = codex_paths(env)?;
-    let (observed, witness) = observe(request, env).map_err(refuse_version)?;
-    let witness = witness.expect("codex observation carries a witness");
+    let (observed, contract) = observe(request, env).map_err(refuse_executable)?;
+    let contract = contract.expect("Codex has a registered contract");
+    // Validate the declared composition without manufacturing a version witness.
+    lib::plan_codex_for_contract(&[], &env.hook_argv(Harness::Codex)?, &contract).map_err(
+        |error| {
+            settings_error(
+                error,
+                request.verb,
+                SettingsKind::CodexUser,
+                &paths.hooks,
+                &paths.hooks_manifest,
+            )
+        },
+    )?;
     let owned_command = codex_owned_command(env)?;
     let layers = observe_codex_config(env, &owned_command);
     refuse_duplicate(&layers, &owned_command, &paths.hooks)?;
-    let socket = codex_sandbox_socket(env, &witness);
-    let roots = match &socket {
-        Ok(_) => codex_sandbox_roots(env).map_err(invalid)?,
-        Err(_) => Vec::new(),
-    };
-    // Prove the allowance composes before anything is written, so a foreign
-    // config.toml value leaves both files untouched.
-    if let Ok(socket) = &socket {
-        let current = match fs::symlink_metadata(&paths.config) {
-            Ok(_) => lib::config_bytes(&paths.config).map_err(|error| {
-                allowance_error(codex_config::AllowanceError::Setup(error), &paths.config)
-            })?,
-            Err(_) => Vec::new(),
-        };
-        let recorded = codex_config::read_manifest(&paths.config_manifest).map_err(|error| {
+    // Legacy allowances are left for owned unsetup. Incomplete or edited
+    // records still refuse before hooks change, preserving the installer seam.
+    // A dangling symlink is still an ownership record, never absence.
+    if fs::symlink_metadata(&paths.config_manifest)
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(allowance_error(
+            codex_config::AllowanceError::Setup(SetupError::Invalid),
+            &paths.config,
+        ));
+    }
+    let inspection =
+        codex_config::inspect(&paths.config, &paths.config_manifest).map_err(|error| {
             allowance_error(codex_config::AllowanceError::Setup(error), &paths.config)
         })?;
-        if recorded.is_none() {
-            codex_config::plan_install(&current, socket, &roots)
-                .map_err(|error| allowance_error(error, &paths.config))?;
-        }
+    if let Some(manifest) = &inspection.recorded
+        && (manifest.phase != lib::InstallPhase::Installed || !inspection.present)
+    {
+        return Err(allowance_error(
+            codex_config::AllowanceError::Setup(SetupError::Conflict),
+            &paths.config,
+        ));
     }
-    // The roots are not created here (setup creates no daemon state): the CLI creates them
-    // on first use, which the sandbox allows because each root covers its own path.
     prepare_state(env)?;
     let mut warnings = Vec::new();
     let mut hooks_file = OwnedFile::new(paths.hooks.clone(), paths.hooks_manifest.clone(), b"{}");
@@ -2467,53 +2275,6 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
         &mut hooks_file,
         &mut warnings,
     )?;
-    let mut allowance_changed = false;
-    let mut created_config = false;
-    if let Ok(socket) = &socket {
-        let mut config_file =
-            OwnedFile::new(paths.config.clone(), paths.config_manifest.clone(), b"");
-        if codex_config::read_manifest(&paths.config_manifest)
-            .ok()
-            .flatten()
-            .is_none()
-        {
-            config_file.prepare()?;
-        }
-        match codex_config::install(&paths.config, &paths.config_manifest, socket, &roots) {
-            Ok(done) => {
-                allowance_changed = done.changed;
-                created_config = config_file.created_file;
-                config_file.record(&mut warnings);
-            }
-            Err(error) => {
-                config_file.undo();
-                let mut error = allowance_error(error, &paths.config);
-                // The hooks were installed first: a failed allowance must not leave them
-                // behind (the command would exit with an error yet change behavior). Hooks
-                // an earlier setup installed, or adopted ones (nothing written), stay.
-                if !already && !adopted {
-                    let note = match remove_user_settings(
-                        SettingsKind::CodexUser,
-                        &paths.hooks,
-                        &paths.hooks_manifest,
-                    ) {
-                        Ok(()) => {
-                            delete_created(&paths.hooks, &paths.hooks_manifest, b"{}");
-                            "the hook installation was rolled back; nothing was installed"
-                                .to_owned()
-                        }
-                        Err(rollback) => format!(
-                            "the hooks in {} could not be rolled back ({rollback:?}); run \
-                             `herdr-threads unsetup codex` to remove them",
-                            paths.hooks.display()
-                        ),
-                    };
-                    error = with_note(error, &note);
-                }
-                return Err(error);
-            }
-        }
-    }
     for layer in &layers {
         if layer.has_other_herdr_threads_hook && layer.path != paths.hooks {
             warnings.push(format!(
@@ -2530,21 +2291,13 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
         }
     }
     warnings.extend(codex_foreign_proxy_warnings(env));
-    let unmeasured = codex_unmeasured_allowance_warning(env, Some(witness.as_str()));
-    if let Err(reason) = &socket {
-        match &unmeasured {
-            // The allowance from an earlier setup is still installed: saying
-            // it was "not written" would hide that it is live.
-            Some(warning) => warnings.push(warning.clone()),
-            None => warnings.push(format!("sandbox socket allowance not written: {reason}")),
-        }
-    }
+    let unmeasured = codex_unmeasured_allowance_warning(env, None);
     let command = shared_command(&installed.owned);
     let inspection = codex_config::inspect(&paths.config, &paths.config_manifest).ok();
     Ok(json!({
         "action": if adopted {
             "adopted"
-        } else if already && !allowance_changed {
+        } else if already {
             "already_installed"
         } else {
             "installed"
@@ -2557,13 +2310,13 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
         "manifest": paths.hooks_manifest.display().to_string(),
         "config_manifest": paths.config_manifest.display().to_string(),
         "created_hooks_file": hooks_file.created_file,
-        "created_config_file": created_config,
+        "created_config_file": false,
         "instance": instance_json(env),
         "hook_argv": env.hook_argv(Harness::Codex)?,
         "command": command,
         "events": installed.owned.iter().map(|entry| entry.event.clone()).collect::<Vec<_>>(),
         "sandbox": with_unmeasured(
-            allowance_json(&socket, &roots, inspection.as_ref()),
+            allowance_json(inspection.as_ref()),
             unmeasured
         ),
         "trust": codex_trust_json(&paths, command.as_deref()),
@@ -2572,7 +2325,7 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
         "observed": "unknown",
         "note": "installed is not observed: run `herdr-threads doctor` for native evidence. \
                  Codex sessions with another CODEX_HOME, or launched with \
-                 --ignore-user-config, do not load these hooks or the allowance",
+                 --ignore-user-config, do not load these hooks",
         "warnings": warnings,
     }))
 }
@@ -2685,29 +2438,11 @@ fn codex_status(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErro
         return Ok(report);
     };
     let inspection = codex_config::inspect(&paths.config, &paths.config_manifest).ok();
-    let (socket, version) = match &observation {
-        Ok((_, Some(witness))) => (
-            codex_sandbox_socket(env, witness),
-            Some(witness.as_str().to_owned()),
-        ),
-        _ => (
-            Err(CodexSocketPolicyError::Unavailable(
-                "the installed Codex version was not admitted".into(),
-            )),
-            None,
-        ),
-    };
-    let unmeasured = codex_unmeasured_allowance_warning(env, version.as_deref());
-    let missing_roots = codex_missing_roots_warning(env, version.as_deref());
-    let roots = codex_sandbox_roots(env).unwrap_or_default();
+    let unmeasured = codex_unmeasured_allowance_warning(env, None);
     report["config_file"] = json!(paths.config.display().to_string());
-    report["sandbox"] = with_unmeasured(
-        allowance_json(&socket, &roots, inspection.as_ref()),
-        unmeasured.clone(),
-    );
+    report["sandbox"] = with_unmeasured(allowance_json(inspection.as_ref()), unmeasured.clone());
     let warnings: Vec<String> = unmeasured
         .into_iter()
-        .chain(missing_roots)
         .chain(codex_foreign_proxy_warnings(env))
         .collect();
     if !warnings.is_empty() {
@@ -2889,15 +2624,6 @@ mod tests {
             assert_eq!(parsed.state_dir.as_deref(), Some(Path::new("/s d")));
         }
         assert!(env(None).hook_argv(Harness::Claude).is_err());
-    }
-
-    /// Kills: echoing control characters or unbounded output into a refusal.
-    #[test]
-    fn unrecognized_version_output_is_reported_as_one_printable_line() {
-        assert_eq!(printable_line(b"claude 2.1.284\n"), "claude 2.1.284");
-        assert_eq!(printable_line(b""), "<empty --version output>");
-        assert_eq!(printable_line(b"a\x1b[31mb\n"), "a[31mb");
-        assert_eq!(printable_line(&[b'x'; 300]).len(), 80);
     }
 
     /// CODEX_HOME resolution as Codex does it. Kills: ignoring CODEX_HOME,

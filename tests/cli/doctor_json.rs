@@ -16,6 +16,7 @@ fn admission_strings_are_the_closed_set() {
     assert_eq!(
         strings,
         [
+            "contract_declared",
             "listed",
             "schema-matched, live-unverified",
             "optimistic",

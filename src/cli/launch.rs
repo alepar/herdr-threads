@@ -3,8 +3,8 @@
 //! (`harness::launch::launch_managed`).
 //!
 //! Preflight, in order:
-//! 1. installed-version recipe gate: `<harness> --version` must be admitted by
-//!    the admission ladder (the same observation `setup` and the hook use);
+//! 1. resolve the selected executable and declare its registered contract,
+//!    without invoking diagnostic flags or inferring runtime identity;
 //! 2. inside the policy: a fresh explicit-target read that must be an
 //!    available shell, the pane's seat resolved through the daemon's ordinary
 //!    guarded `seat resolve` path (a recovery hold refuses), the owned
@@ -216,9 +216,8 @@ pub const LAUNCH_HELP: &str = "Target:
   guarded `agent start` refuses a busy pane.
 
 Preflight (nothing is started when any step refuses):
-  - `<kind> --version` must not be refused by the admission ladder (unparsable, inside a
-    known-broken range, or older than every recipe: exit 4); an optimistic or schema-matched
-    version is admitted with its label;
+  - the selected executable must resolve; its registered contract is declared without
+    invoking --version, --help or schema probes, and runtime metadata remains unknown;
   - the pane's seat is resolved like `seat resolve --pane`; a recovery-held target
     needs `seat rebind ... --operator` or a fresh seat first;
   - the owned user-level hooks must be set up (`herdr-threads setup claude|codex`) in the
@@ -785,29 +784,15 @@ fn execute_guarded_inner(
         env: &effective,
         ..*parts
     };
-    // 1. Installed-version recipe gate.
+    // 1. Executable selection and declared contract.
     let setup_request = SetupRequest {
         verb: SetupVerb::Status,
         harness: request.harness,
         harness_binary: request.harness_binary.clone(),
         prompt_suggestions: Default::default(),
     };
-    // Codex: warm the hook's persistent fingerprint cache here, outside the
-    // hook's time budget, so a cold scan of an unlisted (schema-matched)
-    // version is not repeated, and refused, by every budget-bound hook.
-    // Best effort: without an owned state root the scan stays in memory.
-    let codex_cache = match request.harness {
-        ContextHarness::Codex => parts
-            .env
-            .state_dir
-            .as_deref()
-            .and_then(|state| crate::harness::codex_evidence::prepare(state).ok())
-            .map(|private| crate::harness::codex_evidence::cache_path(&private)),
-        ContextHarness::Claude | ContextHarness::Human => None,
-    };
-    let (observed, _witness) =
-        setup::observe_with_cache(&setup_request, parts.env, codex_cache.as_deref())
-            .map_err(setup::refuse_version)?;
+    let (observed, _contract) =
+        setup::observe(&setup_request, parts.env).map_err(setup::refuse_executable)?;
     let inspector = SetupHookInspector {
         env: parts.env.clone(),
         harness: request.harness,
@@ -952,6 +937,7 @@ fn execute_guarded_inner(
         "config_dir": config_dir,
         "codex": codex,
         "harness_version": observed.version,
+        "admission": "contract_declared",
         "recipe": observed.recipe,
         "binding": binding,
     });
@@ -973,6 +959,7 @@ fn execute_guarded_inner(
         "config_dir": config_dir,
         "codex": codex,
         "harness_version": {
+            "admission": "contract_declared",
             "binary": observed.binary.display().to_string(),
             "version": observed.version,
             "recipe": observed.recipe,

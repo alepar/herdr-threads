@@ -74,19 +74,29 @@ impl HarnessStatesProvider {
         run(&(self.manifest)())
     }
 
-    /// Health's lines: at most one per harness (the broken version seen most
-    /// recently within 24 hours, under the contract id the harness's hooks send now).
+    /// At most one actual input failure per harness in the 24-hour Health
+    /// window. Scoped unavailable-runtime failures never become version rows.
     pub fn health_lines(&self, budget: &CallBudget) -> Result<Vec<String>, ApiError> {
         let now = self.now_ms();
         let mut all = Vec::new();
         for harness in HARNESSES {
-            all.push((harness, self.store.harness_evidence_all(harness, budget)?));
+            all.push((
+                harness,
+                self.store.harness_evidence_all(harness, budget)?,
+                self.store.contract_diagnostics(harness, budget)?,
+            ));
         }
         Ok(self.with_manifest(|manifest| {
             all.iter()
-                .filter_map(|(harness, rows)| {
-                    state::roll_up(harness, rows, manifest, env!("CARGO_PKG_VERSION"), now)
-                        .health_line()
+                .filter_map(|(harness, rows, diagnostics)| {
+                    diagnostics
+                        .iter()
+                        .find(|row| row.last_seen_at >= now.saturating_sub(state::HEALTH_WINDOW_MS))
+                        .map(|row| row.line())
+                        .or_else(|| {
+                            state::roll_up(harness, rows, manifest, env!("CARGO_PKG_VERSION"), now)
+                                .health_line()
+                        })
                 })
                 .collect()
         }))
@@ -98,10 +108,18 @@ impl HarnessStatesProvider {
         let mut harnesses = Vec::new();
         for harness in HARNESSES {
             let rows = self.store.harness_evidence_all(harness, budget)?;
+            let diagnostics = self.store.contract_diagnostics(harness, budget)?;
             let unattributed = self
                 .store
                 .last_unattributed(harness, budget)?
                 .map(|(reason, at)| UnattributedReport { reason, at });
+            let unattributed = diagnostics
+                .first()
+                .map(|row| UnattributedReport {
+                    reason: row.line(),
+                    at: row.last_seen_at,
+                })
+                .or(unattributed);
             let failures = self
                 .parse_failures
                 .as_ref()
@@ -130,7 +148,14 @@ impl HarnessStatesProvider {
 
 fn line_for(harness: &str, version: &str, derived: &state::Derived) -> String {
     match &derived.state {
-        State::Broken(broken) => state::broken_line(harness, version, broken),
+        State::Broken(state::Broken {
+            cause: state::BrokenCause::LocalViolation { event, field },
+            ..
+        }) => format!("harness {harness} {version} contract input failure: {event}/{field}"),
+        State::Broken(_) => format!(
+            "{harness} {version}: historical advisory — {}",
+            state::source_text(&derived.state)
+        ),
         other => format!(
             "{harness} {version}: {} \u{2014} {}",
             state::state_word(other),
@@ -176,7 +201,15 @@ fn harness_report(
             state: state::state_word(&verdict.derived.state).to_owned(),
             source: state::source_text(&verdict.derived.state),
             line: line_for(harness, &verdict.version, &verdict.derived),
-            notes: verdict.derived.doctor_notes.clone(),
+            notes: {
+                let mut notes = verdict.derived.doctor_notes.clone();
+                notes.push(if harness == "claude" {
+                    "runtime metadata source: newest runtime-written Claude transcript entry (optional)"
+                } else {
+                    "historical attributed metadata; rollout creator does not identify the current runtime"
+                }.into());
+                notes
+            },
             issue_url: state::issue_url(&verdict.derived.state),
             last_seen_at: verdict.last_seen_at,
             in_health_window: verdict.in_health_window,

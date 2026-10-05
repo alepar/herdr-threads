@@ -7,7 +7,7 @@
 #   harness-canary.sh --probe HARNESS VERSION [same options]   one probe; prints a probeResult JSON
 #   harness-canary.sh --self-test                              offline self-test (no network, npm, cargo)
 #   harness-canary.sh --write-probe-files P HARNESS VERSION BINARY
-#   harness-canary.sh --check-admission DOCTOR_JSON CANARY_PROBE_JSON   t0.admission on saved files; prints status<TAB>detail<TAB>admission
+#   harness-canary.sh --check-admission DOCTOR_JSON CANARY_PROBE_JSON   core t0.admission on saved files; no runtime/native proof
 #
 # Exit: 0 every harness all_pass / no_candidates / known_broken_persists; 1 any break or inconclusive;
 # 2 any infra error, bad arguments or an isolation refusal. In --probe mode: 0 pass, 1 fail, 2 infra.
@@ -150,7 +150,7 @@ def load(name):
 versions = load("versions")
 cmd, args = sys.argv[1], sys.argv[2:]
 try:
-    if cmd == "expected":  # H V JSON -> expected_admission (§D3 t0.admission), never influenced by --baseline
+    if cmd == "expected":  # H V JSON -> historical diagnostic expected_admission, never influenced by --baseline
         harness, version, path = args
         doc = versions.load_versions_json(path)
         if versions.in_any_range(version, versions.known_broken(doc, harness)):
@@ -268,15 +268,15 @@ if [ "$MODE" = write-probe-files ]; then
   exit 0
 fi
 
-# --check-admission DOCTOR PROBE: the t0.admission verdict on a saved `doctor --json` and the probe's
-# canary-probe.json (harness, expected_admission). Exit 0 pass/skip, 1 fail, 2 infra (not_found).
+# --check-admission DOCTOR PROBE: core t0.admission on saved ordinary doctor JSON.
+# The probe supplies the harness; expected_admission remains a separate historical
+# diagnostic expectation. Exit 0 core pass, 1 fail, 2 infra (not_found); no runtime/native proof.
 if [ "$MODE" = check-admission ]; then
   [ -f "${CHECK_ARGS[0]}" ] || die "--check-admission: no such file: ${CHECK_ARGS[0]}"
   [ -f "${CHECK_ARGS[1]}" ] || die "--check-admission: no such file: ${CHECK_ARGS[1]}"
-  probe_fields=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["harness"], d["expected_admission"])' "${CHECK_ARGS[1]}") \
+  ca_harness=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["expected_admission"]; print(d["harness"])' "${CHECK_ARGS[1]}") \
     || die "--check-admission: ${CHECK_ARGS[1]} is not a canary-probe.json"
-  read -r ca_harness ca_expected <<<"$probe_fields"
-  ca_line=$(python3 "$CANARY/admission.py" evaluate --harness "$ca_harness" --expected "$ca_expected" "${CHECK_ARGS[0]}")
+  ca_line=$(python3 "$CANARY/admission.py" evaluate-core --harness "$ca_harness" "${CHECK_ARGS[0]}")
   printf '%s\n' "$ca_line"
   case ${ca_line%%$'\t'*} in pass|skip) exit 0 ;; infra) exit 2 ;; *) exit 1 ;; esac
 fi
@@ -377,11 +377,11 @@ HT_S=()
 HOOK_FIRES_RAN=0         # set by t0.hook-fires; t0.payload-parse then requires a hook capture
 SCHEMA_RESULT=''         # match|drift|unextractable, set by t0.schema (codex)
 ADMISSION_OBSERVED=''    # doctor's admission string, set by t0.admission
-EXPECTED_ADMISSION=unasserted
+EXPECTED_ADMISSION=unasserted # historical diagnostic scope only
 
 # Order matters: setup before config-load/hook-fires (they run the setup-written configuration); hook-fires
-# before payload-parse (it parses the captures); t0.schema before t0.admission (a Codex version above
-# verified_max is finalized against it, coverage r2); doctor checks and unsetup after the witness is swapped
+# before payload-parse (it parses the captures); t0.schema is a separate historical diagnostic,
+# while t0.admission checks ordinary declared core operation; doctor checks and unsetup after the witness is swapped
 # back out, so none of them is captured into capture/tier0.
 TIER0_CHECKS=(t0.version t0.setup t0.config-load t0.hook-fires t0.payload-parse t0.schema t0.admission
   t0.launch-flags t0.npm-shim-admission t0.launch-tables t0.unsetup)
@@ -467,16 +467,21 @@ def hook_captures(harness, capdir):
     return found
 
 
-if cmd == "setup-assert":  # HARNESS VERSION OUTFILE CONFIGDIR -> `pass|fail<TAB>detail`
-    harness, version, outfile, confdir = args
+if cmd == "setup-assert":  # HARNESS DIAGNOSTIC_VERSION OUTFILE CONFIGDIR -> `pass|fail<TAB>detail`
+    harness, _, outfile, confdir = args
     doc = load(outfile)
     setup = doc.get("setup") if isinstance(doc, dict) else None
+    observation = setup.get("harness_version") if isinstance(setup, dict) else None
     if not isinstance(setup, dict):
         print("fail\tsetup printed no JSON `setup` object")
     elif setup.get("action") != "installed":
         print(f"fail\tsetup.action is {setup.get('action')!r}, expected 'installed'")
-    elif (setup.get("harness_version") or {}).get("version") != version:
-        print(f"fail\tsetup.harness_version.version is {(setup.get('harness_version') or {}).get('version')!r}, expected {version!r}")
+    elif not isinstance(observation, dict) or observation.get("admission") != "contract_declared":
+        print("fail\tsetup.harness_version must declare the core contract")
+    elif observation.get("version") is not None and not isinstance(observation["version"], str):
+        print("fail\tsetup.harness_version.version must be optional string metadata")
+    # Setup validates core installation; optional runtime metadata does not
+    # qualify it. The independent t0.version check retains diagnostic V.
     elif harness == "claude":
         settings = load(os.path.join(confdir, "settings.json"))
         pre = [g for g in owned_groups(settings, "PreToolUse") if "Bash" in str(g.get("matcher", ""))]
@@ -721,8 +726,7 @@ chk_t0_admission() {
   ht_xrun doctor 60 doctor
   # doctor exits non-zero while no daemon runs (the canary never starts one); only its JSON matters
   local line status detail
-  line=$(python3 "$CANARY/admission.py" evaluate --harness "$H" --expected "$EXPECTED_ADMISSION" \
-    ${SCHEMA_RESULT:+--schema "$SCHEMA_RESULT"} "$LOGS/doctor.out")
+  line=$(python3 "$CANARY/admission.py" evaluate-core --harness "$H" "$LOGS/doctor.out")
   IFS=$'\t' read -r status detail ADMISSION_OBSERVED <<<"$line"
   case $status in
     pass|fail|skip) CK_STATUS=$status; CK_DETAIL=$detail ;;

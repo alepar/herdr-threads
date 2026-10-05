@@ -153,7 +153,9 @@ pub fn classify_payload(
         .as_ref()
         .and_then(|value| value.get("session_id"))
         .and_then(Value::as_str)
-        .filter(|id| id.len() <= crate::protocol::commands::HARNESS_EVIDENCE_SESSION_BYTES)
+        .filter(|id| {
+            !id.is_empty() && id.len() <= crate::protocol::commands::HARNESS_EVIDENCE_SESSION_BYTES
+        })
         .map(str::to_owned);
     Some(Classified {
         harness: name,

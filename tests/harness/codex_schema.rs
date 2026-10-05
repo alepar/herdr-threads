@@ -554,20 +554,11 @@ fn mode(path: &Path) -> u32 {
         & 0o777
 }
 
-/// The hook entrypoint's Codex observation with a state directory: the
-/// fingerprint cache lives in a private `<state>/harness/` (0700) as a 0600
-/// file keyed by binary identity and is consulted by a later (one-shot) hook
-/// process; the admission evidence is stored beside it and rewritten only
-/// when it changes; a cache that is not private is ignored and replaced.
-/// Kills: the hook observing without the persistent cache (the tampered
-/// entry would not be seen), trusting a group/other-writable cache file,
-/// not storing the admission evidence (or storing it as listed), rewriting
-/// the record on every hook, and a cache or record wider than 0600/0700.
+/// Explicit diagnostic observation retains private fingerprint/evidence caches.
+/// Operational hooks never consume or write these diagnostic records.
 #[test]
-fn hook_observation_uses_a_private_persistent_cache_and_stores_evidence() {
-    use crate::cli::hook::{InstalledHarness, observe_harness_in};
+fn diagnostic_observation_uses_a_private_persistent_cache_and_stores_evidence() {
     use crate::harness::codex_evidence;
-    use crate::harness::context::Harness;
     let root = private_dir("hook-cache");
     let state = root.join("state");
     std::fs::create_dir(&state).unwrap();
@@ -576,13 +567,22 @@ fn hook_observation_uses_a_private_persistent_cache_and_stores_evidence() {
     std::fs::create_dir(&bin).unwrap();
     let schemas = committed_schemas();
     synthetic_binary(&bin, "codex", "0.160.0", &embedded(&schemas));
-    let path = std::ffi::OsString::from(bin.as_os_str());
     let budget = Duration::from_secs(5);
-    let observe = || observe_harness_in(Harness::Codex, Some(&path), budget, Some(&state));
+    let observe = || {
+        let private = codex_evidence::prepare(&state).unwrap();
+        let cache = codex_evidence::cache_path(&private);
+        let admission = codex::InstalledAdmission::observe_binary(
+            bin.join("codex"),
+            budget,
+            codex_schema::FingerprintCache::ReadWrite(&cache),
+        );
+        codex_evidence::record(&codex_evidence::admission_path(&private), &admission, 123).unwrap();
+        admission.result
+    };
 
     // Cold: fingerprinted, cached privately, evidence stored.
     codex_schema::clear_memory_cache_for_test();
-    let Ok(InstalledHarness::Codex(version)) = observe() else {
+    let Ok(version) = observe() else {
         panic!("cold observation refused");
     };
     assert!(matches!(
@@ -626,7 +626,7 @@ fn hook_observation_uses_a_private_persistent_cache_and_stores_evidence() {
     assert_ne!(tampered.as_bytes(), original.as_slice());
     std::fs::write(&cache, &tampered).unwrap();
     codex_schema::clear_memory_cache_for_test();
-    let Ok(InstalledHarness::Codex(drifted)) = observe() else {
+    let Ok(drifted) = observe() else {
         panic!("a drifted fingerprint is admitted optimistically");
     };
     assert!(
@@ -646,7 +646,7 @@ fn hook_observation_uses_a_private_persistent_cache_and_stores_evidence() {
     // again, and the cache rewritten private.
     std::fs::set_permissions(&cache, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
     codex_schema::clear_memory_cache_for_test();
-    assert!(matches!(observe(), Ok(InstalledHarness::Codex(_))));
+    assert!(observe().is_ok());
     assert_eq!(mode(&cache), 0o600);
     assert!(
         !std::fs::read_to_string(&cache)
@@ -658,9 +658,9 @@ fn hook_observation_uses_a_private_persistent_cache_and_stores_evidence() {
 }
 
 /// Read-only cache access (doctor) consults the cache but never creates or
-/// writes it; without a state directory, or under an unsafe state root, the
-/// hook observation persists nothing and still admits by fingerprint.
-/// Kills: doctor writing the hook's cache, and the hook creating state under
+/// writes it; operational hook contract selection persists nothing, whatever
+/// the state directory or diagnostic fingerprint.
+/// Kills: a read-only diagnostic writing its cache, and a hook creating state under
 /// a missing or group/other-writable state root.
 #[test]
 fn read_only_and_stateless_observation_write_nothing() {
