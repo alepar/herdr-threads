@@ -1,0 +1,31 @@
+{
+  "context": {
+    "context": "bounded cooperative context",
+    "lifecycle_ack": {
+      "event_id": "EVENT",
+      "session_id": "SESSION",
+      "mode": "startup"
+    }
+  },
+  "observer": {
+    "context": "observer must not return this",
+    "lifecycle_ack": {
+      "event_id": "EVENT",
+      "session_id": "SESSION",
+      "mode": "current"
+    }
+  },
+  "malformed": {
+    "context": "bad",
+    "lifecycle_ack": null,
+    "extra": "PRIVATE RESULT"
+  },
+  "mismatch": {
+    "context": "bad",
+    "lifecycle_ack": {
+      "event_id": "wrong",
+      "session_id": "SESSION",
+      "mode": "startup"
+    }
+  }
+}
