@@ -267,6 +267,21 @@ impl Drop for Session {
         if let Some(daemon) = self.daemon.take() {
             let _ = daemon.join();
         }
+        // The elected daemon redirects process stderr into its private log.
+        // Restore the captured panic diagnostic after it has restored stderr,
+        // before IsolatedHerdr removes the fixture directory.
+        if std::thread::panicking()
+            && let Ok(context) =
+                RuntimeContext::explicit(self.state.clone(), self.herdr.socket_path(), None)
+            && let Ok(paths) = InstancePaths::resolve(&context)
+            && let Ok(bytes) = fs::read(herdr_threads::daemon::logs::daemon_log_path(&paths))
+        {
+            let tail = &bytes[bytes.len().saturating_sub(16 * 1024)..];
+            eprintln!(
+                "private daemon failure log:\n{}",
+                String::from_utf8_lossy(tail)
+            );
+        }
     }
 }
 
@@ -278,21 +293,22 @@ fn wait_until(what: &str, timeout: Duration, mut done: impl FnMut() -> bool) {
     }
 }
 
-/// Records the instant a polled counter first exceeds `above`.
-struct FirstExceeding {
+/// Waits for the first commit, retaining its producer-side timestamp rather
+/// than charging observer-thread scheduling delay to the worker's latency.
+struct FirstCommit {
     at: Arc<Mutex<Option<Instant>>>,
     stop: Arc<AtomicBool>,
     poller: Option<JoinHandle<()>>,
 }
-impl FirstExceeding {
-    fn watch(read: impl Fn() -> u64 + Send + 'static, above: u64) -> Self {
+impl FirstCommit {
+    fn watch(read: impl Fn() -> Option<Instant> + Send + 'static) -> Self {
         let at = Arc::new(Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
         let (slot, halt) = (Arc::clone(&at), Arc::clone(&stop));
         let poller = std::thread::spawn(move || {
             while !halt.load(Ordering::SeqCst) {
-                if read() > above {
-                    *slot.lock().unwrap() = Some(Instant::now());
+                if let Some(committed_at) = read() {
+                    *slot.lock().unwrap() = Some(committed_at);
                     return;
                 }
                 std::thread::sleep(Duration::from_millis(1));
@@ -315,13 +331,26 @@ impl FirstExceeding {
         None
     }
 }
-impl Drop for FirstExceeding {
+impl Drop for FirstCommit {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(poller) = self.poller.take() {
             let _ = poller.join();
         }
     }
+}
+
+#[test]
+fn commit_latency_excludes_delayed_observation() {
+    // The producer completed before the observer was scheduled. Reading the
+    // stored timestamp must not relabel that commit as happening now.
+    let committed_at = Instant::now() - Duration::from_millis(250);
+    let mut observation = FirstCommit::watch(move || Some(committed_at));
+    assert_eq!(
+        observation.wait(Duration::from_secs(5)),
+        Some(committed_at),
+        "observer scheduling must not inflate commit latency"
+    );
 }
 
 /// A content digest per table, so a send's writes are the tables whose digest
@@ -433,12 +462,8 @@ fn send_is_attempted_within_100ms_without_a_tick_wait() {
     // lane has nothing left to do before measuring.
     s.wait_commits_quiet("wake", Duration::from_millis(1500));
     let before = table_digests(&s.db());
-    let baseline = s.commits("wake");
-    let probe = s.probe.clone();
-    let mut attempt = FirstExceeding::watch(
-        move || probe.commit_counts().get("wake").copied().unwrap_or(0),
-        baseline,
-    );
+    let committed_at = s.probe.next_commit_instant(Lane::Wakes);
+    let mut attempt = FirstCommit::watch(move || *committed_at.lock().unwrap());
     let sent_after = Instant::now();
     scene.send(0, "latency probe", &[]);
     let attempted_at = attempt
@@ -610,13 +635,9 @@ fn deadline_commit_creating_a_warning_wake_is_attempted_within_100ms() {
         &["invite", &thread, "--seat", &guest, "--deadline", "1"],
     );
     session.wait_commits_quiet("wake", Duration::from_millis(1500));
-    let baseline = session.commits("wake");
     let kicks_before = session.probe.kick_log().len();
-    let probe = session.probe.clone();
-    let mut attempt = FirstExceeding::watch(
-        move || probe.commit_counts().get("wake").copied().unwrap_or(0),
-        baseline,
-    );
+    let committed_at = session.probe.next_commit_instant(Lane::Wakes);
+    let mut attempt = FirstCommit::watch(move || *committed_at.lock().unwrap());
     // The deadline passes after 1 s; the deadline lane notices at its next
     // 5 s safety tick (documented as up to 5 s late).
     let attempted_at = attempt
