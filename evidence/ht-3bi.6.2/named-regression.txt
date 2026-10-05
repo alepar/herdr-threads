@@ -1,0 +1,44 @@
+   Compiling herdr-threads v0.2.3 (/Users/alepar/AleCode/herdr-threads/.worktrees/harness-adapters/.worktrees/harness-adapters--task-ht-3bi.6.2)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.75s
+     Running unittests src/lib.rs (/Users/alepar/AleCode/herdr-threads/.worktrees/harness-adapters/target/debug/deps/herdr_threads-1c2d7f4b9aaa457a)
+
+running 1 test
+test harness::hermes::assets::tests::hermes_owned_assets_share_physical_profile_lock_and_remove_only_locked_generation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2702 filtered out; finished in 0.16s
+
+     Running unittests src/main.rs (/Users/alepar/AleCode/herdr-threads/.worktrees/harness-adapters/target/debug/deps/herdr_threads-2c61c74c17fd57fd)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/combined.rs (/Users/alepar/AleCode/herdr-threads/.worktrees/harness-adapters/target/debug/deps/combined-8ece2fdf502dd891)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 195 filtered out; finished in 0.00s
+
+     Running tests/hook_entrypoint.rs (/Users/alepar/AleCode/herdr-threads/.worktrees/harness-adapters/target/debug/deps/hook_entrypoint-9c279c9913214405)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 0.00s
+
+     Running tests/integration.rs (/Users/alepar/AleCode/herdr-threads/.worktrees/harness-adapters/target/debug/deps/integration-5a2e491a58d478c1)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 113 filtered out; finished in 0.00s
+
+     Running tests/package.rs (/Users/alepar/AleCode/herdr-threads/.worktrees/harness-adapters/target/debug/deps/package-4816cd8c3cddbfe9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+     Running tests/service.rs (/Users/alepar/AleCode/herdr-threads/.worktrees/harness-adapters/target/debug/deps/service-49564015b0d67d73)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.00s

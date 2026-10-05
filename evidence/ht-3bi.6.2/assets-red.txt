@@ -1,0 +1,25 @@
+nice: setpriority: Operation not permitted
+   Compiling herdr-threads v0.2.3 (/Users/alepar/AleCode/herdr-threads/.worktrees/harness-adapters/.worktrees/harness-adapters--task-ht-3bi.6.2)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.47s
+     Running unittests src/lib.rs (/Users/alepar/AleCode/herdr-threads/.worktrees/harness-adapters/target/debug/deps/herdr_threads-1c2d7f4b9aaa457a)
+
+running 1 test
+test harness::hermes::assets::tests::stages_completed_bridge_and_six_settings_in_observed_home ... FAILED
+
+failures:
+
+---- harness::hermes::assets::tests::stages_completed_bridge_and_six_settings_in_observed_home stdout ----
+
+thread 'harness::hermes::assets::tests::stages_completed_bridge_and_six_settings_in_observed_home' (61727263) panicked at src/harness/hermes/assets.rs:35:9:
+assertion `left == right` failed
+  left: Err(Conflict)
+ right: Ok(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    harness::hermes::assets::tests::stages_completed_bridge_and_six_settings_in_observed_home
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2688 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

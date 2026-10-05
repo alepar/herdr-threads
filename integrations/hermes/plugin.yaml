@@ -1,0 +1,10 @@
+manifest_version: 2
+name: herdr-threads
+version: "1.0.0"
+kind: standalone
+description: "Bounded Herdr Threads callback transport"
+provides_hooks:
+  - pre_llm_call
+  - post_tool_call
+  - on_session_start
+  - on_session_reset

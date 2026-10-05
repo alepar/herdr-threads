@@ -31,8 +31,8 @@ pub struct UnsupportedInstalledRuntime {
     pub reason: &'static str,
 }
 
-/// Current installation has no complete nonmutating runtime/config producer.
-/// Refuse before imports, child execution, profile/assets inspection or launch.
+/// Legacy native admission remains unavailable. The separate profile observer
+/// can inspect assets, but supplies no callback/native acceptance qualification.
 pub fn qualify_installed() -> Result<RuntimeMetadata, ProbeFailure> {
     Err(ProbeFailure::Unavailable(QUALIFICATION_GAP.into()))
 }
@@ -217,7 +217,7 @@ pub struct RuntimeMetadata {
 }
 
 impl RuntimeMetadata {
-    /// No qualified readonly native producer or dispatcher snapshot is present.
+    /// Legacy metadata cannot grant native callback admission.
     pub fn qualification_gap(&self) -> &'static str {
         QUALIFICATION_GAP
     }
@@ -747,6 +747,425 @@ mod tests {
             )
             .unwrap_err(),
             ProbeFailure::ChildFailed
+        );
+    }
+}
+
+/// Diagnostic configuration quality; fallback subtype is never inferred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigQuality {
+    Successful,
+    Unknown,
+    FailedConfigRead,
+}
+
+/// Validated selected-home observation for assets only. This is not a
+/// QualifiedRuntime and cannot supply callback admission or Working status.
+#[derive(Debug)]
+pub struct ProfileObservation {
+    pub identity: RuntimeDescriptor,
+    pub profile: String,
+    pub home: PathBuf,
+    pub physical_home: PathBuf,
+    pub config_quality: ConfigQuality,
+    pub enabled: Option<Vec<String>>,
+    pub disabled: Option<Vec<String>>,
+}
+impl ProfileObservation {
+    pub fn configured_enabled(&self) -> Option<bool> {
+        let enabled = self.enabled.as_ref()?;
+        let disabled = self.disabled.as_ref()?;
+        (self.config_quality == ConfigQuality::Successful).then(|| {
+            enabled.iter().any(|s| s == "herdr-threads")
+                && !disabled.iter().any(|s| s == "herdr-threads")
+        })
+    }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeOrigins {
+    hermes_bootstrap: PathBuf,
+    hermes_constants: PathBuf,
+    #[serde(rename = "hermes_cli.profiles")]
+    profiles: PathBuf,
+    #[serde(rename = "hermes_cli.version_info")]
+    version: PathBuf,
+    #[serde(rename = "hermes_cli.config")]
+    config: PathBuf,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileResult {
+    schema_version: u32,
+    status: String,
+    reason: Option<String>,
+    runtime_descriptor: Option<RuntimeDescriptor>,
+    profile: Option<String>,
+    home: Option<PathBuf>,
+    physical_home: Option<PathBuf>,
+    interpreter: Option<PathBuf>,
+    source_root: Option<PathBuf>,
+    module_origins: Option<NativeOrigins>,
+    dependency_paths: Option<Vec<PathBuf>>,
+    enabled: Option<Vec<String>>,
+    disabled: Option<Vec<String>>,
+    config_quality: ConfigQuality,
+    fallback_kind: Option<String>,
+    environment_scope: String,
+    cli_dotenv_loaded: bool,
+    cli_scratch_rehomed: bool,
+    identity_provenance: String,
+    evidence_stage: String,
+}
+/// Strict complete schema2. Legacy API facts are intentionally absent.
+pub fn decode_profile_observation(
+    bytes: &[u8],
+    expected: &MetadataScope,
+) -> Result<ProfileObservation, ProbeFailure> {
+    if bytes.len() > 16384 {
+        return Err(ProbeFailure::Malformed);
+    }
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| ProbeFailure::Malformed)?;
+    let fields = [
+        "schema_version",
+        "status",
+        "reason",
+        "runtime_descriptor",
+        "profile",
+        "home",
+        "physical_home",
+        "interpreter",
+        "source_root",
+        "module_origins",
+        "dependency_paths",
+        "enabled",
+        "disabled",
+        "config_quality",
+        "fallback_kind",
+        "environment_scope",
+        "cli_dotenv_loaded",
+        "cli_scratch_rehomed",
+        "identity_provenance",
+        "evidence_stage",
+    ];
+    if !value
+        .as_object()
+        .is_some_and(|v| v.len() == fields.len() && fields.iter().all(|k| v.contains_key(*k)))
+    {
+        return Err(ProbeFailure::Malformed);
+    }
+    let r: ProfileResult = serde_json::from_slice(bytes).map_err(|_| ProbeFailure::Malformed)?;
+    if r.schema_version != 2
+        || r.fallback_kind.is_some()
+        || r.cli_dotenv_loaded
+        || r.cli_scratch_rehomed
+        || r.environment_scope != "declared_child_input_plus_native_bootstrap_profile_effects"
+        || r.identity_provenance != "startup_captured"
+    {
+        return Err(ProbeFailure::Malformed);
+    }
+    if r.status == "unavailable" {
+        if r.reason.as_deref() != Some("inspection_unavailable")
+            || r.evidence_stage != "unavailable"
+            || r.config_quality != ConfigQuality::Unknown
+            || fields[3..13].iter().any(|k| !value[*k].is_null())
+        {
+            return Err(ProbeFailure::Malformed);
+        }
+        return Err(ProbeFailure::Unavailable("inspection_unavailable".into()));
+    }
+    if r.status != "observed"
+        || r.reason.is_some()
+        || r.evidence_stage != "startup_profile_observation"
+    {
+        return Err(ProbeFailure::Malformed);
+    }
+    let descriptor = r.runtime_descriptor.ok_or(ProbeFailure::Malformed)?;
+    let descriptor_fields = [
+        "release_version",
+        "source",
+        "base_version",
+        "derived_version",
+        "commit",
+        "dirty",
+        "distance",
+    ];
+    if !value["runtime_descriptor"]
+        .as_object()
+        .is_some_and(|v| v.len() == 7 && descriptor_fields.iter().all(|k| v.contains_key(*k)))
+        || descriptor.release_version.is_some()
+        || !matches!(
+            descriptor.source.as_str(),
+            "build" | "commit-build" | "ci" | "docker" | "fallback" | "git" | "local" | "nix"
+        )
+        || descriptor.base_version.is_none()
+        || descriptor.derived_version.is_none()
+        || descriptor.dirty.is_none()
+        || (descriptor.source == "git"
+            && (descriptor.commit.is_none() || descriptor.distance.is_none()))
+    {
+        return Err(ProbeFailure::Malformed);
+    }
+    // This diagnostic retains the native source spelling, including
+    // commit-build; it does not construct an admission RuntimeIdentity key.
+    if descriptor
+        .base_version
+        .as_deref()
+        .is_none_or(|s| !safe(s, 128))
+        || descriptor
+            .derived_version
+            .as_deref()
+            .is_none_or(|s| !safe(s, 128))
+        || descriptor.commit.as_ref().is_some_and(|s| {
+            s.len() != 40
+                || !s
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        })
+        || descriptor.distance.is_some_and(|d| d > u32::MAX as u64)
+    {
+        return Err(ProbeFailure::Malformed);
+    }
+    let home = r.home.ok_or(ProbeFailure::Malformed)?;
+    let physical_home = r.physical_home.ok_or(ProbeFailure::Malformed)?;
+    if r.interpreter.as_ref() != Some(&expected.interpreter)
+        || r.source_root.as_ref() != Some(&expected.source_root)
+        || r.profile.as_ref() != Some(&expected.profile)
+        || home != expected.home
+        || !safe(&expected.profile, 256)
+        || [
+            &home,
+            &physical_home,
+            &expected.interpreter,
+            &expected.source_root,
+        ]
+        .iter()
+        .any(|p| !absolute(p))
+    {
+        return Err(ProbeFailure::Malformed);
+    }
+    let origins = r.module_origins.ok_or(ProbeFailure::Malformed)?;
+    let names = [
+        "hermes_bootstrap",
+        "hermes_constants",
+        "hermes_cli.profiles",
+        "hermes_cli.version_info",
+        "hermes_cli.config",
+    ];
+    let paths = [
+        origins.hermes_bootstrap,
+        origins.hermes_constants,
+        origins.profiles,
+        origins.version,
+        origins.config,
+    ];
+    if names.iter().zip(paths).any(|(name, path)| {
+        path != expected
+            .source_root
+            .join(format!("{}.py", name.replace('.', "/")))
+    }) || r.dependency_paths.as_ref().is_none_or(|v| {
+        v.len() != 1 || !absolute(&v[0]) || v[0].file_name().is_none_or(|n| n != "site-packages")
+    }) {
+        return Err(ProbeFailure::Malformed);
+    }
+    if r.config_quality == ConfigQuality::Successful {
+        if [&r.enabled, &r.disabled].iter().any(|v| {
+            v.as_ref()
+                .is_none_or(|names| names.len() > 128 || names.iter().any(|s| !safe(s, 256)))
+        }) {
+            return Err(ProbeFailure::Malformed);
+        }
+    } else if r.enabled.is_some() || r.disabled.is_some() {
+        return Err(ProbeFailure::Malformed);
+    }
+    Ok(ProfileObservation {
+        identity: descriptor,
+        profile: expected.profile.clone(),
+        home,
+        physical_home,
+        config_quality: r.config_quality,
+        enabled: r.enabled,
+        disabled: r.disabled,
+    })
+}
+
+/// Explicit source/profile invocation context; callers never substitute PATH Python.
+pub struct ProfileInspection<'a> {
+    pub launcher: &'a Path,
+    pub helper: &'a Path,
+    pub scope: &'a MetadataScope,
+    pub environment: &'a crate::harness::adapter::SetupEnvironment,
+    pub budget: &'a crate::protocol::time::CallBudget,
+}
+impl ProfileInspection<'_> {
+    pub fn observe(&self) -> Result<ProfileObservation, ProbeFailure> {
+        observe_selected_profile(
+            self.launcher,
+            self.helper,
+            self.scope,
+            self.environment,
+            self.budget,
+        )
+    }
+}
+
+/// Capture official argv, then execute it unchanged under ONE caller budget.
+/// No native call is performed by decoding, and no result grants admission.
+pub fn observe_selected_profile(
+    launcher: &Path,
+    helper: &Path,
+    expected: &MetadataScope,
+    env: &crate::harness::adapter::SetupEnvironment,
+    budget: &crate::protocol::time::CallBudget,
+) -> Result<ProfileObservation, ProbeFailure> {
+    let started = Instant::now();
+    let machine = capture_machine_metadata(launcher, helper, &expected.profile, env, budget)?
+        .machine_metadata;
+    check_budget(env.clock.as_ref(), budget, started)?;
+    if machine.interpreter.canonicalize().ok().as_ref() != Some(&expected.interpreter) {
+        return Err(ProbeFailure::UnsupportedShape);
+    }
+    let scope = serde_json::json!({"interpreter":expected.interpreter,"source_root":expected.source_root,"profile":expected.profile,"home":expected.home});
+    let mut command = Command::new(&machine.interpreter);
+    command
+        .args(&machine.argv[1..])
+        .env_clear()
+        .envs(&env.declared)
+        .env("HOME", env.home.as_ref().ok_or(ProbeFailure::Malformed)?)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("HERDR_HERMES_INSPECTION_SCOPE", scope.to_string())
+        .current_dir(&env.cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    if let Some(path) = &env.path {
+        command.env("PATH", path);
+    }
+    #[cfg(feature = "test-support")]
+    crate::test_support::spawn::tag(&mut command);
+    let bytes = run_capture(command, env.clock.as_ref(), budget, started)?;
+    let observation = decode_profile_observation(&bytes, expected)?;
+    check_budget(env.clock.as_ref(), budget, started)?;
+    Ok(observation)
+}
+
+#[cfg(test)]
+mod profile_observation_tests {
+    use super::*;
+    #[test]
+    fn startup_profile_schema_is_separate_from_legacy_qualification() {
+        let bytes = include_bytes!("../../../tests/fixtures/hermes/plugin-assets.json");
+        assert!(
+            decode_profile_observation(
+                bytes,
+                &MetadataScope {
+                    interpreter: "/fixture/store python/bin/python3".into(),
+                    source_root: "/fixture/native source".into(),
+                    profile: "default".into(),
+                    home: "/fixture/custom home".into()
+                }
+            )
+            .is_ok(),
+            "separate observation producer is missing"
+        );
+    }
+    fn fixture_scope() -> MetadataScope {
+        MetadataScope {
+            interpreter: "/fixture/store python/bin/python3".into(),
+            source_root: "/fixture/native source".into(),
+            profile: "default".into(),
+            home: "/fixture/custom home".into(),
+        }
+    }
+    #[test]
+    fn duplicate_native_origin_is_not_a_complete_profile_result() {
+        let raw = include_str!("../../../tests/fixtures/hermes/plugin-assets.json");
+        let changed=raw.replace("\"hermes_bootstrap\": \"/fixture/native source/hermes_bootstrap.py\"", "\"hermes_bootstrap\": \"/fixture/native source/hermes_bootstrap.py\",\"hermes_bootstrap\": \"/fixture/native source/hermes_bootstrap.py\"");
+        assert_eq!(
+            decode_profile_observation(changed.as_bytes(), &fixture_scope()).unwrap_err(),
+            ProbeFailure::Malformed
+        );
+    }
+    #[test]
+    fn profile_config_quality_scope_and_bounds_never_become_admission_facts() {
+        let data: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../tests/fixtures/hermes/plugin-assets.json"
+        ))
+        .unwrap();
+        for (field, value) in [
+            ("schema_version", serde_json::json!(1)),
+            ("evidence_stage", serde_json::json!("live_model")),
+            ("fallback_kind", serde_json::json!("last_known_good")),
+            ("cli_dotenv_loaded", serde_json::json!(true)),
+            ("environment_scope", serde_json::json!("full_cli")),
+            ("config_quality", serde_json::json!("failed_config_read")),
+            ("profile", serde_json::json!("work")),
+            ("enabled", serde_json::json!(["secret\nvalue"])),
+        ] {
+            let mut changed = data.clone();
+            changed[field] = value;
+            assert!(
+                decode_profile_observation(
+                    &serde_json::to_vec(&changed).unwrap(),
+                    &fixture_scope()
+                )
+                .is_err(),
+                "accepted {field}"
+            );
+        }
+        for field in [
+            "fallback_kind",
+            "reason",
+            "physical_home",
+            "runtime_descriptor",
+        ] {
+            let mut changed = data.clone();
+            changed.as_object_mut().unwrap().remove(field);
+            assert!(
+                decode_profile_observation(
+                    &serde_json::to_vec(&changed).unwrap(),
+                    &fixture_scope()
+                )
+                .is_err(),
+                "accepted missing {field}"
+            );
+        }
+        let mut failed = data;
+        failed["config_quality"] = serde_json::json!("failed_config_read");
+        failed["enabled"] = serde_json::Value::Null;
+        failed["disabled"] = serde_json::Value::Null;
+        let got =
+            decode_profile_observation(&serde_json::to_vec(&failed).unwrap(), &fixture_scope())
+                .unwrap();
+        assert_eq!(got.configured_enabled(), None);
+        assert!(decode_profile_observation(&vec![b' '; 16385], &fixture_scope()).is_err());
+        assert!(qualify_installed().is_err());
+    }
+    #[test]
+    fn native_stamp_source_spelling_is_retained_without_admission_identity() {
+        let mut value: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../tests/fixtures/hermes/plugin-assets.json"
+        ))
+        .unwrap();
+        value["runtime_descriptor"]["source"] = serde_json::json!("commit-build");
+        let got =
+            decode_profile_observation(&serde_json::to_vec(&value).unwrap(), &fixture_scope())
+                .unwrap();
+        assert_eq!(got.identity.source, "commit-build");
+        assert_eq!(
+            got.identity.commit.as_deref(),
+            Some("1234567890abcdef1234567890abcdef12345678")
+        );
+        assert_eq!(got.identity.distance, Some(1));
+        assert_eq!(got.identity.release_version, None);
+        value["runtime_descriptor"]["source"] = serde_json::json!("unknown");
+        assert!(
+            decode_profile_observation(&serde_json::to_vec(&value).unwrap(), &fixture_scope())
+                .is_err()
         );
     }
 }

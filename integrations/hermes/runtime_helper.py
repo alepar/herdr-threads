@@ -1,34 +1,174 @@
-"""Refuse unavailable native readonly qualification before imports or effects.
+"""Source-bound startup/profile observation, never runtime or callback admission.
 
-The audited installation supplies no complete readonly source/dependency/config
-producer or dispatcher-captured timeout snapshot. Machine argv is installation
-metadata only. No raw-config/default-timeout substitute can qualify this API.
+Only the official completed-bootstrap trace entry is accepted. Native inspection
+may initialize/recover Hermes-owned state. CLI dotenv and post-profile scratch
+re-home are deliberately absent. No registrars, auth/model or plugin discovery.
 """
-import argparse
+import importlib
 import json
+import os
+from pathlib import Path
 import sys
+import sysconfig
 import unicodedata
 
+SCOPE = 'declared_child_input_plus_native_bootstrap_profile_effects'
+FIELDS = ('runtime_descriptor', 'profile', 'home', 'physical_home', 'interpreter',
+          'source_root', 'module_origins', 'dependency_paths', 'enabled', 'disabled')
 
-def unavailable(reason):
-    return {"schema_version": 1, "status": "unsupported", "reason": reason,
-            "runtime_descriptor": None, "profile": None, "home": None,
-            "physical_home": None, "interpreter": None, "source_root": None,
-            "enabled": None, "disabled": None, "callback_timeout_ms": None,
-            "api": None, "evidence_stage": "unavailable"}
+
+def opaque(value, limit=256):
+    return (isinstance(value, str) and 0 < len(value.encode()) <= limit
+            and not any(unicodedata.category(c) == 'Cc' for c in value))
+
+
+def strict_json(raw):
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError('duplicate')
+            result[key] = value
+        return result
+    return json.loads(raw, object_pairs_hook=pairs,
+                      parse_constant=lambda _: (_ for _ in ()).throw(ValueError('nonfinite')))
+
+
+def origin(module):
+    file = getattr(module, '__file__', None)
+    spec = getattr(getattr(module, '__spec__', None), 'origin', None)
+    if not all(opaque(p, 4096) and os.path.isabs(p) for p in (file, spec)):
+        raise ValueError('origin')
+    resolved = Path(file).resolve(strict=True)
+    if resolved != Path(spec).resolve(strict=True):
+        raise ValueError('origin')
+    return resolved
+
+
+def empty(reason):
+    return {'schema_version': 2, 'status': 'unavailable', 'reason': reason,
+            **dict.fromkeys(FIELDS), 'config_quality': 'unknown', 'fallback_kind': None,
+            'environment_scope': SCOPE, 'cli_dotenv_loaded': False,
+            'cli_scratch_rehomed': False, 'identity_provenance': 'startup_captured',
+            'evidence_stage': 'unavailable'}
+
+
+def inspect(profile):
+    raw = os.environ.get('HERDR_HERMES_INSPECTION_SCOPE', '')
+    if len(raw.encode()) > 16384 or not opaque(profile):
+        raise ValueError('scope')
+    scope = strict_json(raw)
+    if not isinstance(scope, dict) or set(scope) != {'interpreter', 'source_root', 'profile', 'home'}:
+        raise ValueError('scope')
+    if scope['profile'] != profile:
+        raise ValueError('scope')
+    helper = Path(__file__).resolve(strict=True)
+    interpreter = Path(sys.executable).resolve(strict=True)
+    bootstrap = sys.modules.get('hermes_bootstrap')
+    root = origin(bootstrap).parent
+    if (root / 'hermes_bootstrap.py' != origin(bootstrap)
+            or str(root) != scope['source_root'] or str(interpreter) != scope['interpreter']
+            or getattr(bootstrap, '_root', None) != root
+            or getattr(bootstrap, '_pm_repair', None) is not False
+            or '_launch_python' not in vars(bootstrap) or bootstrap._launch_python is not None
+            or getattr(getattr(bootstrap, '__spec__', None), '_initializing', True)):
+        raise ValueError('entry')
+    main = sys.modules.get('__main__')
+    if (getattr(getattr(main, '__spec__', None), 'name', None) != 'trace'
+            or origin(main) != Path(sysconfig.get_path('stdlib')).resolve(strict=True) / 'trace.py'
+            or sys.argv != [str(helper), '--profile', profile]
+            or len(sys.orig_argv) != 9
+            or sys.orig_argv[1:3] != ['-I', '-c']
+            or sys.orig_argv[-5:] != ['--count', '--no-report', str(helper), '--profile', profile]
+            or len(sys.path) < 2 or sys.path[0] != str(helper.parent)):
+        raise ValueError('entry')
+    selected = sys.path[1]
+    if (not opaque(selected, 4096) or not os.path.isabs(selected)
+            or Path(selected).name != 'site-packages' or not Path(selected).is_dir()
+            or os.environ.get('PYTHONPATH') != os.pathsep.join((str(root), selected))):
+        raise ValueError('activation_shape')
+    # Check every already loaded native root/package origin before new imports.
+    for name, module in tuple(sys.modules.items()):
+        if name in ('hermes_bootstrap', 'hermes_constants') or name == 'hermes_cli' or name.startswith(('hermes_cli.', 'pm.')) or name == 'pm':
+            path = origin(module)
+            stem = root / name.replace('.', '/')
+            if path not in (stem.with_suffix('.py'), stem / '__init__.py'):
+                raise ValueError('mixed_origin')
+    sys.path[0] = str(root)  # Exactly the one slot trace replaced; retain all other order.
+    profiles = importlib.import_module('hermes_cli.profiles')
+    if origin(profiles) != root / 'hermes_cli' / 'profiles.py':
+        raise ValueError('origin')
+    canon = profiles.normalize_profile_name(profile)
+    profiles.validate_profile_name(canon)
+    if canon != profile:
+        raise ValueError('profile')
+    home = profiles.resolve_profile_env(profile)
+    if not opaque(home, 4096) or not os.path.isabs(home) or home != scope['home']:
+        raise ValueError('profile')
+    os.environ['HERMES_HOME'] = home
+    constants = importlib.import_module('hermes_constants')
+    version = importlib.import_module('hermes_cli.version_info')
+    config = importlib.import_module('hermes_cli.config')
+    modules = {'hermes_bootstrap': bootstrap, 'hermes_constants': constants,
+               'hermes_cli.profiles': profiles, 'hermes_cli.version_info': version,
+               'hermes_cli.config': config}
+    origins = {name: str(origin(module)) for name, module in modules.items()}
+    for name, path in origins.items():
+        wanted = root / (name.replace('.', '/') + '.py')
+        if Path(path) != wanted:
+            raise ValueError('origin')
+    if str(constants.get_hermes_home()) != home:
+        raise ValueError('profile')
+    physical = str(Path(home).resolve(strict=True))
+    if not Path(physical).is_dir():
+        raise ValueError('profile')
+    info = version.get_version_info()
+    descriptor = {'release_version': None, 'source': info.source, 'base_version': info.base_version,
+                  'derived_version': info.derived_version, 'commit': info.commit,
+                  'dirty': info.dirty, 'distance': info.distance}
+    if (descriptor['source'] not in ('build', 'commit-build', 'ci', 'docker', 'fallback', 'git', 'local', 'nix')
+            or not all(opaque(descriptor[k], 128) for k in ('base_version', 'derived_version'))
+            or type(descriptor['dirty']) is not bool
+            or (descriptor['distance'] is not None and (type(descriptor['distance']) is not int or not 0 <= descriptor['distance'] <= 4294967295))
+            or (descriptor['commit'] is not None and (not isinstance(descriptor['commit'], str) or len(descriptor['commit']) != 40 or any(c not in '0123456789abcdef' for c in descriptor['commit'])))
+            or (info.source == 'git' and (info.commit is None or info.distance is None))):
+        raise ValueError('identity')
+    quality, enabled, disabled = 'unknown', None, None
+    try:
+        data = config.load_config_readonly()
+        failed_type = config.FailedConfigRead
+        if isinstance(data, failed_type):
+            quality = 'failed_config_read'
+        elif type(data) is dict:
+            plugins = data.get('plugins')
+            if type(plugins) is dict:
+                lists = [plugins.get(k) for k in ('enabled', 'disabled')]
+                if all(type(v) is list and len(v) <= 128 and all(opaque(n) for n in v) for v in lists):
+                    quality = 'successful'
+                    enabled, disabled = lists
+    except Exception:
+        pass  # Only allowlisted quality, never config values/errors or inferred fallback.
+    result = empty(None)
+    result.update(status='observed', runtime_descriptor=descriptor, profile=profile,
+                  home=home, physical_home=physical, interpreter=str(interpreter), source_root=str(root),
+                  module_origins=origins, dependency_paths=[selected], enabled=enabled, disabled=disabled,
+                  config_quality=quality, evidence_stage='startup_profile_observation')
+    return result
 
 
 def main():
-    # -I ignores PYTHONDONTWRITEBYTECODE. No native module is imported here.
     sys.dont_write_bytecode = True
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--profile", required=True)
-    options = parser.parse_args()
-    profile = options.profile
-    valid = 0 < len(profile.encode()) <= 256 and not any(unicodedata.category(c) == "Cc" for c in profile)
-    reason = "native_read_only_boundary_unavailable" if valid else "profile_unavailable"
-    print(json.dumps(unavailable(reason), separators=(",", ":")))
+    try:
+        if len(sys.argv) != 3 or sys.argv[1] != '--profile':
+            raise ValueError('args')
+        result = inspect(sys.argv[2])
+        raw = json.dumps(result, separators=(',', ':'), allow_nan=False)
+        if len(raw.encode()) > 16384:
+            raise ValueError('output')
+    except (Exception, SystemExit):
+        raw = json.dumps(empty('inspection_unavailable'), separators=(',', ':'))
+    print(raw)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
