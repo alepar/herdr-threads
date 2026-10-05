@@ -115,13 +115,16 @@ class NativeProvider:
         self.captured_home = lexical_home
         info = self.version_api()
         source = getattr(info, "source", None)
-        if (not opaque(source, limit=32) or source == "unknown"
-                or not all(c in "abcdefghijklmnopqrstuvwxyz0123456789_" for c in source)):
+        if (not isinstance(source, str) or source not in (
+                "build", "commit-build", "ci", "docker", "fallback", "git", "local", "nix")):
             raise ValueError("identity_unavailable")
         descriptor = {"release_version": None, "source": source,
                       "base_version": info.base_version, "derived_version": info.derived_version,
                       "commit": info.commit, "dirty": info.dirty, "distance": info.distance}
-        for key in ("release_version", "base_version", "derived_version", "commit"):
+        for key in ("base_version", "derived_version"):
+            if not opaque(descriptor[key], limit=128):
+                raise ValueError("identity_unavailable")
+        for key in ("release_version", "commit"):
             value = descriptor[key]
             if value is not None and not opaque(value, limit=128):
                 raise ValueError("identity_unavailable")

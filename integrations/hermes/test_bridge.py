@@ -494,6 +494,64 @@ class BridgeTests(unittest.TestCase):
             self.ctx.unloads[0]()
             self.reader().thread.join(2)
 
+    def assert_startup_descriptor_refused(self, changes):
+        (self.state / "requests").unlink(missing_ok=True)
+        (self.state / "pid").unlink(missing_ok=True)
+        self.version = types.SimpleNamespace(**{**VERSION, **changes})
+        self.load(wait=False)
+        reader = self.reader()
+        try:
+            limit = time.monotonic() + 2
+            while reader.pending and time.monotonic() < limit:
+                time.sleep(.002)
+            self.assertFalse(reader.pending, "synthetic startup capture did not complete")
+            self.assertIsNone(self.request())
+            self.assertEqual(self.requests(), [], "malformed identity reached owned child")
+            self.assertFalse((self.state / "pid").exists(), "malformed identity started owned child")
+        finally:
+            self.ctx.unloads[0]()
+            reader.thread.join(2)
+            self.assertFalse(reader.thread.is_alive(), "synthetic reader leaked")
+
+    def test_null_required_startup_versions_cannot_deliver_context(self):
+        for field in ("base_version", "derived_version"):
+            with self.subTest(field=field):
+                self.assert_startup_descriptor_refused({field: None})
+
+    def test_undeclared_startup_source_cannot_deliver_context(self):
+        for source in ("invented", "unknown", "commit_build", "", None, 7):
+            with self.subTest(source=source):
+                self.assert_startup_descriptor_refused({"source": source})
+
+    def test_required_startup_version_bounds_cannot_deliver_context(self):
+        for field in ("base_version", "derived_version"):
+            for value in ("", 7, "x" * 129, "é" * 65, "0.21.5\n"):
+                with self.subTest(field=field, value=value):
+                    self.assert_startup_descriptor_refused({field: value})
+
+    def test_declared_non_git_sources_with_optional_fields_deliver_context(self):
+        for source in ("build", "commit-build", "ci", "docker", "fallback", "local", "nix"):
+            with self.subTest(source=source):
+                self.version = types.SimpleNamespace(**{**VERSION, "source": source,
+                                                        "commit": None, "distance": None,
+                                                        "base_version": "x" * 128,
+                                                        "derived_version": "é" * 64})
+                self.load()
+                try:
+                    before = len(self.requests())
+                    self.assertEqual(self.request(), {"context": "bounded cooperative context"})
+                    self.assertEqual(len(self.requests()), before + 1)
+                    identity = self.requests()[-1]["request"]["runtime_identity"]
+                    self.assertEqual(identity["source"], source)
+                    self.assertIsNone(identity["commit"])
+                    self.assertIsNone(identity["distance"])
+                    self.assertEqual(identity["base_version"], "x" * 128)
+                    self.assertEqual(identity["derived_version"], "é" * 64)
+                finally:
+                    self.ctx.unloads[0]()
+                    self.reader().thread.join(2)
+                    self.assertFalse(self.reader().thread.is_alive(), "synthetic reader leaked")
+
     def test_missing_initialized_native_api_does_not_start_reader(self):
         del self.modules["hermes_cli.config"].load_config_readonly
         self.load(wait=False)
