@@ -280,6 +280,17 @@ impl Drop for Session {
         if let Some(daemon) = self.daemon.take() {
             let _ = daemon.join();
         }
+        // Daemon stderr is redirected into this private file. Replay failures
+        // after joining restores stderr, before IsolatedHerdr removes the root.
+        if std::thread::panicking()
+            && let Ok(bytes) = fs::read(&self.log)
+        {
+            let tail = &bytes[bytes.len().saturating_sub(16 * 1024)..];
+            eprintln!(
+                "private daemon failure log:\n{}",
+                String::from_utf8_lossy(tail)
+            );
+        }
     }
 }
 
