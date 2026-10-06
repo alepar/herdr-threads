@@ -634,6 +634,44 @@ pub trait LaunchPolicy: Send + Sync {
     fn requires_process_hint(&self) -> bool {
         false
     }
+    /// Separately observed launch-only API/profile facts, never callback admission.
+    fn uses_prelaunch_observation(&self) -> bool {
+        false
+    }
+    fn observe_prelaunch(
+        &self,
+        _: &LaunchRequest,
+        _: &LaunchScope,
+        _: &CallBudget,
+    ) -> Result<Box<dyn std::any::Any + Send + Sync>, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "prelaunch observation unavailable",
+        ))
+    }
+    fn prepare_prelaunch(
+        &self,
+        _: &LaunchRequest,
+        _: &LaunchScope,
+        _: &(dyn std::any::Any + Send + Sync),
+        _: &LocalSetupStatus,
+        _: &dyn super::launch::CodexShellProbe,
+        _: &CallBudget,
+    ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "prelaunch preparation unavailable",
+        ))
+    }
+    fn recheck_prelaunch(
+        &self,
+        _: &LaunchRequest,
+        _: &LaunchScope,
+        _: &(dyn std::any::Any + Send + Sync),
+        _: &CallBudget,
+    ) -> Result<String, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "prelaunch recheck unavailable",
+        ))
+    }
     fn resolve_scope(
         &self,
         request: &LaunchRequest,

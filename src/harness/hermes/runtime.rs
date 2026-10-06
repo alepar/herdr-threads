@@ -793,6 +793,10 @@ struct NativeOrigins {
     version: PathBuf,
     #[serde(rename = "hermes_cli.config")]
     config: PathBuf,
+    #[serde(default, rename = "hermes_cli.plugins")]
+    plugins: Option<PathBuf>,
+    #[serde(default, rename = "hermes_cli.plugins_dispatch")]
+    dispatch: Option<PathBuf>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -817,6 +821,8 @@ struct ProfileResult {
     cli_scratch_rehomed: bool,
     identity_provenance: String,
     evidence_stage: String,
+    #[serde(default)]
+    api: Option<PrelaunchApi>,
 }
 /// Strict complete schema2. Legacy API facts are intentionally absent.
 pub fn decode_profile_observation(
@@ -947,6 +953,9 @@ pub fn decode_profile_observation(
         return Err(ProbeFailure::Malformed);
     }
     let origins = r.module_origins.ok_or(ProbeFailure::Malformed)?;
+    if origins.plugins.is_some() || origins.dispatch.is_some() {
+        return Err(ProbeFailure::Malformed);
+    }
     let names = [
         "hermes_bootstrap",
         "hermes_constants",
@@ -961,13 +970,20 @@ pub fn decode_profile_observation(
         origins.version,
         origins.config,
     ];
-    if names.iter().zip(paths).any(|(name, path)| {
-        path != expected
-            .source_root
-            .join(format!("{}.py", name.replace('.', "/")))
-    }) || r.dependency_paths.as_ref().is_none_or(|v| {
-        v.len() != 1 || !absolute(&v[0]) || v[0].file_name().is_none_or(|n| n != "site-packages")
-    }) {
+    if value["module_origins"]
+        .as_object()
+        .is_none_or(|v| v.len() != 5)
+        || names.iter().zip(paths).any(|(name, path)| {
+            path != expected
+                .source_root
+                .join(format!("{}.py", name.replace('.', "/")))
+        })
+        || r.dependency_paths.as_ref().is_none_or(|v| {
+            v.len() != 1
+                || !absolute(&v[0])
+                || v[0].file_name().is_none_or(|n| n != "site-packages")
+        })
+    {
         return Err(ProbeFailure::Malformed);
     }
     if r.config_quality == ConfigQuality::Successful {
@@ -1011,6 +1027,97 @@ impl ProfileInspection<'_> {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrelaunchApi {
+    register_hook: bool,
+    on_unload: bool,
+    invoke_hook: bool,
+    callbacks: Vec<String>,
+}
+/// Source/API/profile observation for launch alone; never a runtime witness.
+#[derive(Debug)]
+pub struct PrelaunchObservation {
+    pub profile: ProfileObservation,
+    pub interpreter: PathBuf,
+    pub source_root: PathBuf,
+    pub observation_fingerprint: String,
+}
+pub fn decode_prelaunch_observation(
+    bytes: &[u8],
+    interpreter: &Path,
+    profile: &str,
+) -> Result<PrelaunchObservation, ProbeFailure> {
+    if bytes.len() > 16384 {
+        return Err(ProbeFailure::Malformed);
+    }
+    // Typed decode of original bytes preserves duplicate-field refusal before
+    // normalizing the separate profile projection for schema2 validation.
+    let typed: ProfileResult =
+        serde_json::from_slice(bytes).map_err(|_| ProbeFailure::Malformed)?;
+    let mut value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| ProbeFailure::Malformed)?;
+    if value.as_object().is_none_or(|v| v.len() != 21) || typed.schema_version != 3 {
+        return Err(ProbeFailure::Malformed);
+    }
+    if typed.status == "unavailable" {
+        if typed.api.is_some() {
+            return Err(ProbeFailure::Malformed);
+        }
+    } else {
+        let api = typed.api.ok_or(ProbeFailure::Malformed)?;
+        let origins = typed.module_origins.ok_or(ProbeFailure::Malformed)?;
+        let root = typed.source_root.as_ref().ok_or(ProbeFailure::Malformed)?;
+        if !absolute(root)
+            || !api.register_hook
+            || !api.on_unload
+            || !api.invoke_hook
+            || api.callbacks
+                != [
+                    "pre_llm_call",
+                    "post_tool_call",
+                    "on_session_start",
+                    "on_session_reset",
+                ]
+            || typed.evidence_stage != "prelaunch_api_profile_observation"
+            || origins.plugins.as_ref() != Some(&root.join("hermes_cli/plugins.py"))
+            || origins.dispatch.as_ref() != Some(&root.join("hermes_cli/plugins_dispatch.py"))
+            || value["module_origins"]
+                .as_object()
+                .is_none_or(|v| v.len() != 7)
+        {
+            return Err(ProbeFailure::Malformed);
+        }
+    }
+    let stamp = crate::harness::setup::fingerprint(
+        &serde_json::to_vec(&value).map_err(|_| ProbeFailure::Malformed)?,
+    );
+    value
+        .as_object_mut()
+        .ok_or(ProbeFailure::Malformed)?
+        .remove("api");
+    value["schema_version"] = 2.into();
+    if typed.status != "unavailable" {
+        value["evidence_stage"] = "startup_profile_observation".into();
+        let origins = value["module_origins"]
+            .as_object_mut()
+            .ok_or(ProbeFailure::Malformed)?;
+        origins.remove("hermes_cli.plugins");
+        origins.remove("hermes_cli.plugins_dispatch");
+    }
+    let observed = decode_discovered_profile(
+        &serde_json::to_vec(&value).map_err(|_| ProbeFailure::Malformed)?,
+        interpreter,
+        profile,
+    )?;
+    Ok(PrelaunchObservation {
+        profile: observed,
+        interpreter: interpreter.into(),
+        source_root: typed.source_root.ok_or(ProbeFailure::Malformed)?,
+        observation_fingerprint: stamp,
+    })
+}
+
 /// Actual completed-bootstrap discovery supplies asset scope, never admission.
 pub fn discover_selected_profile(
     launcher: &Path,
@@ -1049,6 +1156,47 @@ pub fn discover_selected_profile(
     crate::test_support::spawn::tag(&mut command);
     let bytes = run_capture(command, env.clock.as_ref(), budget, started)?;
     let observed = decode_discovered_profile(&bytes, &interpreter, profile)?;
+    check_budget(env.clock.as_ref(), budget, started)?;
+    Ok(observed)
+}
+pub fn observe_prelaunch(
+    launcher: &Path,
+    helper: &Path,
+    profile: &str,
+    env: &crate::harness::adapter::SetupEnvironment,
+    budget: &crate::protocol::time::CallBudget,
+) -> Result<PrelaunchObservation, ProbeFailure> {
+    let started = Instant::now();
+    let machine =
+        capture_machine_metadata(launcher, helper, profile, env, budget)?.machine_metadata;
+    let interpreter = machine
+        .interpreter
+        .canonicalize()
+        .map_err(|_| ProbeFailure::Unavailable("interpreter_unavailable".into()))?;
+    check_budget(env.clock.as_ref(), budget, started)?;
+    let request =
+        serde_json::json!({"mode":"inspect_prelaunch","interpreter":interpreter,"profile":profile});
+    let mut command = Command::new(&machine.interpreter);
+    command
+        .args(&machine.argv[1..])
+        .env_clear()
+        .envs(&env.declared)
+        .env("HOME", env.home.as_ref().ok_or(ProbeFailure::Malformed)?)
+        .env("HERDR_HERMES_INSPECTION_SCOPE", request.to_string())
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .current_dir(&env.cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    if let Some(path) = &env.path {
+        command.env("PATH", path);
+    }
+    #[cfg(feature = "test-support")]
+    crate::test_support::spawn::tag(&mut command);
+    let bytes = run_capture(command, env.clock.as_ref(), budget, started)?;
+    let observed = decode_prelaunch_observation(&bytes, &interpreter, profile)?;
     check_budget(env.clock.as_ref(), budget, started)?;
     Ok(observed)
 }
@@ -1129,6 +1277,109 @@ pub fn observe_selected_profile(
 #[cfg(test)]
 mod profile_observation_tests {
     use super::*;
+    fn prelaunch_fixture() -> serde_json::Value {
+        let mut value: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../tests/fixtures/hermes/plugin-assets.json"
+        ))
+        .unwrap();
+        value["schema_version"] = 3.into();
+        value["enabled"] = serde_json::json!(["herdr-threads"]);
+        value["disabled"] = serde_json::json!([]);
+        value["evidence_stage"] = "prelaunch_api_profile_observation".into();
+        value["api"] = serde_json::json!({"register_hook":true,"on_unload":true,"invoke_hook":true,
+            "callbacks":["pre_llm_call","post_tool_call","on_session_start","on_session_reset"]});
+        value["module_origins"]["hermes_cli.plugins"] =
+            "/fixture/native source/hermes_cli/plugins.py".into();
+        value["module_origins"]["hermes_cli.plugins_dispatch"] =
+            "/fixture/native source/hermes_cli/plugins_dispatch.py".into();
+        value
+    }
+    #[test]
+    fn launch_only_schema_cannot_be_diagnostic_or_callback_qualification() {
+        let value = prelaunch_fixture();
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let scope = fixture_scope();
+        let observed = decode_prelaunch_observation(&bytes, &scope.interpreter, "default").unwrap();
+        assert_eq!(observed.profile.configured_enabled(), Some(true));
+        assert!(decode_profile_observation(&bytes, &scope).is_err());
+        assert!(decode_runtime_helper(&bytes, &scope).is_err());
+        assert!(
+            decode_prelaunch_observation(
+                include_bytes!("../../../tests/fixtures/hermes/plugin-assets.json"),
+                &scope.interpreter,
+                "default"
+            )
+            .is_err()
+        );
+        for (field, replacement) in [
+            ("api", serde_json::Value::Null),
+            (
+                "evidence_stage",
+                serde_json::json!("startup_profile_observation"),
+            ),
+            ("profile", serde_json::json!("work")),
+            ("interpreter", serde_json::json!("/other/python")),
+            ("cli_dotenv_loaded", serde_json::json!(true)),
+        ] {
+            let mut changed = value.clone();
+            changed[field] = replacement;
+            assert!(
+                decode_prelaunch_observation(
+                    &serde_json::to_vec(&changed).unwrap(),
+                    &scope.interpreter,
+                    "default"
+                )
+                .is_err(),
+                "accepted {field}"
+            );
+        }
+        for (field, replacement) in [
+            ("on_unload", serde_json::json!(false)),
+            (
+                "callbacks",
+                serde_json::json!([
+                    "pre_llm_call",
+                    "post_tool_call",
+                    "on_session_start",
+                    "on_session_start"
+                ]),
+            ),
+            ("unknown", serde_json::json!(true)),
+        ] {
+            let mut changed = value.clone();
+            changed["api"][field] = replacement;
+            assert!(
+                decode_prelaunch_observation(
+                    &serde_json::to_vec(&changed).unwrap(),
+                    &scope.interpreter,
+                    "default"
+                )
+                .is_err()
+            );
+        }
+        let mut changed = value.clone();
+        changed["module_origins"]["hermes_cli.plugins_dispatch"] =
+            "/foreign/plugins_dispatch.py".into();
+        assert!(
+            decode_prelaunch_observation(
+                &serde_json::to_vec(&changed).unwrap(),
+                &scope.interpreter,
+                "default"
+            )
+            .is_err()
+        );
+        let raw = String::from_utf8(bytes).unwrap().replace(
+            "\"schema_version\":3",
+            "\"schema_version\":3,\"schema_version\":3",
+        );
+        assert!(
+            decode_prelaunch_observation(raw.as_bytes(), &scope.interpreter, "default").is_err()
+        );
+        assert!(
+            decode_prelaunch_observation(&vec![b' '; 16385], &scope.interpreter, "default")
+                .is_err()
+        );
+    }
     #[test]
     fn discovered_profile_observation_needs_no_prior_root_or_home() {
         let bytes = include_bytes!("../../../tests/fixtures/hermes/plugin-assets.json");

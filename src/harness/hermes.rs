@@ -1,5 +1,6 @@
 //! Concrete Hermes bridge adapter. Cooperative startup observations are not native/model proof.
 pub mod assets;
+pub mod launch;
 pub mod runtime;
 use super::{
     adapter::*,
@@ -835,14 +836,17 @@ impl HarnessAdapter for HermesAdapter {
                 enabled: s.configured_enabled,
                 admitted: None,
                 observed: None,
-                configured_hook: None,
-                fingerprint: None,
+                configured_hook: s.launch_hook.clone(),
+                fingerprint: s.launch_hook.as_ref().map(|h| h.fingerprint.clone()),
                 diagnostics: vec![],
                 repairs: vec![],
                 projection: asset_projection(&s),
             })),
             Err(e) => SetupStatus::Failed(e),
         }
+    }
+    fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
+        Some(&launch::POLICY)
     }
     fn unsetup(
         &self,
@@ -891,6 +895,11 @@ fn inspect_profile(
         .map(PathBuf::from)
         .or_else(|| launcher(env))
         .ok_or_else(|| SetupFailure::Invalid("Hermes launcher unavailable".into()))?;
+    let helper = inspection_helper(env)?;
+    runtime::discover_selected_profile(&native, &helper, profile, env, budget)
+        .map_err(|_| SetupFailure::Invalid("Hermes profile inspection unavailable".into()))
+}
+fn inspection_helper(env: &SetupEnvironment) -> Result<PathBuf, SetupFailure> {
     let helper = env
         .state_dir
         .as_ref()
@@ -943,8 +952,7 @@ fn inspect_profile(
         }
         Err(error) => return Err(SetupFailure::Io(error)),
     }
-    runtime::discover_selected_profile(&native, &helper, profile, env, budget)
-        .map_err(|_| SetupFailure::Invalid("Hermes profile inspection unavailable".into()))
+    Ok(helper)
 }
 fn inspect_scope(
     scope: &ResolvedSetupScope,
@@ -2543,5 +2551,37 @@ mod adapter_tests {
         assert_eq!(notes[0].qualifications.len(), 3);
         assert_eq!(notes[1].qualifications.len(), 4);
         drop(notes);
+    }
+}
+
+#[cfg(test)]
+mod launch_boundary_tests {
+    #[test]
+    fn hermes_classic_launch_captured_scope_enablement_and_permission_flags() {
+        let registry = crate::harness::registry::builtins();
+        let registration = registry.by_id(registry.agent("hermes").unwrap()).unwrap();
+        let policy = registration
+            .launch_policy()
+            .expect("Hermes positive launch provider is missing");
+        assert!(policy.requires_process_hint());
+        assert!(
+            policy
+                .validate_native_argv(&[
+                    "--model".into(),
+                    "model Ω".into(),
+                    "-q".into(),
+                    "first turn".into()
+                ])
+                .is_ok()
+        );
+        for flag in [
+            "--oneshot",
+            "--yolo",
+            "--ignore-user-config",
+            "gateway",
+            "--resume",
+        ] {
+            assert!(policy.validate_native_argv(&[flag.into()]).is_err());
+        }
     }
 }

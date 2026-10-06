@@ -43,21 +43,70 @@ class RuntimeHelperTests(unittest.TestCase):
         self.home = self.root / "home with Ω"
         (self.home / "profiles" / "work").mkdir(parents=True)
 
-    def probe(self, profile="default", discovery=False, **extra):
+    def probe(self, profile="default", discovery=False, prelaunch=False, **extra):
         env = {"HOME": str(self.root), "HERMES_HOME": str(self.home),
                "FIXTURE_HOME": str(self.home), "FIXTURE_DEP": str(self.selected),
                "PYTHONDONTWRITEBYTECODE": "1", **extra}
         env["HERDR_HERMES_INSPECTION_SCOPE"] = json.dumps({
             "interpreter": str(Path(sys.executable).resolve()), "source_root": str(self.native),
             "profile": profile, "home": str(self.home if profile == 'default' else self.home / 'profiles' / profile)})
-        if discovery:
-            env["HERDR_HERMES_INSPECTION_SCOPE"] = json.dumps({"mode":"discover_selected_profile", "interpreter":str(Path(sys.executable).resolve()), "profile":profile})
+        if discovery or prelaunch:
+            env["HERDR_HERMES_INSPECTION_SCOPE"] = json.dumps({"mode":"inspect_prelaunch" if prelaunch else "discover_selected_profile", "interpreter":str(Path(sys.executable).resolve()), "profile":profile})
         child = subprocess.run([sys.executable, "-I", "-c", BOOT.format(root=str(self.native)),
                                 "--count", "--no-report", str(HELPER), "--profile", profile],
                                env=env, capture_output=True, timeout=5)
         self.assertEqual(child.returncode, 0, child.stderr.decode())
         self.assertLessEqual(len(child.stdout), 16384)
         return json.loads(child.stdout)
+
+    def make_api(self):
+        package = self.native / "hermes_cli"
+        (package / "plugins_dispatch.py").write_text(
+            "class PluginDispatchMixin:\n def invoke_hook(self,*a,**kw): raise AssertionError('invoked')\n")
+        (package / "plugins.py").write_text(
+            "from .plugins_dispatch import PluginDispatchMixin\n"
+            "VALID_HOOKS={'pre_llm_call','post_tool_call','on_session_start','on_session_reset'}\n"
+            "class PluginContext:\n def __init__(self): raise AssertionError('instantiated')\n"
+            " def register_hook(self,*a): raise AssertionError('registered')\n"
+            " def on_unload(self,*a): raise AssertionError('registered')\n"
+            "class PluginManager(PluginDispatchMixin):\n def __init__(self): raise AssertionError('instantiated')\n")
+
+    def test_prelaunch_observes_api_without_discovery_or_callback_activation(self):
+        # Removing the separate API observation, invoking native registration or
+        # accepting a foreign dispatcher must prevent a launch-only observation.
+        self.make_api()
+        package = self.native / "hermes_cli"
+        result = self.probe("work", prelaunch=True)
+        self.assertEqual(result['status'], 'observed', 'launch-only API producer is missing')
+        self.assertEqual(result['schema_version'], 3)
+        self.assertEqual(result['evidence_stage'], 'prelaunch_api_profile_observation')
+        self.assertEqual(result['api'], {'register_hook': True, 'on_unload': True,
+                         'invoke_hook': True, 'callbacks': ['pre_llm_call','post_tool_call',
+                                                          'on_session_start','on_session_reset']})
+        self.assertEqual(result['module_origins']['hermes_cli.plugins_dispatch'], str(package / 'plugins_dispatch.py'))
+        self.assertEqual(self.probe()['schema_version'], 2)
+        with (package / 'plugins.py').open('a') as f:
+            f.write("PluginContext.on_unload=None\n")
+        refused = self.probe(prelaunch=True)
+        self.assertEqual(refused['status'], 'unavailable')
+        self.assertIsNone(refused['api'])
+
+    def test_prelaunch_rejects_foreign_api_and_missing_hook_without_activation(self):
+        self.make_api()
+        plugins = self.native / "hermes_cli" / "plugins.py"
+        original = plugins.read_text()
+        for mutation in (
+            "PluginContext.register_hook.__module__='foreign'\n",
+            "PluginManager.invoke_hook=lambda *a: None\n",
+            "VALID_HOOKS.remove('post_tool_call')\n",
+        ):
+            with self.subTest(mutation=mutation):
+                plugins.write_text(original + mutation)
+                refused = self.probe(prelaunch=True)
+                self.assertEqual(refused['status'], 'unavailable')
+                self.assertEqual(refused['schema_version'], 3)
+                self.assertIsNone(refused['api'])
+        plugins.write_text(original)
 
     def test_discovery_produces_actual_root_and_named_home_without_prior_scope(self):
         result = self.probe("work", discovery=True)
