@@ -628,26 +628,44 @@ impl HarnessEvidenceRecorderV2 {
             .as_ref()
             .and_then(|key| pending.1.0.iter().position(|h| &h.key == key))
             .and_then(|at| pending.1.0.remove(at));
-        drop(pending);
-        if let Some(held) = held
-            && let Err(error) = self.store_one(&held.note, runtime, descriptor, !suppressed, budget)
-        {
-            let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
-            pending.expire(now);
-            if !pending.2.contains(&held.key) {
-                pending.1.restore(held, now);
-                pending.bound();
+        // Eligibility and the synchronous SQLite commit share the suppression
+        // boundary. Lock order is pending -> Store writer; neither Store nor
+        // legacy recording acquires pending while holding that writer.
+        let held_recorded = if let Some(held) = held {
+            match self.store_one(&held.note, runtime, descriptor, !suppressed, budget) {
+                Ok(recorded) => Some((held.note, recorded)),
+                Err(error) => {
+                    // Restoration is inside the same boundary: suppression
+                    // cannot finish between the failed commit and restoring.
+                    pending.expire(now);
+                    if !pending.2.contains(&held.key) {
+                        pending.1.restore(held, now);
+                        pending.bound();
+                    }
+                    return Err(error);
+                }
             }
-            return Err(error);
-        }
-        self.store_one(
+        } else {
+            None
+        };
+        let recorded = self.store_one(
             message,
             runtime,
             descriptor,
             !(suppressed && lifecycle),
             budget,
-        )
+        );
+        drop(pending);
+        // External lookup/trigger callbacks may reenter the recorder. Preserve
+        // a committed held note's fetch even when the direct write failed.
+        if let Some((note, recorded)) = held_recorded {
+            self.trigger_manifest(&note, runtime, descriptor, &recorded);
+        }
+        let recorded = recorded?;
+        self.trigger_manifest(message, runtime, descriptor, &recorded);
+        Ok(recorded.row.verified(descriptor))
     }
+
     fn store_one(
         &self,
         message: &crate::protocol::commands::HarnessEvidenceV2,
@@ -655,7 +673,7 @@ impl HarnessEvidenceRecorderV2 {
         descriptor: &crate::harness::adapter::ContractDescriptor,
         eligible: bool,
         budget: &CallBudget,
-    ) -> Result<bool, ApiError> {
+    ) -> Result<crate::store::harness_evidence::RecordedV2, ApiError> {
         let outcome = match &message.outcome {
             crate::protocol::commands::HarnessEvidenceOutcomeV2::Ok => EvidenceOutcome::Ok,
             crate::protocol::commands::HarnessEvidenceOutcomeV2::Malformed => {
@@ -672,7 +690,7 @@ impl HarnessEvidenceRecorderV2 {
                 .qualifications
                 .iter()
                 .all(|q| message.qualifications.iter().any(|fact| fact == q));
-        let recorded = self.store.record_harness_evidence_v2(
+        self.store.record_harness_evidence_v2(
             &crate::store::harness_evidence::EvidenceRecordV2 {
                 identity: runtime,
                 descriptor,
@@ -681,7 +699,15 @@ impl HarnessEvidenceRecorderV2 {
                 qualified,
             },
             budget,
-        )?;
+        )
+    }
+    fn trigger_manifest(
+        &self,
+        message: &crate::protocol::commands::HarnessEvidenceV2,
+        runtime: &crate::harness::runtime::RuntimeIdentity,
+        descriptor: &crate::harness::adapter::ContractDescriptor,
+        recorded: &crate::store::harness_evidence::RecordedV2,
+    ) {
         if let Some(manifest) = &self.manifest {
             if recorded.created
                 && !self.rich_manifest.contains(
@@ -706,7 +732,6 @@ impl HarnessEvidenceRecorderV2 {
                 manifest.ensure_manifest(&message.harness, FetchReason::FreshViolation);
             }
         }
-        Ok(recorded.row.verified(descriptor))
     }
     /// Shares the daemon's aggregate holding budget with the legacy recorder.
     /// Compose before either recorder receives notes.
