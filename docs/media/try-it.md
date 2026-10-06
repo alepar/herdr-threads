@@ -180,6 +180,9 @@ Measured normal/assignment medians are 96.694/24.469 ms for Alice and
 
 The H.264 MP4 is 1496×1302 at 12 fps, 307.416667 seconds, 9,482,756 bytes.
 SHA-256: `0fe2626e2130e2b1bf0dc15d526c7d1aaf82303adc96a757d8bc32d2307247dd`.
+The [new video attachment](https://github.com/user-attachments/assets/081ca706-6a44-4f03-b9ee-572a9b12ec71)
+renders through GitHub’s Markdown service with playback controls, and its
+downloaded bytes match the repository MP4’s SHA-256.
 Only the initial blank export frame is trimmed; actual discussion timing and
 the renderer's final hold remain. Public visible cells, styles and cursor state
 are checked against the real client; changes are the tab-chrome crop and
