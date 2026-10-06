@@ -110,6 +110,13 @@ pub fn installed_argv(
 /// held back, so `--state-dir /x --state-dir /y ack ...` returns `None` and the
 /// ordinary CLI refuses it with a nonzero exit instead of the fail-open hook.
 pub fn parse_hook_argv(args: &[OsString]) -> Option<Result<HookArgs, String>> {
+    parse_hook_argv_registered(args, builtins())
+}
+
+pub(crate) fn parse_hook_argv_registered(
+    args: &[OsString],
+    registry: &crate::harness::registry::Registry,
+) -> Option<Result<HookArgs, String>> {
     let mut state_dir: Option<PathBuf> = None;
     let mut host_endpoint: Option<PathBuf> = None;
     let mut conflict: Option<String> = None;
@@ -159,23 +166,31 @@ pub fn parse_hook_argv(args: &[OsString]) -> Option<Result<HookArgs, String>> {
         return Some(Err(conflict));
     }
     let rest = &args[index + 1..];
-    const USAGE: &str = "usage: herdr-threads hook claude|codex [--event NAME]";
+    let usage = || {
+        format!(
+            "usage: herdr-threads hook {} [--event NAME]",
+            registry
+                .registrations()
+                .iter()
+                .map(|r| r.metadata().id)
+                .collect::<Vec<_>>()
+                .join("|")
+        )
+    };
     let words = rest.iter().map(|w| w.to_str()).collect::<Vec<_>>();
-    let (harness, event) = match words[..] {
-        [Some("claude")] => (Harness::Claude, None),
-        [Some("codex")] => (Harness::Codex, None),
-        [Some(h @ ("claude" | "codex")), Some("--event"), Some(name)]
+    let (id, event) = match words[..] {
+        [Some(id)] => (id, None),
+        [Some(id), Some("--event"), Some(name)]
             if (1..=63).contains(&name.len())
-                && name.bytes().all(|b| b.is_ascii_alphanumeric()) =>
+                && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') =>
         {
-            let harness = if h == "claude" {
-                Harness::Claude
-            } else {
-                Harness::Codex
-            };
-            (harness, Some(name.to_owned()))
+            (id, Some(name.to_owned()))
         }
-        _ => return Some(Err(USAGE.into())),
+        _ => return Some(Err(usage())),
+    };
+    let harness = match registry.agent(id) {
+        Ok(id) => crate::harness::registry::OccupantHarness::Agent(id).into(),
+        Err(_) => return Some(Err(usage())),
     };
     Some(Ok(HookArgs {
         state_dir,
