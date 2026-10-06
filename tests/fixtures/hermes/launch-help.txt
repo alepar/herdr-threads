@@ -1,0 +1,9 @@
+SOURCE-DERIVED GRAMMAR; NOT CAPTURED HELP OUTPUT OR NATIVE MEASUREMENT
+Installed source37daf85b2ad0ee50ed45d7234dc47b7fa24cec09, base0.21.5, derived0.21.5+3962.g37daf85.
+hermes_cli/_parser.py:161-166: -m/--model VALUE and --provider VALUE; :210: --cli zero values.
+hermes_cli/_parser.py:229-234: chat -q/--query VALUE; real TTY seeds an interactive first turn, not oneshot.
+hermes_cli/main.py:473-505 and profiles.py:292-327: -p/--profile VALUE or --profile=VALUE, normalized selected existing profile.
+Policy owns exactly --profile NAME --cli chat, and emits model/provider/query values after chat.
+Unknown/duplicate/ambiguous flags or caller subcommands refuse. No native enable/consent, --accept-hooks, --yolo, --oneshot/-z, resume, gateway, TUI, plugin-disable or config-ignore grants.
+Only source/synthetic code coverage; native/model/callback acceptance UNMET.
+API presence source refs at the same installed pin: hermes_cli/plugins.py:230 PluginContext; :409 on_unload; :930 register_hook; :1181 PluginManager; plugins_dispatch.py:209 inherited invoke_hook; plugins.py:114 VALID_HOOKS. Class/callable/membership and agreeing origins only, never constructors/registrars/discovery/invocation.

@@ -24,6 +24,18 @@ pub struct AssetStatus {
     /// Effective-config enable lists only, never discovered/activated.
     pub configured_enabled: Option<bool>,
     pub manual_argv: Vec<String>,
+    pub launch_hook: Option<crate::ports::ConfiguredHook>,
+    pub launch_settings: Option<LaunchAssetSettings>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchAssetSettings {
+    pub schema_version: u32,
+    pub rust_executable: PathBuf,
+    pub state_root: PathBuf,
+    pub host_endpoint: PathBuf,
+    pub bridge_schema_version: u32,
+    pub installation_token: String,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Removal {
@@ -489,6 +501,8 @@ pub fn status(o: &ProfileObservation, state: &Path) -> Result<AssetStatus, Setup
         repairable: false,
         configured_enabled: o.configured_enabled(),
         manual_argv: guidance(&o.profile, "enable"),
+        launch_hook: None,
+        launch_settings: None,
     };
     if matches!(fs::symlink_metadata(o.physical_home.join("plugins")),Err(e) if e.kind()==std::io::ErrorKind::NotFound)
     {
@@ -501,6 +515,45 @@ pub fn status(o: &ProfileObservation, state: &Path) -> Result<AssetStatus, Setup
         verify_generation(&lock, &m)?;
         result.installed = m.phase == "complete";
         result.repairable = m.phase == "preparing";
+        if result.installed {
+            let settings: LaunchAssetSettings =
+                serde_json::from_slice(&m.assets["bridge_config.json"].bytes)
+                    .map_err(|_| SetupError::Conflict)?;
+            if settings.schema_version != 1
+                || settings.bridge_schema_version != 1
+                || settings.installation_token != m.installation_token
+                || [
+                    &settings.rust_executable,
+                    &settings.state_root,
+                    &settings.host_endpoint,
+                ]
+                .iter()
+                .any(|p| !valid_path(p))
+            {
+                return Err(SetupError::Conflict);
+            }
+            let digests: BTreeMap<_, _> = m.assets.iter().map(|(n, a)| (n, &a.digest)).collect();
+            let projection = serde_json::json!({"scope":{"profile":o.profile,"home":o.home,"physical_home":o.physical_home},
+                "runtime_descriptor":o.identity,"config_quality":format!("{:?}",o.config_quality),
+                "enabled":o.enabled,"disabled":o.disabled,"generation":m.installation_token,
+                "lock":m.lock_inode,"directory":m.directory_inode,"assets":digests});
+            let bytes = serde_json::to_vec(&projection).map_err(|_| SetupError::Invalid)?;
+            if bytes.len() > 16384 {
+                return Err(SetupError::TooLarge);
+            }
+            result.launch_hook = Some(crate::ports::ConfiguredHook {
+                scope: o.profile.clone(),
+                path: lock
+                    .plugins
+                    .join("herdr-threads/__init__.py")
+                    .to_str()
+                    .ok_or(SetupError::Invalid)?
+                    .into(),
+                fingerprint: fingerprint(&bytes),
+            });
+            result.launch_settings = Some(settings);
+            lock.validate()?;
+        }
     } else if lock.plugins.join("herdr-threads").exists() {
         return Err(SetupError::Conflict);
     }

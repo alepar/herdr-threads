@@ -45,12 +45,15 @@ def origin(module):
     return resolved
 
 
-def empty(reason):
-    return {'schema_version': 2, 'status': 'unavailable', 'reason': reason,
+def empty(reason, prelaunch=False):
+    result = {'schema_version': 3 if prelaunch else 2, 'status': 'unavailable', 'reason': reason,
             **dict.fromkeys(FIELDS), 'config_quality': 'unknown', 'fallback_kind': None,
             'environment_scope': SCOPE, 'cli_dotenv_loaded': False,
             'cli_scratch_rehomed': False, 'identity_provenance': 'startup_captured',
             'evidence_stage': 'unavailable'}
+    if prelaunch:
+        result['api'] = None
+    return result
 
 
 def inspect(profile):
@@ -58,7 +61,8 @@ def inspect(profile):
     if len(raw.encode()) > 16384 or not opaque(profile):
         raise ValueError('scope')
     scope = strict_json(raw)
-    discovery = isinstance(scope, dict) and set(scope) == {'mode', 'interpreter', 'profile'} and scope['mode'] == 'discover_selected_profile'
+    discovery = isinstance(scope, dict) and set(scope) == {'mode', 'interpreter', 'profile'} and scope['mode'] in ('discover_selected_profile', 'inspect_prelaunch')
+    prelaunch = discovery and scope['mode'] == 'inspect_prelaunch'
     if not discovery and (not isinstance(scope, dict) or set(scope) != {'interpreter', 'source_root', 'profile', 'home'}):
         raise ValueError('scope')
     if not opaque(scope.get('interpreter'), 4096) or not os.path.isabs(scope['interpreter']):
@@ -151,11 +155,44 @@ def inspect(profile):
                     enabled, disabled = lists
     except Exception:
         pass  # Only allowlisted quality, never config values/errors or inferred fallback.
-    result = empty(None)
+    api = None
+    if prelaunch:
+        plugins = importlib.import_module('hermes_cli.plugins')
+        dispatch = importlib.import_module('hermes_cli.plugins_dispatch')
+        for name, module in (('hermes_cli.plugins', plugins), ('hermes_cli.plugins_dispatch', dispatch)):
+            path = origin(module)
+            if path != root / (name.replace('.', '/') + '.py'):
+                raise ValueError('origin')
+            origins[name] = str(path)
+        # Membership/callability only: no instance, registrar, manager getter,
+        # catalog scan, callback, authentication or model operation.
+        for name, module in tuple(sys.modules.items()):
+            if name.startswith('hermes_cli.') or name in ('hermes_cli', 'utils', 'registration_lifecycle', 'hermes_yaml'):
+                path = origin(module)
+                stem = root / name.replace('.', '/')
+                if path not in (stem.with_suffix('.py'), stem / '__init__.py'):
+                    raise ValueError('mixed_origin')
+        context, manager = plugins.PluginContext, plugins.PluginManager
+        hooks = ['pre_llm_call', 'post_tool_call', 'on_session_start', 'on_session_reset']
+        if (not isinstance(context, type) or not isinstance(manager, type)
+                or context.__module__ != plugins.__name__ or manager.__module__ != plugins.__name__
+                or getattr(context.register_hook, '__module__', None) != plugins.__name__
+                or getattr(context.on_unload, '__module__', None) != plugins.__name__
+                or not callable(getattr(context, 'register_hook', None))
+                or not callable(getattr(context, 'on_unload', None))
+                or not callable(getattr(manager, 'invoke_hook', None))
+                or getattr(manager, 'invoke_hook') is not dispatch.PluginDispatchMixin.invoke_hook
+                or type(plugins.VALID_HOOKS) not in (set, frozenset)
+                or not all(hook in plugins.VALID_HOOKS for hook in hooks)):
+            raise ValueError('api')
+        api = {'register_hook': True, 'on_unload': True, 'invoke_hook': True, 'callbacks': hooks}
+    result = empty(None, prelaunch)
     result.update(status='observed', runtime_descriptor=descriptor, profile=profile,
                   home=home, physical_home=physical, interpreter=str(interpreter), source_root=str(root),
                   module_origins=origins, dependency_paths=[selected], enabled=enabled, disabled=disabled,
                   config_quality=quality, evidence_stage='startup_profile_observation')
+    if prelaunch:
+        result.update(api=api, evidence_stage='prelaunch_api_profile_observation')
     return result
 
 
@@ -169,7 +206,12 @@ def main():
         if len(raw.encode()) > 16384:
             raise ValueError('output')
     except (Exception, SystemExit):
-        raw = json.dumps(empty('inspection_unavailable'), separators=(',', ':'))
+        prelaunch = False
+        try:
+            prelaunch = strict_json(os.environ.get('HERDR_HERMES_INSPECTION_SCOPE', ''))['mode'] == 'inspect_prelaunch'
+        except (Exception, SystemExit):
+            pass
+        raw = json.dumps(empty('inspection_unavailable', prelaunch), separators=(',', ':'))
     print(raw)
 
 

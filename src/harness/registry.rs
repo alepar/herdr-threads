@@ -165,6 +165,18 @@ impl AdmittedHandle {
         self.diagnostic.as_deref()
     }
 }
+/// Registration-bound launch-only state. No callback API accepts this type.
+/// ```compile_fail
+/// use herdr_threads::harness::registry::{AdmittedHandle, PrelaunchHandle};
+/// fn callback(handle: PrelaunchHandle) -> AdmittedHandle { handle }
+/// ```
+pub struct PrelaunchHandle {
+    registration: &'static Registration,
+    scope: LaunchScope,
+    request: LaunchRequest,
+    binary: super::BinaryIdentity,
+    state: Box<dyn Any + Send + Sync>,
+}
 struct ErasedAdmission {
     kind: AdmissionKind,
     recipe: &'static str,
@@ -771,6 +783,151 @@ impl Registration {
                 )
             })?
             .prepare_launch(request, scope, admitted, status, probe, budget)
+    }
+    fn selected_prelaunch_binary(&self, request: &LaunchRequest) -> Option<std::path::PathBuf> {
+        request
+            .native_binary
+            .clone()
+            .or_else(|| match self.metadata().executable {
+                ExecutableLookup::Path(name) => {
+                    crate::cli::hook::resolve_on_path(name, request.environment.path.as_deref())
+                }
+                ExecutableLookup::Unsupported => None,
+            })
+    }
+    pub fn observe_prelaunch(
+        &'static self,
+        request: &LaunchRequest,
+        scope: &LaunchScope,
+        binary: &std::path::Path,
+        budget: &CallBudget,
+    ) -> Result<PrelaunchHandle, crate::protocol::results::ApiError> {
+        use crate::protocol::results::{ApiError, ErrorCode};
+        let policy = self
+            .launch_policy()
+            .filter(|p| p.uses_prelaunch_observation())
+            .ok_or_else(|| ApiError::unsupported("prelaunch capability unavailable"))?;
+        if self.identity.get().is_none() || budget.is_exhausted(request.environment.clock.as_ref())
+        {
+            return Err(ApiError::new(
+                ErrorCode::InvalidRequest,
+                "prelaunch registration or budget unavailable",
+            ));
+        }
+        let identity = super::BinaryIdentity::observe(binary).ok_or_else(|| {
+            ApiError::new(ErrorCode::Conflict, "prelaunch executable unavailable")
+        })?;
+        let selected = self.selected_prelaunch_binary(request);
+        if selected
+            .as_deref()
+            .and_then(super::BinaryIdentity::observe)
+            .as_ref()
+            != Some(&identity)
+        {
+            return Err(ApiError::new(
+                ErrorCode::Conflict,
+                "prelaunch selected executable mismatch",
+            ));
+        }
+        let state = policy.observe_prelaunch(request, scope, budget)?;
+        if budget.is_exhausted(request.environment.clock.as_ref())
+            || super::BinaryIdentity::observe(binary).as_ref() != Some(&identity)
+        {
+            return Err(ApiError::new(
+                ErrorCode::Conflict,
+                "prelaunch executable changed",
+            ));
+        }
+        Ok(PrelaunchHandle {
+            registration: self,
+            scope: scope.clone(),
+            request: LaunchRequest {
+                argv: request.argv.clone(),
+                environment: request.environment.clone(),
+                native_binary: request.native_binary.clone(),
+            },
+            binary: identity,
+            state,
+        })
+    }
+    fn check_prelaunch(
+        &self,
+        request: &LaunchRequest,
+        scope: &LaunchScope,
+        handle: &PrelaunchHandle,
+    ) -> Result<(), crate::protocol::results::ApiError> {
+        use crate::protocol::results::{ApiError, ErrorCode};
+        let env = &request.environment;
+        let captured = &handle.request.environment;
+        if !std::ptr::eq(self, handle.registration)
+            || scope.setup != handle.scope.setup
+            || scope.working_directory != handle.scope.working_directory
+            || scope.config_source != handle.scope.config_source
+            || request.argv != handle.request.argv
+            || request.native_binary != handle.request.native_binary
+            || env.home != captured.home
+            || env.path != captured.path
+            || env.cwd != captured.cwd
+            || env.executable != captured.executable
+            || env.state_dir != captured.state_dir
+            || env.host_endpoint != captured.host_endpoint
+            || env.declared != captured.declared
+            || env.config_roots != captured.config_roots
+            || env.instance_source != captured.instance_source
+            || !std::sync::Arc::ptr_eq(&env.clock, &captured.clock)
+        {
+            return Err(ApiError::new(
+                ErrorCode::InvalidRequest,
+                "prelaunch registration or scope mismatch",
+            ));
+        }
+        if super::BinaryIdentity::observe(handle.binary.path()).as_ref() != Some(&handle.binary)
+            || self
+                .selected_prelaunch_binary(request)
+                .as_deref()
+                .and_then(super::BinaryIdentity::observe)
+                .as_ref()
+                != Some(&handle.binary)
+        {
+            return Err(ApiError::new(
+                ErrorCode::Conflict,
+                "prelaunch executable changed",
+            ));
+        }
+        Ok(())
+    }
+    pub fn prepare_prelaunch(
+        &self,
+        request: &LaunchRequest,
+        scope: &LaunchScope,
+        handle: &PrelaunchHandle,
+        status: &LocalSetupStatus,
+        probe: &dyn super::launch::CodexShellProbe,
+        budget: &CallBudget,
+    ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
+        self.check_prelaunch(request, scope, handle)?;
+        if status.scope != scope.setup {
+            return Err(crate::protocol::results::ApiError::new(
+                crate::protocol::results::ErrorCode::Conflict,
+                "prelaunch status scope mismatch",
+            ));
+        }
+        super::launch::owned_launch_hook(status)?;
+        self.launch_policy()
+            .ok_or_else(|| crate::protocol::results::ApiError::unsupported("launch unavailable"))?
+            .prepare_prelaunch(request, scope, handle.state.as_ref(), status, probe, budget)
+    }
+    pub fn recheck_prelaunch(
+        &self,
+        request: &LaunchRequest,
+        scope: &LaunchScope,
+        handle: &PrelaunchHandle,
+        budget: &CallBudget,
+    ) -> Result<String, crate::protocol::results::ApiError> {
+        self.check_prelaunch(request, scope, handle)?;
+        self.launch_policy()
+            .ok_or_else(|| crate::protocol::results::ApiError::unsupported("launch unavailable"))?
+            .recheck_prelaunch(request, scope, handle.state.as_ref(), budget)
     }
     pub fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
         self.adapter.composer_policy()

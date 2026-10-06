@@ -632,60 +632,76 @@ fn execute_guarded_inner(
         ),
         cancellation: local_budget.cancellation.clone(),
     };
-    let installed = registration.observe_install(&install_env, &probe_budget);
-    let version = match &installed {
-        InstallObservation::Available {
-            identity,
-            binary: observed,
-        } => {
-            if fs::canonicalize(observed).ok() != fs::canonicalize(&binary).ok() {
-                return Err(api(
-                    ErrorCode::Conflict,
-                    "installation observation executable mismatch",
-                )
-                .into());
-            }
-            identity.release_version.clone()
-        }
-        InstallObservation::CodexWitness(version) => Some(version.as_str().to_owned()),
-        InstallObservation::ExecutableAvailable { binary: observed } => {
-            if fs::canonicalize(observed).ok() != fs::canonicalize(&binary).ok() {
-                return Err(api(
-                    ErrorCode::Conflict,
-                    "installation observation executable mismatch",
-                )
-                .into());
-            }
-            None
-        }
-        InstallObservation::NotRequested => {
-            return Err(api(
-                ErrorCode::UnsupportedHarness,
-                "launch requires executable availability",
-            )
-            .into());
-        }
-        InstallObservation::Unavailable { diagnostic } => {
-            return Err(api(ErrorCode::UnsupportedHarness, diagnostic).into());
-        }
-        InstallObservation::Unsupported(operation) => {
-            return Err(api(ErrorCode::UnsupportedHarness, operation.to_string()).into());
-        }
-    };
-    let admitted = registration
-        .admit(
-            &AdmissionRequest {
-                installed,
-                input: None,
-                runtime_candidate: None,
-            },
-            &local_budget,
+    let (admitted, prelaunch, version) = if policy.uses_prelaunch_observation() {
+        (
+            None,
+            Some(registration.observe_prelaunch(
+                &adapter_request,
+                &scope,
+                &binary,
+                &local_budget,
+            )?),
+            None,
         )
-        .map_err(|err| api(ErrorCode::UnsupportedHarness, err.to_string()))?;
+    } else {
+        let installed = registration.observe_install(&install_env, &probe_budget);
+        let version = match &installed {
+            InstallObservation::Available {
+                identity,
+                binary: observed,
+            } => {
+                if fs::canonicalize(observed).ok() != fs::canonicalize(&binary).ok() {
+                    return Err(api(
+                        ErrorCode::Conflict,
+                        "installation observation executable mismatch",
+                    )
+                    .into());
+                }
+                identity.release_version.clone()
+            }
+            InstallObservation::CodexWitness(version) => Some(version.as_str().to_owned()),
+            InstallObservation::ExecutableAvailable { binary: observed } => {
+                if fs::canonicalize(observed).ok() != fs::canonicalize(&binary).ok() {
+                    return Err(api(
+                        ErrorCode::Conflict,
+                        "installation observation executable mismatch",
+                    )
+                    .into());
+                }
+                None
+            }
+            InstallObservation::NotRequested => {
+                return Err(api(
+                    ErrorCode::UnsupportedHarness,
+                    "launch requires executable availability",
+                )
+                .into());
+            }
+            InstallObservation::Unavailable { diagnostic } => {
+                return Err(api(ErrorCode::UnsupportedHarness, diagnostic).into());
+            }
+            InstallObservation::Unsupported(operation) => {
+                return Err(api(ErrorCode::UnsupportedHarness, operation.to_string()).into());
+            }
+        };
+        let admitted = registration
+            .admit(
+                &AdmissionRequest {
+                    installed,
+                    input: None,
+                    runtime_candidate: None,
+                },
+                &local_budget,
+            )
+            .map_err(|err| api(ErrorCode::UnsupportedHarness, err.to_string()))?;
+        (Some(admitted), None, version)
+    };
     let observed = crate::harness::setup::legacy::Observed {
         binary: binary.clone(),
         version,
-        recipe: admitted.recipe(),
+        recipe: admitted
+            .as_ref()
+            .map_or("prelaunch_api_profile", |h| h.recipe()),
     };
     let status = match registration.status(
         &StatusRequest {
@@ -712,12 +728,19 @@ fn execute_guarded_inner(
         && status.enabled != Some(false)
         && status.admitted != Some(false)
     {
-        Some(policy.configuration_fingerprint(&adapter_request, &scope)?)
+        Some(if let Some(handle) = &prelaunch {
+            registration.recheck_prelaunch(&adapter_request, &scope, handle, &local_budget)?
+        } else {
+            policy.configuration_fingerprint(&adapter_request, &scope)?
+        })
     } else {
         None
     };
-    let preparation = registration
-        .prepare_launch(&adapter_request, &scope, &admitted, &status, parts.shell_probe, &local_budget)
+    let preparation = if let Some(handle) = &prelaunch {
+        registration.prepare_prelaunch(&adapter_request, &scope, handle, &status, parts.shell_probe, &local_budget)
+    } else {
+        registration.prepare_launch(&adapter_request, &scope, admitted.as_ref().expect("ordinary launch handle"), &status, parts.shell_probe, &local_budget)
+    }
         .map_err(|mut error| {
             if error.code == ErrorCode::MissingHook {
                 error.detail = format!(
@@ -784,7 +807,11 @@ fn execute_guarded_inner(
             .and_then(|path| crate::harness::BinaryIdentity::observe(&path))
             .as_ref()
                 != Some(&binary_identity)
-            || policy.configuration_fingerprint(&adapter_request, &scope)? != config_fingerprint
+            || (if let Some(handle) = &prelaunch {
+                registration.recheck_prelaunch(&adapter_request, &scope, handle, &local_budget)?
+            } else {
+                policy.configuration_fingerprint(&adapter_request, &scope)?
+            }) != config_fingerprint
         {
             return Err(api(
                 ErrorCode::Conflict,
@@ -902,7 +929,7 @@ fn execute_guarded_inner(
         "config_dir": config_dir,
         "codex": codex,
         "harness_version": observed.version,
-        "admission": "contract_declared",
+        "admission": if prelaunch.is_some() { "prelaunch_observed" } else { "contract_declared" },
         "recipe": observed.recipe,
         "binding": binding,
     });
@@ -925,7 +952,7 @@ fn execute_guarded_inner(
         "config_dir": config_dir,
         "codex": codex,
         "harness_version": {
-            "admission": "contract_declared",
+            "admission": if prelaunch.is_some() { "prelaunch_observed" } else { "contract_declared" },
             "binary": observed.binary.display().to_string(),
             "version": observed.version,
             "recipe": observed.recipe,
@@ -956,3 +983,761 @@ fn execute_guarded_inner(
 #[cfg(test)]
 #[path = "../../tests/cli/launch.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "test-support"))]
+#[allow(dead_code)]
+mod task23_tests {
+    use super::*;
+    use crate::ports::{
+        CorrelatedStartup, EvidenceKind, ExecutionEvidence, HostCallContext, HostSnapshot,
+        HostUiState, IncarnationEvidence, NativeLaunchCapability, NativeLaunchRequest,
+        ObservationProvenance, PromptOutcome, SafeWakeTarget, StructuralOccupancy,
+    };
+    use crate::protocol::{
+        ids::{HostBootId, HostCallId, TerminalId},
+        time::UtcMillis,
+    };
+    use std::{
+        os::unix::fs::{DirBuilderExt, PermissionsExt},
+        sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    };
+
+    struct Clock0(AtomicU64);
+    impl Clock for Clock0 {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(1_000)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(self.0.fetch_add(1, Ordering::SeqCst))
+        }
+    }
+
+    struct FakeHost {
+        sequence: AtomicU64,
+        occupancy: StructuralOccupancy,
+        submitted: Mutex<Vec<NativeLaunchRequest>>,
+        unknown: bool,
+        confirmed_refusal: bool,
+    }
+    impl FakeHost {
+        fn new() -> Self {
+            Self {
+                sequence: AtomicU64::new(1),
+                occupancy: StructuralOccupancy::Unknown,
+                submitted: Mutex::new(Vec::new()),
+                unknown: false,
+                confirmed_refusal: false,
+            }
+        }
+        fn observation(&self) -> HostObservation {
+            let sequence = self.sequence.fetch_add(1, Ordering::SeqCst);
+            HostObservation {
+                focused: false,
+                target: HostTargetId::new("w9:p1"),
+                host_boot: HostBootId::new("boot"),
+                epoch: 1,
+                generation: 1,
+                observed_at_utc: UtcMillis(0),
+                observed_at_mono: MonoInstant(sequence),
+                provenance: ObservationProvenance::FreshCurrentTarget,
+                occupant: None,
+                ui: HostUiState::Unknown,
+                terminal: Some(TerminalId::new("term_9")),
+                occupancy: self.occupancy,
+                incarnation: IncarnationEvidence::Verified {
+                    identity: "herdr-server:pid=1".into(),
+                    evidence_kind: EvidenceKind::NativeCurrentTarget,
+                },
+                execution: ExecutionEvidence::Unknown,
+                call_id: HostCallId::new(format!("call-{sequence}")),
+                connection_epoch: 1,
+                observation_sequence: sequence,
+                started_at_mono: MonoInstant(sequence),
+                completed_at_mono: MonoInstant(sequence),
+            }
+        }
+        fn submitted(&self) -> Vec<NativeLaunchRequest> {
+            self.submitted.lock().unwrap().clone()
+        }
+    }
+    impl HostPort for FakeHost {
+        fn observe_current_target_for_archival(
+            &self,
+            _: &crate::protocol::ids::HostTargetId,
+            _: &crate::ports::HostCallContext,
+        ) -> Result<crate::ports::ComposerObservation, crate::protocol::results::ApiError> {
+            Err(crate::protocol::results::ApiError::unsupported(
+                "test adapter has no composer-aware archival observation",
+            ))
+        }
+        fn native_launch_capability(&self) -> NativeLaunchCapability {
+            NativeLaunchCapability::HostGuardedStart
+        }
+        fn observe_current_target(
+            &self,
+            target: &HostTargetId,
+            _: &HostCallContext,
+        ) -> Result<HostObservation, ApiError> {
+            assert_eq!(target.as_str(), "w9:p1");
+            Ok(self.observation())
+        }
+        fn enumerate_targets(&self, _: &HostCallContext) -> Result<HostSnapshot, ApiError> {
+            unreachable!()
+        }
+        fn safe_wake_target(&self, _: &SeatId, _: &HostObservation) -> Option<SafeWakeTarget> {
+            unreachable!()
+        }
+        fn submit_prompt(
+            &self,
+            _: &SafeWakeTarget,
+            _: &str,
+            _: &HostCallContext,
+        ) -> Result<PromptOutcome, ApiError> {
+            panic!("launch must never prompt")
+        }
+        fn pane_agent_state(
+            &self,
+            _target: &SafeWakeTarget,
+            _context: &HostCallContext,
+        ) -> Result<crate::ports::AgentComposerState, ApiError> {
+            Ok(crate::ports::AgentComposerState::Submitted)
+        }
+
+        fn launch_native_with_evidence(
+            &self,
+            request: NativeLaunchRequest,
+            context: &HostCallContext,
+        ) -> Result<NativeLaunchOutcome, crate::ports::NativeLaunchFailure> {
+            if self.confirmed_refusal {
+                return Err(crate::ports::NativeLaunchFailure::not_submitted(api(
+                    ErrorCode::TargetUnsafe,
+                    "confirmed busy",
+                )));
+            }
+            self.launch_native(request, context).map_err(Into::into)
+        }
+        fn launch_native(
+            &self,
+            request: NativeLaunchRequest,
+            context: &HostCallContext,
+        ) -> Result<NativeLaunchOutcome, ApiError> {
+            self.submitted.lock().unwrap().push(request.clone());
+            if self.unknown {
+                return Ok(NativeLaunchOutcome::OutcomeUnknown);
+            }
+            let mut diagnostic = self.observation();
+            diagnostic.occupancy = StructuralOccupancy::Occupied;
+            Ok(NativeLaunchOutcome::ObservedStartup {
+                correlation: CorrelatedStartup {
+                    process_hint: request.process_hint,
+                    seat: request.seat.clone(),
+                    agent_name: request.agent_name(),
+                    harness: request.harness,
+                    target: request.target.clone(),
+                    terminal: request.expected_terminal.clone(),
+                    expected_generation: request.expected_generation,
+                    expected_incarnation: request.expected_incarnation.clone(),
+                    argv: request.argv.clone(),
+                    host_boot: context.expected_boot.clone().unwrap(),
+                    epoch: context.expected_epoch.unwrap(),
+                    submitted_at_mono: diagnostic.started_at_mono,
+                    completed_at_mono: diagnostic.completed_at_mono,
+                },
+                diagnostic,
+            })
+        }
+        fn send_submit_key(
+            &self,
+            _: &crate::ports::SafeWakeTarget,
+            _: &crate::ports::HostCallContext,
+        ) -> Result<(), crate::protocol::results::ApiError> {
+            Ok(())
+        }
+    }
+
+    /// How the fake daemon answers a `RecordManagedLaunch`.
+    #[derive(Clone)]
+    enum RecordAnswer {
+        Recorded,
+        AlreadyBound,
+        /// An older daemon without the `seat.managed_launch` capability.
+        Unsupported,
+        Refused,
+    }
+    struct FakeSeats {
+        calls: AtomicUsize,
+        held: bool,
+        answer: RecordAnswer,
+        recorded: Mutex<Vec<crate::protocol::commands::RecordManagedLaunch>>,
+    }
+    impl LaunchSeatResolver for FakeSeats {
+        fn resolve_for_launch(
+            &self,
+            _: &HostTargetId,
+            _: &HostObservation,
+            _: &CallBudget,
+        ) -> Result<SeatId, ApiError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.held {
+                return Err(api(ErrorCode::TargetUnresolved, "recovery hold"));
+            }
+            Ok(SeatId::new("seat_launch"))
+        }
+        fn record_managed_launch(
+            &self,
+            startup: &CorrelatedStartup,
+            _: &CallBudget,
+        ) -> Result<Option<ManagedLaunchRecord>, ApiError> {
+            self.recorded
+                .lock()
+                .unwrap()
+                .push(managed_launch_command(startup));
+            let record = |recorded: bool, provenance: &str| {
+                Ok(Some(ManagedLaunchRecord {
+                    seat: startup.seat.clone(),
+                    recorded,
+                    binding_generation: 3,
+                    provenance: provenance.into(),
+                }))
+            };
+            match self.answer {
+                RecordAnswer::Recorded => record(true, "managed_launch"),
+                RecordAnswer::AlreadyBound => record(false, "cooperative_top_level"),
+                RecordAnswer::Unsupported => Ok(None),
+                RecordAnswer::Refused => Err(api(
+                    ErrorCode::StaleHostObservation,
+                    "launch evidence differs from the current pane observation",
+                )),
+            }
+        }
+    }
+
+    /// Answers with a fixed pending handoff and counts reads (never mutations).
+    struct FakeHandoff(AtomicUsize);
+    impl HandoffReader for FakeHandoff {
+        fn pending(&self, seat: &SeatId, _: &CallBudget) -> Result<Value, ApiError> {
+            assert_eq!(seat.as_str(), "seat_launch");
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(json!({"threads":["thread_1"],"pending_invitations":1,"pending_receipts":1}))
+        }
+    }
+
+    /// A canned pane-shell answer for `codex`; never runs a shell.
+    struct FakeProbe(Result<String, String>);
+    impl CodexShellProbe for FakeProbe {
+        fn resolve_codex(&self) -> Result<String, String> {
+            self.0.clone()
+        }
+    }
+
+    struct Scratch {
+        root: std::path::PathBuf,
+        env: SetupEnv,
+    }
+    impl Scratch {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "ht-launch-{}",
+                &uuid::Uuid::new_v4().simple().to_string()[..10]
+            ));
+            fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+            let root = root.canonicalize().unwrap();
+            fs::DirBuilder::new()
+                .mode(0o700)
+                .create(root.join("state"))
+                .unwrap();
+            fs::create_dir(root.join("bin")).unwrap();
+            let env = SetupEnv {
+                home: None,
+                declared_environment: Default::default(),
+                executable: root.join("h t/herdr-threads"),
+                state_dir: Some(root.join("state")),
+                cwd: root.clone(),
+                path: Some(root.join("bin").into_os_string()),
+                codex_home: Some(root.join("codex home")),
+                claude_config_dir: Some(root.join("claude config")),
+                host_endpoint: Some(root.join("herdr.sock")),
+                instance_source: Value::Null,
+            };
+            Self { root, env }
+        }
+        fn launch(
+            &self,
+            host: &FakeHost,
+            seats: &FakeSeats,
+            handoff: &FakeHandoff,
+            request: LaunchRequest,
+        ) -> Result<LaunchReport, RunError> {
+            let probe = FakeProbe(Ok("codex is /usr/local/bin/codex\n".into()));
+            self.launch_with_probe(host, seats, handoff, request, &probe)
+        }
+        fn launch_with_probe(
+            &self,
+            host: &FakeHost,
+            seats: &FakeSeats,
+            handoff: &FakeHandoff,
+            request: LaunchRequest,
+            probe: &dyn CodexShellProbe,
+        ) -> Result<LaunchReport, RunError> {
+            let clock = Clock0(AtomicU64::new(1));
+            execute(
+                &request,
+                &LaunchParts {
+                    env: &self.env,
+                    host,
+                    seats,
+                    handoff,
+                    clock: &clock,
+                    record_dir: Some(&self.root),
+                    shell_probe: probe,
+                },
+            )
+        }
+        fn records(&self) -> Vec<Value> {
+            fs::read_to_string(self.root.join("launches.jsonl"))
+                .unwrap_or_default()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect()
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn seats() -> FakeSeats {
+        seats_answering(RecordAnswer::Recorded)
+    }
+    fn seats_answering(answer: RecordAnswer) -> FakeSeats {
+        FakeSeats {
+            calls: AtomicUsize::new(0),
+            held: false,
+            answer,
+            recorded: Mutex::new(Vec::new()),
+        }
+    }
+    fn handoff() -> FakeHandoff {
+        FakeHandoff(AtomicUsize::new(0))
+    }
+    fn request(harness: ContextHarness, argv: &[&str]) -> LaunchRequest {
+        LaunchRequest {
+            target: HostTargetId::new("w9:p1"),
+            harness,
+            harness_binary: None,
+            argv: argv.iter().map(|s| (*s).to_owned()).collect(),
+            name: None,
+            pane_label: None,
+        }
+    }
+    fn code(result: Result<LaunchReport, RunError>) -> ErrorCode {
+        match result {
+            Err(RunError::Api(error)) => error.code,
+            other => panic!("expected an API refusal, got {other:?}"),
+        }
+    }
+
+    // Real shared guarded launch with source-shaped Python APIs and real locked
+    // asset producer. These fixtures do not invoke installed Hermes or Herdr.
+    fn hermes_fixture() -> Scratch {
+        hermes_fixture_selected("default")
+    }
+    fn hermes_fixture_selected(selected_profile: &str) -> Scratch {
+        use crate::test_support::spawn::SpawnOwned;
+        let mut scratch = Scratch::new();
+        let integration = Path::new(env!("CARGO_MANIFEST_DIR")).join("integrations/hermes");
+        let script = "import sys,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);from test_runtime_helper import RuntimeHelperTests;t=RuntimeHelperTests();t.setUp();t.make_api();t.tmp._finalizer.detach();print(json.dumps({'python':str(Path(sys.executable).resolve()),'native':str(t.native),'selected':str(t.selected),'home':str(t.home)}))";
+        let mut command = crate::test_support::spawn::command("python3");
+        command
+            .args(["-I", "-B", "-c", script])
+            .arg(integration)
+            .env("TMPDIR", &scratch.root)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let out = command.spawn_owned().unwrap().wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let python = value["python"].as_str().unwrap();
+        let native = value["native"].as_str().unwrap();
+        let bootstrap = format!(
+            "import sys,runpy;sys.path.insert(0,{});import hermes_bootstrap;runpy.run_module('trace',run_name='__main__',alter_sys=True)",
+            serde_json::to_string(native).unwrap()
+        );
+        let launcher = scratch.root.join("bin/hermes");
+        fs::write(&launcher,format!("#!{python}\nimport json,sys\nprint(json.dumps([{},'-I','-c',{},'--count','--no-report',sys.argv[-3],'--profile',sys.argv[-1]]))\n",serde_json::to_string(python).unwrap(),serde_json::to_string(&bootstrap).unwrap())).unwrap();
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
+        scratch.env.home = Some(scratch.root.as_os_str().to_owned());
+        for (key, field) in [
+            ("FIXTURE_HOME", "home"),
+            ("FIXTURE_DEP", "selected"),
+            ("HERMES_HOME", "home"),
+            ("TASK23_NATIVE", "native"),
+        ] {
+            scratch
+                .env
+                .declared_environment
+                .insert(key.into(), value[field].as_str().unwrap().into());
+        }
+        let env = scratch.env.snapshot();
+        let budget = CallBudget {
+            deadline: MonoInstant(10000),
+            cancellation: Default::default(),
+        };
+        let observed = crate::harness::hermes::runtime::discover_selected_profile(
+            &launcher,
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("integrations/hermes/runtime_helper.py"),
+            selected_profile,
+            &env,
+            &budget,
+        );
+        // Machine metadata binds the exact helper entry, so use the unchanged
+        // captured dynamic helper argument, never a guessed bootstrap.
+        let observed = observed.unwrap();
+        crate::harness::hermes::assets::setup(
+            &observed,
+            env.state_dir.as_ref().unwrap(),
+            &env.executable,
+            env.host_endpoint.as_ref().unwrap(),
+        )
+        .unwrap();
+        scratch
+    }
+    #[test]
+    fn hermes_actual_generic_guarded_consumer_uses_launch_only_observation() {
+        let s = hermes_fixture();
+        let host = FakeHost::new();
+        let seats = seats();
+        let handoff = handoff();
+        let harness: ContextHarness = serde_json::from_str("\"Hermes\"").unwrap();
+        let report = s.launch(
+            &host,
+            &seats,
+            &handoff,
+            request(harness, &["--model", "model Ω", "-q", "first turn's text"]),
+        );
+        let report = report.expect("actual generic consumer refuses separate positive prelaunch");
+        assert_eq!(report.exit, 0);
+        let starts = host.submitted();
+        assert_eq!(starts.len(), 1);
+        assert!(starts[0].process_hint);
+        assert_eq!(
+            starts[0].argv,
+            [
+                "--profile",
+                "default",
+                "--cli",
+                "chat",
+                "--model",
+                "model Ω",
+                "--query",
+                "first turn's text"
+            ]
+        );
+        assert_eq!(seats.recorded.lock().unwrap().len(), 1);
+        assert_eq!(report.report["hermes"]["callback_qualified"], false);
+        assert_eq!(report.report["hermes"]["native_acceptance"], "unmet");
+    }
+    #[test]
+    fn hermes_named_profile_actual_consumer_keeps_provider_prompt_bytes() {
+        let s = hermes_fixture_selected("work");
+        let host = FakeHost::new();
+        let seats = seats();
+        let handoff = handoff();
+        let harness: ContextHarness = serde_json::from_str("\"Hermes\"").unwrap();
+        let report = s
+            .launch(
+                &host,
+                &seats,
+                &handoff,
+                request(
+                    harness,
+                    &[
+                        "--profile",
+                        "Work",
+                        "--cli",
+                        "--provider",
+                        "provider's Ω",
+                        "--query",
+                        "first literal turn",
+                    ],
+                ),
+            )
+            .unwrap();
+        assert_eq!(
+            host.submitted()[0].argv,
+            [
+                "--profile",
+                "work",
+                "--cli",
+                "chat",
+                "--provider",
+                "provider's Ω",
+                "--query",
+                "first literal turn"
+            ]
+        );
+        assert_eq!(report.report["hermes"]["profile"], "work");
+        assert_eq!(seats.recorded.lock().unwrap().len(), 1);
+    }
+    #[test]
+    fn hermes_foreign_partial_api_and_settings_refuse_before_seat_start() {
+        for kind in ["foreign", "partial", "api", "settings"] {
+            let mut s = hermes_fixture();
+            let home = Path::new(s.env.declared_environment["FIXTURE_HOME"].to_str().unwrap());
+            match kind {
+                "foreign" => fs::write(
+                    home.join("plugins/herdr-threads/__init__.py"),
+                    "# foreign bytes",
+                )
+                .unwrap(),
+                "partial" => {
+                    fs::remove_file(home.join("plugins/herdr-threads/bridge_config.json")).unwrap()
+                }
+                "api" => {
+                    let native = Path::new(
+                        s.env.declared_environment["TASK23_NATIVE"]
+                            .to_str()
+                            .unwrap(),
+                    );
+                    fs::remove_file(native.join("hermes_cli/plugins_dispatch.py")).unwrap();
+                }
+                _ => s.env.host_endpoint = Some(s.root.join("wrong-endpoint")),
+            }
+            let host = FakeHost::new();
+            let seats = seats();
+            let handoff = handoff();
+            let harness: ContextHarness = serde_json::from_str("\"Hermes\"").unwrap();
+            assert!(
+                s.launch(&host, &seats, &handoff, request(harness, &[]))
+                    .is_err(),
+                "accepted {kind}"
+            );
+            assert_eq!(seats.calls.load(Ordering::SeqCst), 0);
+            assert!(host.submitted().is_empty());
+            assert!(seats.recorded.lock().unwrap().is_empty());
+            assert!(s.records().is_empty());
+        }
+    }
+    #[test]
+    fn hermes_disabled_and_unknown_selected_config_refuse_before_seat_start() {
+        for failed in [false, true] {
+            let s = hermes_fixture();
+            let native = Path::new(
+                s.env.declared_environment["TASK23_NATIVE"]
+                    .to_str()
+                    .unwrap(),
+            );
+            fs::write(native.join("hermes_cli/config.py"),if failed {
+                "class FailedConfigRead(dict): pass\ndef load_config_readonly(): return FailedConfigRead({'plugins':{'enabled':['herdr-threads'],'disabled':[]}})\n"
+            } else {"class FailedConfigRead(dict): pass\ndef load_config_readonly(): return {'plugins':{'enabled':[],'disabled':['herdr-threads']}}\n"}).unwrap();
+            let host = FakeHost::new();
+            let seats = seats();
+            let handoff = handoff();
+            let harness: ContextHarness = serde_json::from_str("\"Hermes\"").unwrap();
+            assert_eq!(
+                code(s.launch(&host, &seats, &handoff, request(harness, &[]))),
+                ErrorCode::MissingHook
+            );
+            assert_eq!(seats.calls.load(Ordering::SeqCst), 0);
+            assert!(host.submitted().is_empty());
+            assert!(seats.recorded.lock().unwrap().is_empty());
+        }
+    }
+    #[test]
+    fn hermes_pre_submit_config_generation_and_binary_drift_never_start() {
+        for kind in ["config", "asset", "binary"] {
+            let s = hermes_fixture();
+            let host = FakeHost::new();
+            let seats = seats();
+            let handoff = handoff();
+            let harness: ContextHarness = serde_json::from_str("\"Hermes\"").unwrap();
+            let req = request(harness, &[]);
+            let clock = Clock0(AtomicU64::new(1));
+            let probe = FakeProbe(Ok("unused".into()));
+            let path = match kind {
+                "config" => Path::new(
+                    s.env.declared_environment["TASK23_NATIVE"]
+                        .to_str()
+                        .unwrap(),
+                )
+                .join("hermes_cli/config.py"),
+                "asset" => Path::new(s.env.declared_environment["FIXTURE_HOME"].to_str().unwrap())
+                    .join("plugins/herdr-threads/__init__.py"),
+                _ => s.root.join("bin/hermes"),
+            };
+            let mut at_boundary = false;
+            let mut boundary = |event: LaunchBoundary<'_>| {
+                if matches!(event, LaunchBoundary::BeforeSubmit(_)) {
+                    at_boundary = true;
+                    let mut bytes = fs::read(&path).unwrap();
+                    bytes.extend_from_slice(b"\n# owned synthetic mutation\n");
+                    fs::write(&path, bytes).unwrap();
+                }
+                Ok(())
+            };
+            let result = execute_guarded_inner(
+                crate::harness::registry::builtins(),
+                &req,
+                &LaunchParts {
+                    env: &s.env,
+                    host: &host,
+                    seats: &seats,
+                    handoff: &handoff,
+                    clock: &clock,
+                    record_dir: Some(&s.root),
+                    shell_probe: &probe,
+                },
+                false,
+                false,
+                &mut boundary,
+            );
+            assert!(
+                at_boundary,
+                "initial qualification did not reach final guard for {kind}"
+            );
+            if kind == "config" {
+                // An inert comment is not effective-config drift. It must still
+                // pass: prelaunch is observation, not continuous source freshness.
+                assert_eq!(result.unwrap().exit, 0);
+                assert_eq!(host.submitted().len(), 1);
+            } else {
+                assert!(result.is_err(), "{kind} drift reached start");
+                assert!(host.submitted().is_empty());
+                assert!(seats.recorded.lock().unwrap().is_empty());
+            }
+        }
+    }
+    #[test]
+    fn hermes_effective_enablement_drift_at_final_boundary_is_refused() {
+        let s = hermes_fixture();
+        let host = FakeHost::new();
+        let seats = seats();
+        let handoff = handoff();
+        let harness: ContextHarness = serde_json::from_str("\"Hermes\"").unwrap();
+        let req = request(harness, &[]);
+        let clock = Clock0(AtomicU64::new(1));
+        let probe = FakeProbe(Ok("unused".into()));
+        let config = Path::new(
+            s.env.declared_environment["TASK23_NATIVE"]
+                .to_str()
+                .unwrap(),
+        )
+        .join("hermes_cli/config.py");
+        let mut at_boundary = false;
+        let mut boundary = |event: LaunchBoundary<'_>| {
+            if matches!(event, LaunchBoundary::BeforeSubmit(_)) {
+                at_boundary = true;
+                fs::write(&config,"class FailedConfigRead(dict): pass\ndef load_config_readonly(): return {'plugins':{'enabled':[],'disabled':['herdr-threads']}}\n").unwrap();
+            }
+            Ok(())
+        };
+        assert!(
+            execute_guarded_inner(
+                crate::harness::registry::builtins(),
+                &req,
+                &LaunchParts {
+                    env: &s.env,
+                    host: &host,
+                    seats: &seats,
+                    handoff: &handoff,
+                    clock: &clock,
+                    record_dir: Some(&s.root),
+                    shell_probe: &probe
+                },
+                false,
+                false,
+                &mut boundary
+            )
+            .is_err()
+        );
+        assert!(at_boundary);
+        assert!(host.submitted().is_empty());
+        assert!(seats.recorded.lock().unwrap().is_empty());
+        assert!(s.records().is_empty());
+    }
+    #[test]
+    fn prelaunch_handle_cannot_cross_registration_scope_or_captured_inputs() {
+        use crate::harness::adapter::{
+            LaunchRequest as AdapterRequest, SetupStatus, StatusRequest,
+        };
+        let s = hermes_fixture();
+        let registry = crate::harness::registry::builtins();
+        let reg = registry.by_id(registry.agent("hermes").unwrap()).unwrap();
+        let codex = registry.by_id(registry.agent("codex").unwrap()).unwrap();
+        let req = AdapterRequest {
+            argv: vec![],
+            environment: s.env.snapshot(),
+            native_binary: Some(s.root.join("bin/hermes")),
+        };
+        let probe = FakeProbe(Ok("unused".into()));
+        let budget = CallBudget {
+            deadline: MonoInstant(30000),
+            cancellation: Default::default(),
+        };
+        let scope = reg
+            .launch_policy()
+            .unwrap()
+            .resolve_scope(&req, &probe, &budget)
+            .unwrap();
+        assert!(
+            reg.observe_prelaunch(&req, &scope, &s.env.executable, &budget)
+                .is_err()
+        );
+        let handle = reg
+            .observe_prelaunch(&req, &scope, req.native_binary.as_ref().unwrap(), &budget)
+            .unwrap();
+        let SetupStatus::Detailed(status) = reg.status(
+            &StatusRequest {
+                scope: scope.setup.clone(),
+                environment: req.environment.clone(),
+                native_binary: req.native_binary.clone(),
+            },
+            &budget,
+        ) else {
+            panic!("status unavailable")
+        };
+        assert!(
+            codex
+                .prepare_prelaunch(&req, &scope, &handle, &status, &probe, &budget)
+                .is_err()
+        );
+        let mut changed = req;
+        changed.argv = vec!["--profile".into(), "work".into()];
+        assert!(
+            reg.prepare_prelaunch(&changed, &scope, &handle, &status, &probe, &budget)
+                .is_err()
+        );
+        changed.argv.clear();
+        changed.environment.host_endpoint = Some(s.root.join("other-host"));
+        assert!(
+            reg.recheck_prelaunch(&changed, &scope, &handle, &budget)
+                .is_err()
+        );
+        changed.environment.host_endpoint = s.env.host_endpoint.clone();
+        let mut other = scope.clone();
+        other.working_directory = s.root.join("elsewhere");
+        assert!(
+            reg.prepare_prelaunch(&changed, &other, &handle, &status, &probe, &budget)
+                .is_err()
+        );
+        let cancelled = CallBudget {
+            deadline: MonoInstant(30000),
+            cancellation: Default::default(),
+        };
+        cancelled.cancellation.cancel();
+        assert!(
+            reg.observe_prelaunch(
+                &changed,
+                &scope,
+                changed.native_binary.as_ref().unwrap(),
+                &cancelled
+            )
+            .is_err()
+        );
+    }
+}
