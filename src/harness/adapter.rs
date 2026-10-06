@@ -593,6 +593,10 @@ pub struct LaunchPreparation {
     pub wrapper_warning: Option<&'static str>,
 }
 pub trait LaunchPolicy: Send + Sync {
+    /// Cooperative host recognition input; never caller or runtime authority.
+    fn requires_process_hint(&self) -> bool {
+        false
+    }
     fn resolve_scope(
         &self,
         request: &LaunchRequest,

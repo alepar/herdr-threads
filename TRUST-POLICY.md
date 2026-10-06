@@ -348,6 +348,14 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   a registration, availability, receipt or authority for any accountable action, and replaced by the agent's
   first lifecycle check-in. Launch forms without captured hook evidence are refused (implemented for
   `codex resume`).
+- **Process hints are cooperative recognition input.** A registered launch policy may require Herdr's
+  narrow `process_hint` mode, advertised by each compatible start negotiation and fenced to the actual
+  local server peer before submission. The request and startup correlation record the requested mode,
+  not an effective child environment or proof of native execution. Same-user processes can inherit or
+  imitate recognition hints; platform support, environment readability and descendant coverage can
+  prevent recognition. Hints add no registration, receipt, continuity or caller authority and no new
+  provenance (A1–A3, C1); arbitrary environment overrides remain refused. A possibly submitted start
+  with an uncertain response remains unknown, without a safe fallback or inferred binding.
 - **A launch binding can outlive its agent.** Like any binding (Unseen exits), a `managed_launch` binding
   whose agent exits before checking in stays until a check-in replaces it or the seat is unresolved or
   retired; a later `launch` into the seat then records nothing (the seat already has an open binding) and a

@@ -1574,6 +1574,8 @@ pub struct ConfiguredHook {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeLaunchRequest {
+    /// Required transport mode selected by the registered launch policy.
+    pub process_hint: bool,
     pub seat: SeatId,
     pub target: HostTargetId,
     pub harness: Harness,
@@ -1745,6 +1747,8 @@ impl NativeLaunchRequest {
 /// current native execution, registration, receipt, or ACK.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CorrelatedStartup {
+    /// Requested transport mode, not evidence of effective child environment.
+    pub process_hint: bool,
     pub seat: SeatId,
     pub agent_name: String,
     pub harness: Harness,
@@ -1765,6 +1769,7 @@ impl CorrelatedStartup {
         context: &HostCallContext,
     ) -> bool {
         self.seat == request.seat
+            && self.process_hint == request.process_hint
             && request.agent_name_candidates().contains(&self.agent_name)
             && self.harness == request.harness
             && self.target == request.target

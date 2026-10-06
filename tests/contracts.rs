@@ -829,6 +829,7 @@ fn managed_launch_request_preserves_bounded_native_argument_tokens() {
         ids::{HostTargetId, SeatId, TerminalId},
     };
     let mut request = NativeLaunchRequest {
+        process_hint: false,
         seat: SeatId::new("s"),
         target: HostTargetId::new("p"),
         harness: Harness::Codex,
@@ -2468,4 +2469,63 @@ fn health_v2_runtime_identity_rejects_duplicate_fields() {
             .is_err(),
         "strict health identity accepted duplicate fields"
     );
+}
+
+#[test]
+fn process_hint_mode_mismatch_rejects_correlation() {
+    use herdr_threads::ports::{
+        ConfiguredHook, CorrelatedStartup, HostCallContext, NativeLaunchRequest,
+    };
+    use herdr_threads::protocol::{
+        authority::Harness,
+        ids::{HostBootId, HostTargetId, SeatId, TerminalId},
+        time::{CallBudget, Cancellation, MonoInstant},
+    };
+    let request = NativeLaunchRequest {
+        process_hint: false,
+        seat: SeatId::new("seat_1"),
+        target: HostTargetId::new("pane_1"),
+        harness: Harness::Codex,
+        argv: vec!["original arg".into()],
+        configured_hook: ConfiguredHook {
+            scope: "project".into(),
+            path: "/owned/hook".into(),
+            fingerprint: "sha256:fixture".into(),
+        },
+        expected_terminal: TerminalId::new("term_1"),
+        expected_generation: 7,
+        expected_incarnation: "server_1".into(),
+        name_hint: Some("worker".into()),
+    };
+    let context = HostCallContext {
+        budget: CallBudget {
+            deadline: MonoInstant(100),
+            cancellation: Cancellation::default(),
+        },
+        expected_boot: Some(HostBootId::new("boot_1")),
+        expected_epoch: Some(3),
+    };
+    let mut correlation = CorrelatedStartup {
+        process_hint: false,
+        seat: request.seat.clone(),
+        agent_name: "worker".into(),
+        harness: request.harness,
+        target: request.target.clone(),
+        terminal: request.expected_terminal.clone(),
+        expected_generation: 7,
+        expected_incarnation: "server_1".into(),
+        argv: request.argv.clone(),
+        host_boot: HostBootId::new("boot_1"),
+        epoch: 3,
+        submitted_at_mono: MonoInstant(1),
+        completed_at_mono: MonoInstant(2),
+    };
+    assert!(correlation.matches_request(&request, &context));
+    correlation.process_hint = true;
+    assert!(
+        !correlation.matches_request(&request, &context),
+        "transport mode disagreement was accepted"
+    );
+    correlation.process_hint = false;
+    assert!(correlation.matches_request(&request, &context));
 }
