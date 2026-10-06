@@ -149,6 +149,35 @@ pub trait HarnessAdapter: Send + Sync + 'static {
         request: &UnsetupRequest,
         budget: &CallBudget,
     ) -> Result<RemovalOutcome, SetupFailure>;
+    /// Resolve one local operation with the caller's captured inputs/deadline.
+    fn resolve_setup_scope_for(
+        &self,
+        request: &SetupScopeResolutionRequest<'_>,
+        budget: &CallBudget,
+    ) -> Result<SetupScopeResolution, SetupFailure> {
+        check_setup_budget(request.environment, budget)?;
+        let scope = self.resolve_setup_scope(request.selector, request.environment)?;
+        check_setup_budget(request.environment, budget)?;
+        Ok(SetupScopeResolution {
+            scope,
+            removal_generation: None,
+        })
+    }
+    /// Legacy adapters cannot silently consume an owned-generation receipt.
+    fn unsetup_resolved(
+        &self,
+        request: &UnsetupRequest,
+        resolution: &SetupScopeResolution,
+        budget: &CallBudget,
+    ) -> Result<RemovalOutcome, SetupFailure> {
+        check_setup_budget(&request.environment, budget)?;
+        if request.scope != resolution.scope || resolution.removal_generation.is_some() {
+            return Err(SetupFailure::Invalid(
+                "unsupported or mismatched removal resolution".into(),
+            ));
+        }
+        self.unsetup(request, budget)
+    }
     fn setup_options(&self) -> &'static [SetupOption] {
         &[]
     }
@@ -438,6 +467,36 @@ pub enum SetupScopeRequest {
     #[default]
     Default,
     Profile(String),
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupScopeOperation {
+    Install,
+    Status,
+    Remove,
+}
+#[derive(Debug)]
+pub struct SetupScopeResolutionRequest<'a> {
+    pub operation: SetupScopeOperation,
+    pub selector: &'a SetupScopeRequest,
+    pub native_binary: Option<&'a std::path::Path>,
+    pub environment: &'a SetupEnvironment,
+}
+/// Local ownership generation only; conveys no native/runtime qualification.
+#[derive(Debug, Clone)]
+pub struct SetupScopeResolution {
+    pub scope: ResolvedSetupScope,
+    pub removal_generation: Option<String>,
+}
+pub(crate) fn check_setup_budget(
+    environment: &SetupEnvironment,
+    budget: &CallBudget,
+) -> Result<(), SetupFailure> {
+    if budget.cancellation.is_cancelled() || budget.deadline_passed(environment.clock.as_ref()) {
+        return Err(SetupFailure::Invalid(
+            "local operation deadline elapsed or request cancelled".into(),
+        ));
+    }
+    Ok(())
 }
 #[derive(Debug, Clone, Copy)]
 pub struct SetupOption {

@@ -661,20 +661,33 @@ pub(crate) fn execute_registered_with_expected_scope(
             "declared adapter environment exceeds local request limits",
         ));
     }
-    let scope = registration
-        .resolve_setup_scope(scope, environment)
-        .map_err(adapter_run_error)?;
-    if expected_scope.is_some_and(|expected| expected != &scope) {
-        return Err(invalid(
-            "installer scope changed after ownership inspection; preserved",
-        ));
-    }
     let budget = crate::protocol::time::CallBudget {
         deadline: crate::protocol::time::MonoInstant(
             environment.clock.monotonic_now().0.saturating_add(30_000),
         ),
         cancellation: Default::default(),
     };
+    let resolution = registration
+        .resolve_setup_scope_for(
+            &SetupScopeResolutionRequest {
+                operation: match verb {
+                    SetupVerb::Install => SetupScopeOperation::Install,
+                    SetupVerb::Remove => SetupScopeOperation::Remove,
+                    SetupVerb::Status => SetupScopeOperation::Status,
+                },
+                selector: scope,
+                native_binary,
+                environment,
+            },
+            &budget,
+        )
+        .map_err(adapter_run_error)?;
+    let scope = resolution.scope.clone();
+    if expected_scope.is_some_and(|expected| expected != &scope) {
+        return Err(invalid(
+            "installer scope changed after ownership inspection; preserved",
+        ));
+    }
     match verb {
         SetupVerb::Install => registration
             .setup(
@@ -690,11 +703,12 @@ pub(crate) fn execute_registered_with_expected_scope(
             .map(|outcome| outcome.projection)
             .map_err(adapter_run_error),
         SetupVerb::Remove => registration
-            .unsetup(
+            .unsetup_resolved(
                 &UnsetupRequest {
                     scope,
                     environment: environment.clone(),
                 },
+                &resolution,
                 &budget,
             )
             .map(|outcome| outcome.projection)

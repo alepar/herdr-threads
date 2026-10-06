@@ -240,6 +240,17 @@ trait ErasedAdapter: Send + Sync {
         request: &UnsetupRequest,
         budget: &CallBudget,
     ) -> Result<RemovalOutcome, SetupFailure>;
+    fn resolve_setup_scope_for(
+        &self,
+        request: &SetupScopeResolutionRequest<'_>,
+        budget: &CallBudget,
+    ) -> Result<SetupScopeResolution, SetupFailure>;
+    fn unsetup_resolved(
+        &self,
+        request: &UnsetupRequest,
+        resolution: &SetupScopeResolution,
+        budget: &CallBudget,
+    ) -> Result<RemovalOutcome, SetupFailure>;
     fn setup_options(&self) -> &'static [SetupOption];
     fn setup_environment_inputs(&self) -> &'static [&'static str];
     fn resolve_setup_scope(
@@ -396,6 +407,21 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
         budget: &CallBudget,
     ) -> Result<RemovalOutcome, SetupFailure> {
         self.0.unsetup(request, budget)
+    }
+    fn resolve_setup_scope_for(
+        &self,
+        request: &SetupScopeResolutionRequest<'_>,
+        budget: &CallBudget,
+    ) -> Result<SetupScopeResolution, SetupFailure> {
+        self.0.resolve_setup_scope_for(request, budget)
+    }
+    fn unsetup_resolved(
+        &self,
+        request: &UnsetupRequest,
+        resolution: &SetupScopeResolution,
+        budget: &CallBudget,
+    ) -> Result<RemovalOutcome, SetupFailure> {
+        self.0.unsetup_resolved(request, resolution, budget)
     }
     fn setup_options(&self) -> &'static [SetupOption] {
         self.0.setup_options()
@@ -659,6 +685,28 @@ impl Registration {
     ) -> Result<RemovalOutcome, SetupFailure> {
         self.adapter.unsetup(request, budget)
     }
+    pub fn resolve_setup_scope_for(
+        &self,
+        request: &SetupScopeResolutionRequest<'_>,
+        budget: &CallBudget,
+    ) -> Result<SetupScopeResolution, SetupFailure> {
+        check_setup_budget(request.environment, budget)?;
+        self.adapter.resolve_setup_scope_for(request, budget)
+    }
+    pub fn unsetup_resolved(
+        &self,
+        request: &UnsetupRequest,
+        resolution: &SetupScopeResolution,
+        budget: &CallBudget,
+    ) -> Result<RemovalOutcome, SetupFailure> {
+        check_setup_budget(&request.environment, budget)?;
+        if request.scope != resolution.scope {
+            return Err(SetupFailure::Invalid(
+                "removal scope differs from captured resolution".into(),
+            ));
+        }
+        self.adapter.unsetup_resolved(request, resolution, budget)
+    }
     pub fn setup_options(&self) -> &'static [SetupOption] {
         self.adapter.setup_options()
     }
@@ -691,7 +739,19 @@ impl Registration {
             ResolvedSetupScope::ConfigRoot(_) => SetupScopeRequest::Default,
             ResolvedSetupScope::Profile { name, .. } => SetupScopeRequest::Profile(name.clone()),
         };
-        if self.resolve_setup_scope(&selector, &request.environment)? != request.scope {
+        if self
+            .resolve_setup_scope_for(
+                &SetupScopeResolutionRequest {
+                    operation: SetupScopeOperation::Status,
+                    selector: &selector,
+                    native_binary: request.native_binary.as_deref(),
+                    environment: &request.environment,
+                },
+                budget,
+            )?
+            .scope
+            != request.scope
+        {
             return Err(SetupFailure::Invalid(
                 "installer scope does not match captured adapter scope".into(),
             ));

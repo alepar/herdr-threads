@@ -1006,8 +1006,16 @@ fn collect_local_with_budget(
         .unwrap_or_default();
     for registration in entries {
         let id = registration.metadata().id;
-        let resolved = match registration.resolve_setup_scope(scope, environment) {
-            Ok(scope) => scope,
+        let resolved = match registration.resolve_setup_scope_for(
+            &SetupScopeResolutionRequest {
+                operation: SetupScopeOperation::Status,
+                selector: scope,
+                native_binary: None,
+                environment,
+            },
+            budget,
+        ) {
+            Ok(resolution) => resolution.scope,
             Err(error) => {
                 report["local_harnesses"][id] = json!({"scope": {"kind": "local_unresolved", "profile": match scope {SetupScopeRequest::Profile(name) => Some(name), _ => None}}, "installed": null, "enabled": null, "admitted": null, "observed": null, "diagnostics": [{"text": error.to_string()}]});
                 continue;
