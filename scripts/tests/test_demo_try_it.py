@@ -50,6 +50,16 @@ class CaptureTests(unittest.TestCase):
         typed = "".join(event[2] for event in events[1:] if event[1] == "i")
         self.assertNotIn("must-not-run", typed)
 
+    def test_long_assignment_is_typed_twice_as_fast_as_command(self):
+        command = "printf 'abcdefghijklmnopqrst'"
+        result, events = self.record([{"command": command, "fast_from": 8}])
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        typed = [event for event in events[1:] if event[1] == "i"]
+        normal = [typed[i + 1][0] - typed[i][0] for i in range(6)]
+        fast = [typed[i + 1][0] - typed[i][0] for i in range(8, 25)]
+        self.assertGreater(sum(normal) / len(normal), 1.6 * sum(fast) / len(fast))
+        self.assertEqual("".join(event[2] for event in typed), command + "\n")
+
     def test_follow_early_failure_is_not_success(self):
         result, _ = self.record(["false"], follow=True, timeout=1)
         self.assertNotEqual(result.returncode, 0)

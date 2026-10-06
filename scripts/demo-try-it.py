@@ -25,12 +25,21 @@ import time
 
 def capture(args):
     commands = json.loads(args.commands.read_text())
-    if not isinstance(commands, list) or not commands or any(
-        not isinstance(command, str) or not command.strip() for command in commands
-    ):
-        raise ValueError("commands must be a nonempty JSON array of shell commands")
+    if not isinstance(commands, list) or not commands:
+        raise ValueError("commands must be a nonempty JSON array")
+    plan = []
+    for item in commands:
+        command = item if isinstance(item, str) else item.get("command") if isinstance(item, dict) else None
+        fast_from = item.get("fast_from") if isinstance(item, dict) else None
+        if not isinstance(command, str) or not command.strip():
+            raise ValueError("each plan entry requires a shell command")
+        if fast_from is not None and (type(fast_from) is not int or not 0 <= fast_from < len(command)):
+            raise ValueError("fast_from must identify the start of the long assignment")
+        plan.append((command, fast_from))
     if args.delay <= 0 or args.pause < 0 or args.timeout <= 0:
         raise ValueError("delay and timeout must be positive; pause must be nonnegative")
+    if not 1 <= args.cols <= 65535 or not 1 <= args.rows <= 65535:
+        raise ValueError("terminal dimensions must be between 1 and 65535")
     if args.finish_file is not None and args.finish_file.exists():
         raise ValueError("finish marker already exists; use a fresh attempt")
     with tempfile.TemporaryDirectory(prefix="ht-typing-") as private:
@@ -38,14 +47,14 @@ def capture(args):
         rcfile = Path(private) / "bashrc"
         rcfile.write_text(
             "PS1='\\[\\e[1;36m\\]you $ \\[\\e[0m\\]'\nPS2='> '\n"
-            "HISTFILE=/dev/null\nset +m\nHT_PROMPT_SEQ=0\n"
+            "HISTFILE=/dev/null\nset +m\nHT_PROMPT_SEQ=0\nclear\n"
             "PROMPT_COMMAND='HT_LAST_RC=$?; set +m; HT_PROMPT_SEQ=$((HT_PROMPT_SEQ+1)); "
             "printf \"%s %s\\n\" \"$HT_PROMPT_SEQ\" \"$HT_LAST_RC\" > \"$HT_CAPTURE_STATUS.tmp\"; "
             "mv \"$HT_CAPTURE_STATUS.tmp\" \"$HT_CAPTURE_STATUS\"'\n"
         )
         # Open exclusively: retries must preserve their earlier attempt.
         with args.output.open("x") as cast:
-            cast.write(json.dumps({"version": 2, "width": 104, "height": 34,
+            cast.write(json.dumps({"version": 2, "width": args.cols, "height": args.rows,
                                    "timestamp": int(time.time()),
                                    "title": "Herdr Threads: Try it yourself"}) + "\n")
             started = time.monotonic()
@@ -53,11 +62,12 @@ def capture(args):
             pid, master = pty.fork()
             if pid == 0:
                 os.chdir(args.cwd)
-                os.environ.update(HT_CAPTURE_STATUS=str(status), TERM="xterm-256color")
+                os.environ.update(HT_CAPTURE_STATUS=str(status), TERM="xterm-256color",
+                                  BASH_SILENCE_DEPRECATION_WARNING="1")
                 for key in ("HERDR_AGENT", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_THREAD_ID"):
                     os.environ.pop(key, None)
                 os.execv("/bin/bash", ["bash", "--noprofile", "--rcfile", str(rcfile), "-i"])
-            fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 34, 104, 0, 0))
+            fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", args.rows, args.cols, 0, 0))
 
             def event(kind, text):
                 cast.write(json.dumps([round(time.monotonic() - started, 6), kind, text]) + "\n")
@@ -91,11 +101,12 @@ def capture(args):
                             return int(values[1])
                 raise TimeoutError("command did not return to the prompt")
 
-            def type_text(text):
-                for char in text:
+            def type_text(text, fast_from):
+                for position, char in enumerate(text):
                     os.write(master, char.encode())
                     event("i", char)
-                    pump(args.delay * (1.3 if char == " " else 1))
+                    pace = 2 if fast_from is not None and position >= fast_from else 1
+                    pump(args.delay * (1.3 if char == " " else 1) / pace)
                 # Multiline comments/commands may already have advanced the
                 # counter. Freeze the boundary immediately before final Enter.
                 sequence = int(status.read_text().split()[0])
@@ -105,10 +116,16 @@ def capture(args):
 
             try:
                 prompt(1)
-                for index, command in enumerate(commands):
+                if args.start_file is not None:
+                    until = time.monotonic() + args.timeout
+                    while not args.start_file.exists():
+                        if time.monotonic() >= until:
+                            raise TimeoutError("camera start deadline reached")
+                        pump(0.05)
+                for index, (command, fast_from) in enumerate(plan):
                     pump(args.pause)
-                    sequence = type_text(command)
-                    following = args.finish_file is not None and index == len(commands) - 1
+                    sequence = type_text(command, fast_from)
+                    following = args.finish_file is not None and index == len(plan) - 1
                     if following:
                         until = time.monotonic() + args.timeout
                         while not args.finish_file.exists():
@@ -157,7 +174,10 @@ def main():
     parser.add_argument("--delay", type=float, default=0.09, help="seconds per typed character")
     parser.add_argument("--pause", type=float, default=2, help="reading pause before each command")
     parser.add_argument("--timeout", type=float, default=600, help="maximum command/follow wait")
+    parser.add_argument("--cols", type=int, default=104, help="shell terminal columns")
+    parser.add_argument("--rows", type=int, default=34, help="shell terminal rows")
     parser.add_argument("--finish-file", type=Path, help="operator creates this after reviewing the live conclusion")
+    parser.add_argument("--start-file", type=Path, help="wait for camera readiness before typing")
     args = parser.parse_args()
     def interrupted(signum, _frame):
         raise RuntimeError(f"capture interrupted by signal {signum}")

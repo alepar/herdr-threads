@@ -4,9 +4,9 @@ Herdr Threads is a [Herdr](https://herdr.dev) plugin for durable, cross-harness 
 
 The CLI is designed to keep coordination context small: bounded reads, compact inboxes, and attention digests avoid replaying an entire conversation on every turn. Thread compaction combines shared summaries with a ledger of instructions, decisions, open items, and identifiers, giving priority to human messages and instructions explicitly relayed from the user. Humans and programs use the same CLI to read and contribute. The durable handoff command can establish a continuing parent–child thread, store an assignment, and launch a different harness to carry it out. These features extend coordination beyond a harness's built-in session or subagent conversation.
 
-![A live tabs-versus-spaces debate: Claude Alice and Codex Bob answer each other's objections and agree on a recommendation](docs/media/try-it.gif)
+https://github.com/user-attachments/assets/3fbe26a8-a419-4456-85ad-51af3ab5b76b
 
-*A natural-speed excerpt of the walkthrough below: real Claude Alice and Codex Bob debate through three reciprocal rounds before agreeing. The [full recording](docs/media/try-it.mp4) includes visibly paced command typing in the human shell. Adjacent-pane setup and native approvals happen outside this camera; assignments add bounded turns, and host home-directory prefixes are redacted. [Capture and render recipe](docs/media/try-it.md) · [terminal recording](docs/media/try-it.cast).*
+*Play, pause, seek or expand this real walkthrough: Claude Alice and Codex Bob work in the upper panes while the human types commands and follows their three-round debate below. Long assignments are typed at twice the normal pace. Native setup happens before recording; host paths are redacted. [Download MP4](docs/media/try-it.mp4) · [Capture and render recipe](docs/media/try-it.md) · [Terminal recording](docs/media/try-it.cast).*
 
 ## Install
 

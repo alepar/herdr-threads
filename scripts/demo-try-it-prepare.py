@@ -16,9 +16,180 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import uuid
 
 ACTIVE_RUN = None
+
+
+def write_toml(path, data):
+    def scalar(value):
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, str):
+            return json.dumps(value, ensure_ascii=False)
+        if isinstance(value, list):
+            return "[" + ", ".join(scalar(v) for v in value) + "]"
+        if isinstance(value, dict):
+            return "{ " + ", ".join(json.dumps(k) + " = " + scalar(v) for k, v in value.items()) + " }"
+        if isinstance(value, (int, float)):
+            return str(value)
+        return value.isoformat()
+    lines = []
+    def table(keys, values):
+        if keys:
+            lines.append("[" + ".".join(json.dumps(k) for k in keys) + "]")
+        for key, value in values.items():
+            if not isinstance(value, dict):
+                lines.append(json.dumps(key) + " = " + scalar(value))
+        lines.append("")
+        for key, value in values.items():
+            if isinstance(value, dict):
+                table(keys + [key], value)
+    table([], data)
+    text = "\n".join(lines)
+    if tomllib.loads(text) != data:
+        raise ValueError("profile configuration did not round-trip")
+    path.write_text(text)
+    path.chmod(0o600)
+
+
+def copy_settings(root, codex_source, claude_source):
+    """Copy preferences/resources; retain already reviewed private hook routing."""
+    def private_ht(groups):
+        kept = []
+        for group in groups:
+            group = dict(group)
+            group["hooks"] = [h for h in group.get("hooks", [])
+                              if "herdr-threads" in h.get("command", "")]
+            if group["hooks"]:
+                kept.append(group)
+        return kept
+    def remap_codex(text):
+        return text.replace(str(codex_source), str(root / "codex-home")).replace(
+            str(Path.home() / ".codex"), str(root / "codex-home"))
+    def copy_resources(source, target):
+        def copy_private(src, dst):
+            destination = Path(dst)
+            if destination.is_file():
+                destination.chmod(destination.stat().st_mode | 0o200)
+            return shutil.copy2(src, dst)
+        for name in ("hooks", "skills", "rules", "plugins", "scripts", "agents", "prompts", "AGENTS.md", "CLAUDE.md"):
+            path = source / name
+            if path.is_dir():
+                shutil.copytree(path, target / name, dirs_exist_ok=True, symlinks=False,
+                                copy_function=copy_private,
+                                ignore=shutil.ignore_patterns(".git", "temp_subdir_*"))
+            elif path.is_file():
+                shutil.copy2(path, target / name)
+        for name in ("hooks", "skills", "rules", "plugins", "scripts", "agents", "prompts"):
+            directory = target / name
+            if not directory.exists():
+                continue
+            for resource in directory.rglob("*"):
+                if not resource.is_file() or resource.suffix not in (".json", ".toml", ".sh", ".py", ".md"):
+                    continue
+                try:
+                    text = resource.read_text()
+                except UnicodeDecodeError:
+                    continue
+                remapped = text.replace(str(source), str(target))
+                if remapped != text:
+                    resource.chmod(resource.stat().st_mode | 0o200)
+                    resource.write_text(remapped)
+    copy_resources(codex_source, root / "codex-home")
+    copy_resources(claude_source, root / "claude-config")
+    original_hooks = codex_source / "hooks.json"
+    private_hooks = root / "codex-home/hooks.json"
+    if original_hooks.exists():
+        source_hooks = json.loads(original_hooks.read_text()).get("hooks", {})
+        existing_hooks = json.loads(private_hooks.read_text()).get("hooks", {}) if private_hooks.exists() else {}
+        for event, groups in source_hooks.items():
+            retained = []
+            for group in groups:
+                group = dict(group)
+                group["hooks"] = [h for h in group.get("hooks", [])
+                                  if "herdr-threads" not in h.get("command", "")]
+                if group["hooks"]:
+                    retained.append(group)
+            source_hooks[event] = retained + private_ht(existing_hooks.get(event, []))
+        for event, groups in existing_hooks.items():
+            source_hooks.setdefault(event, private_ht(groups))
+        text = json.dumps({"hooks": source_hooks})
+        text = remap_codex(text)
+        save(private_hooks, json.loads(text))
+        script = Path.home() / ".codex/herdr-agent-state.sh"
+        if script.exists():
+            shutil.copy2(script, root / "codex-home/herdr-agent-state.sh")
+    private_config = root / "codex-home/config.toml"
+    current = tomllib.loads(private_config.read_text()) if private_config.exists() else {}
+    source = codex_source / "config.toml"
+    config = tomllib.loads(remap_codex(source.read_text())) if source.exists() else {}
+    # Copied historical trust stays intact; preserve approvals actually acquired
+    # for the generated demo hooks/project. Never manufacture trust hashes.
+    state = config.setdefault("hooks", {}).setdefault("state", {})
+    state.update(current.get("hooks", {}).get("state", {}))
+    config.setdefault("projects", {}).update(current.get("projects", {}))
+    config.update(check_for_update_on_startup=False, approval_policy="on-request",
+                  sandbox_mode="workspace-write")
+    config.setdefault("features", {})["daemon_auto_start"] = False
+    write_toml(private_config, config)
+    for name in ("settings.json", "settings.local.json", ".claude.json"):
+        source = claude_source / name
+        target = root / "claude-config" / name
+        if not source.exists():
+            continue
+        original = json.loads(source.read_text())
+        current = json.loads(target.read_text()) if target.exists() else {}
+        if name == "settings.json":
+            # The source's ht commands target real profile state. Retain the
+            # generated private ht hooks and copy all other hooks/preferences.
+            hooks = {}
+            for event, groups in original.get("hooks", {}).items():
+                kept = []
+                for group in groups:
+                    group = dict(group)
+                    group["hooks"] = [h for h in group.get("hooks", [])
+                                      if "herdr-threads" not in h.get("command", "")]
+                    if group["hooks"]:
+                        kept.append(group)
+                hooks[event] = kept + private_ht(current.get("hooks", {}).get(event, []))
+            for event, groups in current.get("hooks", {}).items():
+                hooks.setdefault(event, private_ht(groups))
+            original["hooks"] = hooks
+        else:
+            original.update(current)
+        text = json.dumps(original)
+        text = text.replace(str(claude_source), str(root / "claude-config"))
+        save(target, json.loads(text))
+    # Claude's default-home startup/trust records also belong to the copy.
+    state = Path.home() / ".claude.json"
+    if state.exists():
+        copied = json.loads(state.read_text())
+        current_path = root / "claude-config/.claude.json"
+        current = json.loads(current_path.read_text()) if current_path.exists() else {}
+        for key, value in current.items():
+            copied.setdefault(key, value)
+        projects = dict(copied.get("projects", {}))
+        projects.update(current.get("projects", {}))
+        copied["projects"] = projects
+        save(current_path, copied)
+        save(root / "home/.claude.json", copied)
+    tmux = root / "home/.tmux"
+    tmux.mkdir(exist_ok=True)
+    for name in ("claude-statusline.sh", "claude-usage.sh"):
+        source = Path.home() / ".tmux" / name
+        if source.exists():
+            shutil.copy2(source, tmux / name)
+    usage = tmux / "claude-usage.sh"
+    if usage.exists():
+        text = usage.read_text()
+        begin = text.find('# Read OAuth token')
+        end = text.find('# Call the usage API', begin)
+        if begin >= 0 and end >= 0:
+            # Same status display, credential supplied from private wrapper copy.
+            text = text[:begin] + 'TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}"\n' + text[end:]
+            usage.write_text(text)
 
 
 def private_env(values):
@@ -134,7 +305,7 @@ def prepare(args):
     root = Path(tempfile.mkdtemp(prefix="ht-try-it.", dir="/private/tmp"))
     root.chmod(0o700)
     ACTIVE_RUN = root
-    for name in ("bin", "home", "project", "claude-config", "codex-home"):
+    for name in ("bin", "home", "project", "claude-config", "codex-home", "tmp"):
         (root / name).mkdir(mode=0o700)
     manifest = {"root": str(root), "run_id": str(uuid.uuid4())}
     env_values = {
@@ -142,9 +313,11 @@ def prepare(args):
         "CODEX_HOME": str(root / "codex-home"), "HERDR_PLUGIN_STATE_DIR": str(root / "state"),
         "HERDR_SOCKET_PATH": os.environ["HERDR_SOCKET_PATH"],
         "XDG_CONFIG_HOME": str(root / "home/config"), "XDG_STATE_HOME": str(root / "home/state"),
+        "XDG_CACHE_HOME": str(root / "home/cache"),
         "PATH": str(root / "bin") + ":" + os.environ["PATH"],
         "SHELL": "/bin/zsh", "HT_LEAK_RUN_ID": manifest["run_id"],
         "ZDOTDIR": str(root / "home"),
+        "TMPDIR": str(root / "tmp"),
         "DISABLE_AUTOUPDATER": "1", "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false",
     }
     manifest["env"] = env_values
@@ -153,6 +326,12 @@ def prepare(args):
     env = private_env(env_values)
     shutil.copy2(args.bin.resolve(), root / "bin/herdr-threads")
     shutil.copy2(Path(__file__).with_name("demo-try-it.py"), root / "record.py")
+    shutil.copy2(Path(__file__).with_name("demo-try-it-camera.py"), root / "camera.py")
+    (root / "camera-config.toml").write_text(
+        'onboarding = false\n[ui]\nsidebar_start_collapsed = true\n'
+        'sidebar_collapsed_mode = "hidden"\n[experimental]\nallow_nested = true\n'
+        '[terminal]\nkitty_graphics = false\n[update]\nversion_check = false\nmanifest_check = false\n'
+    )
     # A real copy, never a writable symlink back to the source profile.
     shutil.copyfile(args.codex_home / "auth.json", root / "codex-home/auth.json")
     (root / "codex-home/auth.json").chmod(0o600)
@@ -194,6 +373,7 @@ def prepare(args):
         'check_for_update_on_startup = false\napproval_policy = "on-request"\n'
         'sandbox_mode = "workspace-write"\n'
     )
+    copy_settings(root, args.codex_home, args.claude_config)
     # Shell startup is private and deterministic; no real dotfiles are loaded.
     (root / "home/.zshrc").write_text("export PATH=" + shlex.quote(env_values["PATH"]) + "\nPS1='demo % '\n")
     run(["git", "init", "-q", str(root / "project")], env)
@@ -220,10 +400,12 @@ def prepare(args):
     for key, value in env_values.items():
         command += ["--env", f"{key}={value}"]
     created = json.loads(run(command, env))["result"]
-    manifest.update(tab=created["tab"]["tab_id"], human=created["root_pane"]["pane_id"])
+    manifest.update(tab=created["tab"]["tab_id"], alice=created["root_pane"]["pane_id"])
     save(root / "private.json", manifest)
-    for name in ("alice", "bob"):
-        split = ["herdr", "pane", "split", manifest["human"], "--direction", "right",
+    # Split the full-width bottom first, then divide only the upper half.
+    for name, direction in (("human", "down"), ("bob", "right")):
+        split = ["herdr", "pane", "split", manifest["alice"], "--direction", direction,
+                 "--ratio", "0.67" if direction == "down" else "0.5",
                  "--cwd", str(root / "project"), "--no-focus"]
         for key, value in env_values.items():
             split += ["--env", f"{key}={value}"]
@@ -231,6 +413,7 @@ def prepare(args):
         manifest[name] = pane
         save(root / "private.json", manifest)
         run(["herdr", "pane", "rename", pane, name], env)
+    run(["herdr", "pane", "rename", manifest["alice"], "alice"], env)
     run(["herdr", "pane", "rename", manifest["human"], "you"], env)
     alice = (
         "You are Alice. Read this thread, make the case for spaces, and discuss it with Bob when he joins. "
@@ -246,12 +429,15 @@ def prepare(args):
         "Use --require-ack-pane alice for each post. "
         "Only after Alice posts Shared recommendation, confirm it or state a remaining tradeoff."
     )
+    alice_command = "herdr-threads handoff --new-thread --thread-name review \\\n  --topic \"Tabs or spaces?\" --pane alice --kind claude -- \\\n  "
+    bob_command = "herdr-threads handoff --thread review --pane bob --kind codex -- \\\n  "
     commands = [
-        "# Adjacent empty panes named alice (Claude) and bob (Codex) are prepared.\n"
-        "# Native trust and CLI approvals happen in those panes, outside this camera.\n"
+        "# We will create a new thread and invite Alice and Bob.\n"
+        "# They will debate spaces versus tabs through the thread.\n"
+        "# We will observe their work above and follow the conversation below.\n"
         "herdr-threads me init",
-        "herdr-threads handoff --new-thread --thread-name review \\\n  --topic \"Tabs or spaces?\" --pane alice --kind claude -- \\\n  " + shlex.quote(alice),
-        "herdr-threads handoff --thread review --pane bob --kind codex -- \\\n  " + shlex.quote(bob),
+        {"command": alice_command + shlex.quote(alice), "fast_from": len(alice_command)},
+        {"command": bob_command + shlex.quote(bob), "fast_from": len(bob_command)},
         "herdr-threads send review --require-ack-pane alice --require-ack-pane bob \\\n  --body \"Please settle on one recommendation and explain the tradeoff, after three replies each.\"",
         "herdr-threads pending-receipts --thread review",
         "herdr-threads follow review",
@@ -265,9 +451,30 @@ def main():
     parser.add_argument("--bin", type=Path)
     parser.add_argument("--codex-home", type=Path, default=Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")))
     parser.add_argument("--claude-credentials", type=Path, help="private Claude credentials JSON (else macOS keychain)")
+    parser.add_argument("--claude-config", type=Path, default=Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")))
+    parser.add_argument("--copy-settings", type=Path, help="refresh settings copies in an existing owned run")
     parser.add_argument("--cleanup", type=Path)
+    parser.add_argument("--camera", type=Path, help="attach private camera client for an existing owned run")
     args = parser.parse_args()
-    if args.cleanup:
+    if args.copy_settings:
+        root = args.copy_settings.resolve()
+        if root.parent != Path("/private/tmp") or not root.name.startswith("ht-try-it."):
+            parser.error("settings require an owned private run")
+        manifest = json.loads((root / "private.json").read_text())
+        if manifest["root"] != str(root) or manifest.get("tab_closed"):
+            parser.error("settings require an active owned run")
+        copy_settings(root, args.codex_home, args.claude_config)
+    elif args.camera:
+        root = args.camera.resolve()
+        if root.parent != Path("/private/tmp") or not root.name.startswith("ht-try-it."):
+            parser.error("camera requires an owned private run")
+        manifest = json.loads((root / "private.json").read_text())
+        if manifest["root"] != str(root) or manifest.get("tab_closed"):
+            parser.error("camera requires an active owned run")
+        env = private_env(manifest["env"])
+        env.update(HERDR_CONFIG_PATH=str(root / "camera-config.toml"), TERM="xterm-256color")
+        os.execve(sys.executable, [sys.executable, str(root / "camera.py"), "--root", str(root)], env)
+    elif args.cleanup:
         cleanup(args.cleanup)
     elif args.bin:
         prepare(args)
