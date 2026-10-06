@@ -117,6 +117,9 @@ class CameraTests(unittest.TestCase):
             (home / "codex/hooks.json").write_text(json.dumps({"hooks":{"SessionStart":[{"hooks":[{"command":"bash " + str(scripts / "native.sh")}]}]}}))
             (root / "codex-home/config.toml").write_text('[hooks.state.private]\ntrusted_hash="genuine-native-review"\n')
             (home / "claude/settings.json").write_text('{"effortLevel":"high"}')
+            source.write_text(source.read_text() +
+                              '[hooks.state.' + json.dumps(str(home / "codex/hooks.json:session_start:0:0")) + ']\ntrusted_hash="source-approval"\n' +
+                              '[hooks.state.' + json.dumps(str(home / ".codex/hooks.json:session_start:0:0")) + ']\ntrusted_hash="alias-approval"\n')
             before = source.read_bytes()
             with patch.object(Path, "home", return_value=home):
                 prepare.copy_settings(root, home / "codex", home / "claude")
@@ -129,7 +132,29 @@ class CameraTests(unittest.TestCase):
             self.assertIn(str(root / "codex-home/scripts/native.sh"),(root / "codex-home/hooks.json").read_text())
             self.assertIn(str(root / "codex-home/log"),(root / "codex-home/scripts/native.sh").read_text())
             self.assertEqual(json.loads((root / "claude-config/settings.json").read_text())["effortLevel"], "high")
+            trust = config["hooks"]["state"]
+            self.assertEqual(trust[str(home / "codex/hooks.json:session_start:0:0")]["trusted_hash"], "source-approval")
+            self.assertEqual(trust[str(home / ".codex/hooks.json:session_start:0:0")]["trusted_hash"], "alias-approval")
             self.assertEqual(source.read_bytes(), before)
+
+    def test_candidate_skill_replaces_stale_private_profile_guidance(self):
+        spec = importlib.util.spec_from_file_location("prepare", SCRIPTS / "demo-try-it-prepare.py")
+        prepare = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(prepare)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("codex-home", "claude-config"):
+                folder = root / name / "skills/herdr-threads"
+                folder.mkdir(parents=True)
+                path = folder / "SKILL.md"
+                path.write_text("old read/body/follow guidance")
+                path.chmod(0o400)
+            guide = "---\nname: herdr-threads\n---\nUse inbox and hooks.\n"
+            with patch.object(prepare, "run", return_value=guide) as invoke:
+                prepare.install_candidate_skill(root, {"HOME": str(root)})
+            invoke.assert_called_once_with([str(root / "bin/herdr-threads"), "skill"], {"HOME": str(root)})
+            for name in ("codex-home", "claude-config"):
+                self.assertEqual((root / name / "skills/herdr-threads/SKILL.md").read_text(), guide)
 
 
 if __name__ == "__main__":

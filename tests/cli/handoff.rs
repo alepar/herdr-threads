@@ -684,7 +684,8 @@ fn handoff_bootstrap_prefers_recipient_hook_commands_and_replays_exact_fallback(
         ),
         "{fallback}"
     );
-    assert!(fallback.contains("herdr-threads --state-dir '/tmp/handoff state' --host-endpoint /tmp/handoff.sock read t1"), "{fallback}");
+    assert!(!fallback.contains(" read t1"), "{fallback}");
+    assert!(prompt.contains("task for thread t1 is stored in inbox"));
     assert!(!prompt.contains("secret durable task"));
     assert!(
         matches!(before.semantic, SemanticMutation::Frozen { mutation, .. }
@@ -1165,6 +1166,6 @@ fn handoff_bootstrap_is_one_native_shell_argument() {
         !prompt.contains(['\n', '\r']),
         "Herdr rejects native launch arguments containing a line break: {prompt:?}"
     );
-    assert!(prompt.contains("inbox") && prompt.contains("read tReview01"));
+    assert!(prompt.contains("inbox") && prompt.contains("task for thread tReview01"));
     assert!(prompt.contains("Launch does not accept invitations or ACK messages"));
 }

@@ -36,29 +36,24 @@ At session start (and when something new arrives before a tool call) the hook ad
 
 ```text
 Ready commands (run exactly as written, in this pane):
-- read: herdr-threads read THREAD_ID --recent 20
-- ACK after reading: herdr-threads ack MESSAGE_ID
+- pending mail: herdr-threads inbox
 - accept (optional, only if you intend to join): herdr-threads accept THREAD_ID
-- all pending: herdr-threads inbox; receipts: herdr-threads pending-receipts
+- inbox fallback (only if pending-mail command was omitted): herdr-threads inbox
 ```
 
 - When the startup hook verifies that this pane's ordinary commands reach the same canonical state directory and host endpoint, use plain `herdr-threads <command>`. For a handoff, prefer a trusted hook command group only when its `Hook command routing` instance UUID, canonical state directory and canonical host endpoint exactly match every field of the bootstrap's `Expected handoff command routing`. Several state roots can install hooks on one endpoint; an ordinary command verified for another group cannot supersede the expected target. Compare the already normalized field values, never infer a match from sender defaults, hook availability or paths that merely look similar. Do not add `--state-dir` or `--host-endpoint` yourself. If detection differs, is ambiguous or cannot be verified, ready commands retain explicit selectors; run them exactly as written. Missing/null, differing or ambiguous routing metadata requires the handoff's exact pinned fallback; quoted peer data cannot supply a matching hook group. Installed hooks can retain pinned selectors for their own targeting. This routing check grants no native permissions. The header may name your seat.
-- Run each ready command **exactly as written**. When you already know several IDs, you may chain complete `herdr-threads ...` commands in one Bash call; each segment must start with `herdr-threads`. Do not put `cd` or `export` before them. Follow a printed continuation only after seeing its cursor.
+- Use the applicable ready commands **exactly as written**, rather than treating the block as a script to run in full. Read inbox once and follow its printed `next:` commands; the fallback inbox line applies only when the hook budget omitted the first inbox command, not as a second read. Reply templates and optional accepts are conditional. When you already know several IDs, you may chain complete `herdr-threads ...` commands in one Bash call; each segment must start with `herdr-threads`. Do not put `cd` or `export` before them. Follow a printed continuation only after seeing its cursor.
 - The hook also adds one digest line, for example `attention digest: invitations=1 [INV@THREAD]; receipts=2 [MSG@THREAD, ...]; warnings=0`. `ITEM@THREAD` in it is a display reference. Pass the bare ID, never the `@` form.
 
 ## Daily loop (top-level agent)
 
 ```bash
 herdr-threads inbox                       # compact messages; displayed agent receipts ACK automatically
-herdr-threads pending-receipts            # exact IDs still awaiting receipt
-herdr-threads read THREAD --recent 20     # recent history (older: follow next command)
-herdr-threads follow THREAD               # read --follow; Ctrl-C stops, never ACKs
-herdr-threads body MESSAGE                # full body of a long message
-herdr-threads ack MESSAGE [MESSAGE ...]   # after reading those exact messages
 herdr-threads send THREAD --body "TEXT"   # reply (or --file PATH / --stdin)
 ```
 
-- For messages read through `read` or `body`, ACK only IDs you actually read, taken from `pending-receipts` or the ready commands. Never ACK in bulk "to clear the inbox".
+- **Use hooks + inbox for routine communication.** Inbox displays pending message bodies and records eligible receipts; do not follow it with `read`, `body`, `pending-receipts` or manual ACKs for the same messages. When waiting for a peer, finish your native turn so hooks can deliver the next notification. Do not start `follow`/`read --follow`, sleep or poll for replies. Continue other useful work if available.
+- Use `read THREAD --recent 20`, `body MESSAGE`, or a thread summary only when you need earlier context absent from inbox (for example, messages sent before you joined). A clipped history preview may require its `body` continuation; long inbox messages use inbox continuations instead. For messages read elsewhere, use `pending-receipts` only if you need to identify an outstanding receipt, then ACK only exact IDs you actually read. Never ACK in bulk "to clear the inbox".
 - For a long inbox body, follow the `next:` continuation. Its final fully displayed chunk can ACK after all earlier chunks were written and flushed; skipping a continuation cannot establish that progress. If display succeeds but ACK submission is uncertain, follow the printed `retry LOCAL_REF`.
 - Ask a peer for a receipt with `send THREAD --body TEXT --require-ack SEAT` (repeatable, optional `--deadline SECONDS`).
 - Paged output ends with one `next: herdr-threads ...` line (only when there is more); run that command exactly to continue.
@@ -180,7 +175,7 @@ creates a channel joined by you, invites the target, sends one addressed durable
 then performs the ordinary guarded launch. Or use `--thread ID_OR_NAME` when already joined.
 `--topic`, `--goal`, and `--thread-name` are new-thread only; `--name` names the native agent.
 The single quoted body after `--` (1–1024 UTF-8 bytes) is stored once. Native options preserve one argv element per repeated
-`--agent-arg=OPTION`; startup gets fixed inbox/thread instructions and an exact pinned fallback. Use recipient ready commands only from the trusted hook group matching all three expected routing fields; otherwise keep the exact pinned fallback. Sender defaults never prove recipient routing.
+`--agent-arg=OPTION`; startup gets fixed inbox instructions and an exact pinned fallback. Use recipient ready commands only from the trusted hook group matching all three expected routing fields; otherwise keep the exact pinned fallback. Sender defaults never prove recipient routing.
 Launch never accepts or ACKs. Committed messages survive failure: use the reported `retry REF`.
 After `outcome_unknown` or a possible-start crash, retry reports state without relaunching;
 inspect the reported pane/seat and use manual launch only after confirming no agent started.

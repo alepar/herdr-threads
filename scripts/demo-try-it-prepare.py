@@ -124,7 +124,18 @@ def copy_settings(root, codex_source, claude_source):
     private_config = root / "codex-home/config.toml"
     current = tomllib.loads(private_config.read_text()) if private_config.exists() else {}
     source = codex_source / "config.toml"
-    config = tomllib.loads(remap_codex(source.read_text())) if source.exists() else {}
+    def rebase_values(value):
+        if isinstance(value, str):
+            return remap_codex(value)
+        if isinstance(value, list):
+            return [rebase_values(item) for item in value]
+        if isinstance(value, dict):
+            # Trust keys are historical native identities, not resource paths.
+            # Rebasing two aliases into one key would either corrupt TOML or
+            # conflate distinct approvals. New private hooks are reviewed natively.
+            return {key: rebase_values(item) for key, item in value.items()}
+        return value
+    config = rebase_values(tomllib.loads(source.read_text())) if source.exists() else {}
     # Copied historical trust stays intact; preserve approvals actually acquired
     # for the generated demo hooks/project. Never manufacture trust hashes.
     state = config.setdefault("hooks", {}).setdefault("state", {})
@@ -209,6 +220,23 @@ def run(argv, env=None):
 def save(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n")
     path.chmod(0o600)
+
+
+def install_candidate_skill(root, env):
+    """Use the captured binary's guide in private profiles, never a stale copy."""
+    guide = run([str(root / "bin/herdr-threads"), "skill"], env)
+    if not guide.startswith("---\nname: herdr-threads\n"):
+        raise ValueError("candidate did not return the embedded Herdr skill")
+    for name in ("codex-home", "claude-config"):
+        folder = root / name / "skills/herdr-threads"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / "SKILL.md"
+        if path.exists():
+            path.chmod(path.stat().st_mode | 0o200)
+        path.write_text(guide)
+        path.chmod(0o600)
+        if path.read_text() != guide:
+            raise ValueError("private skill differs from candidate guide")
 
 
 def stop_tagged(run_id):
@@ -374,6 +402,7 @@ def prepare(args):
         'sandbox_mode = "workspace-write"\n'
     )
     copy_settings(root, args.codex_home, args.claude_config)
+    install_candidate_skill(root, env)
     # Shell startup is private and deterministic; no real dotfiles are loaded.
     (root / "home/.zshrc").write_text("export PATH=" + shlex.quote(env_values["PATH"]) + "\nPS1='demo % '\n")
     run(["git", "init", "-q", str(root / "project")], env)
@@ -416,14 +445,14 @@ def prepare(args):
     run(["herdr", "pane", "rename", manifest["alice"], "alice"], env)
     run(["herdr", "pane", "rename", manifest["human"], "you"], env)
     alice = (
-        "You are Alice. Read this thread, make the case for spaces, and discuss it with Bob when he joins. "
+        "You are Alice. Make the case for spaces and discuss it with Bob in this thread. Wait for his ready message before Alice 1. "
         "Post at most 45 words per turn, labeled Alice 1, Alice 2, Alice 3. Each later turn must answer "
         "a specific Bob objection before raising your next concern. Wait for Bob between turns; no polling. "
         "After Bob joins, use --require-ack-pane bob for each post. "
         "Only after Bob 3, post Shared recommendation with your conclusion."
     )
     bob = (
-        "You are Bob. Read this thread, make the case for tabs, and discuss it with Alice. "
+        "You are Bob. Make the case for tabs and discuss it with Alice in this thread. After joining, tell Alice you are ready, then wait for Alice 1. "
         "Post at most 45 words per turn, labeled Bob 1, Bob 2, Bob 3. Each turn must answer a specific "
         "Alice objection before raising your next concern. Wait for Alice between turns; no polling. "
         "Use --require-ack-pane alice for each post. "
@@ -464,6 +493,7 @@ def main():
         if manifest["root"] != str(root) or manifest.get("tab_closed"):
             parser.error("settings require an active owned run")
         copy_settings(root, args.codex_home, args.claude_config)
+        install_candidate_skill(root, private_env(manifest["env"]))
     elif args.camera:
         root = args.camera.resolve()
         if root.parent != Path("/private/tmp") or not root.name.startswith("ht-try-it."):

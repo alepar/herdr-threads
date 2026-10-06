@@ -154,7 +154,7 @@ pub struct MailSummary {
 /// ([`REQUIRED_INVITATION_INSTRUCTION`]) is not part of it: the ready-command
 /// header carries it only when a required invitation is pending (native codex
 /// matrix P3: a model read it as a precondition for every plain accept).
-pub const TOP_LEVEL_INSTRUCTION: &str = "The top-level agent reads pending mail. Default text inbox ACKs only complete pending agent messages it fully displays, after output is written and flushed; follow its printed cursor. JSON/--machine inbox, read and pending-receipts are read-only. Accept invitations separately; explicitly ACK exact IDs read elsewhere. Before using threads, run herdr-threads skill unless its guide is already in context. Use the herdr-threads CLI in this pane; ready commands below are exact. ACK means receipt only.\n";
+pub const TOP_LEVEL_INSTRUCTION: &str = "Use inbox; follow its next: commands. Default text inbox ACKs only complete pending agent messages it fully displays, after output is written and flushed. Do not reread or re-ACK these messages. JSON/--machine inbox, read and pending-receipts are read-only. Accept invitations separately; explicitly ACK exact IDs read elsewhere. When waiting for replies, finish your turn; hooks notify you of new mail. Do not poll or run follow to wait. Before using threads, run herdr-threads skill unless its guide is already in context. Use exact ready commands in this pane. ACK means receipt only.\n";
 /// The D2 `accept-required` procedure, emitted only when a required invitation
 /// is pending (and by adapters that carry no attention digest).
 pub const REQUIRED_INVITATION_INSTRUCTION: &str = "For a required invitation, read the current requirement ID, invitation ID and revision in thread participants, then explicitly use accept-required with those exact values. A required membership cannot be left until its service owner releases it; stale acceptance requires rereading the current revision.";
@@ -240,9 +240,9 @@ pub const REPLY_PLACEHOLDER: &str = "<text>";
 /// from the seat's attention digest (service-generated IDs only). `items` are
 /// ordered by priority so a budget can keep a prefix; `continuation` is always
 /// kept and reaches everything the items omit. `pinned` is the item prefix a
-/// budget keeps as long as the fixed text allows: through the first ACK line
-/// of the first pending require-ACK receipt. `overview` is the seat-scoped
-/// directory read, shown when the startup overview is trimmed or has more.
+/// budget keeps as long as the fixed text allows: the inbox command that
+/// displays pending messages and records eligible receipts. `overview` is the
+/// seat-scoped directory read, shown when the startup overview is trimmed or has more.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NextActions {
     pub header: String,
@@ -289,16 +289,16 @@ pub const MAX_OPTIONAL_ACCEPTS: usize = 2;
 /// exact IDs, so the agent can run it verbatim. Items whose IDs are not
 /// command-safe are skipped (the continuation still reaches them). A required
 /// invitation gets its exact `accept-required` argv (a plain `accept` would be
-/// refused as stale); labels carry no IDs the command line already names.
+/// refused as stale). The inbox label names the main thread for overview retention.
 ///
-/// Rank (native matrix wave 5 P1; a budget keeps a prefix):
-/// 1. each thread holding a pending require-ACK receipt, in receipt order: its
-///    invitation's accept (if invited; not labelled optional), its read,
-///    then its ACK lines;
-/// 2. each other thread with a required invitation: accept-required, read;
+/// Rank (a budget keeps a prefix):
+/// 1. one inbox command covering all pending threads, pinned under trimming;
+/// 2. invitations tied to pending receipts, then other required invitations;
 /// 3. the reply form for the first receipt thread;
-/// 4. at most [`MAX_OPTIONAL_ACCEPTS`] other invitations, labelled optional;
-///    when more are pending the continuation says so.
+/// 4. at most [`MAX_OPTIONAL_ACCEPTS`] other invitations, labelled optional.
+///
+/// Inbox continuations supply complete bodies and handle display ACKs; ready
+/// commands never duplicate that work with history reads or manual ACKs.
 ///
 /// The header names the caller's seat (native codex matrix P2) and carries
 /// [`REQUIRED_INVITATION_INSTRUCTION`] only when a required invitation is
@@ -314,8 +314,8 @@ pub fn next_actions(
         .collect::<Vec<_>>()
         .join(" ");
     let run = |args: &[&str]| format!("{cli} {}", args.join(" "));
-    let mut items = Vec::new();
-    let mut pinned = 0;
+    let mut items = vec![format!("- pending mail: {}", run(&["inbox"]))];
+    let pinned = 1;
     let mut header = String::new();
     let mut more_invitations = false;
     if let Some(digest) = digest {
@@ -376,13 +376,24 @@ pub fn next_actions(
                 run(&["accept", item.thread.as_str()])
             )),
         };
-        let read = |thread: &str| format!("- read: {}", run(&["read", thread, "--recent", "20"]));
         let receipts: Vec<_> = digest
             .receipts
             .items
             .iter()
             .filter(|item| command_safe_id(&item.id) && command_safe_id(item.thread.as_str()))
             .collect();
+        // Name the main thread in the label for overview retention, without
+        // restricting inbox to it: the same call serves every pending thread.
+        if let Some(thread) = receipts
+            .first()
+            .map(|item| item.thread.as_str())
+            .or_else(|| invitations.first().map(|item| item.thread.as_str()))
+        {
+            items[0] = format!(
+                "- pending mail for {thread} and other threads: {}",
+                run(&["inbox"])
+            );
+        }
         let mut listed: Vec<&str> = Vec::new();
         // 1. Threads with a pending require-ACK receipt, whole group first.
         for receipt in &receipts {
@@ -398,13 +409,6 @@ pub fn next_actions(
             {
                 items.push(line);
             }
-            items.push(read(thread));
-            for item in receipts.iter().filter(|r| r.thread.as_str() == thread) {
-                items.push(format!("- ACK after reading: {}", run(&["ack", &item.id])));
-                if pinned == 0 {
-                    pinned = items.len();
-                }
-            }
         }
         // 2. Required invitations on other threads.
         for item in invitations.iter().filter(|item| item.requirement.is_some()) {
@@ -415,7 +419,6 @@ pub fn next_actions(
             if let Some(line) = accept(item, false) {
                 listed.push(thread);
                 items.push(line);
-                items.push(read(thread));
             }
         }
         // 3. A require-ACK handoff is a reply request: name the exact `send`
@@ -468,14 +471,13 @@ pub fn next_actions(
         items,
         pinned,
         continuation: format!(
-            "- all pending{}: {}; receipts: {}",
+            "- inbox fallback{} (only if pending-mail command was omitted): {}",
             if more_invitations {
                 " (more invitations, each optional)"
             } else {
                 ""
             },
-            run(&["inbox"]),
-            run(&["pending-receipts"])
+            run(&["inbox"])
         ),
         overview: digest
             .map(|digest| digest.seat.as_str())

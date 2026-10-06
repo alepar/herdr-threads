@@ -677,8 +677,7 @@ fn item_names_thread(item: &str, thread: &str) -> bool {
 ///    main thread's row (the thread of the first item command, else the first
 ///    row) is never dropped, and a kept item command keeps its thread's row;
 /// 3. the digest counts line;
-/// 4. item commands from the end, down to the pinned prefix (the first
-///    require-ACK thread through its first ACK line); each dropped command
+/// 4. item commands from the end, down to the pinned inbox command; each dropped command
 ///    takes its thread's row with it unless another kept command names it;
 /// 5. the `offered notices:` line, then the pinned commands;
 /// 6. the continuation-only form, without any row;

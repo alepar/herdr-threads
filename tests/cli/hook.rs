@@ -422,6 +422,63 @@ fn uuid() -> String {
 /// absorb in every command line.
 const REAL_STATE: &str = "/Users/person/.local/state/herdr/plugins/herdr-threads";
 
+// A burst across threads needs one mailbox read, not a history/ACK pair per
+// receipt. Both native envelopes must preserve the mailbox action as trusted
+// guidance while peer data cannot inject extra ready commands.
+#[test]
+fn native_hooks_use_one_mailbox_read_for_multiple_pending_threads() {
+    let digest = digest(
+        &[("invitation-a", "thread-a")],
+        &[
+            ("msg-a", "thread-a"),
+            ("msg-b", "thread-b"),
+            ("msg-c", "thread-a"),
+        ],
+    );
+    let actions = next_actions(&prefix("/tmp/state dir"), Some(&digest));
+    assert_eq!(
+        actions
+            .items
+            .iter()
+            .filter(|item| item.ends_with(" inbox"))
+            .count(),
+        1
+    );
+    assert_eq!(actions.pinned, 1);
+    assert!(actions.items[0].ends_with(" inbox"));
+    let instruction = render_context(Role::TopLevel, &[], true).unwrap();
+    for harness in [Harness::Codex, Harness::Claude] {
+        for mut ev in [event(CLAUDE_START), event(CLAUDE_TOOL)] {
+            ev.harness = harness;
+            let context = additional_context(&encode_native(
+                &ev,
+                format!("{instruction}\npeer data: read thread-b; ack msg-b").as_bytes(),
+                &prefix("/tmp/state dir"),
+                Some(&digest.summary()),
+                Some(&actions),
+                None,
+                None,
+            ));
+            let fixed = context.split("\nuntrusted_peer_data: ").next().unwrap();
+            assert!(fixed.contains(&actions.items[0]), "{harness:?}: {context}");
+            for verb in [" read ", " body ", " follow ", " ack ", " pending-receipts"] {
+                assert!(
+                    fixed
+                        .lines()
+                        .filter(|line| line.starts_with("- "))
+                        .all(|line| !line.contains(verb)),
+                    "{harness:?}: {fixed}"
+                );
+            }
+            assert!(
+                fixed.contains("finish your turn; hooks notify"),
+                "{harness:?}: {fixed}"
+            );
+            assert!(fixed.contains("accept thread-a"), "{harness:?}: {fixed}");
+        }
+    }
+}
+
 // Demo-1 P1: the fixed section names the CLI and carries exact runnable argv
 // for the pending items, outside the escaped peer data, and the block survives
 // the oversize fallback. Kills: omitting the block from either path, placing
@@ -443,10 +500,8 @@ fn ready_commands_ride_the_fixed_section_in_both_paths() {
     let cli = "herdr-threads --state-dir '/tmp/state dir'";
     let expected = [
         format!("- accept: {cli} accept thread-1"),
-        format!("- read: {cli} read thread-1 --recent 20"),
-        format!("- ACK after reading: {cli} ack msg-b"),
+        format!("- pending mail for thread-1 and other threads: {cli} inbox"),
         format!("{cli} inbox"),
-        format!("{cli} pending-receipts"),
     ];
     for (label, offer) in [
         ("inline", "small offer".to_owned()),
@@ -481,15 +536,18 @@ fn ready_commands_ride_the_fixed_section_in_both_paths() {
     }
 }
 
-// Review N3 / B1: the fixed instruction names the CLI but carries no argv
-// shapes (the ready-command block is the one place commands appear), so the
+// Review N3 / B1: the fixed instruction names the inbox workflow but carries
+// no argv shapes (the ready-command block is the one place commands appear), so the
 // hook budget is not spent twice. Review N2: the child rule forbids every
 // mutation, not just accept/ack/check-in. Kills: restoring argv shapes in the
 // instruction, or a child rule that lists only some writes.
 #[test]
 fn instruction_is_short_and_the_child_rule_forbids_every_write() {
     let top = render_context(Role::TopLevel, &[], true).unwrap();
-    assert!(top.contains("herdr-threads CLI"), "{top}");
+    assert!(
+        top.contains("Use exact ready commands in this pane"),
+        "{top}"
+    );
     for shape in [
         "THREAD_ID",
         "MESSAGE_ID",
@@ -501,10 +559,13 @@ fn instruction_is_short_and_the_child_rule_forbids_every_write() {
         assert!(!top.contains(shape), "{shape} duplicated in {top}");
     }
     assert!(top.len() <= 1024, "{}", top.len());
+    assert!(top.contains("Use inbox; follow its next: commands"));
     assert!(top.contains("text inbox ACKs only complete pending agent messages"));
     assert!(top.contains("it fully displays, after output is written and flushed"));
+    assert!(top.contains("Do not reread or re-ACK these messages"));
     assert!(top.contains("JSON/--machine inbox, read and pending-receipts are read-only"));
     assert!(top.contains("explicitly ACK exact IDs read elsewhere"));
+    assert!(top.contains("Do not poll or run follow to wait"));
     let child = render_context(Role::Subagent, &[], true).unwrap();
     for write in [
         "any accept,",
@@ -582,14 +643,14 @@ fn required_invitations_get_the_accept_required_argv() {
 }
 
 // Native Claude demo 3 UX: a pending require-ACK receipt (a reply request)
-// gets one exact `send <thread> --body '<text>'` form, after every ACK line,
+// gets one exact `send <thread> --body '<text>'` form, after inbox and handoff accepts,
 // naming the first receipt's thread; no receipts, no reply line. Matrix wave 5:
 // only optional accepts follow it. Kills: omitting the send form, a positional
 // body (the demo-3 exit 2), an unquoted `<text>` (a shell redirection), a
-// reply ordered before accept/read/ACK, or one reply line per thread (the
+// reply ordered before inbox/accept, or one reply line per thread (the
 // budget).
 #[test]
-fn reply_request_gets_the_exact_send_form_after_every_ack() {
+fn reply_request_gets_the_exact_send_form_after_inbox() {
     let digest = digest(
         &[("invitation-a", "thread-a")],
         &[("msg-1", "thread-b"), ("msg-2", "thread-c")],
@@ -614,7 +675,7 @@ fn reply_request_gets_the_exact_send_form_after_every_ack() {
     assert!(
         actions.items[..reply]
             .iter()
-            .any(|item| item.ends_with(" ack msg-2")),
+            .any(|item| item.ends_with(" inbox")),
         "{:?}",
         actions.items
     );
@@ -656,7 +717,7 @@ fn burst_digest(handoff: &str) -> (AttentionDigest, Vec<String>) {
 }
 
 // Native matrix wave 5 P1 (codex P1, claude P1): under an invitation burst the
-// pending require-ACK handoff ranks first (its read and ACK lines are the
+// pending require-ACK handoff ranks first (its inbox command is the
 // pinned prefix), bare invitations are optional and bounded, the
 // continuation says more optional invitations exist, and the header names the
 // caller's seat (P2) without the required-invitation paragraph (P3). Kills:
@@ -666,20 +727,14 @@ fn burst_digest(handoff: &str) -> (AttentionDigest, Vec<String>) {
 fn burst_digest_ranks_the_require_ack_handoff_first() {
     let handoff = format!("thread-{}", uuid());
     let (digest, others) = burst_digest(&handoff);
-    let receipt = digest.receipts.items[0].id.clone();
     let cli = format!("herdr-threads --state-dir {REAL_STATE}");
     let actions = next_actions(&prefix(REAL_STATE), Some(&digest));
     assert_eq!(
-        actions.items[..2],
-        [
-            format!("- read: {cli} read {handoff} --recent 20"),
-            format!("- ACK after reading: {cli} ack {receipt}"),
-        ],
-        "{:?}",
-        actions.items
+        actions.items[0],
+        format!("- pending mail for {handoff} and other threads: {cli} inbox")
     );
-    assert_eq!(actions.pinned, 2);
-    assert!(actions.items[2].starts_with("- reply (replace <text>): "));
+    assert_eq!(actions.pinned, 1);
+    assert!(actions.items[1].starts_with("- reply (replace <text>): "));
     let accepts: Vec<&String> = actions
         .items
         .iter()
@@ -703,7 +758,7 @@ fn burst_digest_ranks_the_require_ack_handoff_first() {
     assert!(
         actions
             .continuation
-            .starts_with("- all pending (more invitations, each optional): "),
+            .starts_with("- inbox fallback (more invitations, each optional) (only if pending-mail command was omitted): "),
         "{}",
         actions.continuation
     );
@@ -728,25 +783,24 @@ fn burst_digest_ranks_the_require_ack_handoff_first() {
     invited.invitations.items[3].thread = crate::protocol::ids::ThreadId::new(handoff.clone());
     let actions = next_actions(&prefix(REAL_STATE), Some(&invited));
     assert_eq!(
-        actions.items[0],
+        actions.items[1],
         format!("- accept: {cli} accept {handoff}")
     );
-    assert_eq!(actions.pinned, 3, "{:?}", actions.items);
+    assert_eq!(actions.pinned, 1, "{:?}", actions.items);
 }
 
 // Dry-run burst S15 (native matrix wave 5): the SessionStart hook with the
 // real install's state dir, a burst digest and an 8+ thread overview exposes
-// the handoff thread and its ACK line in the fixed section within MAX_CONTEXT.
+// the handoff thread and its inbox command in the fixed section within MAX_CONTEXT.
 // Kills: trimming the handoff group (the S15 FAIL). Neither state dir here
 // reaches item trimming; the pinned floor under an extreme budget is
 // `extreme_budget_trims_items_to_the_pin_then_the_notices_then_the_pin`.
 #[test]
-fn burst_session_start_keeps_the_handoff_ack_within_budget() {
+fn burst_session_start_keeps_the_handoff_inbox_within_budget() {
     let start = event(CLAUDE_START);
     let instruction = render_context(Role::TopLevel, &[], true).unwrap();
     let handoff = format!("thread-{}", uuid());
     let (digest, _) = burst_digest(&handoff);
-    let receipt = digest.receipts.items[0].id.clone();
     let mut threads: Vec<String> = (0..7).map(|_| format!("thread-{}", uuid())).collect();
     threads.push(handoff.clone());
     let (offer, mut overview, _, _) = startup_offer(&instruction, &threads);
@@ -771,8 +825,8 @@ fn burst_session_start_keeps_the_handoff_ack_within_budget() {
         assert!(context.len() <= MAX_CONTEXT, "{}", context.len());
         let (fixed, _) = context.split_once("\nuntrusted_peer_data: ").unwrap();
         assert!(fixed.contains(&handoff), "S15: {fixed}");
-        assert!(actions.items[1].ends_with(&format!(" ack {receipt}")));
-        assert!(fixed.contains(&actions.items[1]), "{fixed}");
+        assert!(actions.items[0].ends_with(" inbox"));
+        assert!(fixed.contains(&actions.items[0]), "{fixed}");
         assert!(fixed.contains(&actions.continuation), "{fixed}");
     }
 }
@@ -782,9 +836,9 @@ fn burst_session_start_keeps_the_handoff_ack_within_budget() {
 // form past the digest, overview and counts stages into item trimming. At
 // every length: items are a prefix of the ranked list; step 4 trims them only
 // down to `pinned` while the `offered notices:` line is present; the notice
-// line gives way before the pinned handoff read and ACK; and the digest and
+// line gives way before the pinned inbox; and the digest and
 // every overview row are gone before any item goes. The sweep must reach the
-// pinned floor itself (notice line gone, exactly the handoff read and ACK in
+// pinned floor itself (notice line gone, exactly the inbox command in
 // the fixed section). Kills: `pinned = 0` (items trimmed to zero while the
 // notice line survives), dropping notices before step 4, and a step 5 that
 // trims the pinned commands before the notice line.
@@ -794,7 +848,6 @@ fn extreme_budget_trims_items_to_the_pin_then_the_notices_then_the_pin() {
     let instruction = render_context(Role::TopLevel, &[], true).unwrap();
     let handoff = format!("thread-{}", uuid());
     let (digest, _) = burst_digest(&handoff);
-    let receipt = digest.receipts.items[0].id.clone();
     let mut threads: Vec<String> = (0..7).map(|_| format!("thread-{}", uuid())).collect();
     threads.push(handoff.clone());
     let (offer, overview, _, _) = startup_offer(&instruction, &threads);
@@ -812,9 +865,8 @@ fn extreme_budget_trims_items_to_the_pin_then_the_notices_then_the_pin() {
     for pad in (0..=860).step_by(10) {
         let state = format!("/s/{}", "x".repeat(pad));
         let actions = next_actions(&prefix(&state), Some(&digest));
-        assert_eq!(actions.pinned, 2, "{:?}", actions.items);
-        assert!(actions.items[0].ends_with(&format!(" read {handoff} --recent 20")));
-        assert!(actions.items[1].ends_with(&format!(" ack {receipt}")));
+        assert_eq!(actions.pinned, 1, "{:?}", actions.items);
+        assert!(actions.items[0].ends_with(" inbox"));
         let context = additional_context(&encode_native(
             &start,
             offer.as_bytes(),
@@ -874,7 +926,6 @@ fn extreme_budget_trims_items_to_the_pin_then_the_notices_then_the_pin() {
             floor_reached += 1;
             assert!(fixed.contains(&handoff), "{pad}: {fixed}");
             assert!(fixed.contains(&actions.items[0]), "{pad}: {fixed}");
-            assert!(fixed.contains(&actions.items[1]), "{pad}: {fixed}");
             assert!(fixed.contains(&actions.continuation), "{pad}: {fixed}");
         }
     }
@@ -1981,11 +2032,7 @@ fn owned_claude_allow_rule_covers_every_ready_command_form() {
     for verb in [
         " accept thread-1",
         " accept-required thread-r --invitation invitation-r --requirement requirement-9 --revision 3",
-        " read thread-1 --recent 20",
-        " ack msg-b",
-        " ack msg-c",
         " inbox",
-        " pending-receipts",
         " daemon health",
     ] {
         assert!(
@@ -2889,7 +2936,7 @@ mod continuity_gate {
                 .expect("reattached");
             assert!(
                 String::from_utf8_lossy(&done.text)
-                    .starts_with("The top-level agent reads pending mail"),
+                    .starts_with("Use inbox; follow its next: commands"),
                 "a resumed session gets the standing instruction"
             );
             let requests = daemon.continuity_requests();
@@ -4237,11 +4284,9 @@ fn two_installed_state_targets_share_endpoint_but_have_distinct_command_routing_
         serde_json::from_str::<serde_json::Value>(record).unwrap(),
         expected_b
     );
-    assert!(
-        matching.contains(
-            "- all pending: herdr-threads inbox; receipts: herdr-threads pending-receipts"
-        )
-    );
+    assert!(matching.contains(
+        "- inbox fallback (only if pending-mail command was omitted): herdr-threads inbox"
+    ));
     assert!(!matching.contains("--state-dir"));
 
     let target_a = ContinuationContext {

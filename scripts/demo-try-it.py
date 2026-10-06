@@ -105,7 +105,7 @@ def capture(args):
                 for position, char in enumerate(text):
                     os.write(master, char.encode())
                     event("i", char)
-                    pace = 2 if fast_from is not None and position >= fast_from else 1
+                    pace = 5 if fast_from is not None and position >= fast_from else 1
                     pump(args.delay * (1.3 if char == " " else 1) / pace)
                 # Multiline comments/commands may already have advanced the
                 # counter. Freeze the boundary immediately before final Enter.

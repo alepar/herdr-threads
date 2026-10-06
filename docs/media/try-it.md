@@ -4,7 +4,7 @@ The video records an actual attached Herdr client: Alice (Claude Code) at upper
 left, Bob (Codex) at upper right, and the human shell across the bottom third.
 The agents' native tool activity and thread discussion are genuine. Font size
 is 15. Commands are visibly typed at 90 ms per character (spaces take 1.3 times
-that); only the long assignment text is typed at twice that speed. Opening
+that); only the long assignment text is typed at five times that speed. Opening
 comments explain creation, invitation, communication, and observation.
 
 ## Prepare privately
@@ -29,7 +29,9 @@ copied. Source-profile resource paths are rebased to the private copies; Git
 history and transient plugin clones are excluded. Walkthrough hooks use private
 thread state. The copied Claude usage helper uses the copied token and private
 cache, rather than reading the real keychain during capture. Real profiles are
-never written. Additional preferences can be refreshed before native startup:
+never written. The private Herdr skill is replaced with the exact captured
+binary's embedded guide, including after settings refresh, so copied older
+instructions cannot invalidate the efficiency trial. Additional preferences can be refreshed before native startup:
 
 ```sh
 python3 scripts/demo-try-it-prepare.py --copy-settings RUN_DIR
