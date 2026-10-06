@@ -71,13 +71,16 @@ def input_document(path):
               'host_endpoint', 'identity', 'installation_token', 'binary'}
     if (not isinstance(data, dict) or data.get('schema_version') != 1
             or data.get('producer') not in ('synthetic_fixture', 'official_native_selective')
-            or set(data) != common | (native if data['producer'] == 'official_native_selective' else set())
+            or set(data) != common | (native if data['producer'] == 'official_native_selective' else set()) | ({'measurement'} if 'measurement' in data else set())
             or not isinstance(data['argv'], list) or not 1 <= len(data['argv']) <= 16
             or not all(text(v) for v in data['argv']) or sum(len(v.encode()) for v in data['argv']) > 16384
             or not os.path.isabs(data['argv'][0])
             or type(data['timeout_seconds']) not in (int, float)
             or not math.isfinite(data['timeout_seconds']) or not 0 < data['timeout_seconds'] <= 30):
         raise ValueError('input')
+    if 'measurement' in data:
+        measurement_input(data['measurement'])
+        if data['producer'] != 'official_native_selective': raise ValueError('measurement_producer')
     if data['producer'] == 'official_native_selective':
         identity(data['identity'])
         if not text(data['profile'], 256) or not text(data['installation_token'], 256):
@@ -263,6 +266,86 @@ def require_settled_dispatcher(manager, deadline):
         lock.release()
 
 
+def measurement_input(value):
+    fields={'schema_version','invocation_id','target','seat','context_marker','child_form'}
+    if (not isinstance(value,dict) or set(value)!=fields or type(value['schema_version']) is not int or value['schema_version']!=1
+            or not all(text(value[k],256) for k in fields-{'schema_version'})
+            or value['child_form'] not in ('explicit_parent_callback','persist_disabled_no_callback')):
+        raise ValueError('measurement_input')
+    if uuid.UUID(value['invocation_id']).int==0: raise ValueError('measurement_invocation')
+    return value
+
+
+def measurement_module():
+    spec=importlib.util.spec_from_file_location('hermes_native_measurement',HERE.parents[2]/'native-hermes-probe.py')
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module
+
+
+def measure_callbacks(data, manager, plugin, returned, session, turn, api_request, started, deadline):
+    """Opt-in selective API diagnostics. Neither model delivery nor domain credit.
+
+    All state reads are bounded private snapshots; only derived scalars leave here.
+    A reset observer's None is never success, and child absence never means read-only.
+    """
+    engine=measurement_module();measurement=data['measurement']
+    output=dict(schema_version=1,scope='selective_native_api_invocation_not_model_delivery',
+        invocation_sha256=hashlib.sha256(measurement['invocation_id'].encode()).hexdigest(),
+        rows=[engine.row(s) for s in ('callback_context','child','reset')])
+    try:
+        observed,initial_doc,initial,kind=engine.qualified_return(data,measurement,session,turn,
+            api_request,returned,started,deadline)
+        output['rows'][0]=observed
+    except (ValueError,OSError,KeyError,TypeError,AttributeError,engine.sqlite3.Error):
+        return output
+    try:
+        if measurement['child_form']=='persist_disabled_no_callback':
+            output['rows'][1]=engine.row('child','SKIPPED','native_form_omits_callback',0)
+        else:
+            before=engine.conservation_snapshot(data,deadline)
+            child_results=manager.invoke_hook('pre_llm_call',platform='cli',
+                session_id=session+'-child',parent_session_id=session,
+                turn_id=turn+'-child',api_request_id=api_request+'-child')
+            require_settled_dispatcher(manager,deadline)
+            restriction=getattr(plugin,'CHILD_RESTRICTION',None)
+            if (isinstance(restriction,str) and restriction
+                    and child_results==[{'context':restriction}]
+                    and engine.conservation_snapshot(data,deadline)==before):
+                output['rows'][1]=engine.row('child','PASS','selective_declared_child_return_and_private_state_conservation',1)
+    except (ValueError,OSError,KeyError,TypeError,AttributeError,engine.sqlite3.Error):
+        pass
+    try:
+        new_session=session+'-reset';new_turn=turn+'-reset';new_api=api_request+'-reset'
+        if time.monotonic()>=deadline: raise ValueError('deadline')
+        reset_started=int(time.time()*1000)
+        manager.invoke_hook('on_session_reset',platform='cli',session_id=new_session,reason='new_session')
+        require_settled_dispatcher(manager,deadline)
+        _,hint_doc,current=engine.matched_current(data,measurement,session,deadline)
+        hints=[h for h in hint_doc.get('declared_resets',[]) if h.get('target')==measurement['target']
+               and h.get('harness')=='Hermes' and h.get('session')==new_session
+               and h.get('generation')==initial['binding_generation'] and h.get('consumed') is False
+               and type(h.get('observed_at_millis')) is int
+               and reset_started<=h['observed_at_millis']<=int(time.time()*1000)]
+        if len(hints)!=1 or current!=initial: raise ValueError('reset_hint_absent')
+        hint=hints[0]
+        returned_reset=manager.invoke_hook('pre_llm_call',platform='cli',session_id=new_session,
+            parent_session_id='',turn_id=new_turn,api_request_id=new_api)
+        require_settled_dispatcher(manager,deadline)
+        _,finished,new_current,kind=engine.qualified_return(data,measurement,new_session,new_turn,
+            new_api,returned_reset,reset_started,deadline)
+        consumed=[h for h in finished.get('declared_resets',[]) if h.get('event_key')==hint.get('event_key')
+            and h.get('session')==new_session and h.get('target')==measurement['target']
+            and h.get('generation')==initial['binding_generation'] and h.get('consumed') is True]
+        if (kind=='Clear' and len(consumed)==1 and new_current['seat']==initial['seat']
+                and new_current['target']==initial['target']
+                and new_current['binding_generation']>initial['binding_generation']
+                and new_current['execution']!=initial['execution']):
+            output['rows'][2]=engine.row('reset','PASS','declared_hint_consumed_clear_and_canonical_transition',1)
+    except (ValueError,OSError,KeyError,TypeError,AttributeError,engine.sqlite3.Error):
+        pass
+    return output
+
+
 def native_driver(path):
     """Native entry; offline tests inject labeled fake APIs, never installed Hermes."""
     data = input_document(path)
@@ -283,7 +366,8 @@ def native_driver(path):
     modules, observed = native_context(data)
     plugins, config = modules['hermes_cli.plugins'], modules['hermes_cli.config']
     assets, generation = owned_generation(data)
-    session = 'canary-' + str(uuid.uuid4())
+    measurement=data.get('measurement')
+    session = ('measurement-'+measurement['invocation_id']) if measurement else 'canary-'+str(uuid.uuid4())
     paths = gate_paths(data, adapter, session)
     if any(os.path.lexists(p) for p, _, _ in paths):
         raise ValueError('baseline')
@@ -329,7 +413,7 @@ def native_driver(path):
                 time.sleep(min(.02, max(0, deadline - time.monotonic())))
             if time.monotonic() >= deadline:
                 raise ValueError('timeout')
-            manager.invoke_hook('pre_llm_call', platform='cli', session_id=session,
+            returned = manager.invoke_hook('pre_llm_call', platform='cli', session_id=session,
                                 parent_session_id='', turn_id='canary-turn', api_request_id='canary-request')
             if time.monotonic() >= deadline:
                 raise ValueError('timeout')
@@ -339,6 +423,10 @@ def native_driver(path):
                 raise ValueError('timeout_or_drift')
             domains = completed_gates(paths, started)
             require_settled_dispatcher(manager, deadline)
+            if measurement is not None:
+                measured=measure_callbacks(data,manager,module,returned,session,'canary-turn','canary-request',started,deadline)
+                if owned_generation(data)[1]!=generation: raise ValueError('generation')
+                require_settled_dispatcher(manager,deadline)
     finally:
         manager.unload()
         # Uncancellable native read may outlive bounded unload: never claim clean PASS.
@@ -348,8 +436,10 @@ def native_driver(path):
             child = getattr(getattr(reader, 'bridge', None), 'unreaped_child', None)
             if reader.thread.is_alive() or (child is not None and child.poll() is None):
                 raise ValueError('owned_worker_survived')
-    return dict(schema_version=1, provenance='official_native_selective', identity=observed,
+    result=dict(schema_version=1, provenance='official_native_selective', identity=observed,
                 native_loaded=loaded, domains=domains)
+    if measurement is not None: result['measurement']=measured
+    return result
 
 
 def main(argv=None):

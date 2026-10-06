@@ -56,11 +56,11 @@ use std::{
 
 /// Shared `--help` epilogue for the three setup commands.
 pub const SETUP_HELP: &str =
-    "No harness named: every harness. `setup` sets up every detected harness (each
-of claude and codex found on PATH) and prints one line per harness: installed, already
+    "No harness named: every registered harness. `setup` sets up every detected harness
+and prints one line per harness: installed, already
 installed or skipped (not on PATH);
-`unsetup` removes both recorded installations (on PATH or not); `setup-status` reports
-both. The Codex hook-trust reminder is printed once at the end. The exit status is that
+`unsetup` removes recorded installations (on PATH or not); `setup-status` reports
+every registered harness. The Codex hook-trust reminder is printed once at the end. The exit status is that
 of the first harness that failed; skipped harnesses are not failures.
 
 Scope (user level, like Herdr's own agent hooks):
@@ -79,6 +79,17 @@ Scope (user level, like Herdr's own agent hooks):
           owned values and refuses edited ownership records. Codex runs user hooks only once
           you trust them: the next interactive `codex` start lists them for review (or use
           /hooks); Codex records their hashes in config.toml [hooks.state]. setup never writes trust.
+  hermes  Experimental/source-tested; native acceptance remains unverified. Select
+          `setup hermes --profile NAME` (or explicit default when omitted). --profile
+          requires a named harness and is refused for bare multi-harness commands.
+          The captured official resolver selects lexical/physical HERMES_HOME; no
+          profile is created and a sticky active profile is not silently selected.
+          Installs owned plugin.yaml, __init__.py and bridge_config.json under the
+          selected home's plugins/herdr-threads. Enable manually with the printed
+          `hermes --profile NAME plugins enable herdr-threads` command and retain
+          native consent. Installed, configured enabled and native activation are
+          separate. Unsetup preserves foreign/modified assets and native YAML/enable
+          selection, reporting residue and manual disable guidance.
 
 Claude prompt suggestions: Claude shows a dim prompt suggestion in its input box after every
 turn, which herdr-threads cannot tell from typed text, so it never pokes a Claude pane that shows

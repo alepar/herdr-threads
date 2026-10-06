@@ -1,6 +1,6 @@
-   Compiling herdr-threads v0.2.3 (/Users/alepar/AleCode/herdr-threads/.worktrees/harness-adapters/.worktrees/harness-adapters--task-ht-3bi.6.2)
+   Compiling herdr-threads v0.2.3 (<TASK14_WORKTREE>)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 14.18s
-     Running unittests src/lib.rs (/Users/alepar/AleCode/herdr-threads/.worktrees/harness-adapters/target/debug/deps/herdr_threads-1c2d7f4b9aaa457a)
+     Running unittests src/lib.rs (<INTEGRATION_TARGET>/debug/deps/herdr_threads-1c2d7f4b9aaa457a)
 
 running 29 tests
 test harness::hermes::assets::tests::lock_child ... ok

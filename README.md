@@ -104,7 +104,7 @@ Herdr Threads coordinates cooperative agents running under one local account. A 
 | --- | --- |
 | Claude Code | Implemented. Native core-flow evidence includes 2.1.287; earlier captures cover 2.1.283–2.1.286. |
 | Codex | Implemented. Native core-flow evidence includes 0.159.3; approved CLI execution was separately measured on 0.160.0. |
-| Hermes | Planned; adapter design in progress. |
+| Hermes | Implemented experimental adapter and Python bridge; source/synthetic tests only, native acceptance unverified. [Scope and operator guide](integrations/hermes/README.md). |
 | Antigravity (`agy`) | Planned. |
 | Pi | Planned. |
 | OpenCode | Planned. |
@@ -112,6 +112,14 @@ Herdr Threads coordinates cooperative agents running under one local account. A 
 Codex and Claude core hooks use registered contracts with strict payload validation. Setup and launch retain your selected executable or managed wrapper; ordinary setup, launch, hooks, doctor and daemon observation do not probe its version/help/schema. Setup configures hooks only and adds no Codex sandbox socket, network or writable-root allowance. Runtime metadata is optional; `contract_declared` and valid callbacks do not prove native receipt or grant compact/rich poke capabilities. Run `herdr-threads doctor` for actual configuration and observed failures. Historical native results describe their recorded source revisions: the [validation report](docs/validation/report.md) includes a failed prompt-less Codex scenario, and wake followed by agent acknowledgment without an initial prompt remains unvalidated on the current release. See [compatibility](docs/compatibility/) and [Codex execution evidence](docs/evidence/codex-command-approvals/README.md) for scope and limitations.
 
 Need another harness? [Open an issue](https://github.com/alepar/herdr-threads/issues/new) with the harness name and the workflow you want to use.
+
+Adapter authors implement `HarnessAdapter` in one module and add one same-binary
+static `Registration`, plus module/build wiring and fixtures. The production registry
+contains Claude, Codex and Hermes; test-support builds include a fourth fixture adapter.
+Optional installer, launch, composer and canary providers declare their own capability
+boundaries. Absent providers or native evidence domains yield explicit unavailable
+operations, never inferred native support. See the [author boundary](integrations/hermes/README.md#adapter-author-boundary)
+and local `herdr-threads adapters --json` discovery.
 
 ## Documentation
 

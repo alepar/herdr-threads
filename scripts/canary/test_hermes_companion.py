@@ -9,6 +9,11 @@ HERE = Path(__file__).resolve().parent
 sys.path[:] = [p for p in sys.path if os.path.realpath(p or '.') != str(HERE)]
 sys.modules.pop('bisect', None)
 import hashlib
+import sqlite3
+import shlex
+import urllib.request
+import io
+import uuid
 import subprocess
 import tempfile
 import unittest
@@ -119,7 +124,61 @@ def synthetic_native_fixture(mode='settled'):
             thread=SimpleNamespace(is_alive=lambda: False), bridge=SimpleNamespace(unreaped_child=None))
         slot_name = '_herdr_threads_hermes_reader_schema1'
         slot = ModuleType(slot_name); slot.reader = reader
-        plugin = SimpleNamespace(SLOT=slot_name)
+        plugin = SimpleNamespace(SLOT=slot_name,CHILD_RESTRICTION='cooperative children may read; never check in or ACK')
+
+        def measured_callback(event, kwargs):
+            """Explicit source-shaped native API stand-in writes actual instance layout."""
+            measurement=data['measurement']
+            inst=state/'instances'/hashlib.sha256(os.fsencode(data['host_endpoint'])).hexdigest()
+            inst.mkdir(parents=True,exist_ok=True,mode=0o700);inst.parent.chmod(0o700)
+            namespace=inst/'namespace'
+            namespace.write_text('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');namespace.chmod(0o600)
+            ctx=inst/'contexts'/'explicit-source-fixture';ctx.mkdir(parents=True,exist_ok=True,mode=0o700)
+            ctx.parent.chmod(0o700);journal=ctx/'context.json'
+            doc=json.loads(journal.read_text()) if journal.exists() else dict(version=1,instance=namespace.read_text(),
+                seat=measurement['seat'],current=None,pending=None,completed=[],declared_resets=[],prepared_kinds=[])
+            session=kwargs['session_id']
+            if kwargs.get('parent_session_id'):
+                if mode=='child-write':
+                    (ctx/'attention.json').write_text('{"synthetic_child_write":true}');(ctx/'attention.json').chmod(0o600)
+                return [{'context':plugin.CHILD_RESTRICTION}] if mode!='child-zero' else []
+            if event=='on_session_reset':
+                if mode=='reset-zero': return []
+                doc['declared_resets'].append(dict(harness='Hermes',target=measurement['target'],session=session,
+                    event_key='hermes:fixture-reset',process_nonce='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',sequence=3,
+                    observed_at_millis=int(time.time()*1000),generation=doc['current']['binding_generation'],consumed=False))
+                journal.write_text(json.dumps(doc));journal.chmod(0o600)
+                return []
+            previous=doc['current'];generation=previous['binding_generation']+1 if previous else 1
+            execution=str(uuid.uuid4())
+            current=dict(format_version=1,instance=doc['instance'],seat=measurement['seat'],target=measurement['target'],
+                harness='Hermes',binding_generation=generation,execution=execution,session={'Native':session},role='TopLevel')
+            raw=json.dumps(['pre_llm_call',session,kwargs['turn_id'],None,kwargs['api_request_id']],ensure_ascii=False,separators=(',',':')).encode()
+            event_key='hermes:'+hashlib.sha256(raw).hexdigest()
+            kind='Clear' if previous else 'Startup'
+            if mode=='reset-startup' and previous:kind='Startup'
+            request=dict(operation_id=str(uuid.uuid4()),mode='Lifecycle',context=dict(current,binding_generation=generation-1),
+                expected_generation=generation-1 if previous else None,event_id=event_key,payload_version=1,payload=[1])
+            done=dict(request=request,response=dict(context=current,historical=False,output=[1]),completed_at_millis=int(time.time()*1000))
+            if mode=='wrong-event':done['request']['event_id']='hermes:wrong-event'
+            doc['completed'].append(done)
+            doc['prepared_kinds'].append(dict(event_id=event_key,operation_id=request['operation_id'],
+                request_digest='sha256:'+hashlib.sha256(json.dumps([request,kind],ensure_ascii=False,separators=(',',':')).encode()).hexdigest(),kind=kind))
+            doc['current']=current
+            for hint in doc['declared_resets']: hint['consumed']=True
+            journal.write_text(json.dumps(doc));journal.chmod(0o600)
+            connection=sqlite3.connect(inst/'threads.sqlite3')
+            connection.execute('CREATE TABLE IF NOT EXISTS occupant_bindings (seat_id TEXT,generation INTEGER,target_id TEXT,harness TEXT,native_session TEXT,execution_id TEXT,observation_provenance TEXT,registered_at INTEGER,ended_at INTEGER)')
+            connection.execute('UPDATE occupant_bindings SET ended_at=? WHERE ended_at IS NULL',(int(time.time()*1000),))
+            connection.execute('INSERT INTO occupant_bindings VALUES (?,?,?,?,?,?,?,?,?)',(measurement['seat'],generation,
+                measurement['target'],'hermes',session,execution,'cooperative_top_level',int(time.time()*1000),None))
+            if mode=='child-bytebound':
+                connection.execute('CREATE TABLE IF NOT EXISTS bounded_fixture (oversized BLOB)')
+                connection.execute('INSERT INTO bounded_fixture VALUES (?)',(b'x'*65537,))
+            connection.commit();connection.close();(inst/'threads.sqlite3').chmod(0o600)
+            if mode=='namespace':namespace.write_text('cccccccc-cccc-4ccc-8ccc-cccccccccccc')
+            if mode=='return-zero':return []
+            return [{'context':'cooperative private-context-never-public'}]
 
         class SyntheticManager:
             def __init__(self, *, scope_key):
@@ -145,7 +204,10 @@ def synthetic_native_fixture(mode='settled'):
                 if mode == 'load': return
                 self._plugins['herdr-threads'] = SimpleNamespace(enabled=True, manifest=m, error=None, module=plugin)
                 self._hooks = {'pre_llm_call': [self.callback], 'post_tool_call': [self.callback]}
+                if 'measurement' in data:self._hooks['on_session_reset']=[self.callback]
             def callback(self, event, kwargs):
+                if 'measurement' in data and (event=='on_session_reset' or kwargs.get('parent_session_id')):
+                    return
                 paths = driver.gate_paths(data, adapter(), kwargs['session_id'])
                 milestones = ['qualified_turn'] if event == 'pre_llm_call' else ['qualified_turn', 'qualified_post_tool']
                 for n, (gate, key, contract) in enumerate(paths):
@@ -184,6 +246,7 @@ def synthetic_native_fixture(mode='settled'):
                     if mode == 'unknown-running': self._hook_running_callbacks = []
                     if mode == 'unknown-bookkeeping': self._hook_abandoned = []
                     if mode == 'contended': self._hook_timeout_lock.acquire()
+                if 'measurement' in data and event!='post_tool_call':return measured_callback(event,kwargs)
                 return []  # A result/ACK says nothing about callback settlement.
             def unload(self):
                 calls.append('unload'); self.unloaded = True
@@ -233,6 +296,66 @@ def synthetic_native_fixture(mode='settled'):
 
 class SyntheticNativeOrchestration(unittest.TestCase):
     """Real production entry/driver tests using only explicitly fake native APIs."""
+    def test_opt_in_measurement_reaches_actual_native_driver_without_legacy_promotion(self):
+        with synthetic_native_fixture() as f:
+            f.data['measurement']=dict(schema_version=1,invocation_id='aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+                target='w1:p1',seat='s.fixture',context_marker='cooperative',child_form='explicit_parent_callback')
+            f.path.write_text(json.dumps(f.data))
+            observation=f.driver.native_driver(f.path)
+            self.assertIn('measurement',observation,'actual native driver must expose opt-in separate measurements')
+            self.assertEqual(observation['measurement']['scope'],'selective_native_api_invocation_not_model_delivery')
+            self.assertNotIn('measurement',dict(result(),domains=observation['domains']))
+
+    def test_opt_in_actual_selective_returns_child_conservation_and_consumed_clear(self):
+        with synthetic_native_fixture() as f:
+            f.data['measurement']=dict(schema_version=1,invocation_id='aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+                target='w1:p1',seat='s.fixture',context_marker='cooperative',child_form='explicit_parent_callback')
+            f.path.write_text(json.dumps(f.data))
+            observation=f.driver.native_driver(f.path)
+            rows=observation['measurement']['rows']
+            self.assertEqual([r['verdict'] for r in rows],['PASS','PASS','PASS'])
+            public=json.dumps(observation['measurement'])
+            for private in ('private-context-never-public','s.fixture','w1:p1',str(f.root)):
+                self.assertNotIn(private,public)
+            self.assertIn('on_session_reset',f.calls)
+            self.assertEqual(sum(call=='pre_llm_call' for call in f.calls),3)
+
+    def test_opt_in_missing_wrong_namespace_child_writes_and_reset_none_are_not_pass(self):
+        cases=[('return-zero',0),('wrong-event',0),('namespace',0),('child-zero',1),
+               ('child-write',1),('child-bytebound',1),('reset-zero',2),('reset-startup',2)]
+        for mode,index in cases:
+            with self.subTest(mode=mode),synthetic_native_fixture(mode) as f:
+                f.data['measurement']=dict(schema_version=1,invocation_id='aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+                    target='w1:p1',seat='s.fixture',context_marker='cooperative',child_form='explicit_parent_callback')
+                f.path.write_text(json.dumps(f.data))
+                measured=f.driver.native_driver(f.path)['measurement']['rows']
+                self.assertNotEqual(measured[index]['verdict'],'PASS')
+
+    def test_opt_in_persist_disabled_child_form_is_explicitly_skipped(self):
+        with synthetic_native_fixture() as f:
+            f.data['measurement']=dict(schema_version=1,invocation_id='aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+                target='w1:p1',seat='s.fixture',context_marker='cooperative',child_form='persist_disabled_no_callback')
+            f.path.write_text(json.dumps(f.data))
+            measured=f.driver.native_driver(f.path)['measurement']['rows'][1]
+            self.assertEqual((measured['verdict'],measured['samples']),('SKIPPED',0))
+
+    def test_opt_in_diagnostic_cannot_be_promoted_by_default_canary_wrapper(self):
+        with synthetic_native_fixture() as f:
+            f.data['measurement']=dict(schema_version=1,invocation_id='aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+                target='w1:p1',seat='s.fixture',context_marker='cooperative',child_form='explicit_parent_callback')
+            f.path.write_text(json.dumps(f.data))
+            observation=f.driver.native_driver(f.path)
+            fake_engine=SimpleNamespace(_json=runner._json,
+                bounded_capture=lambda *a,**kw:(0,json.dumps(observation).encode(),None))
+            output=io.StringIO()
+            with mock.patch.object(f.driver,'runner',return_value=fake_engine),mock.patch.object(sys,'stdout',output):
+                f.driver.main(['--harness','hermes','--attempt','try1','--stage','no_model',
+                    '--work-dir',str(f.root/'work'),'--binary',f.data['binary'],'--runtime-command-file',str(f.path)])
+            measured=json.loads(output.getvalue())
+            self.assertEqual(set(measured),set(result()))
+            self.assertEqual((measured['outcome'],measured['domains']),('inconclusive',[]))
+            self.assertNotIn('measurement',measured)
+
     def test_synthetic_pending_worker_with_fresh_domains_refuses_before_unload(self):
         # Removing the pre-unload dispatcher check must turn this refusal into success.
         with synthetic_native_fixture('pending') as f:
