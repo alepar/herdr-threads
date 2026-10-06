@@ -284,6 +284,8 @@ def reserve_reader(provider):
                 return None
             previous = getattr(slot.reader, "bridge", None)
             if previous is not None:
+                if not previous.closed:
+                    return None
                 if not previous.child_lock.acquire(blocking=False):
                     return None
                 try:
@@ -293,6 +295,7 @@ def reserve_reader(provider):
                 finally:
                     previous.child_lock.release()
         reader = Reader(provider)
+        reader.slot = slot
         slot.reader = reader
         reader.thread.start()
         return reader
@@ -344,12 +347,35 @@ class Bridge:
         self.sequence = 0
         self.nonce = str(uuid.uuid4())
         self.closed = False
+        self.closing = False
         self.unreaped_child = None
 
     def close(self):
-        self.closed = True
-        if self.reader is not None:
-            self.reader.close()
+        # A contended launch/child keeps this reservation. Returning False means
+        # close is still pending, never that an unresolved spawn has stopped.
+        if not self.closing:
+            self.closing = True
+            if self.reader is not None:
+                self.reader.close()
+        if self.reader is None:
+            self.closed = True
+            return True
+        slot = self.reader.slot
+        if not slot.lock.acquire(blocking=False):
+            return False
+        try:
+            if not self.child_lock.acquire(blocking=False):
+                return False
+            try:
+                child = self.unreaped_child
+                if child is not None and child.poll() is None:
+                    return False
+                self.closed = True
+                return True
+            finally:
+                self.child_lock.release()
+        finally:
+            slot.lock.release()
 
     def remember_role(self, session, turn, role, now):
         if not self.role_lock.acquire(blocking=False):
@@ -422,7 +448,7 @@ class Bridge:
             sequence = self.sequence
         finally:
             self.entry_lock.release()
-        if self.closed or self.reader is None:
+        if self.closing or self.closed or self.reader is None:
             return None
         # Validate provided identifiers before encoding anything. No truncation.
         for key in IDS:
@@ -491,10 +517,14 @@ class Bridge:
         if len(encoded) > 65536 or not self.child_lock.acquire(blocking=False):
             return None
         try:
-            output = self.child(encoded, deadline)
+            fresh = self.reader.snapshot()
+            if (self.closing or self.closed or fresh is None
+                    or fresh["generation"] != observation["generation"]):
+                return None
+            output = self.child(encoded, deadline, observation["generation"], sequence)
             # Every callback entry invalidates older work, including contenders
             # skipped while the child lock is held. No late output is published.
-            if self.closed or self.sequence != sequence or time.monotonic() >= deadline:
+            if self.closing or self.closed or self.sequence != sequence or time.monotonic() >= deadline:
                 return None
             if self.reader.snapshot() is None:
                 return None
@@ -514,7 +544,7 @@ class Bridge:
                     return None
                 try:
                     fresh = self.reader.snapshot()
-                    if (self.closed or self.sequence != sequence or time.monotonic() >= deadline
+                    if (self.closing or self.closed or self.sequence != sequence or time.monotonic() >= deadline
                             or fresh is None or fresh["generation"] != observation["generation"]):
                         return None
                     return {"context": context}
@@ -523,8 +553,10 @@ class Bridge:
             return None
         finally:
             self.child_lock.release()
+            if self.closing and not self.closed:
+                self.close()
 
-    def child(self, encoded, deadline):
+    def child(self, encoded, deadline, generation, sequence):
         if self.unreaped_child is not None:
             if self.unreaped_child.poll() is None:
                 raise TimeoutError  # no successor until the owned child is reaped
@@ -536,16 +568,32 @@ class Bridge:
         if time.monotonic() >= io_deadline:
             raise TimeoutError
         selector = selectors.DefaultSelector()
+        slot = self.reader.slot
+        if not slot.lock.acquire(blocking=False):
+            selector.close()
+            raise TimeoutError
         try:
+            fresh = self.reader.snapshot()
+            if (self.closing or self.closed or slot.reader is not self.reader
+                    or fresh is None or fresh["generation"] != generation
+                    or self.sequence != sequence or time.monotonic() >= io_deadline):
+                raise TimeoutError
+            # Register the launch under the same fence as completed close and
+            # reservation transfer. close never waits for OS spawn: it remains
+            # pending while this fence/child guard is held, retaining ownership.
             process = subprocess.Popen(argv, shell=False, stdin=subprocess.PIPE,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True)
         except Exception:
             selector.close()
             raise
+        finally:
+            slot.lock.release()
         output = bytearray()
         stderr_count = 0
         written = 0
         try:
+            if self.closing:
+                raise TimeoutError  # late spawn is owned and reaped below
             for stream in (process.stdin, process.stdout, process.stderr):
                 os.set_blocking(stream.fileno(), False)
             selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
@@ -606,6 +654,7 @@ def register(ctx):
     """Register exactly four fail-open/cooperative hooks in the native context."""
     asset = Path(__file__).parent
     reader = None
+    bridge = None
     try:
         settings = read_settings(asset)
         provider = NativeProvider(ctx, asset)
@@ -619,6 +668,8 @@ def register(ctx):
         for name in HOOKS:
             ctx.register_hook(name, getattr(bridge, name))
     except Exception:
-        if reader is not None:
+        if bridge is not None:
+            bridge.close()
+        elif reader is not None:
             reader.close()
         return None

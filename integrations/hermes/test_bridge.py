@@ -45,6 +45,9 @@ if mode=='invalid': print('{'); sys.exit(0)
 if mode=='duplicate': print('{"context":null,"context":"bad","lifecycle_ack":null}'); sys.exit(0)
 if mode=='context_overflow': print(json.dumps({'context':'é'*2049,'lifecycle_ack':None})); sys.exit(0)
 if mode=='slow': time.sleep(.3)
+if mode=='lifetime_hold':
+    limit=time.monotonic()+3
+    while not (root/'release_child').exists() and time.monotonic()<limit: time.sleep(.002)
 if request['callback']!='pre_llm_call':
     observer=fixtures['observer']
     observer['lifecycle_ack']['event_id']=request['event_id']
@@ -258,6 +261,7 @@ class BridgeTests(unittest.TestCase):
                     "HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "PYTHONDONTWRITEBYTECODE",
                     "HT_LEAK_RUN_ID") if key in os.environ}
                 kwargs["env"]["HT_TEST_OWNER"] = str(os.getpid())
+                self.fixture_live_pids = [child.pid for child in children if child.poll() is None]
                 super().__init__(*args, **kwargs)
                 self.fixture_started_at = time.time()
                 children.append(self)
@@ -588,6 +592,264 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(len(self.requests()), 1)
         worker.join(2)
         self.assertEqual(outcome, [None])
+
+    def test_pre_guard_paused_callback_cannot_launch_after_close_or_successor(self):
+        self.load()
+        predecessor_context = self.ctx
+        predecessor = self.reader()
+        bridge = predecessor.bridge
+        generation = predecessor.generation
+        entered, release = threading.Event(), threading.Event()
+        original_guard = bridge.child_lock
+        class PausedGuard:
+            def acquire(self, *args, **kwargs):
+                # Only the registered callback pauses, after envelope encoding.
+                if threading.current_thread() is worker:
+                    entered.set()
+                    if not release.wait(2):
+                        raise AssertionError("paused callback was not released")
+                return original_guard.acquire(*args, **kwargs)
+            def release(self):
+                original_guard.release()
+        bridge.child_lock = PausedGuard()
+        outcome = []
+        worker = threading.Thread(target=lambda: outcome.append(
+            predecessor_context.hooks["pre_llm_call"](**self.callbacks["qualified"])))
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(1), "callback did not reach pre-guard barrier")
+            self.assertEqual(bridge.sequence, 1)
+            self.assertEqual(predecessor.generation, generation)
+            self.assertEqual(self.requests(), [])
+            self.assertEqual(self.children, [])
+            predecessor_context.unloads[0]()
+            predecessor.thread.join(2)
+            self.assertFalse(predecessor.thread.is_alive())
+            self.assertTrue(bridge.closed)
+            self.assertEqual(predecessor.generation, generation + 1)
+            self.load()
+            successor = self.reader()
+            self.assertIsNot(successor, predecessor)
+            self.assertIs(sys.modules[SLOT].reader, successor)
+            self.assertNotEqual(successor.bridge.nonce, bridge.nonce)
+            # Hold the actual successor process alive through predecessor release.
+            (self.state / "mode").write_text("lifetime_hold")
+            successor_outcome = []
+            successor_worker = threading.Thread(target=lambda: successor_outcome.append(self.request()))
+            successor_worker.start()
+            try:
+                limit = time.monotonic() + 1
+                while not self.requests() and time.monotonic() < limit:
+                    time.sleep(.002)
+                self.assertEqual(len(self.requests()), 1)
+                successor_pid = self.children[0].pid
+                self.assertIsNone(self.children[0].poll())
+                release.set()
+                limit = time.monotonic() + .5
+                while worker.is_alive() and len(self.children) == 1 and time.monotonic() < limit:
+                    time.sleep(.002)
+                self.assertEqual([child.fixture_live_pids for child in self.children], [[]],
+                                 "closed predecessor launched with a live successor")
+                worker.join(1)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(outcome, [None])
+                self.assertEqual(len(self.children), 1,
+                                 "closed predecessor launched a child after successor reservation")
+                self.assertEqual(self.children[0].pid, successor_pid)
+                self.assertEqual(len(self.requests()), 1)
+                self.assertEqual(self.requests()[0]["request"]["observation_order"]["process_nonce"],
+                                 successor.bridge.nonce)
+                (self.state / "release_child").touch()
+                successor_worker.join(2)
+                self.assertFalse(successor_worker.is_alive())
+                self.assertEqual(successor_outcome, [{"context": "bounded cooperative context"}])
+            finally:
+                release.set()
+                (self.state / "release_child").touch()
+                successor_worker.join(2)
+        finally:
+            release.set()
+            worker.join(2)
+            bridge.child_lock = original_guard
+            predecessor_context.unloads[0]()
+            predecessor.thread.join(2)
+            self.assertFalse(worker.is_alive(), "paused callback leaked")
+
+    def test_held_child_guard_refuses_successor_until_reaped_then_admits(self):
+        self.load()
+        predecessor = self.reader()
+        original = self.module.subprocess.Popen
+        started, release = threading.Event(), threading.Event()
+        class HeldChild(original):
+            def wait(child, *args, **kwargs):
+                if threading.current_thread() is worker:
+                    started.set()
+                    if not release.wait(2):
+                        raise AssertionError("owned child reaping barrier was not released")
+                return super().wait(*args, **kwargs)
+        outcome = []
+        worker = threading.Thread(target=lambda: outcome.append(self.request()))
+        try:
+            with patch.object(self.module.subprocess, "Popen", HeldChild):
+                worker.start()
+                self.assertTrue(started.wait(1))
+                self.assertEqual(len(self.children), 1)
+                self.ctx.unloads[0]()
+                predecessor.thread.join(2)
+                self.assertFalse(predecessor.thread.is_alive())
+                self.load(wait=False)
+                self.assertIs(self.reader(), predecessor)
+                self.assertIsNone(self.request())
+                self.assertEqual(len(self.children), 1)
+                release.set()
+                worker.join(2)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(outcome, [None])
+                self.assertIsNotNone(self.children[0].returncode)
+                self.load()
+                self.assertIsNot(self.reader(), predecessor)
+                self.assertEqual(self.request(), {"context": "bounded cooperative context"})
+                self.assertEqual(len(self.children), 2)
+        finally:
+            release.set()
+            if worker.ident is not None:
+                worker.join(2)
+            self.assertFalse(worker.is_alive(), "owned-child callback leaked")
+
+    def test_in_progress_spawn_keeps_close_pending_and_reaps_late_child(self):
+        self.load()
+        predecessor = self.reader()
+        bridge = predecessor.bridge
+        context = self.ctx
+        generation = predecessor.generation
+        original = self.module.subprocess.Popen
+        entered, release = threading.Event(), threading.Event()
+        class PausedSpawn(original):
+            def __init__(child, *args, **kwargs):
+                entered.set()
+                if not release.wait(2):
+                    raise AssertionError("owned spawn barrier was not released")
+                super().__init__(*args, **kwargs)
+        outcome = []
+        worker = threading.Thread(target=lambda: outcome.append(
+            context.hooks["pre_llm_call"](**self.callbacks["qualified"])))
+        try:
+            with patch.object(self.module.subprocess, "Popen", PausedSpawn):
+                worker.start()
+                self.assertTrue(entered.wait(1))
+                started = time.monotonic()
+                self.assertFalse(context.unloads[0](), "unresolved launch cannot complete close")
+                self.assertLess(time.monotonic() - started, .2)
+                predecessor.thread.join(2)
+                self.assertFalse(predecessor.thread.is_alive())
+                self.assertTrue(bridge.closing)
+                self.assertFalse(bridge.closed)
+                self.assertEqual(predecessor.generation, generation + 1)
+                self.assertEqual(self.children, [])
+                self.load(wait=False)
+                self.assertIs(self.reader(), predecessor)
+                self.assertIsNone(self.ctx.hooks["pre_llm_call"].__self__.reader)
+                self.assertIsNone(self.request())
+                self.assertEqual(self.requests(), [])
+                release.set()
+                worker.join(2)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(outcome, [None])
+                self.assertEqual(len(self.children), 1, "late owned spawn was not exercised")
+                self.assertIsNotNone(self.children[0].returncode, "late owned spawn was not reaped")
+                self.assertEqual(self.requests(), [])
+                self.assertTrue(bridge.closed, "cleanup did not complete pending close")
+                self.assertTrue(context.unloads[0]())
+                self.assertEqual(predecessor.generation, generation + 1)
+            self.load()
+            self.assertIsNot(self.reader(), predecessor)
+            self.assertEqual(self.request(), {"context": "bounded cooperative context"})
+            self.assertEqual(len(self.children), 2)
+        finally:
+            release.set()
+            if worker.ident is not None:
+                worker.join(2)
+            context.unloads[0]()
+            predecessor.thread.join(2)
+            self.assertFalse(worker.is_alive(), "in-progress launch callback leaked")
+
+    def test_module_eviction_and_concurrent_registration_keep_single_reservation(self):
+        self.load()
+        predecessor = self.reader()
+        module = self.module
+        # Native loader eviction cannot remove the separate owned slot namespace.
+        with patch.dict(sys.modules, {"synthetic_owned_plugin": module}):
+            sys.modules.pop("synthetic_owned_plugin")
+            self.load(wait=False)
+            self.assertIs(self.reader(), predecessor)
+            self.assertIsNone(self.ctx.hooks["pre_llm_call"].__self__.reader)
+            self.assertIsNone(self.request())
+        self.assertTrue(predecessor.bridge.close())
+        predecessor.thread.join(2)
+        self.assertFalse(predecessor.thread.is_alive())
+        contexts = [self.context_type(), self.context_type()]
+        self.contexts.extend(contexts)
+        start = threading.Barrier(3)
+        workers = []
+        def register(context):
+            token = PROFILE.set(str(self.home))
+            try:
+                start.wait(timeout=2)
+                module.register(context)
+            finally:
+                PROFILE.reset(token)
+        try:
+            for context in contexts:
+                worker = threading.Thread(target=register, args=(context,))
+                workers.append(worker)
+                worker.start()
+            start.wait(timeout=2)
+            for worker in workers:
+                worker.join(2)
+                self.assertFalse(worker.is_alive())
+            bridges = [context.hooks["pre_llm_call"].__self__ for context in contexts]
+            admitted = [bridge for bridge in bridges if bridge.reader is not None]
+            self.assertEqual(len(admitted), 1, "concurrent registration created multiple readers")
+            successor = admitted[0].reader
+            self.assertIs(sys.modules[SLOT].reader, successor)
+            self.assertEqual(len(self.readers), 2)
+            self.await_completion(successor)
+            self.assertEqual(admitted[0].pre_llm_call(**self.callbacks["qualified"]),
+                             {"context": "bounded cooperative context"})
+            self.assertEqual(len(self.children), 1)
+        finally:
+            start.abort()
+            for worker in workers:
+                worker.join(2)
+                self.assertFalse(worker.is_alive(), "registration worker leaked")
+
+    def test_registration_error_closes_its_reservation_before_replacement(self):
+        self.load()
+        predecessor = self.reader()
+        self.assertTrue(predecessor.bridge.close())
+        predecessor.thread.join(2)
+        module = self.module
+        context = self.context_type()
+        self.contexts.append(context)
+        def reject_unload(callback):
+            raise RuntimeError("synthetic registration failure")
+        context.on_unload = reject_unload
+        token = PROFILE.set(str(self.home))
+        try:
+            self.assertIsNone(module.register(context))
+        finally:
+            PROFILE.reset(token)
+        failed = self.reader()
+        self.assertIsNot(failed, predecessor)
+        failed.thread.join(2)
+        self.assertFalse(failed.thread.is_alive())
+        self.assertTrue(failed.bridge.closed)
+        self.assertEqual(context.hooks, {})
+        self.assertEqual(self.children, [])
+        self.load()
+        self.assertIsNot(self.reader(), failed)
+        self.assertEqual(self.request(), {"context": "bounded cooperative context"})
+        self.assertEqual(len(self.children), 1)
 
     def test_valid_context_at_utf8_byte_boundary_is_returned(self):
         self.load()
