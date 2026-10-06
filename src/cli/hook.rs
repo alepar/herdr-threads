@@ -2430,6 +2430,41 @@ fn lifecycle_check_in(
     })
 }
 
+/// Both entrypoints use the same policy projection for observation bypass.
+fn hook_install_observation(
+    registration: &Registration,
+    environment: &InstallEnvironment,
+    budget: &CallBudget,
+) -> InstallObservation {
+    match registration.hook_admission_policy() {
+        HookAdmissionPolicy::RegisteredContract => InstallObservation::NotRequested,
+        HookAdmissionPolicy::QualifiedCallback => callback_install_observation(registration),
+        HookAdmissionPolicy::InstalledObservation => {
+            registration.observe_install(environment, budget)
+        }
+    }
+}
+fn hook_admission_request(
+    registration: &Registration,
+    installed: InstallObservation,
+    input: &HookInput,
+) -> AdmissionRequest {
+    AdmissionRequest {
+        installed,
+        input: registration.callback_admission().then(|| HookInput {
+            bytes: input.bytes.clone(),
+            registered_event: input.registered_event.clone(),
+        }),
+        runtime_candidate: None,
+    }
+}
+fn callback_install_observation(registration: &Registration) -> InstallObservation {
+    InstallObservation::Unsupported(UnsupportedOperation {
+        adapter: registration.metadata().id,
+        operation: "callback startup identity",
+    })
+}
+
 /// Pure hook decision for one invocation. Never panics into the caller's exit
 /// status; `run_process` owns the process boundary.
 pub fn run_hook(
@@ -2475,25 +2510,12 @@ pub(crate) fn run_hook_registered(
         bytes: stdin.to_vec(),
         registered_event: args.event.clone(),
     };
-    let installed =
-        if registration.hook_admission_policy() == HookAdmissionPolicy::RegisteredContract {
-            InstallObservation::NotRequested
-        } else if registration.callback_admission() {
-            InstallObservation::Unsupported(UnsupportedOperation {
-                adapter: registration.metadata().id,
-                operation: "callback startup identity",
-            })
-        } else {
-            installed_observation(installed)
-        };
-    let request = AdmissionRequest {
-        installed,
-        input: registration.callback_admission().then(|| HookInput {
-            bytes: input.bytes.clone(),
-            registered_event: input.registered_event.clone(),
-        }),
-        runtime_candidate: None,
+    let installed = match registration.hook_admission_policy() {
+        HookAdmissionPolicy::RegisteredContract => InstallObservation::NotRequested,
+        HookAdmissionPolicy::QualifiedCallback => callback_install_observation(registration),
+        HookAdmissionPolicy::InstalledObservation => installed_observation(installed),
     };
+    let request = hook_admission_request(registration, installed, &input);
     let admitted = match registration.admit(&request, &budget(deadline, clock.as_ref())) {
         Ok(handle) => handle,
         Err(error) => return quiet_outcome(error.to_string()),
@@ -3082,19 +3104,8 @@ pub fn run_process_with(
         tool_budget,
         |observe_budget| {
             let registration = registration_for(args.harness)?;
-            if registration.hook_admission_policy() == HookAdmissionPolicy::RegisteredContract {
-                return Ok((registration, InstallObservation::NotRequested));
-            }
-            if registration.callback_admission() {
-                return Ok((
-                    registration,
-                    InstallObservation::Unsupported(UnsupportedOperation {
-                        adapter: registration.metadata().id,
-                        operation: "callback startup identity",
-                    }),
-                ));
-            }
-            let observation = registration.observe_install(
+            let observation = hook_install_observation(
+                registration,
                 &InstallEnvironment {
                     path: std::env::var_os("PATH"),
                     config_root: None,
@@ -3103,10 +3114,12 @@ pub fn run_process_with(
                 },
                 &budget(Instant::now() + observe_budget, clock.as_ref()),
             );
-            if matches!(
-                observation,
-                InstallObservation::Unavailable { .. } | InstallObservation::Unsupported(_)
-            ) {
+            if registration.hook_admission_policy() == HookAdmissionPolicy::InstalledObservation
+                && matches!(
+                    observation,
+                    InstallObservation::Unavailable { .. } | InstallObservation::Unsupported(_)
+                )
+            {
                 return Err(observation_failure(observation));
             }
             Ok((registration, observation))
@@ -3119,14 +3132,7 @@ pub fn run_process_with(
                     bytes: stdin.clone(),
                     registered_event: args.event.clone(),
                 };
-                let request = AdmissionRequest {
-                    installed: observation,
-                    input: registration.callback_admission().then(|| HookInput {
-                        bytes: input.bytes.clone(),
-                        registered_event: input.registered_event.clone(),
-                    }),
-                    runtime_candidate: None,
-                };
+                let request = hook_admission_request(registration, observation, &input);
                 let admitted = match registration
                     .admit(&request, &budget(observation_deadline, clock.as_ref()))
                 {
