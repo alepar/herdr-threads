@@ -12,6 +12,11 @@ import hashlib
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
+from contextlib import contextmanager, ExitStack
+from types import ModuleType, SimpleNamespace
+import threading
+import time
 sys.path[:] = _saved
 ROOT = HERE.parents[1]
 
@@ -39,6 +44,335 @@ def adapter():
 def result():
     return dict(schema_version=1, harness='hermes', attempt='try1', identity=IDENTITY,
         evidence_stage='no_model', outcome='inconclusive', reason='synthetic fixture', domains=[])
+
+@contextmanager
+def synthetic_native_fixture(mode='settled'):
+    """Fake source/API context only; calls real driver, never installed Hermes.
+
+    All filesystem inputs are private source fixtures. The pending callback is
+    an owned thread released/joined here, including assertion/error exits.
+    No subprocess, native acceptance artifact, host server or model is created.
+    """
+    driver = load('adapters/hermes')
+    with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+        root = Path(directory).resolve()
+        source = root / 'source'; source.mkdir()
+        home = root / 'home'; home.mkdir(mode=0o700)
+        state = root / 'state'; state.mkdir(mode=0o700)
+        assets = home / 'plugins' / 'herdr-threads'; assets.mkdir(mode=0o700, parents=True)
+        lock = assets.parent / '.herdr-threads-operation.lock'; lock.touch(mode=0o600)
+        setup = state / 'setup' / 'hermes'; setup.mkdir(mode=0o700, parents=True)
+        gates = state / 'harness' / 'evidence-v2'; gates.mkdir(mode=0o700, parents=True)
+        gates.parent.chmod(0o700)
+        selected = root / 'site-packages'; selected.mkdir()
+        work = root / 'work'; work.mkdir()
+        (work / 'request.json').write_text(json.dumps({'adapter': adapter()}))
+        binary = root / 'synthetic-binary'; binary.write_text('# source fixture, never executed'); binary.chmod(0o700)
+        endpoint = root / 'synthetic-endpoint'
+        path = root / 'runtime.json'
+        data = dict(schema_version=1, producer='official_native_selective', timeout_seconds=1,
+            profile='fixture', home=str(home), physical_home=str(home), source_root=str(source),
+            isolation_root=str(root), state_root=str(state), host_endpoint=str(endpoint), identity=IDENTITY,
+            installation_token='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', binary=str(binary),
+            argv=[sys.executable, '-I', '-c', 'opaque synthetic source fixture; never executed',
+                  '--count', '--no-report', str(driver.HERE), '--native-driver', str(path)])
+        path.write_text(json.dumps(data))
+        settings = dict(schema_version=1, bridge_schema_version=1, installation_token=data['installation_token'],
+            rust_executable=str(binary), state_root=str(state), host_endpoint=str(endpoint))
+        contents = {'__init__.py': b'# synthetic plugin source', 'plugin.yaml': b'# synthetic manifest',
+                    'bridge_config.json': json.dumps(settings).encode()}
+        records = {}
+        for name, raw in contents.items():
+            asset = assets / name; asset.write_bytes(raw); asset.chmod(0o600)
+            records[name] = dict(digest='sha256:' + hashlib.sha256(raw).hexdigest(), prior=None, bytes=list(raw))
+        generation = dict(schema_version=1, home=str(home), installation_token=data['installation_token'],
+            phase='complete', stage_name=None, lock_inode=[lock.stat().st_dev, lock.stat().st_ino],
+            directory_inode=[assets.stat().st_dev, assets.stat().st_ino], assets=records)
+        generation_path = setup / ('sha256:' + hashlib.sha256(str(home).encode()).hexdigest() + '.json')
+        generation_path.write_text(json.dumps(generation)); generation_path.chmod(0o600)
+        modules = {}
+        for name in ('hermes_bootstrap', 'hermes_constants', 'hermes_cli', 'hermes_cli.profiles',
+                     'hermes_cli.version_info', 'hermes_cli.config', 'hermes_cli.plugins'):
+            file = source / (name.replace('.', '/') + '.py'); file.parent.mkdir(exist_ok=True); file.touch()
+            module = ModuleType(name); module.__file__ = str(file)
+            module.__spec__ = SimpleNamespace(origin=str(file), _initializing=False)
+            modules[name] = module
+        bootstrap = modules['hermes_bootstrap']
+        bootstrap._root = source; bootstrap._pm_repair = False; bootstrap._launch_python = None
+        profiles = modules['hermes_cli.profiles']
+        profiles.normalize_profile_name = lambda name: name
+        profiles.validate_profile_name = lambda name: None
+        profiles.resolve_profile_env = lambda name: str(home)
+        modules['hermes_constants'].get_hermes_home = lambda: home
+        modules['hermes_cli.version_info'].get_version_info = lambda: SimpleNamespace(**{
+            k: v for k, v in IDENTITY.items() if k not in ('key', 'release_version')})
+        config = modules['hermes_cli.config']
+        config.FailedConfigRead = type('SyntheticFailedConfigRead', (), {})
+        effective = {'plugins': {'enabled': ['herdr-threads'], 'disabled': []}}
+        config.load_config_readonly = lambda: effective
+        m = SimpleNamespace(name='herdr-threads', path=assets, kind='standalone', source='user',
+            manifest_version=2, portable=False, requires_env=[], requires_plugins=[],
+            python_dependencies=[], provides_tools=[], capabilities=[])
+        stop, ready = threading.Event(), threading.Event()
+        workers, calls, seen_gates = [], [], []
+        reader = SimpleNamespace(snapshot=lambda: {'synthetic': True},
+            thread=SimpleNamespace(is_alive=lambda: False), bridge=SimpleNamespace(unreaped_child=None))
+        slot_name = '_herdr_threads_hermes_reader_schema1'
+        slot = ModuleType(slot_name); slot.reader = reader
+        plugin = SimpleNamespace(SLOT=slot_name)
+
+        class SyntheticManager:
+            def __init__(self, *, scope_key):
+                if scope_key != str(home): raise AssertionError('wrong selected scope')
+                self.home_path = home
+                self._hook_timeout_lock = threading.Lock()
+                self._hook_running_callbacks = {}; self._hook_abandoned = {}
+                self._plugins = {}; self._hooks = {}
+                self.unloaded = False
+                managers.append(self)
+            def _scan_directory(self, parent, kind):
+                calls.append('scan')
+                if (parent, kind) != (assets.parent, 'user'): raise AssertionError('foreign scan')
+                if mode == 'scan': raise ValueError('synthetic_scan')
+                return [m]
+            def _gate_manifest(self, manifest, disabled, enabled):
+                calls.append('gate')
+                return mode != 'gate' and manifest.name in enabled and manifest.name not in disabled
+            def _warn_python_dependencies(self, manifest): calls.append('dependencies')
+            def _validate_plugin_config_schema(self, manifest): calls.append('schema')
+            def _load_plugin(self, manifest):
+                calls.append('load')
+                if mode == 'load': return
+                self._plugins['herdr-threads'] = SimpleNamespace(enabled=True, manifest=m, error=None, module=plugin)
+                self._hooks = {'pre_llm_call': [self.callback], 'post_tool_call': [self.callback]}
+            def callback(self, event, kwargs):
+                paths = driver.gate_paths(data, adapter(), kwargs['session_id'])
+                milestones = ['qualified_turn'] if event == 'pre_llm_call' else ['qualified_turn', 'qualified_post_tool']
+                for n, (gate, key, contract) in enumerate(paths):
+                    if mode == 'missing' or (mode == 'partial' and n == 1): continue
+                    doc = dict(version=2, key=key, verified=event == 'post_tool_call', milestones=milestones,
+                               heartbeat_at_ms=int(time.time() * 1000), sent=[])
+                    gate.write_text(json.dumps(doc)); gate.chmod(0o600)
+                if event == 'post_tool_call':
+                    seen_gates[:] = paths
+                    if mode in ('pending', 'running'):
+                        ready.set(); stop.wait(2)
+            def invoke_hook(self, event, **kwargs):
+                calls.append(event)
+                if mode == 'dispatch': raise ValueError('synthetic_dispatch')
+                for callback in self._hooks[event]:
+                    if event == 'post_tool_call' and mode in ('pending', 'running'):
+                        key = (event, id(callback), kwargs['session_id']); token = object()
+                        self._hook_running_callbacks[key] = token
+                        if mode == 'pending': self._hook_abandoned[(event, id(callback))] = {key}
+                        def owned_worker():
+                            try: callback(event, kwargs)
+                            finally:
+                                with self._hook_timeout_lock:
+                                    self._hook_running_callbacks.pop(key, None)
+                                    self._hook_abandoned.clear()
+                        worker = threading.Thread(target=owned_worker, name='synthetic-canary-pending')
+                        workers.append(worker); worker.start()
+                        if not ready.wait(1): raise AssertionError('synthetic output not ready')
+                    else: callback(event, kwargs)
+                if event == 'post_tool_call':
+                    if mode == 'drift': (assets / '__init__.py').write_text('# changed source fixture')
+                    if mode == 'missing-bookkeeping': del self._hook_running_callbacks
+                    if mode == 'missing-abandoned': del self._hook_abandoned
+                    if mode == 'missing-lock': del self._hook_timeout_lock
+                    if mode == 'abandoned-only': self._hook_abandoned = {('post_tool_call', 1): {('synthetic',)}}
+                    if mode == 'unknown-running': self._hook_running_callbacks = []
+                    if mode == 'unknown-bookkeeping': self._hook_abandoned = []
+                    if mode == 'contended': self._hook_timeout_lock.acquire()
+                return []  # A result/ACK says nothing about callback settlement.
+            def unload(self):
+                calls.append('unload'); self.unloaded = True
+                if mode == 'unload': raise ValueError('synthetic_unload')
+                # Explicitly emulate reviewed ledger erasure, without joining worker.
+                if hasattr(self, '_hook_running_callbacks'): self._hook_running_callbacks.clear()
+                self._hook_abandoned = {}
+                self._plugins.clear(); self._hooks.clear()
+                return True
+
+        managers = []
+        plugins = modules['hermes_cli.plugins']; plugins.PluginManager = SyntheticManager
+        @contextmanager
+        def selected_scope(value):
+            if value != home: raise AssertionError('wrong official profile scope')
+            yield
+        plugins._plugin_home_scope = selected_scope
+        main = ModuleType('__main__'); main.__file__ = str(Path(driver.sysconfig.get_path('stdlib')).resolve() / 'trace.py')
+        main.__spec__ = SimpleNamespace(name='trace', origin=main.__file__)
+        stack.enter_context(mock.patch.dict(sys.modules, dict(modules, __main__=main, **{slot_name: slot})))
+        stack.enter_context(mock.patch.object(sys, 'path', [str(driver.HERE.parent), str(selected), 'retained-tail']))
+        stack.enter_context(mock.patch.object(sys, 'argv', data['argv'][-3:]))
+        stack.enter_context(mock.patch.object(sys, 'orig_argv', data['argv']))
+        stack.enter_context(mock.patch.dict(os.environ, {'PYTHONPATH': os.pathsep.join((str(source), str(selected))),
+            'HERDR_HERMES_CANARY_WORK': str(work), 'HOME': str(root), 'HERMES_HOME': str(home)}))
+        def synthetic_import(name):
+            if name not in modules: raise AssertionError('forbidden installed import: ' + name)
+            return modules[name]
+        stack.enter_context(mock.patch.object(driver.importlib, 'import_module', side_effect=synthetic_import))
+        # The endpoint stat is a labeled fake IPC boundary; no private host runs.
+        original_lstat = Path.lstat
+        def fixture_lstat(value):
+            if value == endpoint: return SimpleNamespace(st_mode=0o140600, st_uid=os.geteuid())
+            return original_lstat(value)
+        stack.enter_context(mock.patch.object(Path, 'lstat', fixture_lstat))
+        fixture = SimpleNamespace(driver=driver, data=data, path=path, modules=modules, calls=calls,
+            managers=managers, gates=seen_gates, workers=workers, reader=reader, effective=effective, root=root)
+        try:
+            yield fixture
+        finally:
+            stop.set()
+            for worker in workers:
+                worker.join(timeout=2)
+                if worker.is_alive(): raise AssertionError('owned synthetic worker survived')
+            for manager in managers:
+                if mode == 'contended' and manager._hook_timeout_lock.locked(): manager._hook_timeout_lock.release()
+
+class SyntheticNativeOrchestration(unittest.TestCase):
+    """Real production entry/driver tests using only explicitly fake native APIs."""
+    def test_synthetic_pending_worker_with_fresh_domains_refuses_before_unload(self):
+        # Removing the pre-unload dispatcher check must turn this refusal into success.
+        with synthetic_native_fixture('pending') as f:
+            with self.assertRaisesRegex(ValueError, 'dispatcher'):
+                f.driver.native_driver(f.path)
+            self.assertTrue(f.workers[0].is_alive())
+            self.assertEqual(len(f.driver.completed_gates(f.gates, 0)), 2)
+            self.assertTrue(f.managers[0].unloaded)
+            self.assertEqual(f.managers[0]._hook_running_callbacks, {})
+
+    def test_synthetic_settled_driver_source_fixture_domains_only(self):
+        with synthetic_native_fixture() as f:
+            observation = f.driver.native_driver(f.path)
+            self.assertEqual(observation['identity'], IDENTITY)
+            self.assertTrue(observation['native_loaded'])
+            self.assertEqual([d['domain'] for d in observation['domains']], ['native_callback', 'bridge_envelope'])
+            self.assertEqual(f.calls, ['scan', 'gate', 'dependencies', 'schema', 'load', 'pre_llm_call', 'post_tool_call', 'unload'])
+            # Injected production return is synthetic evidence only, never native PASS.
+            self.assertEqual(runner.verified_domains(dict(result(), domains=observation['domains']), adapter()), [])
+
+    def test_synthetic_dispatcher_running_unknown_and_contended_refuse_bounded(self):
+        # Removing/relaxing the dispatcher snapshot lets complete synthetic gates escape.
+        for mode in ('running', 'abandoned-only', 'missing-bookkeeping', 'missing-abandoned',
+                     'missing-lock', 'unknown-bookkeeping', 'unknown-running', 'contended'):
+            with self.subTest(mode=mode), synthetic_native_fixture(mode) as f:
+                started = time.monotonic()
+                with self.assertRaisesRegex(ValueError, 'dispatcher'):
+                    f.driver.native_driver(f.path)
+                self.assertLess(time.monotonic() - started, .8)
+                self.assertEqual(len(f.driver.completed_gates(f.gates, 0)), 2)
+                self.assertTrue(f.managers[0].unloaded)
+
+    def test_synthetic_dispatcher_missing_lock_and_expired_deadline_refuse(self):
+        # Unknown lock state and expired budget cannot establish completion.
+        with synthetic_native_fixture() as f:
+            observation = f.driver.native_driver(f.path)
+            self.assertEqual(len(observation['domains']), 2)
+            manager = f.managers[0]
+            with self.assertRaisesRegex(ValueError, 'dispatcher'):
+                f.driver.require_settled_dispatcher(manager, time.monotonic() - 1)
+            with mock.patch.object(f.driver.time, 'monotonic', side_effect=[0, 2]):
+                with self.assertRaisesRegex(ValueError, 'dispatcher'):
+                    f.driver.require_settled_dispatcher(manager, 1)
+            self.assertFalse(manager._hook_timeout_lock.locked())
+            del manager._hook_timeout_lock
+            with self.assertRaisesRegex(ValueError, 'dispatcher'):
+                f.driver.require_settled_dispatcher(manager, time.monotonic() + 1)
+
+    def test_synthetic_config_disabled_unknown_failed_never_load(self):
+        # Bypassing successful selected enabled config would incorrectly reach load.
+        for mode in ('disabled', 'unselected', 'unknown', 'failed'):
+            with self.subTest(mode=mode), synthetic_native_fixture() as f:
+                config = f.modules['hermes_cli.config']
+                if mode == 'disabled': f.effective['plugins']['disabled'] = ['herdr-threads']
+                elif mode == 'unselected': f.effective['plugins']['enabled'] = []
+                elif mode == 'unknown': f.effective['plugins'].pop('enabled')
+                else: config.load_config_readonly = lambda: config.FailedConfigRead()
+                with self.assertRaisesRegex(ValueError, 'config|disabled'):
+                    f.driver.native_driver(f.path)
+                self.assertNotIn('load', f.calls)
+                self.assertNotIn('pre_llm_call', f.calls)
+                self.assertTrue(f.managers[0].unloaded)
+
+    def test_synthetic_scan_gate_and_load_failure_unload_and_refuse(self):
+        # A failed discovery/gate/registration must never credit output domains.
+        for mode, reason in (('scan', 'synthetic_scan'), ('gate', 'disabled'), ('load', 'load')):
+            with self.subTest(mode=mode), synthetic_native_fixture(mode) as f:
+                with self.assertRaisesRegex(ValueError, reason): f.driver.native_driver(f.path)
+                self.assertTrue(f.managers[0].unloaded)
+                self.assertNotIn('pre_llm_call', f.calls)
+                if mode != 'load': self.assertNotIn('load', f.calls)
+
+    def test_synthetic_dispatch_missing_partial_output_and_generation_drift_refuse(self):
+        # Skipping the real completed-gate/generation consumer permits incomplete input.
+        for mode, reason in (('dispatch', 'synthetic_dispatch'), ('missing', None),
+                             ('partial', None), ('drift', 'timeout_or_drift|generation')):
+            with self.subTest(mode=mode), synthetic_native_fixture(mode) as f:
+                with self.assertRaises((ValueError, OSError)) as caught: f.driver.native_driver(f.path)
+                if reason: self.assertRegex(str(caught.exception), reason)
+                self.assertTrue(f.managers[0].unloaded)
+                self.assertIn('load', f.calls)
+
+    def test_synthetic_finally_unload_failure_and_surviving_reader_refuse(self):
+        # Returning from the success path despite failed cleanup is a bug.
+        with synthetic_native_fixture('unload') as f:
+            with self.assertRaisesRegex(ValueError, 'synthetic_unload'): f.driver.native_driver(f.path)
+            self.assertEqual(len(f.driver.completed_gates(f.gates, 0)), 2)
+            self.assertTrue(f.managers[0].unloaded)
+        with synthetic_native_fixture() as f:
+            f.reader.thread.is_alive = lambda: True
+            with self.assertRaisesRegex(ValueError, 'owned_worker_survived'): f.driver.native_driver(f.path)
+            self.assertTrue(f.managers[0].unloaded)
+
+    def test_synthetic_reader_wait_uses_existing_deadline_and_finally(self):
+        # Waiting without the decreasing deadline hangs a reader lacking observation.
+        with synthetic_native_fixture() as f:
+            f.data['timeout_seconds'] = .3; f.path.write_text(json.dumps(f.data))
+            f.reader.snapshot = lambda: None
+            started = time.monotonic()
+            with self.assertRaisesRegex(ValueError, 'timeout'): f.driver.native_driver(f.path)
+            self.assertLess(time.monotonic() - started, .8)
+            self.assertTrue(f.managers[0].unloaded)
+            self.assertNotIn('pre_llm_call', f.calls)
+
+    def test_synthetic_entry_origin_spec_and_root_slot_agree(self):
+        # Restoring extra sys.path slots or accepting mixed origins breaks binding.
+        with synthetic_native_fixture() as f:
+            modules, observed = f.driver.native_context(f.data)
+            self.assertEqual(observed, IDENTITY)
+            self.assertEqual(sys.path, [f.data['source_root'], str(f.root / 'site-packages'), 'retained-tail'])
+            self.assertEqual(os.environ['HERMES_HOME'], f.data['home'])
+            self.assertEqual(set(modules), {'hermes_cli.profiles', 'hermes_constants',
+                'hermes_cli.version_info', 'hermes_cli.config', 'hermes_cli.plugins'})
+            self.assertEqual(f.calls, [])
+
+    def test_synthetic_entry_origin_spec_root_profile_home_interpreter_mismatch_refuse(self):
+        # Removing any original-entry binding would accept its otherwise valid fixture.
+        modes = ('spec', 'root', 'root-slot', 'profile', 'home', 'constants-home',
+                 'interpreter', 'trace', 'orig-argv', 'initializing', 'mixed-loaded', 'mixed-import')
+        for mode in modes:
+            with self.subTest(mode=mode), synthetic_native_fixture() as f:
+                boot = f.modules['hermes_bootstrap']; profiles = f.modules['hermes_cli.profiles']
+                if mode == 'spec': boot.__spec__.origin = f.modules['hermes_constants'].__file__
+                elif mode == 'root': boot._root = f.root
+                elif mode == 'root-slot': sys.path[0] = str(f.root)
+                elif mode == 'profile': profiles.normalize_profile_name = lambda name: 'wrong-profile'
+                elif mode == 'home': profiles.resolve_profile_env = lambda name: str(f.root)
+                elif mode == 'constants-home': f.modules['hermes_constants'].get_hermes_home = lambda: f.root
+                elif mode == 'interpreter': f.data['argv'][0] = f.data['binary']
+                elif mode == 'trace': sys.modules['__main__'].__spec__.name = 'not-trace'
+                elif mode == 'orig-argv': sys.orig_argv = list(f.data['argv']) + ['extra']
+                elif mode == 'initializing': boot.__spec__._initializing = True
+                else:
+                    module = f.modules['hermes_cli.plugins']
+                    module.__file__ = f.modules['hermes_constants'].__file__
+                    module.__spec__.origin = module.__file__
+                    if mode == 'mixed-import': sys.modules.pop('hermes_cli.plugins')
+                with self.assertRaises(ValueError): f.driver.native_context(f.data)
+                self.assertEqual(f.calls, [])
+
 
 class HermesCompanion(unittest.TestCase):
     def test_exact_commit_build_generic_schema_and_manifest_final_incomplete(self):

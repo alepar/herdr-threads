@@ -244,8 +244,27 @@ def completed_gates(paths, started):
     return domains
 
 
+def require_settled_dispatcher(manager, deadline):
+    """Pinned dispatcher tokens release only after callback cleanup, before unload.
+
+    Gate ACKs are independent of callback settlement. Never wait for its lock or
+    trust missing bookkeeping; unload clears these maps without joining workers.
+    """
+    lock = getattr(manager, '_hook_timeout_lock', None)
+    if time.monotonic() >= deadline or lock is None or not lock.acquire(blocking=False):
+        raise ValueError('dispatcher_unknown_or_contended')
+    try:
+        running = getattr(manager, '_hook_running_callbacks', None)
+        abandoned = getattr(manager, '_hook_abandoned', None)
+        if (type(running) is not dict or type(abandoned) is not dict
+                or running or abandoned or time.monotonic() >= deadline):
+            raise ValueError('dispatcher_pending_or_unknown')
+    finally:
+        lock.release()
+
+
 def native_driver(path):
-    """Future native measurement entry. No native execution is part of offline tests."""
+    """Native entry; offline tests inject labeled fake APIs, never installed Hermes."""
     data = input_document(path)
     if data['producer'] != 'official_native_selective':
         raise ValueError('producer')
@@ -319,6 +338,7 @@ def native_driver(path):
             if time.monotonic() >= deadline or owned_generation(data)[1] != generation:
                 raise ValueError('timeout_or_drift')
             domains = completed_gates(paths, started)
+            require_settled_dispatcher(manager, deadline)
     finally:
         manager.unload()
         # Uncancellable native read may outlive bounded unload: never claim clean PASS.
