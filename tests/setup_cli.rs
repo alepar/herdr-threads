@@ -117,6 +117,10 @@ impl Scratch {
             .current_dir(cwd)
             .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
             .env("HOME", &self.home)
+            .env(
+                "HT_SYNTHETIC_FOURTH_ROOT",
+                self.home.join("synthetic-fourth-fixture"),
+            )
             .env("CLAUDE_CONFIG_DIR", &self.claude_config)
             .env("CODEX_HOME", &self.codex_home)
             .env_remove("XDG_STATE_HOME")
@@ -1263,7 +1267,8 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
         pairs(&[
             ("claude", "already_installed"),
             ("codex", "already_installed"),
-            ("hermes", "skipped")
+            ("hermes", "skipped"),
+            ("synthetic_fourth", "skipped")
         ])
     );
     assert!(
@@ -1288,7 +1293,8 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
         pairs(&[
             ("claude", "status"),
             ("codex", "status"),
-            ("hermes", "skipped")
+            ("hermes", "skipped"),
+            ("synthetic_fourth", "status")
         ])
     );
     for entry in status["harnesses"]
@@ -1297,7 +1303,11 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
         .iter()
         .filter(|entry| entry["outcome"] == "status")
     {
-        assert_eq!(entry["report"]["installed"], true, "{entry}");
+        assert_eq!(
+            entry["report"]["installed"],
+            entry["harness"] != "synthetic_fourth",
+            "{entry}"
+        );
     }
     let status_text = text(&s.run(&["setup-status"]).stdout);
     assert!(
@@ -1325,7 +1335,8 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
         pairs(&[
             ("claude", "not_installed"),
             ("codex", "not_installed"),
-            ("hermes", "skipped")
+            ("hermes", "skipped"),
+            ("synthetic_fourth", "not_installed")
         ])
     );
 }
@@ -1362,7 +1373,8 @@ fn bare_setup_skips_missing_and_installs_available_harnesses() {
         pairs(&[
             ("claude", "skipped"),
             ("codex", "installed"),
-            ("hermes", "skipped")
+            ("hermes", "skipped"),
+            ("synthetic_fourth", "skipped")
         ])
     );
     assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
@@ -1375,7 +1387,8 @@ fn bare_setup_skips_missing_and_installs_available_harnesses() {
         pairs(&[
             ("claude", "not_installed"),
             ("codex", "removed"),
-            ("hermes", "skipped")
+            ("hermes", "skipped"),
+            ("synthetic_fourth", "not_installed")
         ])
     );
     let status = json(&s.run(&["--json", "setup-status"]));
@@ -1408,7 +1421,8 @@ fn bare_setup_exits_nonzero_only_for_a_failed_harness() {
         pairs(&[
             ("claude", "failed"),
             ("codex", "installed"),
-            ("hermes", "skipped")
+            ("hermes", "skipped"),
+            ("synthetic_fourth", "skipped")
         ])
     );
     assert_eq!(report["exit_status"], 2);

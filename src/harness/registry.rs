@@ -1158,14 +1158,20 @@ impl Registry {
 pub fn builtins() -> &'static Registry {
     static BUILTINS: OnceLock<Registry> = OnceLock::new();
     BUILTINS.get_or_init(|| {
-        let registrations = Box::leak(
-            vec![
-                Registration::new(&crate::harness::claude::ClaudeAdapter),
-                Registration::new(&crate::harness::codex::CodexAdapter),
-                Registration::new(&crate::harness::hermes::HermesAdapter),
-            ]
-            .into_boxed_slice(),
-        );
+        let registrations = vec![
+            Registration::new(&crate::harness::claude::ClaudeAdapter),
+            Registration::new(&crate::harness::codex::CodexAdapter),
+            Registration::new(&crate::harness::hermes::HermesAdapter),
+        ];
+        #[cfg(feature = "test-support")]
+        let registrations = {
+            let mut registrations = registrations;
+            registrations.push(Registration::new(
+                &crate::test_support::synthetic_fourth::ADAPTER,
+            ));
+            registrations
+        };
+        let registrations = Box::leak(registrations.into_boxed_slice());
         let registry =
             Registry::new(registrations).expect("built-in adapter registry validation failed");
         assert_eq!(
@@ -1181,6 +1187,18 @@ pub fn builtins() -> &'static Registry {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn compiled_registry_keeps_exact_shipped_rows_and_feature_fixture() {
+        let rows: Vec<_> = builtins()
+            .registrations()
+            .iter()
+            .map(|r| r.metadata().id)
+            .collect();
+        #[cfg(feature = "test-support")]
+        assert_eq!(rows, ["claude", "codex", "hermes", "synthetic_fourth"]);
+        #[cfg(not(feature = "test-support"))]
+        assert_eq!(rows, ["claude", "codex", "hermes"]);
+    }
     fn unsupported(adapter: &'static str, operation: &'static str) -> UnsupportedOperation {
         UnsupportedOperation { adapter, operation }
     }

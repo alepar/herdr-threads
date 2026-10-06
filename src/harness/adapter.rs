@@ -993,17 +993,19 @@ mod tests {
                 runtime_candidate: None,
             };
             assert!(registration.admit(&request, &budget).is_err());
-            assert!(matches!(
-                registration.status(
-                    &StatusRequest {
-                        scope: ResolvedSetupScope::ConfigRoot(PathBuf::from("unused")),
-                        environment: SetupEnvironment::default(),
-                        native_binary: None
-                    },
-                    &budget
-                ),
-                SetupStatus::Detailed(_)
-            ));
+            let status = registration.status(
+                &StatusRequest {
+                    scope: ResolvedSetupScope::ConfigRoot(PathBuf::from("unused")),
+                    environment: SetupEnvironment::default(),
+                    native_binary: None,
+                },
+                &budget,
+            );
+            if matches!(registration.metadata().id, "hermes" | "synthetic_fourth") {
+                assert!(matches!(status, SetupStatus::Failed(_)));
+            } else {
+                assert!(matches!(status, SetupStatus::Detailed(_)));
+            }
             assert!(
                 registration
                     .setup(
@@ -1031,11 +1033,24 @@ mod tests {
             );
             // Providers exist independently of admission: an unobserved
             // installed recipe must still declare no poke capability.
-            assert_eq!(
-                registration.composer_policy().unwrap().capabilities(None),
-                crate::harness::recipe::PokeCapabilities::NONE,
-            );
-            assert!(registration.canary_strategy().is_some());
+            match registration.metadata().id {
+                "claude" | "codex" => {
+                    assert_eq!(
+                        registration.composer_policy().unwrap().capabilities(None),
+                        crate::harness::recipe::PokeCapabilities::NONE
+                    );
+                    assert!(registration.canary_strategy().is_some());
+                }
+                "hermes" => {
+                    assert!(registration.composer_policy().is_none());
+                    assert!(registration.canary_strategy().is_some());
+                }
+                "synthetic_fourth" => {
+                    assert!(registration.composer_policy().is_none());
+                    assert!(registration.canary_strategy().is_none());
+                }
+                other => panic!("unexpected builtin {other}"),
+            }
             assert_eq!(
                 registration.version_ladder(
                     &RuntimeIdentity::stable_release("999.0.0", "native_transcript").unwrap()
@@ -1047,7 +1062,14 @@ mod tests {
                 registered_event: None,
             };
             let observation = registration.classify(&input);
-            assert_eq!(observation.domain, ContractDomain::Native);
+            assert_eq!(
+                observation.domain,
+                if registration.metadata().id == "hermes" {
+                    ContractDomain::Bridge
+                } else {
+                    ContractDomain::Native
+                }
+            );
             assert_eq!(
                 observation.classification,
                 crate::harness::contract::Classification::Malformed(

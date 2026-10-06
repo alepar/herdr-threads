@@ -620,6 +620,7 @@ fn adapter_runtime_attribution_uses_native_reader_reason() {
                     "claude" => Unattributed::NoTranscriptPath.as_str(),
                     "codex" => Unattributed::CodexCreatorOnly.as_str(),
                     "hermes" => "startup_callback_unavailable",
+                    "synthetic_fourth" => "synthetic_runtime_unavailable",
                     other => panic!("unexpected builtin {other}"),
                 };
                 assert_eq!(diagnostic, expected)

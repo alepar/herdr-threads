@@ -730,7 +730,11 @@ fn probe_harness_states() {
         .iter()
         .map(|h| h.harness.as_str())
         .collect();
-    assert_eq!(names, ["claude", "codex", "hermes"]);
+    assert_eq!(&names[..3], ["claude", "codex", "hermes"]);
+    #[cfg(feature = "test-support")]
+    assert_eq!(&names[3..], ["synthetic_fourth"]);
+    #[cfg(not(feature = "test-support"))]
+    assert_eq!(names.len(), 3);
     let claude = &report.harnesses[0];
     assert_eq!(claude.contract_id.as_deref(), Some("0123456789abcdef"));
     assert_eq!(claude.versions.len(), 1);
@@ -1222,14 +1226,16 @@ fn health_v2_capability_is_negotiated_only_with_cached_provider() {
         AdmissionState, CallbackObservationState, EnablementState, HarnessHealthScope, HealthAxis,
         InstallationState,
     };
-    assert_eq!(
-        report
-            .harnesses
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-        ["claude", "codex", "hermes"]
-    );
+    let names = report
+        .harnesses
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    assert_eq!(&names[..3], ["claude", "codex", "hermes"]);
+    #[cfg(feature = "test-support")]
+    assert_eq!(&names[3..], ["synthetic_fourth"]);
+    #[cfg(not(feature = "test-support"))]
+    assert_eq!(names.len(), 3);
     let hermes = &report.harnesses["hermes"];
     assert_eq!(hermes.scope, HarnessHealthScope::daemon_default());
     assert_eq!(
