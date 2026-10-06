@@ -30,7 +30,11 @@ use std::{
 
 static CALL_ID: AtomicU64 = AtomicU64::new(1);
 /// Herdr `agent.start` errors that are checked before anything is typed.
-const CONFIRMED_PRESTART_REFUSALS: [&str; 2] = ["agent_pane_busy", "agent_name_taken"];
+const CONFIRMED_PRESTART_REFUSALS: [&str; 3] = [
+    "agent_pane_busy",
+    "agent_name_taken",
+    "agent_process_hint_unsupported",
+];
 /// Interval between bounded readiness polls after a submitted start.
 const START_POLL_MILLIS: u64 = 250;
 /// Polling time before a started-but-undetected agent is checked for an early
@@ -176,12 +180,16 @@ impl NativeCli {
                 "native start adapter is unregistered",
             )
         })?;
-        let kinds = registration
-            .launch_policy()
-            .map(|policy| policy.expected_host_kinds())
-            .ok_or_else(|| {
-                before_start(ErrorCode::UnsupportedHarness, "native start is unsupported")
-            })?;
+        let policy = registration.launch_policy().ok_or_else(|| {
+            before_start(ErrorCode::UnsupportedHarness, "native start is unsupported")
+        })?;
+        if request.process_hint != policy.requires_process_hint() {
+            return Err(before_start(
+                ErrorCode::InvalidRequest,
+                "native request mode differs from registered launch policy",
+            ));
+        }
+        let kinds = policy.expected_host_kinds();
         let kind = kinds
             .iter()
             .copied()
@@ -227,18 +235,68 @@ impl NativeCli {
             args.extend(request.argv.iter().map(String::as_str));
             let submitted_at_mono = self.clock.monotonic_now();
             let started = Instant::now();
-            let refusal = match self.run(&args, &context.budget, Duration::from_millis(remaining)) {
-                // Herdr checks both before it types anything into the pane
-                // (live 2026-09-30: an occupied pane and a seat whose agent
-                // still runs were refused with the pane unchanged).
-                Err(error)
-                    if error.code == ErrorCode::TargetUnsafe
-                        && CONFIRMED_PRESTART_REFUSALS
-                            .iter()
-                            .any(|code| error.detail.starts_with(&format!("Herdr {code}:"))) =>
-                {
-                    error
+            let response = if request.process_hint {
+                if !self.socket.is_absolute() {
+                    return Err(before_start(
+                        ErrorCode::InvalidRequest,
+                        "host API endpoint must be absolute",
+                    ));
                 }
+                let validate = |_: &serde_json::Value, witness: &LocalEndpointWitness| {
+                    self.check_epoch(current_epoch)?;
+                    let incarnation = ServerIncarnation::from_witness(witness)?;
+                    if incarnation.identity != request.expected_incarnation
+                        || incarnation.boot != preflight.host_boot
+                        || context.expected_boot.as_ref() != Some(&incarnation.boot)
+                        || context.expected_epoch != Some(self.epoch())
+                    {
+                        return Err(error(
+                            ErrorCode::StaleHostObservation,
+                            "native start peer incarnation or epoch changed",
+                        ));
+                    }
+                    Ok(())
+                };
+                let id = format!("threads-{}", CALL_ID.fetch_add(1, Ordering::Relaxed));
+                let response = super::transport::request_guarded_start(
+                    &self.socket,
+                    &id,
+                    serde_json::json!({"name":name,"kind":kind,"pane_id":request.target.as_str(),"args":request.argv,"timeout_ms":remaining,"process_hint":true}),
+                    self.clock.as_ref(),
+                    &context.budget,
+                    Duration::from_millis(remaining),
+                    &validate,
+                );
+                if response.as_ref().is_err_and(|failure| {
+                    matches!(
+                        failure.error.code,
+                        ErrorCode::Cancelled
+                            | ErrorCode::DeadlineExceeded
+                            | ErrorCode::HostUnavailable
+                            | ErrorCode::StaleHostObservation
+                    )
+                }) {
+                    self.epoch.fetch_add(1, Ordering::AcqRel);
+                }
+                match response {
+                    Ok(response) => Ok(response.body),
+                    Err(failure) if failure.submission == ports::NativeSubmission::NotSubmitted => {
+                        return Err(failure);
+                    }
+                    Err(_) => return Ok(NativeLaunchOutcome::OutcomeUnknown),
+                }
+            } else {
+                self.dispatch(
+                    &args,
+                    &context.budget,
+                    Duration::from_millis(remaining),
+                    false,
+                    true,
+                    true,
+                )
+                .map(|(body, _)| body)
+            };
+            let (refusal, name_taken) = match response {
                 Err(_) => return Ok(NativeLaunchOutcome::OutcomeUnknown),
                 Ok(raw) => {
                     let parsed: serde_json::Value = match serde_json::from_str(&raw) {
@@ -248,20 +306,16 @@ impl NativeCli {
                     let Some(host_error) = structured_host_error(&parsed) else {
                         break (name, parsed, remaining, started, submitted_at_mono);
                     };
-                    if !parsed
+                    let code = parsed
                         .pointer("/error/code")
-                        .and_then(serde_json::Value::as_str)
-                        .is_some_and(|code| CONFIRMED_PRESTART_REFUSALS.contains(&code))
-                    {
+                        .and_then(serde_json::Value::as_str);
+                    if !code.is_some_and(|code| CONFIRMED_PRESTART_REFUSALS.contains(&code)) {
                         return Ok(NativeLaunchOutcome::OutcomeUnknown);
                     }
-                    host_error
+                    (host_error, code == Some("agent_name_taken"))
                 }
             };
-            if refusal.detail.starts_with("Herdr agent_name_taken:")
-                && name != retry_name
-                && !context.budget.cancellation.is_cancelled()
-            {
+            if name_taken && name != retry_name && !context.budget.cancellation.is_cancelled() {
                 name = retry_name.clone();
                 continue;
             }
@@ -277,6 +331,19 @@ impl NativeCli {
         };
         let returned_args = result.get("argv").and_then(serde_json::Value::as_array);
         let args_match = returned_args.is_some_and(|values| {
+            if request.process_hint {
+                let crate::harness::adapter::ExecutableLookup::Path(executable) =
+                    registration.metadata().executable
+                else {
+                    return false;
+                };
+                return values.len() == request.argv.len() + 1
+                    && values.first().and_then(serde_json::Value::as_str) == Some(executable)
+                    && values[1..]
+                        .iter()
+                        .zip(&request.argv)
+                        .all(|(actual, expected)| actual.as_str() == Some(expected));
+            }
             values.len() >= request.argv.len()
                 && values[values.len() - request.argv.len()..]
                     .iter()
@@ -317,6 +384,9 @@ impl NativeCli {
             let status = current
                 .get("agent_status")
                 .and_then(serde_json::Value::as_str);
+            if request.process_hint && status == Some("blocked") {
+                return Ok(NativeLaunchOutcome::OutcomeUnknown);
+            }
             let ready = (current
                 .get("interactive_ready")
                 .and_then(serde_json::Value::as_bool)
@@ -369,7 +439,30 @@ impl NativeCli {
             let left = Duration::from_millis(remaining).saturating_sub(started.elapsed());
             let limit = left.min(Duration::from_millis(750));
             // Stays fenced: a failure here is the launch's `OutcomeUnknown` outcome.
-            let polled = match self.run(&["agent", "get", name.as_str()], &context.budget, limit) {
+            let response = if request.process_hint {
+                self.run_witnessed(&["agent", "get", name.as_str()], &context.budget, limit)
+                    .and_then(|(body, witness)| {
+                        let incarnation = witness
+                            .as_ref()
+                            .map(ServerIncarnation::from_witness)
+                            .transpose()?;
+                        self.check_boot(context, incarnation.as_ref())?;
+                        if incarnation
+                            .as_ref()
+                            .map(|incarnation| &incarnation.identity)
+                            != Some(&request.expected_incarnation)
+                        {
+                            return Err(error(
+                                ErrorCode::StaleHostObservation,
+                                "native startup polling peer changed",
+                            ));
+                        }
+                        Ok(body)
+                    })
+            } else {
+                self.run(&["agent", "get", name.as_str()], &context.budget, limit)
+            };
+            let polled = match response {
                 Ok(raw) => raw,
                 Err(_) => return Ok(NativeLaunchOutcome::OutcomeUnknown),
             };
@@ -401,6 +494,7 @@ impl NativeCli {
         observed.observed_at_mono = self.clock.monotonic_now();
         observed.completed_at_mono = observed.observed_at_mono;
         let correlation = CorrelatedStartup {
+            process_hint: request.process_hint,
             seat: request.seat.clone(),
             agent_name: name,
             harness: request.harness,
@@ -565,6 +659,7 @@ impl NativeCli {
             Duration::from_secs(2),
             cfg!(target_os = "macos"),
             false,
+            false,
         )?;
         let incarnation = witness
             .as_ref()
@@ -655,7 +750,7 @@ impl NativeCli {
         budget: &CallBudget,
         limit: Duration,
     ) -> Result<String, ApiError> {
-        self.dispatch(args, budget, limit, false, true)
+        self.dispatch(args, budget, limit, false, true, false)
             .map(|(body, _)| body)
     }
 
@@ -667,7 +762,7 @@ impl NativeCli {
         budget: &CallBudget,
         limit: Duration,
     ) -> Result<String, ApiError> {
-        self.dispatch(args, budget, limit, false, false)
+        self.dispatch(args, budget, limit, false, false, false)
             .map(|(body, _)| body)
     }
 
@@ -680,7 +775,7 @@ impl NativeCli {
         budget: &CallBudget,
         limit: Duration,
     ) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
-        self.dispatch(args, budget, limit, cfg!(target_os = "macos"), true)
+        self.dispatch(args, budget, limit, cfg!(target_os = "macos"), true, false)
     }
 
     fn dispatch(
@@ -690,6 +785,7 @@ impl NativeCli {
         limit: Duration,
         witnessed: bool,
         fenced: bool,
+        preserve_start_refusal: bool,
     ) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
         if !self.socket.is_absolute() {
             return Err(error(
@@ -784,6 +880,16 @@ impl NativeCli {
                 limit,
             )
             .map(|response| (response.body, Some(response.witness)))
+        } else if method == "agent.start" && preserve_start_refusal {
+            super::transport::request_unhinted_start(
+                &self.socket,
+                &id,
+                params,
+                self.clock.as_ref(),
+                budget,
+                limit,
+            )
+            .map(|body| (body, None))
         } else {
             super::transport::request(
                 &self.socket,
@@ -1977,7 +2083,7 @@ fn composer_state_from_read(raw: Option<&str>) -> ports::AgentComposerState {
 mod wake_submission_tests;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::ports::ConfiguredHook;
     use crate::protocol::time::{Cancellation, MonoInstant, UtcMillis};
@@ -2011,6 +2117,8 @@ mod tests {
         F: FnOnce(&mut UnixStream, Value) + Send + 'static,
     {
         let socket = std::env::temp_dir().join(format!("ht-start-{}", uuid::Uuid::new_v4()));
+        // Reserve one byte for the Unix address terminator.
+        assert!(socket.as_os_str().as_encoded_bytes().len() < 104);
         let listener = UnixListener::bind(&socket).unwrap();
         let worker = thread::spawn(move || {
             let (mut ping, _) = listener.accept().unwrap();
@@ -2035,6 +2143,7 @@ mod tests {
         let boot = HostBootId::new("proven-boot");
         let terminal = TerminalId::new("term_1");
         let request = NativeLaunchRequest {
+            process_hint: false,
             seat: SeatId::new("seat_1"),
             target: target.clone(),
             harness: Harness::Codex,
@@ -2082,6 +2191,608 @@ mod tests {
             completed_at_mono: MonoInstant(1),
         };
         (request, context, observation)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) struct HintSocketFixture {
+        cli: NativeCli,
+        socket: PathBuf,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        frames: Arc<std::sync::Mutex<Vec<Value>>>,
+        received: Arc<std::sync::atomic::AtomicUsize>,
+        worker: Option<thread::JoinHandle<()>>,
+        listener: Arc<std::sync::Mutex<Option<UnixListener>>>,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl HintSocketFixture {
+        pub(crate) fn new<F>(mut response: F) -> Self
+        where
+            F: FnMut(&mut UnixStream, &Value) + Send + 'static,
+        {
+            use std::io::{BufRead, BufReader};
+            let socket = std::env::temp_dir().join(format!("hint-{}", uuid::Uuid::new_v4()));
+            // Reserve one byte for the Unix address terminator.
+            assert!(socket.as_os_str().as_encoded_bytes().len() < 104);
+            let listener = UnixListener::bind(&socket).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let listener = Arc::new(std::sync::Mutex::new(Some(listener)));
+            let worker_listener = listener.clone();
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let frames = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let received = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let worker_stop = stop.clone();
+            let worker_frames = frames.clone();
+            let worker_received = received.clone();
+            let worker = thread::spawn(move || {
+                while !worker_stop.load(Ordering::Acquire) {
+                    let connection = worker_listener
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .map(UnixListener::accept);
+                    let Some(connection) = connection else {
+                        thread::sleep(Duration::from_millis(2));
+                        continue;
+                    };
+                    let (mut stream, _) = match connection {
+                        Ok(connection) => connection,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(2));
+                            continue;
+                        }
+                        Err(error) => panic!("owned hint fixture accept: {error}"),
+                    };
+                    // macOS accept inherits the listener's O_NONBLOCK flag.
+                    // Keep accept stop-aware, but bound each accepted read.
+                    stream.set_nonblocking(false).unwrap();
+                    if stream
+                        .set_read_timeout(Some(Duration::from_millis(100)))
+                        .is_err()
+                        || stream
+                            .set_write_timeout(Some(Duration::from_millis(100)))
+                            .is_err()
+                    {
+                        continue;
+                    }
+                    let mut line = String::new();
+                    let read = BufReader::new(&mut stream).read_line(&mut line);
+                    worker_received.fetch_add(line.len(), Ordering::AcqRel);
+                    match read {
+                        Ok(0) => continue,
+                        Ok(_) => {}
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                            ) =>
+                        {
+                            continue;
+                        }
+                        Err(error) => panic!("owned hint fixture read: {error}"),
+                    }
+                    let wire: Value = serde_json::from_str(&line).unwrap();
+                    worker_frames.lock().unwrap().push(wire.clone());
+                    response(&mut stream, &wire);
+                }
+            });
+            let cli = NativeCli::new(socket.clone(), Arc::new(TestClock(Instant::now())));
+            cli.epoch.store(3, Ordering::Release);
+            Self {
+                cli,
+                socket,
+                stop,
+                frames,
+                received,
+                worker: Some(worker),
+                listener,
+            }
+        }
+
+        pub(crate) fn endpoint(&self) -> &std::path::Path {
+            &self.socket
+        }
+
+        pub(crate) fn rebind(&self) {
+            let mut listener = self.listener.lock().unwrap();
+            fs::remove_file(&self.socket).unwrap();
+            let replacement = UnixListener::bind(&self.socket).unwrap();
+            replacement.set_nonblocking(true).unwrap();
+            *listener = Some(replacement);
+        }
+
+        pub(crate) fn stop_listening(&self) {
+            self.listener.lock().unwrap().take();
+        }
+
+        fn bind_preflight(
+            &self,
+            request: &mut NativeLaunchRequest,
+            context: &mut HostCallContext,
+            observation: &mut HostObservation,
+        ) {
+            let (_, witness) = self
+                .cli
+                .run_witnessed(
+                    &["pane", "get", request.target.as_str()],
+                    &context.budget,
+                    Duration::from_millis(750),
+                )
+                .unwrap();
+            let incarnation = ServerIncarnation::from_witness(&witness.unwrap()).unwrap();
+            request.expected_incarnation = incarnation.identity.clone();
+            context.expected_boot = Some(incarnation.boot.clone());
+            observation.host_boot = incarnation.boot;
+            observation.incarnation = IncarnationEvidence::Verified {
+                identity: incarnation.identity,
+                evidence_kind: EvidenceKind::NativeCurrentTarget,
+            };
+        }
+
+        pub(crate) fn finish(self) -> Vec<Value> {
+            self.finish_with_bytes().0
+        }
+
+        pub(crate) fn finish_with_bytes(mut self) -> (Vec<Value>, usize) {
+            self.close();
+            (
+                self.frames.lock().unwrap().clone(),
+                self.received.load(Ordering::Acquire),
+            )
+        }
+
+        fn close(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(worker) = self.worker.take() {
+                let joined = worker.join();
+                let removed = fs::remove_file(&self.socket);
+                if !thread::panicking() {
+                    joined.unwrap();
+                    if let Err(error) = removed {
+                        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Drop for HintSocketFixture {
+        fn drop(&mut self) {
+            self.close();
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn process_hint_old_host_receives_zero_start_frames() {
+        for capabilities in [
+            None,
+            Some(json!({})),
+            Some(json!({"agent_start_process_hint_v1":false})),
+            Some(json!({"agent_start_process_hint_v1":null})),
+            Some(json!({"agent_start_process_hint_v1":"true"})),
+            Some(json!({"agent_start_process_hint_v1":1})),
+            Some(json!({"agent_start_process_hint":true})),
+        ] {
+            let (mut request, mut context, mut observation) = launch_fixture();
+            let registry = crate::harness::launch::tests::process_hint_registry(true);
+            request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+            request.process_hint = true;
+            let name = request.agent_name();
+            let mut fixture = HintSocketFixture::new(move |stream, wire| {
+                let result = match wire["method"].as_str().unwrap() {
+                    "ping" => {
+                        let mut pong = json!({"type":"pong","version":"0.9.1","protocol":22});
+                        if let Some(capabilities) = &capabilities {
+                            pong["capabilities"] = capabilities.clone();
+                        }
+                        pong
+                    }
+                    "pane.get" => json!({"type":"pane_info"}),
+                    "agent.start" => started(name.clone()),
+                    other => panic!("unexpected fixture operation: {other}"),
+                };
+                answer(stream, wire, result);
+            });
+            fixture.cli.registry = registry;
+            fixture.bind_preflight(&mut request, &mut context, &mut observation);
+            let result = fixture
+                .cli
+                .guarded_start_with_evidence(&request, &context, &observation);
+            let frames = fixture.finish();
+            assert_eq!(
+                frames
+                    .iter()
+                    .filter(|frame| frame["method"] == "agent.start")
+                    .count(),
+                0,
+                "unsupported host received a start frame"
+            );
+            let failure =
+                result.expect_err("missing feature capability must refuse before submission");
+            assert_eq!(failure.error.code, ErrorCode::Unsupported);
+            assert_eq!(failure.submission, ports::NativeSubmission::NotSubmitted);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn process_hint_default_route_omits_field() {
+        let (mut request, mut context, mut observation) = launch_fixture();
+        let registry = crate::harness::launch::tests::process_hint_registry(false);
+        request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+        let name = request.agent_name();
+        let mut fixture = HintSocketFixture::new(move |stream, wire| {
+            let result = match wire["method"].as_str().unwrap() {
+                "ping" => json!({"type":"pong","version":"0.9.1","protocol":22}),
+                "pane.get" => json!({"type":"pane_info"}),
+                "agent.start" => {
+                    assert!(wire["params"].get("process_hint").is_none());
+                    started(name.clone())
+                }
+                other => panic!("unexpected fixture operation: {other}"),
+            };
+            answer(stream, wire, result);
+        });
+        fixture.cli.registry = registry;
+        fixture.bind_preflight(&mut request, &mut context, &mut observation);
+        let result = fixture
+            .cli
+            .guarded_start_with_evidence(&request, &context, &observation);
+        let frames = fixture.finish();
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| frame["method"] == "agent.start")
+                .count(),
+            1
+        );
+        let NativeLaunchOutcome::ObservedStartup { correlation, .. } = result.unwrap() else {
+            panic!("default startup not observed")
+        };
+        assert!(!correlation.process_hint);
+        assert!(correlation.matches_request(&request, &context));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn process_hint_policy_mode_mismatch_is_not_submitted() {
+        for required in [false, true] {
+            let (mut request, mut context, mut observation) = launch_fixture();
+            let registry = crate::harness::launch::tests::process_hint_registry(required);
+            request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+            request.process_hint = !required;
+            let name = request.agent_name();
+            let mut fixture = HintSocketFixture::new(move |stream, wire| {
+                let result = match wire["method"].as_str().unwrap() {
+                    "ping" => {
+                        json!({"type":"pong","version":"0.9.1","protocol":22,"capabilities":{"agent_start_process_hint_v1":true}})
+                    }
+                    "pane.get" => json!({"type":"pane_info"}),
+                    "agent.start" => started(name.clone()),
+                    other => panic!("unexpected fixture operation: {other}"),
+                };
+                answer(stream, wire, result);
+            });
+            fixture.cli.registry = registry;
+            fixture.bind_preflight(&mut request, &mut context, &mut observation);
+            let result = fixture
+                .cli
+                .guarded_start_with_evidence(&request, &context, &observation);
+            let frames = fixture.finish();
+            assert_eq!(
+                frames
+                    .iter()
+                    .filter(|frame| frame["method"] == "agent.start")
+                    .count(),
+                0,
+                "policy/request mode mismatch reached the host"
+            );
+            let failure = result.expect_err("request mode must match the selected launch policy");
+            assert_eq!(failure.error.code, ErrorCode::InvalidRequest);
+            assert_eq!(failure.submission, ports::NativeSubmission::NotSubmitted);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn process_hint_actual_peer_must_match_preflight_before_start_write() {
+        let (mut request, mut context, mut observation) = launch_fixture();
+        let registry = crate::harness::launch::tests::process_hint_registry(true);
+        request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+        request.process_hint = true;
+        let name = request.agent_name();
+        let mut fixture = HintSocketFixture::new(move |stream, wire| {
+            let result = match wire["method"].as_str().unwrap() {
+                "ping" => {
+                    json!({"type":"pong","version":"0.9.1","protocol":22,"capabilities":{"agent_start_process_hint_v1":true}})
+                }
+                "pane.get" => json!({"type":"pane_info"}),
+                "agent.start" => started(name.clone()),
+                other => panic!("unexpected fixture operation: {other}"),
+            };
+            answer(stream, wire, result);
+        });
+        fixture.cli.registry = registry;
+        fixture.bind_preflight(&mut request, &mut context, &mut observation);
+        // Internally consistent recorded fences still cannot authorize a
+        // different actual server peer on the submission stream.
+        let different = HostBootId::new("different-recorded-server");
+        request.expected_incarnation = different.as_str().to_owned();
+        observation.host_boot = different.clone();
+        observation.incarnation = IncarnationEvidence::Verified {
+            identity: different.as_str().to_owned(),
+            evidence_kind: EvidenceKind::NativeCurrentTarget,
+        };
+        context.expected_boot = Some(different);
+        let result = fixture
+            .cli
+            .guarded_start_with_evidence(&request, &context, &observation);
+        let frames = fixture.finish();
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| frame["method"] == "agent.start")
+                .count(),
+            0,
+            "actual peer mismatch received a start frame"
+        );
+        let failure =
+            result.expect_err("actual peer must match the recorded preflight before writing");
+        assert_eq!(failure.error.code, ErrorCode::StaleHostObservation);
+        assert_eq!(failure.submission, ports::NativeSubmission::NotSubmitted);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn process_hint_native_start_preserves_argv_and_ready_working_correlation() {
+        for readiness in ["ready", "working", "pending"] {
+            let (mut request, mut context, mut observation) = launch_fixture();
+            let registry = crate::harness::launch::tests::process_hint_registry(true);
+            request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+            request.process_hint = true;
+            request.argv = vec!["space arg".into(), "apostrophe's arg".into()];
+            let name = request.agent_name();
+            let mut fixture = HintSocketFixture::new(move |stream, wire| {
+                let mut ready = started(name.clone());
+                ready["argv"] = json!(["codex", "space arg", "apostrophe's arg"]);
+                let result = match wire["method"].as_str().unwrap() {
+                    "ping" => {
+                        json!({"type":"pong","version":"0.9.3","protocol":22,"capabilities":{"agent_start_process_hint_v1":true}})
+                    }
+                    "pane.get" => json!({"type":"pane_info"}),
+                    "agent.start" => {
+                        assert_eq!(wire["params"]["process_hint"], true);
+                        assert_eq!(
+                            wire["params"]["args"],
+                            json!(["space arg", "apostrophe's arg"])
+                        );
+                        assert_eq!(wire["params"]["name"], name);
+                        assert_eq!(wire["params"]["pane_id"], "w4:p1");
+                        assert_eq!(wire["params"]["kind"], "codex");
+                        assert!(wire["params"]["timeout_ms"].as_u64().unwrap() <= 10_000);
+                        if readiness == "working" {
+                            ready["agent"]["interactive_ready"] = json!(false);
+                            ready["agent"]["agent_status"] = json!("working");
+                            ready["agent"]["launch_pending"] = json!(true);
+                        } else if readiness == "pending" {
+                            ready["agent"].as_object_mut().unwrap().remove("agent");
+                            ready["agent"]["interactive_ready"] = json!(false);
+                            ready["agent"]["launch_pending"] = json!(true);
+                        }
+                        ready
+                    }
+                    "agent.get" => {
+                        assert_eq!(wire["params"]["target"], name);
+                        json!({"type":"agent_info","agent":ready["agent"]})
+                    }
+                    other => panic!("unexpected fixture operation: {other}"),
+                };
+                answer(stream, wire, result);
+            });
+            fixture.cli.registry = registry;
+            fixture.bind_preflight(&mut request, &mut context, &mut observation);
+            let result = fixture
+                .cli
+                .guarded_start_with_evidence(&request, &context, &observation);
+            let frames = fixture.finish();
+            assert_eq!(
+                frames
+                    .iter()
+                    .filter(|frame| frame["method"] == "agent.start")
+                    .count(),
+                1
+            );
+            let NativeLaunchOutcome::ObservedStartup { correlation, .. } = result.unwrap() else {
+                panic!("startup was not correlated: {readiness}")
+            };
+            assert!(
+                correlation.process_hint,
+                "requested mode was lost in native startup correlation"
+            );
+            assert!(correlation.matches_request(&request, &context));
+            assert_eq!(correlation.argv, ["space arg", "apostrophe's arg"]);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn process_hint_retry_renegotiates_and_unknown_write_is_possible() {
+        for case in [
+            "lost-capability",
+            "kept-capability",
+            "unsupported",
+            "lookalike",
+            "malformed",
+            "eof",
+            "wrong-argv",
+            "wrong-executable",
+            "wrong-kind",
+            "wrong-name",
+            "wrong-terminal",
+            "blocked",
+        ] {
+            let (mut request, mut context, mut observation) = launch_fixture();
+            let registry = crate::harness::launch::tests::process_hint_registry(true);
+            request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+            request.process_hint = true;
+            let names = request.agent_name_candidates();
+            let expected_names = names.clone();
+            let mut pings = 0;
+            let mut starts = 0;
+            let mut fixture = HintSocketFixture::new(move |stream, wire| {
+                match wire["method"].as_str().unwrap() {
+                    "ping" => {
+                        pings += 1;
+                        let supported = !(case == "lost-capability" && pings == 3);
+                        answer(
+                            stream,
+                            wire,
+                            json!({"type":"pong","version":"0.9.1","protocol":22,"capabilities":{"agent_start_process_hint_v1":supported}}),
+                        );
+                    }
+                    "pane.get" => answer(stream, wire, json!({"type":"pane_info"})),
+                    "agent.start" => {
+                        assert_eq!(wire["params"]["process_hint"], true);
+                        assert_eq!(wire["params"]["name"], names[starts]);
+                        starts += 1;
+                        if matches!(case, "lost-capability" | "kept-capability") && starts == 1 {
+                            writeln!(stream, "{}", json!({"id":wire["id"],"error":{"code":"agent_name_taken","message":"taken before typing"}})).unwrap();
+                            return;
+                        }
+                        if matches!(case, "unsupported" | "lookalike") {
+                            let code = if case == "unsupported" {
+                                "agent_process_hint_unsupported"
+                            } else {
+                                "agent_process_hint_unsupported_other"
+                            };
+                            writeln!(stream, "{}", json!({"id":wire["id"],"error":{"code":code,"message":"agent_process_hint_unsupported"}})).unwrap();
+                            return;
+                        }
+                        if case == "malformed" {
+                            writeln!(stream, "{{invalid").unwrap();
+                            return;
+                        }
+                        if case == "eof" {
+                            return;
+                        }
+                        let mut result = started(names[starts - 1].clone());
+                        match case {
+                            "wrong-argv" => {
+                                result["argv"] = json!([
+                                    "unexpected",
+                                    "codex",
+                                    "--no-daemon",
+                                    "--model",
+                                    "test model"
+                                ])
+                            }
+                            "wrong-executable" => result["argv"][0] = json!("other"),
+                            "wrong-kind" => {
+                                result["agent"]["agent"] = json!("claude");
+                                result["agent"]["agent_status"] = json!("blocked");
+                            }
+                            "wrong-name" => result["agent"]["name"] = json!("other-name"),
+                            "wrong-terminal" => {
+                                result["agent"]["terminal_id"] = json!("other-terminal")
+                            }
+                            "blocked" => result["agent"]["agent_status"] = json!("blocked"),
+                            _ => {}
+                        }
+                        answer(stream, wire, result);
+                    }
+                    other => panic!("unexpected fixture operation: {other}"),
+                }
+            });
+            fixture.cli.registry = registry;
+            fixture.bind_preflight(&mut request, &mut context, &mut observation);
+            let result = fixture
+                .cli
+                .guarded_start_with_evidence(&request, &context, &observation);
+            let frames = fixture.finish();
+            assert_eq!(
+                frames
+                    .iter()
+                    .filter(|frame| frame["method"] == "agent.start")
+                    .count(),
+                if case == "kept-capability" { 2 } else { 1 },
+                "{case} retried without confirmed name refusal"
+            );
+            if matches!(case, "lost-capability" | "unsupported") {
+                let failure = result.expect_err(case);
+                assert_eq!(failure.error.code, ErrorCode::Unsupported, "{case}");
+                assert_eq!(
+                    failure.submission,
+                    ports::NativeSubmission::NotSubmitted,
+                    "{case}"
+                );
+            } else if case == "kept-capability" {
+                let NativeLaunchOutcome::ObservedStartup { correlation, .. } = result.unwrap()
+                else {
+                    panic!("confirmed retry was not correlated")
+                };
+                assert_eq!(correlation.agent_name, expected_names[1]);
+                assert!(correlation.matches_request(&request, &context));
+            } else {
+                assert_eq!(
+                    result.unwrap(),
+                    NativeLaunchOutcome::OutcomeUnknown,
+                    "{case} fabricated accepted startup"
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn process_hint_invalid_native_argv_is_not_submitted_in_either_mode() {
+        for required in [false, true] {
+            for argv in [
+                vec![String::new()],
+                vec!["a\0b".into()],
+                vec!["a\nb".into()],
+                vec!["a\rb".into()],
+                vec!["arg".into(); 65],
+                vec!["x".repeat(NativeLaunchRequest::MAX_ARG_BYTES + 1)],
+                vec![
+                    "x".repeat(NativeLaunchRequest::MAX_ARG_BYTES),
+                    "x".repeat(NativeLaunchRequest::MAX_ARG_BYTES),
+                    "x".into(),
+                ],
+            ] {
+                let (mut request, mut context, mut observation) = launch_fixture();
+                let registry = crate::harness::launch::tests::process_hint_registry(required);
+                request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+                request.process_hint = required;
+                let mut fixture = HintSocketFixture::new(|stream, wire| {
+                    let result = if wire["method"] == "ping" {
+                        json!({"type":"pong","version":"0.9.1","protocol":22,"capabilities":{"agent_start_process_hint_v1":true}})
+                    } else {
+                        json!({"type":"pane_info"})
+                    };
+                    answer(stream, wire, result);
+                });
+                fixture.cli.registry = registry;
+                fixture.bind_preflight(&mut request, &mut context, &mut observation);
+                request.argv = argv;
+                let result =
+                    fixture
+                        .cli
+                        .guarded_start_with_evidence(&request, &context, &observation);
+                let frames = fixture.finish();
+                assert_eq!(
+                    frames
+                        .iter()
+                        .filter(|frame| frame["method"] == "agent.start")
+                        .count(),
+                    0
+                );
+                let failure = result.unwrap_err();
+                assert_eq!(failure.error.code, ErrorCode::InvalidRequest);
+                assert_eq!(failure.submission, ports::NativeSubmission::NotSubmitted);
+            }
+        }
     }
     fn started(name: String) -> Value {
         // The live Herdr 0.9.1 `agent.start` success shape (captured
@@ -2382,10 +3093,80 @@ mod tests {
         worker.join().unwrap();
         fs::remove_file(socket).unwrap();
     }
+    #[test]
+    fn process_hint_exact_unsupported_response_is_not_submitted() {
+        let (request, context, observation) = launch_fixture();
+        let (socket, cli, worker) = fixture(|stream, wire| {
+            assert_eq!(wire["method"], "agent.start");
+            writeln!(
+                stream,
+                "{}",
+                json!({"id":wire["id"],"error":{
+                    "code":"agent_process_hint_unsupported","message":"unsupported shell"
+                }})
+            )
+            .unwrap();
+        });
+        let result = cli.guarded_start_with_evidence(&request, &context, &observation);
+        worker.join().unwrap();
+        fs::remove_file(socket).unwrap();
+        let failure = result.expect_err("exact unsupported start is a confirmed refusal");
+        assert_eq!(failure.error.code, ErrorCode::Unsupported);
+        assert_eq!(failure.submission, ports::NativeSubmission::NotSubmitted);
+    }
+
+    #[test]
+    fn process_hint_ordinary_run_keeps_structured_start_error_behavior() {
+        for code in [
+            "agent_pane_busy",
+            "agent_name_taken",
+            "agent_process_hint_unsupported",
+        ] {
+            let (socket, cli, worker) = fixture(move |stream, wire| {
+                writeln!(
+                    stream,
+                    "{}",
+                    json!({"id":wire["id"],"error":{"code":code,"message":"confirmed refusal"}})
+                )
+                .unwrap();
+            });
+            let budget = pane_agent_context().budget;
+            let result = cli.run(
+                &[
+                    "agent",
+                    "start",
+                    "worker",
+                    "--kind",
+                    "codex",
+                    "--pane",
+                    "w4:p1",
+                    "--timeout",
+                    "10000",
+                    "--",
+                ],
+                &budget,
+                Duration::from_secs(1),
+            );
+            worker.join().unwrap();
+            fs::remove_file(socket).unwrap();
+            assert_eq!(
+                result
+                    .expect_err("ordinary run must retain mapped structured errors")
+                    .code,
+                if code == "agent_process_hint_unsupported" {
+                    ErrorCode::Unsupported
+                } else {
+                    ErrorCode::TargetUnsafe
+                }
+            );
+        }
+    }
     type Exchange = Box<dyn FnOnce(&mut UnixStream, Value) + Send>;
     /// Serves one ping+operation exchange per entry of `responses`.
     fn serve_sequence(responses: Vec<Exchange>) -> (PathBuf, NativeCli, thread::JoinHandle<()>) {
         let socket = std::env::temp_dir().join(format!("ht-start-{}", uuid::Uuid::new_v4()));
+        // Reserve one byte for the Unix address terminator.
+        assert!(socket.as_os_str().as_encoded_bytes().len() < 104);
         let listener = UnixListener::bind(&socket).unwrap();
         let worker = thread::spawn(move || {
             for response in responses {

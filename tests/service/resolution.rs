@@ -2735,6 +2735,7 @@ impl HostPort for LaunchHost {
         diagnostic.occupancy = StructuralOccupancy::Occupied;
         Ok(NativeLaunchOutcome::ObservedStartup {
             correlation: CorrelatedStartup {
+                process_hint: false,
                 seat: request.seat.clone(),
                 agent_name: request.agent_name(),
                 harness: request.harness,

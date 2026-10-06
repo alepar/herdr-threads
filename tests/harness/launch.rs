@@ -99,6 +99,7 @@ impl HostPort for FakeHost {
                         .correlation_override
                         .clone()
                         .unwrap_or(CorrelatedStartup {
+                            process_hint: false,
                             seat: request.seat.clone(),
                             agent_name: request.agent_name(),
                             harness: request.harness,
@@ -234,6 +235,7 @@ fn request(harness: Harness, argv: &[&str]) -> ManagedLaunchRequest {
 
 fn correlation_for_empty_args(harness: Harness) -> CorrelatedStartup {
     let request = NativeLaunchRequest {
+        process_hint: false,
         seat: SeatId::new("seat_1"),
         target: HostTargetId::new("pane_1"),
         harness,
@@ -253,6 +255,7 @@ fn correlation_for_empty_args(harness: Harness) -> CorrelatedStartup {
         name_hint: None,
     };
     CorrelatedStartup {
+        process_hint: false,
         seat: request.seat.clone(),
         agent_name: request.agent_name(),
         harness: request.harness,
@@ -1366,4 +1369,173 @@ fn handoff_preparation_runs_all_guards_without_native_submission() {
         NativeLaunchOutcome::ObservedStartup { .. }
     ));
     assert_eq!(host.submitted.lock().unwrap().len(), 1);
+}
+
+// Synthetic registration selects a policy through the same generic accessor as builtins.
+pub(crate) fn process_hint_registry(required: bool) -> &'static crate::harness::registry::Registry {
+    use crate::harness::registry::{Registration, Registry};
+    let adapter = Box::leak(Box::new(HintAdapter(required)));
+    Box::leak(Box::new(
+        Registry::new(Box::leak(
+            vec![Registration::new(adapter)].into_boxed_slice(),
+        ))
+        .unwrap(),
+    ))
+}
+struct HintAdapter(bool);
+impl crate::harness::adapter::HarnessAdapter for HintAdapter {
+    type Admission = String;
+    fn metadata(&self) -> &'static crate::harness::adapter::AdapterMetadata {
+        use crate::harness::adapter::*;
+        static META: AdapterMetadata = AdapterMetadata {
+            id: "hinted",
+            display_label: "Hint fixture",
+            context_spelling: "Hinted",
+            context_aliases: &[],
+            executable: ExecutableLookup::Path("codex"),
+            host_kinds: &["codex"],
+            setup_scopes: &[SetupScopeKind::ConfigRoot],
+            budget: EventBudgetPolicy {
+                lifecycle_ms: 1000,
+                observer_ms: 1000,
+            },
+            runtime_sources: &["installed_probe"],
+        };
+        &META
+    }
+    fn contracts(&self) -> &'static [crate::harness::adapter::ContractDescriptor] {
+        &[]
+    }
+    fn observe_install(
+        &self,
+        e: &crate::harness::adapter::InstallEnvironment,
+        b: &CallBudget,
+    ) -> crate::harness::adapter::InstallObservation {
+        crate::harness::claude::ClaudeAdapter.observe_install(e, b)
+    }
+    fn admit(
+        &self,
+        r: &crate::harness::adapter::AdmissionRequest,
+        b: &CallBudget,
+    ) -> crate::harness::adapter::AdmissionDecision<String> {
+        crate::harness::claude::ClaudeAdapter.admit(r, b)
+    }
+    fn version_ladder(
+        &self,
+        r: &crate::harness::adapter::RuntimeIdentity,
+    ) -> crate::harness::state::Ladder {
+        crate::harness::claude::ClaudeAdapter.version_ladder(r)
+    }
+    fn classify(
+        &self,
+        r: &crate::harness::adapter::HookInput,
+    ) -> crate::harness::adapter::ContractObservation {
+        crate::harness::claude::ClaudeAdapter.classify(r)
+    }
+    fn decode(
+        &self,
+        a: &String,
+        r: &crate::harness::adapter::HookInput,
+    ) -> Result<crate::harness::adapter::DecodedEvent, crate::harness::adapter::DecodeFailure> {
+        crate::harness::claude::ClaudeAdapter.decode(a, r)
+    }
+    fn encode(
+        &self,
+        a: &String,
+        r: &crate::harness::adapter::DecodedEvent,
+        o: &crate::harness::adapter::NeutralOffer,
+    ) -> Result<crate::harness::adapter::EncodedOutput, crate::harness::adapter::EncodeFailure>
+    {
+        crate::harness::claude::ClaudeAdapter.encode(a, r, o)
+    }
+    fn attribute_runtime(
+        &self,
+        r: &crate::harness::adapter::HookInput,
+        b: &CallBudget,
+    ) -> crate::harness::adapter::RuntimeAttribution {
+        crate::harness::claude::ClaudeAdapter.attribute_runtime(r, b)
+    }
+    fn setup(
+        &self,
+        r: &crate::harness::adapter::SetupRequest,
+        b: &CallBudget,
+    ) -> Result<crate::harness::adapter::SetupOutcome, crate::harness::adapter::SetupFailure> {
+        crate::harness::claude::ClaudeAdapter.setup(r, b)
+    }
+    fn status(
+        &self,
+        r: &crate::harness::adapter::StatusRequest,
+        b: &CallBudget,
+    ) -> crate::harness::adapter::SetupStatus {
+        crate::harness::claude::ClaudeAdapter.status(r, b)
+    }
+    fn unsetup(
+        &self,
+        r: &crate::harness::adapter::UnsetupRequest,
+        b: &CallBudget,
+    ) -> Result<crate::harness::adapter::RemovalOutcome, crate::harness::adapter::SetupFailure>
+    {
+        crate::harness::claude::ClaudeAdapter.unsetup(r, b)
+    }
+    fn launch_policy(&self) -> Option<&dyn crate::harness::adapter::LaunchPolicy> {
+        if self.0 {
+            Some(&RequiredHintPolicy)
+        } else {
+            Some(&DefaultHintPolicy)
+        }
+    }
+}
+struct DefaultHintPolicy;
+struct RequiredHintPolicy;
+macro_rules! hint_policy {
+ ($ty:ty $(,$hint:item)?) => {
+ impl crate::harness::adapter::LaunchPolicy for $ty {
+    $($hint)?
+    fn resolve_scope(&self,r:&crate::harness::adapter::LaunchRequest,_:&dyn CodexShellProbe,_:&CallBudget)->Result<crate::harness::adapter::LaunchScope,ApiError> { Ok(crate::harness::adapter::LaunchScope {setup:crate::harness::adapter::ResolvedSetupScope::ConfigRoot(r.environment.cwd.clone()),working_directory:r.environment.cwd.clone(),config_source:"fixture"}) }
+    fn validate_native_argv(&self,_:&[String])->Result<(),ApiError>{Ok(())}
+    fn compose_argv(&self,caller:Vec<String>,owned:Vec<String>,_:bool)->Result<Vec<String>,ApiError>{Ok([owned,caller].concat())}
+    fn prepare_launch(&self,_:&crate::harness::adapter::LaunchRequest,_:&crate::harness::adapter::LaunchScope,_:&crate::harness::registry::AdmittedHandle,_:&crate::harness::adapter::LocalSetupStatus,_:&dyn CodexShellProbe,_:&CallBudget)->Result<crate::harness::adapter::LaunchPreparation,ApiError>{panic!("generic preparation uses supplied owned hook")}
+    fn configuration_fingerprint(&self,_:&crate::harness::adapter::LaunchRequest,_:&crate::harness::adapter::LaunchScope)->Result<String,ApiError>{Ok("hint-fixture".into())}
+    fn expected_host_kinds(&self)-> &'static [&'static str]{ &["codex"] }
+ }
+ };
+}
+hint_policy!(DefaultHintPolicy);
+hint_policy!(
+    RequiredHintPolicy,
+    fn requires_process_hint(&self) -> bool {
+        true
+    }
+);
+#[test]
+fn process_hint_policy_reaches_generic_native_request() {
+    for required in [false, true] {
+        for supplied in [false, true] {
+            let registry = process_hint_registry(required);
+            let (host, seats, hooks, clock, budget) = fixture();
+            let harness = Harness::Agent(registry.agent("hinted").unwrap());
+            let mut managed = request(harness, &["space arg", "apostrophe's arg"]);
+            managed.name_hint = Some("hint-worker".into());
+            let prepared = prepare_managed_with_registry(
+                registry,
+                &host,
+                &seats,
+                &hooks,
+                &clock,
+                managed,
+                &budget,
+                supplied.then(|| vec!["space arg".into(), "apostrophe's arg".into()]),
+            )
+            .unwrap();
+            assert_eq!(
+                prepared.request.process_hint, required,
+                "selected policy mode was lost"
+            );
+            assert_eq!(prepared.request.argv, ["space arg", "apostrophe's arg"]);
+            assert_eq!(prepared.request.agent_name(), "hint-worker");
+            assert_eq!(prepared.request.target.as_str(), "pane_1");
+            assert_eq!(prepared.request.configured_hook.fingerprint, "sha256:abc");
+            assert_eq!(prepared.request.expected_incarnation, "inc_1");
+        }
+    }
 }

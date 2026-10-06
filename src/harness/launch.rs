@@ -378,6 +378,7 @@ pub fn prepare_managed_with_registry(
         ));
     }
     let native_request = NativeLaunchRequest {
+        process_hint: policy.requires_process_hint(),
         seat,
         target: request.target,
         harness: request.harness,
@@ -483,7 +484,7 @@ pub fn submit_prepared_with_evidence(
 
 #[cfg(test)]
 #[path = "../../tests/harness/launch.rs"]
-mod tests;
+pub(crate) mod tests;
 
 /// Resolve only the adapter-declared config variable, retaining the existing pane-shell fallback.
 pub(crate) fn native_scope(
