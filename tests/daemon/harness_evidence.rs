@@ -1892,3 +1892,803 @@ fn absorption_nonholding_policy_bounds_and_exact_descriptor_membership() {
             .is_empty()
     );
 }
+
+// A delegating StorePort pauses before the real SQLite transaction, never models
+// qualification or milestones itself. Unused port methods also delegate unchanged.
+mod publication_order {
+    use super::*;
+    use crate::ports::*;
+    use crate::protocol::{
+        authority::*, commands::*, ids::*, pagination::*, results::*, service::*, time::*,
+    };
+
+    use std::sync::{atomic::AtomicBool, mpsc};
+    struct PausedStore {
+        inner: Arc<SqliteStore>,
+        once: AtomicBool,
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    impl StorePort for PausedStore {
+        fn clock(&self) -> &dyn Clock {
+            self.inner.clock()
+        }
+        fn archival_pass(
+            &self,
+            runtime: &crate::store::archival::Runtime,
+            hints: &[crate::archival_legacy::Hint],
+            budget: &CallBudget,
+        ) -> Result<crate::store::archival::Progress, ApiError> {
+            self.inner.archival_pass(runtime, hints, budget)
+        }
+        fn archival_next(
+            &self,
+            runtime: &crate::store::archival::Runtime,
+            budget: &CallBudget,
+        ) -> Result<crate::store::archival::ObservationWork, ApiError> {
+            self.inner.archival_next(runtime, budget)
+        }
+        fn archival_sample(
+            &self,
+            runtime: &crate::store::archival::Runtime,
+            ticket: &crate::store::archival::ObservationTicket,
+            sample: Option<&ComposerObservation>,
+            budget: &CallBudget,
+        ) -> Result<bool, ApiError> {
+            self.inner.archival_sample(runtime, ticket, sample, budget)
+        }
+        fn audit_service_disconnect(
+            &self,
+            boot: &str,
+            generation: u64,
+            peer: crate::protocol::authority::PeerIdentity,
+            budget: &CallBudget,
+        ) -> Result<(), ApiError> {
+            self.inner
+                .audit_service_disconnect(boot, generation, peer, budget)
+        }
+        fn service_operation(
+            &self,
+            operation: ServiceOperation,
+            connection: &ServiceConnectionAuthority,
+            gate: &dyn ServiceAuthorityGate,
+            budget: &CallBudget,
+            admission: Option<&crate::service::fair_writer::FairWriter>,
+        ) -> Result<ServiceResult, ApiError> {
+            self.inner
+                .service_operation(operation, connection, gate, budget, admission)
+        }
+        fn query(
+            &self,
+            command: &Command,
+            read: &ReadContext,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.inner.query(command, read, budget)
+        }
+        fn mutate(
+            &self,
+            command: PermitMutation,
+            permit: MutationPermit,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.inner.mutate(command, permit, budget)
+        }
+        fn prepare_send_step(
+            &self,
+            request: &SendMessage,
+            admission: DurableWorkAdmission,
+            budget: &CallBudget,
+        ) -> Result<SendPreparationProgress, ApiError> {
+            self.inner.prepare_send_step(request, admission, budget)
+        }
+        fn abandon_send_preparation(
+            &self,
+            expected_preparation_id: &str,
+            budget: &CallBudget,
+        ) -> Result<(), ApiError> {
+            self.inner
+                .abandon_send_preparation(expected_preparation_id, budget)
+        }
+        fn resolve_seat(
+            &self,
+            request: ResolveSeat,
+            attempt: OrdinaryResolutionAttempt,
+            budget: &CallBudget,
+        ) -> Result<OrdinaryResolutionOutcome, ApiError> {
+            self.inner.resolve_seat(request, attempt, budget)
+        }
+        fn check_resolved_target(
+            &self,
+            check: ResolvedTargetCheck,
+            budget: &CallBudget,
+        ) -> Result<(), ApiError> {
+            self.inner.check_resolved_target(check, budget)
+        }
+        fn replay_operator(
+            &self,
+            command: OperatorCommand,
+            actor: OperatorActor,
+            budget: &CallBudget,
+        ) -> Result<Option<CommandResult>, ApiError> {
+            self.inner.replay_operator(command, actor, budget)
+        }
+        fn mutate_operator(
+            &self,
+            command: OperatorRequest,
+            actor: OperatorActor,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.inner.mutate_operator(command, actor, budget)
+        }
+        fn replay_continuity(
+            &self,
+            command: ContinuityCheckIn,
+            budget: &CallBudget,
+        ) -> Result<Option<CommandResult>, ApiError> {
+            self.inner.replay_continuity(command, budget)
+        }
+        fn decide_continuity(
+            &self,
+            request: ContinuityRequest,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.inner.decide_continuity(request, budget)
+        }
+        fn record_managed_launch(
+            &self,
+            command: crate::protocol::commands::RecordManagedLaunch,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.inner.record_managed_launch(command, budget)
+        }
+        fn issue_cooperative_permit(
+            &self,
+            request: CooperativePermitRequest,
+            budget: &CallBudget,
+        ) -> Result<MutationPermit, ApiError> {
+            self.inner.issue_cooperative_permit(request, budget)
+        }
+        fn register_available(
+            &self,
+            request: RegisterAvailableRequest,
+            permit: MutationPermit,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.inner.register_available(request, permit, budget)
+        }
+        fn persisted_host_epoch(
+            &self,
+            _instance: &str,
+            _budget: &CallBudget,
+        ) -> Result<u64, ApiError> {
+            self.inner.persisted_host_epoch(_instance, _budget)
+        }
+        fn begin_host_observation(
+            &self,
+            instance: &str,
+            budget: &CallBudget,
+        ) -> Result<HostObservationAdmission, ApiError> {
+            self.inner.begin_host_observation(instance, budget)
+        }
+        fn publish_current_target_observation(
+            &self,
+            admission: &HostObservationAdmission,
+            observation: &HostObservation,
+            budget: &CallBudget,
+        ) -> Result<bool, ApiError> {
+            self.inner
+                .publish_current_target_observation(admission, observation, budget)
+        }
+        fn invalidate_host_observation(
+            &self,
+            admission: &HostObservationAdmission,
+            reason: HostInvalidationReason,
+            budget: &CallBudget,
+        ) -> Result<Option<HostInvalidationFence>, ApiError> {
+            self.inner
+                .invalidate_host_observation(admission, reason, budget)
+        }
+        fn mark_unresolved_from_invalidation(
+            &self,
+            transition: GuardedInvalidationTransition,
+            budget: &CallBudget,
+        ) -> Result<ReconciliationOutcome, ApiError> {
+            self.inner
+                .mark_unresolved_from_invalidation(transition, budget)
+        }
+        fn saved_seats_page_for_invalidation(
+            &self,
+            fence: &HostInvalidationFence,
+            after_ordinal: u64,
+            high_water_ordinal: Option<u64>,
+            limit: u8,
+            budget: &CallBudget,
+        ) -> Result<InvalidationSeatPage, ApiError> {
+            self.inner.saved_seats_page_for_invalidation(
+                fence,
+                after_ordinal,
+                high_water_ordinal,
+                limit,
+                budget,
+            )
+        }
+        fn begin_snapshot_stage(
+            &self,
+            header: SnapshotHeader,
+            budget: &CallBudget,
+        ) -> Result<SnapshotStage, ApiError> {
+            self.inner.begin_snapshot_stage(header, budget)
+        }
+        fn stage_snapshot_targets(
+            &self,
+            stage: &SnapshotGenerationId,
+            offset: u64,
+            targets: &[HostObservation],
+            admission: DurableWorkAdmission,
+            budget: &CallBudget,
+        ) -> Result<SnapshotStageProgress, ApiError> {
+            self.inner
+                .stage_snapshot_targets(stage, offset, targets, admission, budget)
+        }
+        fn seal_snapshot_stage(
+            &self,
+            stage: &SnapshotGenerationId,
+            budget: &CallBudget,
+        ) -> Result<SnapshotStage, ApiError> {
+            self.inner.seal_snapshot_stage(stage, budget)
+        }
+        fn publish_snapshot_stage(
+            &self,
+            stage: &SnapshotGenerationId,
+            budget: &CallBudget,
+        ) -> Result<PublishedSnapshot, ApiError> {
+            self.inner.publish_snapshot_stage(stage, budget)
+        }
+        fn discard_snapshot_stage(
+            &self,
+            stage: &SnapshotGenerationId,
+            admission: DurableWorkAdmission,
+            budget: &CallBudget,
+        ) -> Result<SnapshotCleanupProgress, ApiError> {
+            self.inner.discard_snapshot_stage(stage, admission, budget)
+        }
+        fn prune_retention(&self, budget: &CallBudget) -> Result<PruneProgress, ApiError> {
+            self.inner.prune_retention(budget)
+        }
+        fn record_harness_evidence_v2(
+            &self,
+            record: &crate::store::harness_evidence::EvidenceRecordV2<'_>,
+            budget: &CallBudget,
+        ) -> Result<crate::store::harness_evidence::RecordedV2, ApiError> {
+            if record.event == "SessionStart" && self.once.swap(false, Ordering::SeqCst) {
+                self.entered.send(()).unwrap();
+                self.release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(3))
+                    .map_err(|_| ApiError::invalid_request("test pause expired"))?;
+            }
+            self.inner.record_harness_evidence_v2(record, budget)
+        }
+        fn harness_evidence_v2(
+            &self,
+            harness: &str,
+            identity: &str,
+            domain: &str,
+            origin: crate::harness::evidence::EvidenceOrigin,
+            contract: &str,
+            budget: &CallBudget,
+        ) -> Result<Option<crate::store::harness_evidence::EvidenceRowV2>, ApiError> {
+            self.inner
+                .harness_evidence_v2(harness, identity, domain, origin, contract, budget)
+        }
+        fn harness_evidence_v2_all(
+            &self,
+            harness: &str,
+            since_ms: u64,
+            budget: &CallBudget,
+        ) -> Result<Vec<crate::store::harness_evidence::EvidenceRowV2>, ApiError> {
+            self.inner
+                .harness_evidence_v2_all(harness, since_ms, budget)
+        }
+        fn harness_evidence_v2_since(
+            &self,
+            since_ms: u64,
+            budget: &CallBudget,
+        ) -> Result<Vec<crate::store::harness_evidence::EvidenceRowV2>, ApiError> {
+            self.inner.harness_evidence_v2_since(since_ms, budget)
+        }
+        fn record_unattributed_v2(
+            &self,
+            harness: &str,
+            domain: &str,
+            origin: crate::harness::evidence::EvidenceOrigin,
+            reason: &str,
+            budget: &CallBudget,
+        ) -> Result<(), ApiError> {
+            self.inner
+                .record_unattributed_v2(harness, domain, origin, reason, budget)
+        }
+        fn last_unattributed_v2(
+            &self,
+            harness: &str,
+            domain: &str,
+            origin: crate::harness::evidence::EvidenceOrigin,
+            budget: &CallBudget,
+        ) -> Result<Option<(String, u64)>, ApiError> {
+            self.inner
+                .last_unattributed_v2(harness, domain, origin, budget)
+        }
+        fn record_harness_evidence(
+            &self,
+            record: &crate::store::harness_evidence::EvidenceRecord<'_>,
+            budget: &CallBudget,
+        ) -> Result<crate::store::harness_evidence::Recorded, ApiError> {
+            self.inner.record_harness_evidence(record, budget)
+        }
+        fn harness_evidence(
+            &self,
+            harness: &str,
+            version: &str,
+            contract_id: &str,
+            budget: &CallBudget,
+        ) -> Result<Option<crate::store::harness_evidence::EvidenceRow>, ApiError> {
+            self.inner
+                .harness_evidence(harness, version, contract_id, budget)
+        }
+        fn harness_evidence_since(
+            &self,
+            since_ms: u64,
+            budget: &CallBudget,
+        ) -> Result<Vec<crate::store::harness_evidence::EvidenceRow>, ApiError> {
+            self.inner.harness_evidence_since(since_ms, budget)
+        }
+        fn harness_evidence_all(
+            &self,
+            harness: &str,
+            budget: &CallBudget,
+        ) -> Result<Vec<crate::store::harness_evidence::EvidenceRow>, ApiError> {
+            self.inner.harness_evidence_all(harness, budget)
+        }
+        fn record_contract_diagnostic(
+            &self,
+            record: &crate::store::harness_evidence::DiagnosticRecord<'_>,
+            budget: &CallBudget,
+        ) -> Result<(), ApiError> {
+            self.inner.record_contract_diagnostic(record, budget)
+        }
+        fn contract_diagnostics(
+            &self,
+            harness: &str,
+            budget: &CallBudget,
+        ) -> Result<Vec<crate::store::harness_evidence::DiagnosticRow>, ApiError> {
+            self.inner.contract_diagnostics(harness, budget)
+        }
+        fn record_unattributed(
+            &self,
+            harness: &str,
+            reason: &str,
+            budget: &CallBudget,
+        ) -> Result<(), ApiError> {
+            self.inner.record_unattributed(harness, reason, budget)
+        }
+        fn last_unattributed(
+            &self,
+            harness: &str,
+            budget: &CallBudget,
+        ) -> Result<Option<(String, u64)>, ApiError> {
+            self.inner.last_unattributed(harness, budget)
+        }
+        fn saved_seats_page(
+            &self,
+            published: &SnapshotGenerationId,
+            after_ordinal: u64,
+            high_water_ordinal: Option<u64>,
+            limit: u8,
+            budget: &CallBudget,
+        ) -> Result<SnapshotSeatPage, ApiError> {
+            self.inner
+                .saved_seats_page(published, after_ordinal, high_water_ordinal, limit, budget)
+        }
+        fn apply_reconciliation_transition(
+            &self,
+            transition: GuardedSeatTransition,
+            budget: &CallBudget,
+        ) -> Result<ReconciliationOutcome, ApiError> {
+            self.inner
+                .apply_reconciliation_transition(transition, budget)
+        }
+        fn record_reconciliation_pass(
+            &self,
+            published: &PublishedSnapshot,
+            budget: &CallBudget,
+        ) -> Result<bool, ApiError> {
+            self.inner.record_reconciliation_pass(published, budget)
+        }
+        fn due_obligations(
+            &self,
+            request: DueScanRequest,
+            budget: &CallBudget,
+        ) -> Result<DueScanProgress, ApiError> {
+            self.inner.due_obligations(request, budget)
+        }
+        fn begin_retirement(
+            &self,
+            seat: SeatId,
+            proof: ClosureEvidence,
+            budget: &CallBudget,
+        ) -> Result<RetirementJob, ApiError> {
+            self.inner.begin_retirement(seat, proof, budget)
+        }
+        fn advance_retirement(
+            &self,
+            job: RetirementJobId,
+            admission: WorkAdmission,
+            budget: &CallBudget,
+        ) -> Result<RetirementProgress, ApiError> {
+            self.inner.advance_retirement(job, admission, budget)
+        }
+        fn pending_retirement_jobs(
+            &self,
+            page: PageRequest,
+            budget: &CallBudget,
+        ) -> Result<Page<RetirementStatus>, ApiError> {
+            self.inner.pending_retirement_jobs(page, budget)
+        }
+        fn binding_evidence_startup(&self) -> Option<BindingEvidenceStartup> {
+            self.inner.binding_evidence_startup()
+        }
+        fn binding_evidence_current(
+            &self,
+            budget: &CallBudget,
+        ) -> Result<Option<BindingEvidenceStartup>, ApiError> {
+            self.inner.binding_evidence_current(budget)
+        }
+        fn unresolved_seat_summary(
+            &self,
+            budget: &CallBudget,
+        ) -> Result<UnresolvedSeatSummary, ApiError> {
+            self.inner.unresolved_seat_summary(budget)
+        }
+        fn retirement_summary(&self, _budget: &CallBudget) -> Result<RetirementSummary, ApiError> {
+            self.inner.retirement_summary(_budget)
+        }
+        fn summary(
+            &self,
+            _request: &crate::protocol::summary::SummaryRequest,
+            _budget: &CallBudget,
+        ) -> Result<crate::protocol::summary::SummaryOutcome, ApiError> {
+            self.inner.summary(_request, _budget)
+        }
+        fn summary_job(
+            &self,
+            _request: &crate::protocol::summary::SummaryJobRequest,
+            _budget: &CallBudget,
+        ) -> Result<crate::protocol::summary::SummaryJobOutcome, ApiError> {
+            self.inner.summary_job(_request, _budget)
+        }
+        fn summary_submit(
+            &self,
+            _request: &crate::protocol::summary::SummarySubmitRequest,
+            _budget: &CallBudget,
+        ) -> Result<crate::protocol::summary::SubmitOutcome, ApiError> {
+            self.inner.summary_submit(_request, _budget)
+        }
+        fn wake_candidates(
+            &self,
+            page: PageRequest,
+            budget: &CallBudget,
+        ) -> Result<Page<WakeCandidate>, ApiError> {
+            self.inner.wake_candidates(page, budget)
+        }
+        fn pending_work(
+            &self,
+            page: PageRequest,
+            budget: &CallBudget,
+        ) -> Result<Page<WorkCandidate>, ApiError> {
+            self.inner.pending_work(page, budget)
+        }
+        fn advance_work(
+            &self,
+            job: &str,
+            admission: DurableWorkAdmission,
+            budget: &CallBudget,
+        ) -> Result<WorkProgress, ApiError> {
+            self.inner.advance_work(job, admission, budget)
+        }
+        fn wake_batch_seats(
+            &self,
+            _after: Option<&SeatId>,
+            _limit: u16,
+            _budget: &CallBudget,
+        ) -> Result<Vec<SeatId>, ApiError> {
+            self.inner.wake_batch_seats(_after, _limit, _budget)
+        }
+        fn clear_wake_batch_if_empty(
+            &self,
+            _seat: &SeatId,
+            _budget: &CallBudget,
+        ) -> Result<bool, ApiError> {
+            self.inner.clear_wake_batch_if_empty(_seat, _budget)
+        }
+        fn wake_batch_window(
+            &self,
+            _candidate: &WakeCandidate,
+            _budget: &CallBudget,
+        ) -> Result<Option<(UtcMillis, u64)>, ApiError> {
+            self.inner.wake_batch_window(_candidate, _budget)
+        }
+        fn reserve_wake(
+            &self,
+            candidate: &WakeCandidate,
+            budget: &CallBudget,
+        ) -> Result<Option<WakeReservation>, ApiError> {
+            self.inner.reserve_wake(candidate, budget)
+        }
+        fn wake_recovery_candidates(
+            &self,
+            page: PageRequest,
+            budget: &CallBudget,
+        ) -> Result<Page<WakeRecoveryCandidate>, ApiError> {
+            self.inner.wake_recovery_candidates(page, budget)
+        }
+        fn recover_wake_reservation(
+            &self,
+            request: WakeRecoveryRequest,
+            budget: &CallBudget,
+        ) -> Result<WakeRecoveryOutcome, ApiError> {
+            self.inner.recover_wake_reservation(request, budget)
+        }
+        fn validate_wake_reservation(
+            &self,
+            reservation: &WakeReservation,
+            budget: &CallBudget,
+        ) -> Result<bool, ApiError> {
+            self.inner.validate_wake_reservation(reservation, budget)
+        }
+        fn complete_wake(
+            &self,
+            attempt: WakeAttemptId,
+            outcome: WakeOutcome,
+            refused_restore: Option<&PriorLadder>,
+            budget: &CallBudget,
+        ) -> Result<bool, ApiError> {
+            self.inner
+                .complete_wake(attempt, outcome, refused_restore, budget)
+        }
+        fn poke_candidates(
+            &self,
+            _limit: u16,
+            _budget: &CallBudget,
+        ) -> Result<Vec<PokeDue>, ApiError> {
+            self.inner.poke_candidates(_limit, _budget)
+        }
+        fn reserve_poke(
+            &self,
+            _due: &PokeDue,
+            _budget: &CallBudget,
+        ) -> Result<Option<PokeReservation>, ApiError> {
+            self.inner.reserve_poke(_due, _budget)
+        }
+        fn complete_poke(
+            &self,
+            _attempt: WakeAttemptId,
+            _outcome: WakeOutcome,
+            _receipts: &[PokeReceipt],
+            _budget: &CallBudget,
+        ) -> Result<(), ApiError> {
+            self.inner
+                .complete_poke(_attempt, _outcome, _receipts, _budget)
+        }
+        fn poke_for_wake(
+            &self,
+            _seat: &SeatId,
+            _budget: &CallBudget,
+        ) -> Result<Option<PokeDue>, ApiError> {
+            self.inner.poke_for_wake(_seat, _budget)
+        }
+    }
+
+    struct UnlockedCallbacks {
+        pending: Arc<Mutex<PendingSessionStarts>>,
+        lookups: AtomicI64,
+        triggers: AtomicI64,
+    }
+    impl RichManifestSource for UnlockedCallbacks {
+        fn contains(
+            &self,
+            _: &str,
+            _: &crate::harness::runtime::RuntimeIdentity,
+            _: &str,
+            _: crate::harness::evidence::EvidenceOrigin,
+            _: &str,
+        ) -> bool {
+            assert!(
+                self.pending.try_lock().is_ok(),
+                "manifest lookup held publication fence"
+            );
+            self.lookups.fetch_add(1, Ordering::SeqCst);
+            false
+        }
+    }
+    impl ManifestTrigger for UnlockedCallbacks {
+        fn ensure_manifest(&self, _: &str, _: FetchReason) {
+            assert!(
+                self.pending.try_lock().is_ok(),
+                "manifest trigger held publication fence"
+            );
+            self.triggers.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    #[test]
+    fn committed_held_manifest_callbacks_unlock_even_when_direct_write_fails() {
+        let fx = Fx::new("publication-callbacks");
+        let callbacks = Arc::new(UnlockedCallbacks {
+            pending: fx.recorder.pending.clone(),
+            lookups: AtomicI64::new(0),
+            triggers: AtomicI64::new(0),
+        });
+        let recorder = HarnessEvidenceRecorderV2::new(
+            fx.store.clone(),
+            Some(callbacks.clone()),
+            fx.clock.clone(),
+        )
+        .with_legacy_pending(&fx.recorder)
+        .with_rich_manifest_source(callbacks.clone());
+        recorder
+            .record(&v2_note(false, "SessionStart"), &budget())
+            .unwrap();
+        let db = rusqlite::Connection::open(fx._iso.state_root().join("store.db")).unwrap();
+        db.execute_batch("CREATE TRIGGER reject_tool BEFORE UPDATE ON harness_contract_evidence_v2 WHEN NEW.milestones_json LIKE '%tool%' BEGIN SELECT RAISE(ABORT,'injected direct failure'); END;").unwrap();
+        assert!(
+            recorder
+                .record(&v2_note(true, "PreToolUse"), &budget())
+                .is_err()
+        );
+        assert_eq!(callbacks.lookups.load(Ordering::SeqCst), 1);
+        assert_eq!(callbacks.triggers.load(Ordering::SeqCst), 1);
+        let rows = fx
+            .store
+            .harness_evidence_v2_all("claude", 0, &budget())
+            .unwrap();
+        assert!(rows[0].milestones.contains_key("lifecycle"));
+        assert!(!rows[0].milestones.contains_key("tool"));
+        db.execute_batch("DROP TRIGGER reject_tool;").unwrap();
+        assert!(
+            recorder
+                .record(&v2_note(true, "PreToolUse"), &budget())
+                .unwrap()
+        );
+    }
+    #[test]
+    fn failed_held_publication_then_completed_suppression_cannot_resurrect_hold() {
+        let fx = Fx::new("publication-restore");
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let paused = Arc::new(PausedStore {
+            inner: fx.store.clone(),
+            once: AtomicBool::new(true),
+            entered: entered_tx,
+            release: Mutex::new(release_rx),
+        });
+        let recorder = Arc::new(
+            HarnessEvidenceRecorderV2::new(paused, None, fx.clock.clone())
+                .with_legacy_pending(&fx.recorder),
+        );
+        let mut initial = codex_note(false, "SessionStart", "failure");
+        initial.unavailable_reason = Some("runtime_metadata_missing".into());
+        recorder.record(&initial, &budget()).unwrap();
+        let db = rusqlite::Connection::open(fx._iso.state_root().join("store.db")).unwrap();
+        db.execute_batch("CREATE TRIGGER reject_v2 BEFORE INSERT ON harness_contract_evidence_v2 BEGIN SELECT RAISE(ABORT,'injected held failure'); END;").unwrap();
+        let note = codex_note(true, "PreToolUse", "failure");
+        let resumed = codex_note(false, "SessionStart", "failure");
+        let (attempt_tx, attempt_rx) = mpsc::channel();
+        let (entered, attempted, published, suppressed) = std::thread::scope(|scope| {
+            let publisher = scope.spawn(|| recorder.record(&note, &budget()));
+            let entered = entered_rx.recv_timeout(Duration::from_secs(2));
+            let suppressor = scope.spawn(|| {
+                attempt_tx.send(()).unwrap();
+                recorder.record(&resumed, &budget())
+            });
+            let attempted = attempt_rx.recv_timeout(Duration::from_secs(2));
+            let _ = release_tx.send(());
+            (entered, attempted, publisher.join(), suppressor.join())
+        });
+        entered.unwrap();
+        attempted.unwrap();
+        assert!(published.unwrap().is_err());
+        suppressed.unwrap().unwrap();
+        assert!(
+            recorder.pending.lock().unwrap().1.0.is_empty(),
+            "suppression must remove a restored hold"
+        );
+        db.execute_batch("DROP TRIGGER reject_v2;").unwrap();
+        assert!(!recorder.record(&note, &budget()).unwrap());
+        recorder
+            .record(&codex_note(true, "SessionStart", "failure"), &budget())
+            .unwrap();
+        let rows = fx
+            .store
+            .harness_evidence_v2_all("codex", 0, &budget())
+            .unwrap();
+        assert!(!rows[0].milestones.contains_key("lifecycle"));
+        assert!(rows[0].milestones.contains_key("tool"));
+    }
+
+    #[test]
+    fn completed_resumed_suppression_prevents_held_and_direct_lifecycle_credit() {
+        let mut stale_routes = Vec::new();
+        for held in [true, false] {
+            let fx = Fx::new("publication-order");
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let paused = Arc::new(PausedStore {
+                inner: fx.store.clone(),
+                once: AtomicBool::new(true),
+                entered: entered_tx,
+                release: Mutex::new(release_rx),
+            });
+            let recorder = Arc::new(
+                HarnessEvidenceRecorderV2::new(paused, None, fx.clock.clone())
+                    .with_legacy_pending(&fx.recorder),
+            );
+            let mut initial = codex_note(false, "SessionStart", "racing");
+            initial.unavailable_reason = Some("runtime_metadata_missing".into());
+            if held {
+                recorder.record(&initial, &budget()).unwrap();
+            }
+            let note = codex_note(
+                true,
+                if held { "PreToolUse" } else { "SessionStart" },
+                "racing",
+            );
+            let resumed = codex_note(false, "SessionStart", "racing");
+            let (done_tx, done_rx) = mpsc::channel();
+            let (attempt_tx, attempt_rx) = mpsc::channel();
+            // No assertion/panic occurs while workers can be waiting for a release.
+            let (entered, attempted, completed_first, published, suppressed) =
+                std::thread::scope(|scope| {
+                    let publisher = scope.spawn(|| recorder.record(&note, &budget()));
+                    let entered = entered_rx.recv_timeout(Duration::from_secs(2));
+                    let suppressor = scope.spawn(|| {
+                        attempt_tx.send(()).unwrap();
+                        let result = recorder.record(&resumed, &budget());
+                        done_tx.send(result.is_ok()).unwrap();
+                        result
+                    });
+                    let attempted = attempt_rx.recv_timeout(Duration::from_secs(2));
+                    let completed_first = done_rx.recv_timeout(Duration::from_millis(250)).ok();
+                    let _ = release_tx.send(());
+                    (
+                        entered,
+                        attempted,
+                        completed_first,
+                        publisher.join(),
+                        suppressor.join(),
+                    )
+                });
+            entered.unwrap();
+            attempted.unwrap();
+            published.unwrap().unwrap();
+            suppressed.unwrap().unwrap();
+            let rows = fx
+                .store
+                .harness_evidence_v2_all("codex", 0, &budget())
+                .unwrap();
+            let credited = rows[0].milestones.contains_key("lifecycle");
+            if completed_first == Some(true) && credited {
+                stale_routes.push(if held { "extracted-held" } else { "direct" });
+            }
+            // A held publication fence makes commit-first legitimate: release before
+            // joining suppression, then confirm that suppression actually completed.
+            if completed_first.is_none() {
+                assert!(credited, "commit-first should retain earlier lifecycle");
+            }
+        }
+        assert!(
+            stale_routes.is_empty(),
+            "completed suppression followed by stale SQLite lifecycle credit: {stale_routes:?}"
+        );
+    }
+}
