@@ -580,7 +580,24 @@ fn observation(input: &HookInput, domain: ContractDomain) -> ContractObservation
         },
     }
 }
+struct HermesCanary;
+impl CanaryStrategy for HermesCanary {
+    fn descriptor(&self) -> CanaryDescriptor {
+        CanaryDescriptor {
+            kind: CanaryKind::ExactRuntime,
+            candidate_kind: CandidateKind::ExactBuild,
+            npm_package: None,
+            model_key_env: None,
+            companion: "scripts/canary/adapters/hermes.py".into(),
+            artifact_schema_version: 1,
+        }
+    }
+}
 impl HarnessAdapter for HermesAdapter {
+    fn canary_strategy(&self) -> Option<&dyn CanaryStrategy> {
+        Some(&HermesCanary)
+    }
+
     type Admission = HermesAdmission;
     fn metadata(&self) -> &'static AdapterMetadata {
         &METADATA
@@ -2583,5 +2600,35 @@ mod launch_boundary_tests {
         ] {
             assert!(policy.validate_native_argv(&[flag.into()]).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod companion_boundary_tests {
+    #[test]
+    fn hermes_canary_exact_runtime_missing_input_is_explicit() {
+        let registration = crate::harness::registry::builtins()
+            .by_id(
+                crate::harness::registry::builtins()
+                    .agent("hermes")
+                    .unwrap(),
+            )
+            .unwrap();
+        let strategy = registration
+            .canary_strategy()
+            .expect("Hermes exact-runtime companion is absent");
+        let descriptor = strategy.descriptor();
+        assert_eq!(
+            descriptor.kind,
+            crate::harness::adapter::CanaryKind::ExactRuntime
+        );
+        assert_eq!(
+            descriptor.candidate_kind,
+            crate::harness::adapter::CandidateKind::ExactBuild
+        );
+        assert!(descriptor.npm_package.is_none());
+        assert!(descriptor.model_key_env.is_none());
+        assert_eq!(descriptor.artifact_schema_version, 1);
+        assert_eq!(descriptor.companion, "scripts/canary/adapters/hermes.py");
     }
 }
