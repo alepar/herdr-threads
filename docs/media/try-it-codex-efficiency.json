@@ -1,0 +1,240 @@
+{
+  "source_commit": "128b3f84786c4a3e072121ad61151748cbc1367c",
+  "native_codex_session": "01a111c4-4850-7243-8df6-e78578621fc9",
+  "native_rollout_sha256": "89ba814db94d534486a9bb3e08cd54389a85681a98f7273d2be2ce9f649fd971",
+  "thread": "t8HK3GC0u",
+  "codex_seat": "snNJEEKDg",
+  "alice_seat": "sbOVgRcCC",
+  "counts": {
+    "inbox": 5,
+    "accept": 1,
+    "send": 5
+  },
+  "redundant_mail_commands": {
+    "read": 0,
+    "body": 0,
+    "follow": 0,
+    "ack": 0,
+    "pending-receipts": 0
+  },
+  "native_turns_completed": [
+    "2026-10-06T15:11:21.155Z",
+    "2026-10-06T15:12:13.512Z",
+    "2026-10-06T15:12:45.462Z",
+    "2026-10-06T15:13:11.415Z",
+    "2026-10-06T15:13:42.442Z"
+  ],
+  "full_inbound_bodies": [
+    {
+      "message": "mxmIOH83e",
+      "sequence": 15,
+      "body": "Alice 1: Spaces render identically everywhere: editors, diffs, GitHub, terminals, code review tools. With tabs, alignment of continuation lines and comments breaks whenever someone uses a different tab width. Spaces make the file look exactly as the author wrote it.",
+      "inbox_call": "call_xJWmBKyQNHH1IEjsrzrKFqWh",
+      "complete_body_observed": true
+    },
+    {
+      "message": "mQekLWib2",
+      "sequence": 19,
+      "body": "Alice 2: Accessibility is fair, but tabs-indent/spaces-align is fragile: mixed whitespace is invisible, and most formatters (Prettier, Black, gofmt aside) default to spaces. New concern: line-length limits. With tabs, an 80-column rule is undefined, since width varies per reader.",
+      "inbox_call": "call_4lIbPnhfY2a7vAmIghMvWlYB",
+      "complete_body_observed": true
+    },
+    {
+      "message": "mAcm7uxbx",
+      "sequence": 23,
+      "body": "Alice 3: Exclusion risk is real but mitigable: editors can render leading spaces at a custom width (e.g. VS Code/Vim indent-guides, elastic display). Next concern: copy-paste into web forms, Markdown, chat and YAML, where tabs get mangled or are outright invalid.",
+      "inbox_call": "call_OsqD0x6NmbhITZjgy6dcoALv",
+      "complete_body_observed": true
+    },
+    {
+      "message": "mOegAr5Rz",
+      "sequence": 27,
+      "body": "Shared recommendation: Default to spaces, enforced by formatter and .editorconfig, except where a language formatter mandates tabs (gofmt, Makefiles): follow it. Tradeoff: spaces give portability and consistent line limits but lose per-reader indent width; I concede indent guides do not fix that.",
+      "inbox_call": "call_UQGxmMZUBkeD5mneazPVhXDJ",
+      "complete_body_observed": true
+    }
+  ],
+  "canonical_sends": [
+    {
+      "message": "mTZxFlHFg",
+      "call_id": "call_fJjkJUhxDkDcV3vV7kQ3TvWM",
+      "body_matches_canonical": true
+    },
+    {
+      "message": "mrZMLlkX7",
+      "call_id": "call_6nHcBzdNrWfUfxHzkEvKNHKN",
+      "body_matches_canonical": true
+    },
+    {
+      "message": "msAHSS5dQ",
+      "call_id": "call_NNILRrrbX3XeJbLI8xvzTkjh",
+      "body_matches_canonical": true
+    },
+    {
+      "message": "mnGcVl8qR",
+      "call_id": "call_UnC82bzUv0aZhN8nnX7JkU6E",
+      "body_matches_canonical": true
+    },
+    {
+      "message": "mO6A67mzC",
+      "call_id": "call_z60cNmZPZMXjEoyirNiXyoEM",
+      "body_matches_canonical": true
+    }
+  ],
+  "commands": [
+    {
+      "timestamp": "2026-10-06T15:10:51.981Z",
+      "call_id": "call_vXKlkCgDhGzeCtgbIVz5i5O4",
+      "command": "herdr-threads inbox",
+      "verb": "inbox",
+      "exit_code": 0
+    },
+    {
+      "timestamp": "2026-10-06T15:11:03.968Z",
+      "call_id": "call_HbCINCidpMwuZwr3nu2zhK2Z",
+      "command": "herdr-threads accept t8HK3GC0u",
+      "verb": "accept",
+      "exit_code": 0
+    },
+    {
+      "timestamp": "2026-10-06T15:11:12.915Z",
+      "call_id": "call_fJjkJUhxDkDcV3vV7kQ3TvWM",
+      "command": "herdr-threads send t8HK3GC0u --body 'Alice, I am ready to make the case for tabs. Please send Alice 1.' --require-ack-pane alice",
+      "verb": "send",
+      "exit_code": 0
+    },
+    {
+      "timestamp": "2026-10-06T15:11:54.961Z",
+      "call_id": "call_xJWmBKyQNHH1IEjsrzrKFqWh",
+      "command": "herdr-threads inbox",
+      "verb": "inbox",
+      "exit_code": 0
+    },
+    {
+      "timestamp": "2026-10-06T15:12:06.832Z",
+      "call_id": "call_6nHcBzdNrWfUfxHzkEvKNHKN",
+      "command": "herdr-threads send t8HK3GC0u --body 'Bob 1: Different tab widths break column alignment, agreed. Tabs for indentation and spaces for alignment preserve structure while allowing readers their preferred indentation width. A formatter can enforce that distinction. Why should the author decide every reader’s indentation width, especially for accessibility?' --require-ack-pane alice",
+      "verb": "send",
+      "exit_code": 0
+    },
+    {
+      "timestamp": "2026-10-06T15:12:25.423Z",
+      "call_id": "call_4lIbPnhfY2a7vAmIghMvWlYB",
+      "command": "herdr-threads inbox",
+      "verb": "inbox",
+      "exit_code": 0
+    },
+    {
+      "timestamp": "2026-10-06T15:12:34.919Z",
+      "call_id": "call_NNILRrrbX3XeJbLI8xvzTkjh",
+      "command": "herdr-threads send t8HK3GC0u --body 'Bob 2: Mixed whitespace needs formatter enforcement; unsupported tooling weakens my proposal. An 80-column check can use a documented tab width while readers choose another display width. That sacrifices universal visual limits. Could enforcing spaces unnecessarily exclude readers who need wider or narrower indentation?' --require-ack-pane alice",
+      "verb": "send",
+      "exit_code": 0
+    },
+    {
+      "timestamp": "2026-10-06T15:12:55.867Z",
+      "call_id": "call_OsqD0x6NmbhITZjgy6dcoALv",
+      "command": "herdr-threads inbox",
+      "verb": "inbox",
+      "exit_code": 0
+    },
+    {
+      "timestamp": "2026-10-06T15:13:05.671Z",
+      "call_id": "call_UnC82bzUv0aZhN8nnX7JkU6E",
+      "command": "herdr-threads send t8HK3GC0u --body 'Bob 3: YAML forbids indentation tabs, and paste targets can damage them; spaces travel better. Indent guides alone do not change space width, so accessibility still deserves explicit tooling. My remaining concern is imposing one convention where a language formatter already mandates tabs.' --require-ack-pane alice",
+      "verb": "send",
+      "exit_code": 0
+    },
+    {
+      "timestamp": "2026-10-06T15:13:27.224Z",
+      "call_id": "call_UQGxmMZUBkeD5mneazPVhXDJ",
+      "command": "herdr-threads inbox",
+      "verb": "inbox",
+      "exit_code": 0
+    },
+    {
+      "timestamp": "2026-10-06T15:13:35.785Z",
+      "call_id": "call_z60cNmZPZMXjEoyirNiXyoEM",
+      "command": "herdr-threads send t8HK3GC0u --body 'Confirmed: default to spaces with formatter and .editorconfig enforcement; honor language tooling and required tab syntax, including Makefile recipes. The tradeoff is portability and consistent visual limits versus adjustable indentation width. Teams should address accessibility explicitly when choosing editor support.' --require-ack-pane alice",
+      "verb": "send",
+      "exit_code": 0
+    }
+  ],
+  "initial_discovery_shell_calls": 2,
+  "pending_receipts": [],
+  "interpretation": "Observed one real Codex session, not a benchmark of every future run. Bob ready gates Alice1 so no pre-join history is required; prompt typing speed is independent of these call counts.",
+  "canonical_receipts": {
+    "database_sha256": "618cbe41081ea87d019fbaeefb76dfc7b1570a5aabe3f9ed817489b9a6c8047a",
+    "all_thread_pending_count": 0,
+    "bob_receipts": [
+      {
+        "message": "mCTJoQuus",
+        "seat": "snNJEEKDg",
+        "state": "acked",
+        "action_provenance": "cooperative_inbox_display",
+        "session": "01a111c4-4850-7243-8df6-e78578621fc9",
+        "acked_at": 1791299460487
+      },
+      {
+        "message": "mUUbIta5M",
+        "seat": "snNJEEKDg",
+        "state": "acked",
+        "action_provenance": "cooperative_inbox_display",
+        "session": "01a111c4-4850-7243-8df6-e78578621fc9",
+        "acked_at": 1791299460487
+      },
+      {
+        "message": "mxmIOH83e",
+        "seat": "snNJEEKDg",
+        "state": "acked",
+        "action_provenance": "cooperative_inbox_display",
+        "session": "01a111c4-4850-7243-8df6-e78578621fc9",
+        "acked_at": 1791299520876
+      },
+      {
+        "message": "mQekLWib2",
+        "seat": "snNJEEKDg",
+        "state": "acked",
+        "action_provenance": "cooperative_inbox_display",
+        "session": "01a111c4-4850-7243-8df6-e78578621fc9",
+        "acked_at": 1791299548683
+      },
+      {
+        "message": "mAcm7uxbx",
+        "seat": "snNJEEKDg",
+        "state": "acked",
+        "action_provenance": "cooperative_inbox_display",
+        "session": "01a111c4-4850-7243-8df6-e78578621fc9",
+        "acked_at": 1791299579360
+      },
+      {
+        "message": "mOegAr5Rz",
+        "seat": "snNJEEKDg",
+        "state": "acked",
+        "action_provenance": "cooperative_inbox_display",
+        "session": "01a111c4-4850-7243-8df6-e78578621fc9",
+        "acked_at": 1791299610642
+      }
+    ]
+  },
+  "native_shell_tool_calls": 13,
+  "unparsed_tool_calls": 0,
+  "hook_notification_turns": [
+    {
+      "timestamp": "2026-10-06T15:11:51.215Z",
+      "message": "herdr-threads: attention pending; run herdr-threads inbox"
+    },
+    {
+      "timestamp": "2026-10-06T15:12:21.960Z",
+      "message": "herdr-threads: attention pending; run herdr-threads inbox"
+    },
+    {
+      "timestamp": "2026-10-06T15:12:52.667Z",
+      "message": "herdr-threads: attention pending; run herdr-threads inbox"
+    },
+    {
+      "timestamp": "2026-10-06T15:13:23.269Z",
+      "message": "herdr-threads: attention pending; run herdr-threads inbox"
+    }
+  ]
+}

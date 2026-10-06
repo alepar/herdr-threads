@@ -78,7 +78,7 @@ returned human pane**, without redirecting stdout away from that pane:
 ```sh
 python3 RUN_DIR/record.py --commands RUN_DIR/commands.json \
   --output RUN_DIR/live.cast --cwd RUN_DIR/project \
-  --cols 157 --rows 15 --start-file RUN_DIR/typing-start \
+  --cols 157 --rows 18 --start-file RUN_DIR/typing-start \
   --finish-file RUN_DIR/finished --timeout 600
 ```
 
@@ -127,9 +127,11 @@ native action and final agreement frames at README size and full screen, plus
 privacy, dimensions and duration before upload or merge.
 
 The [human input cast](try-it-input.cast) separately preserves original input
-characters and timing, with 18 output-only home-prefix redactions. The
-[canonical message bodies](try-it-discussion.json) preserve all eight genuine
-Alice/Bob posts, including both conclusions.
+characters and timing, with 14 output-only home-prefix redactions. The
+[canonical message bodies](try-it-discussion.json) preserve nine genuine
+Alice/Bob posts: Bob ready, three reciprocal rounds, and both conclusions.
+The [Codex command evidence](try-it-codex-efficiency.json) ties every inbound
+body and outbound post to the native session and canonical thread.
 
 ## Cleanup and verification
 
@@ -149,37 +151,49 @@ profiles/credentials while retaining raw casts, canonical evidence and failed
 attempts. Leave the task/source topology for coordinator cleanup. After rendering
 and checks, report SAFE RELEASE; coordinate a separate main mutation window.
 
-## Published take
+## Mailbox-first take
 
-The 2026-10-06 take used source base `97c98998`, Claude Code 2.1.290 with copied
-Opus 5.5 preferences and Codex 0.160.1 with copied GPT-6.1-Sol medium preferences.
-Private run: `c5e180fc-4c97-4e84-8740-ede77e08f67f`; canonical thread: `tfvkDs0mf`.
-Alice/Bob address consistent rendering, accessibility, tab-aware enforcement,
-formatter/CI discipline and ecosystem conventions before agreeing. Recorder and
-camera both exited 0. The raw camera lasts 278.861236 seconds; the human cast
-lasts 287.343417 seconds, including its pre-camera wait, and contains 1,468
-single-character inputs. Measured normal/assignment medians are 96.135/51.181 ms
-for Alice and 97.800/52.273 ms for Bob (requested 90/45 ms plus actual I/O).
+The 2026-10-06 take used source `128b3f84786c4a3e072121ad61151748cbc1367c`,
+Claude Code 2.1.290 (Opus 5.5 medium) and Codex 0.160.1 (GPT-6.1-Sol medium),
+with copied native preferences. Private run: `6975c164-ba43-4f06-bfc6-8dea3416d2c4`;
+canonical thread: `t8HK3GC0u`. Alice/Bob discuss rendering, accessibility,
+formatter enforcement, line limits, copy-paste and language conventions before
+agreeing. Bob's ready message precedes Alice 1, so the debate needs no pre-join
+history. That readiness change is separate from the shipped instruction fix.
 
-The MP4 is 1496×1302 at 12 fps, 281.750000 seconds, 9,549,417 bytes. Its SHA-256 is
-`3fd1409c8bfc32ef8f30dece069ec0830b1cbb289524f50865d0be61cfbc86be`.
-The user approved publication to GitHub's public attachment service. The
-[uploaded video](https://github.com/user-attachments/assets/3fbe26a8-a419-4456-85ad-51af3ab5b76b)
-renders through GitHub's Markdown renderer as a video with playback controls;
-its downloaded bytes match the MP4's SHA-256.
-Raw camera SHA-256: `8872082f12770d13848d5c1fa53fba684c9d9a8d47744fa19321c41e794ef119`.
-Raw human cast SHA-256: `05f853962c317b565fe6d0651a97e7b781a2b467208fad76c15d716a7992853b`.
-Public camera cast SHA-256: `44fe0dfebe55b580f8d441313d9e80e6f6ac83349dbee3a44e0e1e9ad75d7a2b`.
-Public input cast SHA-256: `0218205495d501c0a690753c7cb18b50b8892c0d09159483e4add672ef44604f`.
-Canonical discussion SHA-256: `135fbe915a3569264c3a61ab5b551612c831ed5b12501aaf5360e281f31bb6e3`.
+Codex's native rollout proves 5 inbox calls, 1 acceptance and 5 sends: one ready
+message, three debate replies and confirmation. It ran no `read`, `body`,
+`follow`, manual `ack`, `pending-receipts` or polling commands. Each of Alice's
+four complete bodies appeared in exactly one inbox response; all five Bob send
+bodies match canonical messages. Five native turns completed while waiting for
+hook notifications. No receipts remained pending. Two initial non-mail shell
+calls discover the skill; the first attempted a missing unrelated skill.
+This proves the observed session's behavior, rather than a universal efficiency
+benchmark. Faster typing does not enter the command-count measurement.
 
-The private archive `/private/tmp/ht-try-it.4leew81y` retains raw/canonical evidence
-and the failed socket-alias take. Herdr's host witness does not support those
-aliases; final capture uses the real endpoint with visible-cell privacy export.
-The earlier three-pane privacy trial is preserved at
-`/private/tmp/ht-try-it.pkaf1d4b`. Both runs' owned processes are reaped and copied
-profiles removed; both scoped leak checks pass. No full suite or release ran.
+The recorder and attached camera both exited 0. The raw camera lasts 304.543880
+seconds; the human cast lasts 352.659269 seconds including the private camera
+wait. All 1,553 input events contain one character and match the command plan.
+Requested delays are 90 ms for ordinary input and 18 ms for assignments (5×).
+Measured normal/assignment medians are 96.694/24.469 ms for Alice and
+96.900/24.238 ms for Bob, including actual PTY/output overhead.
 
-Historical `tea-party.gif`, `tea-party.mp4` and `scripts/demo-tea-party.sh` remain
-byte-identical. The prior human-only GIF `try-it.gif` is retained as an earlier
-artifact; README now uses the three-pane video.
+The H.264 MP4 is 1496×1302 at 12 fps, 307.416667 seconds, 9,482,756 bytes.
+SHA-256: `0fe2626e2130e2b1bf0dc15d526c7d1aaf82303adc96a757d8bc32d2307247dd`.
+Only the initial blank export frame is trimmed; actual discussion timing and
+the renderer's final hold remain. Public visible cells, styles and cursor state
+are checked against the real client; changes are the tab-chrome crop and
+same-width privacy placeholders. Raw evidence remains private.
+
+The private archive `/private/tmp/ht-try-it.yh0qgnbj` retains the raw casts,
+canonical messages, native rollout, command/output proof, input timing and
+privacy checks. All eight tagged PIDs are absent after cleanup; the owned tab,
+private daemon and copied profiles are removed. The scoped leak check passes.
+The failed profile-copy attempt `/private/tmp/ht-try-it._wjogkzp` is retained,
+with its processes reaped and credential copies removed.
+
+The prior three-pane take remains in Git history and its
+[original video attachment](https://github.com/user-attachments/assets/3fbe26a8-a419-4456-85ad-51af3ab5b76b),
+with raw archive `/private/tmp/ht-try-it.4leew81y`. Historical `tea-party.gif`,
+`tea-party.mp4`, `scripts/demo-tea-party.sh` and the earlier human-only `try-it.gif`
+remain byte-identical. No full suite or release ran.
