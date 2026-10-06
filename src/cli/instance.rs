@@ -310,6 +310,15 @@ pub fn resolve_context(inputs: &InstanceInputs) -> io::Result<(RuntimeContext, V
 pub(crate) fn resolve_context_with_selected_state(
     inputs: &InstanceInputs,
 ) -> io::Result<(RuntimeContext, Value, PathBuf)> {
+    resolve_context_with_selected_paths(inputs)
+        .map(|(context, source, state, _)| (context, source, state))
+}
+
+/// Preserve exact selected spellings for local asset ownership while the runtime
+/// context uses canonical paths. Each source is resolved only once.
+pub(crate) fn resolve_context_with_selected_paths(
+    inputs: &InstanceInputs,
+) -> io::Result<(RuntimeContext, Value, PathBuf, PathBuf)> {
     let (state, state_how) = resolve_state_dir(inputs).map_err(|error| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -325,6 +334,7 @@ pub(crate) fn resolve_context_with_selected_state(
         )
     })?;
     let selected_state = state.clone();
+    let selected_host = host.clone();
     let context = RuntimeContext::explicit(
         state,
         host,
@@ -336,7 +346,12 @@ pub(crate) fn resolve_context_with_selected_state(
     }
     source.insert("state_dir".into(), json!(state_how));
     source.insert("host_endpoint".into(), json!(host_how));
-    Ok((context, Value::Object(source), selected_state))
+    Ok((
+        context,
+        Value::Object(source),
+        selected_state,
+        selected_host,
+    ))
 }
 
 #[cfg(test)]
@@ -417,7 +432,9 @@ mod tests {
             ),
         ));
         inputs.non_default_server = true;
-        let (context, source, selected) = resolve_context_with_selected_state(&inputs).unwrap();
+        let (context, source, selected, selected_host) =
+            resolve_context_with_selected_paths(&inputs).unwrap();
+        assert_eq!(selected_host, dir.join("host.sock"));
         assert_eq!(
             selected,
             dir.join("home/.local/state/herdr/plugins/herdr-threads")
