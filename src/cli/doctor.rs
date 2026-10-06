@@ -1147,6 +1147,7 @@ struct CapturedDoctorContext {
     context: crate::daemon::paths::RuntimeContext,
     source: Value,
     selected_state: PathBuf,
+    selected_host: PathBuf,
 }
 
 fn local_ownership_environment(
@@ -1157,6 +1158,7 @@ fn local_ownership_environment(
     let mut local = environment.clone();
     if !supplied && let Some(captured) = captured {
         local.state_dir = Some(captured.selected_state.clone());
+        local.host_endpoint = Some(captured.selected_host.clone());
     }
     local
 }
@@ -1169,8 +1171,8 @@ fn report_base(
     registry: &crate::harness::registry::Registry,
 ) -> ((Value, i32), Option<CapturedDoctorContext>) {
     let inputs = super::instance::InstanceInputs::from_process(state_dir, host_endpoint);
-    let (context, source, selected_state) =
-        match super::instance::resolve_context_with_selected_state(&inputs) {
+    let (context, source, selected_state, selected_host) =
+        match super::instance::resolve_context_with_selected_paths(&inputs) {
             Ok(resolved) => resolved,
             Err(error) => {
                 let report = json!({
@@ -1186,6 +1188,7 @@ fn report_base(
         context,
         source,
         selected_state,
+        selected_host,
     };
     let result = report_captured(&captured, clock, budget, registry);
     (result, Some(captured))
@@ -2179,3 +2182,38 @@ mod doctor_json;
 #[cfg(test)]
 #[path = "../../tests/cli/doctor_labels.rs"]
 mod doctor_labels;
+
+#[cfg(test)]
+mod selected_ownership_tests {
+    use super::*;
+    #[test]
+    fn selected_paths_preserve_local_ownership_without_overriding_supplied_environment() {
+        let captured = CapturedDoctorContext {
+            context: crate::daemon::paths::RuntimeContext {
+                state_dir: PathBuf::from("/canonical/state"),
+                host_endpoint: PathBuf::from("/canonical/host"),
+                herdr_bin: None,
+            },
+            source: json!({}),
+            selected_state: PathBuf::from("/selected/state"),
+            selected_host: PathBuf::from("/selected/host"),
+        };
+        let environment = crate::harness::adapter::SetupEnvironment {
+            state_dir: Some(PathBuf::from("/supplied/state")),
+            host_endpoint: Some(PathBuf::from("/supplied/host")),
+            executable: PathBuf::from("/supplied/executable"),
+            ..Default::default()
+        };
+        let local = local_ownership_environment(&environment, Some(&captured), false);
+        assert_eq!(local.state_dir, Some(captured.selected_state.clone()));
+        assert_eq!(local.host_endpoint, Some(captured.selected_host.clone()));
+        assert_eq!(
+            captured.context.host_endpoint,
+            PathBuf::from("/canonical/host")
+        );
+        let supplied = local_ownership_environment(&environment, Some(&captured), true);
+        assert_eq!(supplied.state_dir, environment.state_dir);
+        assert_eq!(supplied.host_endpoint, environment.host_endpoint);
+        assert_eq!(supplied.executable, environment.executable);
+    }
+}
