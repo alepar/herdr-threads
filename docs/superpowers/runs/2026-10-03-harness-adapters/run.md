@@ -112,4 +112,3 @@ cluster dropped: neutral-launch-facilities — Give all launch providers only ne
 cluster dropped: bounded-bridge-diagnostics — Publish bounded allowlisted operational reason tokens for activation/startup capture, reader quality/surviving owned work and child delivery failures at their actual producer boundaries, separately from callback context; never emit raw stderr, exception/config bodies or user/tool content, and preserve fail-open behavior and accepted reader recovery limits.
 cluster dropped: evidence-prune-progress — Ensure bounded gate pruning makes eventual traversal progress across invocations or bounds directory cardinality for both legacy and rich directories, without repeatedly inspecting only a potentially fresh prefix or extending hot-path work without bounds.
 scope-filter: 7 in-scope · 5 punch-listed
-
