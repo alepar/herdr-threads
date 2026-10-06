@@ -32,6 +32,14 @@ Codex: run `herdr-threads` / `ht` outside the sandbox through a CLI-only approve
 
 ## Hook output and ready commands
 
+Hermes is experimental/source-tested, with native acceptance unverified. Its bridge
+offers context at a qualified top-level turn; post-tool callbacks only observe
+allowlisted metadata. A callback return or lifecycle ACK is not proof of model
+consumption or a receipt. Missing child callbacks never authorize a child write.
+Its startup-captured runtime identity lasts for the bridge lifetime and is independent
+of canonical seat continuity. Selected-profile enablement and native permissions stay
+manual; follow the same exact ready-command and top-level-only action rules below.
+
 At session start (and when something new arrives before a tool call) the hook adds a block like:
 
 ```text

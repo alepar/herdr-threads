@@ -118,6 +118,18 @@ fails launch at once with invalid_request and the pane's last lines. Codex launc
 `codex`: the effective CODEX_HOME, its config.toml and the selected profile (-p/--profile,
 else `profile` in config.toml, else default).
 
+Harness choices come from the same-binary registry. Hermes is experimental/source-tested,
+with native acceptance unverified. Its separate startup/profile/API prelaunch observation
+must match the selected executable, owned generation and configured enabled profile.
+Native Hermes -p/--profile NAME after `--` is emitted once (default when omitted);
+--cli and one policy-owned chat token compose the captured interactive grammar.
+Known-arity model/provider options and chat -q/--query are supported in their native
+positions. Resume, TUI/native/oneshot, arbitrary subcommands, plugin suppression and
+approval bypass forms refuse. Launch never enables a plugin or grants native consent.
+The private host must support guarded process hints; a hint or observed launch is
+neither callback activation nor model consumption. Missing Hermes composer support
+permits no in-turn poke or composer stash/restore.
+
 Exit status: 0 startup observed; 5 start may have happened but was not confirmed:
 inspect the pane (`herdr agent get` / `herdr agent read`) before launching again.";
 

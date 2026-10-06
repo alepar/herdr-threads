@@ -1,5 +1,5 @@
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
-     Running unittests src/lib.rs (/Users/alepar/AleCode/herdr-threads/.worktrees/harness-adapters/target/debug/deps/herdr_threads-1c2d7f4b9aaa457a)
+     Running unittests src/lib.rs (<INTEGRATION_TARGET>/debug/deps/herdr_threads-1c2d7f4b9aaa457a)
 
 running 12 tests
 test harness::hermes::assets::tests::lock_child ... ok

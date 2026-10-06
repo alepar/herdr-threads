@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "provenance": "synthetic_fixture",
+  "evidence_stage": "synthetic_dry_run",
+  "native_acceptance": "UNMET",
+  "native_callback": "pre_llm_call",
+  "shape": {"session_id": "string", "parent_session_id": "string", "turn_id": "string"},
+  "domains": [
+    {"domain": "native_callback", "origin": "native_shape_observation"},
+    {"domain": "bridge_envelope", "origin": "bridge_envelope"}
+  ],
+  "context_location": "user_message",
+  "model_consumption": "unobserved",
+  "receipt": "unobserved"
+}

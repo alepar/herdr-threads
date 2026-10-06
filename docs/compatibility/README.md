@@ -34,3 +34,17 @@ manual, known-broken and identities named by existing baseline recipe rows.
 Output is deterministic and written atomically only after validation, within
 80% of the reader's 262144-byte limit; oversized protected history fails without
 replacing the previous output. Publication remains a separate coordinator action.
+
+Hermes is implemented experimental/source-tested, with native acceptance unverified.
+`native_callback`/`native_shape_observation` and `bridge_envelope`/`bridge_envelope`
+remain independent domains; `qualified_turn` and `qualified_post_tool` must be
+measured separately for each exact runtime/contract. Native loader gate and timely
+client replies establish plumbing only. Startup-captured identity survives later
+source edits; it is neither continuous loaded-byte attestation nor canonical seat
+identity. Runtime metadata is optional for registered Claude/Codex operational
+contracts and cannot be fabricated from setup or callback success.
+
+The [bounded Hermes driver](../../integrations/hermes/README.md#measurement-contract)
+labels synthetic dry runs and keeps source, recognition, callback/domain, context,
+model and canonical receipt stages separate. Its sanitized result is not a manifest
+row and cannot promote a fixture or unknown native mode to live evidence.
