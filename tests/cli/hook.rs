@@ -4900,3 +4900,447 @@ fn hermes_codec_keeps_canonical_routing_and_immutable_prepared_kind() {
     assert!(bytes.len() <= 8192);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[cfg(feature = "test-support")]
+mod enum_callback {
+    use super::*;
+    use crate::test_support::synthetic_fourth::ADAPTER;
+
+    struct Callback(HookAdmissionPolicy);
+    impl HarnessAdapter for Callback {
+        type Admission = ();
+        fn metadata(&self) -> &'static AdapterMetadata {
+            ADAPTER.metadata()
+        }
+        fn contracts(&self) -> &'static [ContractDescriptor] {
+            ADAPTER.contracts()
+        }
+        fn hook_admission_policy(&self) -> HookAdmissionPolicy {
+            self.0
+        }
+        fn observe_install(&self, _: &InstallEnvironment, _: &CallBudget) -> InstallObservation {
+            assert_eq!(
+                self.0,
+                HookAdmissionPolicy::InstalledObservation,
+                "enum-only callback must never inspect the installed runtime"
+            );
+            InstallObservation::ExecutableAvailable {
+                binary: "/synthetic/installed-runtime".into(),
+            }
+        }
+        fn admit(&self, request: &AdmissionRequest, _: &CallBudget) -> AdmissionDecision<()> {
+            if self.0 == HookAdmissionPolicy::InstalledObservation {
+                assert!(request.input.is_none());
+                assert!(matches!(
+                    request.installed,
+                    InstallObservation::ExecutableAvailable { .. }
+                ));
+                return AdmissionDecision::ContractDeclared {
+                    state: (),
+                    recipe: "synthetic installed observation",
+                };
+            }
+            let Some(input) = &request.input else {
+                return AdmissionDecision::Refused {
+                    diagnostic: "enum-only callback missing callback input".into(),
+                };
+            };
+            assert_eq!(input.registered_event.as_deref(), Some("SyntheticStart"));
+            assert_eq!(input.bytes, payload());
+            assert!(matches!(
+                request.installed,
+                InstallObservation::Unsupported(_)
+            ));
+            assert!(request.runtime_candidate.is_none());
+            AdmissionDecision::ContractDeclared {
+                state: (),
+                recipe: "synthetic callback",
+            }
+        }
+        fn version_ladder(&self, r: &RuntimeIdentity) -> Ladder {
+            ADAPTER.version_ladder(r)
+        }
+        fn classify(&self, i: &HookInput) -> ContractObservation {
+            ADAPTER.classify(i)
+        }
+        fn decode(&self, a: &(), i: &HookInput) -> Result<DecodedEvent, DecodeFailure> {
+            ADAPTER.decode(a, i)
+        }
+        fn encode(
+            &self,
+            a: &(),
+            e: &DecodedEvent,
+            o: &NeutralOffer,
+        ) -> Result<EncodedOutput, EncodeFailure> {
+            ADAPTER.encode(a, e, o)
+        }
+        fn attribute_runtime(&self, i: &HookInput, b: &CallBudget) -> RuntimeAttribution {
+            ADAPTER.attribute_runtime(i, b)
+        }
+        fn setup(&self, r: &SetupRequest, b: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
+            ADAPTER.setup(r, b)
+        }
+        fn status(&self, r: &StatusRequest, b: &CallBudget) -> SetupStatus {
+            ADAPTER.status(r, b)
+        }
+        fn unsetup(
+            &self,
+            r: &UnsetupRequest,
+            b: &CallBudget,
+        ) -> Result<RemovalOutcome, SetupFailure> {
+            ADAPTER.unsetup(r, b)
+        }
+    }
+    fn payload() -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({"event":"SyntheticStart","event_id":"enum-only-event","session_id":"enum-only-session","role":"top_level"})).unwrap()
+    }
+    fn empty<T>() -> crate::protocol::pagination::Page<T> {
+        crate::protocol::pagination::Page {
+            items: vec![],
+            next_cursor: None,
+            next_argv: None,
+            high_water_ordinal: 0,
+            scope_revision: None,
+            has_more: false,
+            stop_reason: crate::protocol::pagination::StopReason::Complete,
+            consistency: crate::protocol::pagination::Consistency::BoundedLive,
+        }
+    }
+    #[derive(Default)]
+    struct Service(Mutex<Vec<Command>>);
+    impl crate::ports::LocalService for Service {
+        fn service_control(
+            &self,
+            _: Command,
+            _: crate::protocol::authority::PeerIdentity,
+            _: &str,
+            _: &str,
+            _: &crate::service::live_gate::LiveServiceGate,
+            _: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            Err(crate::test_support::unserved("no service control"))
+        }
+        fn audit_service_disconnect(
+            &self,
+            _: &str,
+            _: u64,
+            _: crate::protocol::authority::PeerIdentity,
+            _: &CallBudget,
+        ) -> Result<(), ApiError> {
+            Err(crate::test_support::unserved("no service disconnect"))
+        }
+        fn service_operation(
+            &self,
+            _: crate::protocol::service::ServiceOperation,
+            _: &crate::ports::ServiceConnectionAuthority,
+            _: &dyn crate::ports::ServiceAuthorityGate,
+            _: &CallBudget,
+        ) -> Result<crate::protocol::service::ServiceResult, ApiError> {
+            Err(crate::test_support::unserved("no service operation"))
+        }
+        fn handle_with_output(
+            &self,
+            c: Command,
+            p: crate::protocol::authority::PeerIdentity,
+            b: &CallBudget,
+            _: &OutputSpec,
+        ) -> Result<CommandResult, ApiError> {
+            self.handle(c, p, b)
+        }
+        fn handle(
+            &self,
+            c: Command,
+            _: crate::protocol::authority::PeerIdentity,
+            _: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            use crate::protocol::results::*;
+            self.0.lock().unwrap().push(c.clone());
+            let summary = || SeatSummary {
+                seat: SeatId::new("callback-seat"),
+                continuity: ContinuityStatus::Resolved,
+                target: Some(HostTargetId::new("w9:p1")),
+                generation: self
+                    .0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|command| matches!(command, Command::CheckIn(_)))
+                    .count() as u64
+                    + 1,
+                created_at: crate::protocol::time::UtcMillis(0),
+                retired_at: None,
+            };
+            match c {
+                Command::Seats(_) => {
+                    let mut page = empty();
+                    page.items.push(summary());
+                    Ok(CommandResult::Seats(page))
+                }
+                Command::SeatInspect(_) => Ok(CommandResult::SeatInspect(SeatInspection {
+                    summary: summary(),
+                    mapping: MappingStatus {
+                        state: ContinuityStatus::Resolved,
+                        target: Some(HostTargetId::new("w9:p1")),
+                        detail_argv: None,
+                    },
+                    hold: None,
+                    retirement: None,
+                    open_binding: None,
+                    history: empty(),
+                })),
+                Command::Directory(_) => Ok(CommandResult::Directory(empty())),
+                Command::AttentionDigest(_) => {
+                    let mut d = digest(&[], &[]);
+                    d.seat = SeatId::new("callback-seat");
+                    Ok(CommandResult::AttentionDigest(d))
+                }
+                Command::CheckIn(c) => {
+                    assert_eq!(c.claim.harness.as_str(), "synthetic_fourth");
+                    assert_eq!(c.claim.native_session.as_str(), "enum-only-session");
+                    let mut claim = c.claim;
+                    claim.binding_generation = 2;
+                    Ok(CommandResult::CheckedIn(CheckInResult {
+                        seat: claim.seat.clone(),
+                        context: claim,
+                        context_disposition: CheckInContextDisposition::Current,
+                        offered_through: None,
+                        warning_count: 0,
+                        warning_count_has_more: false,
+                        warnings: empty(),
+                        notices: Default::default(),
+                        inbox: empty(),
+                    }))
+                }
+                _ => Err(crate::test_support::unserved(
+                    "unused callback fixture operation",
+                )),
+            }
+        }
+    }
+    struct Server {
+        shutdown: Cancellation,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Drop for Server {
+        fn drop(&mut self) {
+            self.shutdown.cancel();
+            self.worker.take().unwrap().join().unwrap();
+        }
+    }
+    #[test]
+    fn qualified_callback_enum_alone_controls_generic_hook_admission() {
+        use crate::daemon::ownership::OwnerLock;
+        let iso = crate::test_support::isolation::TestIsolation::new("enum-callback-consumer");
+        let mut args = args(iso.state_root());
+        args.event = Some("SyntheticStart".into());
+        args.harness = crate::harness::registry::OccupantHarness::Agent(
+            crate::harness::registry::builtins()
+                .agent("synthetic_fourth")
+                .unwrap(),
+        )
+        .into();
+        let context = RuntimeContext::explicit(
+            args.state_dir.clone().unwrap(),
+            args.host_endpoint.clone().unwrap(),
+            None,
+        )
+        .unwrap();
+        let paths = InstancePaths::resolve(&context).unwrap();
+        let owner = OwnerLock::acquire(&paths).unwrap();
+        let instance = owner.instance_uuid();
+        let listener = owner.bind_socket().unwrap();
+        owner
+            .publish_endpoint(
+                &listener,
+                env!("CARGO_PKG_VERSION"),
+                crate::protocol::wire::PROTOCOL_VERSION,
+            )
+            .unwrap();
+        let service = Arc::new(Service::default());
+        let handler = Arc::clone(&service);
+        let shutdown = Cancellation::default();
+        let stopped = shutdown.clone();
+        let worker = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let _ = crate::daemon::transport::serve(
+                    listener.into_async().unwrap(),
+                    instance,
+                    handler,
+                    Arc::new(SystemClock::new()),
+                    crate::daemon::paths::effective_uid(),
+                    stopped,
+                )
+                .await
+                .unwrap();
+            });
+            drop(owner);
+        });
+        let _server = Server {
+            shutdown,
+            worker: Some(worker),
+        };
+        static CALLBACK: Callback = Callback(HookAdmissionPolicy::QualifiedCallback);
+        let registrations = Box::leak(Box::new([Registration::new(&CALLBACK)]));
+        let registry = crate::harness::registry::Registry::new(registrations).unwrap();
+        let registration = registry
+            .by_id(registry.agent("synthetic_fourth").unwrap())
+            .unwrap();
+        let outcome = run_hook_registered(
+            registration,
+            &args,
+            &InstalledHarness::Claude("unrelated-invalid-runtime".into()),
+            &payload(),
+            &herdr(),
+            Instant::now() + LIFECYCLE_BUDGET,
+            Arc::new(SystemClock::new()),
+            None,
+        );
+        assert_eq!(
+            outcome.diagnostic,
+            None,
+            "callback admission must receive input independently of PATH; commands: {:?}",
+            service.0.lock().unwrap()
+        );
+        let value: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+        assert!(
+            value["synthetic_context"]
+                .as_str()
+                .unwrap()
+                .contains("Before using threads")
+        );
+        assert!(
+            outcome.attention.is_some(),
+            "real check-in must produce its offer token"
+        );
+        let calls = service.0.lock().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| matches!(c, Command::CheckIn(_)))
+                .count(),
+            1
+        );
+        assert!(calls.iter().any(|c| matches!(c, Command::SeatInspect(_))));
+        drop(calls);
+        let journal =
+            crate::cli::seat_contexts(&paths, instance, &SeatId::new("callback-seat")).unwrap();
+        let saved = journal.current().unwrap().unwrap();
+        assert_eq!(saved.binding_generation, 2);
+        assert_eq!(saved.harness, args.harness);
+        assert_eq!(
+            saved.session,
+            SessionReference::Native("enum-only-session".into())
+        );
+        assert!(journal.pending().unwrap().is_none());
+        // Exercise the same observation and input projections as the active
+        // process sequence, then replay through the actual generic consumer.
+        let started = Instant::now();
+        let environment = InstallEnvironment {
+            path: None,
+            config_root: None,
+            state_dir: args.state_dir.clone(),
+            clock: Arc::new(SystemClock::new()),
+        };
+        sequence(
+            started,
+            TOOL_BUDGET,
+            |remaining| {
+                Ok(hook_install_observation(
+                    registration,
+                    &environment,
+                    &budget(started + remaining, environment.clock.as_ref()),
+                ))
+            },
+            |observation| {
+                let input = HookInput {
+                    bytes: payload(),
+                    registered_event: args.event.clone(),
+                };
+                let request = hook_admission_request(registration, observation, &input);
+                let handle = registration
+                    .admit(
+                        &request,
+                        &budget(started + TOOL_BUDGET, environment.clock.as_ref()),
+                    )
+                    .unwrap();
+                assert!(matches!(
+                    registration.decode(&handle, &input).unwrap().runtime,
+                    RuntimeAttribution::Unavailable { .. }
+                ));
+                let replay = run_hook_registered(
+                    registration,
+                    &args,
+                    &InstalledHarness::Claude("unrelated-invalid-runtime".into()),
+                    &payload(),
+                    &herdr(),
+                    started + TOOL_BUDGET,
+                    Arc::clone(&environment.clock),
+                    None,
+                );
+                assert_eq!(replay.diagnostic, None);
+                assert!(!replay.stdout.is_empty());
+                started + TOOL_BUDGET
+            },
+            |detail| panic!("enum callback was refused before admission: {detail}"),
+            |_| {},
+        );
+        assert_eq!(journal.current().unwrap(), Some(saved));
+        let outside = run_hook_registered(
+            registration,
+            &args,
+            &claude(),
+            &payload(),
+            &HookEnv {
+                herdr_env: true,
+                pane: None,
+            },
+            Instant::now() + TOOL_BUDGET,
+            clock(),
+            None,
+        );
+        assert!(outside.stdout.is_empty());
+        assert!(outside.attention.is_none());
+        assert!(outside.diagnostic.is_none());
+    }
+    #[test]
+    fn explicit_installed_policy_keeps_observation_and_omits_callback_input() {
+        static INSTALLED: Callback = Callback(HookAdmissionPolicy::InstalledObservation);
+        let registry =
+            crate::harness::registry::Registry::new(Box::leak(Box::new([Registration::new(
+                &INSTALLED,
+            )])))
+            .unwrap();
+        let registration = registry
+            .by_id(registry.agent("synthetic_fourth").unwrap())
+            .unwrap();
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        let environment = InstallEnvironment {
+            path: None,
+            config_root: None,
+            state_dir: None,
+            clock: Arc::clone(&clock),
+        };
+        let budget = budget(Instant::now() + TOOL_BUDGET, clock.as_ref());
+        let observation = hook_install_observation(registration, &environment, &budget);
+        assert!(
+            matches!(&observation, InstallObservation::ExecutableAvailable { binary }
+            if binary == Path::new("/synthetic/installed-runtime"))
+        );
+        let request = hook_admission_request(
+            registration,
+            observation,
+            &HookInput {
+                bytes: payload(),
+                registered_event: Some("SyntheticStart".into()),
+            },
+        );
+        assert_eq!(
+            registration.admit(&request, &budget).unwrap().kind(),
+            AdmissionKind::ContractDeclared
+        );
+    }
+}

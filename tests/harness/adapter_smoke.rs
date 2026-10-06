@@ -665,3 +665,172 @@ mod launch_fixture {
         }
     }
 }
+
+/// A fourth author selects callback admission with the enum alone. The actual
+/// hook consumer regression lives in cli::hook; this checks the public author seam.
+mod enum_only_callback {
+    use herdr_threads::test_support::synthetic_fourth::ADAPTER;
+    use herdr_threads::{harness::adapter::*, protocol::time::CallBudget};
+    struct CallbackFourth;
+    const PAYLOAD: &[u8] = br#"{"event":"SyntheticStart","event_id":"fourth-callback","session_id":"fourth-session","role":"top_level"}"#;
+    impl HarnessAdapter for CallbackFourth {
+        type Admission = ();
+        fn metadata(&self) -> &'static AdapterMetadata {
+            ADAPTER.metadata()
+        }
+        fn contracts(&self) -> &'static [ContractDescriptor] {
+            ADAPTER.contracts()
+        }
+        fn hook_admission_policy(&self) -> HookAdmissionPolicy {
+            HookAdmissionPolicy::QualifiedCallback
+        }
+        fn observe_install(&self, _: &InstallEnvironment, _: &CallBudget) -> InstallObservation {
+            panic!("callback must not use installed observation")
+        }
+        fn admit(&self, request: &AdmissionRequest, _: &CallBudget) -> AdmissionDecision<()> {
+            let input = request
+                .input
+                .as_ref()
+                .expect("enum-only fourth must receive callback input");
+            assert_eq!(input.bytes, PAYLOAD);
+            assert_eq!(input.registered_event.as_deref(), Some("SyntheticStart"));
+            assert!(matches!(
+                request.installed,
+                InstallObservation::Unsupported(_)
+            ));
+            assert!(request.runtime_candidate.is_none());
+            AdmissionDecision::ContractDeclared {
+                state: (),
+                recipe: "enum-only fourth callback",
+            }
+        }
+        fn version_ladder(&self, r: &RuntimeIdentity) -> Ladder {
+            ADAPTER.version_ladder(r)
+        }
+        fn classify(&self, i: &HookInput) -> ContractObservation {
+            ADAPTER.classify(i)
+        }
+        fn decode(&self, a: &(), i: &HookInput) -> Result<DecodedEvent, DecodeFailure> {
+            ADAPTER.decode(a, i)
+        }
+        fn encode(
+            &self,
+            a: &(),
+            e: &DecodedEvent,
+            o: &NeutralOffer,
+        ) -> Result<EncodedOutput, EncodeFailure> {
+            ADAPTER.encode(a, e, o)
+        }
+        fn attribute_runtime(&self, i: &HookInput, b: &CallBudget) -> RuntimeAttribution {
+            ADAPTER.attribute_runtime(i, b)
+        }
+        fn setup(&self, r: &SetupRequest, b: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
+            ADAPTER.setup(r, b)
+        }
+        fn status(&self, r: &StatusRequest, b: &CallBudget) -> SetupStatus {
+            ADAPTER.status(r, b)
+        }
+        fn unsetup(
+            &self,
+            r: &UnsetupRequest,
+            b: &CallBudget,
+        ) -> Result<RemovalOutcome, SetupFailure> {
+            ADAPTER.unsetup(r, b)
+        }
+    }
+    #[test]
+    fn qualified_callback_enum_alone_controls_fourth_author_admission() {
+        use herdr_threads::{
+            harness::registry::*,
+            protocol::time::{Clock, MonoInstant},
+        };
+        let iso =
+            herdr_threads::test_support::isolation::TestIsolation::new("fourth-enum-admission");
+        static CALLBACK: CallbackFourth = CallbackFourth;
+        let registry = Registry::new(Box::leak(Box::new([Registration::new(&CALLBACK)]))).unwrap();
+        let id = registry.agent("synthetic_fourth").unwrap();
+        let registration = registry.by_id(id).unwrap();
+        // This public forwarding predicate must agree with the sole author policy.
+        assert!(registration.callback_admission());
+        let clock = std::sync::Arc::new(herdr_threads::app::SystemClock::new());
+        let budget = CallBudget {
+            deadline: MonoInstant(clock.monotonic_now().0 + 1000),
+            cancellation: Default::default(),
+        };
+        let admitted = registration
+            .admit(
+                &AdmissionRequest {
+                    installed: InstallObservation::Unsupported(UnsupportedOperation {
+                        adapter: "synthetic_fourth",
+                        operation: "callback startup identity",
+                    }),
+                    input: Some(HookInput {
+                        bytes: PAYLOAD.to_vec(),
+                        registered_event: Some("SyntheticStart".into()),
+                    }),
+                    runtime_candidate: None,
+                },
+                &budget,
+            )
+            .unwrap();
+        for (event, role) in [
+            ("SyntheticStart", "top_level"),
+            ("SyntheticStart", "child"),
+            ("SyntheticStart", "unknown"),
+            ("SyntheticObserver", "top_level"),
+        ] {
+            let input=HookInput { bytes:serde_json::to_vec(&serde_json::json!({"event":event,"event_id":"fourth-callback","session_id":"fourth-session","role":role})).unwrap(),registered_event:Some(event.into()) };
+            let decoded = registration.decode(&admitted, &input).unwrap();
+            assert_eq!(
+                decoded.can_check_in(),
+                event == "SyntheticStart" && role == "top_level"
+            );
+            assert!(matches!(
+                decoded.runtime,
+                RuntimeAttribution::Unavailable { .. }
+            ));
+            assert!(
+                builtins()
+                    .by_id(builtins().agent("claude").unwrap())
+                    .unwrap()
+                    .decode(&admitted, &input)
+                    .is_err()
+            );
+            let outcome = herdr_threads::cli::hook::run_admitted_hook(
+                &herdr_threads::cli::hook::HookArgs {
+                    state_dir: Some(iso.path("state")),
+                    host_endpoint: Some(iso.path("host.sock")),
+                    harness: OccupantHarness::Agent(id).into(),
+                    event: Some(event.into()),
+                },
+                registration,
+                &admitted,
+                &decoded,
+                &herdr_threads::cli::hook::HookEnv {
+                    herdr_env: true,
+                    pane: Some("w1:p1".into()),
+                },
+                std::time::Instant::now() + std::time::Duration::from_secs(1),
+                clock.clone(),
+                None,
+            );
+            assert!(outcome.attention.is_none());
+            if role == "unknown" {
+                assert!(outcome.stdout.is_empty());
+            } else {
+                let output: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+                if event == "SyntheticObserver" {
+                    assert!(output["synthetic_context"].is_null());
+                }
+                if role == "child" {
+                    assert!(
+                        output["synthetic_context"]
+                            .as_str()
+                            .unwrap()
+                            .contains("forbidden to subagents")
+                    );
+                }
+            }
+        }
+    }
+}

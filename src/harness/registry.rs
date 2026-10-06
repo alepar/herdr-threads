@@ -187,7 +187,6 @@ trait ErasedAdapter: Send + Sync {
     fn receipt_admission_summary(&self) -> Option<String>;
     fn output_policy(&self) -> OutputPolicy;
     fn legacy_contract_id(&self) -> Option<String>;
-    fn callback_admission(&self) -> bool;
     fn hook_admission_policy(&self) -> HookAdmissionPolicy;
     fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy;
     fn evidence_observations(&self, input: &HookInput) -> Vec<EvidenceProjection>;
@@ -277,9 +276,6 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
     }
     fn output_policy(&self) -> OutputPolicy {
         self.0.output_policy()
-    }
-    fn callback_admission(&self) -> bool {
-        self.0.callback_admission()
     }
     fn hook_admission_policy(&self) -> HookAdmissionPolicy {
         self.0.hook_admission_policy()
@@ -506,8 +502,9 @@ impl Registration {
     pub fn hook_admission_policy(&self) -> HookAdmissionPolicy {
         self.adapter.hook_admission_policy()
     }
+    /// Compatibility predicate derived from the authoritative adapter policy.
     pub fn callback_admission(&self) -> bool {
-        self.adapter.callback_admission()
+        self.hook_admission_policy() == HookAdmissionPolicy::QualifiedCallback
     }
     pub fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy {
         self.adapter.qualified_turn_policy()

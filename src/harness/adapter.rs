@@ -15,16 +15,10 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn legacy_contract_id(&self) -> Option<String> {
         None
     }
-    /// Only startup-qualified input adapters bypass the installed PATH witness.
-    fn callback_admission(&self) -> bool {
-        false
-    }
+    /// Selects the sole source of hook admission. Callback input is supplied
+    /// only for startup-qualified adapters; the policy itself grants no authority.
     fn hook_admission_policy(&self) -> HookAdmissionPolicy {
-        if self.callback_admission() {
-            HookAdmissionPolicy::QualifiedCallback
-        } else {
-            HookAdmissionPolicy::InstalledObservation
-        }
+        HookAdmissionPolicy::InstalledObservation
     }
     fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy {
         super::context::QualifiedTurnPolicy::Strict

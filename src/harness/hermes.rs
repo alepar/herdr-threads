@@ -605,8 +605,8 @@ impl HarnessAdapter for HermesAdapter {
     fn contracts(&self) -> &'static [ContractDescriptor] {
         CONTRACTS
     }
-    fn callback_admission(&self) -> bool {
-        true
+    fn hook_admission_policy(&self) -> HookAdmissionPolicy {
+        HookAdmissionPolicy::QualifiedCallback
     }
     fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy {
         super::context::QualifiedTurnPolicy::StartupAttach
@@ -2179,8 +2179,8 @@ mod adapter_tests {
         fn classify(&self, i: &HookInput) -> ContractObservation {
             HermesAdapter.classify(i)
         }
-        fn callback_admission(&self) -> bool {
-            true
+        fn hook_admission_policy(&self) -> HookAdmissionPolicy {
+            HookAdmissionPolicy::QualifiedCallback
         }
         fn decode(
             &self,
