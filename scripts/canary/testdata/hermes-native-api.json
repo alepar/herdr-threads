@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "evidence_stage": "source_captured",
+  "provenance": "pinned_source_fixture",
+  "actual_native_executed": false,
+  "identity": {
+    "release_version": null,
+    "source": "commit-build",
+    "base_version": "0.21.5",
+    "derived_version": "0.21.5+3962.g37daf85",
+    "commit": "37daf85b2ad0ee50ed45d7234dc47b7fa24cec09",
+    "dirty": false,
+    "distance": 3962
+  },
+  "loader_route": "selective_private_api",
+  "native_sources": {
+    "manager": "hermes_cli/plugins.py",
+    "loader": "hermes_cli/plugins_loader.py",
+    "dispatch": "hermes_cli/plugins_dispatch.py",
+    "ledger": "hermes_cli/plugins_ledger.py"
+  },
+  "methods": [
+    "PluginManager._scan_directory",
+    "PluginManager._gate_manifest",
+    "PluginManager._load_plugin",
+    "PluginManager.invoke_hook",
+    "PluginManager.unload"
+  ],
+  "callbacks": [
+    "pre_llm_call",
+    "post_tool_call",
+    "on_session_start",
+    "on_session_reset"
+  ],
+  "domain_producer": "fresh_private_v2_client_gate_after_real_daemon_ack",
+  "native_acceptance": "UNMET",
+  "limits": [
+    "not_full_cli_discovery",
+    "no_model_or_receipt_proof",
+    "startup_captured_identity",
+    "non_atomic_official_observed_timeout",
+    "uncancellable_single_native_reader"
+  ]
+}
