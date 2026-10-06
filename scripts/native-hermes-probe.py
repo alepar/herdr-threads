@@ -84,7 +84,7 @@ def validate(data):
               'physical_home', 'state_root', 'host_endpoint', 'installation_token',
               'interpreter', 'launcher', 'source_root', 'runtime_identity', 'threads',
               'host', 'api_mode', 'timeout_seconds', 'owned_services', 'cleanup_argv', 'stages'}
-    optional = {'runtime_command_file', 'native_scope', 'model_evidence'}
+    optional = {'runtime_command_file', 'native_scope', 'model_evidence', 'launch', 'measurement'}
     if (not isinstance(data, dict) or not fields <= set(data) or set(data) - fields - optional
             or data['schema_version'] != 1 or data['producer'] not in ('synthetic_fixture', 'prepared_native')
             or not token(data['profile'], 256) or not token(data['api_mode'], 64)):
@@ -130,6 +130,10 @@ def validate(data):
     argv(data['cleanup_argv'])
     for command in data['stages'].values():
         argv(command)
+    if 'measurement' in data:
+        companion_module().measurement_input(data['measurement'])
+        if data['measurement']['target'] != launch_scope(data)['pane']:
+            raise ValueError('measurement_target_scope')
     if not isinstance(data['runtime_identity'], dict):
         raise ValueError('runtime_identity')
     return data
@@ -278,15 +282,29 @@ def native_preflight(data):
     return scope
 
 
-def native_commands(data):
-    """Use the existing real selective loader producer, without editing its argv.
+def launch_scope(data):
+    value = data.get('launch')
+    if (not isinstance(value, dict) or set(value) != {'pane','terminal','agent_name'}
+            or not all(token(value[k],256) for k in value)):
+        raise ValueError('explicit_launch_target_required')
+    return value
 
-    The companion consumes the parent's exact official runtime-command file.
-    Other explicit CLI commands remain scoped to their actual output parser;
-    arbitrary stage JSON cannot satisfy a native stage predicate.
-    """
+
+def native_commands(data):
+    """Construct real scoped producers; caller stage argv cannot substitute echo."""
+    scope = launch_scope(data)
+    launch = [data['threads']['path'], '--state-dir', data['state_root'],
+        '--host-endpoint', data['host_endpoint'], '--json', 'launch',
+        '--pane', scope['pane'], '--kind', 'hermes', '--name', scope['agent_name'],
+        '--', '--profile', data['profile'], '--cli']
+    recognition = [data['host']['path'], 'agent', 'get', scope['pane']]
     commands = dict(data['stages'])
+    for stage, command in (('guarded_launch',launch),('recognition',recognition)):
+        if stage in commands and commands[stage] != command:
+            raise ValueError('unbound_native_command')
+        commands[stage] = command
     commands['source_capture'] = [data['threads']['path'], '--version']
+    # Recognition is performed after the guarded start, not from an unrelated prior pane.
     if data.get('native_scope') in ('native_callbacks', 'live'):
         path = data.get('runtime_command_file')
         if not token(path) or not os.path.isabs(path):
@@ -331,16 +349,65 @@ def capture_domains(data, owned, deadline):
     fd = os.open(path, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
     with os.fdopen(fd,'w') as stream:
         json.dump({'adapter':adapter},stream)
-    code, raw, error = owned.capture(native_commands(data)['native_domains'],deadline)
+    opt_in=data.get('measurement')
+    if opt_in is not None and captured.get('measurement') != opt_in:
+        raise ValueError('measurement_input_binding')
+    if opt_in is None and 'measurement' in captured:
+        raise ValueError('unexpected_measurement_mode')
+    command=captured['argv'] if opt_in is not None else native_commands(data)['native_domains']
+    code, raw, error = owned.capture(command,deadline)
     if error or code != 0:
         raise ValueError('selective_callback_unavailable')
     engine = companion.runner()
+    if opt_in is not None:
+        observation=document(raw)
+        if (set(observation)!={'schema_version','provenance','identity','native_loaded','domains','measurement'}
+                or observation['schema_version']!=1 or observation['provenance']!='official_native_selective'
+                or observation['native_loaded'] is not True or observation['identity']!=data['runtime_identity']):
+            raise ValueError('selective_observation')
+        diagnostic=decode_measurement(observation['measurement'],opt_in)
+        candidate=dict(schema_version=1,harness='hermes',attempt=data['installation_token'],
+            identity=observation['identity'],evidence_stage='no_model',outcome='complete',reason=None,domains=observation['domains'])
+        raw=json.dumps(candidate).encode()
     measured = engine.validate_result(raw,adapter,data['installation_token'],'no_model')
     if measured['identity'] != data['runtime_identity'] or len(engine.verified_domains(measured,adapter)) != 2:
         raise ValueError('native_domains_incomplete')
     # The companion verifies source/profile/generation, the real native enabled
     # loader gates, callback shape and timely real client evidence replies.
-    return measured['domains']
+    return dict(domains=measured['domains'],measurement=diagnostic if opt_in is not None else None)
+
+
+def decode_measurement(value, expected):
+    fields={'schema_version','scope','invocation_sha256','rows'}
+    reasons={'unobserved','selective_return_and_canonical_completed_operation',
+        'native_form_omits_callback','selective_declared_child_return_and_private_state_conservation',
+        'declared_hint_consumed_clear_and_canonical_transition'}
+    if (not isinstance(value,dict) or set(value)!=fields or value['schema_version']!=1
+            or value['scope']!='selective_native_api_invocation_not_model_delivery'
+            or value['invocation_sha256']!=hashlib.sha256(expected['invocation_id'].encode()).hexdigest()
+            or not isinstance(value['rows'],list) or len(value['rows'])!=3):
+        raise ValueError('measurement_schema')
+    pass_reasons={'callback_context':'selective_return_and_canonical_completed_operation',
+        'child':'selective_declared_child_return_and_private_state_conservation',
+        'reset':'declared_hint_consumed_clear_and_canonical_transition'}
+    for stage,item in zip(('callback_context','child','reset'),value['rows']):
+        allowed={'stage','verdict','reason','samples','exit_code'}
+        if item.get('verdict')=='PASS' and stage=='callback_context':allowed|={'context_sha256','context_bytes'}
+        if (set(item)!=allowed or item.get('stage')!=stage or item.get('verdict') not in ('PASS','FAIL','INCONCLUSIVE','SKIPPED')
+                or item.get('reason') not in reasons or item.get('exit_code') is not None
+                or type(item.get('samples')) is not int or not 0<=item['samples']<=1
+                or (item['verdict']=='PASS' and item['samples']!=1)):
+            raise ValueError('measurement_row')
+        if (item['verdict']=='PASS' and item['reason']!=pass_reasons[stage]) or (item['verdict']!='PASS' and
+                (item['samples']!=0 or item['reason'] not in ('unobserved','native_form_omits_callback'))) or (
+                item['reason']=='native_form_omits_callback' and (stage!='child' or item['verdict']!='SKIPPED')):
+            raise ValueError('measurement_predicate')
+        if 'context_bytes' in item:
+            h=item['context_sha256']
+            if (type(item['context_bytes']) is not int or not 1<=item['context_bytes']<=4096
+                    or not isinstance(h,str) or len(h)!=64 or any(c not in '0123456789abcdef' for c in h)):
+                raise ValueError('measurement_context')
+    return value
 
 
 def native_row(stage, code, raw, data):
@@ -349,14 +416,195 @@ def native_row(stage, code, raw, data):
         return row(stage, 'PASS', 'explicit_source_binary_digest', 1)
     if stage == 'guarded_launch':
         value = document(raw)
-        # The generic CLI's report is not check-in, registration or receipt proof.
-        if value.get('outcome') == 'started' and value.get('harness') == 'hermes':
+        scope = launch_scope(data)
+        h = value.get('hermes', {})
+        v = value.get('harness_version', {})
+        if (value.get('outcome') == 'started' and value.get('harness') == 'hermes'
+                and value.get('pane') == scope['pane']
+                and value.get('agent_name') == scope['agent_name'] and token(value.get('seat'),256)
+                and value.get('argv') == ['--profile',data['profile'],'--cli','chat']
+                and value.get('config_dir',{}).get('path') == data['home']
+                and v.get('binary') == data['launcher'] and v.get('admission') == 'prelaunch_observed'
+                and h.get('profile') == data['profile'] and h.get('home') == data['home']
+                and h.get('identity') == data['runtime_identity']
+                and h.get('identity_provenance') == 'startup_captured_prelaunch_observation'
+                and h.get('environment_scope') == 'declared_child_input_plus_native_bootstrap_profile_effects'
+                and h.get('api') == 'presence_only' and h.get('callback_qualified') is False
+                and h.get('native_acceptance') == 'unmet'):
             return row(stage, 'PASS', 'managed_launch_only', 1, code)
-        return row(stage, reason='startup_not_observed', exit_code=code)
+        return row(stage, reason='startup_not_correlated', exit_code=code)
+    if stage == 'recognition':
+        scope = launch_scope(data)
+        value = document(raw).get('result',{}).get('agent',{})
+        if (value.get('pane_id') == scope['pane'] and value.get('terminal_id') == scope['terminal']
+                and value.get('name') == scope['agent_name'] and value.get('agent') == 'hermes'
+                and value.get('launch_pending',False) is False
+                and value.get('agent_status') in ('idle','working','blocked','done')
+                and type(value.get('revision')) is int and value['revision'] > 0):
+            return row(stage,'PASS','advisory_private_agent_match_no_epoch_attestation',1,code)
+        return row(stage,reason='private_agent_not_correlated',exit_code=code)
     # The companion's strict real selective result supplies two DOMAIN samples,
     # not context/API/model consumption. Retain those separately in the result.
     return row(stage, reason='independent_native_observation_required', exit_code=code)
 
+
+
+def instance_directory(data):
+    # Same raw endpoint bytes as RuntimeContext / InstancePaths, not a root DB guess.
+    return Path(data['state_root'])/'instances'/hashlib.sha256(os.fsencode(data['host_endpoint'])).hexdigest()
+
+
+def private_bytes(path, cap):
+    path = Path(path)
+    for parent in (path.parent, path.parent.parent):
+        info = parent.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError('private_directory_required')
+    fd = os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError('private_file_required')
+        raw = os.read(fd,cap+1)
+        if len(raw)>cap: raise ValueError('private_bound')
+        return raw
+    finally: os.close(fd)
+
+
+def captured_instance(data):
+    directory = instance_directory(data)
+    observed=uuid.UUID(private_bytes(directory/'namespace',128).decode().strip())
+    if observed.int==0: raise ValueError('namespace_nil')
+    namespace=str(observed)
+    return directory, namespace
+
+
+def callback_event(session, turn, api_request):
+    raw = json.dumps(['pre_llm_call',session,turn,None,api_request],
+                     ensure_ascii=False,separators=(',',':')).encode()
+    return 'hermes:'+hashlib.sha256(raw).hexdigest()
+
+
+def journals(data, deadline):
+    directory, namespace = captured_instance(data)
+    root = directory/'contexts'
+    info = root.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError('contexts_private')
+    records = []
+    with os.scandir(root) as entries:
+        for index, entry in enumerate(entries):
+            if index >= 256 or time.monotonic() >= deadline: raise ValueError('contexts_bound')
+            raw = private_bytes(Path(entry.path)/'context.json',1048576)
+            value = json.loads(raw,object_pairs_hook=unique_pairs,parse_constant=lambda _: (_ for _ in ()).throw(ValueError('nonfinite')))
+            if (value.get('version') != 1 or value.get('instance') != namespace
+                    or not token(value.get('seat'),256) or not isinstance(value.get('completed'),list)
+                    or len(value['completed'])>128 or len(value.get('declared_resets',[]))>32
+                    or len(value.get('prepared_kinds',[]))>129):
+                raise ValueError('context_schema')
+            records.append((Path(entry.path),value))
+    return directory, namespace, records
+
+
+def matched_current(data, measurement, session, deadline):
+    directory, namespace, records = journals(data, deadline)
+    selected = [(path,value) for path,value in records if value['seat']==measurement['seat']
+                and isinstance(value.get('current'),dict)
+                and value['current'].get('target')==measurement['target']]
+    if len(selected)!=1: raise ValueError('context_ambiguous_or_absent')
+    path, value = selected[0]; current = value['current']
+    if (current.get('format_version')!=1 or current.get('instance')!=namespace
+            or current.get('seat')!=measurement['seat'] or current.get('harness')!='Hermes'
+            or current.get('role')!='TopLevel' or current.get('session')!={'Native':session}
+            or type(current.get('binding_generation')) is not int or current['binding_generation']<=0):
+        raise ValueError('current_context_mismatch')
+    if uuid.UUID(current['execution']).int==0: raise ValueError('execution_nil')
+    connection = readonly_database(directory/'threads.sqlite3',deadline)
+    try:
+        rows = connection.execute("SELECT generation,execution_id,native_session FROM occupant_bindings WHERE seat_id=? AND target_id=? AND harness='hermes' AND observation_provenance='cooperative_top_level' AND registered_at IS NOT NULL AND ended_at IS NULL LIMIT 2",
+            (measurement['seat'],measurement['target'])).fetchall()
+        if len(rows)!=1 or tuple(rows[0])!=(current['binding_generation'],current['execution'],session):
+            raise ValueError('canonical_binding_mismatch')
+    finally: connection.close()
+    if time.monotonic()>=deadline: raise ValueError('deadline')
+    return path,value,current
+
+
+def request_kind_digest(request, kind):
+    fields=('operation_id','mode','context','expected_generation','event_id','payload_version','payload')
+    context_fields=('format_version','instance','seat','target','harness','binding_generation','execution','session','role')
+    ordered={name:request[name] for name in fields}
+    ordered['context']={name:request['context'][name] for name in context_fields}
+    return 'sha256:'+hashlib.sha256(json.dumps([ordered,kind],ensure_ascii=False,
+        separators=(',',':')).encode()).hexdigest()
+
+
+def qualified_return(data, measurement, session, turn, api_request, returned, started, deadline):
+    # Official dispatcher list contains only the one loaded owned plugin result.
+    if (not isinstance(returned,list) or len(returned)!=1 or not isinstance(returned[0],dict)
+            or set(returned[0])!={'context'} or not isinstance(returned[0]['context'],str)
+            or not 0<len(returned[0]['context'].encode())<=4096
+            or measurement['context_marker'] not in returned[0]['context']):
+        raise ValueError('qualified_return_absent')
+    path,value,current = matched_current(data,measurement,session,deadline)
+    event=callback_event(session,turn,api_request)
+    done=[d for d in value['completed'] if d.get('request',{}).get('event_id')==event]
+    if len(done)!=1 or value.get('pending') is not None: raise ValueError('completed_event_absent')
+    done=done[0];request,response=done['request'],done['response']
+    if uuid.UUID(request['operation_id']).int==0: raise ValueError('operation_nil')
+    if (response.get('historical') is not False or response.get('context')!=current
+            or any(request.get('context',{}).get(k)!=current.get(k) for k in ('format_version','instance','seat','target','harness','execution','session','role'))
+            or (request.get('mode')=='Current' and request['context'].get('binding_generation')!=current['binding_generation'])
+            or (request.get('mode')=='Lifecycle' and current['binding_generation']<=(request.get('expected_generation') or 0))
+            or type(done.get('completed_at_millis')) is not int
+            or not started<=done['completed_at_millis']<=int(time.time()*1000)):
+        raise ValueError('completed_event_mismatch')
+    kinds=[k for k in value.get('prepared_kinds',[]) if k.get('event_id')==event
+           and k.get('operation_id')==request['operation_id']]
+    if (len(kinds)!=1 or kinds[0].get('kind') not in ('Startup','Tool','Clear')
+            or kinds[0].get('request_digest')!=request_kind_digest(request,kinds[0]['kind'])
+            or request.get('mode')!=('Current' if kinds[0]['kind']=='Tool' else 'Lifecycle')):
+        raise ValueError('prepared_kind_mismatch')
+    context=returned[0]['context'].encode()
+    result=row('callback_context','PASS','selective_return_and_canonical_completed_operation',1)
+    result.update(context_sha256=hashlib.sha256(context).hexdigest(),context_bytes=len(context))
+    return result,value,current,kinds[0]['kind']
+
+
+def conservation_snapshot(data, deadline):
+    directory,namespace,records=journals(data,deadline)
+    private=[]
+    for path,value in records:
+        private.append((str(path.relative_to(directory)),hashlib.sha256(private_bytes(path/'context.json',1048576)).hexdigest()))
+        attention=path/'attention.json'
+        if os.path.lexists(attention):
+            private.append((str(attention.relative_to(directory)),hashlib.sha256(private_bytes(attention,65536)).hexdigest()))
+    connection=readonly_database(directory/'threads.sqlite3',deadline)
+    try:
+        connection.execute('BEGIN')
+        tables=connection.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name LIMIT 257").fetchall()
+        if len(tables)>256: raise ValueError('table_bound')
+        canonical=[];size=0
+        for table in tables:
+            name=table[0]
+            if not name.isidentifier() or time.monotonic()>=deadline: raise ValueError('table_or_deadline')
+            columns=[r[1] for r in connection.execute('PRAGMA table_info("'+name+'")').fetchall()]
+            if not columns or len(columns)>256 or any(not c.isidentifier() for c in columns):
+                raise ValueError('column_bound')
+            sizes='+'.join('COALESCE(length(CAST("'+c+'" AS BLOB)),0)' for c in columns)
+            count,total,largest=connection.execute('SELECT COUNT(*),COALESCE(SUM('+sizes+'),0),COALESCE(MAX('+sizes+'),0) FROM "'+name+'"').fetchone()
+            if count>4096 or total>4194304-size or largest>65536:
+                raise ValueError('row_or_byte_bound')
+            rows=connection.execute('SELECT * FROM "'+name+'" LIMIT 4097').fetchall()
+            if len(rows)!=count: raise ValueError('snapshot_changed')
+            normalized=[[v.hex() if isinstance(v,bytes) else v for v in r] for r in rows]
+            encoded=sorted(json.dumps(r,ensure_ascii=False,separators=(',',':')) for r in normalized)
+            size+=sum(len(v.encode()) for v in encoded)
+            if size>4194304: raise ValueError('snapshot_bound')
+            canonical.append((name,encoded))
+    finally: connection.close()
+    raw=json.dumps([namespace,sorted(private),canonical],ensure_ascii=False,separators=(',',':')).encode()
+    return hashlib.sha256(raw).hexdigest()
 
 
 def readonly_database(path, deadline):
@@ -366,6 +614,8 @@ def readonly_database(path, deadline):
     physical home/state root select the paths; no import-time default is used.
     Each query has a decreasing deadline and bounded row/body projections.
     """
+    info=Path(path).lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid(): raise ValueError('database_ownership')
     connection = sqlite3.connect(Path(path).resolve(strict=True).as_uri()+'?mode=ro',
                                  uri=True, timeout=0)
     connection.row_factory = sqlite3.Row
@@ -404,7 +654,8 @@ def collect_model_evidence(data, deadline):
     native = canonical = None
     try:
         native = readonly_database(Path(data['physical_home'])/'state.db',deadline)
-        canonical = readonly_database(Path(data['state_root'])/'threads.sqlite3',deadline)
+        directory, namespace = captured_instance(data)
+        canonical = readonly_database(directory/'threads.sqlite3',deadline)
         messages = native.execute("""SELECT id,role,content,api_content,tool_calls,
             tool_call_id,tool_name,effect_disposition,timestamp FROM messages
             WHERE session_id=? AND active=1 AND id>? AND timestamp>=? AND timestamp<=?
@@ -575,12 +826,16 @@ def run(data, mode):
     try:
         if mode == 'native':
             native_preflight(data)
+            native_commands(data)
         elif data['producer'] != 'synthetic_fixture':
             raise ValueError('dry_requires_labeled_standins')
     except ValueError:
         result['preflight'] = row('preflight', reason='scope_not_authorized_by_input')
         return result
     env = isolated_environment(data, mode)
+    if mode == 'native' and data.get('measurement') is not None:
+        env.update(HERDR_ENV='1',HERDR_PANE_ID=data['measurement']['target'],
+                   HERDR_HERMES_CANARY_WORK=data['isolation_root'])
     owned = OwnedProcesses(env, data['isolation_root'])
     deadline = time.monotonic() + data['timeout_seconds']
     try:
@@ -589,7 +844,11 @@ def run(data, mode):
         for service in data['owned_services']:
             owned.spawn(service['argv'], pipes=False)
         commands = data['stages'] if mode == 'dry-run' else native_commands(data)
-        for index, stage in enumerate(STAGES):
+        order = list(STAGES)
+        if mode == 'native':
+            order.remove('recognition'); order.insert(order.index('guarded_launch')+1,'recognition')
+        for stage in order:
+            index = STAGES.index(stage)
             command = commands.get(stage)
             if command is None:
                 continue
@@ -607,13 +866,18 @@ def run(data, mode):
             result['matrix'][index] = measured
         if mode == 'native' and 'native_domains' in commands:
             try:
-                result['domains'] = capture_domains(data,owned,deadline)
+                captured = capture_domains(data,owned,deadline)
+                result['domains'] = captured['domains']
                 for stage in ('plugin_discovery','enablement'):
                     result['matrix'][STAGES.index(stage)] = row(stage,'PASS','native_selective_loader_gate',1)
                 # Actual callback context/API/model delivery remains independent
                 # of the measured two-domain evidence reply milestones.
                 result['matrix'][STAGES.index('callback_context')] = row(
                     'callback_context',reason='domain_reply_is_not_context_consumption')
+                if captured['measurement'] is not None:
+                    result['selective_api_measurement']=captured['measurement']
+                    for observed in captured['measurement']['rows']:
+                        result['matrix'][STAGES.index(observed['stage'])]=observed
             except (ValueError, OSError, TypeError, KeyError, StopIteration):
                 result['domains'] = []
         if mode == 'native' and data.get('native_scope') == 'live':

@@ -152,7 +152,9 @@ Live cooperative verification requires genuine native model-issued action eviden
 and matching canonical seat/binding/receipt records. Operator/driver setup commands
 are not model actions. Use an unhinted request to check mail; supplying exact CLI
 commands or IDs in a launch prompt cannot prove hook-context delivery. The live observer reads the captured physical Hermes home's `state.db` and the
-captured Threads state root's `threads.sqlite3` in SQLite read-only mode without
+captured Threads instance's `threads.sqlite3` at
+`STATE/instances/SHA256(raw host-endpoint bytes)/threads.sqlite3`, with its actual
+private `namespace` UUID; no root-database fallback in SQLite read-only mode without
 importing Hermes. The private `model_evidence` expected predicates are
 `session_id`, `after_id`, `user_row_id`, `started_at`, `finished_at` (epoch seconds,
 maximum 120-second window), `context_marker`, `seat_id`, `generation`,
@@ -185,3 +187,46 @@ captured producers; no domain reply or caller JSON supplies them. The driver
 therefore keeps `native_acceptance=UNMET`, even when individual measured action
 stages PASS.
 Final live measurement and acceptance belong to the coordinator, not leaf dry tests.
+
+
+The native input now requires `launch` with exact private `pane`, `terminal` and
+`agent_name`. The driver constructs the digest-bound Threads command with
+`--state-dir`, `--host-endpoint`, `--json`, `launch --pane ... --kind hermes
+--name ... -- --profile NAME --cli`. The adapter owns the emitted `chat` token;
+passing `chat` as a caller subcommand is refused. A native guarded-launch stage
+cannot substitute an echo or another executable/operation/scope. PASS requires
+the actual report's pane, name, composed argv, resolved launcher, selected home,
+profile and prelaunch identity/observation scope. It means managed launch only.
+The separately constructed private-host `agent get` matches the actual
+`result.agent` pane/terminal/name/Hermes label and nonpending status; it is an
+advisory recognition observation, not kernel epoch/incarnation attestation.
+
+An optional strict `measurement` object in both driver and captured companion
+input enables separate selective native API diagnostics. Its fields are
+`schema_version:1`, a fresh nonnil `invocation_id` UUID, exact `target`, expected
+`seat`, bounded `context_marker`, and `child_form` (`explicit_parent_callback`
+or `persist_disabled_no_callback`). The captured official trace/native-driver
+argv is unchanged; no bootstrap parsing or reconstruction occurs. The default
+canary result shape and domain credit stay unchanged. Opt-in output has a separate
+`measurement` scope `selective_native_api_invocation_not_model_delivery`.
+
+The producer captures the actual official dispatcher's returned context, then
+matches a fresh completed event/operation and prepared kind in the private context
+journal to the current canonical Hermes binding. Only a derived context hash and
+byte count leave private memory. A declared parent-qualified child must return
+the fixed read-only restriction and conserve bounded private context/attention
+and canonical table snapshots. This measures a selective declared-child API
+invocation; it does not establish that a running native subagent dispatched a
+callback. A native form known to suppress callbacks is explicitly skipped.
+Declared-reset None is insufficient: the producer requires an unchanged current
+context plus new-session reset hint, then a qualified new-session return,
+consumed hint, immutable prepared Clear operation, and same-seat canonical
+execution/generation/session transition. This is selective reset API behavior,
+not an actual interactive CLI reset or model delivery.
+
+Missing, zero, ambiguous, oversized, stale or mismatched samples remain
+inconclusive; child-state conservation is an observed bounded before/after
+projection, not atomic proof of all concurrent activity. All selective reads use
+the actual hashed instance and namespace, bounded private journal history and
+read-only SQLite deadlines. Real native/model acceptance remains UNMET until
+the coordinator performs separately authorized, reviewed final-build measurements.
