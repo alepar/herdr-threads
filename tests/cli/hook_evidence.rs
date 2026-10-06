@@ -19,6 +19,269 @@ use std::sync::{
 
 const NOW: u64 = 5_000 * HEARTBEAT_MS;
 
+/// Strict synthetic callback data; no native imports, profile reads or runtime probes.
+fn hermes_callback() -> Value {
+    let mut payload: Value =
+        serde_json::from_slice(include_bytes!("../fixtures/hermes/envelopes.json")).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    payload["started_at"] = now.into();
+    payload["deadline_at"] = (now + 1200).into();
+    payload["observation_order"]["observed_at_millis"] = now.into();
+    payload
+}
+
+#[test]
+fn hermes_structural_domains_reach_real_recorder_without_qualification_conflation() {
+    use crate::{
+        harness::adapter::{ContractDomain, HookInput, RuntimeAttribution},
+        ports::StorePort as _,
+        protocol::{
+            capabilities::HARNESS_EVIDENCE_V2, commands::HarnessEvidenceOutcomeV2 as Outcome,
+            results::HarnessEvidenceV2Recorded,
+        },
+    };
+    let iso = TestIsolation::new("hev-hermes-domains");
+    let clock: Arc<dyn Clock> = Arc::new(crate::app::SystemClock::new());
+    let store = Arc::new(
+        crate::store::SqliteStore::new(
+            crate::store::connection::StoreContext::new(iso.path("store.db"), clock.clone()),
+            "i",
+            crate::store::StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    let recorder = crate::daemon::harness_evidence::HarnessEvidenceRecorderV2::new(
+        store.clone(),
+        None,
+        clock.clone(),
+    );
+    let notes = Arc::new(Mutex::new(Vec::new()));
+    let captured = notes.clone();
+    let client = Arc::new(CountingLocalClient::scripted(
+        move |command| {
+            let Command::HarnessEvidenceV2(note) = command else {
+                panic!("unexpected command {command:?}")
+            };
+            captured.lock().unwrap().push(note.clone());
+            recorder.record(note, &budget()).map(|verified| {
+                CommandResult::HarnessEvidenceV2Recorded(HarnessEvidenceV2Recorded { verified })
+            })
+        },
+        DaemonVintage::Current,
+    ));
+    let registry = crate::harness::registry::builtins();
+    let registration = registry.by_id(registry.agent("hermes").unwrap()).unwrap();
+    let send = |payload: &Value, state: Option<&Path>, at| {
+        run_registered(
+            registration,
+            Some("pre_llm_call"),
+            &serde_json::to_vec(payload).unwrap(),
+            state,
+            at,
+            (&budget(), clock.as_ref()),
+            |_| {
+                Some((
+                    client.clone() as Arc<dyn LocalClient>,
+                    Capabilities::from_list([HARNESS_EVIDENCE_V2.into()]),
+                ))
+            },
+        )
+    };
+    let native = registration
+        .contracts()
+        .iter()
+        .find(|d| d.domain == ContractDomain::Native)
+        .unwrap();
+    let bridge = registration
+        .contracts()
+        .iter()
+        .find(|d| d.domain == ContractDomain::Bridge)
+        .unwrap();
+    let mut calls = 0;
+    // Both missing and type-wrong paths must be accepted by the real recorder's allowlist.
+    for (index, field, broken_domain, missing) in [
+        (0, "deadline_at", bridge, false),
+        (1, "deadline_at", bridge, true),
+        (2, "shape.session_id.type", native, false),
+        (3, "shape.session_id.type", native, true),
+    ] {
+        let mut payload = hermes_callback();
+        payload["session_id"] = format!("broken-{index}").into();
+        payload["role_association"]["session_id"] = payload["session_id"].clone();
+        let (object, key) = if field == "deadline_at" {
+            (payload.as_object_mut().unwrap(), "deadline_at")
+        } else {
+            (
+                payload["shape"]["session_id"].as_object_mut().unwrap(),
+                "type",
+            )
+        };
+        if missing {
+            object.remove(key);
+        } else {
+            object.insert(key.into(), serde_json::json!([]));
+        }
+        assert_eq!(
+            send(&payload, Some(iso.state_root()), NOW + index),
+            Delivery::Sent(Some(false)),
+            "{field}/missing={missing}"
+        );
+        calls += 2;
+        assert_eq!(client.total_calls(), calls);
+        let captured = notes.lock().unwrap();
+        for (note, descriptor) in captured[captured.len() - 2..].iter().zip([native, bridge]) {
+            assert_eq!(note.domain, descriptor.domain_id);
+            assert_eq!(note.origin, descriptor.origin);
+            assert_eq!(note.contract_id, descriptor.contract_id_v2().unwrap());
+            assert_eq!(note.event, "pre_llm_call");
+            assert_eq!(
+                note.outcome,
+                if descriptor.domain == broken_domain.domain {
+                    Outcome::Violation {
+                        field: field.into(),
+                    }
+                } else {
+                    Outcome::Ok
+                }
+            );
+            assert_eq!(note.runtime, None);
+            assert_eq!(
+                note.unavailable_reason.as_deref(),
+                Some("startup_callback_unavailable")
+            );
+            assert!(note.qualifications.is_empty());
+        }
+        drop(captured);
+        let diagnostics = store.contract_diagnostics("hermes", &budget()).unwrap();
+        let diagnostic = diagnostics
+            .iter()
+            .find(|d| d.session_id == format!("broken-{index}"))
+            .unwrap();
+        assert_eq!(
+            diagnostic.contract_id,
+            broken_domain.contract_id_v2().unwrap()
+        );
+        assert_eq!(diagnostic.event, "pre_llm_call");
+        assert_eq!(diagnostic.field, field);
+        assert_eq!(diagnostics.len(), (index + 1) as usize);
+        assert_eq!(
+            send(&payload, Some(iso.state_root()), NOW + index + 10),
+            Delivery::Sent(Some(false))
+        );
+        calls += 1; // Unqualified Ok in the other domain still needs its milestone.
+        assert_eq!(
+            client.total_calls(),
+            calls,
+            "bounded per-session diagnostic send"
+        );
+        let captured = notes.lock().unwrap();
+        assert_ne!(captured.last().unwrap().domain, broken_domain.domain_id);
+        assert_eq!(captured.last().unwrap().outcome, Outcome::Ok);
+    }
+    for (index, callback) in [
+        Value::Null,
+        serde_json::json!(3),
+        serde_json::json!("on_session_start"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut payload = hermes_callback();
+        payload["session_id"] = format!("selector-{index}").into();
+        if callback.is_null() {
+            payload.as_object_mut().unwrap().remove("callback");
+        } else {
+            payload["callback"] = callback;
+        }
+        assert_eq!(send(&payload, None, NOW), Delivery::Sent(Some(false)));
+        calls += 2;
+        assert_eq!(client.total_calls(), calls);
+        let captured = notes.lock().unwrap();
+        assert_eq!(captured[captured.len() - 2].outcome, Outcome::Malformed);
+        assert_eq!(captured[captured.len() - 2].domain, native.domain_id);
+        assert_eq!(
+            captured.last().unwrap().outcome,
+            Outcome::Violation {
+                field: "callback".into()
+            }
+        );
+        assert_eq!(captured.last().unwrap().domain, bridge.domain_id);
+        drop(captured);
+        let diagnostics = store.contract_diagnostics("hermes", &budget()).unwrap();
+        let diagnostic = diagnostics
+            .iter()
+            .find(|d| d.session_id == format!("selector-{index}"))
+            .unwrap();
+        assert_eq!(diagnostic.contract_id, bridge.contract_id_v2().unwrap());
+        assert_eq!(diagnostic.field, "callback");
+    }
+    let sticky = store.contract_diagnostics("hermes", &budget()).unwrap();
+    // Full decoder refusal must never invent a structural field violation.
+    for refusal in ["expired", "role", "runtime", "schema", "callback_value"] {
+        let mut payload = hermes_callback();
+        match refusal {
+            "expired" => {
+                payload["started_at"] = 1.into();
+                payload["deadline_at"] = 1201.into();
+                payload["observation_order"]["observed_at_millis"] = 1.into();
+            }
+            "role" => payload["role_association"]["role"] = "unsupported".into(),
+            "runtime" => payload["runtime_identity"]["source"] = "unsupported".into(),
+            "schema" => payload["schema_version"] = 2.into(),
+            "callback_value" => payload["reset_reason"] = "unsupported".into(),
+            _ => unreachable!(),
+        }
+        payload["session_id"] = "broken-0".into();
+        payload["role_association"]["session_id"] = "broken-0".into();
+        let input = HookInput {
+            bytes: serde_json::to_vec(&payload).unwrap(),
+            registered_event: Some("pre_llm_call".into()),
+        };
+        assert!(matches!(
+            registration.attribute_runtime(&input, &budget()),
+            RuntimeAttribution::Unavailable { .. }
+        ));
+        assert_eq!(
+            send(&payload, None, NOW),
+            Delivery::Sent(Some(false)),
+            "{refusal}"
+        );
+        calls += 2;
+        assert_eq!(client.total_calls(), calls);
+        for note in notes.lock().unwrap().iter().rev().take(2) {
+            assert_eq!(note.outcome, Outcome::Ok, "{refusal}");
+            assert_eq!(note.runtime, None);
+            assert!(note.qualifications.is_empty());
+        }
+        assert_eq!(
+            store.contract_diagnostics("hermes", &budget()).unwrap(),
+            sticky,
+            "success cannot clear or refresh sticky failure"
+        );
+    }
+    for descriptor in [native, bridge] {
+        assert_eq!(
+            store
+                .last_unattributed_v2("hermes", descriptor.domain_id, descriptor.origin, &budget())
+                .unwrap()
+                .unwrap()
+                .0,
+            "startup_callback_unavailable"
+        );
+    }
+    assert!(
+        store
+            .harness_evidence_v2_all("hermes", 0, &budget())
+            .unwrap()
+            .is_empty(),
+        "unavailable runtime creates no build or verified milestone"
+    );
+    assert_eq!(client.total_calls(), 28);
+}
+
 fn budget() -> CallBudget {
     CallBudget {
         deadline: MonoInstant(u64::MAX / 2),
