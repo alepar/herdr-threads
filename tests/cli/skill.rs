@@ -226,3 +226,32 @@ fn user_intent_guidance_query_withdrawal() {
         assert!(printed.contains(needle), "missing {needle}");
     }
 }
+
+#[test]
+fn daily_loop_uses_inbox_and_hook_notifications() {
+    let daily = SKILL_MD
+        .split_once("## Daily loop (top-level agent)")
+        .unwrap()
+        .1
+        .split_once("## Human input")
+        .unwrap()
+        .0;
+    let commands = daily
+        .split_once("```bash\n")
+        .unwrap()
+        .1
+        .split_once("```")
+        .unwrap()
+        .0;
+    assert!(commands.contains("herdr-threads inbox"));
+    assert!(commands.contains("herdr-threads send"));
+    for verb in ["read", "body", "follow", "ack", "pending-receipts"] {
+        assert!(
+            !commands.contains(&format!("herdr-threads {verb}")),
+            "routine command: {verb}"
+        );
+    }
+    assert!(daily.contains("finish your native turn"));
+    assert!(daily.contains("earlier context absent from inbox"));
+    assert!(daily.contains("long inbox messages use inbox continuations"));
+}

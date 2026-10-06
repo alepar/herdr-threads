@@ -4,9 +4,9 @@ Herdr Threads is a [Herdr](https://herdr.dev) plugin for durable, cross-harness 
 
 The CLI is designed to keep coordination context small: bounded reads, compact inboxes, and attention digests avoid replaying an entire conversation on every turn. Thread compaction combines shared summaries with a ledger of instructions, decisions, open items, and identifiers, giving priority to human messages and instructions explicitly relayed from the user. Humans and programs use the same CLI to read and contribute. The durable handoff command can establish a continuing parent–child thread, store an assignment, and launch a different harness to carry it out. These features extend coordination beyond a harness's built-in session or subagent conversation.
 
-![A mad tea party: a Claude host launches two Claude and two Codex guests, and they chat across harnesses in one herdr-threads thread](docs/media/tea-party.gif)
+https://github.com/user-attachments/assets/081ca706-6a44-4f03-b9ee-572a9b12ec71
 
-*A recorded cross-harness tea party, sped up about 10×, using the earlier manual launch/invite flow. A Claude host recruits two Claude and two Codex guests; the bottom strip follows their thread. The reproduction script now uses named-channel handoffs. [Full-length video](docs/media/tea-party.mp4) · [reproduction script](scripts/demo-tea-party.sh).*
+*Play, pause, seek or expand this real walkthrough: Claude Alice and Codex Bob work in the upper panes while the human types commands and follows their three-round debate below. Long assignments use 5× typing speed. Agents handle messages through inbox and hook notifications. Native setup happens before recording; host paths are redacted. [Download MP4](docs/media/try-it.mp4) · [Capture and render recipe](docs/media/try-it.md) · [Terminal recording](docs/media/try-it.cast).*
 
 ## Install
 
@@ -49,7 +49,7 @@ Return to your own pane. Use a tab without existing panes named `alice` or `bob`
 ```sh
 herdr-threads handoff --new-thread --thread-name review \
   --topic "Tabs or spaces?" --pane alice --kind claude -- \
-  "You are Alice. Read this thread, make the case for spaces, and discuss it with Bob when he joins."
+  "You are Alice. Make the case for spaces in this thread. Wait for Bob to say he is ready, then debate the tradeoffs with him."
 ```
 
 **4. Bring Bob on Codex into the same thread.**
@@ -57,10 +57,10 @@ herdr-threads handoff --new-thread --thread-name review \
 ```sh
 herdr-threads handoff --thread review --pane bob --kind codex \
   -- \
-  "You are Bob. Read this thread, make the case for tabs, and agree on a recommendation with Alice."
+  "You are Bob. Make the case for tabs in this thread. After joining, tell Alice you are ready, then debate and agree on a recommendation with her."
 ```
 
-Approve Codex's CLI permission request when it appears. Agents read their assignments and accept invitations separately; launch itself does not acknowledge a message or join a thread.
+Approve Codex's CLI permission request when it appears. Agents receive their assignments through inbox and accept invitations separately; launch itself does not acknowledge a message or join a thread.
 
 **5. Watch and participate.**
 
@@ -82,7 +82,7 @@ herdr-threads follow review
 
 Names select panes within your current tab. Use `--space` and `--tab` to address another workspace or tab. Threads can span those locations; a duplicate thread name requires the exact ID printed by the CLI. Bare `herdr-threads read` opens a channel picker in a human terminal; bare `herdr-threads follow` selects a channel and then follows it. Rows show active/archived status, joined participant count, sampled messages per minute, and a compact last-message preview. Active channels come first, ranked by participants × (1 + sampled messages/minute). The sample uses the latest 512 timeline positions, counting ordinary messages over the elapsed time through now with a one-minute minimum. Participant counts exclude retired seats and pending invitations, and include accepted service requirements. Color highlights activity and selection on supporting terminals and honors `NO_COLOR`. Agents, scripts, `--machine`, and `--json` require an explicit thread name or ID. If the daemon lacks picker support, upgrade it or use an exact thread ID.
 
-For a larger live example, see [the tea-party script](scripts/demo-tea-party.sh). Every command has `--help`; [the agent guide](integrations/skill/SKILL.md) explains how agents participate.
+The [recording recipe](docs/media/try-it.md) reproduces this walkthrough with bounded debate turns. The [earlier tea-party script](scripts/demo-tea-party.sh) and its [recording](docs/media/tea-party.mp4) remain historical examples. Every command has `--help`; [the agent guide](integrations/skill/SKILL.md) explains how agents participate.
 
 ## A role that survives its session
 

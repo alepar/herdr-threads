@@ -723,7 +723,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
         .as_str()
         .unwrap();
     assert!(
-        context.starts_with("The top-level agent reads pending mail"),
+        context.starts_with("Use inbox; follow its next: commands"),
         "{context}"
     );
     assert!(
@@ -1026,7 +1026,7 @@ fn two_hundred_tool_hooks_on_one_seat_stay_healthy_and_write_no_journal() {
     let fx = Fixture::start();
     let started = fx.hook("w9:p1", &start("sess-1"));
     assert_eq!(started.code, Some(0), "{}", started.stderr);
-    assert!(context_of(&started).starts_with("The top-level agent reads pending mail"));
+    assert!(context_of(&started).starts_with("Use inbox; follow its next: commands"));
     let journal_before = fs::read(fx.context_dir("seat").join("context.json")).unwrap();
     let intents_before = fx.intents();
     let before = fx.check_ins.load(Ordering::SeqCst);
@@ -1203,7 +1203,7 @@ fn cooperative_seat_on_own_target_startup_clear_resume_always_replace_binding() 
         assert_eq!(hook.code, Some(0), "{source}: {}", hook.stderr);
         let context = context_of(&hook);
         assert!(
-            context.starts_with("The top-level agent reads pending mail"),
+            context.starts_with("Use inbox; follow its next: commands"),
             "{source}: {context}"
         );
         assert!(!context.contains("unavailable"), "{source}: {context}");
@@ -4058,7 +4058,7 @@ mod continuity {
             assert_eq!(resumed.code, Some(0), "{harness}: {}", resumed.stderr);
             let context = context_of(&resumed);
             assert!(
-                context.starts_with("The top-level agent reads pending mail"),
+                context.starts_with("Use inbox; follow its next: commands"),
                 "{harness}: {context}"
             );
             assert_eq!(

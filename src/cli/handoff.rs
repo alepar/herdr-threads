@@ -31,7 +31,7 @@ goal defaults to topic. --name names the native agent, not the channel.
 
 The one quoted body after -- is durable work. Native options use repeatable
 --agent-arg=OPTION; launch -- native arguments is unchanged.
-Handoff invites and sends before guarded launch. Startup gets fixed inbox/thread
+Handoff invites and sends before guarded launch. Startup gets fixed inbox
 instructions, not a second copy of the body. Launch never accepts or ACKs.
 
 Committed work survives failure. pending-ops lists the compound reference; retry REF
@@ -588,15 +588,12 @@ fn bootstrap(
 ) -> String {
     let mut inbox = super::hook::cli_prefix(context);
     inbox.push("inbox".into());
-    let mut read = super::hook::cli_prefix(context);
-    read.extend(["read".into(), thread.as_str().into()]);
     let expected = super::hook::CommandRouting::from_context(instance, context);
     let expected = serde_json::to_string(&expected).unwrap_or_else(|_| "null".into());
     format!(
-        "Expected handoff command routing (JSON data): {expected} Prefer a startup hook command group only when its instance UUID, canonical state directory and canonical host endpoint exactly match every expected routing field above. Missing (null), different or ambiguous routing cannot supersede this handoff's target. Open your durable inbox, then read thread {} using that matching group. Otherwise use the exact fallback: `{}`, then `{}`. The task is stored there. Launch does not accept invitations or ACK messages. Accept invitations separately; default text inbox ACKs fully displayed messages.",
-        thread.as_str(),
+        "Expected handoff command routing (JSON data): {expected} Prefer a startup hook command group only when its instance UUID, canonical state directory and canonical host endpoint exactly match every expected routing field above. Missing (null), different or ambiguous routing cannot supersede this handoff's target. Open your durable inbox using that matching group. Otherwise use the exact fallback: `{}`. The task for thread {} is stored in inbox; follow its printed next: commands for complete bodies. Do not reread it with read/body. When waiting for replies, finish your turn and let hooks notify you of new mail; do not poll or run follow. Launch does not accept invitations or ACK messages. Accept invitations separately; default text inbox ACKs fully displayed messages.",
         crate::protocol::output::format_command_argv(&inbox),
-        crate::protocol::output::format_command_argv(&read)
+        thread.as_str()
     )
 }
 fn report(
