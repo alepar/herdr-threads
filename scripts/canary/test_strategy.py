@@ -487,5 +487,80 @@ class Strategy(unittest.TestCase):
                          ["1.0.1"])
 
 
+class LegacyCompanionLoader(unittest.TestCase):
+    def load(self, companion, harness="claude", before=""):
+        script = HERE.parent / "harness-canary.sh"
+        body = ('selected=$1; selected_harness=$2; selected_out=$3; set --; '
+                'HT_CANARY_SOURCE_ONLY=1 . "$0" --out "$selected_out"; ' + before +
+                'HT_CANARY_COMPANION=$selected; PROBE_HARNESS=$selected_harness; load_probe_companion; '
+                'load_probe_companion; '
+                'for fn in probe_one tier1_keyvar tier1_key adapter_model_run; do declare -F "$fn"; done')
+        with tempfile.TemporaryDirectory() as out:
+            return runner.bounded_capture(["bash", "-c", body, str(script), str(companion), harness, out], timeout=10)
+
+    def test_both_owned_emitters_load_repeatedly_at_source_only_boundary(self):
+        for harness, key in (("claude", "ANTHROPIC_API_KEY"), ("codex", "OPENAI_API_KEY")):
+            with self.subTest(harness=harness):
+                companion = HERE / "adapters" / f"{harness}.py"
+                emitted = runner.emit_shell_functions(companion)
+                self.assertIn(f"tier1_keyvar() {{ echo {key}; }}", emitted)
+                code, out, err = self.load(companion, harness)
+                self.assertEqual(code, 0, err)
+                self.assertEqual(out.decode().splitlines(),
+                                 ["probe_one", "tier1_keyvar", "tier1_key", "adapter_model_run"])
+
+    def test_emitter_failure_and_missing_functions_are_infrastructure(self):
+        for harness in ("claude", "codex"):
+            with tempfile.TemporaryDirectory() as d, self.subTest(harness=harness):
+                broken = pathlib.Path(d) / "companion.py"
+                # Even valid partial shell output must not hide the emitter's failure.
+                broken.write_text("print('probe_one() { :; }')\nraise SystemExit(23)\n")
+                code, _, err = self.load(broken, harness)
+                self.assertEqual(code, 2)
+                self.assertIn(b"emitter exited 23", err)
+                # A previous good load cannot supply missing definitions to the next load.
+                owned = HERE / "adapters" / f"{harness}.py"
+                before = f'HT_CANARY_COMPANION="{owned}"; PROBE_HARNESS=$selected_harness; load_probe_companion; '
+                broken.write_text("print('probe_one() { :; }')\n")
+                code, _, err = self.load(broken, harness, before)
+                self.assertEqual(code, 2)
+                self.assertIn(b"missing function: tier1_keyvar", err)
+
+    def test_emission_is_bounded_and_rejects_invalid_shell_bytes(self):
+        with tempfile.TemporaryDirectory() as d:
+            companion = pathlib.Path(d) / "companion.py"
+            for script, message in (("print('x' * 65537)", "stdout limit"),
+                                    ("import time; time.sleep(5)", "deadline"),
+                                    ("import sys; sys.stdout.buffer.write(b'\\xff')", "invalid probe"),
+                                    ("print('\\x00')", "invalid probe"),
+                                    ("print('')", "invalid probe")):
+                with self.subTest(script=script):
+                    companion.write_text(script)
+                    with self.assertRaisesRegex(ValueError, message):
+                        runner.emit_shell_functions(companion, timeout=.2)
+
+    def test_selected_wrong_harness_fails_before_installation(self):
+        with tempfile.TemporaryDirectory() as d:
+            # Keep even a regressed guard offline: the installer remains an inert fixture.
+            fakebin = pathlib.Path(d) / "bin"
+            fakebin.mkdir()
+            npm = fakebin / "npm"
+            npm.write_text("#!/bin/sh\nexit 23\n")
+            npm.chmod(0o755)
+            # Call the selected real probe function: its guard precedes any npm/model child.
+            script = HERE.parent / "harness-canary.sh"
+            for harness, wrong in (("claude", "codex"), ("codex", "claude")):
+                with self.subTest(harness=harness):
+                    env = dict(os.environ, HT_CANARY_COMPANION=str(HERE / "adapters" / f"{wrong}.py"),
+                               PATH=str(fakebin) + os.pathsep + os.environ["PATH"])
+                    code, out, err = runner.bounded_capture(
+                        ["bash", str(script), "--probe", harness, "1.2.3", "--model-tier", "off",
+                         "--out", str(pathlib.Path(d) / harness)], timeout=10, env=env)
+                    self.assertEqual(code, 2)
+                    self.assertIn(b"wrong companion harness", err)
+                    self.assertEqual(out, b"")
+                    self.assertEqual(list((pathlib.Path(d) / harness / "work").iterdir()), [])
+
+
 if __name__ == "__main__":
     unittest.main()

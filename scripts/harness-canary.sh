@@ -288,9 +288,18 @@ fi
 # ---------------------------------------------------------------- tier-1 key gate (§D6)
 
 load_probe_companion() {
-  local companion=${HT_CANARY_COMPANION:-$CANARY/adapters/${PROBE_HARNESS:-${H:-}}.py}
+  local companion=${HT_CANARY_COMPANION:-$CANARY/adapters/${PROBE_HARNESS:-${H:-}}.py} emitted fn
   [ -f "$companion" ] || die "missing probe companion"
-  . <(python3 "$companion" --shell-functions)
+  # Source a completed, checked emission. Sourcing /dev/fd process substitution
+  # can read no functions on the system Bash, and hides the producer's status.
+  emitted=$(python3 "$CANARY/run.py" shell-functions "$companion") \
+    || die "probe companion emission failed"
+  # Repeated loads must never use functions left by an earlier companion.
+  unset -f probe_one tier1_keyvar tier1_key adapter_model_run
+  eval "$emitted" || die "probe companion load failed"
+  for fn in probe_one tier1_keyvar tier1_key adapter_model_run; do
+    declare -F "$fn" >/dev/null || die "probe companion missing function: $fn"
+  done
 }
 
 # Compatibility --probe owns its backend/key policy; generic runs read discovery.

@@ -116,6 +116,20 @@ def bounded_capture(argv, timeout=60, env=None, cwd=None, stdout_limit=65536, st
         proc.stderr.close()
 
 
+def emit_shell_functions(companion, timeout=5):
+    """Complete one bounded owned emission before the shell loads any functions."""
+    code, raw, _ = bounded_capture([sys.executable, str(companion), "--shell-functions"], timeout=timeout)
+    if code:
+        raise ValueError(f"probe companion emitter exited {code}")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeError as e:
+        raise ValueError("invalid probe companion emission") from e
+    if not text.strip() or "\x00" in text:
+        raise ValueError("invalid probe companion emission")
+    return text
+
+
 def _pairs(pairs):
     out = {}
     for key, value in pairs:
@@ -728,6 +742,11 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, _interrupted)
     signal.signal(signal.SIGINT, _interrupted)
     try:
+        if sys.argv[1:2] == ["shell-functions"]:
+            if len(sys.argv) != 3:
+                raise ValueError("shell-functions needs one companion path")
+            print(emit_shell_functions(sys.argv[2]), end="")
+            sys.exit(0)
         sys.exit(strategy_main(sys.argv[2:]) if sys.argv[1:2] == ["strategy"] else main())
     except (ValueError, OSError, KeyError) as e:
         print("canary: " + str(e), file=sys.stderr)

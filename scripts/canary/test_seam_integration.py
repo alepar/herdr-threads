@@ -13,6 +13,10 @@ import json
 import os
 import pathlib
 import shutil
+import shlex
+import signal
+import time
+import uuid
 import subprocess
 import sys
 import textwrap
@@ -70,13 +74,69 @@ def classify(doc, harness, version):
 class SeamIntegration(unittest.TestCase):
     # the fake-npm harness of test_capture_hook.ScriptTier1, reused rather than copied
     VERSION = tch.ScriptTier1.VERSION
-    setUp = tch.ScriptTier1.setUp
+    def setUp(self):
+        tch.ScriptTier1.setUp(self)
+        self.diagnostics = self.t / "seam-diagnostics"
+        self.diagnostics.mkdir()
+
     tearDown = tch.ScriptTier1.tearDown
     install_fake_claude = tch.ScriptTier1.install_fake_claude
     env = tch.ScriptTier1.env
     probe_args = tch.ScriptTier1.probe_args
     claude_calls = tch.ScriptTier1.claude_calls
-    bisect = tch.ScriptTier1.bisect
+    def run_owned(self, argv, *, env, timeout, cwd=ROOT):
+        """Capture each seam subprocess before assertions, and reap its group on every path."""
+        attempt = self.diagnostics / str(uuid.uuid4())
+        attempt.mkdir()
+        keys = ("HOME", "PATH", "CARGO_HOME", "RUSTUP_HOME", "CARGO_TARGET_DIR", "TMPDIR",
+                "CLAUDE_CONFIG_DIR", "CODEX_HOME", "HT_CANARY_TIER0_CHECKS",
+                "HT_CANARY_PLANT_TIER1_FAIL", "HT_LEAK_RUN_ID")
+        meta = {"argv": argv, "cwd": str(cwd), "env": {k: env[k] for k in keys if k in env},
+                "started": time.time(), "pid": None, "returncode": None, "reaped": False}
+        (attempt / "start.json").write_text(json.dumps(meta))
+        proc = subprocess.Popen(argv, env=env, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, start_new_session=True)
+        try:
+            meta["pid"] = proc.pid
+            (attempt / "launch.json").write_text(json.dumps(meta))
+            out, err = proc.communicate(timeout=timeout)
+            (attempt / "stdout").write_text(out)
+            (attempt / "stderr").write_text(err)
+            return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+        finally:
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(proc.pid, sig)
+                except ProcessLookupError:
+                    break
+                try:
+                    proc.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    pass
+            proc.wait()
+            proc.stdout.close()
+            proc.stderr.close()
+            meta.update(returncode=proc.returncode, finished=time.time(), reaped=True)
+            (attempt / "finish.json").write_text(json.dumps(meta))
+
+    def bisect(self, planted):
+        """Keep actual retry stdout/stderr and probe artifacts before bisect parses them."""
+        calls = self.t / "probe-invocations.txt"
+        wrapper = self.t / "probe-wrapper.sh"
+        out = self.t / "out-bisect"
+        q = shlex.quote
+        tch.write_exe(wrapper, f"#!/bin/sh\necho \"$1\" >> {q(str(calls))}\n"
+                      f"n=$(wc -l < {q(str(calls))} | tr -d ' ')\n"
+                      f"bash {q(SCRIPT)} --probe claude \"$1\" --out {q(str(out))} "
+                      f"--herdr-threads {q(str(self.ht))} --model-tier auto --keep "
+                      f"> {q(str(self.diagnostics))}/retry-$n.stdout "
+                      f"2> {q(str(self.diagnostics))}/retry-$n.stderr\n"
+                      f"rc=$?\ncat {q(str(self.diagnostics))}/retry-$n.stdout\n"
+                      f"cat {q(str(self.diagnostics))}/retry-$n.stderr >&2\nexit \"$rc\"\n")
+        cp = self.run_owned([sys.executable, tch.BISECT, "--probe-cmd", f"{wrapper} {{version}}",
+                             "--candidates", self.VERSION, "--baseline", "2.1.285", "--tier1"],
+                            env=self.env(HT_CANARY_PLANT_TIER1_FAIL=planted), timeout=600)
+        return json.loads(cp.stdout), calls.read_text().split()
 
     def real_cargo_env(self, **extra):
         """The probe environment with no fake cargo: the script and this test run the real gated test."""
@@ -98,19 +158,19 @@ class SeamIntegration(unittest.TestCase):
         env = self.real_cargo_env()
         env["HT_CANARY_TIER0_CHECKS"] = tier0
         env.update(extra_env or {})
-        cp = subprocess.run(
+        cp = self.run_owned(
             ["bash", SCRIPT, "--probe", harness, version, "--out", str(out), "--herdr-threads", str(self.ht),
              "--model-tier", "off", "--versions-json", fixture, "--keep"],
-            env=env, capture_output=True, text=True, cwd=ROOT, timeout=2400)
+            env=env, cwd=ROOT, timeout=2400)
         (probe_dir,) = (out / "work").glob(f"{harness}-{version}-*")
         return cp, probe_dir
 
     def gated_cargo(self, capture_dir, fixture):
         env = {k: v for k, v in os.environ.items() if k not in ("HT_CANARY_PLANT_TIER1_FAIL",)}
         env.update(HT_CANARY_CAPTURE_DIR=str(capture_dir), HT_TEST_RECIPES_JSON=fixture)
-        return subprocess.run(
+        return self.run_owned(
             ["nice", "cargo", "test", "--locked", "--all-features", "--lib", "gated_canary_payloads"],
-            env=env, capture_output=True, text=True, cwd=ROOT, timeout=2400)
+            env=env, cwd=ROOT, timeout=2400)
 
     # -- 1. bisect.py's tier-1 retry policy against the real --probe path
 
