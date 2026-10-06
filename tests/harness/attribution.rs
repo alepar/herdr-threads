@@ -616,7 +616,13 @@ fn adapter_runtime_attribution_uses_native_reader_reason() {
         );
         match result {
             RuntimeAttribution::Unavailable { diagnostic } => {
-                assert_eq!(diagnostic, "no transcript path in the payload")
+                let expected = match registration.metadata().id {
+                    "claude" => Unattributed::NoTranscriptPath.as_str(),
+                    "codex" => Unattributed::CodexCreatorOnly.as_str(),
+                    "hermes" => "startup_callback_unavailable",
+                    other => panic!("unexpected builtin {other}"),
+                };
+                assert_eq!(diagnostic, expected)
             }
             RuntimeAttribution::Attributed(_) => {
                 panic!("missing transcript must not produce an identity")
@@ -674,6 +680,18 @@ fn adapter_runtime_identity_is_native_transcript_release() {
             .by_id(builtins().agent(harness).unwrap())
             .unwrap();
         let input = HookInput { bytes: serde_json::to_vec(&serde_json::json!({"hook_event_name":"PreToolUse", "transcript_path":fixture(transcript)})).unwrap(), registered_event: Some("PreToolUse".into()) };
+        if harness == "codex" {
+            assert!(
+                matches!(registration.attribute_runtime(&input,&budget), RuntimeAttribution::Unavailable {diagnostic} if diagnostic==Unattributed::CodexCreatorOnly.as_str())
+            );
+            let Attribution::Attributed { version, .. } =
+                attribute_transcript("codex", &fixture(transcript))
+            else {
+                panic!("optional creator metadata reader must remain intact")
+            };
+            assert_eq!(format!("release:{version}"), key);
+            continue;
+        }
         match registration.attribute_runtime(&input, &budget) {
             RuntimeAttribution::Attributed(identity) => {
                 assert_eq!(identity.key, key);
@@ -682,4 +700,30 @@ fn adapter_runtime_identity_is_native_transcript_release() {
             RuntimeAttribution::Unavailable { diagnostic } => panic!("{diagnostic}"),
         }
     }
+}
+
+// The optional creator reader stays usable; production never calls it current runtime.
+#[test]
+fn task3_versionless_codex_creator_is_not_current_runtime_even_at_startup() {
+    let transcript = fixture("codex-fresh.jsonl");
+    assert!(matches!(
+        attribute_transcript("codex", &transcript),
+        Attribution::Attributed { .. }
+    ));
+    for event in ["SessionStart", "PreToolUse"] {
+        let payload =
+            json!({"hook_event_name": event, "source": "startup", "transcript_path": transcript});
+        assert!(
+            matches!(
+                attribute_payload("codex", &payload),
+                Attribution::Unattributable { .. }
+            ),
+            "{event}"
+        );
+    }
+    let payload = json!({"hook_event_name": "SessionStart", "source": "resume", "transcript_path": transcript});
+    assert_eq!(
+        attribute_payload("codex", &payload),
+        unattributable(Unattributed::CodexResumed)
+    );
 }

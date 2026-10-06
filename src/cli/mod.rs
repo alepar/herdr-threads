@@ -8,6 +8,8 @@ pub mod hook;
 pub mod hook_evidence;
 pub mod human;
 pub mod input;
+pub mod installer;
+pub(crate) mod installer_skill;
 pub mod instance;
 pub mod internal;
 pub mod irc;
@@ -370,6 +372,9 @@ where
         writer.write_all(text.as_bytes())?;
         writer.flush()?;
         return Ok(());
+    }
+    if let CliAction::InstallerIntegrations { confirm_missing } = &parsed.action {
+        return installer::run(*confirm_missing, &parsed.output, writer);
     }
     if let CliAction::InternalJsonField { path } = &parsed.action {
         let mut input = String::new();
@@ -747,7 +752,7 @@ where
         | CliAction::HarnessVersionNormalize { .. } => {
             unreachable!("contract-id and harness-version are handled before context resolution")
         }
-        CliAction::InternalJsonField { .. } => {
+        CliAction::InstallerIntegrations { .. } | CliAction::InternalJsonField { .. } => {
             unreachable!("internal json-field is handled before context resolution")
         }
         CliAction::Launch(_) | CliAction::Handoff(_) => {

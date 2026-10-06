@@ -1,7 +1,7 @@
 //! The daemon half of harness version evidence (ht-xoc.4).
 //!
 //! A hook's [`HarnessEvidence`] note is recorded in `harness_version_evidence`
-//! (or, with no version, only the reason goes to `harness_unattributed`). An
+//! (or, with no version, reasons and bounded session/contract failures are advisory). An
 //! unattributed `SessionStart` (a resumed Claude session, say; not a Codex
 //! resume, whose rollout only names the creating CLI) is held per
 //! `(harness, session id)` for up to 24 hours and credited to the session's
@@ -29,7 +29,9 @@ use crate::{
         results::ApiError,
         time::{CallBudget, Clock},
     },
-    store::harness_evidence::{EventClass, EvidenceOutcome, EvidenceRecord, Recorded},
+    store::harness_evidence::{
+        DiagnosticRecord, EventClass, EvidenceOutcome, EvidenceRecord, Recorded,
+    },
 };
 
 /// A held unattributed `SessionStart` is credited only within this long.
@@ -58,6 +60,12 @@ pub trait EvidenceWrites: Send + Sync {
         budget: &CallBudget,
     ) -> Result<Recorded, ApiError>;
 
+    fn record_contract_diagnostic(
+        &self,
+        record: &DiagnosticRecord<'_>,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError>;
+
     fn record_unattributed(
         &self,
         harness: &str,
@@ -75,6 +83,14 @@ impl EvidenceWrites for PortWrites {
         budget: &CallBudget,
     ) -> Result<Recorded, ApiError> {
         self.0.record_harness_evidence(record, budget)
+    }
+
+    fn record_contract_diagnostic(
+        &self,
+        record: &DiagnosticRecord<'_>,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        self.0.record_contract_diagnostic(record, budget)
     }
 
     fn record_unattributed(
@@ -189,15 +205,10 @@ fn outcome_of(outcome: &HarnessEvidenceOutcome) -> EvidenceOutcome {
     }
 }
 
-/// Whether an unattributed note is a `SessionStart` the daemon holds for the
-/// session's first attributed event. A Codex resume is not: its rollout
-/// only ever names the creating CLI's version, so crediting it later would
-/// file it under the wrong version.
+/// Only Claude's runtime-written metadata can credit a held start. Codex's
+/// creator header never qualifies a current runtime, including fresh startup.
 fn holds_session_start(message: &HarnessEvidence) -> bool {
-    message.event == "SessionStart"
-        && !(message.harness == "codex"
-            && message.unattributed_reason.as_deref()
-                == Some(crate::harness::attribution::Unattributed::CodexResumed.as_str()))
+    message.harness == "claude" && message.event == "SessionStart"
 }
 
 impl HarnessEvidenceRecorder {
@@ -235,7 +246,7 @@ impl HarnessEvidenceRecorder {
         let outcome = outcome_of(&message.outcome);
         let Some(version) = message.version.as_deref() else {
             if holds_session_start(message)
-                && let Some(session_id) = &message.session_id
+                && let Some(session_id) = message.session_id.as_ref().filter(|id| !id.is_empty())
             {
                 self.pending().hold(
                     Held {
@@ -250,12 +261,46 @@ impl HarnessEvidenceRecorder {
                 );
             }
             // Held first: a failed reason write must not lose the start.
-            let reason = message
+            let mut reason = message
                 .unattributed_reason
-                .as_deref()
-                .unwrap_or("unattributed");
+                .clone()
+                .unwrap_or_else(|| "unattributed".into());
+            match &message.outcome {
+                HarnessEvidenceOutcome::Violation { field } => {
+                    if let Some(session_id) =
+                        message.session_id.as_deref().filter(|id| !id.is_empty())
+                    {
+                        self.store.record_contract_diagnostic(
+                            &DiagnosticRecord {
+                                harness: &message.harness,
+                                session_id,
+                                contract_id: &message.contract_id,
+                                event: &message.event,
+                                field,
+                            },
+                            budget,
+                        )?;
+                    } else {
+                        // No session identity: bounded local parse diagnostic only.
+                        reason = format!(
+                            "contract input failure: {}/{}; no session identity",
+                            message.event, field
+                        );
+                    }
+                }
+                HarnessEvidenceOutcome::Malformed => {
+                    reason = format!(
+                        "contract input malformed: {}; runtime metadata unavailable",
+                        message.event
+                    );
+                }
+                HarnessEvidenceOutcome::Ok => {}
+            }
+            while reason.len() > crate::protocol::commands::HARNESS_EVIDENCE_TEXT_BYTES {
+                reason.pop();
+            }
             self.store
-                .record_unattributed(&message.harness, reason, budget)?;
+                .record_unattributed(&message.harness, &reason, budget)?;
             return Ok(false);
         };
         let held = message
@@ -531,7 +576,13 @@ impl HarnessEvidenceRecorderV2 {
                 if resumed {
                     pending.2.mark(key);
                     pending.1.0.retain(|h| &h.key != key);
-                } else if descriptor.may_hold(false) && !pending.2.contains(key) {
+                } else if !message.unavailable_reason.as_deref().is_some_and(|reason| {
+                    registration
+                        .nonholding_unavailable_reasons(descriptor)
+                        .contains(&reason)
+                }) && descriptor.may_hold(false)
+                    && !pending.2.contains(key)
+                {
                     pending.1.push(
                         HeldV2 {
                             key: key.clone(),
@@ -542,6 +593,21 @@ impl HarnessEvidenceRecorderV2 {
                     );
                     pending.bound();
                 }
+            }
+            if let crate::protocol::commands::HarnessEvidenceOutcomeV2::Violation { field } =
+                &message.outcome
+                && let Some(session_id) = message.session_id.as_deref()
+            {
+                self.store.record_contract_diagnostic(
+                    &DiagnosticRecord {
+                        harness: &message.harness,
+                        session_id,
+                        contract_id: &message.contract_id,
+                        event: &message.event,
+                        field,
+                    },
+                    budget,
+                )?;
             }
             self.store.record_unattributed_v2(
                 &message.harness,

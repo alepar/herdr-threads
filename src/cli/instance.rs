@@ -304,6 +304,12 @@ pub fn resolve_host_endpoint(inputs: &InstanceInputs) -> Result<(PathBuf, String
 /// Both fields resolved into a runtime context, plus `{"state_dir": how,
 /// "host_endpoint": how}`. A failure names the flag and variable to use.
 pub fn resolve_context(inputs: &InstanceInputs) -> io::Result<(RuntimeContext, Value)> {
+    resolve_context_with_selected_state(inputs).map(|(context, source, _)| (context, source))
+}
+
+pub(crate) fn resolve_context_with_selected_state(
+    inputs: &InstanceInputs,
+) -> io::Result<(RuntimeContext, Value, PathBuf)> {
     let (state, state_how) = resolve_state_dir(inputs).map_err(|error| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -318,6 +324,7 @@ pub fn resolve_context(inputs: &InstanceInputs) -> io::Result<(RuntimeContext, V
             ),
         )
     })?;
+    let selected_state = state.clone();
     let context = RuntimeContext::explicit(
         state,
         host,
@@ -329,7 +336,7 @@ pub fn resolve_context(inputs: &InstanceInputs) -> io::Result<(RuntimeContext, V
     }
     source.insert("state_dir".into(), json!(state_how));
     source.insert("host_endpoint".into(), json!(host_how));
-    Ok((context, Value::Object(source)))
+    Ok((context, Value::Object(source), selected_state))
 }
 
 #[cfg(test)]
@@ -377,6 +384,48 @@ mod tests {
             )),
             ..InstanceInputs::default()
         }
+    }
+
+    #[test]
+    fn selected_state_capture_preserves_raw_spelling_and_canonical_identity() {
+        let dir = scratch();
+        let state = dir.join("state");
+        fs::create_dir(&state).unwrap();
+        let selected = dir.join("selected");
+        std::os::unix::fs::symlink(&state, &selected).unwrap();
+        let inputs = InstanceInputs {
+            state_flag: Some(selected.clone()),
+            host_flag: Some(dir.join("host.sock")),
+            ..InstanceInputs::default()
+        };
+        let (context, source, raw) = resolve_context_with_selected_state(&inputs).unwrap();
+        assert_eq!(raw, selected);
+        assert_eq!(context.state_dir, state);
+        assert_eq!(source["state_dir"], "--state-dir");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn selected_state_capture_queries_each_missing_field_once() {
+        let dir = scratch();
+        let mut inputs = inputs(&dir);
+        inputs.herdr = Some(recording_herdr(
+            &dir,
+            &format!(
+                r#"{{"running":true,"socket":"{}"}}"#,
+                dir.join("host.sock").display()
+            ),
+        ));
+        inputs.non_default_server = true;
+        let (context, source, selected) = resolve_context_with_selected_state(&inputs).unwrap();
+        assert_eq!(
+            selected,
+            dir.join("home/.local/state/herdr/plugins/herdr-threads")
+        );
+        assert_eq!(context.state_dir, selected);
+        assert_eq!(source["host_endpoint"], "herdr status server");
+        assert_eq!(calls(&dir), "plugin list --json\nstatus server --json\n");
+        fs::remove_dir_all(dir).unwrap();
     }
 
     /// Kills: requiring flags/env in a plain shell, spawning `herdr` when the

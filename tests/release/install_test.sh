@@ -107,7 +107,11 @@ cat > "$stub_bin" <<'EOF'
 #!/bin/sh
 case "$1" in
     --version) echo "herdr-threads 0.2.0" ;;
-    internal) exec "$REAL_BIN" "$@" ;;
+    # This stand-in models the older user-level setup interface, without the
+    # modern reconciliation capability. Keep its bare-setup fallback covered.
+    internal)
+        if [ "${2:-}" = installer-integrations ]; then exit 2; fi
+        exec "$REAL_BIN" "$@" ;;
     setup|unsetup)
         if [ "${2:-}" = --help ]; then
             echo "No harness named: every harness. \`setup\` sets up every detected harness"
@@ -140,7 +144,18 @@ cat > "$tools/herdr" <<'EOF'
 d=$FAKE_HERDR_DIR; reg=$d/registry; echo "$*" >> "$d/calls"
 up() { [ -e "$d/server" ] || { echo '{"error":{"code":"server_not_running"}}'; exit 1; }; }
 case "$1 $2" in
-"plugin list") if [ -s "$reg" ]; then echo "1 plugin installed:"; echo "- herdr-threads (Threads) enabled [local:$(cat "$reg")]"; else echo "No plugins installed."; fi ;;
+"plugin list")
+    if [ "${3:-}" = --json ]; then
+        if [ -s "$reg" ]; then
+            echo '{"result":{"plugins":[{"plugin_id":"herdr-threads","enabled":true}]}}'
+        else
+            echo '{"result":{"plugins":[]}}'
+        fi
+    elif [ -s "$reg" ]; then
+        echo "1 plugin installed:"; echo "- herdr-threads (Threads) enabled [local:$(cat "$reg")]"
+    else
+        echo "No plugins installed."
+    fi ;;
 "plugin link") [ -f "$3/herdr-plugin.toml" ] || exit 1; printf '%s' "$3" > "$reg"; echo '{"result":{"type":"plugin_linked"}}' ;;
 "plugin unlink") up; : > "$reg"; echo '{"result":{"removed":true}}' ;;
 "plugin log") up; n=$(cat "$d/n" 2>/dev/null || echo 0); code=$(cat "$d/code-$n" 2>/dev/null || echo 0); echo "{\"result\":{\"logs\":[{\"exit_code\":$code,\"log_id\":\"plugin-log-$n\",\"status\":\"succeeded\"}]}}" ;;
@@ -216,19 +231,33 @@ expect "package build command keeps the prebuilt binary" \
 # writes hooks without a terminal or --setup.
 if "$binary" setup --help 2>/dev/null | grep -qi 'user level'; then
     user_level=1
-    expect "user-level setup: no terminal, so setup not run" \
-        has "detected claude; hook setup not run (no terminal and no --setup)"
+    if "$binary" internal installer-integrations --help >/dev/null 2>&1; then
+        modern_integrations=1
+        expect "modern integrations: missing hooks skipped without terminal" has "claude hooks: skipped"
+        expect "modern integrations: missing skill skipped without terminal" has "claude skill: skipped"
+        expect "modern integrations: explicit consent remedy" has "rerun install.sh --setup"
+    else
+        modern_integrations=0
+        expect "user-level setup: no terminal, so setup not run" \
+            has "detected claude; hook setup not run (no terminal and no --setup)"
+    fi
     expect "user-level setup: not run without a terminal" bash -c "! grep -qF 'set up hooks for the detected harnesses' '$out'"
     expect "user-level setup: nothing written to the scratch ~/.claude" [ ! -e "$home/.claude" ]
 else
     user_level=0
+    modern_integrations=0
     expect "per-project setup is not run from the installer" has "this build's setup is per project"
 fi
 expect "no project settings written in the cwd" [ ! -e "$root/cwd/.claude" ]
 expect "next steps printed" has "Next steps:"
-expect "next steps: hooks not set up, so setup suggested" has "Set up agent hooks: herdr-threads setup"
-expect "no hints mid-run: the setup command appears only in the next steps" \
-    bash -c "[ \"\$(grep -c 'herdr-threads setup' '$out')\" = 1 ]"
+if [ "$modern_integrations" = 1 ]; then
+    expect "modern integrations: no misleading legacy setup hint" \
+        bash -c "! grep -qF 'Set up agent hooks:' '$out'"
+else
+    expect "next steps: hooks not set up, so setup suggested" has "Set up agent hooks: herdr-threads setup"
+    expect "no hints mid-run: the setup command appears only in the next steps" \
+        bash -c "[ \"\$(grep -c 'herdr-threads setup' '$out')\" = 1 ]"
+fi
 expect "next steps: no Codex trust reminder without Codex setup" bash -c "! grep -qF 'Trust the Codex hooks' '$out'"
 expect "next steps: try-it points at me init" has "herdr-threads me init"
 expect "next steps: no stale agent-guide URL" bash -c "! grep -qF 'docs/agent-usage.md' '$out'"

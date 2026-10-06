@@ -1,8 +1,9 @@
 //! Harness version attribution from the payload's transcript (ht-xoc.2).
 //!
-//! The running harness writes its own version into the session transcript the
-//! hook payload points at (`transcript_path`): Claude puts `version` on every
-//! conversation entry, Codex puts `cli_version` in `session_meta` records.
+//! Claude writes runtime metadata in the payload transcript: newest `version`
+//! is optional current-runtime attribution. Codex `session_meta.cli_version`
+//! names only the rollout creator; the reader is an optional diagnostic API,
+//! never production current-runtime attribution, including fresh startup.
 //! Reading it is in-process and bounded: no exec, no process walk, no
 //! inode/mtime comparison, and at most [`MAX_WINDOW`] bytes of the file (plus at
 //! most [`LINE_EXTENSION`] to finish one line straddling the window's start). Only a
@@ -41,6 +42,7 @@ pub enum Unattributed {
     NoTranscriptPath,
     ResumeBeforeFirstEntry,
     CodexResumed,
+    CodexCreatorOnly,
     Absent,
     Unreadable,
     NoVersionField,
@@ -49,10 +51,13 @@ pub enum Unattributed {
 }
 
 impl Unattributed {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::NoTranscriptPath => "no transcript path in the payload",
             Self::ResumeBeforeFirstEntry => "resume before first entry",
+            Self::CodexCreatorOnly => {
+                "codex rollout creator metadata does not identify the current runtime"
+            }
             Self::CodexResumed => "codex resume: rollout version is the creating CLI's",
             Self::Absent => "transcript not found",
             Self::Unreadable => "transcript unreadable",
@@ -86,8 +91,9 @@ fn known_harness(harness: &str) -> Option<&'static str> {
     }
 }
 
-/// Attribute a hook payload: a `SessionStart` with source `resume` is never
-/// read (per-harness reason); otherwise `transcript_path` must be a non-empty absolute path.
+/// Claude payloads may name runtime-written metadata in a nonempty absolute
+/// transcript path. Codex payloads always lack current-runtime attribution:
+/// the optional transcript reader names only the rollout creator.
 pub fn attribute_payload(harness: &str, payload: &Value) -> Attribution {
     if known_harness(harness).is_none() {
         return unattributable(Unattributed::UnrecognizedVersion);
@@ -100,6 +106,9 @@ pub fn attribute_payload(harness: &str, payload: &Value) -> Attribution {
         } else {
             Unattributed::ResumeBeforeFirstEntry
         });
+    }
+    if harness == "codex" {
+        return unattributable(Unattributed::CodexCreatorOnly);
     }
     match str_field("transcript_path") {
         Some(p) if !p.is_empty() && Path::new(p).is_absolute() => {

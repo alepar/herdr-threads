@@ -205,7 +205,7 @@ fn version_lines(health: &crate::protocol::results::Health) -> Vec<&String> {
     health
         .limitations
         .iter()
-        .filter(|line| line.contains(" broken: ") || line.contains("below the supported floor"))
+        .filter(|line| line.contains("contract input failure"))
         .collect()
 }
 
@@ -325,83 +325,30 @@ fn broken_manifest_row(version: &str, extra: serde_json::Value) -> serde_json::V
     row
 }
 
-/// Kills: a wrong action for each manifest situation: upgrade when another
-/// contract's release supports it, pin from last_working, report otherwise.
+// Historical manifest advice stays in the report and cannot degrade core Health.
 #[test]
-fn broken_line_per_manifest_situation() {
+fn manifest_history_is_advisory_for_every_release_pointer() {
     let version = newer_version();
-    // (a) another contract verified it in a newer release: upgrade.
-    let fx = Fx::new("hhs-broken-upgrade");
-    fx.record(
-        "claude",
-        &version,
-        CONTRACT,
-        "SessionStart",
-        HarnessEvidenceOutcome::Ok,
-    );
-    fx.plant_manifest(json!([
-        broken_manifest_row(&version, json!({"last_working": "2.1.283"})),
-        {"harness": "claude", "version": version, "status": "verified",
-         "contract_id": "ffffffffffffffff", "supported_since": "999.0.0"},
-    ]));
-    let health = fx.health();
-    assert_eq!(
-        version_lines(&health),
-        [&format!(
-            "harness claude {version} broken: the canary manifest row reports PreToolUse payload \
-             field tool_input.command; upgrade herdr-threads to 999.0.0 (supports claude {version})"
-        )]
-    );
-    assert_eq!(health.state, HealthState::Degraded);
-
-    // (b) no newer release, a last_working pointer: pin.
-    let fx = Fx::new("hhs-broken-pin");
-    fx.record(
-        "claude",
-        &version,
-        CONTRACT,
-        "SessionStart",
-        HarnessEvidenceOutcome::Ok,
-    );
-    fx.plant_manifest(json!([broken_manifest_row(
-        &version,
-        json!({"last_working": "2.1.283"})
-    )]));
-    assert_eq!(
-        version_lines(&fx.health()),
-        [&format!(
-            "harness claude {version} broken: the canary manifest row reports PreToolUse payload \
-             field tool_input.command; pin claude to <= 2.1.283"
-        )]
-    );
-
-    // (b2) a locally verified older version beats the manifest's last_working.
-    let older = listed_version();
-    fx.verify("claude", &older, CONTRACT);
-    assert!(
-        version_lines(&fx.health())[0].ends_with(&format!("pin claude to <= {older}")),
-        "{:#?}",
-        fx.health().limitations
-    );
-
-    // (c) nothing else known: the row's issue URL.
-    let fx = Fx::new("hhs-broken-report");
-    fx.record(
-        "claude",
-        &version,
-        CONTRACT,
-        "SessionStart",
-        HarnessEvidenceOutcome::Ok,
-    );
-    fx.plant_manifest(json!([broken_manifest_row(
-        &version,
-        json!({"issue_url": "https://example.test/issues/9"})
-    )]));
-    assert!(
-        version_lines(&fx.health())[0].ends_with("; report: https://example.test/issues/9"),
-        "{:#?}",
-        fx.health().limitations
-    );
+    for extra in [
+        json!({"last_working": "2.1.283"}),
+        json!({"issue_url": "https://example.test/issues/9"}),
+    ] {
+        let fx = Fx::new("hhs-advisory-manifest");
+        fx.record(
+            "claude",
+            &version,
+            CONTRACT,
+            "SessionStart",
+            HarnessEvidenceOutcome::Ok,
+        );
+        fx.plant_manifest(json!([broken_manifest_row(&version, extra)]));
+        assert!(fx.health().limitations.is_empty());
+        assert_eq!(fx.health().state, HealthState::Healthy);
+        assert_eq!(
+            fx.provider().report(&budget()).unwrap().harnesses[0].versions[0].state,
+            "broken"
+        );
+    }
 }
 
 /// Kills: a local violation that is not a Health line, one that is shown for
@@ -422,8 +369,7 @@ fn old_version_without_session_in_24h_drops_out() {
     let health = fx.health();
     assert_eq!(version_lines(&health).len(), 1, "{:#?}", health.limitations);
     assert!(version_lines(&health)[0].starts_with(&format!(
-        "harness claude {version} broken: PreToolUse payload field tool_input.command is missing \
-         or has the wrong type; "
+        "harness claude {version} contract input failure: PreToolUse/tool_input.command"
     )));
     fx.advance(24 * HOUR_MS + 1);
     assert!(
@@ -480,35 +426,20 @@ fn downgrade_back_to_an_older_contract_decides_health() {
     assert_eq!(version_lines(&fx.health()).len(), 1);
 }
 
-/// Kills: a below-floor version that reaches Health only through the PATH
-/// observation (never end to end through evidence), a wrong floor, and the
-/// below-floor line losing its `upgrade <harness>` action.
+// A below-floor historical version is advisory; its actual callbacks still count.
 #[test]
-fn below_floor_line_rendered_through_evidence() {
+fn below_floor_evidence_does_not_degrade_core_health() {
     let fx = Fx::new("hhs-floor");
-    let version = below_floor_version();
-    // The recorder is the real hook path: one lifecycle payload for an old
-    // claude is enough.
     fx.record(
         "claude",
-        &version,
+        &below_floor_version(),
         CONTRACT,
         "SessionStart",
         HarnessEvidenceOutcome::Ok,
     );
-    let min = claude::RECIPES
-        .iter()
-        .map(|r| r.min_version())
-        .min()
-        .unwrap();
     let health = fx.health();
-    assert_eq!(
-        version_lines(&health),
-        [&format!(
-            "claude {version} is below the supported floor {min}; upgrade claude"
-        )]
-    );
-    assert_eq!(health.state, HealthState::Degraded);
+    assert!(health.limitations.is_empty());
+    assert_eq!(health.state, HealthState::Healthy);
     health.validate().unwrap();
 }
 
@@ -528,11 +459,11 @@ fn one_line_per_harness() {
     let lines = version_lines(&health);
     assert_eq!(lines.len(), 2, "{lines:#?}");
     assert!(
-        lines[0].starts_with(&format!("harness claude {second} broken: ")),
+        lines[0].starts_with(&format!("harness claude {second} contract input failure: ")),
         "{lines:#?}"
     );
     assert!(
-        lines[1].starts_with("harness codex 999.0.0 broken: "),
+        lines[1].starts_with("harness codex 999.0.0 contract input failure: "),
         "{lines:#?}"
     );
 }
@@ -715,11 +646,9 @@ fn report_carries_sources_unattributed_reason_and_caps_versions() {
         broken.source,
         "local evidence: violation in PreToolUse/tool_input.command"
     );
-    assert!(
-        broken
-            .line
-            .starts_with(&format!("harness claude {version} broken: "))
-    );
+    assert!(broken.line.starts_with(&format!(
+        "harness claude {version} contract input failure: "
+    )));
     assert!(broken.in_health_window);
     assert_eq!(
         broken.issue_url.as_deref(),
@@ -1270,4 +1199,260 @@ fn health_v2_runtime_rows_are_bounded_newest_then_identity_domain_contract() {
     assert_eq!(rows[0].identity.key, "release:999.0.24");
     assert_eq!(rows[1].identity.key, "release:999.1.0");
     assert_eq!(rows[2].identity.key, "release:999.1.1");
+}
+
+// Catches a cooperative note inventing runtime recipe admission.
+#[test]
+fn task3_versionless_health_cooperation_does_not_claim_runtime_admission() {
+    let mut inputs = ready_inputs();
+    inputs.claude = HarnessStatus::ContractDeclared {
+        detail: "contract_declared; runtime metadata unavailable".into(),
+    };
+    let health = inputs.assemble();
+    assert_eq!(
+        health.harness.claude,
+        crate::protocol::results::HarnessState::Cooperative
+    );
+    assert_eq!(health.state, HealthState::Healthy);
+    assert!(health.limitations.is_empty());
+    let note = health
+        .notes
+        .iter()
+        .find(|line| line.starts_with("receipt cooperative:"))
+        .unwrap();
+    assert!(note.contains("cooperative_top_level"));
+    assert!(
+        !note.contains("admitted recipe") && !note.contains("admitted:"),
+        "{note}"
+    );
+    assert!(
+        health
+            .notes
+            .iter()
+            .any(|line| line.contains("runtime metadata unavailable"))
+    );
+}
+
+// Catches manifest/floor diagnoses becoming operational Health refusals.
+#[test]
+fn task3_versionless_historical_verdicts_are_advisory_but_payload_failures_matter() {
+    let fx = Fx::new("task3-advisory");
+    let version = below_floor_version();
+    fx.record(
+        "claude",
+        &version,
+        CONTRACT,
+        "SessionStart",
+        HarnessEvidenceOutcome::Ok,
+    );
+    fx.plant_manifest(json!([broken_manifest_row(
+        &version,
+        json!({"last_working": "2.1.283"})
+    )]));
+    assert!(fx.provider().health_lines(&budget()).unwrap().is_empty());
+    assert_eq!(
+        fx.provider().report(&budget()).unwrap().harnesses[0]
+            .versions
+            .len(),
+        1
+    );
+    fx.violate("claude", &version, CONTRACT);
+    assert!(
+        fx.provider()
+            .health_lines(&budget())
+            .unwrap()
+            .iter()
+            .any(|line| line.contains("tool_input.command"))
+    );
+}
+
+// Catches inventing a session key for invalid payloads and accidental verification.
+#[test]
+fn task3_versionless_missing_empty_session_and_malformed_never_create_identity() {
+    let fx = Fx::new("task3-no-identity");
+    for session in [None, Some("")] {
+        let note = HarnessEvidence {
+            harness: "codex".into(),
+            version: None,
+            unattributed_reason: Some("runtime metadata unavailable".into()),
+            contract_id: CONTRACT.into(),
+            event: "PreToolUse".into(),
+            outcome: HarnessEvidenceOutcome::Violation {
+                field: "session_id".into(),
+            },
+            session_id: session.map(str::to_owned),
+        };
+        assert!(!fx.recorder.record(&note, &budget()).unwrap());
+    }
+    let note = HarnessEvidence {
+        harness: "codex".into(),
+        version: None,
+        unattributed_reason: Some("runtime metadata unavailable".into()),
+        contract_id: CONTRACT.into(),
+        event: "PreToolUse".into(),
+        outcome: HarnessEvidenceOutcome::Malformed,
+        session_id: Some("s".into()),
+    };
+    assert!(!fx.recorder.record(&note, &budget()).unwrap());
+    let db = rusqlite::Connection::open(fx._iso.state_root().join("store.db")).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM harness_contract_diagnostics",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert!(
+        fx.store
+            .harness_evidence_all("codex", &budget())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+// Catches loss across daemon/store reopen and success overwriting the first failure.
+#[test]
+fn task3_versionless_violation_survives_reopen_and_success_without_version_rows() {
+    let fx = Fx::new("task3-sticky");
+    let mut note = HarnessEvidence {
+        harness: "codex".into(),
+        version: None,
+        unattributed_reason: Some("runtime metadata unavailable".into()),
+        contract_id: CONTRACT.into(),
+        event: "PreToolUse".into(),
+        outcome: HarnessEvidenceOutcome::Violation {
+            field: "session_id".into(),
+        },
+        session_id: Some("session-a".into()),
+    };
+    assert!(!fx.recorder.record(&note, &budget()).unwrap());
+    fx.advance(1000);
+    note.event = "PostToolUse".into();
+    note.outcome = HarnessEvidenceOutcome::Violation {
+        field: "tool_input.command".into(),
+    };
+    assert!(!fx.recorder.record(&note, &budget()).unwrap());
+    note.outcome = HarnessEvidenceOutcome::Ok;
+    assert!(!fx.recorder.record(&note, &budget()).unwrap());
+    let reopened = Arc::new(
+        SqliteStore::new(
+            StoreContext::new(fx._iso.state_root().join("store.db"), fx.clock.clone()),
+            "i",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    let provider = HarnessStatesProvider::new(
+        reopened.clone(),
+        crate::daemon::harness_states::embedded_source(),
+        fx.clock.clone(),
+        Box::new(|_| None),
+        None,
+    );
+    assert!(
+        reopened
+            .harness_evidence_all("codex", &budget())
+            .unwrap()
+            .is_empty()
+    );
+    let report = provider.report(&budget()).unwrap();
+    let codex = &report.harnesses[1];
+    assert!(codex.versions.is_empty());
+    assert!(codex.detected.is_none());
+    let reason = &codex.unattributed.as_ref().unwrap().reason;
+    assert!(
+        reason.contains("PreToolUse") && reason.contains("session_id"),
+        "{reason}"
+    );
+    let lines = provider.health_lines(&budget()).unwrap();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("PreToolUse") && line.contains("session_id")),
+        "{lines:?}"
+    );
+}
+
+// Actual observer output must stay distinct from historical listed admission.
+#[test]
+fn absorption_observer_to_v2_declares_contract_without_runtime_admission() {
+    use crate::harness::{
+        adapter::{DaemonObservation, InstallEnvironment},
+        registry,
+    };
+    use crate::protocol::results::{AdmissionState, InstallationState};
+    let fx = Fx::new("absorption-declared-projection");
+    let bin = fx._iso.state_root().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    for name in ["claude", "codex"] {
+        crate::harness::stub_binaries::write_stub_harness(
+            &bin,
+            name,
+            if name == "claude" {
+                "2.1.286"
+            } else {
+                "0.158.0"
+            },
+        );
+    }
+    let env = InstallEnvironment {
+        path: Some(bin.into_os_string()),
+        config_root: None,
+        state_dir: None,
+        clock: fx.clock.clone(),
+    };
+    let mut cached = std::collections::BTreeMap::new();
+    for name in ["claude", "codex"] {
+        let r = registry::builtins()
+            .by_id(registry::builtins().agent(name).unwrap())
+            .unwrap();
+        cached.insert(name.into(), r.observe_daemon(&env, &budget()));
+    }
+    let report = fx
+        .provider()
+        .with_observations(Box::new(move || Ok(cached.clone())))
+        .report_v2(&budget())
+        .unwrap();
+    for name in ["claude", "codex"] {
+        let entry = &report.harnesses[name];
+        assert_eq!(entry.installation.state, InstallationState::Present);
+        assert_eq!(entry.admission.state, AdmissionState::Unknown);
+        assert!(
+            entry
+                .admission
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("contract_declared"))
+        );
+        assert!(entry.runtime_evidence.is_empty());
+    }
+    let doctor = serde_json::json!({"adapter_order":["claude","codex"],"harness_health_v2":report});
+    let rendered = crate::cli::doctor::render_debug_text(&doctor);
+    assert!(
+        rendered.contains("contract_declared"),
+        "actual doctor text dropped declared contract detail: {rendered}"
+    );
+    let legacy = DaemonObservation {
+        status: HarnessStatus::Cooperative {
+            detail: "historical listed".into(),
+            live_unverified: false,
+        },
+        ..Default::default()
+    };
+    let report = fx
+        .provider()
+        .with_observations(Box::new(move || {
+            Ok(std::collections::BTreeMap::from([(
+                "claude".into(),
+                legacy.clone(),
+            )]))
+        }))
+        .report_v2(&budget())
+        .unwrap();
+    assert_eq!(
+        report.harnesses["claude"].admission.state,
+        AdmissionState::Listed
+    );
 }

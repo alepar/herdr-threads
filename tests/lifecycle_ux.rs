@@ -375,11 +375,10 @@ fn ensure_accepts_herdr_0755_state_root_and_degraded_daemon() {
     assert!(text(&stop.stdout).contains("stop_accepted"));
 }
 
-/// Kills: a shutdown join that waits out the hung `--version` runs, so stop
-/// answers DeadlineExceeded (final review S6), and a hung harness child left
-/// running after the daemon exits.
+/// Kills: operational admission invoking an executable that hangs, or
+/// daemon stop waiting for an optional metadata probe.
 #[test]
-fn daemon_stop_completes_with_a_hung_harness_binary() {
+fn daemon_stop_completes_without_invoking_hung_harness_binaries() {
     let scratch = Scratch::new();
     let state = scratch.0.join("plugin-state");
     fs::create_dir(&state).unwrap();
@@ -413,11 +412,28 @@ fn daemon_stop_completes_with_a_hung_harness_binary() {
         text(&ensure.stdout),
         text(&ensure.stderr)
     );
-    let started = std::time::Instant::now();
-    while !marker("claude").exists() {
+    // Wait for actual availability observation to complete before stopping:
+    // stopping immediately could cancel a regressed asynchronous probe before
+    // its executable ever starts and make the marker assertion vacuous.
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let report = run_with_path(&state, &host, &["--json", "doctor"], &bin);
+        assert_eq!(report.status.code(), Some(0), "{}", text(&report.stderr));
+        let value: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+        for name in ["claude", "codex"] {
+            assert!(
+                !marker(name).exists(),
+                "operational observation invoked {name}"
+            );
+        }
+        if value["doctor"]["daemon"]["harness_claude"] == "cooperative"
+            && value["doctor"]["daemon"]["harness_codex"] == "cooperative"
+        {
+            break;
+        }
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(10),
-            "the admission observer never started claude --version"
+            std::time::Instant::now() < until,
+            "availability observation did not complete: {value}"
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
@@ -432,23 +448,11 @@ fn daemon_stop_completes_with_a_hung_harness_binary() {
     );
     assert!(text(&stop.stdout).contains("stop_accepted"));
 
-    let alive = |pid: &str| {
-        Command::new("kill")
-            .args(["-0", pid])
-            .status()
-            .unwrap()
-            .success()
-    };
     for name in ["claude", "codex"] {
-        let Ok(pid) = fs::read_to_string(marker(name)) else {
-            continue;
-        };
-        let pid = pid.trim().to_owned();
-        let started = std::time::Instant::now();
-        while alive(&pid) && started.elapsed() < std::time::Duration::from_secs(2) {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        assert!(!alive(&pid), "hung {name} child {pid} outlived the daemon");
+        assert!(
+            !marker(name).exists(),
+            "metadata-only admission must not invoke the hung {name} wrapper"
+        );
     }
 }
 
@@ -522,7 +526,7 @@ fn doctor_reports_context_daemon_and_owned_hook_installation() {
     );
     assert!(
         report.contains(
-            "hooks.claude.compaction_recovery: claude-hooks-2.1.283: unsupported (resume/clear and herdr-threads summary); claude-hooks-2.1.287: supported\n"
+            "hooks.claude.compaction_recovery: unavailable until current runtime is separately qualified; use resume/clear or herdr-threads summary\n"
         ),
         "{report}"
     );
@@ -537,8 +541,8 @@ fn doctor_reports_context_daemon_and_owned_hook_installation() {
     assert!(report.contains("result: unavailable"), "{report}");
     assert!(down.stderr.is_empty(), "{}", text(&down.stderr));
 
-    // The daemon observes the harnesses on its own PATH: an admitted
-    // `claude` and no `codex`.
+    // The daemon checks executable availability on its own PATH: Claude
+    // is present, Codex absent, and neither version is required.
     let path = claude_on_path(&scratch.0, "2.1.286");
     let ensure = run_with_path(&state, &host, &["daemon", "ensure"], &path);
     assert_eq!(ensure.status.code(), Some(0), "{}", text(&ensure.stderr));
@@ -660,7 +664,11 @@ fn doctor_reports_context_daemon_and_owned_hook_installation() {
 fn codex_on_path(root: &Path, label: &str, version: &str, tail: &[u8]) -> PathBuf {
     let dir = root.join(format!("bin-{label}"));
     fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
-    let mut bytes = format!("#!/bin/sh\nprintf 'codex-cli {version}\\n'\nexit 0\n").into_bytes();
+    let mut bytes = format!(
+        "#!/bin/sh\necho invoked > '{}'\nprintf 'codex-cli {version}\\n'\nexit 0\n",
+        dir.join("invoked").display()
+    )
+    .into_bytes();
     bytes.extend_from_slice(tail);
     let codex = dir.join("codex");
     fs::write(&codex, bytes).unwrap();
@@ -686,14 +694,11 @@ fn committed_codex_schemas() -> Vec<u8> {
     out
 }
 
-/// Doctor reports the installed codex it would resolve on PATH: a listed
-/// version as listed, an unlisted version whose embedded hook schemas match
-/// as "schema-matched, live-unverified", and an unmatched one as refused
-/// with the actionable message. None of them changes doctor's exit status.
-/// Kills: doctor omitting the codex admission, reporting a schema-matched
-/// version as listed, and hiding a schema refusal.
+/// Kills: operational doctor executing the selected wrapper, attributing a
+/// version from its bytes, or promoting embedded historical schemas to a
+/// current operational/native qualification.
 #[test]
-fn doctor_reports_codex_schema_matched_admission() {
+fn doctor_reports_codex_contract_without_probing_runtime_or_embedded_schemas() {
     let scratch = Scratch::new();
     let state = scratch.0.join("state");
     let host = scratch.0.join("host.sock");
@@ -704,30 +709,10 @@ fn doctor_reports_codex_schema_matched_admission() {
         .position(|w| w == b"\"fork\"")
         .unwrap();
     changed.splice(at..at + 6, b"\"forked\"".iter().copied());
-    for (label, version, tail, admission, evidence) in [
-        (
-            "listed",
-            "0.158.0",
-            &b""[..],
-            "listed",
-            "codex 0.158.0: listed recipe codex-hooks-v1",
-        ),
-        (
-            "matched",
-            "0.160.0",
-            &schemas[..],
-            "schema-matched, live-unverified",
-            "codex 0.160.0: schema-matched, live-unverified: recipe codex-hooks-v1 hook schemas \
-             sha256:86858f2456c999030224a92d8dfb535183fe0edf8601690d8941978fadbb066d; binary sha256 ",
-        ),
-        (
-            "unmatched",
-            "0.160.0",
-            &changed[..],
-            "optimistic",
-            "codex 0.160.0: optimistic (newer-than-verified): assumed recipe codex-hooks-v1; \
-             schema drift sha256:",
-        ),
+    for (label, version, tail) in [
+        ("listed", "0.158.0", &b""[..]),
+        ("matched", "0.160.0", &schemas[..]),
+        ("unmatched", "0.160.0", &changed[..]),
     ] {
         let bin = codex_on_path(&scratch.0, label, version, tail);
         let output = scrubbed_command(BIN)
@@ -755,12 +740,22 @@ fn doctor_reports_codex_schema_matched_admission() {
         );
         let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         let installed = &value["doctor"]["hooks"]["codex"]["installed"];
-        assert_eq!(installed["admission"], admission, "{label}: {installed}");
+        assert_eq!(
+            installed["admission"], "contract_declared",
+            "{label}: {installed}"
+        );
+        assert!(installed["version"].is_null(), "{label}: {installed}");
         assert_eq!(installed["binary"], bin.join("codex").display().to_string());
         let line = installed["evidence"].as_str().unwrap();
-        assert!(line.starts_with(evidence), "{label}: {line}");
-        // Schema-matched and optimistic admissions both name their recipe
-        // and carry no error: the drifted binary is admitted, not refused.
+        assert!(
+            line.contains("runtime metadata unavailable"),
+            "{label}: {line}"
+        );
+        assert!(
+            !bin.join("invoked").exists(),
+            "{label}: doctor invoked Codex"
+        );
+        // Embedded historical schema bytes are never current qualification.
         assert!(installed["error"].is_null(), "{label}: {installed}");
         assert_eq!(installed["recipe"], "codex-hooks-v1");
         assert_eq!(
@@ -802,10 +797,7 @@ fn doctor_reports_codex_schema_matched_admission() {
         .unwrap();
     let report = text(&output.stdout);
     assert!(
-        report.contains(
-            "hooks.codex.installed: codex 0.160.0: schema-matched, live-unverified: recipe \
-             codex-hooks-v1"
-        ),
+        report.contains("hooks.codex.installed: contract_declared; runtime metadata unavailable; rich optional capabilities unavailable"),
         "{report}"
     );
 }
@@ -1149,220 +1141,119 @@ fn endpoint_json(state: &Path) -> serde_json::Value {
     serde_json::from_slice(&fs::read(instance_dir.join("endpoint.json")).unwrap()).unwrap()
 }
 
-/// ht-910 P1: `setup codex` writes the narrow workspace-write sandbox
-/// allowance into the scratch CODEX_HOME's config.toml, naming exactly the
-/// socket the daemon binds, and that pathname is the same after a daemon
-/// restart (a new boot ID, the same allowlist). Kills: a boot-specific socket
-/// name (the allowlist goes stale on restart), setup computing a different
-/// instance than the daemon, dropping any of the three keys, and guessing a
-/// socket when the Herdr instance is unknown.
+/// Kills: setup adding networking/socket/root allowances, mutating a valid
+/// legacy allowance, or changing the stable daemon socket across restart.
 #[test]
-fn setup_codex_sandbox_allowance_names_the_stable_daemon_socket() {
+fn setup_codex_installs_hooks_only_and_preserves_legacy_socket_allowance() {
     let scratch = Scratch::new();
     let state = scratch.0.join("state");
     let host = scratch.0.join("host.sock");
-    // 0.159.2 (like 0.159.3) is a version whose proxy default-deny was measured; it
-    // is admitted as schema-matched, so the fake embeds the recipe schemas.
     let bin = codex_on_path(&scratch.0, "codex", "0.159.2", &committed_codex_schemas());
     let codex = bin.join("codex").display().to_string();
+    let codex_home = scratch.0.join("codex-home");
     let _guard = DaemonGuard {
         state: state.clone(),
         host: host.clone(),
     };
-    // Codex config is written only to a scratch CODEX_HOME, never the user's.
-    let codex_home = scratch.0.join("codex-home");
-    let setup = || {
+    let invoke = |args: &[&str]| {
         let mut command = scrubbed_command(BIN);
         command
             .arg("--state-dir")
             .arg(&state)
             .arg("--host-endpoint")
             .arg(&host)
-            .args(["--json", "setup", "codex", "--harness-binary", &codex])
-            .env_remove("HERDR_SOCKET_PATH")
-            .env_remove("HERDR_PLUGIN_STATE_DIR");
+            .args(args)
+            .env("PATH", &bin);
         scratch_homes(&mut command, &state);
         let out = command.output().unwrap();
         assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+        out
+    };
+    let setup = |verb: &str| {
+        let out = invoke(&["--json", verb, "codex", "--harness-binary", &codex]);
         serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()["setup"].clone()
     };
-    let planned = setup();
+    let planned = setup("setup");
+    assert_eq!(planned["action"], "installed", "{planned}");
+    assert_eq!(planned["created_config_file"], false, "{planned}");
+    assert_eq!(planned["harness_version"]["admission"], "contract_declared");
+    assert!(planned["harness_version"]["version"].is_null());
+    assert_eq!(planned["sandbox"]["present"], false);
+    assert!(planned["sandbox"]["socket_path"].is_null());
+    assert!(!codex_home.join("config.toml").exists());
     assert!(
         !state.join("instances").exists(),
-        "setup codex must not create daemon state"
+        "setup created daemon state"
     );
-    assert_eq!(planned["action"], "installed", "{planned}");
-    assert_eq!(planned["created_config_file"], true, "{planned}");
-
-    let ensure = run(&state, &host, &["daemon", "ensure"], None);
-    assert_eq!(ensure.status.code(), Some(0), "{}", text(&ensure.stderr));
+    let hooks = fs::read(codex_home.join("hooks.json")).unwrap();
+    let groups: serde_json::Value = serde_json::from_slice(&hooks).unwrap();
+    for event in ["SessionStart", "SubagentStart", "PreToolUse"] {
+        assert!(groups["hooks"][event].is_array(), "{groups}");
+    }
+    invoke(&["daemon", "ensure"]);
     let first = endpoint_json(&state);
     let socket = first["endpoint"].as_str().unwrap().to_owned();
-    assert!(socket.len() < 100, "{socket}");
-    assert_eq!(planned["sandbox"]["socket_path"], socket);
-    assert_eq!(planned["sandbox"]["present"], true);
-    let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
-    let doc: toml_edit::DocumentMut = config.parse().unwrap();
-    assert_eq!(
-        doc["sandbox_workspace_write"]["network_access"].as_bool(),
-        Some(true)
-    );
-    assert_eq!(
-        doc["features"]["network_proxy"]["enabled"].as_bool(),
-        Some(true)
-    );
-    let sockets = doc["features"]["network_proxy"]["unix_sockets"]
-        .as_table_like()
-        .unwrap();
-    assert_eq!(sockets.len(), 1, "{config}");
-    assert_eq!(sockets.get(&socket).and_then(|v| v.as_str()), Some("allow"));
-    let note = planned["sandbox"]["note"].as_str().unwrap();
-    assert!(note.contains("network_access=true") && note.contains("stays"));
-    assert!(note.contains("denied") && note.contains("state directory"));
-
-    let stop = run(&state, &host, &["daemon", "stop"], None);
-    assert_eq!(stop.status.code(), Some(0), "{}", text(&stop.stderr));
-    let again = run(&state, &host, &["daemon", "ensure"], None);
-    assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
+    assert!(socket.len() < 100);
+    invoke(&["daemon", "stop"]);
+    invoke(&["daemon", "ensure"]);
     let second = endpoint_json(&state);
-    assert_eq!(
-        second["endpoint"], first["endpoint"],
-        "socket path changed on restart"
-    );
+    assert_eq!(second["endpoint"], first["endpoint"]);
     assert_ne!(second["boot_id"], first["boot_id"]);
-    let rerun = setup();
-    assert_eq!(rerun["action"], "already_installed", "{rerun}");
-    assert_eq!(rerun["sandbox"], planned["sandbox"]);
-    assert_eq!(
-        fs::read_to_string(codex_home.join("config.toml")).unwrap(),
-        config
-    );
+    assert_eq!(setup("setup")["action"], "already_installed");
+    assert!(!codex_home.join("config.toml").exists());
 
-    // ht-4is.8.20: the writable roots are exactly the two client-side journal directories the
-    // CLI writes, as the canonical paths it opens, never the instance directory itself.
-    let instance = fs::read_dir(state.join("instances"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path()
-        .canonicalize()
+    // Seed the historical writer's genuine ownership record: current setup
+    // must inspect it without upgrading missing roots or altering foreign bytes.
+    let config = codex_home.join("config.toml");
+    let foreign = "# owned by user\nmodel = \"m\"\n";
+    fs::write(&config, foreign).unwrap();
+    let manifest = herdr_threads::cli::setup::manifest_path(&state, "codex-config", &config);
+    herdr_threads::harness::codex_config::install(&config, &manifest, &socket, &[]).unwrap();
+    let before = fs::read(&config).unwrap();
+    let owned = fs::read(&manifest).unwrap();
+    for verb in ["setup-status", "setup"] {
+        let result = setup(verb);
+        assert_eq!(result["sandbox"]["present"], true, "{result}");
+        assert_eq!(result["sandbox"]["recorded"], true, "{result}");
+        assert_eq!(result["sandbox"]["socket_path"], socket);
+        assert!(
+            result["sandbox"]["warning"]
+                .as_str()
+                .unwrap()
+                .contains("metadata is unavailable")
+        );
+        assert_eq!(fs::read(&config).unwrap(), before);
+        assert_eq!(fs::read(&manifest).unwrap(), owned);
+        assert_eq!(fs::read(codex_home.join("hooks.json")).unwrap(), hooks);
+    }
+    let out = invoke(&["--json", "doctor"]);
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    // Missing optional runtime metadata cannot qualify a historical socket
+    // policy or predict sandbox root behavior. The actual installed allowance
+    // is still reported loudly, with owned-removal guidance.
+    assert!(report["doctor"]["hooks"]["codex"]["sandbox_roots_warning"].is_null());
+    let warning = report["doctor"]["hooks"]["codex"]["sandbox_warning"]
+        .as_str()
         .unwrap();
-    let expected_roots = vec![
-        instance.join("intents").display().to_string(),
-        instance.join("contexts").display().to_string(),
-    ];
-    let roots: Vec<String> = doc["sandbox_workspace_write"]["writable_roots"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap().to_owned())
-        .collect();
-    assert_eq!(roots, expected_roots, "{config}");
-    assert_eq!(
-        planned["sandbox"]["writable_roots"],
-        serde_json::json!(expected_roots)
-    );
-    assert_eq!(
-        planned["sandbox"]["writable_roots_present"], true,
-        "{planned}"
-    );
-    assert!(note.contains("writable_roots") && note.contains("SQLite database"));
-
-    // An allowance recorded before the roots existed (manifest version 1): setup-status and
-    // doctor say sandboxed mutations fail and name `setup codex`, which upgrades it in place.
-    let config_path = codex_home.join("config.toml");
-    let manifest = PathBuf::from(planned["config_manifest"].as_str().unwrap());
-    assert!(herdr_threads::harness::codex_config::remove(&config_path, &manifest).unwrap());
-    herdr_threads::harness::codex_config::install(&config_path, &manifest, &socket, &[]).unwrap();
-    let status = |verb: &str| {
-        let mut command = scrubbed_command(BIN);
-        command
-            .arg("--state-dir")
-            .arg(&state)
-            .arg("--host-endpoint")
-            .arg(&host)
-            .args(["--json", verb, "codex", "--harness-binary", &codex])
-            .env_remove("HERDR_SOCKET_PATH")
-            .env_remove("HERDR_PLUGIN_STATE_DIR");
-        scratch_homes(&mut command, &state);
-        let out = command.output().unwrap();
-        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
-        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()["setup"].clone()
-    };
-    let old = status("setup-status");
-    assert_eq!(old["sandbox"]["present"], true, "{old}");
-    assert_eq!(old["sandbox"]["writable_roots_present"], false, "{old}");
-    let warnings = old["warnings"].to_string();
+    assert!(warning.contains("metadata is unavailable") && warning.contains("unsetup codex"));
+    let removed_output = invoke(&["--json", "unsetup", "codex"]);
+    let removed =
+        serde_json::from_slice::<serde_json::Value>(&removed_output.stdout).unwrap()["setup"]
+            .clone();
+    assert_eq!(removed["allowance_removed"], true, "{removed}");
+    assert_eq!(removed["hooks_removed"], true, "{removed}");
+    assert_eq!(fs::read_to_string(&config).unwrap(), foreign);
+    assert!(!manifest.exists());
     assert!(
-        warnings.contains("Operation not") && warnings.contains("herdr-threads setup codex"),
-        "{old}"
-    );
-    let mut command = scrubbed_command(BIN);
-    command
-        .arg("--state-dir")
-        .arg(&state)
-        .arg("--host-endpoint")
-        .arg(&host)
-        .args(["--json", "doctor"])
-        .env_remove("HERDR_SOCKET_PATH")
-        .env_remove("HERDR_PLUGIN_STATE_DIR")
-        .env_remove("HERDR_PANE_ID")
-        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()));
-    scratch_homes(&mut command, &state);
-    let doctor: serde_json::Value =
-        serde_json::from_slice(&command.output().unwrap().stdout).unwrap();
-    let roots_warning = &doctor["doctor"]["hooks"]["codex"]["sandbox_roots_warning"];
-    assert!(
-        roots_warning
-            .as_str()
-            .is_some_and(|w| w.contains("writable roots")),
-        "{doctor}"
-    );
-    assert!(
-        doctor["doctor"]["limitations"]
-            .to_string()
-            .contains("writable roots"),
-        "{doctor}"
-    );
-    let upgraded = status("setup");
-    assert_eq!(upgraded["action"], "installed", "{upgraded}");
-    assert_eq!(
-        upgraded["sandbox"]["writable_roots_present"], true,
-        "{upgraded}"
-    );
-    let fixed = status("setup-status");
-    assert!(fixed["warnings"].is_null(), "{fixed}");
-    assert_eq!(fs::read_to_string(&config_path).unwrap(), config);
-
-    // Without a known (or detectable) host endpoint nothing is guessed:
-    // setup refuses (status 2) and writes nothing more.
-    let mut command = scrubbed_command(BIN);
-    command
-        .arg("--state-dir")
-        .arg(&state)
-        .args(["--json", "setup", "codex", "--harness-binary", &codex])
-        .env_remove("HERDR_SOCKET_PATH")
-        .env_remove("HERDR_PLUGIN_STATE_DIR")
-        .env("PATH", "/usr/bin:/bin");
-    scratch_homes(&mut command, &state);
-    let bare = command.output().unwrap();
-    assert_eq!(bare.status.code(), Some(2), "{}", text(&bare.stdout));
-    assert!(
-        text(&bare.stderr).contains("Herdr host endpoint unknown"),
-        "{}",
-        text(&bare.stderr)
+        !bin.join("invoked").exists(),
+        "operational commands invoked Codex"
     );
 }
 
-/// ht-910 review: `network_access=true` is only narrow where Codex's proxy
-/// enforces default-deny, which was measured on 0.159.2 and 0.159.3 alone. Any other
-/// admitted version (a listed recipe version, or another schema-matched one)
-/// gets the user-level hooks and a warning, never the allowance, in both
-/// install and status. Kills: writing the allowance for every admitted
-/// version.
+/// Kills: new sandbox allowances conditioned on embedded schema bytes or
+/// hypothetical runtime versions. Installed hooks do not claim native proof.
 #[test]
-fn setup_codex_withholds_sandbox_allowance_on_unmeasured_versions() {
+fn setup_codex_withholds_new_sandbox_allowances_for_every_available_wrapper() {
     let scratch = Scratch::new();
     let state = scratch.0.join("state");
     let host = scratch.0.join("host.sock");
@@ -1371,6 +1262,7 @@ fn setup_codex_withholds_sandbox_allowance_on_unmeasured_versions() {
     for (label, version, tail) in [
         ("listed", "0.158.0", &b""[..]),
         ("listed-old", "0.157.1", &b""[..]),
+        ("formerly-measured", "0.159.3", &schemas[..]),
         ("matched", "0.160.0", &schemas[..]),
     ] {
         let bin = codex_on_path(&scratch.0, label, version, tail);
@@ -1394,25 +1286,19 @@ fn setup_codex_withholds_sandbox_allowance_on_unmeasured_versions() {
         let sandbox = &planned["sandbox"];
         assert!(sandbox["socket_path"].is_null(), "{label}: {sandbox}");
         let omitted = sandbox["omitted"].as_str().unwrap();
-        assert!(
-            omitted.contains(&format!("Codex {version} socket policy is unvalidated"))
-                && omitted.contains("0.159.2")
-                && omitted.contains("does not establish incompatibility")
-                && !omitted.contains("curl https://example.com")
-                && !omitted.contains("danger-full-access"),
-            "{label}: {omitted}"
+        assert_eq!(
+            omitted,
+            "setup uses approved outside-sandbox commands and installs no sandbox allowance"
         );
         assert_eq!(sandbox["validation"], "unvalidated", "{label}: {sandbox}");
+        assert_eq!(sandbox["present"], false, "{label}: {sandbox}");
+        assert_eq!(planned["created_config_file"], false, "{label}: {planned}");
+        assert_eq!(planned["harness_version"]["admission"], "contract_declared");
+        assert!(planned["harness_version"]["version"].is_null());
+        assert_eq!(planned["observed"], "unknown");
         assert!(
-            omitted.contains("controlled allow/deny evidence"),
-            "{label}: {omitted}"
-        );
-        assert!(!omitted.contains("-- curl"), "{label}: {omitted}");
-        assert!(
-            planned["warnings"]
-                .to_string()
-                .contains("sandbox socket allowance not written"),
-            "{label}: {planned}"
+            !bin.join("invoked").exists(),
+            "{label}: setup invoked Codex"
         );
         assert!(
             codex_home.join("hooks.json").exists(),
@@ -1435,17 +1321,11 @@ fn setup_codex_withholds_sandbox_allowance_on_unmeasured_versions() {
     );
 }
 
-/// ht-4is.8.8 review: the allowance lives in config.toml and applies to
-/// every Codex session of that CODEX_HOME, so the version gate must keep
-/// being checked after install. With an allowance recorded on 0.159.2 and
-/// Codex then upgraded to an unmeasured version, re-running setup, status
-/// and doctor all warn loudly that `network_access=true` is still installed
-/// and name `unsetup codex`; setup no longer claims the allowance was "not
-/// written". On the measured version nothing warns, and after unsetup the
-/// warning is gone. Kills: checking the gate only when writing, and the
-/// misleading "not written" warning while the old allowance is live.
+/// Kills: a recorded legacy networking allowance going silent when current
+/// runtime metadata is unavailable, mutation during setup/status/doctor, or
+/// unsetup deleting foreign configuration bytes.
 #[test]
-fn codex_allowance_on_an_unmeasured_version_warns_in_setup_status_and_doctor() {
+fn legacy_codex_allowance_warns_with_unavailable_runtime_and_preserves_foreign_bytes() {
     let scratch = Scratch::new();
     let state = scratch.0.join("state");
     let host = scratch.0.join("host.sock");
@@ -1491,49 +1371,52 @@ fn codex_allowance_on_an_unmeasured_version_warns_in_setup_status_and_doctor() {
     };
 
     let installed = setup(&measured, "setup");
-    assert_eq!(installed["sandbox"]["present"], true, "{installed}");
-    assert!(installed["sandbox"]["warning"].is_null(), "{installed}");
-    let status = setup(&measured, "setup-status");
-    assert!(status["sandbox"]["warning"].is_null(), "{status}");
-    assert!(status["warnings"].is_null(), "{status}");
-    let measured_doctor = doctor(&measured);
-    assert!(
-        measured_doctor["hooks"]["codex"]["sandbox_warning"].is_null(),
-        "{measured_doctor}"
-    );
-    let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
-
-    // ht-4is.8.15: Codex auto-updated 0.159.2 -> 0.159.3, whose default-deny
-    // was measured too (codex-1593-sandbox-probe): the recorded allowance is
-    // still admitted, so setup, status and doctor stay quiet and nothing is
-    // rewritten.
+    assert_eq!(installed["sandbox"]["present"], false, "{installed}");
+    let config_path = codex_home.join("config.toml");
+    let foreign = "# mine\nmodel = \"mine\"\n";
+    fs::write(&config_path, foreign).unwrap();
+    let manifest = herdr_threads::cli::setup::manifest_path(&state, "codex-config", &config_path);
+    herdr_threads::harness::codex_config::install(
+        &config_path,
+        &manifest,
+        "/private/tmp/legacy.sock",
+        &[],
+    )
+    .unwrap();
+    let config = fs::read_to_string(&config_path).unwrap();
+    let owned = fs::read(&manifest).unwrap();
+    for verb in ["setup", "setup-status"] {
+        let result = setup(&measured, verb);
+        assert!(
+            loud(result["sandbox"]["warning"].as_str().unwrap()),
+            "{result}"
+        );
+        assert!(
+            result["sandbox"]["warning"]
+                .as_str()
+                .unwrap()
+                .contains("metadata is unavailable")
+        );
+    }
     let patch = codex_on_path(&scratch.0, "patch", "0.159.3", &schemas);
-    let rerun = setup(&patch, "setup");
-    assert_eq!(rerun["action"], "already_installed", "{rerun}");
-    assert_eq!(rerun["sandbox"]["present"], true, "{rerun}");
-    assert!(rerun["sandbox"]["warning"].is_null(), "{rerun}");
-    assert!(
-        rerun["warnings"].as_array().is_some_and(Vec::is_empty),
-        "{rerun}"
-    );
-    let status = setup(&patch, "setup-status");
-    assert!(status["sandbox"]["warning"].is_null(), "{status}");
-    assert!(status["warnings"].is_null(), "{status}");
-    let patch_doctor = doctor(&patch);
-    assert!(
-        patch_doctor["hooks"]["codex"]["sandbox_warning"].is_null(),
-        "{patch_doctor}"
-    );
-    assert_eq!(
-        fs::read_to_string(codex_home.join("config.toml")).unwrap(),
-        config
-    );
+    assert!(loud(
+        setup(&patch, "setup")["sandbox"]["warning"]
+            .as_str()
+            .unwrap()
+    ));
+    assert!(loud(
+        doctor(&patch)["hooks"]["codex"]["sandbox_warning"]
+            .as_str()
+            .unwrap()
+    ));
+    assert_eq!(fs::read_to_string(&config_path).unwrap(), config);
+    assert_eq!(fs::read(&manifest).unwrap(), owned);
 
-    // Codex upgraded: the allowance from the measured version stays.
+    // Selecting another wrapper still cannot attribute the current runtime.
     let rerun = setup(&upgraded, "setup");
-    let warnings = rerun["warnings"].to_string();
+    let warnings = rerun["sandbox"]["warning"].as_str().unwrap();
     assert!(
-        loud(&warnings) && warnings.contains("Codex 0.160.0"),
+        loud(warnings) && warnings.contains("metadata is unavailable"),
         "{rerun}"
     );
     assert!(
@@ -1591,6 +1474,14 @@ fn codex_allowance_on_an_unmeasured_version_warns_in_setup_status_and_doctor() {
         after["hooks"]["codex"]["sandbox_warning"].is_null(),
         "{after}"
     );
+    assert_eq!(fs::read_to_string(&config_path).unwrap(), foreign);
+    assert!(!manifest.exists());
+    for bin in [&measured, &patch, &upgraded] {
+        assert!(
+            !bin.join("invoked").exists(),
+            "operational commands invoked Codex"
+        );
+    }
 }
 
 /// The instance paths a `--state-dir`/`--host-endpoint` pair resolves to, with

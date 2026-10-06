@@ -5,7 +5,7 @@ use crate::cli::{
 };
 use crate::harness::setup::legacy::*;
 use crate::harness::{
-    claude, codex,
+    claude,
     context::Harness,
     prompt_suggestion::{self, SuggestionState},
     recipe,
@@ -68,7 +68,7 @@ pub fn claude_paths(env: &SetupEnv) -> Result<(PathBuf, PathBuf), RunError> {
 pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
     let settings = env.claude_settings()?;
     env.hook_argv(Harness::Claude)?;
-    let (observed, _) = observe(request, env).map_err(refuse_version)?;
+    let (observed, _) = observe(request, env).map_err(refuse_executable)?;
     prepare_state(env)?;
     let manifest = claude_manifest(env, &settings)?;
     let mut file = OwnedFile::new(settings.clone(), manifest.clone(), b"{}");
@@ -305,7 +305,7 @@ pub(crate) fn claude_remove(env: &SetupEnv) -> Result<Value, RunError> {
 
 fn claude_status(
     env: &SetupEnv,
-    observation: Result<(Observed, Option<codex::InstalledVersion>), String>,
+    observation: Result<(Observed, Option<crate::harness::operational::CodexContract>), String>,
 ) -> Result<Value, RunError> {
     let settings = env.claude_settings()?;
     let mut report = json!({
@@ -405,14 +405,14 @@ pub(crate) fn unsetup(
 pub(crate) fn observe(
     request: &SetupRequest,
     env: &SetupEnv,
-) -> Result<(Observed, Option<codex::InstalledVersion>), String> {
+) -> Result<(Observed, Option<crate::harness::operational::CodexContract>), String> {
     observe_with_cache(request, env, None)
 }
 pub(crate) fn observe_with_cache(
     request: &SetupRequest,
     env: &SetupEnv,
     _codex_cache: Option<&Path>,
-) -> Result<(Observed, Option<codex::InstalledVersion>), String> {
+) -> Result<(Observed, Option<crate::harness::operational::CodexContract>), String> {
     observe_bounded(
         request,
         env,
@@ -428,38 +428,24 @@ fn observe_bounded(
     _codex_cache: Option<&Path>,
     timeout: Duration,
     cancellation: &crate::protocol::time::Cancellation,
-) -> Result<(Observed, Option<codex::InstalledVersion>), String> {
+) -> Result<(Observed, Option<crate::harness::operational::CodexContract>), String> {
     if timeout.is_zero() || cancellation.is_cancelled() {
         return Err("native status observation budget exhausted or cancelled".into());
     }
-    let binary = harness_binary(request, env).map_err(|error| error.to_string())?;
-    let Some(binary) = binary else {
-        return Err(claude::check_version("").unwrap_err()
-            + " (no executable `claude` on PATH; pass --harness-binary)");
-    };
-    // The hook entrypoint's own observation and parser, so setup
-    // accepts exactly what the installed hook will accept.
-    let version = match codex::version_output_cancellable(&binary, timeout, cancellation) {
-        Err(_) => String::new(),
-        Ok(out) => match claude::version_from_output(&out) {
-            Some(version) => version,
-            None => {
-                let line = printable_line(&out);
-                return Err(recipe::refusal_message(
-                    "claude",
-                    &line,
-                    claude::RECIPES,
-                    &recipe::LookupError::Unrecognized,
-                ));
-            }
-        },
-    };
-    let recipe = claude::check_version(&version)?;
+    let binary = harness_binary(request, env)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "no executable `claude` on PATH; pass --harness-binary".to_owned())?;
+    use std::os::unix::fs::PermissionsExt;
+    if !std::fs::metadata(&binary)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    {
+        return Err(format!("{} is not an executable file", binary.display()));
+    }
     Ok((
         Observed {
             binary,
-            version,
-            recipe: recipe.id,
+            version: None,
+            recipe: "claude-hooks-2.1.283",
         },
         None,
     ))

@@ -6,7 +6,7 @@ use crate::harness::contract::{Classification, Malformed, classify, contract_for
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum ExpectedAdmission {
     Listed,
@@ -35,8 +35,8 @@ fn read_help(dir: &Path, name: &str) -> Option<String> {
     std::fs::read_to_string(dir.join("help").join(format!("{name}.txt"))).ok()
 }
 
-/// An observation refusal fails the canary only when the probe did not expect a refusal.
-fn refusal_is_failure(expected: ExpectedAdmission) -> bool {
+/// A historical recipe refusal fails its diagnostic when the probe did not expect it.
+fn historical_refusal_is_failure(expected: ExpectedAdmission) -> bool {
     expected != ExpectedAdmission::Refused
 }
 
@@ -50,14 +50,14 @@ fn canary_probe_sample_decodes() {
         probe.expected_admission,
         ExpectedAdmission::SchemaMatchedOrOptimistic
     );
-    assert!(refusal_is_failure(probe.expected_admission));
-    assert!(!refusal_is_failure(ExpectedAdmission::Refused));
+    assert!(historical_refusal_is_failure(probe.expected_admission));
+    assert!(!historical_refusal_is_failure(ExpectedAdmission::Refused));
     for e in [
         ExpectedAdmission::Listed,
         ExpectedAdmission::Optimistic,
         ExpectedAdmission::Unasserted,
     ] {
-        assert!(refusal_is_failure(e));
+        assert!(historical_refusal_is_failure(e));
     }
 }
 
@@ -195,8 +195,9 @@ fn classification_json(c: Classification) -> serde_json::Value {
     }
 }
 
-/// Observe the harness exactly as the hook does, then parse every captured payload with the
-/// production adapter. An observation refusal fails only when the probe did not expect one.
+/// Replay core payloads under the operational contract. A separate historical
+/// diagnostic classifies explicit probe metadata; it never supplies runtime
+/// attribution or excuses a core observation/payload failure.
 fn run_capture(dir: &Path) -> CaptureRun {
     let dir = dir.canonicalize().expect("capture dir exists");
     let probe = read_probe(&dir).expect("canary-probe.json");
@@ -222,9 +223,7 @@ fn run_capture(dir: &Path) -> CaptureRun {
             ) {
                 Err(error) => {
                     observation = format!("refused: {error}");
-                    if refusal_is_failure(probe.expected_admission) {
-                        failures.push(format!("observation refused: {error}"));
-                    }
+                    failures.push(format!("operational observation refused: {error}"));
                 }
                 Ok(installed) => {
                     for captured in read_payloads(&dir, &probe.harness) {
@@ -268,13 +267,65 @@ fn run_capture(dir: &Path) -> CaptureRun {
     } else {
         (None, None)
     };
+    let historical = match harness {
+        Some(crate::harness::context::Harness::Claude) => Some(recipe_history(
+            crate::harness::claude::admission_table(),
+            &probe,
+            None,
+        )),
+        Some(crate::harness::context::Harness::Codex) => Some(recipe_history(
+            crate::harness::codex::admission_table(),
+            &probe,
+            schema.as_ref().and_then(|schema| {
+                (schema["result"] == "match")
+                    .then(|| schema["recipe"].as_str())
+                    .flatten()
+            }),
+        )),
+        _ => None,
+    };
+    if let Some(diagnostic) = &historical
+        && diagnostic["classification"] == "refused"
+        && historical_refusal_is_failure(probe.expected_admission)
+    {
+        failures.push(format!(
+            "historical recipe diagnostic refused: {} (explicit probe version {})",
+            diagnostic["reason"], probe.version
+        ));
+    }
     let contract_id = harness.and_then(|_| contract_for(&probe.harness).map(contract_id));
     let report = serde_json::json!({
         "probe": {"harness": probe.harness, "version": probe.version, "binary": binary},
         "contract_id": contract_id,
-        "observation": observation, "payloads": payloads,
+        "observation": observation, "observation_scope": "operational_contract",
+        "runtime_version": null, "historical_diagnostic": historical, "payloads": payloads,
         "schema": schema, "launch_tables": launch_tables, "help_present": help});
     CaptureRun { report, failures }
+}
+
+/// Source-declared recipe history for the explicitly captured probe version.
+/// This never observes an executable or qualifies a current runtime/native
+/// capability. Schema matching uses only the separate already-captured report.
+fn recipe_history<P: 'static>(
+    table: &[crate::harness::recipe::Recipe<P>],
+    probe: &CanaryProbe,
+    schema_recipe: Option<&str>,
+) -> serde_json::Value {
+    use crate::harness::admission::{Row, classify};
+    let (classification, reason) = match classify(table, &probe.version, || {
+        table.iter().find(|recipe| Some(recipe.id) == schema_recipe)
+    }) {
+        Row::Refused(reason) => ("refused", Some(format!("{reason:?}"))),
+        Row::Listed(_) => ("listed", None),
+        Row::SchemaMatched(_) => ("schema-matched, live-unverified", None),
+        Row::Optimistic { .. } => ("optimistic", None),
+    };
+    serde_json::json!({
+        "scope": "recipe_history_only", "version_source": "canary-probe.json.version",
+        "version": probe.version, "classification": classification,
+        "expected_admission": probe.expected_admission, "reason": reason,
+        "runtime_qualified": false, "native_qualified": false,
+    })
 }
 
 /// The production `codex_schema` fingerprint of `binary` against every recipe's

@@ -909,7 +909,7 @@ fn codex_resume_mark_is_written_without_a_daemon() {
 }
 
 #[test]
-fn codex_fresh_session_is_attributed_from_the_rollout_head() {
+fn codex_fresh_session_creator_metadata_is_not_current_runtime() {
     let fx = Fx::new("hev-codex-fresh", DaemonVintage::Current);
     let rollout = codex_rollout(&fx.iso, "0.159.3");
     fx.hook_as(
@@ -927,7 +927,11 @@ fn codex_fresh_session_is_attributed_from_the_rollout_head() {
     let notes = fx.notes();
     assert_eq!(notes.len(), 2);
     for note in &notes {
-        assert_eq!(note.version.as_deref(), Some("0.159.3"), "{note:?}");
+        assert_eq!(note.version, None, "{note:?}");
+        assert_eq!(
+            note.unattributed_reason.as_deref(),
+            Some(crate::harness::attribution::Unattributed::CodexCreatorOnly.as_str())
+        );
     }
     assert!(!fx.gate("codex", "s").resumed);
 }

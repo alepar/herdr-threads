@@ -658,6 +658,7 @@ impl InstalledVersion {
 /// Run `<absolute binary> --version` under one deadline covering process exit
 /// and reading stdout to EOF; the process group is killed on expiry. Shared by
 /// every adapter that gates on an observed installed version.
+#[cfg(test)]
 pub(crate) fn version_output(binary: &Path, timeout: Duration) -> Result<Vec<u8>, VersionError> {
     version_output_by(binary, Instant::now() + external_bound(timeout), None)
 }
@@ -851,16 +852,6 @@ impl InstalledAdmission {
         Self::observe_on_path_with(path, timeout, None)
     }
 
-    /// [`Self::observe_on_path`] whose `--version` run is killed once
-    /// `cancel` fires.
-    pub(crate) fn observe_on_path_cancellable(
-        path: Option<&std::ffi::OsStr>,
-        timeout: Duration,
-        cancel: &Cancellation,
-    ) -> Self {
-        Self::observe_on_path_with(path, timeout, Some(cancel))
-    }
-
     fn observe_on_path_with(
         path: Option<&std::ffi::OsStr>,
         timeout: Duration,
@@ -1042,9 +1033,22 @@ fn required(value: &Value, key: &str) -> Result<String, ContextError> {
     field(value, key)?.ok_or(ContextError::Invalid)
 }
 
-/// The sole parser entry. The version witness can only come from observing
-/// the installed binary, so no caller can parse native input unmeasured. The
-/// witness's recipe selects the input schema.
+/// Decode the registered operational contract without executable metadata.
+/// Validation proves only this input, never native transport or receipt.
+pub fn parse_event_for_contract(
+    bytes: &[u8],
+    event_id: &str,
+    _: &super::operational::CodexContract,
+) -> Result<LifecycleEvent, ContextError> {
+    let value = input(bytes, event_id)?;
+    check_hooks_v1(&value)?;
+    let mut event = parse_shape(&value, event_id)?;
+    event.capability = Capability::ContractValidatedInput;
+    Ok(event)
+}
+
+/// Diagnostic/fixture compatibility parser. The version witness selects the
+/// captured recipe; production hooks use [`parse_event_for_contract`].
 pub fn parse_event_for_version(
     bytes: &[u8],
     event_id: &str,
@@ -1244,14 +1248,14 @@ impl super::adapter::CanaryStrategy for CodexCanary {
     }
 }
 impl HarnessAdapter for CodexAdapter {
+    fn installer_policy(&self) -> Option<&dyn InstallerPolicy> {
+        Some(self)
+    }
     fn receipt_admission_summary(&self) -> Option<String> {
-        Some(
-            RECIPES
-                .iter()
-                .map(|recipe| recipe.versions.to_string())
-                .collect::<Vec<_>>()
-                .join("; "),
-        )
+        Some(format!(
+            "contract_declared {}; runtime/native behavior unverified",
+            RECIPES[0].id
+        ))
     }
     fn observation_fingerprint(&self, env: &InstallEnvironment) -> Option<String> {
         super::adapter::executable_observation_fingerprint(env, "codex")
@@ -1259,17 +1263,17 @@ impl HarnessAdapter for CodexAdapter {
     fn observe_daemon(
         &self,
         env: &InstallEnvironment,
-        budget: &CallBudget,
+        _: &CallBudget,
     ) -> super::adapter::DaemonObservation {
-        let (status, version) = observe_daemon_install(
-            env.path.as_deref(),
-            super::adapter::adapter_timeout(env, budget),
-            &budget.cancellation,
-        );
+        let status = if crate::cli::hook::resolve_on_path("codex", env.path.as_deref()).is_some() {
+            super::adapter::HarnessStatus::ContractDeclared { detail: "codex: contract_declared; runtime metadata unavailable; rich optional capabilities unavailable".into() }
+        } else {
+            super::adapter::HarnessStatus::NotInstalled(
+                "no executable `codex` on the daemon's PATH".into(),
+            )
+        };
         super::adapter::DaemonObservation {
             status,
-            identity: version
-                .and_then(|v| RuntimeIdentity::stable_release(&v, "installed_probe").ok()),
             receipt_basis: Some(
                 crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE.into(),
             ),
@@ -1277,7 +1281,10 @@ impl HarnessAdapter for CodexAdapter {
         }
     }
 
-    type Admission = InstalledVersion;
+    fn hook_admission_policy(&self) -> HookAdmissionPolicy {
+        HookAdmissionPolicy::RegisteredContract
+    }
+    type Admission = super::operational::CodexContract;
     fn metadata(&self) -> &'static AdapterMetadata {
         static METADATA: AdapterMetadata = AdapterMetadata {
             id: "codex",
@@ -1339,37 +1346,22 @@ impl HarnessAdapter for CodexAdapter {
         }];
         &CONTRACTS
     }
-    fn observe_install(&self, env: &InstallEnvironment, budget: &CallBudget) -> InstallObservation {
-        let Some(binary) = resolve_on_path(env.path.as_deref()) else {
-            return InstallObservation::Unavailable {
-                diagnostic: "installed codex executable not found on PATH".into(),
-            };
-        };
-        let private = env
-            .state_dir
-            .as_deref()
-            .and_then(|state| super::codex_evidence::prepare(state).ok());
-        let cache = private.as_deref().map(super::codex_evidence::cache_path);
-        let admission = InstalledAdmission::observe_binary(
-            binary,
-            super::adapter::adapter_timeout(env, budget),
-            cache.as_deref().map_or(
-                super::codex_schema::FingerprintCache::Memory,
-                super::codex_schema::FingerprintCache::ReadWrite,
-            ),
-        );
-        if let Some(private) = &private {
-            let now = env.clock.utc_now().0.max(0) as u64;
-            let _ = super::codex_evidence::record(
-                &super::codex_evidence::admission_path(private),
-                &admission,
-                now,
-            );
+    fn nonholding_unavailable_reasons(
+        &self,
+        descriptor: &ContractDescriptor,
+    ) -> &'static [&'static str] {
+        static REASONS: [&str; 1] = [super::attribution::Unattributed::CodexCreatorOnly.as_str()];
+        if std::ptr::eq(&self.contracts()[0], descriptor) {
+            &REASONS
+        } else {
+            &[]
         }
-        match admission.result {
-            Ok(version) => InstallObservation::CodexWitness(version),
-            Err(error) => InstallObservation::Unavailable {
-                diagnostic: format!("installed codex version: {}", error.summary()),
+    }
+    fn observe_install(&self, env: &InstallEnvironment, _: &CallBudget) -> InstallObservation {
+        match crate::cli::hook::resolve_on_path("codex", env.path.as_deref()) {
+            Some(binary) => InstallObservation::ExecutableAvailable { binary },
+            None => InstallObservation::Unavailable {
+                diagnostic: "installed codex executable not found on PATH".into(),
             },
         }
     }
@@ -1378,25 +1370,9 @@ impl HarnessAdapter for CodexAdapter {
         request: &AdmissionRequest,
         _: &CallBudget,
     ) -> AdmissionDecision<Self::Admission> {
-        let InstallObservation::CodexWitness(version) = &request.installed else {
-            return AdmissionDecision::Refused {
-                diagnostic: "installed codex witness unavailable".into(),
-            };
-        };
-        match version.admission() {
-            Admission::Listed => AdmissionDecision::Listed {
-                state: version.clone(),
-                recipe: version.recipe().id,
-            },
-            Admission::SchemaMatched { .. } => AdmissionDecision::SchemaMatched {
-                state: version.clone(),
-                recipe: version.recipe().id,
-            },
-            Admission::Optimistic { admission, .. } => AdmissionDecision::Optimistic {
-                state: version.clone(),
-                recipe: version.recipe().id,
-                diagnostic: super::optimistic_label(admission, false),
-            },
+        match &request.installed {
+            InstallObservation::NotRequested | InstallObservation::ExecutableAvailable { .. } => AdmissionDecision::ContractDeclared {state: super::operational::CodexContract::registered(), recipe: RECIPES[0].id},
+            _ => AdmissionDecision::Refused {diagnostic: "registered codex contract requires executable availability or declared hook selection".into()},
         }
     }
     fn version_ladder(&self, identity: &RuntimeIdentity) -> Ladder {
@@ -1427,7 +1403,14 @@ impl HarnessAdapter for CodexAdapter {
         admitted: &Self::Admission,
         input: &HookInput,
     ) -> Result<DecodedEvent, DecodeFailure> {
-        parse_event_for_version(&input.bytes, &uuid::Uuid::new_v4().to_string(), admitted)
+        if let Some(registered) = input.registered_event.as_deref() {
+            let payload: Value = serde_json::from_slice(&input.bytes)
+                .map_err(|_| DecodeFailure::Native(ContextError::Invalid))?;
+            if payload.get("hook_event_name").and_then(Value::as_str) != Some(registered) {
+                return Err(DecodeFailure::Native(ContextError::Invalid));
+            }
+        }
+        parse_event_for_contract(&input.bytes, &uuid::Uuid::new_v4().to_string(), admitted)
             .map(DecodedEvent::from_native)
             .map_err(DecodeFailure::Native)
     }
@@ -1455,32 +1438,6 @@ impl HarnessAdapter for CodexAdapter {
     ) -> Result<RemovalOutcome, SetupFailure> {
         setup::unsetup(request)
     }
-}
-
-fn observe_daemon_install(
-    path: Option<&std::ffi::OsStr>,
-    timeout: std::time::Duration,
-    cancel: &crate::protocol::time::Cancellation,
-) -> (super::adapter::HarnessStatus, Option<String>) {
-    use crate::harness::codex::{InstalledRefusal, VersionError};
-    let admission = crate::harness::codex::InstalledAdmission::observe_on_path_cancellable(
-        path, timeout, cancel,
-    );
-    let version = match &admission.result {
-        Ok(version) => Some(version.as_str()),
-        Err(InstalledRefusal::Refused(
-            VersionError::Unsupported(version) | VersionError::KnownBroken { version, .. },
-        )) => Some(version.as_str()),
-        Err(_) => None,
-    };
-    let version = version.and_then(|raw| crate::harness::contract::normalize_version("codex", raw));
-    (
-        crate::app::codex_status(
-            &admission,
-            crate::harness::codex::DECLARATION.health_capability(),
-        ),
-        version,
-    )
 }
 
 /// Codex native launch grammar, environment and wrapper policy.
@@ -2239,5 +2196,42 @@ impl LaunchPolicy for CodexAdapter {
     }
     fn expected_host_kinds(&self) -> &'static [&'static str] {
         self.metadata().host_kinds
+    }
+}
+
+impl InstallerPolicy for CodexAdapter {
+    fn inspect_hooks(
+        &self,
+        request: &StatusRequest,
+        budget: &CallBudget,
+    ) -> Result<InstallerHookState, SetupFailure> {
+        if budget.cancellation.is_cancelled() {
+            return Err(SetupFailure::Invalid(
+                "installer observation cancelled".into(),
+            ));
+        }
+        let env = crate::harness::setup::legacy::scoped_legacy_environment(
+            Harness::Codex,
+            &request.scope,
+            &request.environment,
+        )?;
+        crate::harness::setup::legacy::installer_hooks_installed(&env, Harness::Codex)
+            .map(|owned| {
+                if owned {
+                    InstallerHookState::Owned
+                } else {
+                    InstallerHookState::Missing
+                }
+            })
+            .map_err(|error| SetupFailure::Invalid(error.to_string()))
+    }
+    fn skill_destination(&self, scope: &ResolvedSetupScope) -> Option<InstallerSkillDestination> {
+        let ResolvedSetupScope::ConfigRoot(root) = scope else {
+            return None;
+        };
+        Some(InstallerSkillDestination {
+            root: root.clone(),
+            file: root.join("skills/herdr-threads/SKILL.md"),
+        })
     }
 }

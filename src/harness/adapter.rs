@@ -19,6 +19,13 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn callback_admission(&self) -> bool {
         false
     }
+    fn hook_admission_policy(&self) -> HookAdmissionPolicy {
+        if self.callback_admission() {
+            HookAdmissionPolicy::QualifiedCallback
+        } else {
+            HookAdmissionPolicy::InstalledObservation
+        }
+    }
     fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy {
         super::context::QualifiedTurnPolicy::Strict
     }
@@ -36,6 +43,9 @@ pub trait HarnessAdapter: Send + Sync + 'static {
                 }]
             })
             .unwrap_or_default()
+    }
+    fn nonholding_unavailable_reasons(&self, _: &ContractDescriptor) -> &'static [&'static str] {
+        &[]
     }
     fn contracts(&self) -> &'static [ContractDescriptor];
     fn observe_install(&self, env: &InstallEnvironment, budget: &CallBudget) -> InstallObservation;
@@ -68,6 +78,13 @@ pub trait HarnessAdapter: Send + Sync + 'static {
                 },
                 budget,
             ) {
+                AdmissionDecision::ContractDeclared { recipe, .. } => {
+                    HarnessStatus::ContractDeclared {
+                        detail: format!(
+                            "{recipe}; contract_declared; runtime metadata unavailable; rich optional capabilities unavailable"
+                        ),
+                    }
+                }
                 AdmissionDecision::Listed { recipe, .. } => HarnessStatus::Cooperative {
                     detail: recipe.into(),
                     live_unverified: false,
@@ -176,6 +193,9 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     ) -> Result<(), SetupFailure> {
         Ok(())
     }
+    fn installer_policy(&self) -> Option<&dyn InstallerPolicy> {
+        None
+    }
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
         None
     }
@@ -217,7 +237,19 @@ pub struct InstallEnvironment {
     pub config_root: Option<std::path::PathBuf>,
     pub state_dir: Option<std::path::PathBuf>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookAdmissionPolicy {
+    InstalledObservation,
+    RegisteredContract,
+    QualifiedCallback,
+}
 pub enum InstallObservation {
+    /// Executable availability alone, without invoking it or identifying its runtime.
+    ExecutableAvailable {
+        binary: std::path::PathBuf,
+    },
+    /// Hook-only selection under an explicit registered-contract policy.
+    NotRequested,
     /// Carries the unforgeable installed binary/schema witness, never a payload claim.
     CodexWitness(super::codex::InstalledVersion),
     Available {
@@ -236,6 +268,10 @@ pub struct AdmissionRequest {
     pub runtime_candidate: Option<RuntimeIdentity>,
 }
 pub enum AdmissionDecision<A> {
+    ContractDeclared {
+        state: A,
+        recipe: &'static str,
+    },
     Listed {
         state: A,
         recipe: &'static str,
@@ -255,6 +291,7 @@ pub enum AdmissionDecision<A> {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdmissionKind {
+    ContractDeclared,
     Listed,
     SchemaMatched,
     Optimistic,
@@ -1091,18 +1128,6 @@ pub(crate) fn encode_context(
     }
 }
 
-pub(crate) fn adapter_timeout(
-    env: &InstallEnvironment,
-    budget: &CallBudget,
-) -> std::time::Duration {
-    std::time::Duration::from_millis(
-        budget
-            .deadline
-            .0
-            .saturating_sub(env.clock.monotonic_now().0),
-    )
-}
-
 /// One harness as the daemon observed it on its own `PATH` (the bounded
 /// boot observation). Hook installation is per harness environment
 /// (`$CLAUDE_CONFIG_DIR`, `$CODEX_HOME`), so `doctor`, run in that
@@ -1122,6 +1147,8 @@ pub enum HarnessStatus {
     /// (`harness::state`, rendered from evidence and the manifest), so Health
     /// shows nothing for it here; doctor shows the detected-version line.
     VersionRefused(String),
+    /// Registered core input contract; no runtime recipe admission.
+    ContractDeclared { detail: String },
     /// Admitted by a recipe whose receipts are cooperative
     /// (`cooperative_top_level`). `live_unverified` marks a schema-matched
     /// admission, which stays listed as a limitation.
@@ -1157,4 +1184,23 @@ pub fn executable_observation_fingerprint(env: &InstallEnvironment, name: &str) 
         "{:x}",
         Sha256::digest(format!("{identity:?}").as_bytes())
     ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallerHookState {
+    Missing,
+    Owned,
+}
+#[derive(Debug, Clone)]
+pub struct InstallerSkillDestination {
+    pub root: std::path::PathBuf,
+    pub file: std::path::PathBuf,
+}
+pub trait InstallerPolicy: Send + Sync {
+    fn inspect_hooks(
+        &self,
+        request: &StatusRequest,
+        budget: &CallBudget,
+    ) -> Result<InstallerHookState, SetupFailure>;
+    fn skill_destination(&self, scope: &ResolvedSetupScope) -> Option<InstallerSkillDestination>;
 }

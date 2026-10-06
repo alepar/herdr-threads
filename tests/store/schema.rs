@@ -5059,7 +5059,7 @@ fn recent_activity_writer_rejects_missing_or_null_default() {
 // and incomplete public migration chaining from any supported historical version.
 #[test]
 fn adapter_migration_preserves_all_supported_history_and_rejection_overlay() {
-    for version in 1..=23 {
+    for version in 1..=24 {
         let db = adapter_historical_database(version);
         db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0); INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (7,'s',1,'p','b',0,'codex','session','execution','cooperative_top_level',1,1,'term','inc');").unwrap();
         db.execute_batch("INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,ended_at) VALUES (90,'s',2,'p','b',0,'codex','deleted','deleted','cooperative_top_level',2,3); DELETE FROM occupant_bindings WHERE ordinal=90;").unwrap();
@@ -5073,7 +5073,7 @@ fn adapter_migration_preserves_all_supported_history_and_rejection_overlay() {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            24,
+            schema::LATEST_VERSION,
             "from {version}"
         );
         let history:(i64,String,String,String)=db.query_row("SELECT ordinal,native_session,execution_id,observation_provenance FROM occupant_bindings WHERE seat_id='s'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
@@ -5261,6 +5261,7 @@ fn adapter_historical_database(version: usize) -> Connection {
         include_str!("../../migrations/0021_invitation_rejections.sql"),
         include_str!("../../migrations/0022_user_message_intent.sql"),
         include_str!("../../migrations/0023_channel_archival.sql"),
+        include_str!("../../migrations/0024_harness_contract_diagnostics.sql"),
     ];
     let db = Connection::open_in_memory().unwrap();
     db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
@@ -5274,7 +5275,7 @@ fn adapter_historical_database(version: usize) -> Connection {
 
 #[test]
 fn adapter_migration_failure_rolls_back_rebuilt_tables_and_schema_version() {
-    let db = adapter_historical_database(23);
+    let db = adapter_historical_database(24);
     db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0); INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at) VALUES (7,'s',1,'p','b',0,'codex','launch:n','launch:e','managed_launch',0); UPDATE sqlite_sequence SET seq=90 WHERE name='occupant_bindings'; CREATE TABLE harness_runtime_identities(collision INTEGER);").unwrap();
     let original: String = db
         .query_row(
@@ -5289,7 +5290,7 @@ fn adapter_migration_failure_rolls_back_rebuilt_tables_and_schema_version() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        23
+        24
     );
     assert_eq!(
         db.query_row(
@@ -5424,7 +5425,7 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
             "SELECT json_array(id,fetched_at,created_at) FROM summary_jobs ORDER BY id",
         ].into_iter().flat_map(|sql| db.prepare(sql).unwrap().query_map([], |r| r.get::<_,String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()).collect();
         let roots = db
-            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences') ORDER BY name")
+            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics') ORDER BY name")
             .unwrap()
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap()
@@ -5707,7 +5708,7 @@ fn archival_schema_upgrade_21_and_22_preserves_history_and_starts_unqualified() 
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            24
+            schema::LATEST_VERSION
         );
         // The bounded worker seeds historical rows. Migration cannot backdate eligibility.
         assert_eq!(
@@ -5778,8 +5779,8 @@ fn archival_schema_audit_preserves_case_sensitive_terminal_state_literals() {
 
 // A binding table rebuild must retain canonical archival invalidation and queue producers.
 #[test]
-fn adapter_migration_23_to_24_preserves_archival_guards_and_intent_history() {
-    let db = adapter_historical_database(23);
+fn adapter_migration_main24_to25_preserves_archival_guards_and_intent_history() {
+    let db = adapter_historical_database(24);
     user_intent_seed(&db);
     db.execute_batch(r#"INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES(7,'s',1,'p','host',1,'codex','session','execution','cooperative_top_level',0,1);
         UPDATE sqlite_sequence SET seq=90 WHERE name='occupant_bindings';
@@ -5798,7 +5799,7 @@ fn adapter_migration_23_to_24_preserves_archival_guards_and_intent_history() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        24
+        schema::LATEST_VERSION
     );
     assert_eq!(
         db.query_row(
@@ -5915,4 +5916,97 @@ fn adapter_migration_23_to_24_preserves_archival_guards_and_intent_history() {
 fn binding_archival_guards(db: &Connection) -> Vec<(String, String)> {
     db.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name='occupant_bindings' ORDER BY name").unwrap()
         .query_map([],|r|Ok((r.get(0)?,r.get(1)?))).unwrap().map(Result::unwrap).collect()
+}
+
+// Catches an altered current table or missing retention index accepted at v24.
+#[test]
+fn task3_versionless_schema24_rejects_altered_table_and_missing_index() {
+    for alteration in [
+        "DROP INDEX harness_contract_diagnostics_recent",
+        "DROP TABLE harness_contract_diagnostics; CREATE TABLE harness_contract_diagnostics(harness TEXT, session_id TEXT, contract_id TEXT, event TEXT, field TEXT, first_seen_at INTEGER, last_seen_at INTEGER)",
+    ] {
+        let db = Connection::open_in_memory().unwrap();
+        schema::initialize(&db, || UtcMillis(1)).unwrap();
+        db.execute_batch(alteration).unwrap();
+        assert!(schema::initialize(&db, || UtcMillis(2)).is_err());
+    }
+}
+
+// Catches missing additive migration and accepting incomplete current schemas.
+#[test]
+fn task3_versionless_schema24_upgrades_preserves_history_and_audits_objects() {
+    let db = adapter_historical_database(23);
+    db.execute_batch("INSERT INTO harness_version_evidence(harness,version,contract_id,first_seen_at,last_seen_at) VALUES ('codex','0.159.3','0123456789abcdef',1,2)").unwrap();
+    schema::initialize(&db, || UtcMillis(3)).unwrap();
+    assert_eq!(
+        db.query_row("SELECT version FROM harness_version_evidence", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .unwrap(),
+        "0.159.3"
+    );
+    assert_eq!(
+        db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        25
+    );
+    db.execute_batch("DROP TABLE harness_contract_diagnostics")
+        .unwrap();
+    assert!(schema::initialize(&db, || UtcMillis(4)).is_err());
+}
+
+// The successor must consume actual main24 without rewriting its diagnostic history.
+#[test]
+fn absorption_main24_to25_preserves_diagnostics_and_matches_fresh_catalog() {
+    let db = adapter_historical_database(23);
+    db.execute_batch(include_str!(
+        "../../migrations/0024_harness_contract_diagnostics.sql"
+    ))
+    .unwrap();
+    db.pragma_update(None, "user_version", 24).unwrap();
+    db.execute_batch("INSERT INTO harness_contract_diagnostics VALUES('codex','old-session','0123456789abcdef','1Start','field',7,11)").unwrap();
+    let guards = binding_archival_guards(&db);
+    schema::initialize(&db, || UtcMillis(100)).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        25
+    );
+    assert_eq!(binding_archival_guards(&db), guards);
+    assert_eq!(
+        db.query_row(
+            "SELECT event,first_seen_at,last_seen_at FROM harness_contract_diagnostics",
+            [],
+            |r| Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?
+            ))
+        )
+        .unwrap(),
+        ("1Start".into(), 7, 11)
+    );
+    db.execute_batch("INSERT INTO harness_contract_diagnostics VALUES('fourth_agent','new-session','0123456789abcdef','Session_Start','field',12,13)").unwrap();
+    for harness in ["human", "Upper", "1agent", "has.dot", ""] {
+        assert!(db.execute("INSERT INTO harness_contract_diagnostics VALUES(?1,'invalid','0123456789abcdef','SessionStart','field',12,13)",[harness]).is_err(),"{harness}");
+    }
+    let fresh = Connection::open_in_memory().unwrap();
+    schema::initialize(&fresh, || UtcMillis(0)).unwrap();
+    let catalog = |db: &Connection| {
+        db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").unwrap()
+            .query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?.split_whitespace().collect::<String>().replace('\"',"")))).unwrap().map(Result::unwrap).collect::<Vec<_>>()
+    };
+    assert_eq!(catalog(&db), catalog(&fresh));
+    assert_eq!(
+        catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
+        67
+    );
+    assert_eq!(
+        catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
+        133
+    );
+    assert_eq!(
+        catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
+        156
+    );
 }

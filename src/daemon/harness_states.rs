@@ -139,12 +139,15 @@ impl HarnessStatesProvider {
                 ));
             }
             let id = registration.metadata().id;
+            let diagnostics = self.store.contract_diagnostics(id, budget)?;
             let observed = cached.get(id).cloned().unwrap_or_default();
             let mut limitations = Vec::new();
             let mut notes = Vec::new();
+            limitations.extend(diagnostics.iter().map(|row| health_text(&row.line(), 256)));
             let detail = match &observed.status {
                 HarnessStatus::Unknown => None,
-                HarnessStatus::Cooperative { detail, .. }
+                HarnessStatus::ContractDeclared { detail }
+                | HarnessStatus::Cooperative { detail, .. }
                 | HarnessStatus::NotInstalled(detail)
                 | HarnessStatus::Refused(detail)
                 | HarnessStatus::VersionRefused(detail)
@@ -167,6 +170,13 @@ impl HarnessStatesProvider {
                             .unwrap_or_else(|| "installed runtime unavailable".into()),
                     );
                     (InstallationState::Unavailable, AdmissionState::Refused)
+                }
+                HarnessStatus::ContractDeclared { .. } => {
+                    limitations.push(
+                        "runtime metadata unavailable; rich optional capabilities unavailable"
+                            .into(),
+                    );
+                    (InstallationState::Present, AdmissionState::Unknown)
                 }
                 HarnessStatus::VersionRefused(_) => {
                     (InstallationState::Present, AdmissionState::Refused)
@@ -260,6 +270,15 @@ impl HarnessStatesProvider {
             {
                 broken_rollup.insert(id.into(), (row.last_seen_at, row.line.clone()));
             }
+            if let Some(row) = diagnostics
+                .iter()
+                .find(|row| row.last_seen_at >= now.saturating_sub(state::HEALTH_WINDOW_MS))
+                && broken_rollup
+                    .get(id)
+                    .is_none_or(|(at, _)| row.last_seen_at >= *at)
+            {
+                broken_rollup.insert(id.into(), (row.last_seen_at, health_text(&row.line(), 256)));
+            }
             let runtime_evidence = runtime_evidence.into_iter().take(20).collect();
             let mut unattributed = Vec::new();
             for descriptor in registration.contracts() {
@@ -330,23 +349,30 @@ impl HarnessStatesProvider {
         run(&(self.manifest)())
     }
 
-    /// Health's lines: at most one per harness (the broken version seen most
-    /// recently within 24 hours, under the contract id the harness's hooks send now).
+    /// At most one actual input failure per harness in the 24-hour Health
+    /// window. Scoped unavailable-runtime failures never become version rows.
     pub fn health_lines(&self, budget: &CallBudget) -> Result<Vec<String>, ApiError> {
         let now = self.now_ms();
         let mut all = Vec::new();
         for registration in self.registry.registrations() {
             let harness = registration.metadata().id;
-            if registration.legacy_contract_id().is_some() {
-                all.push((harness, self.store.harness_evidence_all(harness, budget)?));
-            }
+            let rows = if registration.legacy_contract_id().is_some() {
+                self.store.harness_evidence_all(harness, budget)?
+            } else {
+                vec![]
+            };
+            all.push((
+                harness,
+                rows,
+                self.store.contract_diagnostics(harness, budget)?,
+            ));
         }
         let mut lines: BrokenRuntimeRollup = self.with_manifest(|manifest| {
             all.iter()
-                .filter_map(|(harness, rows)| {
+                .filter_map(|(harness, rows, diagnostics)| {
                     let rollup =
                         state::roll_up(harness, rows, manifest, env!("CARGO_PKG_VERSION"), now);
-                    let line = rollup.health_line()?;
+                    let legacy_line = rollup.health_line();
                     let at = rollup
                         .versions
                         .iter()
@@ -356,7 +382,16 @@ impl HarnessStatesProvider {
                         .map(|v| v.last_seen_at)
                         .max()
                         .unwrap_or(0);
-                    Some(((*harness).into(), (at, line)))
+                    let diagnostic = diagnostics.iter().find(|row| {
+                        row.last_seen_at >= now.saturating_sub(state::HEALTH_WINDOW_MS)
+                    });
+                    let selected = match (legacy_line, diagnostic) {
+                        (Some(line), Some(row)) if row.last_seen_at < at => Some((at, line)),
+                        (_, Some(row)) => Some((row.last_seen_at, health_text(&row.line(), 256))),
+                        (Some(line), None) => Some((at, line)),
+                        (None, None) => None,
+                    };
+                    selected.map(|row| ((*harness).into(), row))
                 })
                 .collect()
         });
@@ -381,6 +416,7 @@ impl HarnessStatesProvider {
         let mut harnesses = Vec::new();
         for registration in self.registry.registrations() {
             let harness = registration.metadata().id;
+            let diagnostics = self.store.contract_diagnostics(harness, budget)?;
             let legacy = registration.legacy_contract_id().is_some();
             let rows = if legacy {
                 self.store.harness_evidence_all(harness, budget)?
@@ -391,6 +427,13 @@ impl HarnessStatesProvider {
                 .store
                 .last_unattributed(harness, budget)?
                 .map(|(reason, at)| UnattributedReport { reason, at });
+            let unattributed = diagnostics
+                .first()
+                .map(|row| UnattributedReport {
+                    reason: row.line(),
+                    at: row.last_seen_at,
+                })
+                .or(unattributed);
             let failures = self
                 .parse_failures
                 .as_ref()
@@ -463,7 +506,14 @@ impl RuntimeCandidate {
 
 fn line_for(harness: &str, version: &str, derived: &state::Derived) -> String {
     match &derived.state {
-        State::Broken(broken) => state::broken_line(harness, version, broken),
+        State::Broken(state::Broken {
+            cause: state::BrokenCause::LocalViolation { event, field },
+            ..
+        }) => format!("harness {harness} {version} contract input failure: {event}/{field}"),
+        State::Broken(_) => format!(
+            "{harness} {version}: historical advisory — {}",
+            state::source_text(&derived.state)
+        ),
         other => format!(
             "{harness} {version}: {} \u{2014} {}",
             state::state_word(other),
@@ -509,7 +559,15 @@ fn harness_report(
             state: state::state_word(&verdict.derived.state).to_owned(),
             source: state::source_text(&verdict.derived.state),
             line: line_for(harness, &verdict.version, &verdict.derived),
-            notes: verdict.derived.doctor_notes.clone(),
+            notes: {
+                let mut notes = verdict.derived.doctor_notes.clone();
+                notes.push(if harness == "claude" {
+                    "runtime metadata source: newest runtime-written Claude transcript entry (optional)"
+                } else {
+                    "historical attributed metadata; rollout creator does not identify the current runtime"
+                }.into());
+                notes
+            },
             issue_url: state::issue_url(&verdict.derived.state),
             last_seen_at: verdict.last_seen_at,
             in_health_window: verdict.in_health_window,

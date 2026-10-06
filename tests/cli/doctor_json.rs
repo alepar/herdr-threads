@@ -199,6 +199,7 @@ fn admission_strings_are_the_closed_set() {
     assert_eq!(
         strings,
         [
+            "contract_declared",
             "listed",
             "schema-matched, live-unverified",
             "optimistic",
@@ -1106,9 +1107,9 @@ fn doctor_owned_repair_refuses_undeclared_options_before_writes() {
     assert!(adapter.setup_deadlines.lock().unwrap().is_empty());
 }
 
-/// Kills a second native version capture whose result can contradict the local row.
+/// Operational doctor projects executable availability without invoking diagnostic flags.
 #[test]
-fn doctor_concrete_projection_uses_one_native_capture() {
+fn absorption_doctor_concrete_projection_invokes_no_diagnostic_flags() {
     let case = PathCase::new("single-capture");
     let count = case.dir.join("count");
     let binary = case.dir.join("claude");
@@ -1151,9 +1152,12 @@ fn doctor_concrete_projection_uses_one_native_capture() {
     };
     let mut out = Vec::new();
     let _ = run_registered(&parsed, registry, Some(&environment), &mut out);
-    assert_eq!(std::fs::read_to_string(&count).unwrap(), "x\n");
+    assert!(!count.exists(), "doctor invoked diagnostic flags");
     let doc: Value = serde_json::from_slice::<Value>(&out).unwrap()["doctor"].clone();
-    assert_eq!(doc["hooks"]["claude"]["installed"]["admission"], "listed");
+    assert_eq!(
+        doc["hooks"]["claude"]["installed"]["admission"],
+        "contract_declared"
+    );
     assert_eq!(doc["local_harnesses"]["claude"]["admitted"], true);
 }
 

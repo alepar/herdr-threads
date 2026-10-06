@@ -7,7 +7,7 @@ use crate::cli::{
 };
 use crate::harness::setup::legacy::*;
 use crate::{
-    daemon::paths::{RuntimeContext, instance_dir, stable_socket_path},
+    daemon::paths::{RuntimeContext, instance_dir},
     harness::{
         codex, codex_config,
         context::Harness,
@@ -302,63 +302,6 @@ pub(crate) fn codex_unmeasured_allowance_warning(
     ))
 }
 
-/// The stable daemon socket of this state directory and host endpoint that
-/// the allowance names, or why it is withheld for this version. Computed
-/// only: nothing is created.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CodexSocketPolicyError {
-    /// Hook admission succeeded, but this build's effective socket policy has
-    /// no conclusive default-deny evidence. This is not a version refusal.
-    Unvalidated {
-        version: String,
-    },
-    Unavailable(String),
-}
-
-impl std::fmt::Display for CodexSocketPolicyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unvalidated { version } => write!(
-                f,
-                "Codex {version} socket policy is unvalidated for this installation (measured: \
-                 {}). No new global network allowance is authorized. This does not establish \
-                 incompatibility. Legacy in-sandbox transport needs controlled allow/deny evidence \
-                 bound to the target executable and effective configuration; managed launch \
-                 uses approved outside-sandbox CLI commands instead",
-                CODEX_SANDBOX_MEASURED_VERSIONS.join(", ")
-            ),
-            Self::Unavailable(reason) => write!(f, "socket path unavailable: {reason}"),
-        }
-    }
-}
-
-pub(crate) fn codex_sandbox_socket(
-    env: &SetupEnv,
-    witness: &codex::InstalledVersion,
-) -> Result<String, CodexSocketPolicyError> {
-    let version = witness.as_str();
-    if !CODEX_SANDBOX_MEASURED_VERSIONS.contains(&version) {
-        return Err(CodexSocketPolicyError::Unvalidated {
-            version: version.to_owned(),
-        });
-    }
-    let state = env
-        .state_dir()
-        .map_err(|error| CodexSocketPolicyError::Unavailable(error.to_string()))?;
-    let host = env
-        .host_endpoint()
-        .map_err(|error| CodexSocketPolicyError::Unavailable(error.to_string()))?;
-    let context = RuntimeContext::explicit(state.to_path_buf(), host, None).map_err(|error| {
-        CodexSocketPolicyError::Unavailable(format!("invalid host endpoint: {error}"))
-    })?;
-    let socket = stable_socket_path(&instance_dir(&context)).map_err(|error| {
-        CodexSocketPolicyError::Unavailable(format!("daemon socket path: {error}"))
-    })?;
-    socket.to_str().map(str::to_owned).ok_or_else(|| {
-        CodexSocketPolicyError::Unavailable("the daemon socket path is not UTF-8".to_owned())
-    })
-}
-
 /// The client-side directories a sandboxed herdr-threads command writes, which the allowance
 /// adds to `sandbox_workspace_write.writable_roots`: `<instance>/intents` (the intent journal:
 /// every mutation records its pending operation there before calling the daemon, for
@@ -596,60 +539,14 @@ pub(crate) fn allowance_error(error: codex_config::AllowanceError, config: &Path
     }
 }
 
-/// `error` with `note` appended to its message.
-pub(crate) fn with_note(error: RunError, note: &str) -> RunError {
-    match error {
-        RunError::Api(mut api) => {
-            api.detail = format!("{}; {note}", api.detail);
-            RunError::Api(api)
-        }
-        RunError::Io(error) => failed(format!("{error}; {note}")),
-        other => other,
-    }
-}
-
-pub(crate) fn allowance_json(
-    socket: &Result<String, CodexSocketPolicyError>,
-    roots: &[String],
-    inspection: Option<&codex_config::AllowanceInspection>,
-) -> Value {
-    match socket {
-        Ok(socket) => json!({
-            "socket_path": socket,
-            "keys": codex_config::allowance_keys(socket, roots)
-                .iter()
-                .map(|(path, _)| path.join("."))
-                .fold(Vec::<String>::new(), |mut keys, key| {
-                    if !keys.contains(&key) {
-                        keys.push(key);
-                    }
-                    keys
-                }),
-            "writable_roots": roots,
-            "recorded": inspection.is_some_and(|i| i.recorded.is_some()),
-            "present": inspection.is_some_and(|i| i.present),
-            "writable_roots_present": inspection.is_some_and(|i| i.roots_present(roots)),
-            "pre_existing": inspection
-                .and_then(|i| i.recorded.as_ref())
-                .map(|m| m.keys.iter().filter(|k| k.pre_existing).map(|k| k.path.join(".")).collect::<Vec<_>>()),
-            "scope": format!(
-                "this state directory and Herdr instance; stable across daemon restarts; \
-                 default-deny measured on Codex {} only",
-                CODEX_SANDBOX_MEASURED_VERSIONS.join(" and ")
-            ),
-            "note": codex_sandbox_note(),
-        }),
-        Err(reason) => json!({
-            "socket_path": null,
-            "omitted": reason.to_string(),
-            "validation": if matches!(reason, CodexSocketPolicyError::Unvalidated { .. }) {
-                "unvalidated"
-            } else {
-                "unavailable"
-            },
-            "recorded": inspection.is_some_and(|i| i.recorded.is_some()),
-        }),
-    }
+pub(crate) fn allowance_json(inspection: Option<&codex_config::AllowanceInspection>) -> Value {
+    json!({
+        "socket_path": inspection.and_then(|i| i.recorded.as_ref()).map(|m| &m.socket),
+        "validation": "unvalidated",
+        "omitted": "setup uses approved outside-sandbox commands and installs no sandbox allowance",
+        "recorded": inspection.is_some_and(|i| i.recorded.is_some()),
+        "present": inspection.is_some_and(|i| i.present),
+    })
 }
 
 /// Attach the unmeasured-allowance warning to a `sandbox` report.
@@ -661,38 +558,49 @@ pub(crate) fn with_unmeasured(mut sandbox: Value, warning: Option<String>) -> Va
     sandbox
 }
 
-pub(crate) fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
+fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
     env.hook_argv(Harness::Codex)?;
     let paths = codex_paths(env)?;
-    let (observed, witness) = observe(request, env).map_err(refuse_version)?;
-    let witness = witness.expect("codex observation carries a witness");
+    let (observed, contract) = observe(request, env).map_err(refuse_executable)?;
+    let contract = contract.expect("Codex has a registered contract");
+    // Validate the declared composition without manufacturing a version witness.
+    lib::plan_codex_for_contract(&[], &env.hook_argv(Harness::Codex)?, &contract).map_err(
+        |error| {
+            settings_error(
+                error,
+                request.verb,
+                SettingsKind::CodexUser,
+                &paths.hooks,
+                &paths.hooks_manifest,
+            )
+        },
+    )?;
     let owned_command = codex_owned_command(env)?;
     let layers = observe_codex_config(env, &owned_command);
     refuse_duplicate(&layers, &owned_command, &paths.hooks)?;
-    let socket = codex_sandbox_socket(env, &witness);
-    let roots = match &socket {
-        Ok(_) => codex_sandbox_roots(env).map_err(invalid)?,
-        Err(_) => Vec::new(),
-    };
-    // Prove the allowance composes before anything is written, so a foreign
-    // config.toml value leaves both files untouched.
-    if let Ok(socket) = &socket {
-        let current = match fs::symlink_metadata(&paths.config) {
-            Ok(_) => lib::config_bytes(&paths.config).map_err(|error| {
-                allowance_error(codex_config::AllowanceError::Setup(error), &paths.config)
-            })?,
-            Err(_) => Vec::new(),
-        };
-        let recorded = codex_config::read_manifest(&paths.config_manifest).map_err(|error| {
+    // Legacy allowances are left for owned unsetup. Incomplete or edited
+    // records still refuse before hooks change, preserving the installer seam.
+    // A dangling symlink is still an ownership record, never absence.
+    if fs::symlink_metadata(&paths.config_manifest)
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(allowance_error(
+            codex_config::AllowanceError::Setup(SetupError::Invalid),
+            &paths.config,
+        ));
+    }
+    let inspection =
+        codex_config::inspect(&paths.config, &paths.config_manifest).map_err(|error| {
             allowance_error(codex_config::AllowanceError::Setup(error), &paths.config)
         })?;
-        if recorded.is_none() {
-            codex_config::plan_install(&current, socket, &roots)
-                .map_err(|error| allowance_error(error, &paths.config))?;
-        }
+    if let Some(manifest) = &inspection.recorded
+        && (manifest.phase != lib::InstallPhase::Installed || !inspection.present)
+    {
+        return Err(allowance_error(
+            codex_config::AllowanceError::Setup(SetupError::Conflict),
+            &paths.config,
+        ));
     }
-    // The roots are not created here (setup creates no daemon state): the CLI creates them
-    // on first use, which the sandbox allows because each root covers its own path.
     prepare_state(env)?;
     let mut warnings = Vec::new();
     let mut hooks_file = OwnedFile::new(paths.hooks.clone(), paths.hooks_manifest.clone(), b"{}");
@@ -703,53 +611,6 @@ pub(crate) fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Va
         &mut hooks_file,
         &mut warnings,
     )?;
-    let mut allowance_changed = false;
-    let mut created_config = false;
-    if let Ok(socket) = &socket {
-        let mut config_file =
-            OwnedFile::new(paths.config.clone(), paths.config_manifest.clone(), b"");
-        if codex_config::read_manifest(&paths.config_manifest)
-            .ok()
-            .flatten()
-            .is_none()
-        {
-            config_file.prepare()?;
-        }
-        match codex_config::install(&paths.config, &paths.config_manifest, socket, &roots) {
-            Ok(done) => {
-                allowance_changed = done.changed;
-                created_config = config_file.created_file;
-                config_file.record(&mut warnings);
-            }
-            Err(error) => {
-                config_file.undo();
-                let mut error = allowance_error(error, &paths.config);
-                // The hooks were installed first: a failed allowance must not leave them
-                // behind (the command would exit with an error yet change behavior). Hooks
-                // an earlier setup installed, or adopted ones (nothing written), stay.
-                if !already && !adopted {
-                    let note = match remove_user_settings(
-                        SettingsKind::CodexUser,
-                        &paths.hooks,
-                        &paths.hooks_manifest,
-                    ) {
-                        Ok(()) => {
-                            delete_created(&paths.hooks, &paths.hooks_manifest, b"{}");
-                            "the hook installation was rolled back; nothing was installed"
-                                .to_owned()
-                        }
-                        Err(rollback) => format!(
-                            "the hooks in {} could not be rolled back ({rollback:?}); run \
-                             `herdr-threads unsetup codex` to remove them",
-                            paths.hooks.display()
-                        ),
-                    };
-                    error = with_note(error, &note);
-                }
-                return Err(error);
-            }
-        }
-    }
     for layer in &layers {
         if layer.has_other_herdr_threads_hook && layer.path != paths.hooks {
             warnings.push(format!(
@@ -766,21 +627,13 @@ pub(crate) fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Va
         }
     }
     warnings.extend(codex_foreign_proxy_warnings(env));
-    let unmeasured = codex_unmeasured_allowance_warning(env, Some(witness.as_str()));
-    if let Err(reason) = &socket {
-        match &unmeasured {
-            // The allowance from an earlier setup is still installed: saying
-            // it was "not written" would hide that it is live.
-            Some(warning) => warnings.push(warning.clone()),
-            None => warnings.push(format!("sandbox socket allowance not written: {reason}")),
-        }
-    }
+    let unmeasured = codex_unmeasured_allowance_warning(env, None);
     let command = shared_command(&installed.owned);
     let inspection = codex_config::inspect(&paths.config, &paths.config_manifest).ok();
     Ok(json!({
         "action": if adopted {
             "adopted"
-        } else if already && !allowance_changed {
+        } else if already {
             "already_installed"
         } else {
             "installed"
@@ -793,13 +646,13 @@ pub(crate) fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Va
         "manifest": paths.hooks_manifest.display().to_string(),
         "config_manifest": paths.config_manifest.display().to_string(),
         "created_hooks_file": hooks_file.created_file,
-        "created_config_file": created_config,
+        "created_config_file": false,
         "instance": instance_json(env),
         "hook_argv": env.hook_argv(Harness::Codex)?,
         "command": command,
         "events": installed.owned.iter().map(|entry| entry.event.clone()).collect::<Vec<_>>(),
         "sandbox": with_unmeasured(
-            allowance_json(&socket, &roots, inspection.as_ref()),
+            allowance_json(inspection.as_ref()),
             unmeasured
         ),
         "trust": codex_trust_json(&paths, command.as_deref()),
@@ -808,7 +661,7 @@ pub(crate) fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Va
         "observed": "unknown",
         "note": "installed is not observed: run `herdr-threads doctor` for native evidence. \
                  Codex sessions with another CODEX_HOME, or launched with \
-                 --ignore-user-config, do not load these hooks or the allowance",
+                 --ignore-user-config, do not load these hooks",
         "warnings": warnings,
     }))
 }
@@ -906,7 +759,7 @@ pub(crate) fn codex_remove(env: &SetupEnv) -> Result<Value, RunError> {
 
 fn codex_status(
     env: &SetupEnv,
-    observation: Result<(Observed, Option<codex::InstalledVersion>), String>,
+    observation: Result<(Observed, Option<crate::harness::operational::CodexContract>), String>,
 ) -> Result<Value, RunError> {
     let mut report = json!({
         "action": "status",
@@ -923,29 +776,11 @@ fn codex_status(
         return Ok(report);
     };
     let inspection = codex_config::inspect(&paths.config, &paths.config_manifest).ok();
-    let (socket, version) = match &observation {
-        Ok((_, Some(witness))) => (
-            codex_sandbox_socket(env, witness),
-            Some(witness.as_str().to_owned()),
-        ),
-        _ => (
-            Err(CodexSocketPolicyError::Unavailable(
-                "the installed Codex version was not admitted".into(),
-            )),
-            None,
-        ),
-    };
-    let unmeasured = codex_unmeasured_allowance_warning(env, version.as_deref());
-    let missing_roots = codex_missing_roots_warning(env, version.as_deref());
-    let roots = codex_sandbox_roots(env).unwrap_or_default();
+    let unmeasured = codex_unmeasured_allowance_warning(env, None);
     report["config_file"] = json!(paths.config.display().to_string());
-    report["sandbox"] = with_unmeasured(
-        allowance_json(&socket, &roots, inspection.as_ref()),
-        unmeasured.clone(),
-    );
+    report["sandbox"] = with_unmeasured(allowance_json(inspection.as_ref()), unmeasured.clone());
     let warnings: Vec<String> = unmeasured
         .into_iter()
-        .chain(missing_roots)
         .chain(codex_foreign_proxy_warnings(env))
         .collect();
     if !warnings.is_empty() {
@@ -1001,14 +836,14 @@ pub(crate) fn unsetup(
 pub(crate) fn observe(
     request: &SetupRequest,
     env: &SetupEnv,
-) -> Result<(Observed, Option<codex::InstalledVersion>), String> {
+) -> Result<(Observed, Option<crate::harness::operational::CodexContract>), String> {
     observe_with_cache(request, env, None)
 }
 pub(crate) fn observe_with_cache(
     request: &SetupRequest,
     env: &SetupEnv,
     codex_cache: Option<&Path>,
-) -> Result<(Observed, Option<codex::InstalledVersion>), String> {
+) -> Result<(Observed, Option<crate::harness::operational::CodexContract>), String> {
     observe_bounded(
         request,
         env,
@@ -1021,34 +856,28 @@ pub(crate) fn observe_with_cache(
 fn observe_bounded(
     request: &SetupRequest,
     env: &SetupEnv,
-    codex_cache: Option<&Path>,
+    _codex_cache: Option<&Path>,
     timeout: Duration,
     cancellation: &crate::protocol::time::Cancellation,
-) -> Result<(Observed, Option<codex::InstalledVersion>), String> {
+) -> Result<(Observed, Option<crate::harness::operational::CodexContract>), String> {
     if timeout.is_zero() || cancellation.is_cancelled() {
         return Err("native status observation budget exhausted or cancelled".into());
     }
-    let binary = harness_binary(request, env).map_err(|error| error.to_string())?;
-    let Some(binary) = binary else {
-        return Err(codex::VersionError::Unavailable.to_string()
-            + " (no executable `codex` on PATH; pass --harness-binary)");
-    };
-    let witness = codex::InstalledVersion::observe_with_cancel(
-        &binary,
-        timeout,
-        codex_cache.map_or(
-            crate::harness::codex_schema::FingerprintCache::Memory,
-            crate::harness::codex_schema::FingerprintCache::ReadWrite,
-        ),
-        Some(cancellation),
-    )
-    .map_err(|error| error.to_string())?;
+    let binary = harness_binary(request, env)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "no executable `codex` on PATH; pass --harness-binary".to_owned())?;
+    use std::os::unix::fs::PermissionsExt;
+    if !std::fs::metadata(&binary)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    {
+        return Err(format!("{} is not an executable file", binary.display()));
+    }
     Ok((
         Observed {
             binary,
-            version: witness.as_str().to_owned(),
-            recipe: witness.recipe().id,
+            version: None,
+            recipe: "codex-hooks-v1",
         },
-        Some(witness),
+        Some(crate::harness::operational::CodexContract::registered()),
     ))
 }

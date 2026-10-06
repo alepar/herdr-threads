@@ -23,6 +23,8 @@ mod contracts;
 mod handoff_fences;
 #[path = "host_adapter.rs"]
 mod host_adapter;
+#[path = "installer_integrations.rs"]
+mod installer_integrations;
 #[path = "lifecycle_ux.rs"]
 mod lifecycle_ux;
 #[path = "local_endpoint.rs"]

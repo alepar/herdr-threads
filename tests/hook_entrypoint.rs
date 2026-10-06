@@ -70,6 +70,8 @@ const HANG: u8 = 1;
 const REJECT: u8 = 2;
 /// Sleep past the lifecycle budget, then drop without forwarding (lost call).
 const DROP: u8 = 3;
+/// Withhold the capability response beyond the production tool deadline.
+const WITHHOLD_CAPABILITIES: u8 = 4;
 
 /// Where a scripted arrival lands relative to the hook's calls.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -86,6 +88,9 @@ type Race = Arc<std::sync::Mutex<Option<(RaceAt, Box<dyn FnOnce() + Send>)>>>;
 struct Counting {
     inner: Arc<dyn herdr_threads::ports::LocalService>,
     check_ins: Arc<AtomicU64>,
+    parse_failures: Arc<AtomicU64>,
+    withheld_capabilities: Arc<AtomicU64>,
+    withheld_capabilities_started: Arc<std::sync::Mutex<Option<Instant>>>,
     digests: Arc<AtomicU64>,
     mode: Arc<AtomicU8>,
     /// One-shot action run inside the service right after the named call is
@@ -116,7 +121,24 @@ impl Counting {
             action();
         }
     }
+    fn withhold_capabilities(&self, command: &Command) {
+        if matches!(command, Command::Capabilities)
+            && self.mode.load(Ordering::SeqCst) == WITHHOLD_CAPABILITIES
+        {
+            self.withheld_capabilities.fetch_add(1, Ordering::SeqCst);
+            self.withheld_capabilities_started
+                .lock()
+                .unwrap()
+                .get_or_insert_with(Instant::now);
+            // Bounded and joined by Fixture::drop; no helper outlives the test.
+            std::thread::sleep(Duration::from_millis(3000));
+        }
+    }
     fn observe(&self, command: &Command) -> Result<(), herdr_threads::protocol::results::ApiError> {
+        self.withhold_capabilities(command);
+        if matches!(command, Command::HookParseFailure(_)) {
+            self.parse_failures.fetch_add(1, Ordering::SeqCst);
+        }
         if matches!(command, Command::AttentionDigest(_)) {
             self.digests.fetch_add(1, Ordering::SeqCst);
             // A hung daemon hangs every attention read, not only CheckIn.
@@ -157,6 +179,10 @@ impl herdr_threads::ports::LocalService for Counting {
         gate: &herdr_threads::service::live_gate::LiveServiceGate,
         budget: &CallBudget,
     ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+        self.withhold_capabilities(&command);
+        if matches!(command, Command::HookParseFailure(_)) {
+            self.parse_failures.fetch_add(1, Ordering::SeqCst);
+        }
         self.inner
             .service_control(command, peer, instance, boot, gate, budget)
     }
@@ -232,10 +258,8 @@ impl Hook {
     }
 }
 
-/// The hook parses only under a version observed from the installed harness on
-/// PATH. This PATH puts pinned fake `claude`/`codex` version reporters, kept
-/// in the fixture's private root beside the host endpoint (removed with it),
-/// ahead of the system directories.
+/// Isolated executable stubs for historical fixtures. Operational hooks must
+/// not execute these reporters; PATH is not their parser authority.
 fn harness_path(host: &Path) -> String {
     use std::os::unix::fs::PermissionsExt;
     let dir = host.parent().unwrap().join("bin");
@@ -437,10 +461,13 @@ struct Fixture {
     stop: Cancellation,
     worker: Option<std::thread::JoinHandle<()>>,
     check_ins: Arc<AtomicU64>,
+    parse_failures: Arc<AtomicU64>,
+    withheld_capabilities: Arc<AtomicU64>,
+    withheld_capabilities_started: Arc<std::sync::Mutex<Option<Instant>>>,
     digests: Arc<AtomicU64>,
     mode: Arc<AtomicU8>,
     race: Race,
-    /// The exact Claude command setup installs into .claude/settings.local.json.
+    /// Legacy Claude registration used for tests spanning callback classes.
     command: String,
     /// The Codex hook command built from the same installed argv contract.
     codex: String,
@@ -489,6 +516,12 @@ impl Fixture {
         let worker_stop = stop.clone();
         let worker_paths = paths.clone();
         let check_ins = Arc::new(AtomicU64::new(0));
+        let parse_failures = Arc::new(AtomicU64::new(0));
+        let parsed_failures = Arc::clone(&parse_failures);
+        let withheld_capabilities = Arc::new(AtomicU64::new(0));
+        let withheld = Arc::clone(&withheld_capabilities);
+        let withheld_capabilities_started = Arc::new(std::sync::Mutex::new(None));
+        let withholding_started = Arc::clone(&withheld_capabilities_started);
         let mode = Arc::new(AtomicU8::new(PASS));
         let race: Race = Arc::default();
         let digests = Arc::new(AtomicU64::new(0));
@@ -557,6 +590,9 @@ impl Fixture {
                         Ok(Arc::new(Counting {
                             inner,
                             check_ins: counted,
+                            parse_failures: parsed_failures,
+                            withheld_capabilities: withheld,
+                            withheld_capabilities_started: withholding_started,
                             digests: digested,
                             mode: moded,
                             race: raced,
@@ -574,12 +610,9 @@ impl Fixture {
         let descriptor = ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(descriptor.instance_uuid, instance);
         let argv = installed_argv(BIN, Some(state.to_str().unwrap()), None, Harness::Claude);
-        let plan = plan_claude(b"{}", &argv).unwrap();
-        let settings: serde_json::Value = serde_json::from_slice(&plan.proposed_bytes).unwrap();
-        let command = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-            .as_str()
-            .unwrap()
-            .to_owned();
+        // This fixture exercises multiple callback classes through a legacy
+        // registration. Explicit --event routing is covered separately.
+        let command = herdr_threads::harness::setup::shell_command(&argv).unwrap();
         let codex_argv = installed_argv(BIN, Some(state.to_str().unwrap()), None, Harness::Codex);
         let codex = herdr_threads::harness::setup::shell_command(&codex_argv).unwrap();
         Self {
@@ -591,6 +624,9 @@ impl Fixture {
             stop,
             worker: Some(worker),
             check_ins,
+            parse_failures,
+            withheld_capabilities,
+            withheld_capabilities_started,
             digests,
             mode,
             race,
@@ -3093,7 +3129,7 @@ fn conflicting_globals_fail_the_cli_but_fail_open_only_for_hook() {
 // it must exit 0 at once with no stdout and no stderr, without observing the
 // harness version (no `claude --version` probe), reading state or starting a
 // daemon. Inside a pane of the installed instance it still runs (here it
-// observes the fake harness, which proves the probe happens). Kills: a
+// reports a hook diagnostic, without invoking the harness). Kills: a
 // user-level hook that is noisy or slow in unrelated sessions, ignores the
 // recorded instance, or starts a daemon for a foreign Herdr server.
 // -- harness version evidence (ht-xoc.4) ------------------------------------
@@ -3268,11 +3304,11 @@ fn hook_with_unreachable_manifest_url_stays_within_budget() {
 }
 
 /// Evidence does not depend on the version ladder: a listed, an optimistic
-/// (unlisted newer) and a refused (older than any recipe) installed Claude all
-/// report what their payloads showed, and the refused one still emits nothing.
+/// (unlisted newer) and an older-than-listed installed Claude all report
+/// what their payloads showed and perform the same operational check-in.
 /// Kills: evidence placed after admission, or gated on the optimistic tier.
 #[test]
-fn evidence_sent_for_listed_optimistic_and_refused_versions_alike() {
+fn versionless_evidence_and_check_in_independent_of_installed_version() {
     use std::os::unix::fs::PermissionsExt;
     let fx = Fixture::start();
     let bin = PathBuf::from(harness_path(&fx.host).split(':').next().unwrap());
@@ -3289,15 +3325,13 @@ fn evidence_sent_for_listed_optimistic_and_refused_versions_alike() {
             .with("transcript_path", transcript.into())
             .bytes();
         let command = claude_event_command(&fx.state, "SessionStart");
-        let hook = run_hook(&command, "w1:p1", &fx.host, &start);
+        let hook = run_hook(&command, "w9:p1", &fx.host, &start);
         assert_eq!(hook.code, Some(0), "{stub}: {}", hook.stderr);
-        if stub.starts_with("1.0.0") {
-            assert!(
-                hook.stdout.is_empty(),
-                "a refused version emits no context: {}",
-                String::from_utf8_lossy(&hook.stdout)
-            );
-        }
+        assert!(
+            !hook.stdout.is_empty(),
+            "{stub}: valid core callbacks produce context without version admission: {}",
+            hook.stderr
+        );
         assert_eq!(
             evidence_rows(&fx, version, "lifecycle_ok_at IS NOT NULL"),
             1,
@@ -3402,7 +3436,11 @@ fn user_level_hook_is_silent_outside_its_herdr_instance() {
     ]);
     assert_eq!(output.status.code(), Some(0));
     assert!(
-        marker.exists(),
+        !marker.exists(),
+        "operational hooks must not probe even in the installed instance"
+    );
+    assert!(
+        !output.stderr.is_empty(),
         "the installed instance's pane was gated out"
     );
     fs::remove_dir_all(&root).unwrap();
@@ -3787,12 +3825,7 @@ mod continuity {
                 ),
             });
             let argv = installed_argv(BIN, Some(state.to_str().unwrap()), None, Harness::Claude);
-            let plan = plan_claude(b"{}", &argv).unwrap();
-            let settings: serde_json::Value = serde_json::from_slice(&plan.proposed_bytes).unwrap();
-            let claude = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-                .as_str()
-                .unwrap()
-                .to_owned();
+            let claude = herdr_threads::harness::setup::shell_command(&argv).unwrap();
             let codex_argv =
                 installed_argv(BIN, Some(state.to_str().unwrap()), None, Harness::Codex);
             let codex = herdr_threads::harness::setup::shell_command(&codex_argv).unwrap();
@@ -4744,4 +4777,111 @@ fn clear_and_codex_compact_emit_recovery_text_but_startup_and_tool_calls_do_not(
         "SessionStart"
     );
     assert_recovery("codex compact", &context_of(&compact));
+}
+
+// Catches PATH admission in real callbacks and routing mismatches that mutate executions.
+#[test]
+fn versionless_native_callbacks_without_path_refuse_registered_event_mismatch() {
+    let fx = Fixture::start();
+    let invoke = |harness: &str, pane: &str, registered: &str, payload: &[u8]| {
+        let mut child = scrubbed_command(BIN)
+            .args([
+                "--state-dir",
+                fx.state.to_str().unwrap(),
+                "--host-endpoint",
+                fx.host.to_str().unwrap(),
+                "hook",
+                harness,
+                "--event",
+                registered,
+            ])
+            .env("PATH", "")
+            .env("HERDR_ENV", "1")
+            .env("HERDR_PANE_ID", pane)
+            .env("HERDR_SOCKET_PATH", &fx.host)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn_owned()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(payload).unwrap();
+        child.wait_with_output().unwrap()
+    };
+    for (harness, pane, payload) in [
+        ("claude", "w9:p1", start("versionless-claude")),
+        (
+            "codex",
+            "w9:p3",
+            Payload::session_start("versionless-codex", "startup")
+                .codex("turn")
+                .bytes(),
+        ),
+    ] {
+        let before = fx.check_ins.load(Ordering::SeqCst);
+        let failures_before = fx.parse_failures.load(Ordering::SeqCst);
+        let mismatch = invoke(harness, pane, "PreToolUse", &payload);
+        assert_eq!(mismatch.status.code(), Some(0));
+        assert!(mismatch.stdout.is_empty());
+        assert!(
+            String::from_utf8_lossy(&mismatch.stderr).contains("unsupported hook payload: Invalid")
+        );
+        assert_eq!(fx.check_ins.load(Ordering::SeqCst), before);
+        assert!(
+            fx.parse_failures.load(Ordering::SeqCst) > failures_before,
+            "versionless parse failures must be reported"
+        );
+        let valid = invoke(harness, pane, "SessionStart", &payload);
+        assert_eq!(
+            valid.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&valid.stderr)
+        );
+        assert!(
+            !valid.stdout.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&valid.stderr)
+        );
+        assert!(fx.check_ins.load(Ordering::SeqCst) > before);
+    }
+}
+
+// Catches a mismatched lifecycle payload raising a tool registration's deadline.
+#[test]
+fn versionless_registered_event_mismatch_keeps_tool_deadline_with_withheld_capabilities() {
+    let fx = Fixture::start();
+    fx.mode.store(WITHHOLD_CAPABILITIES, Ordering::SeqCst);
+    let mut argv = installed_argv(BIN, Some(fx.state.to_str().unwrap()), None, Harness::Claude);
+    argv.extend(["--event".to_owned(), "PreToolUse".to_owned()]);
+    let command = herdr_threads::harness::setup::shell_command(&argv).unwrap();
+    // Disable test budget scaling: the production tool watchdog must apply.
+    let rejected = run_hook_with(
+        &command,
+        "w9:p1",
+        &fx.host,
+        &start("mismatched-start"),
+        false,
+    );
+    assert_eq!(rejected.code, Some(0));
+    assert!(rejected.stdout.is_empty());
+    assert_eq!(fx.check_ins.load(Ordering::SeqCst), 0);
+    assert!(
+        fx.withheld_capabilities.load(Ordering::SeqCst) > 0,
+        "the capability negotiation was not exercised: {}",
+        rejected.stderr
+    );
+    // Observe from the request reaching the isolated daemon: the hook's
+    // watchdog is already armed. Shell/process startup is outside that clock.
+    let report_elapsed = fx
+        .withheld_capabilities_started
+        .lock()
+        .unwrap()
+        .unwrap()
+        .elapsed();
+    assert!(
+        report_elapsed < TOOL_BUDGET + Duration::from_millis(350),
+        "registered-event mismatch inherited lifecycle time: report={report_elapsed:?}, process={:?}; {}",
+        rejected.elapsed,
+        rejected.stderr
+    );
 }

@@ -2591,6 +2591,17 @@ pub trait StorePort: Send + Sync {
         harness: &str,
         budget: &CallBudget,
     ) -> Result<Vec<crate::store::harness_evidence::EvidenceRow>, ApiError>;
+    /// Advisory unavailable-runtime failures, never exact-version evidence.
+    fn record_contract_diagnostic(
+        &self,
+        record: &crate::store::harness_evidence::DiagnosticRecord<'_>,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError>;
+    fn contract_diagnostics(
+        &self,
+        harness: &str,
+        budget: &CallBudget,
+    ) -> Result<Vec<crate::store::harness_evidence::DiagnosticRow>, ApiError>;
     /// Keeps the latest reason a payload of `harness` was unattributable.
     fn record_unattributed(
         &self,

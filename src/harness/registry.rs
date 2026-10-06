@@ -176,8 +176,13 @@ trait ErasedAdapter: Send + Sync {
     fn output_policy(&self) -> OutputPolicy;
     fn legacy_contract_id(&self) -> Option<String>;
     fn callback_admission(&self) -> bool;
+    fn hook_admission_policy(&self) -> HookAdmissionPolicy;
     fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy;
     fn evidence_observations(&self, input: &HookInput) -> Vec<EvidenceProjection>;
+    fn nonholding_unavailable_reasons(
+        &self,
+        descriptor: &ContractDescriptor,
+    ) -> &'static [&'static str];
     fn contracts(&self) -> &'static [ContractDescriptor];
     fn observe_install(&self, env: &InstallEnvironment, budget: &CallBudget) -> InstallObservation;
     fn observation_fingerprint(&self, env: &InstallEnvironment) -> Option<String>;
@@ -238,6 +243,7 @@ trait ErasedAdapter: Send + Sync {
         reader: &mut dyn std::io::BufRead,
         writer: &mut dyn std::io::Write,
     ) -> Result<(), SetupFailure>;
+    fn installer_policy(&self) -> Option<&dyn InstallerPolicy>;
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy>;
     fn composer_policy(&self) -> Option<&dyn ComposerPolicy>;
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy>;
@@ -263,11 +269,20 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
     fn callback_admission(&self) -> bool {
         self.0.callback_admission()
     }
+    fn hook_admission_policy(&self) -> HookAdmissionPolicy {
+        self.0.hook_admission_policy()
+    }
     fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy {
         self.0.qualified_turn_policy()
     }
     fn evidence_observations(&self, input: &HookInput) -> Vec<EvidenceProjection> {
         self.0.evidence_observations(input)
+    }
+    fn nonholding_unavailable_reasons(
+        &self,
+        descriptor: &ContractDescriptor,
+    ) -> &'static [&'static str] {
+        self.0.nonholding_unavailable_reasons(descriptor)
     }
     fn contracts(&self) -> &'static [ContractDescriptor] {
         self.0.contracts()
@@ -281,6 +296,9 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
         budget: &CallBudget,
     ) -> Result<ErasedAdmission, AdmissionFailure> {
         let (state, kind, recipe, diagnostic) = match self.0.admit(request, budget) {
+            AdmissionDecision::ContractDeclared { state, recipe } => {
+                (state, AdmissionKind::ContractDeclared, recipe, None)
+            }
             AdmissionDecision::Listed { state, recipe } => {
                 (state, AdmissionKind::Listed, recipe, None)
             }
@@ -394,6 +412,9 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
         self.0
             .settle_setup_consent(environment, projection, reader, writer)
     }
+    fn installer_policy(&self) -> Option<&dyn InstallerPolicy> {
+        self.0.installer_policy()
+    }
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
         self.0.launch_policy()
     }
@@ -440,6 +461,20 @@ impl Registration {
     pub fn legacy_contract_id(&self) -> Option<String> {
         self.adapter.legacy_contract_id()
     }
+    pub fn nonholding_unavailable_reasons(
+        &self,
+        descriptor: &ContractDescriptor,
+    ) -> &'static [&'static str] {
+        if self
+            .contracts()
+            .iter()
+            .any(|known| std::ptr::eq(known, descriptor))
+        {
+            self.adapter.nonholding_unavailable_reasons(descriptor)
+        } else {
+            &[]
+        }
+    }
     pub fn contracts(&self) -> &'static [ContractDescriptor] {
         self.adapter.contracts()
     }
@@ -455,6 +490,9 @@ impl Registration {
             return Ladder::Admitted;
         }
         self.adapter.version_ladder(identity)
+    }
+    pub fn hook_admission_policy(&self) -> HookAdmissionPolicy {
+        self.adapter.hook_admission_policy()
     }
     pub fn callback_admission(&self) -> bool {
         self.adapter.callback_admission()
@@ -635,6 +673,69 @@ impl Registration {
         self.adapter
             .settle_setup_consent(environment, projection, reader, writer)
     }
+    pub fn inspect_installer_hooks(
+        &self,
+        request: &StatusRequest,
+        budget: &crate::protocol::time::CallBudget,
+    ) -> Result<InstallerHookState, SetupFailure> {
+        let selector = match &request.scope {
+            ResolvedSetupScope::ConfigRoot(_) => SetupScopeRequest::Default,
+            ResolvedSetupScope::Profile { name, .. } => SetupScopeRequest::Profile(name.clone()),
+        };
+        if self.resolve_setup_scope(&selector, &request.environment)? != request.scope {
+            return Err(SetupFailure::Invalid(
+                "installer scope does not match captured adapter scope".into(),
+            ));
+        }
+        self.installer_policy()
+            .ok_or_else(|| SetupFailure::Invalid("installer policy unavailable".into()))?
+            .inspect_hooks(request, budget)
+    }
+    pub fn installer_skill_destination(
+        &self,
+        scope: &ResolvedSetupScope,
+    ) -> Result<Option<InstallerSkillDestination>, SetupFailure> {
+        let Some(policy) = self.installer_policy() else {
+            return Ok(None);
+        };
+        let Some(destination) = policy.skill_destination(scope) else {
+            return Ok(None);
+        };
+        let root = match scope {
+            ResolvedSetupScope::ConfigRoot(root) => root,
+            ResolvedSetupScope::Profile { home, .. } => home,
+        };
+        let valid_path = |path: &std::path::Path| {
+            path.is_absolute()
+                && path.as_os_str().len() <= 4096
+                && !path
+                    .as_os_str()
+                    .as_encoded_bytes()
+                    .iter()
+                    .any(|byte| byte.is_ascii_control())
+                && path.components().all(|part| {
+                    matches!(
+                        part,
+                        std::path::Component::RootDir | std::path::Component::Normal(_)
+                    )
+                })
+        };
+        let relative = destination.file.strip_prefix(root).ok();
+        if destination.root != *root
+            || !valid_path(root)
+            || !valid_path(&destination.file)
+            || relative
+                .is_none_or(|path| path.components().count() < 2 || path.components().count() > 16)
+        {
+            return Err(SetupFailure::Invalid(
+                "installer skill destination escapes declared scope or exceeds bounds".into(),
+            ));
+        }
+        Ok(Some(destination))
+    }
+    pub fn installer_policy(&self) -> Option<&dyn InstallerPolicy> {
+        self.adapter.installer_policy()
+    }
     pub fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
         self.adapter.launch_policy()
     }
@@ -710,6 +811,13 @@ impl Registration {
                     diagnostic: "undeclared runtime attribution source".into(),
                 });
             }
+        }
+        if matches!(request.installed, InstallObservation::NotRequested)
+            && self.hook_admission_policy() != HookAdmissionPolicy::RegisteredContract
+        {
+            return Err(AdmissionFailure {
+                diagnostic: "hook-only contract selection is undeclared".into(),
+            });
         }
         let row = self.adapter.admit(request, budget)?;
         Ok(AdmittedHandle {
@@ -801,6 +909,21 @@ impl Registry {
                 })
             {
                 return Err(RegistryError::InvalidEvidenceMetadata(m.id.into()));
+            }
+            for descriptor in r.contracts() {
+                let reasons = r.nonholding_unavailable_reasons(descriptor);
+                if reasons.len() > 8
+                    || reasons
+                        .iter()
+                        .any(|reason| !super::runtime::printable(reason, 128))
+                    || reasons
+                        .iter()
+                        .collect::<std::collections::HashSet<_>>()
+                        .len()
+                        != reasons.len()
+                {
+                    return Err(RegistryError::InvalidEvidenceMetadata(m.id.into()));
+                }
             }
             if !ids.insert(m.id) {
                 return Err(RegistryError::DuplicateId(m.id.into()));
@@ -1258,9 +1381,27 @@ mod tests {
     #[test]
     fn injected_local_aggregate_keeps_order_continues_after_error_and_preserves_first_exit() {
         use crate::cli::setup::{PromptSuggestionPolicy, SetupVerb, execute_all_registered};
-        let first = fixture("first", "First", &[], &["first"]);
-        let second = fixture("second", "Second", &[], &["second"]);
-        let third = fixture("third", "Third", &[], &["third"]);
+        let root_fixture = |id, spelling, kinds| {
+            let base = fixture(id, spelling, &[], kinds);
+            Box::leak(Box::new(TestAdapter {
+                metadata: Box::leak(Box::new(AdapterMetadata {
+                    setup_scopes: &[SetupScopeKind::ConfigRoot],
+                    executable: ExecutableLookup::Unsupported,
+                    budget: EventBudgetPolicy {
+                        lifecycle_ms: 5,
+                        observer_ms: 2,
+                    },
+                    ..*base.metadata
+                })),
+                calls: AtomicUsize::new(0),
+                event_id: "codex",
+                harness: OnceLock::new(),
+                offers: std::sync::Mutex::new(vec![]),
+            })) as &'static TestAdapter
+        };
+        let first = root_fixture("first", "First", &["first"]);
+        let second = root_fixture("second", "Second", &["second"]);
+        let third = root_fixture("third", "Third", &["third"]);
         let registry = registry(&[first, second, third]).unwrap();
         let root = std::env::temp_dir().join(format!("adapter-aggregate-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
@@ -1305,6 +1446,57 @@ mod tests {
         assert_eq!(skipped["harnesses"][2]["outcome"], "skipped");
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn implicit_all_skips_profile_only_before_scope_or_native_discovery() {
+        use crate::cli::setup::{PromptSuggestionPolicy, SetupVerb, execute_all_registered};
+        const CASES: &[&[SetupScopeKind]] = &[
+            &[SetupScopeKind::Profile],
+            &[SetupScopeKind::ConfigRoot, SetupScopeKind::Profile],
+        ];
+        for scopes in CASES {
+            let adapter = Box::leak(Box::new(TestAdapter {
+                metadata: Box::leak(Box::new(AdapterMetadata {
+                    setup_scopes: scopes,
+                    executable: ExecutableLookup::Path("sh"),
+                    budget: EventBudgetPolicy {
+                        lifecycle_ms: 5,
+                        observer_ms: 2,
+                    },
+                    ..*fixture("profileonly", "ProfileOnly", &[], &[]).metadata
+                })),
+                calls: AtomicUsize::new(0),
+                event_id: "codex",
+                harness: OnceLock::new(),
+                offers: std::sync::Mutex::new(vec![]),
+            }));
+            let registry = registry(&[adapter]).unwrap();
+            let environment = SetupEnvironment {
+                path: Some("/bin".into()),
+                ..Default::default()
+            };
+            // No config root exists in the capture: resolving the fake adapter's
+            // scope would panic, and install/remove preflight must also be skipped.
+            for verb in [SetupVerb::Install, SetupVerb::Status, SetupVerb::Remove] {
+                let report = execute_all_registered(
+                    &registry,
+                    verb,
+                    PromptSuggestionPolicy::Ask,
+                    &environment,
+                )
+                .unwrap();
+                assert_eq!(report["exit_status"], 0);
+                assert_eq!(report["harnesses"].as_array().unwrap().len(), 1);
+                assert_eq!(report["harnesses"][0]["harness"], "profileonly");
+                assert_eq!(report["harnesses"][0]["detected"], true);
+                assert_eq!(report["harnesses"][0]["outcome"], "skipped");
+                assert_eq!(
+                    report["harnesses"][0]["reason"],
+                    "requires explicit harness selection for a profile scope"
+                );
+            }
+        }
+    }
+
     fn fixture(
         id: &'static str,
         spelling: &'static str,

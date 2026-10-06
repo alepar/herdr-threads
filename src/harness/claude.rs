@@ -311,6 +311,18 @@ pub fn health_capability() -> CapabilityState {
     }
 }
 
+/// Decode the registered core hooks contract without executable metadata.
+/// Optional compact handling requires separate native qualification.
+pub fn parse_event_for_contract(
+    bytes: &[u8],
+    event_id: &str,
+    _: &super::operational::ClaudeContract,
+) -> Result<LifecycleEvent, ContextError> {
+    let mut event = parse_hooks_2_1_283(bytes, event_id, NativeSupport::Unsupported)?;
+    event.capability = Capability::ContractValidatedInput;
+    Ok(event)
+}
+
 /// The version comes from the installed Claude executable, never peer hook JSON.
 /// A version the ladder refuses is refused with
 /// [`ContextError::UnsupportedVersion`] carrying [`check_version`]'s
@@ -715,14 +727,14 @@ impl super::adapter::CanaryStrategy for ClaudeCanary {
     }
 }
 impl HarnessAdapter for ClaudeAdapter {
+    fn installer_policy(&self) -> Option<&dyn InstallerPolicy> {
+        Some(self)
+    }
     fn receipt_admission_summary(&self) -> Option<String> {
-        Some(
-            RECIPES
-                .iter()
-                .map(|recipe| recipe.versions.to_string())
-                .collect::<Vec<_>>()
-                .join("; "),
-        )
+        Some(format!(
+            "contract_declared {}; runtime/native behavior unverified",
+            RECIPES[0].id
+        ))
     }
     fn observation_fingerprint(&self, env: &InstallEnvironment) -> Option<String> {
         super::adapter::executable_observation_fingerprint(env, "claude")
@@ -730,17 +742,17 @@ impl HarnessAdapter for ClaudeAdapter {
     fn observe_daemon(
         &self,
         env: &InstallEnvironment,
-        budget: &CallBudget,
+        _: &CallBudget,
     ) -> super::adapter::DaemonObservation {
-        let (status, version) = observe_daemon_install(
-            env.path.as_deref(),
-            super::adapter::adapter_timeout(env, budget),
-            &budget.cancellation,
-        );
+        let status = if crate::cli::hook::resolve_on_path("claude", env.path.as_deref()).is_some() {
+            super::adapter::HarnessStatus::ContractDeclared { detail: "claude: contract_declared; runtime metadata unavailable; rich optional capabilities unavailable".into() }
+        } else {
+            super::adapter::HarnessStatus::NotInstalled(
+                "no executable `claude` on the daemon's PATH".into(),
+            )
+        };
         super::adapter::DaemonObservation {
             status,
-            identity: version
-                .and_then(|v| RuntimeIdentity::stable_release(&v, "installed_probe").ok()),
             receipt_basis: Some(
                 crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE.into(),
             ),
@@ -748,7 +760,10 @@ impl HarnessAdapter for ClaudeAdapter {
         }
     }
 
-    type Admission = String;
+    fn hook_admission_policy(&self) -> HookAdmissionPolicy {
+        HookAdmissionPolicy::RegisteredContract
+    }
+    type Admission = super::operational::ClaudeContract;
     fn metadata(&self) -> &'static AdapterMetadata {
         static METADATA: AdapterMetadata = AdapterMetadata {
             id: "claude",
@@ -802,19 +817,11 @@ impl HarnessAdapter for ClaudeAdapter {
         }];
         &CONTRACTS
     }
-    fn observe_install(&self, env: &InstallEnvironment, budget: &CallBudget) -> InstallObservation {
-        let Some(binary) = crate::cli::hook::resolve_on_path("claude", env.path.as_deref()) else {
-            return InstallObservation::Unavailable {
+    fn observe_install(&self, env: &InstallEnvironment, _: &CallBudget) -> InstallObservation {
+        match crate::cli::hook::resolve_on_path("claude", env.path.as_deref()) {
+            Some(binary) => InstallObservation::ExecutableAvailable { binary },
+            None => InstallObservation::Unavailable {
                 diagnostic: "installed claude executable not found on PATH".into(),
-            };
-        };
-        match observe_installed_version(&binary, super::adapter::adapter_timeout(env, budget)) {
-            Ok(version) => match RuntimeIdentity::stable_release(&version, "installed_probe") {
-                Ok(identity) => InstallObservation::Available { binary, identity },
-                Err(diagnostic) => InstallObservation::Unavailable { diagnostic },
-            },
-            Err(error) => InstallObservation::Unavailable {
-                diagnostic: format!("installed claude version: {error:?}"),
             },
         }
     }
@@ -823,25 +830,9 @@ impl HarnessAdapter for ClaudeAdapter {
         request: &AdmissionRequest,
         _: &CallBudget,
     ) -> AdmissionDecision<Self::Admission> {
-        let InstallObservation::Available { identity, .. } = &request.installed else {
-            return AdmissionDecision::Refused {
-                diagnostic: "installed claude version unavailable".into(),
-            };
-        };
-        let version = identity.release_version.as_deref().unwrap_or("");
-        match admit(version) {
-            Ok(admitted) => match admitted.admission {
-                ClaudeAdmission::Listed => AdmissionDecision::Listed {
-                    state: version.into(),
-                    recipe: admitted.recipe.id,
-                },
-                ClaudeAdmission::Optimistic(admission) => AdmissionDecision::Optimistic {
-                    state: version.into(),
-                    recipe: admitted.recipe.id,
-                    diagnostic: super::optimistic_label(&admission, false),
-                },
-            },
-            Err(diagnostic) => AdmissionDecision::Refused { diagnostic },
+        match &request.installed {
+            InstallObservation::NotRequested | InstallObservation::ExecutableAvailable { .. } => AdmissionDecision::ContractDeclared {state: super::operational::ClaudeContract::registered(), recipe: RECIPES[0].id},
+            _ => AdmissionDecision::Refused {diagnostic: "registered claude contract requires executable availability or declared hook selection".into()},
         }
     }
     fn version_ladder(&self, identity: &RuntimeIdentity) -> Ladder {
@@ -872,7 +863,14 @@ impl HarnessAdapter for ClaudeAdapter {
         admitted: &Self::Admission,
         input: &HookInput,
     ) -> Result<DecodedEvent, DecodeFailure> {
-        parse_event(admitted, &input.bytes, &uuid::Uuid::new_v4().to_string())
+        if let Some(registered) = input.registered_event.as_deref() {
+            let payload: Value = serde_json::from_slice(&input.bytes)
+                .map_err(|_| DecodeFailure::Native(ContextError::Invalid))?;
+            if payload.get("hook_event_name").and_then(Value::as_str) != Some(registered) {
+                return Err(DecodeFailure::Native(ContextError::Invalid));
+            }
+        }
+        parse_event_for_contract(&input.bytes, &uuid::Uuid::new_v4().to_string(), admitted)
             .map(DecodedEvent::from_native)
             .map_err(DecodeFailure::Native)
     }
@@ -930,30 +928,6 @@ impl HarnessAdapter for ClaudeAdapter {
     ) -> Result<RemovalOutcome, SetupFailure> {
         setup::unsetup(request)
     }
-}
-
-fn observe_daemon_install(
-    path: Option<&std::ffi::OsStr>,
-    timeout: std::time::Duration,
-    cancel: &crate::protocol::time::Cancellation,
-) -> (super::adapter::HarnessStatus, Option<String>) {
-    let observed = crate::cli::hook::resolve_on_path("claude", path).map(|binary| {
-        crate::harness::claude::observe_installed_version_cancellable(&binary, timeout, cancel)
-    });
-    let version = observed.as_ref().and_then(|observed| match observed {
-        Ok(version) => Some(version.as_str()),
-        Err(crate::harness::codex::VersionError::Unsupported(version)) => Some(version.as_str()),
-        Err(crate::harness::codex::VersionError::KnownBroken { version, .. }) => {
-            Some(version.as_str())
-        }
-        Err(_) => None,
-    });
-    let version =
-        version.and_then(|raw| crate::harness::contract::normalize_version("claude", raw));
-    (
-        crate::app::claude_status(observed, crate::harness::claude::health_capability()),
-        version,
-    )
 }
 
 impl LaunchPolicy for ClaudeAdapter {
@@ -1021,5 +995,42 @@ impl LaunchPolicy for ClaudeAdapter {
     }
     fn expected_host_kinds(&self) -> &'static [&'static str] {
         self.metadata().host_kinds
+    }
+}
+
+impl InstallerPolicy for ClaudeAdapter {
+    fn inspect_hooks(
+        &self,
+        request: &StatusRequest,
+        budget: &CallBudget,
+    ) -> Result<InstallerHookState, SetupFailure> {
+        if budget.cancellation.is_cancelled() {
+            return Err(SetupFailure::Invalid(
+                "installer observation cancelled".into(),
+            ));
+        }
+        let env = crate::harness::setup::legacy::scoped_legacy_environment(
+            Harness::Claude,
+            &request.scope,
+            &request.environment,
+        )?;
+        crate::harness::setup::legacy::installer_hooks_installed(&env, Harness::Claude)
+            .map(|owned| {
+                if owned {
+                    InstallerHookState::Owned
+                } else {
+                    InstallerHookState::Missing
+                }
+            })
+            .map_err(|error| SetupFailure::Invalid(error.to_string()))
+    }
+    fn skill_destination(&self, scope: &ResolvedSetupScope) -> Option<InstallerSkillDestination> {
+        let ResolvedSetupScope::ConfigRoot(root) = scope else {
+            return None;
+        };
+        Some(InstallerSkillDestination {
+            root: root.clone(),
+            file: root.join("skills/herdr-threads/SKILL.md"),
+        })
     }
 }

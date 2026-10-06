@@ -87,10 +87,7 @@ fn swapping_the_binary_reobserves_on_the_next_tick() {
     assert!(
         matches!(
             slot.lock().unwrap().status("claude"),
-            HarnessStatus::Cooperative {
-                live_unverified: false,
-                ..
-            }
+            HarnessStatus::ContractDeclared { .. }
         ),
         "{:?}",
         slot.lock().unwrap().status("claude")
@@ -114,15 +111,16 @@ fn swapping_the_binary_reobserves_on_the_next_tick() {
     advance(&pacer);
     wait_until("the third pass", || pacer.idle_events() >= 3);
     let observed = slot.lock().unwrap().status("claude").clone();
-    let HarnessStatus::Optimistic(detail) = &observed else {
+    let HarnessStatus::ContractDeclared { detail } = &observed else {
         panic!("the swapped binary must be re-observed as optimistic: {observed:?}");
     };
-    assert!(detail.starts_with("claude 2.1.299: optimistic"), "{detail}");
+    assert!(detail.contains("contract_declared"), "{detail}");
+    assert_eq!(slot.lock().unwrap().detected_version("claude"), None);
     let lines = lines.lock().unwrap();
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(
         lines[0].starts_with("claude binary changed: ")
-            && lines[0].ends_with("; admission optimistic")
+            && lines[0].ends_with("; admission contract_declared")
             && lines[0].contains(" \u{2192} "),
         "{}",
         lines[0]
@@ -136,82 +134,66 @@ fn swapping_the_binary_reobserves_on_the_next_tick() {
 
 const TICK_MS: u64 = ADMISSION_TICK.as_millis() as u64;
 
-/// Kills: an admission pass that ignores the lane's cancellation, so
-/// shutdown's join waits out two 5 s --version timeouts (final review S6), a
-/// hung harness child left running, and a half-observed pass stored.
+// Catches cancellation replacing a whole existing pair or probing wrappers.
 #[test]
-fn cancelling_the_lane_kills_a_hung_harness_and_ends_the_pass() {
+fn cancelling_the_lane_preserves_the_previous_observation() {
+    let iso = crate::test_support::isolation::TestIsolation::new("task3-observer-cancel");
+    write_stub_harness(iso.state_root(), "claude", "2.1.286");
+    let observer = AdmissionReobserver::new(
+        Some(iso.state_root().as_os_str().to_owned()),
+        Duration::from_secs(1),
+        Arc::new(|_| {}),
+    );
+    let previous = observer.pass(&Cancellation::default());
+    let cancel = Cancellation::default();
+    cancel.cancel();
+    assert_eq!(observer.pass(&cancel), previous);
+    assert_eq!(observer.pass(&Cancellation::default()), previous);
+}
+
+// Catches any diagnostic execution and accidental rich/native qualification.
+#[test]
+fn task3_versionless_daemon_observes_failing_wrappers_without_probes() {
+    use crate::ports::PokeCapabilitySource;
     use std::os::unix::fs::PermissionsExt;
-    let dir = std::env::temp_dir().join(format!("ht-reobserve-hung-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let marker = |name: &str| dir.join(format!("{name}.pid"));
+    let iso = crate::test_support::isolation::TestIsolation::new("task3-observer");
+    let dir = iso.state_root();
+    let marker = dir.join("invocations");
     for name in ["claude", "codex"] {
-        let path = dir.join(name);
-        let pid_file = marker(name);
+        let binary = dir.join(name);
         std::fs::write(
-            &path,
+            &binary,
             format!(
-                "#!/bin/sh\necho $$ > '{0}.tmp'\nmv '{0}.tmp' '{0}'\nexec sleep 60\n",
-                pid_file.display()
+                "#!/bin/sh\nprintf '%s\n' \"$*\" >> '{}'\nexit 71\n",
+                marker.display()
             ),
         )
         .unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(binary, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let reobserver = AdmissionReobserver::new(
-        Some(dir.clone().into_os_string()),
-        Duration::from_secs(30),
-        Arc::new(|_: &str| {}),
+    let observer = AdmissionReobserver::new(
+        Some(dir.as_os_str().to_owned()),
+        Duration::from_secs(2),
+        Arc::new(|_| {}),
     );
-    let clock = Arc::new(FakeClock {
-        mono: AtomicU64::new(1),
-        utc: AtomicI64::new(1_000_000),
-    });
-    let cancel = Cancellation::default();
-    let pacer = Arc::new(Pacer::new(
-        Lane::AdmissionObserver.name(),
-        clock.clone(),
-        cancel.clone(),
-    ));
-    let slot = Arc::new(Mutex::new(HarnessObservations::default()));
-    let handle = start_admission_observer(
-        move |budget| {
-            let observed = reobserver.pass(&budget.cancellation);
-            if budget.cancellation.is_cancelled() {
-                return Err(ApiError::cancelled("admission pass cancelled"));
-            }
-            Ok(observed)
-        },
-        Arc::clone(&slot),
-        pacer,
-        clock.clone(),
-        cancel.clone(),
-        Arc::new(WorkerStatus::default()),
-    )
-    .unwrap();
-    wait_until("claude --version started", || marker("claude").exists());
-    cancel.cancel();
-    handle.join().unwrap();
-
-    assert!(
-        !marker("codex").exists(),
-        "the pass went on to observe codex after cancellation"
-    );
-    let pid = std::fs::read_to_string(marker("claude")).unwrap();
-    let alive = std::process::Command::new("kill")
-        .args(["-0", pid.trim()])
-        .status()
-        .unwrap()
-        .success();
-    assert!(!alive, "hung claude child {} outlived the lane", pid.trim());
-    let stored = slot.lock().unwrap();
-    assert!(
-        matches!(stored.status("claude"), HarnessStatus::Unknown)
-            && matches!(stored.status("codex"), HarnessStatus::Unknown),
-        "a cancelled pass was stored: {:?} / {:?}",
-        stored.status("claude"),
-        stored.status("codex")
-    );
-    let _ = std::fs::remove_dir_all(&dir);
+    let observed = observer.pass(&Cancellation::default());
+    assert!(!marker.exists(), "daemon invoked a diagnostic wrapper");
+    for status in [observed.status("claude"), observed.status("codex")] {
+        assert!(
+            matches!(status, HarnessStatus::ContractDeclared { .. }),
+            "{status:?}"
+        );
+    }
+    assert_eq!(observed.detected_version("claude"), None);
+    assert_eq!(observed.detected_version("codex"), None);
+    let source = crate::app::ObservedPokeCapabilities::new(Arc::new(Mutex::new(observed)));
+    for harness in [
+        crate::protocol::authority::Harness::Claude,
+        crate::protocol::authority::Harness::Codex,
+    ] {
+        assert_eq!(
+            source.capabilities(harness),
+            crate::harness::recipe::PokeCapabilities::NONE
+        );
+    }
 }

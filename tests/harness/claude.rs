@@ -1204,3 +1204,35 @@ fn claude_docs_list_exactly_the_declared_installed_hook_groups() {
         );
     }
 }
+
+// Catches runtime-free parsing that grants optional compact handling or native capability.
+#[test]
+fn versionless_claude_contract_validates_core_input_without_compact_qualification() {
+    let contract = crate::harness::operational::ClaudeContract::registered();
+    for source in ["startup", "clear", "resume"] {
+        let payload = serde_json::to_vec(
+            &json!({"hook_event_name":"SessionStart","source":source,"session_id":"s"}),
+        )
+        .unwrap();
+        let event = claude::parse_event_for_contract(&payload, "event", &contract).unwrap();
+        assert_eq!(
+            event.capability,
+            crate::harness::Capability::ContractValidatedInput
+        );
+        assert!(event.can_check_in());
+    }
+    let compact = br#"{"hook_event_name":"SessionStart","source":"compact","session_id":"s"}"#;
+    assert!(claude::parse_event_for_contract(compact, "event", &contract).is_err());
+    // Captured, explicitly version-qualified fixture behavior remains available.
+    assert!(claude::parse_versioned_event(compact, "2.1.287", "event").is_ok());
+    let mut child: Value = serde_json::from_slice(&tool_input("true")).unwrap();
+    child["agent_id"] = json!("child");
+    child["agent_type"] = json!("worker");
+    let event =
+        claude::parse_event_for_contract(&serde_json::to_vec(&child).unwrap(), "event", &contract)
+            .unwrap();
+    assert_eq!(event.role, Role::Subagent);
+    assert!(!event.can_check_in());
+    assert!(claude::parse_event_for_contract(START, "", &contract).is_err());
+    assert!(claude::parse_event_for_contract(&vec![b'x'; 65537], "event", &contract).is_err());
+}

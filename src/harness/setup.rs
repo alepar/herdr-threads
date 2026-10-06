@@ -728,7 +728,7 @@ pub fn uninstall_json(bytes: &[u8], entries: &[OwnedEntry]) -> Result<Vec<u8>, S
 /// these `-c` values (hooks/list on 0.157.1, 0.158.0 and 0.159.2), so copying
 /// them in would register them twice. Each session override includes the
 /// supplied existing groups. hooks.state is untouched and must be measured separately.
-/// Internal composition only: production callers go through `plan_codex_for_version`.
+/// Internal composition shared by contract planning and historical diagnostics.
 fn plan_codex(
     existing: &[EventGroups],
     hook_argv: &[String],
@@ -796,9 +796,17 @@ fn plan_codex(
     Ok(plan)
 }
 
-/// The production setup boundary. The witness exists only after observing the
-/// installed binary report a version some recipe covers, so this cannot plan
-/// unmeasured. The witness's recipe must still be a registered recipe.
+/// Compose the registered Codex setup contract without executable metadata.
+/// The handle declares registration, never runtime support or native delivery.
+pub fn plan_codex_for_contract(
+    existing: &[EventGroups],
+    hook_argv: &[String],
+    _: &super::operational::CodexContract,
+) -> Result<CodexSetupPlan, SetupError> {
+    plan_codex(existing, hook_argv)
+}
+
+/// Diagnostic/fixture compatibility for historical installed-version callers.
 pub fn plan_codex_for_version(
     existing: &[EventGroups],
     hook_argv: &[String],
@@ -2002,7 +2010,7 @@ pub(crate) mod legacy {
     use crate::{
         daemon::paths::{ensure_owned_state_root, ensure_private_dir},
         harness::{
-            claude, codex,
+            claude,
             context::Harness,
             setup::{
                 self as lib, NativeObservation, SettingsKind, SetupError, adopt_user_settings,
@@ -2041,6 +2049,129 @@ pub(crate) mod legacy {
             prompt_suggestions,
         })
     }
+    fn installer_failure(detail: impl Into<String>) -> crate::cli::RunError {
+        crate::cli::RunError::Io(std::io::Error::other(detail.into()))
+    }
+    pub(crate) fn installer_hooks_installed(
+        env: &SetupEnv,
+        harness: Harness,
+    ) -> Result<bool, crate::cli::RunError> {
+        use crate::{
+            cli::{installer_skill::read_optional, setup},
+            harness::{
+                codex_config,
+                setup::{self as owned, NativeObservation, SettingsKind},
+            },
+        };
+        let (kind, path, manifest) = match harness {
+            Harness::Claude => {
+                let (path, manifest) = setup::claude_paths(env)?;
+                (SettingsKind::ClaudeUser, path, manifest)
+            }
+            Harness::Codex => {
+                let paths = setup::codex_paths(env)?;
+                let allowance = codex_config::inspect(&paths.config, &paths.config_manifest)
+                    .map_err(|error| {
+                        installer_failure(format!("invalid Codex allowance ownership: {error:?}"))
+                    })?;
+                if allowance.recorded.as_ref().is_some_and(|manifest| {
+                    manifest.phase != owned::InstallPhase::Installed || !allowance.present
+                }) {
+                    return Err(installer_failure(
+                        "recorded Codex allowance is partial or edited; preserved",
+                    ));
+                }
+                (SettingsKind::CodexUser, paths.hooks, paths.hooks_manifest)
+            }
+            Harness::Human => return Err(installer_failure("human panes have no hooks")),
+            _ => return Err(installer_failure("installer policy unavailable")),
+        };
+        let bytes = read_optional(&path)?;
+        let argv = env.hook_argv(harness)?;
+        let recorded = owned::read_settings_manifest(&manifest).map_err(|error| {
+            installer_failure(format!("invalid hook ownership manifest: {error:?}"))
+        })?;
+        if let Some(recorded) = recorded {
+            let current = bytes.as_deref().unwrap_or_default();
+            let ownership = (|| -> Result<(), super::SetupError> {
+                if recorded.phase != owned::InstallPhase::Installed
+                    || !super::manifest_matches(kind, &recorded, &path)?
+                    || !super::recorded_ownership_valid(&recorded)
+                    || super::shared_command(&recorded.owned).as_deref()
+                        != Some(super::owned_command(&argv, &recorded.installation_id)?.as_str())
+                {
+                    return Err(super::SetupError::Conflict);
+                }
+                super::uninstall_json(current, &recorded.owned)?;
+                if kind.manages_permission()
+                    && recorded
+                        .permission
+                        .as_ref()
+                        .is_some_and(super::permission_current)
+                    && super::allow_count(&super::root(current)?, super::DECLARED_RULE)? == 0
+                {
+                    return Err(super::SetupError::Conflict);
+                }
+                Ok(())
+            })();
+            ownership.map_err(|error| {
+                installer_failure(format!(
+                    "recorded hooks are partial or edited; preserved: {error:?}"
+                ))
+            })?;
+            // Ownership of an older declaration permits a canonical upgrade; it grants no readiness.
+            return Ok(true);
+        }
+        let inspection = owned::inspect_user_settings_for(
+            kind,
+            &path,
+            &manifest,
+            NativeObservation::Unknown,
+            Some(&argv),
+        )
+        .map_err(|error| {
+            installer_failure(format!("hook ownership inspection failed: {error:?}"))
+        })?;
+        if inspection.installed {
+            return Ok(true);
+        }
+        if let Some(bytes) = bytes {
+            let value: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| installer_failure("invalid hook settings; preserved"))?;
+            if !value.is_object() {
+                return Err(installer_failure(
+                    "hook settings are not an object; preserved",
+                ));
+            }
+            if let Some(hooks) = value.get("hooks") {
+                let map = hooks
+                    .as_object()
+                    .ok_or_else(|| installer_failure("invalid hooks map; preserved"))?;
+                if map.values().any(|groups| !groups.is_array()) {
+                    return Err(installer_failure("invalid hook groups; preserved"));
+                }
+            }
+            // This conservative conflict check grants no ownership; canonical setup handles all writes.
+            if value.get("hooks").is_some_and(foreign_hooks) {
+                return Err(installer_failure(
+                    "unowned or partial herdr-threads hooks; preserved (use setup-status to inspect)",
+                ));
+            }
+        }
+        Ok(false)
+    }
+
+    fn foreign_hooks(value: &Value) -> bool {
+        match value {
+            Value::Object(object) => object.iter().any(|(key, value)| {
+                (key == "command" && value.as_str().is_some_and(|s| s.contains("herdr-threads")))
+                    || foreign_hooks(value)
+            }),
+            Value::Array(array) => array.iter().any(foreign_hooks),
+            _ => false,
+        }
+    }
+
     pub(crate) fn scoped_legacy_environment(
         harness: Harness,
         scope: &crate::harness::adapter::ResolvedSetupScope,
@@ -2173,7 +2304,9 @@ pub(crate) mod legacy {
                 scope: request.scope.clone(),
                 installed: projection["installed"].as_bool().unwrap_or(false),
                 enabled: None,
-                admitted: projection["harness_version"]["supported"].as_bool(),
+                admitted: projection["harness_version"]["admission"]
+                    .as_str()
+                    .map(|admission| admission == "contract_declared"),
                 observed: None,
                 configured_hook,
                 fingerprint,
@@ -2218,39 +2351,29 @@ pub(crate) mod legacy {
         }
     }
 
-    /// One printable line of unrecognized `--version` output for a refusal.
-    pub(crate) fn printable_line(stdout: &[u8]) -> String {
-        let text = String::from_utf8_lossy(stdout);
-        let line = text.strip_suffix('\n').unwrap_or(&text);
-        if line.is_empty() {
-            return "<empty --version output>".into();
-        }
-        line.chars().filter(|c| !c.is_control()).take(80).collect()
-    }
-
     /// An accepted installed-version observation.
     #[derive(Debug, Clone)]
     pub(crate) struct Observed {
         pub(crate) binary: PathBuf,
-        pub(crate) version: String,
+        pub(crate) version: Option<String>,
         pub(crate) recipe: &'static str,
     }
 
     pub(crate) fn observation_json(
-        result: &Result<(Observed, Option<codex::InstalledVersion>), String>,
+        result: &Result<(Observed, Option<crate::harness::operational::CodexContract>), String>,
     ) -> Value {
         match result {
             Ok((observed, _)) => json!({
-                "supported": true,
+                "admission": "contract_declared",
                 "binary": observed.binary.display().to_string(),
                 "version": observed.version,
                 "recipe": observed.recipe,
             }),
-            Err(refusal) => json!({"supported": false, "refusal": refusal}),
+            Err(refusal) => json!({"admission":"unavailable", "version":null, "refusal":refusal}),
         }
     }
 
-    pub(crate) fn refuse_version(refusal: String) -> RunError {
+    pub(crate) fn refuse_executable(refusal: String) -> RunError {
         api(ErrorCode::UnsupportedHarness, refusal)
     }
 

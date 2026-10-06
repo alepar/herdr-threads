@@ -137,38 +137,19 @@ pub(crate) struct HarnessObservations {
         std::collections::BTreeMap<String, crate::harness::adapter::DaemonObservation>,
 }
 
-/// Soft-deadline poke capabilities (spec §10) from the installed harness
-/// versions the admission observer last observed (re-observed when a binary
-/// changes). No observation, no recipe for the
-/// observed version, or a harness without recipes reports `NONE`.
-pub(crate) struct ObservedPokeCapabilities {
-    observed: Arc<Mutex<HarnessObservations>>,
-}
+/// Ordinary observation supplies no safe current-runtime qualifier. Metadata
+/// and historical recipe declarations alone cannot grant richer poke behavior.
+pub(crate) struct ObservedPokeCapabilities;
 
 impl ObservedPokeCapabilities {
-    pub(crate) fn new(observed: Arc<Mutex<HarnessObservations>>) -> Self {
-        Self { observed }
+    pub(crate) fn new(_observed: Arc<Mutex<HarnessObservations>>) -> Self {
+        Self
     }
 }
 
 impl crate::ports::PokeCapabilitySource for ObservedPokeCapabilities {
-    fn capabilities(&self, harness: Harness) -> crate::harness::recipe::PokeCapabilities {
-        let observed = self.observed.lock().ok();
-        // The detected version is also recorded for a refused binary (below
-        // the floor or known broken) so doctor can name it; a refused
-        // version never declares poke capabilities.
-        let version = observed.as_deref().and_then(|observed| {
-            let entry = observed.entries.get(harness.as_str())?;
-            if matches!(
-                entry.status,
-                HarnessStatus::Refused(_) | HarnessStatus::VersionRefused(_)
-            ) {
-                None
-            } else {
-                entry.identity.as_ref()?.release()
-            }
-        });
-        crate::harness::recipe::poke_capabilities(harness, version)
+    fn capabilities(&self, _: Harness) -> crate::harness::recipe::PokeCapabilities {
+        crate::harness::recipe::PokeCapabilities::NONE
     }
 }
 
@@ -314,6 +295,7 @@ fn scheduler_status(workers: &[Arc<WorkerStatus>]) -> ComponentStatus {
 /// `supported` requires BOTH a native-verified receipt (the recipe tables'
 /// capability) AND a version some recipe lists; a schema-matched or
 /// optimistic version never reaches it, however the tables read.
+#[cfg(test)]
 pub(crate) fn supports_native_receipt(native: CapabilityState, listed: bool) -> bool {
     native == CapabilityState::Supported && listed
 }
@@ -321,6 +303,7 @@ pub(crate) fn supports_native_receipt(native: CapabilityState, listed: bool) -> 
 /// Classify the admission of the installed `codex`: cooperative (or
 /// supported, when the recipes declare native receipt) when a recipe admits
 /// it, unsupported when absent or refused.
+#[cfg(test)]
 pub(crate) fn codex_status(
     admission: &crate::harness::codex::InstalledAdmission,
     native: CapabilityState,
@@ -361,6 +344,7 @@ pub(crate) fn codex_status(
 
 /// Classify the installed `claude` (`None` when no executable is on `PATH`;
 /// otherwise its `--version` observation, admitted only by a recipe).
+#[cfg(test)]
 pub(crate) fn claude_status(
     observed: Option<Result<String, crate::harness::codex::VersionError>>,
     native: CapabilityState,
@@ -369,6 +353,7 @@ pub(crate) fn claude_status(
 }
 
 /// [`claude_status`] against an explicit admission table.
+#[cfg(test)]
 pub(crate) fn claude_status_in(
     table: &'static [crate::harness::claude::ClaudeRecipe],
     observed: Option<Result<String, crate::harness::codex::VersionError>>,
@@ -440,7 +425,9 @@ impl HarnessStatus {
                 live_unverified: true,
                 ..
             } => crate::harness::codex::SCHEMA_MATCHED_LABEL,
-            HarnessStatus::Cooperative { .. } | HarnessStatus::Supported(_) => "listed",
+            HarnessStatus::ContractDeclared { .. } => "contract_declared",
+            HarnessStatus::Cooperative { .. } => "listed",
+            HarnessStatus::Supported(_) => "listed",
             HarnessStatus::Optimistic(_) => crate::harness::codex::OPTIMISTIC_LABEL,
         }
     }
@@ -1508,32 +1495,53 @@ mod poke_capability_source_tests {
         })))
     }
 
-    /// Kills: a source ignoring the observed version, and one inventing a
-    /// capability for an unobserved harness.
+    // Optional metadata alone is not captured current-runtime qualification.
     #[test]
-    fn observed_versions_select_the_recipe_pair_and_unobserved_is_none() {
-        let declared = PokeCapabilities {
-            composer_stash: NativeSupport::Supported,
-            poke_during_turn: NativeSupport::Supported,
-        };
-        let observed = source(Some("2.1.287"), Some("0.160.0"));
-        assert_eq!(observed.capabilities(Harness::Claude), declared);
+    fn task3_versionless_optional_metadata_does_not_grant_rich_poke_capabilities() {
+        let observed = Arc::new(Mutex::new(HarnessObservations {
+            entries: std::collections::BTreeMap::from([(
+                "claude".into(),
+                crate::harness::adapter::DaemonObservation {
+                    status: HarnessStatus::Cooperative {
+                        detail: "contract_declared".into(),
+                        live_unverified: false,
+                    },
+                    identity: Some(
+                        crate::harness::runtime::RuntimeIdentity::stable_release(
+                            "2.1.287",
+                            "installed_probe",
+                        )
+                        .unwrap(),
+                    ),
+                    ..Default::default()
+                },
+            )]),
+        }));
+        let source = ObservedPokeCapabilities::new(observed);
+        assert_eq!(source.capabilities(Harness::Claude), PokeCapabilities::NONE);
+        // The historical capture declaration itself remains intact.
         assert_eq!(
-            observed.capabilities(Harness::Codex),
-            PokeCapabilities::NONE
+            crate::harness::recipe::poke_capabilities(Harness::Claude, Some("2.1.287")),
+            PokeCapabilities {
+                composer_stash: NativeSupport::Supported,
+                poke_during_turn: NativeSupport::Supported
+            }
         );
-        assert_eq!(
-            observed.capabilities(Harness::Human),
-            PokeCapabilities::NONE
-        );
-        let older = source(Some("2.1.286"), None);
-        assert_eq!(older.capabilities(Harness::Claude), PokeCapabilities::NONE);
-        let unobserved = source(None, None);
-        assert_eq!(
-            unobserved.capabilities(Harness::Claude),
-            PokeCapabilities::NONE
-        );
-        // The slot starts empty and is filled later by the background probe.
+    }
+
+    // Metadata/cache changes cannot substitute for safe current qualification.
+    #[test]
+    fn observed_metadata_and_unobserved_runtime_both_leave_richer_paths_unavailable() {
+        for versions in [
+            (Some("2.1.287"), Some("0.160.0")),
+            (Some("2.1.286"), None),
+            (None, None),
+        ] {
+            let source = source(versions.0, versions.1);
+            for harness in [Harness::Claude, Harness::Codex, Harness::Human] {
+                assert_eq!(source.capabilities(harness), PokeCapabilities::NONE);
+            }
+        }
         let slot = Arc::new(Mutex::new(HarnessObservations::default()));
         let late = ObservedPokeCapabilities::new(Arc::clone(&slot));
         assert_eq!(late.capabilities(Harness::Claude), PokeCapabilities::NONE);
@@ -1550,7 +1558,7 @@ mod poke_capability_source_tests {
                 ..Default::default()
             },
         );
-        assert_eq!(late.capabilities(Harness::Claude), declared);
+        assert_eq!(late.capabilities(Harness::Claude), PokeCapabilities::NONE);
     }
 
     /// Kills: a source that declares poke capabilities for a detected

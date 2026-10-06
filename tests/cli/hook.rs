@@ -176,100 +176,84 @@ fn installed_argv_and_hook_parser_are_one_contract() {
 }
 
 fn claude() -> InstalledHarness {
-    InstalledHarness::Claude("2.1.283".into())
+    InstalledHarness::DeclaredClaude(crate::harness::operational::ClaudeContract::registered())
 }
 
-fn fake_harness(dir: &std::path::Path, name: &str, output: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    let path = dir.join(name);
-    std::fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' '{output}'\n")).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
-
-// Kills: parsing native payloads without the installed-version witness
-// (a hook that skips observation, or trusts an unsupported/missing binary),
-// and resolving a relative PATH entry.
+// Rejects a PATH-dependent hook admission and probes of managed wrappers.
 #[test]
-fn hook_parses_only_under_an_observed_pinned_harness_version() {
+fn versionless_hook_contracts_decode_without_path_or_probes() {
+    use std::os::unix::fs::PermissionsExt;
     let root = private_root();
-    let bin = root.join("bin");
-    std::fs::create_dir(&bin).unwrap();
-    // The production cap: this test is about which versions parse, and fake
-    // `sh` harnesses can take seconds to start under a loaded parallel suite.
-    let budget = crate::harness::codex::VERSION_TIMEOUT;
-    fake_harness(&bin, "claude", "2.1.283 (Claude Code)");
-    fake_harness(&bin, "codex", "codex-cli 0.157.1");
-    let path = std::ffi::OsString::from(format!("relative:{}", bin.display()));
-    let observed = observe_harness(Harness::Claude, Some(&path), budget).unwrap();
-    assert_eq!(observed, claude());
-    assert!(parse_event(&observed, CLAUDE_TOOL).is_ok());
-    let codex = observe_harness(Harness::Codex, Some(&path), budget);
-    assert!(matches!(codex, Ok(InstalledHarness::Codex(_))), "{codex:?}");
-    // An unsupported installed version never parses. (The recipe registry
-    // recipes cover 2.1.283..=2.1.287, so 2.1.282 is older than every recipe and
-    // refused; 2.1.288 is newer and is admitted optimistically.)
-    let unsupported = InstalledHarness::Claude("2.1.282".into());
-    assert!(parse_event(&unsupported, CLAUDE_TOOL).is_err());
-    let outcome = run_hook(
-        &args(&root),
-        &unsupported,
-        CLAUDE_TOOL,
-        &herdr(),
-        Instant::now() + TOOL_BUDGET,
-        clock(),
-        None,
-    );
-    assert!(outcome.stdout.is_empty());
-    // Every registry-covered version is observed; one outside every recipe
-    // is refused.
-    fake_harness(&bin, "claude", "2.1.284 (Claude Code)");
-    assert_eq!(
-        observe_harness(Harness::Claude, Some(&path), budget),
-        Ok(InstalledHarness::Claude("2.1.284".into()))
-    );
-    fake_harness(&bin, "codex", "codex-cli 0.158.0");
-    assert!(matches!(
-        observe_harness(Harness::Codex, Some(&path), budget),
-        Ok(InstalledHarness::Codex(_))
-    ));
-    fake_harness(&bin, "codex", "codex-cli 0.155.1");
-    assert!(observe_harness(Harness::Codex, Some(&path), budget).is_err());
-    // Newer than every recipe: admitted optimistically (no schemas embedded
-    // in the fake binary, so the schema observation is unreadable).
-    fake_harness(&bin, "codex", "codex-cli 0.160.0");
-    assert!(matches!(
-        observe_harness(Harness::Codex, Some(&path), budget),
-        Ok(InstalledHarness::Codex(_))
-    ));
-    fake_harness(&bin, "claude", "2.1.288 (Claude Code)");
-    assert_eq!(
-        observe_harness(Harness::Claude, Some(&path), budget),
-        Ok(InstalledHarness::Claude("2.1.288".into()))
-    );
-    fake_harness(&bin, "claude", "2.1.285 (Claude Code)");
-    assert_eq!(
-        observe_harness(Harness::Claude, Some(&path), budget),
-        Ok(InstalledHarness::Claude("2.1.285".into()))
-    );
-    fake_harness(&bin, "claude", "2.1.286 (Claude Code)");
-    assert_eq!(
-        observe_harness(Harness::Claude, Some(&path), budget),
-        Ok(InstalledHarness::Claude("2.1.286".into()))
-    );
-    fake_harness(&bin, "claude", "2.1.282 (Claude Code)");
-    assert!(observe_harness(Harness::Claude, Some(&path), budget).is_err());
-    fake_harness(&bin, "claude", "Claude Code 2.1.283");
-    assert!(observe_harness(Harness::Claude, Some(&path), budget).is_err());
-    // Missing from PATH, or only reachable through a relative entry.
-    assert!(
-        observe_harness(
-            Harness::Claude,
-            Some(std::ffi::OsStr::new("relative")),
-            budget
+    let log = root.join("invocations");
+    std::fs::write(&log, "").unwrap();
+    for name in ["codex", "claude"] {
+        let binary = root.join(name);
+        std::fs::write(
+            &binary,
+            format!("#!/bin/sh\necho invoked >> '{}'\nexit 99\n", log.display()),
         )
-        .is_err()
+        .unwrap();
+        std::fs::set_permissions(binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    for (harness, payload) in [
+        (Harness::Claude, CLAUDE_TOOL),
+        (Harness::Codex, br#"{"hook_event_name":"PreToolUse","session_id":"s","turn_id":"t","tool_name":"Bash","tool_use_id":"u","tool_input":{"command":"true"}}"#.as_slice()),
+    ] {
+        let absent = observe_harness_in(harness, None, Duration::from_millis(100), None).unwrap();
+        assert_eq!(parse_event(&absent, payload).unwrap().capability, Capability::ContractValidatedInput);
+        let wrapped = observe_harness_in(harness, Some(root.as_os_str()), Duration::from_millis(100), Some(&root)).unwrap();
+        assert!(parse_event(&wrapped, payload).is_ok());
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "");
+        for (key, value) in [
+            ("agent_id", serde_json::json!("child")),
+            ("tool_name", serde_json::json!("Unknown")),
+            ("hook_event_name", serde_json::json!("FutureSchema")),
+        ] {
+            let mut invalid: serde_json::Value = serde_json::from_slice(payload).unwrap();
+            invalid[key] = value;
+            assert!(parse_event(&absent, &serde_json::to_vec(&invalid).unwrap()).is_err(), "{harness:?}: {key}");
+        }
+        for key in ["session_id", "tool_name", "tool_use_id"] {
+            let mut invalid: serde_json::Value = serde_json::from_slice(payload).unwrap();
+            invalid.as_object_mut().unwrap().remove(key);
+            assert!(parse_event(&absent, &serde_json::to_vec(&invalid).unwrap()).is_err(), "{harness:?}: {key}");
+        }
+        let start = br#"{"hook_event_name":"SessionStart","session_id":"s","source":"startup"}"#;
+        assert!(parse_event(&absent, start).is_ok());
+        let missing_source = br#"{"hook_event_name":"SessionStart","session_id":"s"}"#;
+        assert!(parse_event(&absent, missing_source).is_err());
+    }
+    assert!(
+        !root.join("harness").exists(),
+        "operational hooks must not write admission caches"
     );
-    assert!(observe_harness(Harness::Claude, None, budget).is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+// Refuses a callback before service or journal access if its registered event differs.
+#[test]
+fn versionless_registered_event_mismatch_refuses_before_check_in() {
+    let root = private_root();
+    let mut hook_args = args(&root);
+    for registered in ["SessionStart", "FutureSchema"] {
+        hook_args.event = Some(registered.into());
+        let outcome = run_hook(
+            &hook_args,
+            &claude(),
+            CLAUDE_TOOL,
+            &herdr(),
+            Instant::now() + TOOL_BUDGET,
+            clock(),
+            None,
+        );
+        assert!(outcome.stdout.is_empty());
+        assert!(outcome.attention.is_none());
+        assert_eq!(
+            outcome.diagnostic.as_deref(),
+            Some("unsupported hook payload: Invalid")
+        );
+    }
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -1857,6 +1841,34 @@ fn budgets_follow_event_mode() {
     assert_eq!(budget_for(&event(CLAUDE_START)), LIFECYCLE_BUDGET);
 }
 
+// Catches registration validation withholding ordinary lifecycle budgets.
+#[test]
+fn versionless_registered_and_legacy_lifecycle_keep_lifecycle_budget() {
+    for harness in [Harness::Claude, Harness::Codex] {
+        let installed = observe_harness(harness, None, TOOL_BUDGET).unwrap();
+        for registered in [None, Some("SessionStart")] {
+            let args = HookArgs {
+                state_dir: None,
+                host_endpoint: None,
+                harness,
+                event: registered.map(str::to_owned),
+            };
+            for source in ["startup", "resume", "clear"] {
+                let payload = serde_json::to_vec(&serde_json::json!({
+                    "hook_event_name":"SessionStart", "session_id":"s", "source":source,
+                }))
+                .unwrap();
+                let event = parse_registered_event(&args, &installed, &payload).unwrap();
+                assert_eq!(
+                    budget_for(&event),
+                    LIFECYCLE_BUDGET,
+                    "{harness:?} {registered:?} {source}"
+                );
+            }
+        }
+    }
+}
+
 // Kills: a hook deadline window that retries after its deadline, or
 // sleeps a whole backoff past it.
 #[test]
@@ -2312,7 +2324,7 @@ mod pane_seat_selection {
     }
 }
 
-// -- parse-failure reports under an optimistic admission (ht-p03.23) --------
+// -- operational parse-failure reports (ht-p03.23) --------
 
 mod parse_failure_report {
     use super::*;
@@ -2410,7 +2422,6 @@ mod parse_failure_report {
         let started = Instant::now();
         report_parse_failure_to_daemon(
             &hook_args,
-            &InstalledHarness::Claude("2.1.299".into()),
             &ContextError::Invalid,
             &herdr(),
             started + TOOL_BUDGET,
@@ -2426,10 +2437,9 @@ mod parse_failure_report {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// Kills: a report naming a human occupant (no harness), and an optimistic
-    /// check that is true for a listed Claude version.
+    /// Kills: a report naming a human occupant (no harness).
     #[test]
-    fn only_optimistic_claude_and_never_a_human_reports() {
+    fn never_a_human_reports() {
         let current = daemon(DaemonVintage::Current);
         assert!(!report_parse_failure(
             &current,
@@ -2439,15 +2449,13 @@ mod parse_failure_report {
             &budget()
         ));
         assert_eq!(current.calls(CallKind::HookParseFailure), 0);
-        assert!(is_optimistic(&InstalledHarness::Claude("2.1.299".into())));
-        assert!(!is_optimistic(&InstalledHarness::Claude("2.1.286".into())));
     }
 
-    /// Kills: an unparsable payload under an optimistic admission that fails
+    /// Kills: an unparsable payload under an operational contract that fails
     /// the hook (it must stay a diagnostic with no stdout), including when no
     /// daemon is reachable to report to.
     #[test]
-    fn unparsable_payload_under_optimistic_admission_stays_quiet() {
+    fn unparsable_payload_under_operational_contract_stays_quiet() {
         let args = HookArgs {
             state_dir: Some("/nonexistent-ht-p03-23".into()),
             host_endpoint: Some("/nonexistent-ht-p03-23/herdr.sock".into()),
@@ -2460,7 +2468,9 @@ mod parse_failure_report {
         };
         let outcome = run_hook(
             &args,
-            &InstalledHarness::Claude("2.1.299".into()),
+            &InstalledHarness::DeclaredClaude(
+                crate::harness::operational::ClaudeContract::registered(),
+            ),
             b"not json",
             &env,
             Instant::now() + Duration::from_millis(500),
@@ -4007,7 +4017,7 @@ mod hook_sequence {
     use std::cell::RefCell;
 
     fn claude() -> InstalledHarness {
-        InstalledHarness::Claude("2.1.286".into())
+        InstalledHarness::DeclaredClaude(crate::harness::operational::ClaudeContract::registered())
     }
 
     // Kills: evidence before the probe (the probe's budget is cut, or the
@@ -4148,9 +4158,8 @@ fn hook_adapter_dispatch_keeps_native_output_and_observer_nonconsumption() {
         .by_id(builtins().agent("claude").unwrap())
         .unwrap();
     let request = AdmissionRequest {
-        installed: InstallObservation::Available {
+        installed: InstallObservation::ExecutableAvailable {
             binary: "/unused/claude".into(),
-            identity: RuntimeIdentity::stable_release("2.1.287", "installed_probe").unwrap(),
         },
         input: None,
         runtime_candidate: None,
@@ -4161,6 +4170,7 @@ fn hook_adapter_dispatch_keeps_native_output_and_observer_nonconsumption() {
             &budget(Instant::now() + TOOL_BUDGET, &SystemClock::new()),
         )
         .unwrap();
+    assert_eq!(admitted.kind(), AdmissionKind::ContractDeclared);
     let event = registration
         .decode(
             &admitted,

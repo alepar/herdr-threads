@@ -2069,6 +2069,22 @@ impl StorePort for SqliteStore {
         let db = self.context.open_query(budget.clone())?;
         harness_evidence::all(&db, harness)
     }
+    fn record_contract_diagnostic(
+        &self,
+        record: &harness_evidence::DiagnosticRecord<'_>,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        let mut writer = self.writer(budget)?;
+        harness_evidence::record_diagnostic(&self.context, &mut writer, record)
+    }
+    fn contract_diagnostics(
+        &self,
+        harness: &str,
+        budget: &CallBudget,
+    ) -> Result<Vec<harness_evidence::DiagnosticRow>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        harness_evidence::diagnostics(&db, harness, self.context.clock().utc_now())
+    }
     fn record_unattributed(
         &self,
         harness: &str,

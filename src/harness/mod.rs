@@ -46,6 +46,7 @@ pub mod manifest;
 #[cfg(test)]
 #[path = "../../tests/harness/manifest.rs"]
 mod manifest_tests;
+pub mod operational;
 #[cfg(test)]
 #[path = "../../tests/harness/optimistic_render.rs"]
 mod optimistic_render;
@@ -112,6 +113,9 @@ pub fn known_broken_label(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Capability {
+    /// This payload passed the registered operational parser. It grants no
+    /// native receipt, model delivery or optional runtime capability.
+    ContractValidatedInput,
     SourceSupported,
     ObservedInput,
     /// Parsed under a recipe that does not list the installed version, which

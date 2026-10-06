@@ -1037,3 +1037,151 @@ fn v2_noncanonical_milestone_maps_are_refused_not_silently_reinterpreted() {
         "duplicate milestone timestamp must not be last-wins"
     );
 }
+
+// Catches ignoring schema bounds on a direct store call.
+#[test]
+fn task3_versionless_diagnostic_store_rejects_invalid_keys_and_field_sizes() {
+    let fx = Fx::new("task3-diagnostic-invalid");
+    for (session, contract, event, field) in [
+        ("", CONTRACT, "PreToolUse", "session_id"),
+        ("s", "unknown", "PreToolUse", "session_id"),
+        ("s", CONTRACT, "not an event", "session_id"),
+        ("s", CONTRACT, "1LegacyEvent", "session_id"),
+        ("s", CONTRACT, "PreToolUse", "bad\nfield"),
+        ("bad\nsession", CONTRACT, "PreToolUse", "session_id"),
+        ("s", CONTRACT, "PreToolUse", ""),
+        ("s", CONTRACT, "PreToolUse", &"x".repeat(129)),
+        (&"x".repeat(257), CONTRACT, "PreToolUse", "session_id"),
+    ] {
+        assert!(
+            fx.store
+                .record_contract_diagnostic(
+                    &DiagnosticRecord {
+                        harness: "codex",
+                        session_id: session,
+                        contract_id: contract,
+                        event,
+                        field,
+                    },
+                    &budget()
+                )
+                .is_err()
+        );
+    }
+    assert!(
+        fx.store
+            .contract_diagnostics("codex", &budget())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+// Catches unbounded recent storage, unbounded reads, nondeterministic tie eviction,
+// scope conflation and expired failures remaining visible without another write.
+#[test]
+fn task3_versionless_diagnostics_are_bounded_scoped_sticky_and_expire() {
+    let fx = Fx::new("task3-diagnostic-caps");
+    let record = |harness: &str, session: &str, contract: &str, event: &str, field: &str| {
+        fx.store
+            .record_contract_diagnostic(
+                &DiagnosticRecord {
+                    harness,
+                    session_id: session,
+                    contract_id: contract,
+                    event,
+                    field,
+                },
+                &budget(),
+            )
+            .unwrap();
+    };
+    record("codex", "s", CONTRACT, "PreToolUse", "session_id");
+    fx.advance(1000);
+    record("codex", "s", CONTRACT, "PostToolUse", "tool_input.command");
+    record("codex", "s", OTHER_CONTRACT, "SessionStart", "source");
+    record("claude", "s", CONTRACT, "SessionStart", "source");
+    let rows = fx.store.contract_diagnostics("codex", &budget()).unwrap();
+    assert_eq!(rows.len(), 2);
+    let original = rows.iter().find(|row| row.contract_id == CONTRACT).unwrap();
+    assert_eq!(original.event, "PreToolUse");
+    assert_eq!(original.field, "session_id");
+    assert_eq!(
+        (original.first_seen_at, original.last_seen_at),
+        (T0 as u64, T0 as u64 + 1000)
+    );
+    assert_eq!(
+        fx.store
+            .contract_diagnostics("claude", &budget())
+            .unwrap()
+            .len(),
+        1
+    );
+    fx.advance(1);
+    for n in 0..300 {
+        record(
+            "codex",
+            &format!("s-{n:03}"),
+            CONTRACT,
+            "PreToolUse",
+            "tool_name",
+        );
+    }
+    let db = rusqlite::Connection::open(fx._iso.state_root().join("store.db")).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM harness_contract_diagnostics WHERE harness='codex'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        256
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT min(session_id) FROM harness_contract_diagnostics WHERE harness='codex'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "s-000"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT max(session_id) FROM harness_contract_diagnostics WHERE harness='codex'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "s-255"
+    );
+    assert_eq!(
+        fx.store
+            .contract_diagnostics("codex", &budget())
+            .unwrap()
+            .len(),
+        20
+    );
+    assert!(
+        fx.store
+            .harness_evidence_all("codex", &budget())
+            .unwrap()
+            .is_empty()
+    );
+    fx.advance(30 * 24 * HOUR_MS + 1);
+    assert!(
+        fx.store
+            .contract_diagnostics("codex", &budget())
+            .unwrap()
+            .is_empty()
+    );
+    record("codex", "new", CONTRACT, "PreToolUse", "tool_name");
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM harness_contract_diagnostics WHERE harness='codex'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+}

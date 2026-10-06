@@ -21,7 +21,7 @@ use std::{
     io::Write,
     os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::PathBuf,
-    process::{Command, Stdio},
+    process::Stdio,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -84,7 +84,7 @@ struct World {
     state: PathBuf,
     host: PathBuf,
     instance_dir: PathBuf,
-    claude_hook: String,
+    claude_hooks: Value,
     codex_hook: String,
     _host: FakeHost,
     _scratch: Scratch,
@@ -100,27 +100,15 @@ impl World {
         let state = root.join("state");
         let socket = root.join("herdr.sock");
         let host = FakeHost::start(&socket, panes);
-        // The installed hook parses only under a harness version it can
-        // observe on PATH: pinned reporters stand in for `claude`/`codex`.
+        // Executable availability is metadata only; these wrappers must not
+        // be invoked to admit installed lifecycle/tool registrations.
         let bin = root.join("bin");
         fs::create_dir_all(&bin).unwrap();
-        for (name, line) in [
-            ("claude", "2.1.283 (Claude Code)"),
-            ("codex", "codex-cli 0.157.1"),
-        ] {
+        for name in ["claude", "codex"] {
+            use std::os::unix::fs::PermissionsExt;
             let path = bin.join(name);
-            fs::write(&path, format!("#!/bin/sh\necho '{line}'\n")).unwrap();
+            fs::write(&path, "#!/bin/sh\nexit 99\n").unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-            // A freshly written script's first exec can outlast the hook's
-            // version-observation deadline on macOS: warm it here.
-            assert!(
-                Command::new(&path)
-                    .arg("--version")
-                    .output()
-                    .unwrap()
-                    .status
-                    .success()
-            );
         }
         let context = RuntimeContext::explicit(state.clone(), socket.clone(), None).unwrap();
         let paths = InstancePaths::resolve(&context).unwrap();
@@ -131,10 +119,7 @@ impl World {
         let argv = installed_argv(BIN, Some(state.to_str().unwrap()), None, Harness::Claude);
         let plan = plan_claude(b"{}", &argv).unwrap();
         let installed: Value = serde_json::from_slice(&plan.proposed_bytes).unwrap();
-        let claude_hook = installed["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-            .as_str()
-            .unwrap()
-            .to_owned();
+        let claude_hooks = installed["hooks"].clone();
         let codex_argv = installed_argv(BIN, Some(state.to_str().unwrap()), None, Harness::Codex);
         let codex_hook = herdr_threads::harness::setup::shell_command(&codex_argv).unwrap();
         let world = Self {
@@ -142,7 +127,7 @@ impl World {
             state,
             host: socket,
             instance_dir: paths.instance_dir,
-            claude_hook,
+            claude_hooks,
             codex_hook,
             _host: host,
             _scratch: scratch,
@@ -238,9 +223,13 @@ impl World {
     /// native JSON on stdin and the pane identity from `HERDR_*`.
     fn hook(&self, harness: &str, pane: &str, stdin: &str) -> Out {
         let command = if harness == "codex" {
-            &self.codex_hook
+            self.codex_hook.as_str()
         } else {
-            &self.claude_hook
+            let payload = serde_json::from_str::<Value>(stdin).unwrap();
+            let event = payload["hook_event_name"].as_str().unwrap();
+            self.claude_hooks[event][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap_or_else(|| panic!("no installed Claude registration for {event}"))
         };
         let mut child = crate::scrubbed_command("/bin/sh")
             .arg("-c")

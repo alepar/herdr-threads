@@ -82,6 +82,19 @@ fn parse_accepts(harness: &str, bytes: &[u8]) -> bool {
     }
 }
 
+/// The registered operational parsers consume core captures independently of
+/// diagnostic runtime/version witnesses. Optional Claude compact is excluded
+/// from accepted_fixtures and remains tested under its captured qualification.
+fn operational_parse_accepts(harness: &str, bytes: &[u8]) -> bool {
+    use crate::harness::operational::{ClaudeContract, CodexContract};
+    match harness {
+        "claude" => {
+            claude::parse_event_for_contract(bytes, "e", &ClaudeContract::registered()).is_ok()
+        }
+        _ => codex::parse_event_for_contract(bytes, "e", &CodexContract::registered()).is_ok(),
+    }
+}
+
 /// Keep only declared paths of the fixture's event (nested: dotted paths).
 fn strip_to_declared(fx: &Fixture) -> Value {
     let c = contract(fx.harness);
@@ -233,18 +246,23 @@ fn contract_ids_json_has_exact_keys_and_ids() {
 #[test]
 fn drift_parsers_require_no_undeclared_field() {
     for fx in accepted_fixtures() {
-        assert!(
-            parse_accepts(fx.harness, &fx.bytes),
-            "{} is not accepted by its parser",
-            fx.name
-        );
         let stripped = serde_json::to_vec(&strip_to_declared(&fx)).unwrap();
-        assert!(
-            parse_accepts(fx.harness, &stripped),
-            "{}: a parser requires a field the contract does not declare (stripped payload: {})",
-            fx.name,
-            String::from_utf8_lossy(&stripped)
-        );
+        for (mode, parse) in [
+            ("diagnostic", parse_accepts as fn(&str, &[u8]) -> bool),
+            ("operational", operational_parse_accepts),
+        ] {
+            assert!(
+                parse(fx.harness, &fx.bytes),
+                "{} is not accepted by its {mode} parser",
+                fx.name
+            );
+            assert!(
+                parse(fx.harness, &stripped),
+                "{}: {mode} parser requires a field the contract does not declare (stripped payload: {})",
+                fx.name,
+                String::from_utf8_lossy(&stripped)
+            );
+        }
     }
 }
 
@@ -258,12 +276,17 @@ fn drift_every_declared_required_field_is_required_by_a_parser() {
             let mut edited = source.clone();
             remove_path(&mut edited, spec.path);
             let bytes = serde_json::to_vec(&edited).unwrap();
-            assert!(
-                !parse_accepts(fx.harness, &bytes),
-                "{}: parser accepts a payload without declared required field {}",
-                fx.name,
-                spec.path
-            );
+            for (mode, parse) in [
+                ("diagnostic", parse_accepts as fn(&str, &[u8]) -> bool),
+                ("operational", operational_parse_accepts),
+            ] {
+                assert!(
+                    !parse(fx.harness, &bytes),
+                    "{}: {mode} parser accepts a payload without declared required field {}",
+                    fx.name,
+                    spec.path
+                );
+            }
         }
     }
 }

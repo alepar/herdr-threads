@@ -383,7 +383,7 @@ fn recipe_known_broken_with_local_verified_is_broken_with_note() {
     assert_eq!(
         derived.doctor_notes,
         vec![
-            "it has worked here, but the recipe tables mark >= 2.1.290, <= 2.1.291 known broken and the hook refuses it"
+            "it has worked here; historical recipe verdict marks >= 2.1.290, <= 2.1.291 known broken (advisory, core hooks use the declared contract)"
         ]
     );
     let manifest = broken_manifest();
@@ -630,7 +630,7 @@ fn roll_up_evaluates_the_newest_contract_inside_the_window() {
         .health_line()
         .expect("the recent violation is broken");
     assert!(
-        line.starts_with("harness claude 2.1.286 broken: "),
+        line.starts_with("harness claude 2.1.286 contract input failure: "),
         "{line}"
     );
 }

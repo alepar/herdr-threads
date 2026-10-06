@@ -3675,7 +3675,7 @@ pub(crate) mod tests {
     use crate::harness::adapter::*;
     struct FourthAdapter(bool, bool);
     impl HarnessAdapter for FourthAdapter {
-        type Admission = String;
+        type Admission = crate::harness::operational::ClaudeContract;
         fn metadata(&self) -> &'static AdapterMetadata {
             static META: AdapterMetadata = AdapterMetadata {
                 id: "fourth",
@@ -3724,7 +3724,7 @@ pub(crate) mod tests {
             &self,
             request: &AdmissionRequest,
             budget: &CallBudget,
-        ) -> AdmissionDecision<String> {
+        ) -> AdmissionDecision<Self::Admission> {
             crate::harness::claude::ClaudeAdapter.admit(request, budget)
         }
         fn version_ladder(&self, identity: &RuntimeIdentity) -> Ladder {
@@ -3735,14 +3735,14 @@ pub(crate) mod tests {
         }
         fn decode(
             &self,
-            admitted: &String,
+            admitted: &Self::Admission,
             input: &HookInput,
         ) -> Result<DecodedEvent, DecodeFailure> {
             crate::harness::claude::ClaudeAdapter.decode(admitted, input)
         }
         fn encode(
             &self,
-            admitted: &String,
+            admitted: &Self::Admission,
             event: &DecodedEvent,
             offer: &NeutralOffer,
         ) -> Result<EncodedOutput, EncodeFailure> {

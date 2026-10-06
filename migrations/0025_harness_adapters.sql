@@ -112,3 +112,19 @@ END;
 CREATE TRIGGER archival_binding_queue_delete AFTER DELETE ON occupant_bindings BEGIN
  UPDATE seat_archival SET next_mono=0 WHERE seat_id=OLD.seat_id;
 END;
+
+-- Preserve main24 diagnostic history while opening the registered agent/event grammar.
+CREATE TABLE harness_contract_diagnostics_v25 (
+    harness TEXT NOT NULL CHECK (length(harness) BETWEEN 1 AND 64 AND harness GLOB '[a-z]*' AND harness NOT GLOB '*[^a-z0-9_-]*' AND harness <> 'human'),
+    session_id TEXT NOT NULL CHECK (length(CAST(session_id AS BLOB)) BETWEEN 1 AND 256),
+    contract_id TEXT NOT NULL CHECK (length(contract_id) = 16 AND contract_id NOT GLOB '*[^0-9a-f]*'),
+    event TEXT NOT NULL CHECK (length(event) BETWEEN 1 AND 63 AND event NOT GLOB '*[^a-zA-Z0-9_]*'),
+    field TEXT NOT NULL CHECK (length(CAST(field AS BLOB)) BETWEEN 1 AND 128),
+    first_seen_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    PRIMARY KEY (harness, session_id, contract_id)
+) WITHOUT ROWID;
+INSERT INTO harness_contract_diagnostics_v25 SELECT * FROM harness_contract_diagnostics;
+DROP TABLE harness_contract_diagnostics;
+ALTER TABLE harness_contract_diagnostics_v25 RENAME TO harness_contract_diagnostics;
+CREATE INDEX harness_contract_diagnostics_recent ON harness_contract_diagnostics(harness, last_seen_at DESC, first_seen_at DESC, session_id, contract_id);

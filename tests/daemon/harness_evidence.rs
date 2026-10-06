@@ -547,6 +547,14 @@ impl EvidenceWrites for FlakyWrites {
         self.inner.record_harness_evidence(record, budget)
     }
 
+    fn record_contract_diagnostic(
+        &self,
+        record: &DiagnosticRecord<'_>,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        self.inner.record_contract_diagnostic(record, budget)
+    }
+
     fn record_unattributed(
         &self,
         harness: &str,
@@ -1616,4 +1624,271 @@ impl Fetcher for NeverFetch {
     fn fetch(&self, _: &str, _: Option<&str>) -> Result<FetchOutcome, FetchError> {
         panic!("offline manifest test must not fetch")
     }
+}
+
+// Catches crediting a held Codex startup to later creator metadata.
+#[test]
+fn task3_versionless_codex_start_is_never_credited_to_creator_metadata() {
+    let fx = Fx::new("task3-no-codex-hold");
+    let mut start = note(None, "SessionStart", ok(), Some("s"));
+    start.harness = "codex".into();
+    start.unattributed_reason = Some("runtime metadata unavailable".into());
+    assert!(!fx.recorder.record(&start, &budget()).unwrap());
+    start.version = Some("0.159.3".into());
+    start.event = "PreToolUse".into();
+    assert!(
+        !fx.recorder.record(&start, &budget()).unwrap(),
+        "unknown startup must not verify a later creator row"
+    );
+}
+
+// Exercises runtime-unavailable V2 producer -> real SQLite -> both projections.
+#[test]
+fn absorption_v2_unavailable_violation_is_sticky_without_runtime_credit() {
+    use crate::daemon::harness_states::{HarnessStatesProvider, embedded_source};
+    let fx = Fx::new("absorption-v2-diagnostic");
+    let recorder = HarnessEvidenceRecorderV2::new(fx.store.clone(), None, fx.clock.clone());
+    let mut note = v2_note(false, "PreToolUse");
+    note.outcome = crate::protocol::commands::HarnessEvidenceOutcomeV2::Violation {
+        field: "tool_name".into(),
+    };
+    assert!(!recorder.record(&note, &budget()).unwrap());
+    let first = fx.store.contract_diagnostics("claude", &budget()).unwrap();
+    assert_eq!(first.len(), 1);
+    note.outcome = crate::protocol::commands::HarnessEvidenceOutcomeV2::Ok;
+    assert!(!recorder.record(&note, &budget()).unwrap());
+    assert_eq!(
+        fx.store.contract_diagnostics("claude", &budget()).unwrap(),
+        first
+    );
+    assert!(
+        fx.store
+            .harness_evidence_v2_all("claude", 0, &budget())
+            .unwrap()
+            .is_empty()
+    );
+    let provider = HarnessStatesProvider::new(
+        fx.store.clone(),
+        embedded_source(),
+        fx.clock.clone(),
+        Box::new(|_| None),
+        None,
+    )
+    .with_observations(Box::new(|| Ok(Default::default())));
+    let report = provider.report_v2(&budget()).unwrap();
+    assert!(report.harnesses["claude"].runtime_evidence.is_empty());
+    assert!(
+        report.harnesses["claude"]
+            .limitations
+            .iter()
+            .any(|line| line.contains("contract input failure"))
+    );
+    assert!(
+        provider
+            .health_lines(&budget())
+            .unwrap()
+            .iter()
+            .any(|line| line.contains("contract input failure"))
+    );
+    assert!(
+        provider
+            .report(&budget())
+            .unwrap()
+            .harnesses
+            .iter()
+            .any(|h| h.harness == "claude"
+                && h.unattributed
+                    .as_ref()
+                    .is_some_and(|u| u.reason.contains("contract input failure")))
+    );
+    assert!(fx.triggers.calls().is_empty());
+    // Store failure must remain observable, rather than an empty success projection.
+    let db = rusqlite::Connection::open(fx._iso.state_root().join("store.db")).unwrap();
+    db.execute_batch("DROP TABLE harness_contract_diagnostics")
+        .unwrap();
+    note.outcome = crate::protocol::commands::HarnessEvidenceOutcomeV2::Violation {
+        field: "tool_name".into(),
+    };
+    assert!(recorder.record(&note, &budget()).is_err());
+    assert!(provider.report_v2(&budget()).is_err());
+    assert!(provider.report(&budget()).is_err());
+    assert!(provider.health_lines(&budget()).is_err());
+}
+
+// Creator-only unavailability does not hold lifecycle or suppress future real starts.
+#[test]
+fn absorption_codex_creator_only_neither_holds_nor_filters_lifecycle() {
+    let fx = Fx::new("absorption-creator-only");
+    let recorder = HarnessEvidenceRecorderV2::new(fx.store.clone(), None, fx.clock.clone());
+    let mut start = codex_note(false, "SessionStart", "fresh-creator");
+    start.unavailable_reason = Some(
+        crate::harness::attribution::Unattributed::CodexCreatorOnly
+            .as_str()
+            .into(),
+    );
+    assert!(!recorder.record(&start, &budget()).unwrap());
+    assert_eq!(
+        recorder.pending.lock().unwrap().1.0.len(),
+        0,
+        "creator-only lifecycle held"
+    );
+    let tool = codex_note(true, "PreToolUse", "fresh-creator");
+    assert!(!recorder.record(&tool, &budget()).unwrap());
+    let rows = fx
+        .store
+        .harness_evidence_v2_all("codex", 0, &budget())
+        .unwrap();
+    assert!(!rows[0].milestones.contains_key("lifecycle"));
+    let real_start = codex_note(true, "SessionStart", "fresh-creator");
+    assert!(
+        recorder.record(&real_start, &budget()).unwrap(),
+        "creator-only must not create a sticky resume filter"
+    );
+    let mut default_start = codex_note(false, "SessionStart", "ordinary-unavailability");
+    default_start.unavailable_reason = Some("awaiting transcript".into());
+    assert!(!recorder.record(&default_start, &budget()).unwrap());
+    assert_eq!(
+        recorder.pending.lock().unwrap().1.0.len(),
+        1,
+        "other declared holding policy changed"
+    );
+}
+
+struct NonholdingFixture(&'static [&'static str]);
+impl crate::harness::adapter::HarnessAdapter for NonholdingFixture {
+    type Admission = ();
+    fn metadata(&self) -> &'static crate::harness::adapter::AdapterMetadata {
+        FourthEvidenceAdapter.metadata()
+    }
+    fn contracts(&self) -> &'static [crate::harness::adapter::ContractDescriptor] {
+        FourthEvidenceAdapter.contracts()
+    }
+    fn nonholding_unavailable_reasons(
+        &self,
+        _: &crate::harness::adapter::ContractDescriptor,
+    ) -> &'static [&'static str] {
+        self.0
+    }
+    fn observe_install(
+        &self,
+        e: &crate::harness::adapter::InstallEnvironment,
+        b: &CallBudget,
+    ) -> crate::harness::adapter::InstallObservation {
+        FourthEvidenceAdapter.observe_install(e, b)
+    }
+    fn admit(
+        &self,
+        r: &crate::harness::adapter::AdmissionRequest,
+        b: &CallBudget,
+    ) -> crate::harness::adapter::AdmissionDecision<()> {
+        FourthEvidenceAdapter.admit(r, b)
+    }
+    fn version_ladder(
+        &self,
+        i: &crate::harness::runtime::RuntimeIdentity,
+    ) -> crate::harness::adapter::Ladder {
+        FourthEvidenceAdapter.version_ladder(i)
+    }
+    fn classify(
+        &self,
+        i: &crate::harness::adapter::HookInput,
+    ) -> crate::harness::adapter::ContractObservation {
+        FourthEvidenceAdapter.classify(i)
+    }
+    fn decode(
+        &self,
+        a: &(),
+        i: &crate::harness::adapter::HookInput,
+    ) -> Result<crate::harness::adapter::DecodedEvent, crate::harness::adapter::DecodeFailure> {
+        FourthEvidenceAdapter.decode(a, i)
+    }
+    fn encode(
+        &self,
+        a: &(),
+        e: &crate::harness::adapter::DecodedEvent,
+        o: &crate::harness::adapter::NeutralOffer,
+    ) -> Result<crate::harness::adapter::EncodedOutput, crate::harness::adapter::EncodeFailure>
+    {
+        FourthEvidenceAdapter.encode(a, e, o)
+    }
+    fn attribute_runtime(
+        &self,
+        i: &crate::harness::adapter::HookInput,
+        b: &CallBudget,
+    ) -> crate::harness::adapter::RuntimeAttribution {
+        FourthEvidenceAdapter.attribute_runtime(i, b)
+    }
+    fn setup(
+        &self,
+        r: &crate::harness::adapter::SetupRequest,
+        b: &CallBudget,
+    ) -> Result<crate::harness::adapter::SetupOutcome, crate::harness::adapter::SetupFailure> {
+        FourthEvidenceAdapter.setup(r, b)
+    }
+    fn status(
+        &self,
+        r: &crate::harness::adapter::StatusRequest,
+        b: &CallBudget,
+    ) -> crate::harness::adapter::SetupStatus {
+        FourthEvidenceAdapter.status(r, b)
+    }
+    fn unsetup(
+        &self,
+        r: &crate::harness::adapter::UnsetupRequest,
+        b: &CallBudget,
+    ) -> Result<crate::harness::adapter::RemovalOutcome, crate::harness::adapter::SetupFailure>
+    {
+        FourthEvidenceAdapter.unsetup(r, b)
+    }
+}
+#[test]
+fn absorption_nonholding_policy_bounds_and_exact_descriptor_membership() {
+    use crate::harness::{
+        adapter::HarnessAdapter,
+        registry::{Registration, Registry},
+    };
+    for reasons in [
+        &[""][..],
+        &["same", "same"][..],
+        &["bad\nreason"][..],
+        &["1", "2", "3", "4", "5", "6", "7", "8", "9"][..],
+    ] {
+        let adapter = Box::leak(Box::new(NonholdingFixture(reasons)));
+        let entries = Box::leak(vec![Registration::new(adapter)].into_boxed_slice());
+        assert!(
+            Registry::new(entries).is_err(),
+            "accepted invalid nonholding policy {reasons:?}"
+        );
+    }
+    let long: &'static str = Box::leak("x".repeat(129).into_boxed_str());
+    let reasons = Box::leak(vec![long].into_boxed_slice());
+    let entries = Box::leak(
+        vec![Registration::new(Box::leak(Box::new(NonholdingFixture(
+            reasons,
+        ))))]
+        .into_boxed_slice(),
+    );
+    assert!(Registry::new(entries).is_err());
+    let entries = Box::leak(
+        vec![Registration::new(Box::leak(Box::new(NonholdingFixture(
+            &["creator only"],
+        ))))]
+        .into_boxed_slice(),
+    );
+    let registry = Registry::new(entries).unwrap();
+    let r = registry.by_id(registry.agent("fourth").unwrap()).unwrap();
+    let d = &r.contracts()[0];
+    let before = d.contract_id_v2().unwrap();
+    assert_eq!(r.nonholding_unavailable_reasons(d), &["creator only"]);
+    let copy = *d;
+    assert!(
+        r.nonholding_unavailable_reasons(&copy).is_empty(),
+        "policy escaped exact registered descriptor"
+    );
+    assert_eq!(d.contract_id_v2().unwrap(), before);
+    assert!(
+        FourthEvidenceAdapter
+            .nonholding_unavailable_reasons(d)
+            .is_empty()
+    );
 }

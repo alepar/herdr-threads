@@ -38,6 +38,8 @@ const HEALTH_BUDGET_MS: u64 = 2_000;
 /// The closed set of doctor admission strings (ht-p03.47).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum AdmissionState {
+    #[serde(rename = "contract_declared")]
+    ContractDeclared,
     #[serde(rename = "listed")]
     Listed,
     /// Emitted for Codex only.
@@ -53,7 +55,8 @@ pub enum AdmissionState {
 }
 
 impl AdmissionState {
-    pub const ALL: [AdmissionState; 5] = [
+    pub const ALL: [AdmissionState; 6] = [
+        AdmissionState::ContractDeclared,
         AdmissionState::Listed,
         AdmissionState::SchemaMatched,
         AdmissionState::Optimistic,
@@ -63,6 +66,7 @@ impl AdmissionState {
 
     pub fn as_str(self) -> &'static str {
         match self {
+            AdmissionState::ContractDeclared => "contract_declared",
             AdmissionState::Listed => "listed",
             AdmissionState::SchemaMatched => crate::harness::codex::SCHEMA_MATCHED_LABEL,
             AdmissionState::Optimistic => crate::harness::codex::OPTIMISTIC_LABEL,
@@ -118,6 +122,7 @@ fn claude_installed_with_warning(
 ) -> (InstalledHarnessJson, Option<String>) {
     claude_installed_with_warning_budget(path, lookup, crate::harness::codex::VERSION_TIMEOUT)
 }
+#[cfg(test)]
 fn claude_installed_with_warning_budget(
     path: Option<&std::ffi::OsStr>,
     lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
@@ -182,6 +187,25 @@ fn claude_installed_with_warning_budget(
     )
 }
 
+/// Executable availability and the declared contract; no runtime observation.
+fn installed_declared(harness: &str, path: Option<&std::ffi::OsStr>) -> InstalledHarnessJson {
+    let binary = super::hook::resolve_on_path(harness, path);
+    let recipe = binary.as_ref().map(|_| match harness {
+        "claude" => crate::harness::claude::RECIPES[0].id.to_owned(),
+        _ => crate::harness::codex::RECIPES[0].id.to_owned(),
+    });
+    InstalledHarnessJson {
+        admission: if binary.is_some() {
+            AdmissionState::ContractDeclared
+        } else {
+            AdmissionState::NotFound
+        },
+        binary: binary.map(|binary| binary.display().to_string()),
+        version: None,
+        recipe,
+    }
+}
+
 /// The one text line for the Claude PATH check.
 fn claude_path_line(installed: &Value) -> String {
     match installed["binary"].as_str() {
@@ -199,6 +223,7 @@ fn claude_path_line(installed: &Value) -> String {
     }
 }
 
+#[cfg(test)]
 fn codex_installed_json(codex: &crate::harness::codex::InstalledAdmission) -> InstalledHarnessJson {
     use crate::harness::codex::{Admission, InstalledRefusal};
     let (admission, version, recipe) = match &codex.result {
@@ -510,7 +535,7 @@ fn harness_states_text(report: &Value) -> String {
         let detected = &harness["detected"];
         if let Some(newest) = versions.first() {
             out.push_str(&format!(
-                "harness {name}: {} {} \u{2014} {}\n",
+                "harness {name} advisory history: {} {} \u{2014} {}\n",
                 scalar(&newest["state"]),
                 scalar(&newest["version"]),
                 scalar(&newest["source"])
@@ -577,22 +602,6 @@ fn harness_states_text(report: &Value) -> String {
     out
 }
 
-fn local_timeout(
-    request: &crate::harness::adapter::StatusRequest,
-    budget: &CallBudget,
-) -> std::time::Duration {
-    if budget.cancellation.is_cancelled() {
-        return std::time::Duration::ZERO;
-    }
-    std::time::Duration::from_millis(
-        budget
-            .deadline
-            .0
-            .saturating_sub(request.environment.clock.monotonic_now().0),
-    )
-    .min(crate::harness::codex::VERSION_TIMEOUT)
-}
-
 fn captured_legacy_status(
     request: &crate::harness::adapter::StatusRequest,
     hooks: &Value,
@@ -605,7 +614,9 @@ fn captured_legacy_status(
         return SetupStatus::Failed(SetupFailure::Invalid(error.chars().take(1024).collect()));
     }
     let admitted = match hooks["installed"]["admission"].as_str() {
-        Some("listed" | "optimistic" | "schema-matched, live-unverified") => Some(true),
+        Some("contract_declared" | "listed" | "optimistic" | "schema-matched, live-unverified") => {
+            Some(true)
+        }
         Some("refused") if hooks["installed"]["version"].is_string() => Some(false),
         _ => None,
     };
@@ -616,9 +627,9 @@ fn captured_legacy_status(
     )];
     if hooks["installed"]["binary"].is_string() && hooks["installed"]["version"].is_null() {
         diagnostics.push(SetupDiagnostic::new(
-            "native_observation_unavailable",
-            DiagnosticSeverity::Warning,
-            "Native version/admission observation unavailable within doctor budget",
+            "runtime_metadata_unavailable",
+            DiagnosticSeverity::Info,
+            "Runtime metadata unavailable; registered input contract does not qualify optional native capabilities",
         ));
     }
     for error in [
@@ -651,7 +662,7 @@ fn captured_legacy_status(
 pub(crate) fn legacy_claude_projection(
     request: &crate::harness::adapter::StatusRequest,
     daemon: &Value,
-    budget: &CallBudget,
+    _budget: &CallBudget,
 ) -> crate::harness::adapter::DoctorProjection {
     use crate::harness::adapter::*;
     let env = super::setup::SetupEnv::from_snapshot(&request.environment);
@@ -683,7 +694,7 @@ pub(crate) fn legacy_claude_projection(
     let mut claude = json!({
         "scope": "user",
         "recipes": crate::harness::recipe::describe(crate::harness::claude::RECIPES),
-        "compaction_recovery": crate::harness::claude::compaction_recovery(),
+        "compaction_recovery": "unavailable until current runtime is separately qualified; use resume/clear or herdr-threads summary",
         "observed": observed_claude,
     });
     // Problems found in this environment (the one the harnesses run in):
@@ -731,11 +742,8 @@ pub(crate) fn legacy_claude_projection(
             claude["error"] = json!(error);
         }
     }
-    let (claude_installed, claude_warning) = claude_installed_with_warning_budget(
-        path.as_deref(),
-        |key| request.environment.declared.get(key).cloned(),
-        local_timeout(request, budget),
-    );
+    let claude_installed = installed_declared("claude", path.as_deref());
+    let claude_warning: Option<String> = None;
     claude["installed"] = json!(claude_installed);
     // With the daemon's answer the PATH version's verdict is the
     // detected-version line of the harness block; without it the admission
@@ -774,7 +782,7 @@ pub(crate) fn legacy_claude_projection(
 pub(crate) fn legacy_codex_projection(
     request: &crate::harness::adapter::StatusRequest,
     daemon: &Value,
-    budget: &CallBudget,
+    _budget: &CallBudget,
 ) -> crate::harness::adapter::DoctorProjection {
     use crate::harness::adapter::*;
     let env = super::setup::SetupEnv::from_snapshot(&request.environment);
@@ -801,95 +809,24 @@ pub(crate) fn legacy_codex_projection(
     if codex_trust["status"] == "review_required" {
         limitations.push("Codex hook review required; start codex interactively and review herdr-threads hooks in /hooks".into());
     }
-    // The `codex` a hook would resolve on this PATH, observed read-only and
-    // bounded by the version-observation deadline. A listed version is
-    // admitted exactly; an unlisted one only when its embedded hook schemas
-    // hash-match a recipe (schema-matched, live-unverified).
-    // The hook's private fingerprint cache is consulted read-only (a warm
-    // cache answers without rescanning; doctor never writes it), and the
-    // admission evidence the latest hook stored is shown beside it.
-    let private = request
-        .environment
-        .state_dir
-        .as_deref()
-        .and_then(|state| crate::harness::codex_evidence::existing(state).ok());
-    let cache = private
-        .as_deref()
-        .map(crate::harness::codex_evidence::cache_path);
-    let codex = match crate::harness::codex::resolve_on_path(path.as_deref()) {
-        Some(binary)
-            if local_timeout(request, budget).is_zero() || budget.cancellation.is_cancelled() =>
-        {
-            crate::harness::codex::InstalledAdmission {
-                binary: Some(binary),
-                result: Err(crate::harness::codex::InstalledRefusal::Refused(
-                    crate::harness::codex::VersionError::Unavailable,
-                )),
-            }
-        }
-        Some(binary) => crate::harness::codex::InstalledAdmission::observe_binary(
-            binary,
-            local_timeout(request, budget),
-            cache.as_deref().map_or(
-                crate::harness::codex_schema::FingerprintCache::Memory,
-                crate::harness::codex_schema::FingerprintCache::ReadOnly,
-            ),
-        ),
-        None => crate::harness::codex::InstalledAdmission::observe_on_path(
-            None,
-            local_timeout(request, budget),
-        ),
-    };
-    let mut installed = json!(codex_installed_json(&codex));
-    installed["evidence"] = json!(codex.line());
-    if let Some(source) = codex
-        .result
-        .as_ref()
-        .ok()
-        .and_then(|version| version.fingerprinted())
-    {
-        installed["fingerprint_source"] = json!(source.display().to_string());
-    }
-    let last_hook = private.as_deref().and_then(|private| {
-        crate::harness::codex_evidence::read(&crate::harness::codex_evidence::admission_path(
-            private,
-        ))
-    });
-    match &codex.result {
-        Ok(_) => (),
-        Err(refusal) => installed["error"] = json!(refusal.to_string()),
-    }
-    let sandbox_warning = super::setup::codex_unmeasured_allowance_warning(
-        &env,
-        codex.result.as_ref().ok().map(|version| version.as_str()),
-    );
-    let socket_policy_validation = codex.result.as_ref().ok().map(|_| "not_run");
-    if let Some(binary) = &codex.binary {
-        match &codex.result {
-            Err(_) => limitations.push(format!(
-                "codex on PATH ({}) is not admitted: {}",
-                binary.display(),
-                codex.line()
-            )),
-            Ok(_) => match &codex_inspection {
-                Ok((file, inspection)) if !inspection.installed => limitations.push(format!(
-                    "codex is on PATH ({}) but its hooks are not installed in {}: run \
-                     `herdr-threads setup codex` with this CODEX_HOME",
-                    binary.display(),
-                    file.display()
-                )),
-                Ok(_) => (),
-                Err(error) => limitations.push(format!("codex hooks cannot be inspected: {error}")),
-            },
+    let binary = super::hook::resolve_on_path("codex", path.as_deref());
+    let installed = json!(installed_declared("codex", path.as_deref()));
+    let last_hook: Option<crate::harness::codex_evidence::AdmissionRecord> = None;
+    let sandbox_warning = super::setup::codex_unmeasured_allowance_warning(&env, None);
+    let socket_policy_validation = binary.as_ref().map(|_| "not_run");
+    if let Some(binary) = &binary {
+        match &codex_inspection {
+            Ok((file, inspection)) if !inspection.installed => limitations.push(format!(
+                "codex is on PATH ({}) but its hooks are not installed in {}: run `herdr-threads setup codex` with this CODEX_HOME",
+                binary.display(), file.display())),
+            Ok(_) => (),
+            Err(error) => limitations.push(format!("codex hooks cannot be inspected: {error}")),
         }
     }
     if let Some(warning) = &sandbox_warning {
         limitations.push(format!("codex sandbox: {warning}"));
     }
-    let roots_warning = super::setup::codex_missing_roots_warning(
-        &env,
-        codex.result.as_ref().ok().map(|version| version.as_str()),
-    );
+    let roots_warning = super::setup::codex_missing_roots_warning(&env, None);
     if let Some(warning) = &roots_warning {
         limitations.push(format!("codex sandbox: {warning}"));
     }
@@ -940,9 +877,11 @@ pub fn report(state_dir: Option<PathBuf>, host_endpoint: Option<PathBuf>) -> (Va
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let budget = observation_budget(&clock);
     let registry = crate::harness::registry::builtins();
-    let (mut report, code) = report_base(state_dir, host_endpoint, &clock, &budget, registry);
+    let ((mut report, code), captured) =
+        report_base(state_dir, host_endpoint, &clock, &budget, registry);
     let mut environment = doctor_environment(&report, registry, None);
     environment.clock = clock;
+    let environment = local_ownership_environment(&environment, captured.as_ref(), false);
     collect_local_with_budget(
         &mut report,
         registry,
@@ -1204,26 +1143,66 @@ fn add_global_manual_repairs(report: &Value, repairs: &mut Vec<Value>) {
     }
 }
 
+struct CapturedDoctorContext {
+    context: crate::daemon::paths::RuntimeContext,
+    source: Value,
+    selected_state: PathBuf,
+}
+
+fn local_ownership_environment(
+    environment: &crate::harness::adapter::SetupEnvironment,
+    captured: Option<&CapturedDoctorContext>,
+    supplied: bool,
+) -> crate::harness::adapter::SetupEnvironment {
+    let mut local = environment.clone();
+    if !supplied && let Some(captured) = captured {
+        local.state_dir = Some(captured.selected_state.clone());
+    }
+    local
+}
+
 fn report_base(
     state_dir: Option<PathBuf>,
     host_endpoint: Option<PathBuf>,
     clock: &Arc<dyn Clock>,
     budget: &CallBudget,
     registry: &crate::harness::registry::Registry,
+) -> ((Value, i32), Option<CapturedDoctorContext>) {
+    let inputs = super::instance::InstanceInputs::from_process(state_dir, host_endpoint);
+    let (context, source, selected_state) =
+        match super::instance::resolve_context_with_selected_state(&inputs) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                let report = json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "protocol_version": PROTOCOL_VERSION,
+                    "context": {"ok": false, "error": error.to_string()},
+                    "result": "invalid_context",
+                });
+                return ((report, exit::EXIT_USAGE), None);
+            }
+        };
+    let captured = CapturedDoctorContext {
+        context,
+        source,
+        selected_state,
+    };
+    let result = report_captured(&captured, clock, budget, registry);
+    (result, Some(captured))
+}
+
+fn report_captured(
+    captured: &CapturedDoctorContext,
+    clock: &Arc<dyn Clock>,
+    budget: &CallBudget,
+    registry: &crate::harness::registry::Registry,
 ) -> (Value, i32) {
+    let context = &captured.context;
+    let source = &captured.source;
     let mut report = json!({
         "version": env!("CARGO_PKG_VERSION"),
         "protocol_version": PROTOCOL_VERSION,
     });
-    let inputs = super::instance::InstanceInputs::from_process(state_dir, host_endpoint);
-    let (context, source) = match super::instance::resolve_context(&inputs) {
-        Ok(resolved) => resolved,
-        Err(error) => {
-            report["context"] = json!({"ok": false, "error": error.to_string()});
-            report["result"] = json!("invalid_context");
-            return (report, exit::EXIT_USAGE);
-        }
-    };
     let host_present = std::fs::symlink_metadata(&context.host_endpoint).is_ok();
     report["context"] = json!({
         "ok": true,
@@ -1241,7 +1220,7 @@ fn report_base(
     // Resolving may check the plugin-created runtime socket directory; an
     // unsafe one is the same invalid local context `daemon ensure` reports
     // (status 2), not an unavailable daemon.
-    let resolved = InstancePaths::resolve_read_only(&context);
+    let resolved = InstancePaths::resolve_read_only(context);
     if state_error.is_none() {
         state_error = match &resolved {
             Err(error) if is_unsafe_local_state(error) => Some(error.to_string()),
@@ -1352,20 +1331,27 @@ fn report_base(
     // already shows is not repeated); working and new verdicts are not.
     if let Ok(states) = &states {
         for harness in &states.harnesses {
-            let broken = |state: &str| state == "broken";
-            let lines = harness
-                .detected
+            let local = harness
+                .versions
                 .iter()
-                .filter(|detected| broken(&detected.state))
-                .map(|detected| detected.line.clone())
-                .chain(
-                    harness
-                        .versions
-                        .iter()
-                        .filter(|row| row.in_health_window && broken(&row.state))
-                        .map(|row| row.line.clone()),
-                );
-            for line in lines {
+                .filter(|row| {
+                    row.in_health_window && row.source.starts_with("local evidence: violation")
+                })
+                .map(|row| {
+                    format!(
+                        "harness {} {} contract input failure: {}",
+                        harness.harness, row.version, row.source
+                    )
+                });
+            let scoped = harness
+                .unattributed
+                .iter()
+                .filter(|row| {
+                    row.reason.contains("contract input failure")
+                        || row.reason.contains("contract input malformed")
+                })
+                .map(|row| row.reason.clone());
+            for line in local.chain(scoped) {
                 if !daemon_limitations.contains(&line) {
                     limitations.push(line);
                 }
@@ -1490,6 +1476,21 @@ fn registry_text(report: &Value) -> String {
                 scalar(&daemon["enablement"]["state"]),
                 scalar(&daemon["callback_observation"]["state"])
             ));
+            if let Some(detail) = daemon["admission"]["detail"].as_str() {
+                out.push_str(&format!(
+                    "  admission {}: {}\n",
+                    scalar(&daemon["admission"]["state"]),
+                    clean(detail)
+                ));
+            }
+            for detail in daemon["limitations"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                out.push_str(&format!("  {}\n", clean(detail)));
+            }
             for row in daemon["runtime_evidence"].as_array().into_iter().flatten() {
                 out.push_str(&format!(
                     "  {} {}: {}\n",
@@ -1820,6 +1821,11 @@ pub fn render_text(report: &Value) -> String {
             "hooks missing"
         };
         out.push_str(&format!("{name}: {admission}, {setup}\n"));
+        if harness["installed"]["binary"].is_string() && harness["installed"]["version"].is_null() {
+            out.push_str(&format!(
+                "{name}: runtime metadata unavailable; rich optional capabilities unavailable\n"
+            ));
+        }
     }
     if report["hooks"]["codex"]["setup"]["installed"] == json!(true) {
         match report["hooks"]["codex"]["trust"]["status"].as_str() {
@@ -1848,7 +1854,7 @@ pub fn render_text(report: &Value) -> String {
             };
             if let Some(row) = row {
                 out.push_str(&format!(
-                    "{name} version {}: {}\n",
+                    "{name} advisory history {}: {}\n",
                     scalar(&row["version"]),
                     scalar(&row["state"])
                 ));
@@ -1913,7 +1919,7 @@ fn repair_plan(report: &Value) -> Vec<Repair> {
         && claude["installed"]["binary"].is_string()
         && matches!(
             claude["installed"]["admission"].as_str(),
-            Some("listed" | "optimistic")
+            Some("contract_declared" | "listed" | "optimistic")
         )
     {
         repairs.push(Repair::SetupClaude);
@@ -1946,7 +1952,7 @@ fn add_manual_repairs(report: &Value, repairs: &mut Vec<Value>) {
         && codex["installed"]["binary"].is_string()
         && matches!(
             codex["installed"]["admission"].as_str(),
-            Some("listed" | "schema-matched, live-unverified" | "optimistic")
+            Some("contract_declared" | "listed" | "schema-matched, live-unverified" | "optimistic")
         )
     {
         if !codex["setup"]["error"].is_null() {
@@ -1958,26 +1964,12 @@ fn add_manual_repairs(report: &Value, repairs: &mut Vec<Value>) {
             repairs.push(json!({
                 "action": "setup codex",
                 "outcome": "manual",
-                "detail": "global socket policy is unvalidated for the effective Codex configuration; run `herdr-threads setup codex` explicitly after reviewing its sandbox changes"
+                "detail": "hooks are not installed; run `herdr-threads setup codex` explicitly"
             }));
         }
     }
-    if codex["setup"]["installed"] == json!(true)
-        && codex["installed"]["version"]
-            .as_str()
-            .is_some_and(|version| {
-                !super::setup::CODEX_SANDBOX_MEASURED_VERSIONS.contains(&version)
-            })
-    {
-        repairs.push(json!({"action": "Codex socket policy", "outcome": "manual", "detail": "legacy in-sandbox socket policy unvalidated; managed launch uses approved outside-sandbox CLI execution instead; global auto repair withheld"}));
-    }
     if !report["hooks"]["claude"]["error"].is_null() {
         repairs.push(json!({"action": "setup claude", "outcome": "refused", "detail": "hook ownership could not be inspected; inspect doctor --debug before setup"}));
-    }
-    for name in ["claude", "codex"] {
-        if report["hooks"][name]["installed"]["admission"] == "refused" {
-            repairs.push(json!({"action": format!("{name} version"), "outcome": "manual", "detail": "installed harness version was refused; inspect doctor --debug and install an admitted version"}));
-        }
     }
     if repairs.is_empty() {
         repairs.push(
@@ -2055,7 +2047,7 @@ pub(crate) fn run_registered<W: Write>(
         .map(|environment| Arc::clone(&environment.clock))
         .unwrap_or_else(|| Arc::new(SystemClock::new()));
     let mut budget = observation_budget(&clock);
-    let (mut report, mut code) = report_base(
+    let ((mut report, mut code), captured) = report_base(
         parsed.output.context.state_dir.as_ref().map(PathBuf::from),
         parsed.output.context.host.as_ref().map(PathBuf::from),
         &clock,
@@ -2064,8 +2056,19 @@ pub(crate) fn run_registered<W: Write>(
     );
     let mut environment = doctor_environment(&report, registry, supplied_environment);
     environment.clock = Arc::clone(&clock);
-    let owned =
-        collect_local_with_budget(&mut report, registry, harness, scope, &environment, &budget);
+    let local_environment = local_ownership_environment(
+        &environment,
+        captured.as_ref(),
+        supplied_environment.is_some(),
+    );
+    let owned = collect_local_with_budget(
+        &mut report,
+        registry,
+        harness,
+        scope,
+        &local_environment,
+        &budget,
+    );
     if fix {
         let mut repairs = Vec::new();
         if writes_safe(&report) && report["daemon"]["state"] == "not_running" {
@@ -2098,16 +2101,19 @@ pub(crate) fn run_registered<W: Write>(
                     .map_err(|error| error.to_string()),
             ));
         }
-        repairs.extend(apply_owned_repairs(&report, owned, &environment));
+        repairs.extend(apply_owned_repairs(&report, owned, &local_environment));
         budget = observation_budget(&clock);
-        (report, code) = report_base(
-            parsed.output.context.state_dir.as_ref().map(PathBuf::from),
-            parsed.output.context.host.as_ref().map(PathBuf::from),
-            &clock,
-            &budget,
+        if let Some(captured) = &captured {
+            (report, code) = report_captured(captured, &clock, &budget, registry);
+        }
+        collect_local_with_budget(
+            &mut report,
             registry,
+            harness,
+            scope,
+            &local_environment,
+            &budget,
         );
-        collect_local_with_budget(&mut report, registry, harness, scope, &environment, &budget);
         add_global_manual_repairs(&report, &mut repairs);
         for id in report["adapter_order"]
             .as_array()

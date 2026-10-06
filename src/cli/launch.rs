@@ -3,8 +3,8 @@
 //! (`harness::launch::launch_managed`).
 //!
 //! Preflight, in order:
-//! 1. installed-version recipe gate: `<harness> --version` must be admitted by
-//!    the admission ladder (the same observation `setup` and the hook use);
+//! 1. resolve the selected executable and declare its registered contract,
+//!    without invoking diagnostic flags or inferring runtime identity;
 //! 2. inside the policy: a fresh explicit-target read that must be an
 //!    available shell, the pane's seat resolved through the daemon's ordinary
 //!    guarded `seat resolve` path (a recovery hold refuses), the owned
@@ -81,9 +81,8 @@ pub const LAUNCH_HELP: &str = "Target:
   guarded `agent start` refuses a busy pane.
 
 Preflight (nothing is started when any step refuses):
-  - `<kind> --version` must not be refused by the admission ladder (unparsable, inside a
-    known-broken range, or older than every recipe: exit 4); an optimistic or schema-matched
-    version is admitted with its label;
+  - the selected executable must resolve; its registered contract is declared without
+    invoking --version, --help or schema probes, and runtime metadata remains unknown;
   - the pane's seat is resolved like `seat resolve --pane`; a recovery-held target
     needs `seat rebind ... --operator` or a fresh seat first;
   - the owned user-level hooks must be set up (`herdr-threads setup claude|codex`) in the
@@ -594,6 +593,16 @@ fn execute_guarded_inner(
             )
             .into());
         }
+        use std::os::unix::fs::PermissionsExt;
+        if !fs::metadata(explicit)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        {
+            return Err(api(
+                ErrorCode::UnsupportedHarness,
+                "selected harness binary is not an executable file",
+            )
+            .into());
+        }
         if fs::canonicalize(explicit).ok() != fs::canonicalize(&binary).ok() {
             return Err(api(
                 ErrorCode::InvalidRequest,
@@ -636,12 +645,26 @@ fn execute_guarded_inner(
                 )
                 .into());
             }
-            identity
-                .release_version
-                .clone()
-                .unwrap_or_else(|| identity.key.to_string())
+            identity.release_version.clone()
         }
-        InstallObservation::CodexWitness(version) => version.as_str().to_owned(),
+        InstallObservation::CodexWitness(version) => Some(version.as_str().to_owned()),
+        InstallObservation::ExecutableAvailable { binary: observed } => {
+            if fs::canonicalize(observed).ok() != fs::canonicalize(&binary).ok() {
+                return Err(api(
+                    ErrorCode::Conflict,
+                    "installation observation executable mismatch",
+                )
+                .into());
+            }
+            None
+        }
+        InstallObservation::NotRequested => {
+            return Err(api(
+                ErrorCode::UnsupportedHarness,
+                "launch requires executable availability",
+            )
+            .into());
+        }
         InstallObservation::Unavailable { diagnostic } => {
             return Err(api(ErrorCode::UnsupportedHarness, diagnostic).into());
         }
@@ -879,6 +902,7 @@ fn execute_guarded_inner(
         "config_dir": config_dir,
         "codex": codex,
         "harness_version": observed.version,
+        "admission": "contract_declared",
         "recipe": observed.recipe,
         "binding": binding,
     });
@@ -901,6 +925,7 @@ fn execute_guarded_inner(
         "config_dir": config_dir,
         "codex": codex,
         "harness_version": {
+            "admission": "contract_declared",
             "binary": observed.binary.display().to_string(),
             "version": observed.version,
             "recipe": observed.recipe,

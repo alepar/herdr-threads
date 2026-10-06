@@ -225,12 +225,13 @@ fn api_failure(stage: &str, error: &ApiError) -> Failure {
     Failure::UnavailableDetail(format!("{stage}: {:?}", error.code), error.detail.clone())
 }
 
-/// The installed native harness version the adapters require. It is observed by
-/// running the harness executable found on `PATH`, never read from hook JSON.
+/// Registered operational input contract, independent of PATH and runtime metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstalledHarness {
     Claude(String),
+    DeclaredClaude(crate::harness::operational::ClaudeContract),
     Codex(crate::harness::codex::InstalledVersion),
+    DeclaredCodex(crate::harness::operational::CodexContract),
 }
 
 /// First absolute, executable `name` on `PATH`.
@@ -245,9 +246,8 @@ pub(crate) fn resolve_on_path(name: &str, path: Option<&std::ffi::OsStr>) -> Opt
         })
 }
 
-/// Observe the harness this hook was installed for. Unobservable or
-/// unsupported versions fail closed: the hook stays quiet. No persistent
-/// state is read or written.
+/// Select the registered input contract for this hook. The compatibility
+/// arguments are ignored: hook callbacks never resolve or probe an executable.
 pub fn observe_harness(
     harness: Harness,
     path: Option<&std::ffi::OsStr>,
@@ -256,13 +256,7 @@ pub fn observe_harness(
     observe_harness_in(harness, path, timeout, None)
 }
 
-/// [`observe_harness`] with the plugin state directory. For Codex, an
-/// unlisted version's schema fingerprint is cached in the private
-/// `<state>/harness/` directory, keyed by binary identity, so a warm hook
-/// does not rescan the binary; the admission evidence (listed,
-/// schema-matched live-unverified, or refused) is stored there as the hook's
-/// evidence. Without a usable state directory it falls back to the
-/// in-process cache and stores nothing.
+/// Select the contract without reading or writing admission caches.
 pub fn observe_harness_in(
     harness: Harness,
     path: Option<&std::ffi::OsStr>,
@@ -270,6 +264,17 @@ pub fn observe_harness_in(
     state_dir: Option<&Path>,
 ) -> Result<InstalledHarness, String> {
     let registration = registration_for(harness)?;
+    if registration.hook_admission_policy() == HookAdmissionPolicy::RegisteredContract {
+        return match harness {
+            Harness::Claude => Ok(InstalledHarness::DeclaredClaude(
+                crate::harness::operational::ClaudeContract::registered(),
+            )),
+            Harness::Codex => Ok(InstalledHarness::DeclaredCodex(
+                crate::harness::operational::CodexContract::registered(),
+            )),
+            _ => Err("legacy hook handle unavailable for registered adapter".into()),
+        };
+    }
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let observation = registration.observe_install(
         &InstallEnvironment {
@@ -280,7 +285,7 @@ pub fn observe_harness_in(
         },
         &budget(Instant::now() + timeout, clock.as_ref()),
     );
-    installed_compat(&observation).ok_or_else(|| observation_failure(observation))
+    installed_compat(registration, &observation).ok_or_else(|| observation_failure(observation))
 }
 fn observation_failure(observation: InstallObservation) -> String {
     match observation {
@@ -299,7 +304,7 @@ fn hook_state_dir(args: &HookArgs) -> Option<PathBuf> {
         .filter(|state| state.is_absolute())
 }
 
-/// Parse with the harness adapter under the observed installed version. Event
+/// Parse with the registered operational harness contract. Event
 /// IDs are fresh per native invocation: every hook call is its own lifecycle
 /// event and is never inferred from a native session label.
 pub fn parse_event(
@@ -307,11 +312,16 @@ pub fn parse_event(
     stdin: &[u8],
 ) -> Result<LifecycleEvent, ContextError> {
     let harness = match installed {
-        InstalledHarness::Claude(_) => Harness::Claude,
-        InstalledHarness::Codex(_) => Harness::Codex,
+        InstalledHarness::Claude(_) | InstalledHarness::DeclaredClaude(_) => Harness::Claude,
+        InstalledHarness::Codex(_) | InstalledHarness::DeclaredCodex(_) => Harness::Codex,
     };
     let registration = registration_for(harness).map_err(ContextError::UnsupportedVersion)?;
-    let observation = installed_observation(installed);
+    let observation =
+        if registration.hook_admission_policy() == HookAdmissionPolicy::RegisteredContract {
+            InstallObservation::NotRequested
+        } else {
+            installed_observation(installed)
+        };
     let request = AdmissionRequest {
         installed: observation,
         input: None,
@@ -348,7 +358,29 @@ fn installed_observation(installed: &InstalledHarness) -> InstallObservation {
             }
         }
         InstalledHarness::Codex(version) => InstallObservation::CodexWitness(version.clone()),
+        InstalledHarness::DeclaredClaude(_) | InstalledHarness::DeclaredCodex(_) => {
+            InstallObservation::NotRequested
+        }
     }
+}
+
+/// Refuse a registered-event or harness mismatch before service/journal access.
+#[cfg(test)]
+fn parse_registered_event(
+    args: &HookArgs,
+    installed: &InstalledHarness,
+    stdin: &[u8],
+) -> Result<LifecycleEvent, ContextError> {
+    let event = parse_event(installed, stdin)?;
+    if event.harness != args.harness
+        || args
+            .event
+            .as_deref()
+            .is_some_and(|name| name != native_event_name(&event))
+    {
+        return Err(ContextError::Invalid);
+    }
+    Ok(event)
 }
 
 pub fn budget_for(event: &LifecycleEvent) -> Duration {
@@ -1145,21 +1177,6 @@ fn unavailable_text(policy: &OutputPolicy, reason: &str, diagnose: &[String]) ->
     )
 }
 
-/// Whether the observed harness was admitted by the ladder's optimistic rows
-/// (an unlisted version parsed under an assumed recipe).
-fn is_optimistic(installed: &InstalledHarness) -> bool {
-    use crate::harness::{claude, codex};
-    match installed {
-        InstalledHarness::Claude(version) => matches!(
-            claude::admit(version),
-            Ok(admitted) if matches!(admitted.admission, claude::ClaudeAdmission::Optimistic(_))
-        ),
-        InstalledHarness::Codex(version) => {
-            matches!(version.admission(), codex::Admission::Optimistic { .. })
-        }
-    }
-}
-
 /// Reports one unparsed payload to the daemon, only when it advertised
 /// `hook.parse_failure_report`. Best effort: the answer and any error are
 /// ignored and nothing here can fail the hook. Returns whether a report was
@@ -1191,19 +1208,18 @@ pub(crate) fn report_parse_failure(
     true
 }
 
-/// Under an optimistic admission, counts a payload parse failure with the
+/// Counts any operational payload parse failure with the
 /// daemon over the hook's existing local-client path: inside a Herdr pane
 /// only, to the daemon already running (never started for this), within the
 /// hook's remaining budget. Every error is ignored.
 fn report_parse_failure_to_daemon(
     args: &HookArgs,
-    installed: &InstalledHarness,
     error: &ContextError,
     env: &HookEnv,
     deadline: Instant,
     clock: Arc<dyn Clock>,
 ) {
-    if !env.herdr_env || !is_optimistic(installed) {
+    if !env.herdr_env {
         return;
     }
     let Ok(context) =
@@ -2445,14 +2461,17 @@ pub(crate) fn run_hook_registered(
         bytes: stdin.to_vec(),
         registered_event: args.event.clone(),
     };
-    let installed = if registration.callback_admission() {
-        InstallObservation::Unsupported(UnsupportedOperation {
-            adapter: registration.metadata().id,
-            operation: "callback startup identity",
-        })
-    } else {
-        installed_observation(installed)
-    };
+    let installed =
+        if registration.hook_admission_policy() == HookAdmissionPolicy::RegisteredContract {
+            InstallObservation::NotRequested
+        } else if registration.callback_admission() {
+            InstallObservation::Unsupported(UnsupportedOperation {
+                adapter: registration.metadata().id,
+                operation: "callback startup identity",
+            })
+        } else {
+            installed_observation(installed)
+        };
     let request = AdmissionRequest {
         installed,
         input: registration.callback_admission().then(|| HookInput {
@@ -2468,17 +2487,19 @@ pub(crate) fn run_hook_registered(
     let decoded = match registration.decode(&admitted, &input) {
         Ok(event) => event,
         Err(error) => {
-            if let Some(installed) = installed_compat(&request.installed) {
+            {
                 report_parse_failure_to_daemon(
                     args,
-                    &installed,
                     &native_decode_error(&error),
                     env,
                     deadline,
                     clock,
                 );
             }
-            return quiet_outcome(format!("unsupported hook payload: {error:?}"));
+            return quiet_outcome(format!(
+                "unsupported hook payload: {}",
+                decode_failure_detail(registration, &error)
+            ));
         }
     };
     run_admitted_hook(
@@ -2491,6 +2512,16 @@ pub(crate) fn run_hook_registered(
         clock,
         ensure_executable,
     )
+}
+fn decode_failure_detail(registration: &Registration, error: &DecodeFailure) -> String {
+    match error {
+        DecodeFailure::Native(inner)
+            if registration.hook_admission_policy() == HookAdmissionPolicy::RegisteredContract =>
+        {
+            format!("{inner:?}")
+        }
+        other => format!("{other:?}"),
+    }
 }
 fn native_decode_error(error: &DecodeFailure) -> ContextError {
     match error {
@@ -2543,13 +2574,22 @@ fn quiet_outcome(detail: String) -> HookOutcome {
         attention: None,
     }
 }
-fn installed_compat(observation: &InstallObservation) -> Option<InstalledHarness> {
+fn installed_compat(
+    registration: &Registration,
+    observation: &InstallObservation,
+) -> Option<InstalledHarness> {
     match observation {
-        InstallObservation::CodexWitness(version) => Some(InstalledHarness::Codex(version.clone())),
-        InstallObservation::Available { identity, .. } => identity
-            .release_version
-            .clone()
-            .map(InstalledHarness::Claude),
+        InstallObservation::CodexWitness(version) if registration.metadata().id == "codex" => {
+            Some(InstalledHarness::Codex(version.clone()))
+        }
+        InstallObservation::Available { identity, .. }
+            if registration.metadata().id == "claude" =>
+        {
+            identity
+                .release_version
+                .clone()
+                .map(InstalledHarness::Claude)
+        }
         _ => None,
     }
 }
@@ -3028,6 +3068,9 @@ pub fn run_process_with(
         tool_budget,
         |observe_budget| {
             let registration = registration_for(args.harness)?;
+            if registration.hook_admission_policy() == HookAdmissionPolicy::RegisteredContract {
+                return Ok((registration, InstallObservation::NotRequested));
+            }
             if registration.callback_admission() {
                 return Ok((
                     registration,
@@ -3079,17 +3122,19 @@ pub fn run_process_with(
                 let event = match registration.decode(&admitted, &input) {
                     Ok(event) => event,
                     Err(error) => {
-                        if let Some(installed) = installed_compat(&request.installed) {
+                        {
                             report_parse_failure_to_daemon(
                                 &args,
-                                &installed,
                                 &native_decode_error(&error),
                                 env,
                                 observation_deadline,
                                 Arc::clone(&clock),
                             );
                         }
-                        return quiet_outcome(format!("unsupported hook payload: {error:?}"));
+                        return quiet_outcome(format!(
+                            "unsupported hook payload: {}",
+                            decode_failure_detail(registration, &error)
+                        ));
                     }
                 };
                 let lifecycle = matches!(
@@ -3177,11 +3222,10 @@ fn spawn_watchdog(started: Instant, deadline_ms: Arc<AtomicU64>, quiet: Arc<Atom
     });
 }
 
-/// The in-pane hook after its payload is read (ht-rlv.1): the version probe
-/// gets the whole remaining tool budget, the check-in runs under the event's
-/// budget, and the evidence note goes last with whatever time is left before
-/// the watchdog. A refused probe sends the note right after its diagnostic.
-/// The note is advisory: it never delays the probe or the check-in, and a
+/// The in-pane hook after its payload is read: select its operational contract,
+/// run the check-in under the event's budget, then send the advisory evidence
+/// note with whatever time is left before the watchdog. Contract selection
+/// never probes an executable. The note never delays the check-in, and a
 /// check-in that uses its whole budget leaves no time for it (the gate file
 /// is then unchanged, so the next event sends it).
 pub(crate) fn sequence<T>(
@@ -3210,3 +3254,14 @@ pub(crate) fn sequence<T>(
 #[cfg(test)]
 #[path = "../../tests/cli/hook.rs"]
 mod tests;
+
+#[cfg(test)]
+fn native_event_name(event: &LifecycleEvent) -> &'static str {
+    if event.kind == EventKind::Tool {
+        "PreToolUse"
+    } else if event.source == "SubagentStart" {
+        "SubagentStart"
+    } else {
+        "SessionStart"
+    }
+}

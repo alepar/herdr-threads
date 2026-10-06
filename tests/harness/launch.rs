@@ -1384,7 +1384,7 @@ pub(crate) fn process_hint_registry(required: bool) -> &'static crate::harness::
 }
 struct HintAdapter(bool);
 impl crate::harness::adapter::HarnessAdapter for HintAdapter {
-    type Admission = String;
+    type Admission = crate::harness::operational::ClaudeContract;
     fn metadata(&self) -> &'static crate::harness::adapter::AdapterMetadata {
         use crate::harness::adapter::*;
         static META: AdapterMetadata = AdapterMetadata {
@@ -1417,7 +1417,7 @@ impl crate::harness::adapter::HarnessAdapter for HintAdapter {
         &self,
         r: &crate::harness::adapter::AdmissionRequest,
         b: &CallBudget,
-    ) -> crate::harness::adapter::AdmissionDecision<String> {
+    ) -> crate::harness::adapter::AdmissionDecision<Self::Admission> {
         crate::harness::claude::ClaudeAdapter.admit(r, b)
     }
     fn version_ladder(
@@ -1434,14 +1434,14 @@ impl crate::harness::adapter::HarnessAdapter for HintAdapter {
     }
     fn decode(
         &self,
-        a: &String,
+        a: &Self::Admission,
         r: &crate::harness::adapter::HookInput,
     ) -> Result<crate::harness::adapter::DecodedEvent, crate::harness::adapter::DecodeFailure> {
         crate::harness::claude::ClaudeAdapter.decode(a, r)
     }
     fn encode(
         &self,
-        a: &String,
+        a: &Self::Admission,
         r: &crate::harness::adapter::DecodedEvent,
         o: &crate::harness::adapter::NeutralOffer,
     ) -> Result<crate::harness::adapter::EncodedOutput, crate::harness::adapter::EncodeFailure>

@@ -84,6 +84,10 @@ mod operator_text;
 /// Herdr endpoint.
 #[path = "integration/operator_ux.rs"]
 mod operator_ux;
+/// Real versionless setup output/configuration through the live canary consumer.
+#[cfg(feature = "test-support")]
+#[path = "integration/setup_canary_seam.rs"]
+mod setup_canary_seam;
 /// ht-1ip.16: the summary flow (job leasing, catch-up, hold, deadline
 /// extension, recovery text) on a real daemon, driven through the CLI.
 #[path = "integration/summary_flow.rs"]

@@ -10,9 +10,8 @@
 //!   (default `~/.claude/settings.json`), merged with the hooks already there.
 //! - Codex: the declared hook groups (SessionStart, SubagentStart, Bash
 //!   PreToolUse) go into `$CODEX_HOME/hooks.json` (default
-//!   `~/.codex/hooks.json`), and, for a Codex version whose network-proxy
-//!   default-deny was measured, the narrow sandbox socket allowance goes into
-//!   `$CODEX_HOME/config.toml`.
+//!   `~/.codex/hooks.json`). No sandbox allowance is installed. Historical
+//!   config.toml ownership remains inspectable and removable by unsetup.
 //!
 //! Every write is owned: groups carry an installation marker, a private
 //! manifest under `<state-dir>/setup/` records exactly what was added, a
@@ -29,10 +28,8 @@
 //! records both, and the hook stays silent in any session that is not a pane
 //! of that instance.
 //!
-//! Every install observes the installed harness version by running
-//! `<binary> --version` and refuses one the admission ladder refuses
-//! (unparsable, known-broken, older than every recipe); a newer unlisted
-//! version is admitted optimistically.
+//! Setup resolves the selected executable without invoking it and declares
+//! the registered contract. Runtime metadata and native delivery remain unknown.
 //! The installed hook command is exactly the hook entrypoint's
 //! [`hook::installed_argv`], which its `parse_hook_argv` accepts.
 
@@ -61,10 +58,10 @@ use std::{
 pub const SETUP_HELP: &str =
     "No harness named: every harness. `setup` sets up every detected harness (each
 of claude and codex found on PATH) and prints one line per harness: installed, already
-installed, skipped (not on PATH) or refused (version covered by no recipe, with the reason);
+installed or skipped (not on PATH);
 `unsetup` removes both recorded installations (on PATH or not); `setup-status` reports
 both. The Codex hook-trust reminder is printed once at the end. The exit status is that
-of the first harness that failed; skipped and refused are not failures.
+of the first harness that failed; skipped harnesses are not failures.
 
 Scope (user level, like Herdr's own agent hooks):
   claude  $CLAUDE_CONFIG_DIR/settings.json (default ~/.claude/settings.json), created as `{}`
@@ -75,21 +72,13 @@ Scope (user level, like Herdr's own agent hooks):
           already have is left as yours. Re-running setup on an older installation replaces its
           owned `Bash(export HERDR_THREADS_CALLER_CONTEXT=*)` rule, which allowed nothing in use.
   codex   $CODEX_HOME/hooks.json (default ~/.codex/hooks.json) for the hook groups
-          (SessionStart, SubagentStart, Bash PreToolUse), and $CODEX_HOME/config.toml for the
-          workspace-write sandbox allowance of this instance's stable daemon socket:
-            sandbox_workspace_write.network_access = true
-            features.network_proxy.enabled = true
-            features.network_proxy.unix_sockets = { \"<socket>\" = \"allow\" }
-            sandbox_workspace_write.writable_roots += [\"<instance>/intents\", \"<instance>/contexts\"]
-          network_access=true only starts Codex's proxy; with no allowed domain, other network
-          access stays denied and only that one socket is reachable. The two writable roots are
-          the instance's client-side journals (pending-operation intents and caller contexts),
-          which every mutation and check-in writes; the database and daemon files stay
-          read-only. An earlier allowance without the roots is upgraded by setup. This default-deny was
-          measured on a short list of Codex versions only (setup names them when it declines):
-          for any other admitted version the allowance is not written (a warning says so). Codex runs user hooks only once you trust them: the next
-          interactive `codex` start lists them for review (or use /hooks); Codex then records
-          their hashes in config.toml [hooks.state]. setup never writes trust.
+          (SessionStart, SubagentStart, Bash PreToolUse). Setup installs no sandbox socket,
+          writable-root or network allowance. Run herdr-threads commands through Codex's
+          approved outside-sandbox execution; a denied approval is a policy refusal.
+          Historical owned allowances remain inspectable; unsetup removes only unchanged
+          owned values and refuses edited ownership records. Codex runs user hooks only once
+          you trust them: the next interactive `codex` start lists them for review (or use
+          /hooks); Codex records their hashes in config.toml [hooks.state]. setup never writes trust.
 
 Claude prompt suggestions: Claude shows a dim prompt suggestion in its input box after every
 turn, which herdr-threads cannot tell from typed text, so it never pokes a Claude pane that shows
@@ -118,25 +107,20 @@ adopted: setup records a manifest for it and leaves the file byte-identical (act
 `adopted`), setup-status and doctor report it installed (adopted), and unsetup removes only
 those groups from that file.
 
-Setup observes `<harness> --version` and places it on the admission ladder: listed (a recipe
-covers it); schema-matched, live-unverified (Codex only: unlisted, but its hook schemas match
-a recipe); optimistic (newer than the verified range, or unlisted inside it: admitted on an
-assumed recipe; doctor shows it as new until it is verified by use, and Health adds no line);
-or refused (unparsable, inside a known-broken range, or older than every recipe). Every
-admitted version installs; a refused one exits 4. `doctor` prints the recipe registries.
-Installed is not observed: only native evidence (see `doctor`) proves hook delivery.
+Setup resolves the selected executable without invoking --version, --help or schema probes.
+Admission is contract_declared: the registered hook contract is configured, runtime metadata
+is unknown. Installation does not prove hook delivery, native support or receipt.
 
 Exit status:
   0  installed / removed / nothing to remove / status reported
   1  refused: the file changed concurrently, an owned entry was edited or removed by hand,
      the recorded allow rule was removed by hand, an unowned identical hook exists (for
-     codex also in another Codex config layer), a config.toml key the allowance needs holds
-     another value, or a file could not be written
+     codex also in another Codex config layer), a recorded legacy allowance is partial or
+     edited, or a file could not be written
   2  invalid arguments, undetectable Herdr instance, or invalid settings file (not a JSON
      object / not valid TOML, symlink, over 1 MiB)
-  4  the named harness is missing from PATH, or its version is refused (unparsable, inside a
-     known-broken range, or older than every recipe); with no harness named this is reported
-     as refused, not a failure";
+  4  the named harness is missing from PATH or --harness-binary is not an executable file;
+     with no harness named an absent harness is skipped";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupVerb {
@@ -613,6 +597,27 @@ pub fn execute_registered(
     options: crate::harness::adapter::SetupOptions,
     environment: &crate::harness::adapter::SetupEnvironment,
 ) -> Result<Value, RunError> {
+    execute_registered_with_expected_scope(
+        registration,
+        verb,
+        scope,
+        native_binary,
+        options,
+        environment,
+        None,
+    )
+}
+
+/// Installer reconciliation binds the final resolution to its inspected scope.
+pub(crate) fn execute_registered_with_expected_scope(
+    registration: &crate::harness::registry::Registration,
+    verb: SetupVerb,
+    scope: &crate::harness::adapter::SetupScopeRequest,
+    native_binary: Option<&Path>,
+    options: crate::harness::adapter::SetupOptions,
+    environment: &crate::harness::adapter::SetupEnvironment,
+    expected_scope: Option<&crate::harness::adapter::ResolvedSetupScope>,
+) -> Result<Value, RunError> {
     use crate::harness::adapter::*;
     crate::harness::setup::validate_local_request(
         Some(registration),
@@ -648,6 +653,11 @@ pub fn execute_registered(
     let scope = registration
         .resolve_setup_scope(scope, environment)
         .map_err(adapter_run_error)?;
+    if expected_scope.is_some_and(|expected| expected != &scope) {
+        return Err(invalid(
+            "installer scope changed after ownership inspection; preserved",
+        ));
+    }
     let budget = crate::protocol::time::CallBudget {
         deadline: crate::protocol::time::MonoInstant(
             environment.clock.monotonic_now().0.saturating_add(30_000),
@@ -772,8 +782,7 @@ fn verb_name(verb: SetupVerb) -> &'static str {
 /// Run one setup command for every harness and return the combined report.
 ///
 /// - `setup` installs for each harness found on PATH. One that is absent is
-///   `skipped`; one whose version no recipe admits is `refused` (with the
-///   reason). Neither is a failure.
+///   `skipped`, without failing the combined command.
 /// - `unsetup` removes the recorded installation of both harnesses, whether
 ///   or not the harness is still on PATH (removal never depends on it).
 /// - `setup-status` reports both harnesses.
@@ -827,13 +836,32 @@ pub fn execute_all_registered(
             )
         })
         .collect();
+    let eligible = |registration: &&crate::harness::registry::Registration| {
+        registration
+            .metadata()
+            .setup_scopes
+            .iter()
+            .any(|scope| matches!(scope, crate::harness::adapter::SetupScopeKind::ConfigRoot))
+            && !registration
+                .metadata()
+                .setup_scopes
+                .iter()
+                .any(|scope| matches!(scope, crate::harness::adapter::SetupScopeKind::Profile))
+    };
     match verb {
-        SetupVerb::Install if found.iter().any(|(_, _, binary)| binary.is_some()) => {
-            if let Some((_, harness, _)) = found.iter().find(|(_, _, binary)| binary.is_some()) {
+        SetupVerb::Install => {
+            if let Some((_, harness, _)) = found
+                .iter()
+                .find(|(registration, _, binary)| eligible(registration) && binary.is_some())
+            {
                 env.hook_argv(*harness)?;
             }
         }
-        SetupVerb::Remove => {
+        SetupVerb::Remove
+            if found
+                .iter()
+                .any(|(registration, _, _)| eligible(registration)) =>
+        {
             env.state_dir()?;
         }
         _ => {}
@@ -844,6 +872,12 @@ pub fn execute_all_registered(
     for (registration, harness, binary) in found {
         let name = harness_name(harness);
         let mut entry = json!({"harness": name, "detected": binary.is_some()});
+        if !eligible(&registration) {
+            entry["outcome"] = json!("skipped");
+            entry["reason"] = json!("requires explicit harness selection for a profile scope");
+            entries.push(entry);
+            continue;
+        }
         if verb == SetupVerb::Install && binary.is_none() {
             entry["outcome"] = json!("skipped");
             entry["reason"] = json!(format!("no executable `{name}` on PATH"));
@@ -924,14 +958,10 @@ pub fn render_all_text(report: &Value) -> String {
         let inner = &entry["report"];
         let version = || {
             let observed = &inner["harness_version"];
-            if observed["supported"] == true {
-                format!(
-                    "{name} {} (recipe {})",
-                    scalar(&observed["version"]),
-                    scalar(&observed["recipe"])
-                )
+            if observed["admission"] == "contract_declared" {
+                format!("{name} contract declared ({})", scalar(&observed["recipe"]))
             } else {
-                format!("version refused: {}", scalar(&observed["refusal"]))
+                format!("executable unavailable: {}", scalar(&observed["refusal"]))
             }
         };
         let file = || {
@@ -1004,7 +1034,7 @@ pub fn render_all_text(report: &Value) -> String {
     out
 }
 
-// ---------------------------------------------------------------- versions
+// ----------------------------------------------------- executable selection
 
 /// Both stdin and stderr are terminals: setup may ask a question.
 fn interactive() -> bool {
@@ -1165,15 +1195,6 @@ mod tests {
             assert_eq!(parsed.state_dir.as_deref(), Some(Path::new("/s d")));
         }
         assert!(env(None).hook_argv(Harness::Claude).is_err());
-    }
-
-    /// Kills: echoing control characters or unbounded output into a refusal.
-    #[test]
-    fn unrecognized_version_output_is_reported_as_one_printable_line() {
-        assert_eq!(printable_line(b"claude 2.1.284\n"), "claude 2.1.284");
-        assert_eq!(printable_line(b""), "<empty --version output>");
-        assert_eq!(printable_line(b"a\x1b[31mb\n"), "a[31mb");
-        assert_eq!(printable_line(&[b'x'; 300]).len(), 80);
     }
 
     /// CODEX_HOME resolution as Codex does it. Kills: ignoring CODEX_HOME,
@@ -1535,9 +1556,9 @@ mod detect_tests {
 
 pub use crate::harness::setup::legacy::manifest_path;
 
-pub(crate) use crate::harness::setup::legacy::user_inspection;
 #[cfg(test)]
-use crate::harness::setup::legacy::{first_shell_word, printable_line};
+use crate::harness::setup::legacy::first_shell_word;
+pub(crate) use crate::harness::setup::legacy::user_inspection;
 
 pub use crate::harness::claude::setup::{
     PROMPT_SUGGESTION_EXPLANATION, allow_rule_json, claude_config_dir_from, claude_paths,
