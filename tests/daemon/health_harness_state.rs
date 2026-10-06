@@ -1456,3 +1456,158 @@ fn absorption_observer_to_v2_declares_contract_without_runtime_admission() {
         AdmissionState::Listed
     );
 }
+
+// Production builtins feed cached consumers; the test-support-only fourth adapter
+// is not a shipped harness and supplies no production installation observation.
+#[test]
+fn hermes_registry_presence_preserves_healthy_legacy_only_health() {
+    use crate::{
+        app::AdmissionReobserver,
+        harness::{adapter::InstallEnvironment, registry},
+        protocol::results::{
+            AdmissionState, CallbackObservationState, EnablementState, InstallationState,
+        },
+    };
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fx::new("hermes-registry-presence");
+    let bin = fx._iso.home().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    for name in ["claude", "codex"] {
+        crate::harness::stub_binaries::write_stub_harness(&bin, name, "0.0.0");
+    }
+    let observer = AdmissionReobserver::with_registry(
+        registry::builtins(),
+        InstallEnvironment {
+            clock: fx.clock.clone(),
+            path: Some(bin.clone().into_os_string()),
+            config_root: None,
+            state_dir: None,
+        },
+        std::time::Duration::from_millis(50),
+        Arc::new(|_| {}),
+    );
+    let legacy = |cached: &std::collections::BTreeMap<
+        String,
+        crate::harness::adapter::DaemonObservation,
+    >| {
+        let mut inputs = ready_inputs();
+        inputs.instance = uuid::Uuid::from_u128(1);
+        inputs.boot = uuid::Uuid::from_u128(2);
+        inputs.claude = cached["claude"].status.clone();
+        inputs.codex = cached["codex"].status.clone();
+        inputs.additional_harnesses = vec![("hermes".into(), cached["hermes"].status.clone())];
+        inputs.harness_version_lines = fx.provider().health_lines(&budget()).unwrap();
+        inputs.assemble()
+    };
+    let absent = observer.pass(&Cancellation::default()).entries;
+    assert!(matches!(
+        absent["hermes"].status,
+        HarnessStatus::NotInstalled(_)
+    ));
+    let absent_report = fx
+        .provider()
+        .with_observations(Box::new({
+            let cached = absent.clone();
+            move || Ok(cached.clone())
+        }))
+        .report_v2(&budget())
+        .unwrap();
+    assert_eq!(
+        absent_report.harnesses["hermes"].installation.state,
+        InstallationState::NotFound
+    );
+    let absent_health = legacy(&absent);
+    assert_eq!(absent_health.state, HealthState::Healthy);
+    assert!(
+        absent_health
+            .notes
+            .iter()
+            .any(|line| line.starts_with("harness hermes not installed:"))
+    );
+    let legacy_bytes = serde_json::to_vec(&absent_health.harness).unwrap();
+    assert_eq!(
+        legacy_bytes,
+        br#"{"codex":"cooperative","claude":"cooperative"}"#
+    );
+
+    let executable = bin.join("hermes");
+    std::fs::write(
+        &executable,
+        "#!/bin/sh\n: > \"${0%/*}/executed\"\nexit 91\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let present = observer.pass(&Cancellation::default()).entries;
+    let observed = &present["hermes"];
+    assert!(observed.identity.is_none());
+    assert!(observed.receipt_basis.is_none());
+    assert_eq!(observed.enablement.state, EnablementState::Unknown);
+    assert_eq!(
+        observed.callback_observation.state,
+        CallbackObservationState::Unknown
+    );
+    assert!(!observed.status.reusable());
+    assert_eq!(observed.status.admission_word(), "unqualified");
+    assert_eq!(observed.status.state(), HarnessState::Unsupported);
+    let provider = fx.provider().with_observations(Box::new({
+        let cached = present.clone();
+        move || Ok(cached.clone())
+    }));
+    let report = provider.report_v2(&budget()).unwrap();
+    let entry = &report.harnesses["hermes"];
+    assert_eq!(entry.installation.state, InstallationState::Present);
+    assert_eq!(entry.admission.state, AdmissionState::Unknown);
+    assert_eq!(entry.enablement.state, EnablementState::Unknown);
+    assert_eq!(
+        entry.callback_observation.state,
+        CallbackObservationState::Unknown
+    );
+    assert_eq!(entry.receipt_basis, "unknown");
+    assert!(entry.runtime_evidence.is_empty());
+    assert!(
+        entry
+            .limitations
+            .iter()
+            .any(|line| line.contains("qualification unavailable"))
+    );
+    assert!(entry.admission.detail.as_deref().is_some_and(|d| {
+        d.contains("qualification unavailable") && !d.contains("contract_declared")
+    }));
+    assert!(!bin.join("executed").exists());
+    let present_health = legacy(&present);
+    assert_eq!(present_health.state, HealthState::Healthy);
+    assert_eq!(
+        serde_json::to_vec(&present_health.harness).unwrap(),
+        legacy_bytes
+    );
+    assert_eq!(present_health.limitations, absent_health.limitations);
+    assert!(
+        present_health
+            .notes
+            .iter()
+            .any(|line| line.starts_with("harness hermes:")
+                && line.contains("qualification unavailable"))
+    );
+    let mut unqualified_only = ready_inputs();
+    unqualified_only.claude = HarnessStatus::NotInstalled("fixture absent".into());
+    unqualified_only.codex = HarnessStatus::NotInstalled("fixture absent".into());
+    unqualified_only.additional_harnesses = vec![("hermes".into(), observed.status.clone())];
+    let health = unqualified_only.assemble();
+    assert_eq!(health.state, HealthState::Healthy);
+    assert!(
+        !health
+            .notes
+            .iter()
+            .any(|line| line.starts_with("receipt cooperative:"))
+    );
+    // Cache remains present after the executable disappears; only the next pass
+    // observes the filesystem. Health requests cannot secretly rediscover Hermes.
+    std::fs::remove_file(&executable).unwrap();
+    assert_eq!(provider.report_v2(&budget()).unwrap(), report);
+    assert_eq!(legacy(&present), present_health);
+    assert!(matches!(
+        observer.pass(&Cancellation::default()).entries["hermes"].status,
+        HarnessStatus::NotInstalled(_)
+    ));
+    assert!(!bin.join("executed").exists());
+}

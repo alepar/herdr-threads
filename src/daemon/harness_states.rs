@@ -146,7 +146,8 @@ impl HarnessStatesProvider {
             limitations.extend(diagnostics.iter().map(|row| health_text(&row.line(), 256)));
             let detail = match &observed.status {
                 HarnessStatus::Unknown => None,
-                HarnessStatus::ContractDeclared { detail }
+                HarnessStatus::PresentUnqualified { detail }
+                | HarnessStatus::ContractDeclared { detail }
                 | HarnessStatus::Cooperative { detail, .. }
                 | HarnessStatus::NotInstalled(detail)
                 | HarnessStatus::Refused(detail)
@@ -170,6 +171,14 @@ impl HarnessStatesProvider {
                             .unwrap_or_else(|| "installed runtime unavailable".into()),
                     );
                     (InstallationState::Unavailable, AdmissionState::Refused)
+                }
+                HarnessStatus::PresentUnqualified { .. } => {
+                    limitations.push(
+                        detail
+                            .clone()
+                            .unwrap_or_else(|| "callback qualification unavailable".into()),
+                    );
+                    (InstallationState::Present, AdmissionState::Unknown)
                 }
                 HarnessStatus::ContractDeclared { .. } => {
                     limitations.push(

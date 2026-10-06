@@ -420,6 +420,7 @@ impl HarnessStatus {
         match self {
             HarnessStatus::Unknown => "unknown",
             HarnessStatus::NotInstalled(_) => "not_found",
+            HarnessStatus::PresentUnqualified { .. } => "unqualified",
             HarnessStatus::Refused(_) | HarnessStatus::VersionRefused(_) => "refused",
             HarnessStatus::Cooperative {
                 live_unverified: true,
@@ -1849,9 +1850,21 @@ pub(crate) mod health_v2_observer_tests {
             "missing supplied registered host kind: {wake}"
         );
         assert!(!wake.contains("during a turn"));
+        let builtins = crate::harness::registry::builtins();
+        let legacy =
+            crate::harness::registry::Registry::new(&builtins.registrations()[..2]).unwrap();
         assert_eq!(
-            crate::daemon::health::cooperative_wake_line_for(crate::harness::registry::builtins()),
+            crate::daemon::health::cooperative_wake_line_for(&legacy),
             crate::daemon::health::COOPERATIVE_WAKE_LINE
+        );
+        let expected = if cfg!(feature = "test-support") {
+            "wake cooperative: prompts only Herdr's detected idle/done claude, codex, hermes or synthetic_fourth agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified"
+        } else {
+            "wake cooperative: prompts only Herdr's detected idle/done claude, codex or hermes agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified"
+        };
+        assert_eq!(
+            crate::daemon::health::cooperative_wake_line_for(builtins),
+            expected
         );
     }
 
@@ -1868,7 +1881,7 @@ pub(crate) mod health_v2_observer_tests {
         let before = observer.pass(&Cancellation::default());
         assert!(matches!(
             before.status("claude"),
-            HarnessStatus::Cooperative { .. }
+            HarnessStatus::ContractDeclared { .. }
         ));
         let cancel = Cancellation::default();
         cancel.cancel();

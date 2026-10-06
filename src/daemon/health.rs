@@ -22,9 +22,10 @@ impl HarnessStatus {
     pub fn state(&self) -> HarnessState {
         match self {
             Self::Unknown => HarnessState::Unknown,
-            Self::NotInstalled(_) | Self::Refused(_) | Self::VersionRefused(_) => {
-                HarnessState::Unsupported
-            }
+            Self::NotInstalled(_)
+            | Self::PresentUnqualified { .. }
+            | Self::Refused(_)
+            | Self::VersionRefused(_) => HarnessState::Unsupported,
             Self::ContractDeclared { .. } | Self::Cooperative { .. } | Self::Optimistic(_) => {
                 HarnessState::Cooperative
             }
@@ -33,11 +34,12 @@ impl HarnessStatus {
     }
 
     /// Whether this harness leaves Health `healthy`: cooperative or
-    /// supported, or simply not installed here.
+    /// supported, absent here, or present without optional qualification.
     fn acceptable(&self) -> bool {
         matches!(
             self,
             Self::NotInstalled(_)
+                | Self::PresentUnqualified { .. }
                 | Self::VersionRefused(_)
                 | Self::ContractDeclared { .. }
                 | Self::Cooperative { .. }
@@ -319,7 +321,8 @@ fn harness_line(
         HarnessStatus::Refused(detail) => {
             push(limitations, format!("harness {name} unsupported: {detail}"))
         }
-        HarnessStatus::ContractDeclared { detail } => {
+        HarnessStatus::PresentUnqualified { detail }
+        | HarnessStatus::ContractDeclared { detail } => {
             push(notes, format!("harness {name}: {detail}"));
         }
         HarnessStatus::VersionRefused(_)

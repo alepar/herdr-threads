@@ -1193,6 +1193,9 @@ pub enum HarnessStatus {
     Unknown,
     /// No executable on the daemon's `PATH`: a note, never a degradation.
     NotInstalled(String),
+    /// Executable present; callback/runtime qualification is unavailable.
+    /// Grants no operational contract, enablement, runtime or receipt basis.
+    PresentUnqualified { detail: String },
     /// Present but its `--version` could not be observed or recognized, which
     /// blocks the hook: a limitation that degrades Health.
     Refused(String),

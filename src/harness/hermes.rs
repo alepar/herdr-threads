@@ -598,6 +598,57 @@ impl CanaryStrategy for HermesCanary {
         }
     }
 }
+/// Captured PATH metadata only: never invoke the executable or discover a
+/// profile. Check the caller's budget between each bounded candidate lookup.
+fn observe_executable(
+    env: &InstallEnvironment,
+    budget: &CallBudget,
+) -> Result<Option<std::path::PathBuf>, String> {
+    use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
+    let check = || -> Result<(), String> {
+        if budget.cancellation.is_cancelled() {
+            Err("hermes executable observation cancelled".into())
+        } else if env.clock.monotonic_now() >= budget.deadline {
+            Err("hermes executable observation budget expired".into())
+        } else {
+            Ok(())
+        }
+    };
+    check()?;
+    let Some(path) = env.path.as_deref() else {
+        return Ok(None);
+    };
+    if path.as_bytes().len() > 65_536 {
+        return Err("hermes executable observation PATH exceeds bounded lookup".into());
+    }
+    for (index, directory) in std::env::split_paths(path).enumerate() {
+        check()?;
+        if index >= 256 {
+            return Err("hermes executable observation PATH exceeds bounded lookup".into());
+        }
+        if !directory.is_absolute() {
+            continue;
+        }
+        let binary = directory.join("hermes");
+        let metadata = std::fs::metadata(&binary);
+        check()?;
+        match metadata {
+            Ok(metadata) if metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 => {
+                return Ok(Some(binary));
+            }
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) => {}
+            Err(_) => return Err("hermes executable observation metadata unavailable".into()),
+        }
+    }
+    check()?;
+    Ok(None)
+}
+
 impl HarnessAdapter for HermesAdapter {
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy> {
         Some(&HermesCanary)
@@ -616,11 +667,31 @@ impl HarnessAdapter for HermesAdapter {
     fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy {
         super::context::QualifiedTurnPolicy::StartupAttach
     }
-    fn observe_install(&self, _: &InstallEnvironment, _: &CallBudget) -> InstallObservation {
-        InstallObservation::Unsupported(UnsupportedOperation {
-            adapter: "hermes",
-            operation: "installation is not callback qualification",
-        })
+    fn observe_install(&self, env: &InstallEnvironment, budget: &CallBudget) -> InstallObservation {
+        match observe_executable(env, budget) {
+            Ok(Some(binary)) => InstallObservation::ExecutableAvailable { binary },
+            Ok(None) => InstallObservation::Unavailable {
+                diagnostic: "no executable `hermes` on the daemon's PATH".into(),
+            },
+            Err(diagnostic) => InstallObservation::Unavailable { diagnostic },
+        }
+    }
+    fn observe_daemon(&self, env: &InstallEnvironment, budget: &CallBudget) -> DaemonObservation {
+        let status = match observe_executable(env, budget) {
+            Ok(Some(_)) => HarnessStatus::PresentUnqualified {
+                detail: "hermes executable present; callback qualification unavailable; runtime metadata, enablement and native behavior unobserved".into(),
+            },
+            Ok(None) => HarnessStatus::NotInstalled(
+                "no executable `hermes` on the daemon's PATH".into(),
+            ),
+            Err(diagnostic) => HarnessStatus::Refused(diagnostic),
+        };
+        // Executable presence cannot supply qualified callback admission or
+        // runtime identity. No fingerprint reuse: every pass observes again.
+        DaemonObservation {
+            status,
+            ..Default::default()
+        }
     }
     fn admit(
         &self,
