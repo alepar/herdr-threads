@@ -46,9 +46,17 @@ fn execute_for_registry<F: FnMut(&str) -> io::Result<bool>>(
             continue;
         }
         let request = registration
-            .resolve_setup_scope(&SetupScopeRequest::Default, &snapshot)
-            .map(|scope| StatusRequest {
-                scope,
+            .resolve_setup_scope_for(
+                &SetupScopeResolutionRequest {
+                    operation: SetupScopeOperation::Status,
+                    selector: &SetupScopeRequest::Default,
+                    native_binary: None,
+                    environment: &snapshot,
+                },
+                &budget,
+            )
+            .map(|resolution| StatusRequest {
+                scope: resolution.scope,
                 environment: snapshot.clone(),
                 native_binary: None,
             });

@@ -2775,3 +2775,350 @@ fn versionless_setup_rejects_unusable_explicit_binary_without_config_changes() {
         assert!(!s.state.join("setup").exists());
     }
 }
+
+/// Strict synthetic machine-command/helper fixture; no installed Hermes imports.
+struct HermesScopeFixture {
+    scratch: Scratch,
+    launcher: PathBuf,
+    native_home: PathBuf,
+    calls: PathBuf,
+}
+impl HermesScopeFixture {
+    fn new() -> Self {
+        use herdr_threads::test_support::spawn::SpawnOwned;
+        let scratch = Scratch::new();
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(scratch.state.join("setup"))
+            .unwrap();
+        // Resolve the test interpreter before narrowing PATH to synthetic executables.
+        let mut python = scrubbed_command("python3");
+        python
+            .args(["-c", "import sys;print(sys.executable)"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let output = python.spawn_owned().unwrap().wait_with_output().unwrap();
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        let interpreter = PathBuf::from(text(&output.stdout).trim())
+            .canonicalize()
+            .unwrap();
+        let root = scratch.root.join("synthetic source");
+        let package = root.join("hermes_cli");
+        let dependencies = scratch.root.join("dependencies/site-packages");
+        let native_home = scratch.root.join("native home with spaces");
+        fs::create_dir_all(&package).unwrap();
+        fs::create_dir_all(&dependencies).unwrap();
+        fs::create_dir_all(native_home.join("profiles/work")).unwrap();
+        let py = |p: &Path| serde_json::to_string(p.to_str().unwrap()).unwrap();
+        for (path, bytes) in [
+            (root.join("hermes_bootstrap.py"),format!("import os,sys\nfrom pathlib import Path\n_root=Path(__file__).resolve().parent\n_pm_repair=False\n_launch_python=None\nsys.path[:]=[str(_root),{},*sys.path[1:]]\nos.environ['PYTHONPATH']=os.pathsep.join(sys.path[:2])\n",py(&dependencies))),
+            (root.join("hermes_constants.py"),"import os\nfrom pathlib import Path\ndef get_hermes_home(): return Path(os.environ['HERMES_HOME'])\n".into()),
+            (package.join("__init__.py"),String::new()),
+            (package.join("profiles.py"),format!("from pathlib import Path\ndef normalize_profile_name(p): return p.strip().lower()\ndef validate_profile_name(p):\n if p not in ('default','work'): raise ValueError('private')\ndef resolve_profile_env(p):\n p=normalize_profile_name(p);validate_profile_name(p)\n root=Path({});home=root if p=='default' else root/'profiles'/p\n if not home.is_dir(): raise FileNotFoundError('private')\n return str(home)\n",py(&native_home))),
+            (package.join("version_info.py"),"from types import SimpleNamespace\ndef get_version_info(): return SimpleNamespace(source='git',base_version='0.21.5',derived_version='0.21.5+1.g1234567',commit='1234567890abcdef1234567890abcdef12345678',dirty=False,distance=1)\n".into()),
+            (package.join("config.py"),"class FailedConfigRead(dict): pass\ndef load_config_readonly(): return {'plugins':{'enabled':['herdr-threads'],'disabled':[]}}\n".into()),
+        ] { fs::write(path,bytes).unwrap(); }
+        for home in [&native_home, native_home.join("profiles/work").as_path()] {
+            fs::write(
+                home.join("config.yaml"),
+                b"plugins:\n  enabled: [herdr-threads]\nother: preserved\n",
+            )
+            .unwrap();
+        }
+        let bootstrap = format!(
+            "import sys,runpy;sys.path.insert(0,{});import hermes_bootstrap;runpy.run_module('trace',run_name='__main__',alter_sys=True)",
+            py(&root)
+        );
+        let launcher = scratch.root.join("selected launcher");
+        let calls = scratch.root.join("selected-launcher-calls.jsonl");
+        fs::write(&launcher,format!("#!{}\nimport json,sys,os\nwith open({},'a') as f: f.write(json.dumps({{'argv':sys.argv[1:],'home':os.environ['HOME'],'path':os.environ.get('PATH'),'native_home':os.environ.get('HERMES_HOME')}})+'\\n')\nprint(json.dumps([{},'-I','-c',{},'--count','--no-report',sys.argv[-3],'--profile',sys.argv[-1]]))\n",interpreter.display(),py(&calls),py(&interpreter),serde_json::to_string(&bootstrap).unwrap())).unwrap();
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
+        Self {
+            scratch,
+            launcher,
+            native_home,
+            calls,
+        }
+    }
+    fn run(&self, verb: &str, profile: &str, explicit: bool) -> Output {
+        let mut command = self.scratch.command(&self.scratch.root);
+        command
+            .env("PATH", &self.scratch.bin)
+            .env("HERMES_HOME", &self.native_home)
+            .arg("--state-dir")
+            .arg(&self.scratch.state)
+            .arg("--host-endpoint")
+            .arg(self.scratch.host())
+            .args(["--json", verb, "hermes"]);
+        if profile != "default" {
+            command.args(["--profile", profile]);
+        }
+        if explicit {
+            command.arg("--harness-binary").arg(&self.launcher);
+        }
+        herdr_threads::test_support::spawn::tag(&mut command);
+        command.output().unwrap()
+    }
+    fn selected_home(&self, profile: &str) -> PathBuf {
+        if profile == "default" {
+            self.native_home.clone()
+        } else {
+            self.native_home.join("profiles").join(profile)
+        }
+    }
+}
+
+#[test]
+fn public_hermes_unsetup_uses_recorded_scope_after_launcher_loss() {
+    for profile in ["default", "work"] {
+        let fixture = HermesScopeFixture::new();
+        fs::copy(&fixture.launcher, fixture.scratch.bin.join("hermes")).unwrap();
+        let home = fixture.selected_home(profile);
+        let yaml = fs::read(home.join("config.yaml")).unwrap();
+        let installed = fixture.run("setup", profile, false);
+        assert!(
+            installed.status.success(),
+            "{}{}",
+            text(&installed.stdout),
+            text(&installed.stderr)
+        );
+        assert!(home.join("plugins/herdr-threads/__init__.py").is_file());
+        let calls = fs::read(&fixture.calls).unwrap();
+        fs::remove_file(fixture.scratch.bin.join("hermes")).unwrap();
+        fs::remove_file(&fixture.launcher).unwrap();
+        let removed = fixture.run("unsetup", profile, false);
+        assert!(
+            removed.status.success(),
+            "{}{}",
+            text(&removed.stdout),
+            text(&removed.stderr)
+        );
+        assert!(!home.join("plugins/herdr-threads").exists());
+        assert_eq!(
+            fs::read(&fixture.calls).unwrap(),
+            calls,
+            "removal executed a native/helper discovery"
+        );
+        assert_eq!(fs::read(home.join("config.yaml")).unwrap(), yaml);
+        let unknown = fixture.run("unsetup", "missing", false);
+        assert!(!unknown.status.success());
+        assert_eq!(fs::read(&fixture.calls).unwrap(), calls);
+    }
+}
+
+#[test]
+fn explicit_hermes_binary_and_budget_reach_public_install_and_status() {
+    let fixture = HermesScopeFixture::new();
+    let sentinel = fixture.scratch.root.join("unrelated-launcher-executed");
+    fixture.scratch.harness("hermes", "unrelated");
+    fs::write(
+        fixture.scratch.bin.join("hermes"),
+        format!("#!/bin/sh\n: > '{}'\nexit 77\n", sentinel.display()),
+    )
+    .unwrap();
+    let installed = fixture.run("setup", "work", true);
+    assert!(
+        installed.status.success(),
+        "{}{}",
+        text(&installed.stdout),
+        text(&installed.stderr)
+    );
+    let status = fixture.run("setup-status", "work", true);
+    assert!(
+        status.status.success(),
+        "{}{}",
+        text(&status.stdout),
+        text(&status.stderr)
+    );
+    assert_eq!(json(&status)["installed"], true);
+    assert!(
+        !sentinel.exists(),
+        "scope resolution used unrelated PATH launcher"
+    );
+    let calls: Vec<serde_json::Value> = fs::read_to_string(&fixture.calls)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        calls.len(),
+        4,
+        "resolution and revalidation must use selected launcher"
+    );
+    for call in calls {
+        assert_eq!(call["home"], fixture.scratch.home.to_str().unwrap());
+        assert_eq!(call["path"], fixture.scratch.bin.to_str().unwrap());
+        assert_eq!(call["native_home"], fixture.native_home.to_str().unwrap());
+        assert_eq!(call["argv"].as_array().unwrap().last().unwrap(), "work");
+    }
+    // Existing generic API: a clock that exhausts the caller deadline during
+    // discovery must never reach owned installation with a renewed budget.
+    use herdr_threads::{
+        harness::{adapter::*, registry},
+        protocol::time::*,
+    };
+    struct Advancing(std::sync::atomic::AtomicU64);
+    impl Clock for Advancing {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(0)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(
+                self.0
+                    .fetch_add(20_000, std::sync::atomic::Ordering::SeqCst),
+            )
+        }
+    }
+    let environment = SetupEnvironment {
+        clock: std::sync::Arc::new(Advancing(std::sync::atomic::AtomicU64::new(0))),
+        home: Some(fixture.scratch.home.clone().into_os_string()),
+        path: Some(fixture.scratch.bin.clone().into_os_string()),
+        cwd: fixture.scratch.root.clone(),
+        executable: PathBuf::from(BIN),
+        state_dir: Some(fixture.scratch.root.join("deadline-state")),
+        host_endpoint: Some(fixture.scratch.host()),
+        declared: [(
+            "HERMES_HOME".into(),
+            fixture.native_home.clone().into_os_string(),
+        )]
+        .into(),
+        ..Default::default()
+    };
+    let registry = registry::builtins();
+    let registration = registry.by_id(registry.agent("hermes").unwrap()).unwrap();
+    let before = fs::read(&fixture.calls).unwrap();
+    let result = herdr_threads::cli::setup::execute_registered(
+        registration,
+        herdr_threads::cli::setup::SetupVerb::Install,
+        &SetupScopeRequest::Default,
+        Some(&fixture.launcher),
+        Default::default(),
+        &environment,
+    );
+    assert!(
+        result.is_err(),
+        "exhausted single caller budget was renewed"
+    );
+    assert!(!fixture.native_home.join("plugins/herdr-threads").exists());
+    assert_eq!(
+        fs::read(&fixture.calls).unwrap(),
+        before,
+        "expired boundary executed launcher"
+    );
+}
+
+#[test]
+fn public_hermes_recorded_scope_preserves_assets_on_lock_alias_and_generation_changes() {
+    use herdr_threads::{
+        harness::{adapter::*, registry},
+        protocol::time::*,
+    };
+    use std::os::{fd::AsRawFd, unix::fs::symlink};
+    let fixture = HermesScopeFixture::new();
+    let alias = fixture.scratch.root.join("native alias with spaces");
+    symlink(&fixture.native_home, &alias).unwrap();
+    let profiles = fixture
+        .scratch
+        .root
+        .join("synthetic source/hermes_cli/profiles.py");
+    let before = fs::read_to_string(&profiles).unwrap();
+    fs::write(
+        &profiles,
+        before.replace(
+            &serde_json::to_string(fixture.native_home.to_str().unwrap()).unwrap(),
+            &serde_json::to_string(alias.to_str().unwrap()).unwrap(),
+        ),
+    )
+    .unwrap();
+    assert!(fixture.run("setup", "work", true).status.success());
+    let home = fixture.selected_home("work");
+    let bridge = home.join("plugins/herdr-threads/__init__.py");
+    let original = fs::read(&bridge).unwrap();
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(home.join("plugins/.herdr-threads-operation.lock"))
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    let refused = fixture.run("unsetup", "work", false);
+    drop(lock);
+    assert!(!refused.status.success());
+    assert_eq!(fs::read(&bridge).unwrap(), original);
+    fs::write(&bridge, b"user modification").unwrap();
+    assert!(fixture.run("unsetup", "work", false).status.success());
+    assert_eq!(fs::read(&bridge).unwrap(), b"user modification");
+    fs::write(&bridge, &original).unwrap();
+    let environment = SetupEnvironment {
+        home: Some(fixture.scratch.home.clone().into_os_string()),
+        path: Some(fixture.scratch.bin.clone().into_os_string()),
+        cwd: fixture.scratch.root.clone(),
+        executable: PathBuf::from(BIN),
+        state_dir: Some(fixture.scratch.state.clone()),
+        host_endpoint: Some(fixture.scratch.host()),
+        declared: [(
+            "HERMES_HOME".into(),
+            fixture.native_home.clone().into_os_string(),
+        )]
+        .into(),
+        ..Default::default()
+    };
+    let budget = CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let registry = registry::builtins();
+    let registration = registry.by_id(registry.agent("hermes").unwrap()).unwrap();
+    let selector = SetupScopeRequest::Profile("work".into());
+    let resolution = registration
+        .resolve_setup_scope_for(
+            &SetupScopeResolutionRequest {
+                operation: SetupScopeOperation::Remove,
+                selector: &selector,
+                native_binary: None,
+                environment: &environment,
+            },
+            &budget,
+        )
+        .unwrap();
+    assert!(fixture.run("setup", "work", true).status.success());
+    let successor = fs::read(home.join("plugins/herdr-threads/bridge_config.json")).unwrap();
+    assert!(
+        registration
+            .unsetup_resolved(
+                &UnsetupRequest {
+                    scope: resolution.scope.clone(),
+                    environment: environment.clone()
+                },
+                &resolution,
+                &budget
+            )
+            .is_err()
+    );
+    assert_eq!(
+        fs::read(home.join("plugins/herdr-threads/bridge_config.json")).unwrap(),
+        successor
+    );
+    let foreign_home = fixture.scratch.root.join("foreign home");
+    fs::create_dir(&foreign_home).unwrap();
+    fs::remove_file(&alias).unwrap();
+    symlink(&foreign_home, &alias).unwrap();
+    let refused = fixture.run("unsetup", "work", false);
+    assert!(!refused.status.success());
+    assert_eq!(fs::read(&bridge).unwrap(), original);
+    fs::remove_file(&alias).unwrap();
+    symlink(&fixture.native_home, &alias).unwrap();
+    let foreign = home.join("plugins/herdr-threads/foreign.txt");
+    fs::write(&foreign, b"foreign preserved").unwrap();
+    assert!(fixture.run("unsetup", "work", false).status.success());
+    assert_eq!(fs::read(&foreign).unwrap(), b"foreign preserved");
+    fs::remove_file(&foreign).unwrap();
+    assert!(
+        fixture.run("unsetup", "work", false).status.success(),
+        "interrupted exact removal did not recover"
+    );
+    assert!(!bridge.parent().unwrap().exists());
+}

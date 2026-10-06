@@ -877,6 +877,73 @@ impl HarnessAdapter for HermesAdapter {
             home: o.home,
         })
     }
+    fn resolve_setup_scope_for(
+        &self,
+        request: &SetupScopeResolutionRequest<'_>,
+        budget: &CallBudget,
+    ) -> Result<SetupScopeResolution, SetupFailure> {
+        check_setup_budget(request.environment, budget)?;
+        let profile = match request.selector {
+            SetupScopeRequest::Default => "default",
+            SetupScopeRequest::Profile(profile) => profile,
+        };
+        if request.operation == SetupScopeOperation::Remove {
+            let state = request
+                .environment
+                .state_dir
+                .as_deref()
+                .ok_or_else(|| SetupFailure::Invalid("state unavailable".into()))?;
+            let (home, generation) =
+                assets::resolve_owned_selector(state, profile).map_err(asset_error)?;
+            check_setup_budget(request.environment, budget)?;
+            return Ok(SetupScopeResolution {
+                scope: ResolvedSetupScope::Profile {
+                    name: profile.into(),
+                    home,
+                },
+                removal_generation: Some(generation),
+            });
+        }
+        let observed =
+            inspect_profile(profile, request.native_binary, request.environment, budget)?;
+        check_setup_budget(request.environment, budget)?;
+        Ok(SetupScopeResolution {
+            scope: ResolvedSetupScope::Profile {
+                name: observed.profile,
+                home: observed.home,
+            },
+            removal_generation: None,
+        })
+    }
+    fn unsetup_resolved(
+        &self,
+        request: &UnsetupRequest,
+        resolution: &SetupScopeResolution,
+        budget: &CallBudget,
+    ) -> Result<RemovalOutcome, SetupFailure> {
+        check_setup_budget(&request.environment, budget)?;
+        if request.scope != resolution.scope {
+            return Err(SetupFailure::Invalid(
+                "removal scope differs from recorded resolution".into(),
+            ));
+        }
+        let ResolvedSetupScope::Profile { name, home } = &request.scope else {
+            return Err(SetupFailure::Invalid(
+                "recorded removal requires a profile".into(),
+            ));
+        };
+        let generation = resolution.removal_generation.as_deref().ok_or_else(|| {
+            SetupFailure::Invalid("recorded removal generation unavailable".into())
+        })?;
+        let state = request
+            .environment
+            .state_dir
+            .as_deref()
+            .ok_or_else(|| SetupFailure::Invalid("state unavailable".into()))?;
+        let removed =
+            assets::unsetup_recorded(home, name, state, generation).map_err(asset_error)?;
+        Ok(removal_outcome(removed))
+    }
     fn setup(
         &self,
         request: &SetupRequest,
@@ -898,6 +965,7 @@ impl HarnessAdapter for HermesAdapter {
             .host_endpoint
             .as_deref()
             .ok_or_else(|| SetupFailure::Invalid("host unavailable".into()))?;
+        check_setup_budget(&request.environment, budget)?;
         assets::setup(&o, state, &request.executable, host).map_err(asset_error)?;
         let status = assets::status(&o, state).map_err(asset_error)?;
         Ok(SetupOutcome {
@@ -956,13 +1024,7 @@ impl HarnessAdapter for HermesAdapter {
             .as_deref()
             .ok_or_else(|| SetupFailure::Invalid("state unavailable".into()))?;
         let removed = assets::unsetup(home, profile, state).map_err(asset_error)?;
-        Ok(RemovalOutcome {
-            actions: vec![SetupAction::RemovedOwned],
-            diagnostic: "exact owned assets removed; native disable remains manual".into(),
-            residue: removed.residue.iter().map(PathBuf::from).collect(),
-            projection: serde_json::json!({"manual_argv":removed.manual_argv}),
-            diagnostics: vec![],
-        })
+        Ok(removal_outcome(removed))
     }
 }
 fn asset_projection(s: &assets::AssetStatus) -> serde_json::Value {
@@ -977,6 +1039,15 @@ fn launcher(env: &SetupEnvironment) -> Option<PathBuf> {
             .map(|p| p.join("hermes"))
             .find(|p| p.is_file())
     })
+}
+fn removal_outcome(removed: assets::Removal) -> RemovalOutcome {
+    RemovalOutcome {
+        actions: vec![SetupAction::RemovedOwned],
+        diagnostic: "exact owned assets removed; native disable remains manual".into(),
+        residue: removed.residue.iter().map(PathBuf::from).collect(),
+        projection: serde_json::json!({"manual_argv":removed.manual_argv}),
+        diagnostics: vec![],
+    }
 }
 fn inspect_profile(
     profile: &str,
@@ -1987,7 +2058,7 @@ mod adapter_tests {
             test_support::counting_client::{CountingLocalClient, DaemonVintage},
         };
         let iso = crate::test_support::isolation::TestIsolation::new("hermes-rich-recorder");
-        let (clock, budget) = timing();
+        let clock: Arc<dyn crate::protocol::time::Clock> = Arc::new(crate::app::SystemClock::new());
         let store = Arc::new(
             crate::store::SqliteStore::new(
                 crate::store::connection::StoreContext::new(
@@ -1999,6 +2070,11 @@ mod adapter_tests {
             )
             .unwrap(),
         );
+        // Fixture preparation is outside the one unchanged callback budget.
+        let budget = CallBudget {
+            deadline: crate::protocol::time::MonoInstant(clock.monotonic_now().0 + 1000),
+            cancellation: Default::default(),
+        };
         let recorder = Arc::new(
             crate::daemon::harness_evidence::HarnessEvidenceRecorderV2::new(
                 store.clone(),
@@ -2285,6 +2361,21 @@ mod adapter_tests {
         ) -> Result<ResolvedSetupScope, SetupFailure> {
             HermesAdapter.resolve_setup_scope(r, e)
         }
+        fn resolve_setup_scope_for(
+            &self,
+            r: &SetupScopeResolutionRequest<'_>,
+            b: &CallBudget,
+        ) -> Result<SetupScopeResolution, SetupFailure> {
+            HermesAdapter.resolve_setup_scope_for(r, b)
+        }
+        fn unsetup_resolved(
+            &self,
+            r: &UnsetupRequest,
+            s: &SetupScopeResolution,
+            b: &CallBudget,
+        ) -> Result<RemovalOutcome, SetupFailure> {
+            HermesAdapter.unsetup_resolved(r, s, b)
+        }
         fn setup(&self, r: &SetupRequest, b: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
             HermesAdapter.setup(r, b)
         }
@@ -2401,6 +2492,21 @@ mod adapter_tests {
             e: &SetupEnvironment,
         ) -> Result<ResolvedSetupScope, SetupFailure> {
             HermesAdapter.resolve_setup_scope(r, e)
+        }
+        fn resolve_setup_scope_for(
+            &self,
+            r: &SetupScopeResolutionRequest<'_>,
+            b: &CallBudget,
+        ) -> Result<SetupScopeResolution, SetupFailure> {
+            HermesAdapter.resolve_setup_scope_for(r, b)
+        }
+        fn unsetup_resolved(
+            &self,
+            r: &UnsetupRequest,
+            s: &SetupScopeResolution,
+            b: &CallBudget,
+        ) -> Result<RemovalOutcome, SetupFailure> {
+            HermesAdapter.unsetup_resolved(r, s, b)
         }
         fn setup(&self, r: &SetupRequest, b: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
             HermesAdapter.setup(r, b)

@@ -61,6 +61,323 @@ struct Manifest {
     stage_name: Option<String>,
     assets: BTreeMap<String, Asset>,
 }
+
+const INDEX_MAX: u64 = 16_384;
+const INDEX_NAME: &str = "selectors-v1.json";
+const INDEX_LOCK: &str = ".selectors.lock";
+const INDEX_MARKER: &str = ".selectors.identity";
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SelectorRecord {
+    home: PathBuf,
+    physical_home: PathBuf,
+    installation_token: String,
+    lock_inode: (u64, u64),
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SelectorIndex {
+    schema_version: u32,
+    state_inode: (u64, u64),
+    index_lock_inode: (u64, u64),
+    #[serde(deserialize_with = "unique_selectors")]
+    selectors: BTreeMap<String, SelectorRecord>,
+}
+fn unique_selectors<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, SelectorRecord>, D::Error> {
+    struct Unique;
+    impl<'de> serde::de::Visitor<'de> for Unique {
+        type Value = BTreeMap<String, SelectorRecord>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("at most32 distinct owned selectors")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut result = BTreeMap::new();
+            while let Some((key, value)) = map.next_entry::<String, SelectorRecord>()? {
+                if result.len() >= 32 || result.insert(key, value).is_some() {
+                    return Err(serde::de::Error::custom(
+                        "excess or duplicate owned selectors",
+                    ));
+                }
+            }
+            Ok(result)
+        }
+    }
+    deserializer.deserialize_map(Unique)
+}
+fn valid_generation(token: &str) -> bool {
+    token.len() == 36 && uuid::Uuid::parse_str(token).is_ok_and(|value| value.to_string() == token)
+}
+fn valid_selector(selector: &str) -> bool {
+    !selector.is_empty() && selector.len() <= 256 && !selector.chars().any(char::is_control)
+}
+fn owned_bytes(path: &Path, maximum: u64) -> Result<Option<Vec<u8>>, SetupError> {
+    let mut file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(SetupError::Conflict),
+    };
+    let meta = file.metadata().map_err(|_| SetupError::Io)?;
+    if !meta.is_file()
+        || meta.uid() != unsafe { libc::geteuid() }
+        || meta.nlink() != 1
+        || meta.mode() & 0o077 != 0
+        || meta.len() > maximum
+    {
+        return Err(SetupError::Conflict);
+    }
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(maximum + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| SetupError::Io)?;
+    if bytes.len() as u64 > maximum {
+        return Err(SetupError::TooLarge);
+    }
+    Ok(Some(bytes))
+}
+/// Local state ordering is always index -> physical profile; no native discovery.
+struct IndexLock {
+    file: File,
+    state: PathBuf,
+    directory: PathBuf,
+    state_inode: (u64, u64),
+    directory_inode: (u64, u64),
+    marker_inode: (u64, u64),
+}
+impl IndexLock {
+    fn acquire(state: &Path, create: bool) -> Result<Self, SetupError> {
+        if !valid_path(state) {
+            return Err(SetupError::Invalid);
+        }
+        regular_dir(state, create)?;
+        let directory = state.join("setup/hermes");
+        for path in [state.join("setup"), directory.clone()] {
+            if create {
+                crate::daemon::paths::ensure_private_dir(&path).map_err(|_| SetupError::Invalid)?;
+            }
+            regular_dir(&path, false)?;
+        }
+        let marker = directory.join(INDEX_MARKER);
+        let named = directory.join(INDEX_LOCK);
+        if matches!(fs::symlink_metadata(&named), Err(e) if e.kind()==std::io::ErrorKind::NotFound)
+            && (fs::symlink_metadata(&marker).is_ok()
+                || fs::symlink_metadata(directory.join(INDEX_NAME)).is_ok())
+        {
+            return Err(SetupError::Conflict);
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(create)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&named)
+            .map_err(|_| SetupError::Conflict)?;
+        let meta = file.metadata().map_err(|_| SetupError::Io)?;
+        if !meta.is_file()
+            || meta.uid() != unsafe { libc::geteuid() }
+            || meta.mode() & 0o077 != 0
+            || meta.nlink() != 1
+        {
+            return Err(SetupError::Conflict);
+        }
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(SetupError::Conflict);
+        }
+        match owned_bytes(&marker, 128)? {
+            Some(bytes)
+                if serde_json::from_slice::<(u64, u64)>(&bytes).ok() == Some(identity(&meta)) => {}
+            None if create => {
+                let mut output = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                    .open(&marker)
+                    .map_err(|_| SetupError::Conflict)?;
+                output
+                    .write_all(
+                        &serde_json::to_vec(&identity(&meta)).map_err(|_| SetupError::Invalid)?,
+                    )
+                    .and_then(|_| output.sync_all())
+                    .map_err(|_| SetupError::Io)?;
+                File::open(&directory)
+                    .and_then(|file| file.sync_all())
+                    .map_err(|_| SetupError::Io)?;
+            }
+            _ => return Err(SetupError::Conflict),
+        }
+        let lock = Self {
+            file,
+            state: state.into(),
+            state_inode: identity(&fs::symlink_metadata(state).map_err(|_| SetupError::Io)?),
+            directory_inode: identity(
+                &fs::symlink_metadata(&directory).map_err(|_| SetupError::Io)?,
+            ),
+            marker_inode: identity(&fs::symlink_metadata(marker).map_err(|_| SetupError::Io)?),
+            directory,
+        };
+        lock.validate()?;
+        Ok(lock)
+    }
+    fn validate(&self) -> Result<(), SetupError> {
+        regular_dir(&self.state.join("setup"), false)?;
+        let state = fs::symlink_metadata(&self.state).map_err(|_| SetupError::Conflict)?;
+        let directory = fs::symlink_metadata(&self.directory).map_err(|_| SetupError::Conflict)?;
+        let held = self.file.metadata().map_err(|_| SetupError::Conflict)?;
+        let named = fs::symlink_metadata(self.directory.join(INDEX_LOCK))
+            .map_err(|_| SetupError::Conflict)?;
+        let marker = fs::symlink_metadata(self.directory.join(INDEX_MARKER))
+            .map_err(|_| SetupError::Conflict)?;
+        if !state.is_dir()
+            || !directory.is_dir()
+            || !named.is_file()
+            || !marker.is_file()
+            || held.nlink() != 1
+            || identity(&state) != self.state_inode
+            || identity(&directory) != self.directory_inode
+            || identity(&held) != identity(&named)
+            || identity(&marker) != self.marker_inode
+        {
+            return Err(SetupError::Conflict);
+        }
+        Ok(())
+    }
+    fn read(&self) -> Result<SelectorIndex, SetupError> {
+        self.validate()?;
+        let Some(bytes) = owned_bytes(&self.directory.join(INDEX_NAME), INDEX_MAX)? else {
+            return Ok(SelectorIndex {
+                schema_version: 1,
+                state_inode: self.state_inode,
+                index_lock_inode: identity(&self.file.metadata().map_err(|_| SetupError::Io)?),
+                selectors: BTreeMap::new(),
+            });
+        };
+        let index: SelectorIndex =
+            serde_json::from_slice(&bytes).map_err(|_| SetupError::Conflict)?;
+        if index.schema_version != 1
+            || index.state_inode != self.state_inode
+            || index.index_lock_inode
+                != identity(&self.file.metadata().map_err(|_| SetupError::Io)?)
+            || index.selectors.len() > 32
+            || index.selectors.iter().any(|(key, row)| {
+                !valid_selector(key)
+                    || !valid_path(&row.home)
+                    || !valid_path(&row.physical_home)
+                    || !valid_generation(&row.installation_token)
+            })
+        {
+            return Err(SetupError::Conflict);
+        }
+        Ok(index)
+    }
+    fn save(&self, index: &SelectorIndex) -> Result<(), SetupError> {
+        self.validate()?;
+        let bytes = index_bytes(index)?;
+        write_replacement(&self.directory.join(INDEX_NAME), &bytes, true)?;
+        self.validate()
+    }
+}
+fn index_bytes(index: &SelectorIndex) -> Result<Vec<u8>, SetupError> {
+    let bytes = serde_json::to_vec(index).map_err(|_| SetupError::Invalid)?;
+    if index.selectors.len() > 32 || bytes.len() as u64 > INDEX_MAX {
+        return Err(SetupError::TooLarge);
+    }
+    Ok(bytes)
+}
+fn validate_record(record: &SelectorRecord) -> Result<(), SetupError> {
+    if record
+        .home
+        .canonicalize()
+        .map_err(|_| SetupError::Conflict)?
+        != record.physical_home
+        || record
+            .physical_home
+            .canonicalize()
+            .map_err(|_| SetupError::Conflict)?
+            != record.physical_home
+    {
+        return Err(SetupError::Conflict);
+    }
+    Ok(())
+}
+/// Exact recorded selector only. Historical manifests without it are ambiguous.
+pub fn resolve_owned_selector(
+    state: &Path,
+    selector: &str,
+) -> Result<(PathBuf, String), SetupError> {
+    if !valid_selector(selector) {
+        return Err(SetupError::Invalid);
+    }
+    let index_lock = IndexLock::acquire(state, false)?;
+    let index = index_lock.read()?;
+    let record = index.selectors.get(selector).ok_or(SetupError::Conflict)?;
+    validate_record(record)?;
+    let lock = ProfileLock::acquire(&record.physical_home, false, false)?;
+    let manifest = read_manifest(
+        &manifest_path(state, &record.physical_home, false)?,
+        &record.physical_home,
+    )?
+    .ok_or(SetupError::Conflict)?;
+    if record.installation_token != manifest.installation_token
+        || record.lock_inode != manifest.lock_inode
+    {
+        return Err(SetupError::Conflict);
+    }
+    // Partial exact removal is allowed; digest/refusal decisions belong to remover.
+    if identity(&lock.file.metadata().map_err(|_| SetupError::Io)?) != record.lock_inode {
+        return Err(SetupError::Conflict);
+    }
+    index_lock.validate()?;
+    lock.validate()?;
+    validate_record(record)?;
+    Ok((
+        record.physical_home.clone(),
+        record.installation_token.clone(),
+    ))
+}
+/// Capture and removal share the exact local generation; a successor is refused.
+pub fn unsetup_recorded(
+    home: &Path,
+    selector: &str,
+    state: &Path,
+    generation: &str,
+) -> Result<Removal, SetupError> {
+    if !valid_generation(generation) {
+        return Err(SetupError::Invalid);
+    }
+    let index_lock = IndexLock::acquire(state, false)?;
+    let mut index = index_lock.read()?;
+    let record = index.selectors.get(selector).ok_or(SetupError::Conflict)?;
+    validate_record(record)?;
+    if record.physical_home != home || record.installation_token != generation {
+        return Err(SetupError::Conflict);
+    }
+    let lock = ProfileLock::acquire(home, true, false)?;
+    let manifest =
+        read_manifest(&manifest_path(state, home, false)?, home)?.ok_or(SetupError::Conflict)?;
+    if manifest.installation_token != generation || manifest.lock_inode != record.lock_inode {
+        return Err(SetupError::Conflict);
+    }
+    index_lock.validate()?;
+    validate_record(record)?;
+    let result = unsetup_locked(home, selector, state, Some(&lock))?;
+    if result.residue.is_empty() {
+        index.selectors.retain(|_, row| row.physical_home != home);
+        index_lock.save(&index)?;
+    }
+    Ok(result)
+}
+
 fn guidance(profile: &str, action: &str) -> Vec<String> {
     vec![
         "hermes".into(),
@@ -422,6 +739,21 @@ pub fn setup(
     if !valid_path(rust) || !valid_path(host) {
         return Err(SetupError::Invalid);
     }
+    if !valid_selector(&o.profile) {
+        return Err(SetupError::Invalid);
+    }
+    let index_lock = IndexLock::acquire(state, true)?;
+    let mut index = index_lock.read()?;
+    if index
+        .selectors
+        .get(&o.profile)
+        .is_some_and(|record| record.physical_home != o.physical_home)
+    {
+        return Err(SetupError::Conflict);
+    }
+    if !index.selectors.contains_key(&o.profile) && index.selectors.len() >= 32 {
+        return Err(SetupError::TooLarge);
+    }
     let lock = ProfileLock::acquire(&o.physical_home, true, true)?;
     validate_scope(o)?;
     let manifest = manifest_path(state, &o.physical_home, true)?;
@@ -457,6 +789,27 @@ pub fn setup(
             )
         })
         .collect();
+    let lock_inode = identity(&lock.file.metadata().map_err(|_| SetupError::Io)?);
+    // Update every recorded alias of this physical home under both locks.
+    for record in index
+        .selectors
+        .values_mut()
+        .filter(|record| record.physical_home == o.physical_home)
+    {
+        validate_record(record)?;
+        record.installation_token = token.clone();
+        record.lock_inode = lock_inode;
+    }
+    index.selectors.insert(
+        o.profile.clone(),
+        SelectorRecord {
+            home: o.home.clone(),
+            physical_home: o.physical_home.clone(),
+            installation_token: token.clone(),
+            lock_inode,
+        },
+    );
+    index_bytes(&index)?; // Refuse whole-index overflow before changing assets/manifest.
     let stage_name = if old.is_none() {
         Some(format!(".herdr-threads-stage-{token}"))
     } else {
@@ -476,11 +829,12 @@ pub fn setup(
         home: o.physical_home.clone(),
         installation_token: token,
         phase: "preparing".into(),
-        lock_inode: identity(&lock.file.metadata().map_err(|_| SetupError::Io)?),
+        lock_inode,
         directory_inode,
         stage_name,
         assets,
     };
+    index_lock.validate()?;
     lock.validate()?;
     validate_scope(o)?;
     if let Err(error) = save_manifest(&manifest, &new) {
@@ -489,7 +843,9 @@ pub fn setup(
         }
         return Err(error);
     }
+    index_lock.save(&index)?;
     publish(&lock, &manifest, &mut new)?;
+    index_lock.validate()?;
     validate_scope(o)?;
     Ok(())
 }
@@ -562,6 +918,32 @@ pub fn status(o: &ProfileObservation, state: &Path) -> Result<AssetStatus, Setup
 
 /// Removal uses persisted ownership only; no native executable/version needed.
 pub fn unsetup(home: &Path, profile: &str, state: &Path) -> Result<Removal, SetupError> {
+    // Old schema1 exact-home callers remain compatible. Missing selector metadata
+    // never permits generic scope discovery, and no roots are guessed here.
+    let indexed = [INDEX_LOCK, INDEX_MARKER, INDEX_NAME]
+        .iter()
+        .any(|name| fs::symlink_metadata(state.join("setup/hermes").join(name)).is_ok());
+    let index_lock = if indexed {
+        Some(IndexLock::acquire(state, false)?)
+    } else {
+        None
+    };
+    let mut index = index_lock.as_ref().map(IndexLock::read).transpose()?;
+    let result = unsetup_locked(home, profile, state, None)?;
+    if result.residue.is_empty()
+        && let (Some(index_lock), Some(index)) = (index_lock, index.as_mut())
+    {
+        index.selectors.retain(|_, row| row.physical_home != home);
+        index_lock.save(index)?;
+    }
+    Ok(result)
+}
+fn unsetup_locked(
+    home: &Path,
+    profile: &str,
+    state: &Path,
+    held: Option<&ProfileLock>,
+) -> Result<Removal, SetupError> {
     if !valid_path(home)
         || !valid_path(state)
         || profile.is_empty()
@@ -578,7 +960,13 @@ pub fn unsetup(home: &Path, profile: &str, state: &Path) -> Result<Removal, Setu
     {
         return Ok(result);
     }
-    let lock = ProfileLock::acquire(home, true, false)?;
+    let acquired;
+    let lock = if let Some(lock) = held {
+        lock
+    } else {
+        acquired = ProfileLock::acquire(home, true, false)?;
+        &acquired
+    };
     let manifest = manifest_path(state, home, false)?;
     let Some(m) = read_manifest(&manifest, home)? else {
         if lock.plugins.join("herdr-threads").exists() {
@@ -598,7 +986,7 @@ pub fn unsetup(home: &Path, profile: &str, state: &Path) -> Result<Removal, Setu
         fs::remove_file(manifest).map_err(|_| SetupError::Io)?;
         return Ok(result);
     } else {
-        generation_directory(&lock, &m)?
+        generation_directory(lock, &m)?
     };
     // Inspect one locked generation. Never delete a successor using stale state.
     for (name, a) in &m.assets {
@@ -1143,6 +1531,101 @@ mod tests {
             f.home
                 .join("plugins/herdr-threads/bridge_config.json")
                 .exists()
+        );
+    }
+    #[test]
+    fn recorded_selectors_refuse_missing_historical_metadata_and_stale_generations() {
+        let f = Fixture::new();
+        f.install().unwrap();
+        let (home, generation) = resolve_owned_selector(&f.state, "default").unwrap();
+        assert_eq!(home, f.home);
+        assert!(valid_generation(&generation));
+        assert!(resolve_owned_selector(&f.state, "unknown").is_err());
+        f.install().unwrap();
+        let successor = fs::read(f.home.join("plugins/herdr-threads/bridge_config.json")).unwrap();
+        assert!(unsetup_recorded(&home, "default", &f.state, &generation).is_err());
+        assert_eq!(
+            fs::read(f.home.join("plugins/herdr-threads/bridge_config.json")).unwrap(),
+            successor
+        );
+        // A real legacy schema1 manifest has no selector attribution. Exact-home
+        // API removal stays supported; generic discovery must remain refused.
+        for name in [INDEX_NAME, INDEX_LOCK, INDEX_MARKER] {
+            fs::remove_file(f.state.join("setup/hermes").join(name)).unwrap();
+        }
+        assert!(resolve_owned_selector(&f.state, "default").is_err());
+        assert!(
+            unsetup(&home, "default", &f.state)
+                .unwrap()
+                .residue
+                .is_empty()
+        );
+    }
+    #[test]
+    fn selector_index_bounds_duplicates_lock_identity_and_corruption_preserve_assets() {
+        let f = Fixture::new();
+        f.install().unwrap();
+        let lock = IndexLock::acquire(&f.state, false).unwrap();
+        let path = lock.directory.join(INDEX_NAME);
+        let original = fs::read(&path).unwrap();
+        let bridge = fs::read(f.home.join("plugins/herdr-threads/__init__.py")).unwrap();
+        let mut index = lock.read().unwrap();
+        let row = index.selectors["default"].clone();
+        index.selectors.clear();
+        for i in 0..32 {
+            index.selectors.insert(format!("profile-{i}"), row.clone());
+        }
+        lock.save(&index).unwrap();
+        let full = fs::read(&path).unwrap();
+        drop(lock);
+        let mut observed = f.observation();
+        observed.profile = "overflow".into();
+        assert_eq!(
+            setup(
+                &observed,
+                &f.state,
+                &f.root.join("rust"),
+                &f.root.join("host")
+            ),
+            Err(SetupError::TooLarge)
+        );
+        assert_eq!(fs::read(&path).unwrap(), full);
+        let lock = IndexLock::acquire(&f.state, false).unwrap();
+        let mut oversized = lock.read().unwrap();
+        oversized.selectors.clear();
+        for i in 0..32 {
+            oversized
+                .selectors
+                .insert(format!("{}-{i}", "x".repeat(250)), row.clone());
+        }
+        assert!(index_bytes(&oversized).is_err());
+        let value = serde_json::to_string(&row).unwrap();
+        let duplicate = format!(
+            "{{\"schema_version\":1,\"state_inode\":{},\"index_lock_inode\":{},\"selectors\":{{\"default\":{},\"default\":{}}}}}",
+            serde_json::to_string(&lock.state_inode).unwrap(),
+            serde_json::to_string(&index.index_lock_inode).unwrap(),
+            value,
+            value
+        );
+        fs::write(&path, duplicate).unwrap();
+        assert!(lock.read().is_err());
+        fs::write(&path, &original).unwrap();
+        drop(lock);
+        fs::write(&path, vec![b' '; INDEX_MAX as usize + 1]).unwrap();
+        assert!(resolve_owned_selector(&f.state, "default").is_err());
+        assert!(unsetup(&f.home, "default", &f.state).is_err());
+        assert_eq!(
+            fs::read(f.home.join("plugins/herdr-threads/__init__.py")).unwrap(),
+            bridge
+        );
+        fs::write(&path, &original).unwrap();
+        let lock_path = f.state.join("setup/hermes").join(INDEX_LOCK);
+        fs::remove_file(&lock_path).unwrap();
+        assert!(resolve_owned_selector(&f.state, "default").is_err());
+        assert!(unsetup(&f.home, "default", &f.state).is_err());
+        assert_eq!(
+            fs::read(f.home.join("plugins/herdr-threads/__init__.py")).unwrap(),
+            bridge
         );
     }
 }
