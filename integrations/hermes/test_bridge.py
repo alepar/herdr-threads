@@ -9,6 +9,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -69,6 +71,57 @@ if mode=='mismatch':
     result['lifecycle_ack']['session_id']=session
 print(json.dumps(result,ensure_ascii=False))
 '''
+
+
+class PublicationLock:
+    """Observe publication by the worker without replacing its behavior.
+
+    A provider return alone is insufficient: the worker must publish pending=False
+    under its own lock for that exact capture/read iteration.
+    """
+    def __init__(self, reader):
+        self.reader = reader
+        self.lock = reader.lock
+        self.counts = {"capture": 0, "timeout": 0}
+        self.entered = {}
+        self.completed = {}
+        self.current = None
+        for kind, name in (("capture", "capture"), ("timeout", "observe_timeout")):
+            original = getattr(reader.provider, name)
+            setattr(reader.provider, name, self.observe(kind, original))
+
+    def observe(self, kind, original):
+        def call():
+            with self.lock:
+                self.counts[kind] += 1
+                key = (kind, self.counts[kind])
+                self.current = (key, False)
+                self.entered[key] = True
+            try:
+                return original()
+            finally:
+                with self.lock:
+                    self.current = (key, True)
+        return call
+
+    def acquire(self, *args, **kwargs):
+        return self.lock.acquire(*args, **kwargs)
+
+    def release(self):
+        reader = self.reader
+        if (threading.current_thread() is reader.thread and self.current is not None
+                and self.current[1] and not reader.pending):
+            key = self.current[0]
+            self.completed.setdefault(key, (reader.quality, reader.observed_timeout,
+                                            reader.observed_at, reader.identity))
+        self.lock.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *args):
+        self.release()
 
 
 class BridgeTests(unittest.TestCase):
@@ -142,6 +195,9 @@ class BridgeTests(unittest.TestCase):
         self.addCleanup(self.native_patch.stop)
         sys.modules.pop(SLOT, None)
         self.contexts = []
+        self.readers = []
+        self.children = []
+        self.clock = None
         self.addCleanup(self.stop_readers)
         self.callbacks = json.loads((DATA / "callbacks.json").read_text())
 
@@ -150,11 +206,22 @@ class BridgeTests(unittest.TestCase):
         for context in self.contexts:
             for callback in context.unloads:
                 callback()
-        slot = sys.modules.get(SLOT)
-        reader = getattr(slot, "reader", None)
-        if reader is not None:
+        alive = []
+        for reader in self.readers:
+            reader.close()
             reader.thread.join(2)
-            self.assertFalse(reader.thread.is_alive(), "synthetic reader leaked")
+            if reader.thread.is_alive():
+                alive.append(reader)
+        for child in self.children:
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGTERM)
+                try:
+                    child.wait(timeout=.1)
+                except subprocess.TimeoutExpired:
+                    os.killpg(child.pid, signal.SIGKILL)
+                    child.wait(timeout=2)
+            self.assertIsNotNone(child.returncode, "synthetic child was not reaped")
+        self.assertEqual(alive, [], "synthetic reader leaked")
         if (self.state / "pid").exists():
             pid = int((self.state / "pid").read_text())
             with self.assertRaises(ProcessLookupError):
@@ -180,6 +247,28 @@ class BridgeTests(unittest.TestCase):
         module.__file__ = str(self.asset / "__init__.py")
         if SOURCE.exists():
             exec(compile(SOURCE.read_text(), module.__file__, "exec"), module.__dict__)
+        if self.clock is not None:
+            # Change only this executed synthetic module; waits/joins keep real time.
+            module.time = types.SimpleNamespace(monotonic=lambda: self.clock, time=time.time)
+        children = self.children
+        class OwnedChild(subprocess.Popen):
+            def __init__(self, *args, **kwargs):
+                kwargs["start_new_session"] = True
+                kwargs["env"] = {key: os.environ[key] for key in (
+                    "HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "PYTHONDONTWRITEBYTECODE",
+                    "HT_LEAK_RUN_ID") if key in os.environ}
+                kwargs["env"]["HT_TEST_OWNER"] = str(os.getpid())
+                super().__init__(*args, **kwargs)
+                self.fixture_started_at = time.time()
+                children.append(self)
+        module.subprocess = types.SimpleNamespace(Popen=OwnedChild, PIPE=subprocess.PIPE,
+                                                  TimeoutExpired=subprocess.TimeoutExpired)
+        initialize = module.Reader.__init__
+        def tracked_initialize(reader, provider):
+            initialize(reader, provider)
+            reader.lock = PublicationLock(reader)
+            self.readers.append(reader)
+        module.Reader.__init__ = tracked_initialize
         self.assertTrue(callable(getattr(module, "register", None)), "actual bridge registration is missing")
         ctx = self.context_type()
         self.contexts.append(ctx)
@@ -195,14 +284,42 @@ class BridgeTests(unittest.TestCase):
         return ctx
 
     def settle(self):
-        limit = time.monotonic() + 2
+        reader = self.reader()
+        self.await_completion(reader)
+        self.assertIsNotNone(reader.snapshot(), "completed native observation is unusable")
+        return reader
+
+    def await_entry(self, reader, kind="timeout", iteration=1, timeout=2):
+        limit = time.monotonic() + timeout
         while time.monotonic() < limit:
-            slot = sys.modules.get(SLOT)
-            reader = getattr(slot, "reader", None)
-            if reader and reader.snapshot() is not None:
-                return reader
+            if reader.lock.acquire(timeout=.01):
+                try:
+                    if (kind, iteration) in reader.lock.entered:
+                        return
+                finally:
+                    reader.lock.release()
             time.sleep(.002)
-        self.fail("native observation did not become ready")
+        self.fail(f"target {kind} iteration {iteration} did not enter")
+
+    def await_completion(self, reader, kind="timeout", iteration=1, quality="ok", timeout=2):
+        self.await_entry(reader, kind, iteration, timeout)
+        limit = time.monotonic() + timeout
+        while time.monotonic() < limit:
+            if reader.lock.acquire(timeout=.01):
+                try:
+                    result = reader.lock.completed.get((kind, iteration))
+                    if result is not None:
+                        self.assertFalse(reader.pending, "target observation is still pending")
+                        self.assertEqual(result[0], quality)
+                        self.assertEqual(reader.quality, quality)
+                        self.assertEqual(reader.observed_timeout, result[1])
+                        self.assertEqual(reader.observed_at, result[2])
+                        self.assertIs(reader.identity, result[3])
+                        return result
+                finally:
+                    reader.lock.release()
+            time.sleep(.002)
+        self.fail(f"target {kind} iteration {iteration} did not publish completion")
 
     def request(self, callback="pre_llm_call", payload=None):
         return self.ctx.hooks[callback](**(self.callbacks["qualified"] if payload is None else payload))
@@ -239,10 +356,13 @@ class BridgeTests(unittest.TestCase):
     def reader(self):
         return sys.modules[SLOT].reader
 
-    def refresh(self):
+    def refresh(self, quality="ok"):
         reader = self.reader()
-        reader.next_refresh = 0
+        with reader.lock:
+            iteration = reader.lock.counts["timeout"] + 1
+            reader.next_refresh = 0
         reader.wake.set()
+        self.await_completion(reader, iteration=iteration, quality=quality)
         return reader
 
     def test_bridge_callback_privacy_role_cache_deadlines_and_owned_child_reaping(self):
@@ -327,20 +447,15 @@ class BridgeTests(unittest.TestCase):
         self.load()
         for value, expected in ((None,30), ("bad",30), (-1,30), (0,0), (.2,.2), (.3,.3), (900,600)):
             self.config = {"plugins":{"hook_callback_timeout":value}}
-            self.entered.clear()
-            self.refresh()
-            self.assertTrue(self.entered.wait(2))
-            reader = self.settle()
+            reader = self.refresh()
             self.assertEqual(reader.snapshot()["timeout_seconds"], expected)
         for config in (self.failed(self.config), {"plugins":{"hook_callback_timeout":float("nan")}}, {"plugins":{"hook_callback_timeout":float("inf")}}, []):
             self.config = config
-            self.refresh()
-            time.sleep(.03)
+            self.refresh(quality="failed_config_read" if isinstance(config, self.failed) else "unknown")
             self.assertIsNone(self.request())
         self.assertEqual(self.requests(), [])
         self.config = {"plugins":{"hook_callback_timeout":30}}
-        self.refresh()
-        reader = self.settle()
+        reader = self.refresh()
         with reader.lock:
             reader.observed_at = time.monotonic() - 6
         self.assertIsNone(self.request())
@@ -378,7 +493,6 @@ class BridgeTests(unittest.TestCase):
         self.modules["hermes_cli.version_info"].__file__ = "later changed source path"
         self.config = {"plugins":{"hook_callback_timeout":0}}
         self.refresh()
-        self.settle()
         self.request(payload={**self.callbacks["qualified"],"turn_id":"turn-2"})
         self.assertEqual(self.requests()[-1]["request"]["runtime_identity"], original)
         self.assertEqual(self.version_reads, 1)
@@ -389,8 +503,7 @@ class BridgeTests(unittest.TestCase):
     def test_read_exception_is_private_and_no_implicit_default(self):
         self.read_error = RuntimeError("PRIVATE CONFIG ERROR")
         self.load(wait=False)
-        self.assertTrue(self.entered.wait(2))
-        time.sleep(.03)
+        self.await_completion(self.reader(), quality="read_error")
         self.assertIsNone(self.request())
         self.assertEqual(self.requests(), [])
         reader = self.reader()
@@ -500,12 +613,7 @@ class BridgeTests(unittest.TestCase):
     def test_changed_native_profile_during_refresh_cannot_deliver_under_startup_identity(self):
         self.load()
         self.rotate_profile = True
-        self.entered.clear()
-        self.refresh()
-        self.assertTrue(self.entered.wait(2))
-        limit = time.monotonic() + 1
-        while self.reader().pending and time.monotonic() < limit:
-            time.sleep(.002)
+        self.refresh(quality="profile_unavailable")
         self.assertIsNone(self.request())
         self.assertEqual(self.requests(), [])
 
@@ -513,7 +621,7 @@ class BridgeTests(unittest.TestCase):
         for field in ("commit", "distance"):
             self.version = types.SimpleNamespace(**{**VERSION,field:None})
             self.load(wait=False)
-            time.sleep(.03)
+            self.await_completion(self.reader(), kind="capture", quality="identity_unavailable")
             self.assertIsNone(self.request())
             self.assertEqual(self.requests(), [])
             self.ctx.unloads[0]()
@@ -526,9 +634,7 @@ class BridgeTests(unittest.TestCase):
         self.load(wait=False)
         reader = self.reader()
         try:
-            limit = time.monotonic() + 2
-            while reader.pending and time.monotonic() < limit:
-                time.sleep(.002)
+            self.await_completion(reader, kind="capture", quality="identity_unavailable")
             self.assertFalse(reader.pending, "synthetic startup capture did not complete")
             self.assertIsNone(self.request())
             self.assertEqual(self.requests(), [], "malformed identity reached owned child")
@@ -627,11 +733,9 @@ class BridgeTests(unittest.TestCase):
         time.sleep(.1)
         self.assertEqual(len(self.reads), 1)
         self.config = self.failed({"plugins":{"hook_callback_timeout":0}})
-        self.entered.clear()
-        self.assertTrue(self.entered.wait(2))
-        limit = time.monotonic() + 1
-        while self.reader().pending and time.monotonic() < limit:
-            time.sleep(.002)
+        with self.reader().lock:
+            iteration = self.reader().lock.counts["timeout"] + 1
+        self.await_completion(self.reader(), iteration=iteration, quality="failed_config_read")
         self.assertEqual(self.reader().quality, "failed_config_read")
         self.assertIsNone(self.reader().fallback)
         self.assertIsNone(self.request())
@@ -674,10 +778,77 @@ class BridgeTests(unittest.TestCase):
     def test_origin_mismatch_and_unavailable_api_do_not_fabricate_identity(self):
         self.modules["hermes_cli.config"].__spec__.origin = str(self.root / "foreign.py")
         self.load(wait=False)
-        time.sleep(.03)
+        self.await_completion(self.reader(), kind="capture", quality="identity_unavailable")
         self.assertIsNone(self.request())
         self.assertEqual(self.requests(), [])
         self.assertIsNone(self.reader().identity)
+
+    def test_completion_helper_rejects_pending_target_and_previous_snapshot(self):
+        self.load()
+        reader = self.reader()
+        self.block_read = True
+        with reader.lock:
+            iteration = reader.lock.counts["timeout"] + 1
+            reader.next_refresh = 0
+        reader.wake.set()
+        try:
+            self.await_entry(reader, iteration=iteration)
+            with reader.lock:
+                self.assertTrue(reader.pending)
+                self.assertIn(("timeout", iteration - 1), reader.lock.completed)
+            with self.assertRaisesRegex(AssertionError, "did not publish completion"):
+                self.await_completion(reader, iteration=iteration, timeout=.05)
+            self.assertIsNone(self.request())
+            self.assertEqual(self.requests(), [])
+            self.assertFalse((self.state / "pid").exists())
+        finally:
+            self.release.set()
+        self.await_completion(reader, iteration=iteration)
+
+    def completed_clock_read(self, finished):
+        self.clock = 100.0
+        self.block_read = True
+        self.load(wait=False)
+        reader = self.reader()
+        try:
+            self.await_entry(reader)
+            self.assertTrue(self.entered.wait(2))
+            with reader.lock:
+                self.assertTrue(reader.pending)
+                self.assertIsNotNone(reader.identity)
+            self.assertEqual(self.reads, [str(self.home)])
+            self.clock = finished
+        finally:
+            self.release.set()
+        result = self.await_completion(reader)
+        self.assertEqual(result[1], 30.0)
+        with reader.lock:
+            self.assertFalse(reader.pending)
+            self.assertEqual(reader.quality, "ok")
+            self.assertEqual(reader.observed_timeout, 30.0)
+        # Callback deadlines and child teardown continue on elapsed real time,
+        # independently of the explicitly controlled provider clock above.
+        anchor = time.monotonic()
+        self.module.time.monotonic = lambda: finished + time.monotonic() - anchor
+        return reader
+
+    def test_completed_slow_timeout_read_keeps_entry_age_and_starts_no_child(self):
+        reader = self.completed_clock_read(106.0)
+        # Actual registered callback is the stale-observation consumer.
+        self.assertIsNone(self.request())
+        self.assertEqual(self.requests(), [])
+        self.assertFalse((self.state / "pid").exists(), "stale read started owned child")
+        self.assertIsNone(reader.snapshot())
+        self.assertEqual(reader.observed_at, 100.0)
+
+    def test_completed_fast_timeout_read_delivers_through_registered_callback(self):
+        reader = self.completed_clock_read(100.1)
+        self.assertEqual(self.request(), {"context": "bounded cooperative context"})
+        self.assertEqual(len(self.requests()), 1)
+        self.assertTrue((self.state / "pid").exists(), "fast read did not start owned child")
+        self.assertNotIn("PRIVATE", json.dumps(self.requests()))
+        self.assertIsNotNone(reader.snapshot())
+        self.assertEqual(reader.observed_at, 100.0)
 
 
 if __name__ == "__main__":
