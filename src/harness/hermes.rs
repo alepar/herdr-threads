@@ -4,7 +4,7 @@ pub mod launch;
 pub mod runtime;
 use super::{
     adapter::*,
-    contract::{self, Classification, EventClass, EventContract, HarnessContract, JsonType, field},
+    contract::{self, EventClass, EventContract, HarnessContract, JsonType, field},
     evidence::{AttributionHolding, EvidenceEvent, EvidenceOrigin},
 };
 use crate::protocol::time::CallBudget;
@@ -556,28 +556,33 @@ fn parse(input: &HookInput) -> Result<Envelope, DecodeFailure> {
     }
     Ok(e)
 }
-fn native_name(input: &HookInput) -> Option<&'static str> {
-    let v: serde_json::Value = serde_json::from_slice(&input.bytes).ok()?;
-    EVENTS
-        .iter()
-        .find(|e| Some(e.native_event) == v["callback"].as_str())
-        .map(|e| e.native_event)
-}
 fn observation(input: &HookInput, domain: ContractDomain) -> ContractObservation {
+    let descriptor = CONTRACTS.iter().find(|d| d.domain == domain).unwrap();
+    let classification = contract::classify(
+        descriptor.contract,
+        input.registered_event.as_deref(),
+        &input.bytes,
+    );
+    // The native shape contract uses callback only to select an event; it
+    // does not declare the bridge's callback field. A bad selector cannot
+    // produce a field violation in that native domain.
+    let classification = match classification {
+        contract::Classification::Violation { event, field }
+            if !descriptor
+                .contract
+                .events
+                .iter()
+                .any(|e| e.event == event && e.fields.iter().any(|f| f.path == field)) =>
+        {
+            contract::Classification::Malformed(contract::Malformed::UnknownEvent)
+        }
+        other => other,
+    };
     ContractObservation {
         domain,
-        classification: match parse(input) {
-            Ok(_) => Classification::Ok {
-                event: native_name(input).unwrap(),
-            },
-            Err(_) => native_name(input).map_or(
-                Classification::Malformed(contract::Malformed::NotJson),
-                |event| Classification::Violation {
-                    event,
-                    field: "envelope",
-                },
-            ),
-        },
+        // Structure belongs to this descriptor. Runtime, role, values and
+        // deadlines remain the strict parser's separate admission concerns.
+        classification,
     }
 }
 struct HermesCanary;

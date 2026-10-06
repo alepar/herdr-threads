@@ -4901,6 +4901,154 @@ fn hermes_codec_keeps_canonical_routing_and_immutable_prepared_kind() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn hermes_structural_success_never_grants_callback_delivery_or_qualification() {
+    use crate::harness::{
+        adapter::{
+            AdmissionRequest, EncodedOutput, EventIntent, HookInput, InstallObservation,
+            NeutralOffer, RuntimeAttribution,
+        },
+        contract::{Classification, Malformed},
+    };
+    let registry = crate::harness::registry::builtins();
+    let registration = registry.by_id(registry.agent("hermes").unwrap()).unwrap();
+    let budget = crate::protocol::time::CallBudget {
+        deadline: crate::protocol::time::MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let fixture = || {
+        let mut payload: serde_json::Value =
+            serde_json::from_slice(include_bytes!("../fixtures/hermes/envelopes.json")).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        payload["started_at"] = now.into();
+        payload["deadline_at"] = (now + 1200).into();
+        payload["observation_order"]["observed_at_millis"] = now.into();
+        payload
+    };
+    let admit = |input: &HookInput| {
+        registration.admit(
+            &AdmissionRequest {
+                installed: InstallObservation::Unavailable {
+                    diagnostic: "synthetic callback only".into(),
+                },
+                input: Some(HookInput {
+                    bytes: input.bytes.clone(),
+                    registered_event: input.registered_event.clone(),
+                }),
+                runtime_candidate: None,
+            },
+            &budget,
+        )
+    };
+    for callback in ["on_session_start", "on_session_reset", "post_tool_call"] {
+        let mut payload = fixture();
+        payload["callback"] = callback.into();
+        if callback == "post_tool_call" {
+            payload["parent_session_id"] = serde_json::Value::Null;
+            payload["shape"]["parent_session_id"] =
+                serde_json::json!({"presence":"missing","type":"absent"});
+            payload["role_association"]["provenance"] = "qualified_pre_llm_cache".into();
+        } else {
+            payload["role_association"] = serde_json::Value::Null;
+        }
+        if callback == "on_session_reset" {
+            payload["reset_reason"] = "new_session".into();
+        }
+        let input = HookInput {
+            bytes: serde_json::to_vec(&payload).unwrap(),
+            registered_event: Some(callback.into()),
+        };
+        for projection in registration.evidence_observations(&input).unwrap() {
+            assert!(
+                matches!(projection.classification, Classification::Ok { event } if event == callback)
+            );
+        }
+        let handle = admit(&input).unwrap();
+        let decoded = registration.decode(&handle, &input).unwrap();
+        assert!(!decoded.can_check_in());
+        assert!(matches!(
+            decoded.intent,
+            EventIntent::Observer | EventIntent::DeclaredReset(_)
+        ));
+        let output = registration
+            .encode(
+                &handle,
+                &decoded,
+                &NeutralOffer {
+                    fixed_guidance: "must remain unconsumed".into(),
+                    peer_data: serde_json::Value::Null,
+                    ready_argv: Vec::new(),
+                },
+            )
+            .unwrap();
+        assert!(
+            matches!(output, EncodedOutput::ObserverOnly { bytes } if bytes == br#"{"context":null,"lifecycle_ack":null}"#)
+        );
+    }
+    for refusal in ["expired", "role", "runtime", "callback_value"] {
+        let mut payload = fixture();
+        match refusal {
+            "expired" => {
+                payload["started_at"] = 1.into();
+                payload["deadline_at"] = 1201.into();
+                payload["observation_order"]["observed_at_millis"] = 1.into();
+            }
+            "role" => payload["role_association"]["role"] = "unsupported".into(),
+            "runtime" => payload["runtime_identity"]["source"] = "unsupported".into(),
+            "callback_value" => payload["reset_reason"] = "unsupported".into(),
+            _ => unreachable!(),
+        }
+        let input = HookInput {
+            bytes: serde_json::to_vec(&payload).unwrap(),
+            registered_event: Some("pre_llm_call".into()),
+        };
+        assert!(admit(&input).is_err(), "{refusal}");
+        assert!(matches!(
+            registration.attribute_runtime(&input, &budget),
+            RuntimeAttribution::Unavailable { .. }
+        ));
+        assert!(
+            matches!(
+                registration.classify(&input).classification,
+                Classification::Ok {
+                    event: "pre_llm_call"
+                }
+            ),
+            "{refusal}"
+        );
+    }
+    for (bytes, expected) in [
+        (b"not json".as_slice(), Malformed::NotJson),
+        (b"[]".as_slice(), Malformed::NotObject),
+        (
+            br#"{"callback":"unknown"}"#.as_slice(),
+            Malformed::UnknownEvent,
+        ),
+    ] {
+        let input = HookInput {
+            bytes: bytes.to_vec(),
+            registered_event: None,
+        };
+        for projection in registration.evidence_observations(&input).unwrap() {
+            assert_eq!(
+                projection.classification,
+                Classification::Malformed(expected)
+            );
+        }
+    }
+    let input = HookInput {
+        bytes: vec![b' '; crate::harness::contract::MAX_PAYLOAD + 1],
+        registered_event: Some("pre_llm_call".into()),
+    };
+    assert_eq!(
+        registration.classify(&input).classification,
+        Classification::Malformed(Malformed::TooLarge)
+    );
+}
+
 #[cfg(feature = "test-support")]
 mod enum_callback {
     use super::*;
