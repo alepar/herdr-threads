@@ -834,3 +834,149 @@ mod enum_only_callback {
         }
     }
 }
+
+#[test]
+fn hermes_presence_controls_never_invoke_or_admit_the_executable() {
+    use herdr_threads::{
+        app::SystemClock,
+        harness::adapter::{
+            AdmissionRequest, HarnessStatus, InstallEnvironment, InstallObservation,
+        },
+        protocol::{
+            results::{CallbackObservationState, EnablementState, HarnessState},
+            time::{CallBudget, Cancellation, Clock, MonoInstant},
+        },
+        test_support::isolation::TestIsolation,
+    };
+    use std::{
+        os::unix::fs::{PermissionsExt, symlink},
+        sync::Arc,
+    };
+    let iso = TestIsolation::new("hermes-presence-controls");
+    let bin = iso.home().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let path = bin.join("hermes");
+    let sentinel = bin.join("executed");
+    std::fs::write(&path, "#!/bin/sh\n: > \"${0%/*}/executed\"\nexit 91\n").unwrap();
+    let clock = Arc::new(SystemClock::new());
+    let env = InstallEnvironment {
+        clock: clock.clone(),
+        path: Some(bin.clone().into_os_string()),
+        config_root: None,
+        state_dir: None,
+    };
+    let budget = CallBudget {
+        deadline: MonoInstant(clock.monotonic_now().0 + 10_000),
+        cancellation: Cancellation::default(),
+    };
+    let r = builtins()
+        .by_id(builtins().agent("hermes").unwrap())
+        .unwrap();
+    // A regular file and an executable are different installation observations.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(matches!(
+        r.observe_daemon(&env, &budget).status,
+        HarnessStatus::NotInstalled(_)
+    ));
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let installed = r.observe_install(&env, &budget);
+    assert!(
+        matches!(&installed, InstallObservation::ExecutableAvailable { binary } if binary == &path)
+    );
+    assert!(
+        r.admit(
+            &AdmissionRequest {
+                installed,
+                input: None,
+                runtime_candidate: None
+            },
+            &budget
+        )
+        .is_err()
+    );
+    let observed = r.observe_daemon(&env, &budget);
+    assert!(matches!(
+        observed.status,
+        HarnessStatus::PresentUnqualified { .. }
+    ));
+    assert_eq!(observed.status.state(), HarnessState::Unsupported);
+    assert_eq!(observed.identity, None);
+    assert_eq!(observed.receipt_basis, None);
+    assert_eq!(observed.enablement.state, EnablementState::Unknown);
+    assert_eq!(
+        observed.callback_observation.state,
+        CallbackObservationState::Unknown
+    );
+    assert_eq!(observed, r.observe_daemon(&env, &budget));
+    assert!(!sentinel.exists());
+
+    let expired = CallBudget {
+        deadline: clock.monotonic_now(),
+        cancellation: Cancellation::default(),
+    };
+    let cancelled = CallBudget {
+        deadline: budget.deadline,
+        cancellation: Cancellation::default(),
+    };
+    cancelled.cancellation.cancel();
+    for control in [&expired, &cancelled] {
+        assert!(matches!(
+            r.observe_install(&env, control),
+            InstallObservation::Unavailable { .. }
+        ));
+        let unavailable = r.observe_daemon(&env, control);
+        assert!(matches!(unavailable.status, HarnessStatus::Refused(_)));
+        assert_eq!(unavailable.identity, None);
+        assert_eq!(unavailable.enablement.state, EnablementState::Unknown);
+        assert_eq!(
+            unavailable.callback_observation.state,
+            CallbackObservationState::Unknown
+        );
+    }
+    // Actual inaccessible directory: restore its permissions before assertions
+    // so even a failed control cannot strand the isolated fixture at teardown.
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let inaccessible = r.observe_daemon(&env, &budget);
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(matches!(inaccessible.status, HarnessStatus::Refused(_)));
+    std::fs::remove_file(&path).unwrap();
+    symlink("hermes", &path).unwrap();
+    assert!(matches!(
+        r.observe_daemon(&env, &budget).status,
+        HarnessStatus::Refused(_)
+    ));
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert!(matches!(
+        r.observe_daemon(&env, &budget).status,
+        HarnessStatus::NotInstalled(_)
+    ));
+    std::fs::remove_dir(&path).unwrap();
+    assert!(matches!(
+        r.observe_daemon(&env, &budget).status,
+        HarnessStatus::NotInstalled(_)
+    ));
+    assert!(!sentinel.exists());
+    // Bounded captured environments are refused rather than scanned indefinitely.
+    for captured_path in [
+        std::env::join_paths((0..257).map(|n| bin.join(format!("missing-{n}")))).unwrap(),
+        OsString::from("x".repeat(65_537)),
+    ] {
+        let bounded = InstallEnvironment {
+            clock: clock.clone(),
+            path: Some(captured_path),
+            config_root: None,
+            state_dir: None,
+        };
+        assert!(matches!(
+            r.observe_daemon(&bounded, &budget).status,
+            HarnessStatus::Refused(_)
+        ));
+    }
+    // Do not inherit the caller's PATH when the captured environment has none.
+    let no_path = InstallEnvironment { path: None, ..env };
+    assert!(matches!(
+        r.observe_daemon(&no_path, &budget).status,
+        HarnessStatus::NotInstalled(_)
+    ));
+}
