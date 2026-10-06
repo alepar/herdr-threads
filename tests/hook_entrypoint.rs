@@ -723,7 +723,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
         .as_str()
         .unwrap();
     assert!(
-        context.starts_with("The top-level agent reads pending mail"),
+        context.starts_with("Use inbox; follow its next: commands"),
         "{context}"
     );
     assert!(
@@ -1026,7 +1026,7 @@ fn two_hundred_tool_hooks_on_one_seat_stay_healthy_and_write_no_journal() {
     let fx = Fixture::start();
     let started = fx.hook("w9:p1", &start("sess-1"));
     assert_eq!(started.code, Some(0), "{}", started.stderr);
-    assert!(context_of(&started).starts_with("The top-level agent reads pending mail"));
+    assert!(context_of(&started).starts_with("Use inbox; follow its next: commands"));
     let journal_before = fs::read(fx.context_dir("seat").join("context.json")).unwrap();
     let intents_before = fx.intents();
     let before = fx.check_ins.load(Ordering::SeqCst);
@@ -1203,7 +1203,7 @@ fn cooperative_seat_on_own_target_startup_clear_resume_always_replace_binding() 
         assert_eq!(hook.code, Some(0), "{source}: {}", hook.stderr);
         let context = context_of(&hook);
         assert!(
-            context.starts_with("The top-level agent reads pending mail"),
+            context.starts_with("Use inbox; follow its next: commands"),
             "{source}: {context}"
         );
         assert!(!context.contains("unavailable"), "{source}: {context}");
@@ -2569,18 +2569,17 @@ fn peer_data(context: &str) -> String {
 }
 
 // Demo-1 P1/P5, built binary end to end: a seat invited and sent a
-// require-ACK message before launch gets, from its SessionStart hook, ready
-// commands naming the `herdr-threads` CLI; running exactly those command lines
-// in the pane (no --seat) accepts the invitation and ACKs the exact message.
-// A later PreToolUse offer's ACK command works the same way, the digest
-// `ITEM@THREAD` form is refused as invalid arguments naming the bare ID, and
-// the accept and ACK observations share one JSON shape.
-// Kills: a fixed section without the CLI or runnable argv (the lines are
-// missing), argv that does not run in the pane (wrong subcommand or flags,
-// missing --state-dir, a --seat the pane does not need, the digest form as an
-// argument: nonzero exit or nothing accepted/ACKed), dropping the block from
-// the tool-boundary path, the misleading not_found for the digest form, and
-// divergent accept/ACK observation field naming.
+// require-ACK message before launch gets one ready inbox command and a
+// separate invitation-accept command. Running inbox in the pane displays the
+// complete message and ACKs it; accepting remains explicit. The digest form is
+// refused as invalid arguments naming the bare ID, and the accept and inbox
+// ACK observations share one JSON shape. A later PreToolUse inbox command
+// handles a new message the same way.
+// Kills: a fixed section without the CLI or runnable argv, argv that does not
+// run in the pane (wrong subcommand or flags, missing --state-dir, a --seat
+// the pane does not need, the digest form as an argument), missing display
+// ACK, dropping the block from the tool-boundary path, misleading not_found
+// for the digest form, or divergent accept/ACK observation field naming.
 #[test]
 fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
     let fx = Fixture::start();
@@ -2608,13 +2607,7 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
     assert!(fixed.contains("herdr-threads"), "{fixed}");
     assert!(!fixed.contains("Mail data (JSON)"), "{fixed}");
     let accept = ready_command_ending(&context, "- accept: ", &format!(" accept {thread}"));
-    let ack = ready_command_ending(
-        &context,
-        "- ACK after reading: ",
-        &format!(" ack {message}"),
-    );
-    let read = ready_command_ending(&context, "- read: ", &format!(" read {thread} --recent 20"));
-    let continuation = ready_command(&context, "- all pending");
+    let inbox = ready_command_ending(&context, "- pending mail", " inbox");
     // Review B1: the startup directory overview for the one thread is
     // delivered with the commands, within the budget.
     let peer = peer_data(&context);
@@ -2627,12 +2620,9 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
     );
     assert!(peer.contains("age_millis_signed"), "{peer}");
     assert!(!peer.contains("overview has_more"), "{peer}");
-    assert!(
-        !accept.contains("--seat") && !ack.contains("--seat"),
-        "{fixed}"
-    );
+    assert!(!accept.contains("--seat"), "{fixed}");
     assert!(accept.ends_with(&format!(" accept {thread}")), "{accept}");
-    assert!(ack.ends_with(&format!(" ack {message}")), "{ack}");
+    assert!(inbox.ends_with(" inbox"), "{inbox}");
 
     // The digest form is refused with an actionable error, not not_found.
     let digest_form = accept.replace(
@@ -2648,7 +2638,9 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
     );
     assert!(!stderr.contains("not_found"), "{stderr}");
 
-    for command in [&read, &accept, &ack] {
+    // One complete text inbox display settles the receipt; there is no
+    // separate history read or manual ACK command.
+    for command in [&inbox, &accept] {
         let out = run_in_pane(&fx, "w9:p1", command);
         assert_eq!(
             out.status.code(),
@@ -2657,16 +2649,11 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
-    let (inbox, receipts) = continuation.split_once("; receipts: ").unwrap();
-    for command in [inbox, receipts] {
-        let out = run_in_pane(&fx, "w9:p1", command);
-        assert_eq!(
-            out.status.code(),
-            Some(0),
-            "{command}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
+    assert_eq!(
+        fx.count(&format!("SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND seat_id='seat' AND state='acked' AND ack_actor_seat_id='seat'")),
+        1,
+        "displaying the complete inbox ACKs the message as the seat"
+    );
     assert_eq!(
         fx.count(&format!("SELECT count(*) FROM invitations WHERE id='{invitation}' AND state='accepted' AND accepted_actor_seat_id='seat'")),
         1
@@ -2695,8 +2682,8 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
         1
     );
 
-    // Tool boundary: a new require-ACK message is offered with its own ACK
-    // command, which also runs verbatim.
+    // Tool boundary: a new require-ACK message is offered with the same inbox
+    // action, which displays and ACKs it without another read/ACK pair.
     let second = data(fx.cooperative(
         "peer",
         "w9:p2",
@@ -2705,8 +2692,8 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
     let offered = fx.hook("w9:p1", &tool("sess-1"));
     assert_eq!(offered.code, Some(0), "{}", offered.stderr);
     let context = context_of(&offered);
-    let ack = ready_command_ending(&context, "- ACK after reading: ", &format!(" ack {second}"));
-    let out = run_in_pane(&fx, "w9:p1", &ack);
+    let inbox = ready_command_ending(&context, "- pending mail", " inbox");
+    let out = run_in_pane(&fx, "w9:p1", &inbox);
     assert_eq!(
         out.status.code(),
         Some(0),
@@ -2714,7 +2701,7 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(
-        fx.count(&format!("SELECT count(*) FROM receipt_state WHERE message_id='{second}' AND seat_id='seat' AND state='acked'")),
+        fx.count(&format!("SELECT count(*) FROM receipt_state WHERE message_id='{second}' AND seat_id='seat' AND state='acked' AND ack_actor_seat_id='seat'")),
         1
     );
 
@@ -2745,17 +2732,29 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
             .cloned()
             .collect::<Vec<_>>()
     };
-    assert_eq!(keys(&accepted), keys(&acked));
+    let accepted_keys = keys(&accepted);
+    let acked_keys = keys(&acked);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&acked).unwrap()["action_provenance"],
+        "cooperative_inbox_display"
+    );
+    assert_eq!(
+        acked_keys
+            .into_iter()
+            .filter(|key| key != "action_provenance")
+            .collect::<Vec<_>>(),
+        accepted_keys
+    );
 }
 
 // Review B1, built binary end to end: three threads, each with an invitation
 // and a require-ACK message, reach the seat before launch. Its SessionStart
 // context stays within MAX_CONTEXT and carries both the startup directory
 // overview (every thread, with topic, creation time, signed age, message and
-// participant counts) and every ready command; the accept, read and ACK lines
-// all run verbatim in the pane. Kills: dropping the overview whole in the
-// oversize fallback, command lines that do not run, or a budget that forces
-// commands out for a typical startup.
+// participant counts) and one ready inbox command plus each explicit accept;
+// they run verbatim in the pane. One inbox display ACKs all complete messages.
+// Kills: dropping the overview whole in the oversize fallback, command lines
+// that do not run, or a budget that forces commands out for a typical startup.
 #[test]
 fn three_thread_startup_keeps_the_overview_and_every_command() {
     let fx = Fixture::start();
@@ -2844,25 +2843,19 @@ fn three_thread_startup_keeps_the_overview_and_every_command() {
     for label in ["\"age_millis_signed\":", "\"created_at", "\"joined_"] {
         assert!(peer.contains(label), "{label}: {peer}");
     }
-    let mut commands = Vec::new();
-    for (thread, _, message, _) in &threads {
-        commands.push(ready_command_ending(
-            &context,
-            "- read: ",
-            &format!(" read {thread} --recent 20"),
-        ));
+    let mut commands = vec![ready_command_ending(&context, "- pending mail", " inbox")];
+    for (thread, _, _, _) in &threads {
         commands.push(ready_command_ending(
             &context,
             "- accept: ",
             &format!(" accept {thread}"),
         ));
-        commands.push(ready_command_ending(
-            &context,
-            "- ACK after reading: ",
-            &format!(" ack {message}"),
-        ));
     }
-    ready_command(&context, "- all pending");
+    assert!(!fixed_section(&context).contains("- read:"), "{context}");
+    assert!(
+        !fixed_section(&context).contains("- ACK after reading:"),
+        "{context}"
+    );
     for command in &commands {
         let out = run_in_pane(&fx, "w9:p1", command);
         assert_eq!(
@@ -2889,10 +2882,10 @@ fn three_thread_startup_keeps_the_overview_and_every_command() {
 // W6-D5, built binary end to end: S15 failed with a long run root. A state
 // directory of 330+ bytes (deep, as under a native-run root) with six threads,
 // each invited and sent a require-ACK handoff, still yields a SessionStart
-// context that fits MAX_CONTEXT, shows the main thread's row and its exact
-// command (which runs verbatim in the pane), and says the overview was trimmed.
-// Kills: overflowing the budget with a long state dir, dropping the main
-// thread's row or its command, and a path altered inside a command.
+// context that fits MAX_CONTEXT, shows the main thread's row and one exact
+// inbox command (which runs verbatim in the pane), and says the overview was
+// trimmed. Kills: overflowing the budget with a long state dir, dropping the
+// main thread's row/label, or altering the path inside the inbox command.
 #[test]
 fn deep_state_dir_startup_context_fits_and_names_the_main_thread() {
     let deep = format!("{0}/{0}/deeper/state", "d".repeat(150));
@@ -2928,17 +2921,21 @@ fn deep_state_dir_startup_context_fits_and_names_the_main_thread() {
         context.len()
     );
     let state = fx.state.to_str().unwrap();
-    // The first ready read command names the main thread.
-    let read = ready_command(&context, "- read: ");
+    // The one ready inbox command labels the main thread whose overview is
+    // retained and carries the exact long state path.
+    let inbox = ready_command(&context, "- pending mail for ");
     assert!(
-        read.contains(state),
-        "exact state dir in the command: {read}"
+        inbox.contains(state),
+        "exact state dir in the command: {inbox}"
     );
-    let main = read
-        .split_once(" read ")
+    let mail_label = fixed_section(&context)
+        .lines()
+        .find(|line| line.starts_with("- pending mail for "))
+        .unwrap();
+    let main = mail_label
+        .strip_prefix("- pending mail for ")
         .unwrap()
-        .1
-        .split(' ')
+        .split(" and other threads: ")
         .next()
         .unwrap();
     let peer = peer_data(&context);
@@ -2948,11 +2945,11 @@ fn deep_state_dir_startup_context_fits_and_names_the_main_thread() {
     );
     assert!(peer.contains("overview has_more:"), "{peer}");
     assert!(!peer.contains(state), "{peer}");
-    let out = run_in_pane(&fx, "w9:p1", &read);
+    let out = run_in_pane(&fx, "w9:p1", &inbox);
     assert_eq!(
         out.status.code(),
         Some(0),
-        "{read}: {}",
+        "{inbox}: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 }
@@ -4058,7 +4055,7 @@ mod continuity {
             assert_eq!(resumed.code, Some(0), "{harness}: {}", resumed.stderr);
             let context = context_of(&resumed);
             assert!(
-                context.starts_with("The top-level agent reads pending mail"),
+                context.starts_with("Use inbox; follow its next: commands"),
                 "{harness}: {context}"
             );
             assert_eq!(
