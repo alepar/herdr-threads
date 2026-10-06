@@ -37,6 +37,197 @@ const T0: i64 = 1_000 * HOUR_MS;
 const CONTRACT: &str = "0123456789abcdef";
 const NEW_CONTRACT: &str = "fedcba9876543210";
 
+// These are separate real Store fixtures so overflow cannot hide the expiry
+// regression in RED. Status lines must share the complete wire-vector budget.
+#[test]
+fn health_current_diagnostics_expire_and_cap_after_status_without_losing_rollup() {
+    use crate::harness::adapter::DaemonObservation;
+    use crate::protocol::results::CommandResult;
+    use crate::store::harness_evidence::DiagnosticRecord;
+    let mut failures = Vec::new();
+    for (label, count, status) in [
+        (
+            "seventeen",
+            17,
+            HarnessStatus::NotInstalled("fixture absent".into()),
+        ),
+        (
+            "status-sixteen",
+            16,
+            HarnessStatus::PresentUnqualified {
+                detail: "qualification unavailable".into(),
+            },
+        ),
+        ("expired", 1, HarnessStatus::Supported("listed".into())),
+    ] {
+        let fx = Fx::new(&format!("hhs-current-{label}"));
+        let event = "E".repeat(63);
+        for index in 0..count {
+            let session = format!("session-{index:02}");
+            let field = format!("fresh_{index:02}_{}", "界".repeat(39));
+            fx.store
+                .record_contract_diagnostic(
+                    &DiagnosticRecord {
+                        harness: "claude",
+                        session_id: &session,
+                        contract_id: CONTRACT,
+                        event: &event,
+                        field: &field,
+                    },
+                    &budget(),
+                )
+                .unwrap();
+            fx.advance(1);
+        }
+        if label == "expired" {
+            fx.advance(48 * HOUR_MS);
+        }
+        let provider = fx.provider().with_observations(Box::new(move || {
+            Ok([(
+                "claude".into(),
+                DaemonObservation {
+                    status: status.clone(),
+                    ..Default::default()
+                },
+            )]
+            .into())
+        }));
+        let retained = fx.store.contract_diagnostics("claude", &budget()).unwrap();
+        assert_eq!(
+            retained.len(),
+            count,
+            "current projection must preserve history"
+        );
+        match provider.report_v2(&budget()) {
+            Err(error) => failures.push(format!(
+                "{label}: report_v2 {:?}: {}",
+                error.code, error.detail
+            )),
+            Ok(report) => {
+                let entry = &report.harnesses["claude"];
+                report.validate().unwrap();
+                let result = CommandResult::HarnessHealthV2(report.clone());
+                assert_eq!(
+                    serde_json::from_slice::<CommandResult>(&serde_json::to_vec(&result).unwrap())
+                        .unwrap(),
+                    result
+                );
+                assert!(entry.limitations.len() <= 16);
+                assert!(entry.notes.len() <= 16);
+                if label == "seventeen" {
+                    assert_eq!(
+                        entry.notes,
+                        ["executable not found in the daemon environment"]
+                    );
+                }
+                assert!(
+                    entry
+                        .limitations
+                        .iter()
+                        .chain(&entry.notes)
+                        .all(|s| s.len() <= 256)
+                );
+                if label == "expired" {
+                    if !entry.limitations.is_empty() {
+                        failures.push(format!(
+                            "expired: current limitations contain retained history: {:?}",
+                            entry.limitations
+                        ));
+                    }
+                } else {
+                    assert_eq!(entry.limitations.len(), 16);
+                    assert!(
+                        entry.limitations[0].contains(&format!("fresh_{:02}_", count - 1)),
+                        "newest diagnostic must retain priority"
+                    );
+                    if label == "status-sixteen" {
+                        assert!(
+                            entry.limitations.last().unwrap().contains("fresh_00_"),
+                            "diagnostics retain newest-first priority over status; status is also present on the axes"
+                        );
+                        assert_eq!(
+                            entry.admission.detail.as_deref(),
+                            Some("qualification unavailable")
+                        );
+                    }
+                }
+            }
+        }
+        match provider.health_lines(&budget()) {
+            Err(error) => failures.push(format!(
+                "{label}: legacy Health {:?}: {}",
+                error.code, error.detail
+            )),
+            Ok(lines) => {
+                let mut inputs = ready_inputs();
+                inputs.harness_version_lines = lines.clone();
+                let health = inputs.assemble();
+                health.validate().unwrap();
+                if label == "expired" {
+                    assert!(lines.is_empty());
+                    assert_eq!(health.state, HealthState::Healthy);
+                    assert!(
+                        provider.report(&budget()).unwrap().harnesses[0]
+                            .unattributed
+                            .is_some(),
+                        "history remains explicit and timestamped"
+                    );
+                } else {
+                    assert_eq!(lines.len(), 1);
+                    assert!(lines[0].contains(&format!("fresh_{:02}_", count - 1)));
+                    assert!(lines[0].len() <= 256);
+                    assert_eq!(health.state, HealthState::Degraded);
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn health_current_diagnostic_window_is_inclusive_and_history_stays_retained() {
+    use crate::store::harness_evidence::DiagnosticRecord;
+    let fx = Fx::new("hhs-current-boundary");
+    fx.store
+        .record_contract_diagnostic(
+            &DiagnosticRecord {
+                harness: "claude",
+                session_id: "boundary",
+                contract_id: CONTRACT,
+                event: "PreToolUse",
+                field: "boundary_field",
+            },
+            &budget(),
+        )
+        .unwrap();
+    let provider = fx
+        .provider()
+        .with_observations(Box::new(|| Ok(Default::default())));
+    fx.advance(24 * HOUR_MS);
+    assert!(
+        provider.report_v2(&budget()).unwrap().harnesses["claude"]
+            .limitations
+            .iter()
+            .any(|s| s.contains("boundary_field"))
+    );
+    assert_eq!(provider.health_lines(&budget()).unwrap().len(), 1);
+    fx.advance(1);
+    assert!(
+        !provider.report_v2(&budget()).unwrap().harnesses["claude"]
+            .limitations
+            .iter()
+            .any(|s| s.contains("boundary_field"))
+    );
+    assert!(provider.health_lines(&budget()).unwrap().is_empty());
+    assert_eq!(
+        fx.store
+            .contract_diagnostics("claude", &budget())
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
 struct TestClock(AtomicI64);
 impl Clock for TestClock {
     fn utc_now(&self) -> UtcMillis {
@@ -1057,6 +1248,20 @@ fn health_v2_store_cache_and_expired_budget_fail_explicitly() {
         provider.report_v2(&expired).unwrap_err().code,
         crate::protocol::results::ErrorCode::DeadlineExceeded
     );
+    assert_eq!(
+        provider.health_lines(&expired).unwrap_err().code,
+        crate::protocol::results::ErrorCode::DeadlineExceeded
+    );
+    let cancelled = budget();
+    cancelled.cancellation.cancel();
+    assert_eq!(
+        provider.report_v2(&cancelled).unwrap_err().code,
+        crate::protocol::results::ErrorCode::Cancelled
+    );
+    assert_eq!(
+        provider.health_lines(&cancelled).unwrap_err().code,
+        crate::protocol::results::ErrorCode::Cancelled
+    );
     let poisoned = fx.provider().with_observations(Box::new(|| {
         Err(crate::protocol::results::ApiError::new(
             crate::protocol::results::ErrorCode::StoreBusy,
@@ -1064,6 +1269,7 @@ fn health_v2_store_cache_and_expired_budget_fail_explicitly() {
         ))
     }));
     assert!(poisoned.report_v2(&budget()).is_err());
+    assert!(poisoned.health_lines(&budget()).is_err());
     let db = rusqlite::Connection::open(fx._iso.state_root().join("store.db")).unwrap();
     db.execute_batch("DROP TABLE harness_contract_evidence_v2")
         .unwrap();

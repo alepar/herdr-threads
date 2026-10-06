@@ -5,6 +5,216 @@
 
 use super::*;
 
+struct CurrentHealthDoctorClock(std::sync::atomic::AtomicI64);
+impl Clock for CurrentHealthDoctorClock {
+    fn utc_now(&self) -> crate::protocol::time::UtcMillis {
+        crate::protocol::time::UtcMillis(self.0.load(std::sync::atomic::Ordering::SeqCst))
+    }
+    fn monotonic_now(&self) -> MonoInstant {
+        MonoInstant(1)
+    }
+}
+
+struct CurrentHealthDoctorClient(crate::daemon::harness_states::HarnessStatesProvider);
+impl LocalClient for CurrentHealthDoctorClient {
+    fn call(
+        &self,
+        command: Command,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+        let result = match command {
+            Command::Capabilities => {
+                CommandResult::Capabilities(crate::protocol::results::CapabilityList {
+                    capabilities: vec![crate::protocol::capabilities::HARNESS_HEALTH_V2.into()],
+                })
+            }
+            Command::HarnessHealthV2 => CommandResult::HarnessHealthV2(self.0.report_v2(budget)?),
+            _ => panic!("unexpected current health doctor command"),
+        };
+        // Exercise the same strict result decoding as the wire client.
+        Ok(serde_json::from_slice(&serde_json::to_vec(&result).unwrap()).unwrap())
+    }
+    fn call_with_output(
+        &self,
+        command: Command,
+        _: &crate::protocol::output::OutputSpec,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+        self.call(command, budget)
+    }
+}
+
+// Real Store -> cached producer -> negotiated doctor consumer -> JSON/text.
+// Historical runtime evidence remains broken and labeled all-scopes; retained
+// old scoped failures cannot be rendered as current limitations.
+#[test]
+fn doctor_current_diagnostics_are_bounded_and_expired_history_is_all_scopes() {
+    use crate::{
+        daemon::harness_states::{HarnessStatesProvider, embedded_source},
+        ports::StorePort,
+        store::{
+            SqliteStore, StoreSettings,
+            connection::StoreContext,
+            harness_evidence::{DiagnosticRecord, EvidenceOutcome, EvidenceRecordV2},
+        },
+        test_support::isolation::TestIsolation,
+    };
+    let iso = TestIsolation::new("doctor-current-health");
+    let clock = Arc::new(CurrentHealthDoctorClock(std::sync::atomic::AtomicI64::new(
+        1_000_000_000,
+    )));
+    let store = Arc::new(
+        SqliteStore::new(
+            StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
+            "i",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    let budget = CallBudget {
+        deadline: MonoInstant(1_000_000),
+        cancellation: Default::default(),
+    };
+    store
+        .record_contract_diagnostic(
+            &DiagnosticRecord {
+                harness: "claude",
+                session_id: "expired",
+                contract_id: "0123456789abcdef",
+                event: "PreToolUse",
+                field: "expired_scoped_failure",
+            },
+            &budget,
+        )
+        .unwrap();
+    let descriptor = &crate::harness::registry::builtins().registrations()[0].contracts()[0];
+    let identity =
+        crate::harness::runtime::RuntimeIdentity::stable_release("9.0.0", "fixture").unwrap();
+    store
+        .record_harness_evidence_v2(
+            &EvidenceRecordV2 {
+                identity: &identity,
+                descriptor,
+                event: "PreToolUse",
+                outcome: &EvidenceOutcome::Violation {
+                    field: "historical_runtime_failure".into(),
+                },
+                qualified: true,
+            },
+            &budget,
+        )
+        .unwrap();
+    clock
+        .0
+        .fetch_add(48 * 60 * 60 * 1000, std::sync::atomic::Ordering::SeqCst);
+    let client = CurrentHealthDoctorClient(
+        HarnessStatesProvider::new(
+            store.clone(),
+            embedded_source(),
+            clock.clone(),
+            Box::new(|_| None),
+            None,
+        )
+        .with_observations(Box::new(|| {
+            Ok([(
+                "claude".into(),
+                DaemonObservation {
+                    status: crate::daemon::health::HarnessStatus::PresentUnqualified {
+                        detail: "qualification unavailable".into(),
+                    },
+                    ..Default::default()
+                },
+            )]
+            .into())
+        })),
+    );
+    let consume = || {
+        let rich = daemon_details(&client, &budget)
+            .rich
+            .expect("actual advertised doctor health");
+        json!({"adapter_order":["claude"],"harness_health_v2":rich})
+    };
+    let history = consume();
+    let entry = &history["harness_health_v2"]["harnesses"]["claude"];
+    assert_eq!(entry["limitations"], json!(["qualification unavailable"]));
+    assert_eq!(entry["runtime_evidence"][0]["state"], "broken");
+    assert_eq!(entry["runtime_evidence"][0]["in_health_window"], false);
+    assert_eq!(
+        entry["runtime_evidence"][0]["scope"]["kind"],
+        "runtime_evidence_all_scopes"
+    );
+    assert!(client.0.health_lines(&budget).unwrap().is_empty());
+    let text = render_debug_text(&history);
+    assert!(
+        text.contains("claude daemon_default: installation present"),
+        "{text}"
+    );
+    assert!(
+        text.contains("runtime_evidence_all_scopes broken:"),
+        "{text}"
+    );
+    assert!(!text.contains("expired_scoped_failure"), "{text}");
+    for index in 0..17 {
+        clock.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        store
+            .record_contract_diagnostic(
+                &DiagnosticRecord {
+                    harness: "claude",
+                    session_id: &format!("fresh-{index:02}"),
+                    contract_id: "0123456789abcdef",
+                    event: "PreToolUse",
+                    field: &format!("fresh_{index:02}"),
+                },
+                &budget,
+            )
+            .unwrap();
+        if index == 15 {
+            let sixteen = consume();
+            let limitations = sixteen["harness_health_v2"]["harnesses"]["claude"]["limitations"]
+                .as_array()
+                .unwrap();
+            assert_eq!(
+                limitations.len(),
+                16,
+                "status plus sixteen diagnostics share the complete cap"
+            );
+            assert!(limitations[0].as_str().unwrap().contains("fresh_15"));
+            assert!(limitations[15].as_str().unwrap().contains("fresh_00"));
+            let text = render_debug_text(&sixteen);
+            assert_eq!(text.matches("contract input failure").count(), 16, "{text}");
+            assert!(
+                text.contains("qualification unavailable")
+                    && !text.contains("expired_scoped_failure"),
+                "{text}"
+            );
+        }
+    }
+    let current = consume();
+    let limitations = current["harness_health_v2"]["harnesses"]["claude"]["limitations"]
+        .as_array()
+        .unwrap();
+    assert_eq!(limitations.len(), 16);
+    assert!(limitations[0].as_str().unwrap().contains("fresh_16"));
+    assert!(limitations[15].as_str().unwrap().contains("fresh_01"));
+    let text = render_debug_text(&current);
+    assert_eq!(text.matches("contract input failure").count(), 16, "{text}");
+    assert!(
+        !text.contains("expired_scoped_failure") && !text.contains("fresh_00"),
+        "{text}"
+    );
+    assert!(
+        text.contains("qualification unavailable")
+            && text.contains("runtime_evidence_all_scopes broken:"),
+        "{text}"
+    );
+    assert!(client.0.health_lines(&budget).unwrap()[0].contains("fresh_16"));
+    assert_eq!(
+        store.contract_diagnostics("claude", &budget).unwrap().len(),
+        18,
+        "history must remain retained independently of public caps"
+    );
+}
+
 struct DoctorClock(std::sync::atomic::AtomicU64);
 impl Clock for DoctorClock {
     fn utc_now(&self) -> crate::protocol::time::UtcMillis {

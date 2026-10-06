@@ -95,8 +95,11 @@ impl HarnessStatesProvider {
         &self,
         budget: &CallBudget,
     ) -> Result<crate::protocol::results::HarnessHealthV2Report, ApiError> {
-        self.report_v2_with_broken_rollup(budget)
-            .map(|(report, _)| report)
+        let (report, _) = self.report_v2_with_broken_rollup(budget)?;
+        report.validate().map_err(|reason| {
+            ApiError::new(crate::protocol::results::ErrorCode::InvalidRequest, reason)
+        })?;
+        Ok(report)
     }
 
     fn report_v2_with_broken_rollup(
@@ -143,7 +146,12 @@ impl HarnessStatesProvider {
             let observed = cached.get(id).cloned().unwrap_or_default();
             let mut limitations = Vec::new();
             let mut notes = Vec::new();
-            limitations.extend(diagnostics.iter().map(|row| health_text(&row.line(), 256)));
+            limitations.extend(
+                diagnostics
+                    .iter()
+                    .filter(|row| row.last_seen_at >= now.saturating_sub(state::HEALTH_WINDOW_MS))
+                    .map(|row| health_text(&row.line(), 256)),
+            );
             let detail = match &observed.status {
                 HarnessStatus::Unknown => None,
                 HarnessStatus::PresentUnqualified { detail }
@@ -312,6 +320,11 @@ impl HarnessStatesProvider {
                 .detail
                 .as_deref()
                 .map(|s| health_text(s, 256));
+            // Current diagnostics retain the store's deterministic newest-first
+            // priority. Status detail is also carried on the axes. Bound the
+            // complete vectors, including status additions, to the wire limits.
+            limitations.truncate(16);
+            notes.truncate(16);
             harnesses.insert(
                 id.into(),
                 AdapterHealthV2Report {
@@ -343,11 +356,10 @@ impl HarnessStatesProvider {
                 },
             );
         }
-        let report = HarnessHealthV2Report { harnesses };
-        report
-            .validate()
-            .map_err(|reason| ApiError::new(ErrorCode::InvalidRequest, reason))?;
-        Ok((report, broken_rollup))
+        // Public detail validation belongs to report_v2. A detail-only refusal
+        // must not erase the independently selected legacy broken rollup.
+        // Cache, store and budget failures above still propagate to both callers.
+        Ok((HarnessHealthV2Report { harnesses }, broken_rollup))
     }
 
     fn now_ms(&self) -> u64 {
@@ -494,6 +506,7 @@ fn health_text(text: &str, limit: usize) -> String {
     }
     format!("{}…", &clean[..end])
 }
+
 struct RuntimeCandidate {
     identity: crate::harness::runtime::RuntimeIdentity,
     domain: String,
@@ -620,5 +633,23 @@ pub fn trigger_unseen_versions(
                 version: version.clone(),
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::health_text;
+
+    #[test]
+    fn diagnostic_text_obeys_wire_byte_caps_and_removes_controls() {
+        let long = format!("\n{}\t", "界".repeat(100));
+        let bounded = health_text(&long, 256);
+        assert_eq!(bounded.len(), 255);
+        assert!(bounded.ends_with('…'));
+        assert!(!bounded.chars().any(char::is_control));
+        assert_eq!(health_text("\nshort\t", 256), "short");
+        let receipt = health_text(&long, 128);
+        assert_eq!(receipt.len(), 126);
+        assert!(receipt.ends_with('…'));
     }
 }
