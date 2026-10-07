@@ -1180,6 +1180,159 @@ mod archival_actual_producer_base_fixture {
             st.query_map([],|r|(0..n).map(|i|r.get(i)).collect()).unwrap().collect::<Result<_,_>>().unwrap()
         }).collect()
     }
+    pub(super) fn registered_alias_family_actual_producer_and_poke() {
+        use herdr_threads::{
+            harness::registry, test_support::archival_composer_fixture as injected,
+        };
+        let r = injected::registry();
+        assert_eq!(injected::ALIAS_64.len(), 64);
+        assert_eq!(injected::ALIAS_65.len(), 65);
+        assert_eq!(
+            r.agent("synthetic_fourth").unwrap(),
+            registry::builtins().agent("synthetic_fourth").unwrap()
+        );
+        let mut cases = Vec::new();
+        for kind in [
+            injected::ALIAS_64,
+            injected::ALIAS_65,
+            injected::ALIAS_CONTROL,
+        ] {
+            assert_eq!(
+                r.by_host_kind(kind).unwrap().metadata().id,
+                "synthetic_fourth"
+            );
+            cases.push((
+                kind,
+                r,
+                "idle",
+                HostUiState::Unknown,
+                HostUiState::Idle,
+                true,
+            ));
+            cases.push((
+                kind,
+                r,
+                "blocked",
+                HostUiState::ApprovalOrQuestion,
+                HostUiState::ApprovalOrQuestion,
+                false,
+            ));
+        }
+        cases.extend([
+            (
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                r,
+                "idle",
+                HostUiState::Unknown,
+                HostUiState::Unknown,
+                false,
+            ),
+            (
+                "synthetic_fourth\tundeclared",
+                r,
+                "blocked",
+                HostUiState::Unknown,
+                HostUiState::Unknown,
+                false,
+            ),
+            (
+                "synthetic_fourth_alias",
+                registry::builtins(),
+                "idle",
+                HostUiState::Unknown,
+                HostUiState::Unknown,
+                false,
+            ),
+        ]);
+        let mut failures = Vec::new();
+        for (kind, r, status, want_ordinary, want_composer, want_accept) in cases {
+            let mut peer = OwnedPeer::configured(kind, "SYNTHETIC COMPOSER EMPTY", status);
+            let cli = NativeCli::with_registry(peer.socket.clone(), Arc::new(FixedClock), r);
+            let target = HostTargetId::new("w4:p1");
+            let context = HostCallContext {
+                budget: CallBudget {
+                    deadline: MonoInstant(10000),
+                    cancellation: Cancellation::default(),
+                },
+                expected_boot: None,
+                expected_epoch: None,
+            };
+            let ordinary = cli.observe_current_target(&target, &context).unwrap();
+            let db = super::fixture();
+            super::thread(&db);
+            seed_canonical(&db, "synthetic_fourth", &ordinary);
+            let authority = complete_authority(&db);
+            let rt = archival::Runtime {
+                boot: "alias-family-runtime".into(),
+                mono: 1000,
+                utc: UtcMillis(1000),
+                after_ms: 60000,
+                host_generation: 0,
+                coherent: true,
+                valid_until_mono: None,
+                legacy_source: Some("covered-source".into()),
+            };
+            injected::advance(&db, "i", &rt, r).unwrap();
+            let ticket = injected::ticket(&db, "i", "s", &rt, r).unwrap();
+            let sample = cli
+                .observe_current_target_for_archival(&target, &context)
+                .unwrap();
+            let poke = cli
+                .observe_current_target_for_poke(&target, &context)
+                .unwrap();
+            let accepted = ticket
+                .as_ref()
+                .is_some_and(|t| injected::sample(&db, t, &rt, &sample, r).unwrap());
+            // Cleanup precedes the behavioral assertion, including at frozen RED.
+            peer.settle();
+            std::fs::remove_file(&peer.socket).unwrap();
+            assert!(!peer.socket.exists());
+            let errors = peer.errors.lock().unwrap().clone();
+            assert!(errors.is_empty(), "fixture protocol errors: {errors:?}");
+            let methods = peer.methods.lock().unwrap().clone();
+            let reads = methods
+                .iter()
+                .filter(|m| m.as_str() == "agent.read")
+                .count();
+            assert_eq!(
+                methods.iter().filter(|m| m.as_str() == "pane.get").count(),
+                3
+            );
+            assert!(sample.0.verified_structural_proof().is_some());
+            assert!(sample.0.occupant.is_none());
+            assert_eq!(sample.0.occupancy, StructuralOccupancy::Unknown);
+            assert_eq!(sample.0.execution, ExecutionEvidence::Unknown);
+            assert_eq!(complete_authority(&db), authority);
+            let evidence_matches = sample.1.as_ref().is_some_and(|e| {
+                e.parser == r.agent("synthetic_fourth").unwrap()
+                    && e.reported_host_kind == kind
+                    && e.classification == herdr_threads::ports::ComposerClassification::Empty
+            });
+            let ok = ordinary.ui == want_ordinary
+                && sample.0.ui == want_composer
+                && poke.ui == want_composer
+                && accepted == want_accept
+                && evidence_matches == want_accept
+                && reads == if want_accept { 2 } else { 0 };
+            eprintln!(
+                "alias-family actual kind={kind:?} bytes={} status={status} ordinary={:?} archival={:?} poke={:?} ticket={} evidence={} accepted={accepted} detection_reads={reads} peer_joined=true socket_absent=true protocol_errors=0",
+                kind.len(),
+                ordinary.ui,
+                sample.0.ui,
+                poke.ui,
+                ticket.is_some(),
+                evidence_matches
+            );
+            if !ok {
+                failures.push(format!("{kind:?}/{status}: ordinary={:?} archival={:?} poke={:?} accepted={accepted} evidence={evidence_matches} reads={reads}", ordinary.ui, sample.0.ui, poke.ui));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "exact declared aliases must preserve real producer/canonical/poke behavior: {failures:?}"
+        );
+    }
+
     pub(super) fn full_grace_actual_producers() {
         use herdr_threads::{
             harness::registry, test_support::archival_composer_fixture as injected,
@@ -1204,6 +1357,24 @@ mod archival_actual_producer_base_fixture {
             (
                 "synthetic_fourth",
                 "synthetic_fourth_alias",
+                "SYNTHETIC COMPOSER EMPTY",
+                injected::registry(),
+            ),
+            (
+                "synthetic_fourth",
+                injected::ALIAS_64,
+                "SYNTHETIC COMPOSER EMPTY",
+                injected::registry(),
+            ),
+            (
+                "synthetic_fourth",
+                injected::ALIAS_65,
+                "SYNTHETIC COMPOSER EMPTY",
+                injected::registry(),
+            ),
+            (
+                "synthetic_fourth",
+                injected::ALIAS_CONTROL,
                 "SYNTHETIC COMPOSER EMPTY",
                 injected::registry(),
             ),
@@ -1804,5 +1975,71 @@ fn archival_stale_sample_harness_cannot_pass_final_member_scan() {
     assert!(
         !archived(&db),
         "stale sample harness must not qualify exact current binding"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn archival_registered_alias_family_actual_producer_and_poke() {
+    archival_actual_producer_base_fixture::registered_alias_family_actual_producer_and_poke();
+}
+
+// Isolates the deciding consumer guard with explicitly synthetic envelopes.
+// Actual NativeCli closure is exercised separately without rewriting its envelope.
+#[test]
+fn archival_registered_alias_family_canonical_sample() {
+    use herdr_threads::{
+        harness::registry, ports::HostUiState, test_support::archival_composer_fixture as injected,
+    };
+    let r = injected::registry();
+    let mut failures = Vec::new();
+    for (kind, wrong_parser, want_accept) in [
+        (injected::ALIAS_64, false, true),
+        (injected::ALIAS_65, false, true),
+        (injected::ALIAS_CONTROL, false, true),
+        (
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            false,
+            false,
+        ),
+        ("synthetic_fourth\tundeclared", false, false),
+        (injected::ALIAS_65, true, false),
+    ] {
+        let db = fixture();
+        thread(&db);
+        joined_agent(&db);
+        ordinary(&db);
+        db.execute(
+            "UPDATE occupant_bindings SET harness='synthetic_fourth'",
+            [],
+        )
+        .unwrap();
+        let rt = runtime(0);
+        injected::advance(&db, "i", &rt, r).unwrap();
+        let ticket = injected::ticket(&db, "i", "s", &rt, r).unwrap().unwrap();
+        assert!(injected::next(&db, "i", &rt, r).unwrap().is_some());
+        let mut value = sample(0, HostUiState::Idle);
+        let e = value.1.as_mut().unwrap();
+        e.parser = if wrong_parser {
+            registry::builtins().agent("codex").unwrap()
+        } else {
+            r.agent("synthetic_fourth").unwrap()
+        };
+        e.reported_host_kind = kind.into();
+        assert!(value.0.occupant.is_none());
+        let accepted = injected::sample(&db, &ticket, &rt, &value, r).unwrap();
+        eprintln!(
+            "alias-family synthetic-consumer kind={kind:?} bytes={} wrong_parser={wrong_parser} accepted={accepted}",
+            kind.len()
+        );
+        if accepted != want_accept {
+            failures.push(format!(
+                "{kind:?}: accepted={accepted} expected={want_accept}"
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "exact registered aliases must qualify canonical synthetic samples: {failures:?}"
     );
 }

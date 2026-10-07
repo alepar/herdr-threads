@@ -10,12 +10,44 @@ use crate::protocol::{results::ApiError, time::CallBudget};
 use crate::store::archival::{self, ObservationTicket, Progress, Runtime};
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 use std::sync::OnceLock;
+/// Static aliases exercise the existing host-kind contract; these are data only.
+pub const ALIAS_64: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+pub const ALIAS_65: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+pub const ALIAS_CONTROL: &str = "synthetic_fourth\tdeclared";
 static OVERLAY: Overlay = Overlay;
 struct Overlay;
 impl HarnessAdapter for Overlay {
     type Admission = ();
     fn metadata(&self) -> &'static AdapterMetadata {
-        ADAPTER.metadata()
+        static METADATA: OnceLock<AdapterMetadata> = OnceLock::new();
+        METADATA.get_or_init(|| {
+            let base = ADAPTER.metadata();
+            let host_kinds = Box::leak(
+                base.host_kinds
+                    .iter()
+                    .copied()
+                    .chain([ALIAS_64, ALIAS_65, ALIAS_CONTROL])
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            );
+            AdapterMetadata {
+                id: base.id,
+                display_label: base.display_label,
+                context_spelling: base.context_spelling,
+                context_aliases: base.context_aliases,
+                executable: match &base.executable {
+                    ExecutableLookup::Path(path) => ExecutableLookup::Path(path),
+                    ExecutableLookup::Unsupported => ExecutableLookup::Unsupported,
+                },
+                host_kinds,
+                setup_scopes: base.setup_scopes,
+                budget: EventBudgetPolicy {
+                    lifecycle_ms: base.budget.lifecycle_ms,
+                    observer_ms: base.budget.observer_ms,
+                },
+                runtime_sources: base.runtime_sources,
+            }
+        })
     }
     fn contracts(&self) -> &'static [ContractDescriptor] {
         ADAPTER.contracts()

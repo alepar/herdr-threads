@@ -694,7 +694,7 @@ pub(crate) fn record_sample_in_with_registry(
             sample.1.as_ref().is_some_and(|e| {
                 e.parser==agent && e.classification==crate::ports::ComposerClassification::Empty
                 && e.basis==crate::ports::ComposerEvidenceBasis::RegisteredHostKindComposerRead
-                && e.reported_host_kind.len()<=64 && !e.reported_host_kind.chars().any(char::is_control)
+                // Exact static alias membership agrees with the real producer.
                 && registry.by_host_kind(&e.reported_host_kind).is_some_and(|r|r.metadata().id==agent.as_str())
             })
         })

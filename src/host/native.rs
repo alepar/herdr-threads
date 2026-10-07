@@ -1683,11 +1683,9 @@ impl NativeCli {
         pane: &NativePane,
         context: &HostCallContext,
     ) -> (HostUiState, Option<ports::RegisteredComposerEvidence>) {
-        let Some(kind) = pane
-            .agent
-            .as_deref()
-            .filter(|kind| kind.len() <= 64 && !kind.chars().any(char::is_control))
-        else {
+        // The bounded transport supplies the string; exact immutable registry
+        // membership determines which declared alias may select a parser.
+        let Some(kind) = pane.agent.as_deref() else {
             return (HostUiState::Unknown, None);
         };
         let Some(parser) = self
