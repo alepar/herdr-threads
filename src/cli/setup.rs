@@ -93,7 +93,7 @@ Scope (user level, like Herdr's own agent hooks):
 
 Foreground agents (user-managed, read-only inspection): setup and setup-status report user
 settings and manual advice for both harnesses. Claude: merge `disableAgentView: true` into
-user settings.json, or set its env.CLAUDE_CODE_DISABLE_AGENT_VIEW to `1`. Codex 0.160.1 has
+user settings.json, or set its env.CLAUDE_CODE_DISABLE_AGENT_VIEW to `1`. The inspected Codex has
 no persistent config/environment daemon opt-out; features.daemon_auto_start=false still attaches
 to an existing daemon. Use native --no-daemon, or HERDR_THREADS_CODEX_OPTS='--no-daemon'
 when the selected binary/wrapper supports and forwards it. Setup never sets these choices;
