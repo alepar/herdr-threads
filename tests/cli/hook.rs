@@ -5498,7 +5498,7 @@ mod enum_callback {
 #[cfg(feature = "test-support")]
 mod registered_resume {
     use super::*;
-    use crate::daemon::ownership::{OwnedListener, OwnerLock};
+    use crate::daemon::ownership::{EndpointDescriptor, OwnerLock, read_descriptor};
     use crate::harness::contract::{
         Classification, EventClass, EventContract, FieldSpec, HarnessContract, JsonType, classify,
         field,
@@ -5506,6 +5506,7 @@ mod registered_resume {
     use crate::harness::evidence::{AttributionHolding, EvidenceEvent, EvidenceOrigin};
     use crate::harness::registry::{OccupantHarness, Registry};
     use crate::protocol::results::*;
+    use crate::test_support::spawn::{OwnedChild, SpawnOwned};
     use crate::test_support::synthetic_fourth::ADAPTER;
     use std::sync::OnceLock;
 
@@ -5764,6 +5765,7 @@ mod registered_resume {
         seen: Mutex<Vec<Command>>,
         generation: Mutex<u64>,
         resolved: AtomicBool,
+        transcript: Option<PathBuf>,
     }
     impl Service {
         fn new(resolved: bool) -> Self {
@@ -5771,6 +5773,7 @@ mod registered_resume {
                 seen: Mutex::new(vec![]),
                 generation: Mutex::new(1),
                 resolved: AtomicBool::new(resolved),
+                transcript: None,
             }
         }
         fn requests(&self) -> Vec<crate::protocol::commands::ContinuityCheckIn> {
@@ -5848,7 +5851,13 @@ mod registered_resume {
             _: &CallBudget,
         ) -> Result<CommandResult, ApiError> {
             eprintln!("registered fixture command: {c:?}");
-            self.seen.lock().unwrap().push(c.clone());
+            {
+                let mut seen = self.seen.lock().unwrap();
+                seen.push(c.clone());
+                if let Some(path) = &self.transcript {
+                    write_fixture_json(path, &*seen).unwrap();
+                }
+            }
             match c {
                 Command::Seats(_) => {
                     let mut page = empty();
@@ -5919,7 +5928,56 @@ mod registered_resume {
             }
         }
     }
-    struct FixtureRoot(PathBuf);
+    // Reporting a teardown error must not create another unwind when stderr
+    // itself is unavailable.
+    macro_rules! fixture_diagnostic {
+        ($($arg:tt)*) => {{
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr().lock(), $($arg)*);
+        }};
+    }
+    const WORKER_ROOT_ENV: &str = "HT42_REGISTERED_WORKER_ROOT";
+    const WORKER_TEST: &str =
+        "cli::hook::tests::registered_resume::registered_fixture_worker_process";
+    const SETTLE_LIMIT: Duration = Duration::from_secs(3);
+    const RECOVERY_LIMIT: Duration = Duration::from_millis(250);
+    fn read_fixture_json<T: serde::de::DeserializeOwned>(path: &Path, limit: u64) -> io::Result<T> {
+        use std::io::Read;
+        if !std::fs::symlink_metadata(path)?.file_type().is_file() {
+            return Err(io::Error::other("fixture record is not a regular file"));
+        }
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?
+            .take(limit + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > limit {
+            return Err(io::Error::other("fixture record exceeds bound"));
+        }
+        serde_json::from_slice(&bytes).map_err(io::Error::other)
+    }
+    fn write_fixture_json(path: &Path, value: &impl serde::Serialize) -> io::Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
+        if bytes.len() > 1024 * 1024 {
+            return Err(io::Error::other("fixture transcript exceeds bound"));
+        }
+        let temporary = path.with_extension(format!("{}.tmp", uuid()));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)?;
+        file.write_all(&bytes)?;
+        std::fs::rename(temporary, path)
+    }
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct WorkerConfig {
+        instance: uuid::Uuid,
+        resolved: bool,
+        mode: String,
+    }
+    struct FixtureRoot(PathBuf, bool);
     impl std::ops::Deref for FixtureRoot {
         type Target = Path;
         fn deref(&self) -> &Path {
@@ -5928,24 +5986,115 @@ mod registered_resume {
     }
     impl Drop for FixtureRoot {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            if !self.1 {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
         }
+    }
+    // This entry is inert in ordinary test enumeration. Only an owned exact
+    // child receives its private root via Command.env, never global mutation.
+    #[test]
+    fn registered_fixture_worker_process() {
+        let Some(root) = std::env::var_os(WORKER_ROOT_ENV).map(PathBuf::from) else {
+            return;
+        };
+        let config: WorkerConfig = read_fixture_json(&root.join("worker.json"), 4096).unwrap();
+        let context =
+            RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
+        let paths = InstancePaths::resolve(&context).unwrap();
+        let owner = OwnerLock::acquire(&paths).unwrap();
+        assert_eq!(owner.instance_uuid(), config.instance);
+        assert!(
+            std::fs::symlink_metadata(&paths.socket_path)
+                .is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
+        );
+        let bound = owner.bind_socket().unwrap();
+        let descriptor = match owner.publish_endpoint(
+            &bound,
+            env!("CARGO_PKG_VERSION"),
+            crate::protocol::wire::PROTOCOL_VERSION,
+        ) {
+            Ok(d) => d,
+            Err(error) => {
+                owner.remove_failed_bound_publication(&bound).unwrap();
+                panic!("fixture publication: {error}");
+            }
+        };
+        if config.mode == "before-ready" {
+            panic!("injected publication-before-ready failure");
+        }
+        let mut service = Service::new(config.resolved);
+        service.transcript = Some(root.join("transcript.json"));
+        write_fixture_json(service.transcript.as_ref().unwrap(), &Vec::<Command>::new()).unwrap();
+        write_fixture_json(&root.join("ready.json"), &descriptor).unwrap();
+        let stop = Cancellation::default();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let cancellation = stop.clone();
+            let marker = root.join("stop.json");
+            tokio::spawn(async move {
+                loop {
+                    if marker.exists() {
+                        cancellation.cancel();
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            });
+            let outcome = crate::daemon::transport::serve(
+                bound.into_async().unwrap(),
+                config.instance,
+                Arc::new(service),
+                Arc::new(SystemClock::new()),
+                crate::daemon::paths::effective_uid(),
+                stop,
+            )
+            .await
+            .unwrap();
+            if let crate::daemon::transport::ServeOutcome::Incomplete(mut drain) = outcome {
+                tokio::time::timeout(Duration::from_secs(2), drain.wait())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            }
+        });
+        // Keep the actual child-elected owner through serving and injected late
+        // settlement. A process deadline can terminate any still-live work.
+        match config.mode.as_str() {
+            "panic" => panic!("injected actual fixture worker panic"),
+            "late" => std::thread::sleep(Duration::from_millis(80)),
+            "hung" => std::thread::sleep(Duration::from_secs(30)),
+            _ => {}
+        }
+        drop(runtime);
+        drop(owner);
     }
     struct Fixture {
         root: FixtureRoot,
         paths: InstancePaths,
         instance: uuid::Uuid,
         service: Arc<Service>,
-        owner: OwnerLock,
-        bound: Option<OwnedListener>,
         boot: Option<uuid::Uuid>,
-        shutdown: Cancellation,
-        worker: Option<std::thread::JoinHandle<()>>,
-        settled: Option<std::sync::mpsc::Receiver<()>>,
+        proof: Option<EndpointDescriptor>,
+        child: Option<OwnedChild>,
+        settle_limit: Duration,
     }
     impl Fixture {
         fn new(resolved: bool) -> Self {
-            let root = FixtureRoot(std::env::temp_dir().join(format!("ht42-{}", uuid())));
+            Self::new_mode(resolved, "normal")
+        }
+        fn new_mode(resolved: bool, mode: &str) -> Self {
+            Self::new_mode_with_root(
+                resolved,
+                mode,
+                std::env::temp_dir().join(format!("ht42-{}", uuid())),
+            )
+        }
+        fn new_mode_with_root(resolved: bool, mode: &str, root: PathBuf) -> Self {
+            let root = FixtureRoot(root, false);
             std::fs::DirBuilder::new()
                 .mode(0o700)
                 .create(&root.0)
@@ -5958,81 +6107,90 @@ mod registered_resume {
                     .is_err_and(|e| e.kind() == io::ErrorKind::NotFound),
                 "refuse preexisting endpoint"
             );
+            assert!(
+                !paths.descriptor_path.exists(),
+                "refuse preexisting descriptor"
+            );
             let owner = OwnerLock::acquire(&paths).unwrap();
             let instance = owner.instance_uuid();
+            drop(owner);
             let mut f = Self {
                 root,
                 paths,
                 instance,
                 service: Arc::new(Service::new(resolved)),
-                owner,
-                bound: None,
                 boot: None,
-                shutdown: Cancellation::default(),
-                worker: None,
-                settled: None,
+                proof: None,
+                child: None,
+                settle_limit: SETTLE_LIMIT,
             };
-            f.bound = Some(f.owner.bind_socket().unwrap());
-            let listener = f.bound.as_ref().unwrap();
-            let descriptor = match f.owner.publish_endpoint(
-                listener,
-                env!("CARGO_PKG_VERSION"),
-                crate::protocol::wire::PROTOCOL_VERSION,
-            ) {
-                Ok(d) => d,
-                Err(e) => {
-                    f.owner.remove_failed_bound_publication(listener).unwrap();
-                    f.bound.take();
-                    panic!("fixture publication: {e}")
+            write_fixture_json(
+                &f.root.join("worker.json"),
+                &WorkerConfig {
+                    instance,
+                    resolved,
+                    mode: mode.into(),
+                },
+            )
+            .unwrap();
+            let mut command = crate::test_support::spawn::command(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", WORKER_TEST, "--nocapture", "--test-threads=1"])
+                .env(WORKER_ROOT_ENV, &f.root.0)
+                .env_remove(crate::protocol::time::TEST_TIMEOUT_SCALE_ENV)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::fs::File::create(f.root.join("child.stdout")).unwrap())
+                .stderr(std::fs::File::create(f.root.join("child.stderr")).unwrap());
+            f.child = Some(command.spawn_owned().unwrap());
+            // The child is owned before any fallible readiness/metadata read.
+            let deadline = Instant::now() + SETTLE_LIMIT;
+            loop {
+                if f.root.join("ready.json").exists() {
+                    let ready: EndpointDescriptor =
+                        read_fixture_json(&f.root.join("ready.json"), 4096).unwrap();
+                    let actual = read_descriptor(&f.paths, f.instance).unwrap();
+                    assert_eq!(ready, actual, "fixture readiness descriptor drift");
+                    f.remember_proof(actual).unwrap();
+                    break;
                 }
-            };
-            f.boot = Some(descriptor.boot_id);
-            eprintln!(
-                "registered fixture endpoint: {} state={} instance={} boot={} device={} inode={}",
-                f.paths.socket_path.display(),
-                f.paths.instance_dir.display(),
-                instance,
-                descriptor.boot_id,
-                descriptor.socket_device,
-                descriptor.socket_inode
-            );
-            let listener = f.bound.take().unwrap();
-            let handler = Arc::clone(&f.service);
-            let stop = f.shutdown.clone();
-            let (tx, rx) = std::sync::mpsc::channel();
-            f.settled = Some(rx);
-            f.worker = Some(std::thread::spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .unwrap();
-                runtime.block_on(async {
-                    let outcome = crate::daemon::transport::serve(
-                        listener.into_async().unwrap(),
-                        instance,
-                        handler,
-                        Arc::new(SystemClock::new()),
-                        crate::daemon::paths::effective_uid(),
-                        stop,
-                    )
-                    .await
-                    .unwrap();
-                    if let crate::daemon::transport::ServeOutcome::Incomplete(mut drain) = outcome {
-                        tokio::time::timeout(Duration::from_secs(2), drain.wait())
-                            .await
-                            .unwrap()
-                            .unwrap();
-                    }
-                });
-                let _ = tx.send(());
-            }));
+                assert!(
+                    f.child.as_mut().unwrap().try_wait().unwrap().is_none(),
+                    "fixture child exited before ready"
+                );
+                assert!(Instant::now() < deadline, "fixture child readiness timeout");
+                std::thread::sleep(Duration::from_millis(5));
+            }
             f
+        }
+        fn remember_proof(&mut self, proof: EndpointDescriptor) -> io::Result<()> {
+            if proof.instance_uuid != self.instance || proof.endpoint != self.paths.socket_path {
+                return Err(io::Error::other("fixture endpoint namespace/path drift"));
+            }
+            if self
+                .proof
+                .as_ref()
+                .is_some_and(|previous| previous != &proof)
+            {
+                return Err(io::Error::other("fixture endpoint boot/inode drift"));
+            }
+            fixture_diagnostic!(
+                "registered fixture endpoint: {} state={} instance={} boot={} device={} inode={}",
+                proof.endpoint.display(),
+                self.paths.instance_dir.display(),
+                self.instance,
+                proof.boot_id,
+                proof.socket_device,
+                proof.socket_inode
+            );
+            self.boot = Some(proof.boot_id);
+            self.proof = Some(proof);
+            Ok(())
         }
         fn run(&self, r: &'static Registration, i: &HookInput) -> HookOutcome {
             let mut a = args(&self.root);
             a.harness = OccupantHarness::Agent(builtins().agent(r.metadata().id).unwrap()).into();
             a.event = i.registered_event.clone();
-            run_hook_registered(
+            let outcome = run_hook_registered(
                 r,
                 &a,
                 &claude(),
@@ -6041,7 +6199,10 @@ mod registered_resume {
                 Instant::now() + LIFECYCLE_BUDGET,
                 Arc::new(SystemClock::new()),
                 None,
-            )
+            );
+            *self.service.seen.lock().unwrap() =
+                read_fixture_json(&self.root.join("transcript.json"), 1024 * 1024).unwrap();
+            outcome
         }
         fn saved(&self) -> Option<OccupantContext> {
             crate::cli::seat_contexts(&self.paths, self.instance, &SeatId::new("registered-seat"))
@@ -6049,39 +6210,224 @@ mod registered_resume {
                 .current()
                 .unwrap()
         }
+        fn teardown(&mut self) -> Result<(), String> {
+            let mut errors = Vec::new();
+            let mut diagnostics = Vec::new();
+            if let Some(mut child) = self.child.take() {
+                if let Err(error) = write_fixture_json(&self.root.join("stop.json"), &true) {
+                    errors.push(format!("fixture cancellation: {error}"));
+                }
+                let first_deadline = Instant::now() + self.settle_limit;
+                let final_deadline = first_deadline + RECOVERY_LIMIT;
+                let mut late = false;
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(status)) => {
+                            if !status.success() {
+                                errors.push(format!("fixture worker failure: {status}"));
+                            }
+                            break;
+                        }
+                        Err(error) => {
+                            errors.push(format!("fixture child wait: {error}"));
+                            break;
+                        }
+                        Ok(None) => {}
+                    }
+                    if Instant::now() >= first_deadline && !late {
+                        late = true;
+                        errors.push("fixture transport did not settle before deadline".into());
+                    }
+                    if Instant::now() >= final_deadline {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                // stop always terminates the entire owned group, even if its
+                // leader already exited; wait reaps before endpoint election.
+                let reaped = child.stop();
+                fixture_diagnostic!(
+                    "registered fixture child: pid={} reaped={reaped:?} late={late}",
+                    child.id()
+                );
+                // Capture child diagnostics before successful cleanup removes
+                // its private root. Reads remain strictly bounded.
+                for name in ["child.stdout", "child.stderr"] {
+                    use std::io::Read;
+                    if let Ok(file) = std::fs::File::open(self.root.join(name)) {
+                        let mut bytes = Vec::new();
+                        match file.take(65537).read_to_end(&mut bytes) {
+                            Ok(_) if bytes.len() <= 65536 => diagnostics.push(format!(
+                                "registered fixture {name}: {}",
+                                String::from_utf8_lossy(&bytes)
+                            )),
+                            _ => errors
+                                .push(format!("fixture {name} diagnostics exceeds/read bound")),
+                        }
+                    }
+                }
+                if reaped.is_none() {
+                    self.root.1 = true;
+                    return Err(
+                        "fixture child reaping unconfirmed; ownership evidence retained".into(),
+                    );
+                }
+            }
+            let cleanup = (|| -> io::Result<()> {
+                // A child may publish then fail before ready. Only this own
+                // initial private namespace and sole reaped child can have
+                // published here; production validation supplies the proof.
+                if self.paths.descriptor_path.exists() {
+                    let actual = read_descriptor(&self.paths, self.instance)?;
+                    self.remember_proof(actual)?;
+                    let owner = OwnerLock::acquire(&self.paths)?;
+                    if owner.instance_uuid() != self.instance {
+                        return Err(io::Error::other("fixture namespace drift"));
+                    }
+                    let elected = read_descriptor(&self.paths, self.instance)?;
+                    if self.proof.as_ref() != Some(&elected) {
+                        return Err(io::Error::other(
+                            "fixture publication changed during election",
+                        ));
+                    }
+                    owner.remove_owned_endpoint(elected.boot_id)?;
+                }
+                match std::fs::symlink_metadata(&self.paths.socket_path) {
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                    _ => Err(io::Error::other("owned endpoint survived shutdown")),
+                }
+            })();
+            if let Err(error) = cleanup {
+                self.root.1 = true;
+                errors.push(format!(
+                    "fixture endpoint cleanup refused; root retained {}: {error}",
+                    self.root.0.display()
+                ));
+            } else {
+                fixture_diagnostic!(
+                    "registered fixture cleanup: endpoint absent {}",
+                    self.paths.socket_path.display()
+                );
+            }
+            for diagnostic in diagnostics {
+                fixture_diagnostic!("{diagnostic}");
+            }
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors.join("; "))
+            }
+        }
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
-            self.shutdown.cancel();
-            if let Some(worker) = self.worker.take() {
-                let settled = self
-                    .settled
-                    .take()
-                    .unwrap()
-                    .recv_timeout(Duration::from_secs(3));
-                assert!(
-                    !matches!(settled, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
-                    "fixture transport did not settle"
-                );
-                let joined = worker.join();
-                if !std::thread::panicking() {
-                    joined.unwrap();
+            if let Err(error) = self.teardown() {
+                if std::thread::panicking() {
+                    fixture_diagnostic!("registered fixture teardown during unwind: {error}");
+                } else {
+                    panic!("registered fixture teardown: {error}");
                 }
             }
-            if let Some(boot) = self.boot {
-                self.owner.remove_owned_endpoint(boot).unwrap();
-            } else if let Some(bound) = self.bound.as_ref() {
-                self.owner.remove_failed_bound_publication(bound).unwrap();
-            }
-            assert!(
-                !self.paths.socket_path.exists(),
-                "owned endpoint survived shutdown"
-            );
-            eprintln!(
-                "registered fixture cleanup: endpoint absent {}",
-                self.paths.socket_path.display()
-            );
         }
+    }
+    // Established before injecting a teardown error: recover only the original
+    // exact endpoint after the finite injected worker has stopped.
+    struct EndpointRecovery {
+        _root: FixtureRoot,
+        paths: InstancePaths,
+        instance: uuid::Uuid,
+        boot: uuid::Uuid,
+        delayed: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Drop for EndpointRecovery {
+        fn drop(&mut self) {
+            if let Some(worker) = self.delayed.take() {
+                let _ = worker.join();
+            }
+            if self.paths.socket_path.exists()
+                && let Ok(owner) = OwnerLock::acquire(&self.paths)
+                && owner.instance_uuid() == self.instance
+            {
+                let outcome = owner.remove_owned_endpoint(self.boot);
+                fixture_diagnostic!("regression recovery: {outcome:?}");
+            }
+            self._root.1 = self.paths.socket_path.exists();
+        }
+    }
+    fn teardown_error_regression(late: bool) {
+        let mut f = Fixture::new_mode(false, if late { "late" } else { "panic" });
+        if late {
+            f.settle_limit = Duration::from_millis(20);
+        }
+        let recovery = EndpointRecovery {
+            _root: FixtureRoot(f.root.0.clone(), true),
+            paths: f.paths.clone(),
+            instance: f.instance,
+            boot: f.boot.unwrap(),
+            delayed: None,
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(f)));
+        assert!(result.is_err(), "worker failure must be reported");
+        assert!(
+            !recovery.paths.socket_path.exists(),
+            "owned endpoint survived reported teardown error"
+        );
+    }
+    #[test]
+    fn registered_fixture_worker_panic_cleans_endpoint_before_reporting() {
+        teardown_error_regression(false);
+    }
+    #[test]
+    fn registered_fixture_late_settlement_cleans_endpoint_before_reporting() {
+        teardown_error_regression(true);
+    }
+    #[test]
+    fn registered_fixture_worker_failure_during_unwind_preserves_original_panic() {
+        let f = Fixture::new_mode(false, "panic");
+        let endpoint = f.paths.socket_path.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _fixture = f;
+            panic!("original test failure");
+        }));
+        let payload = result.unwrap_err();
+        assert_eq!(
+            payload.downcast_ref::<&str>(),
+            Some(&"original test failure")
+        );
+        assert!(
+            !endpoint.exists(),
+            "unwinding teardown must finish endpoint cleanup"
+        );
+    }
+    #[test]
+    fn registered_fixture_live_worker_deadline_reaps_before_endpoint_cleanup() {
+        let mut f = Fixture::new_mode(false, "hung");
+        f.settle_limit = Duration::from_millis(20);
+        let error = f.teardown().unwrap_err();
+        assert!(error.contains("did not settle before deadline"));
+        assert!(
+            f.child.is_none(),
+            "owned worker must be reaped before return"
+        );
+        assert!(
+            !f.paths.socket_path.exists(),
+            "deadline cleanup must remove owned endpoint"
+        );
+    }
+    #[test]
+    fn registered_fixture_publication_before_ready_failure_cleans_owned_endpoint() {
+        let root = std::env::temp_dir().join(format!("ht42-{}", uuid()));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Fixture::new_mode_with_root(false, "before-ready", root.clone())
+        }));
+        assert!(
+            result.is_err(),
+            "actual child publication failure must be reported"
+        );
+        assert!(
+            !root.exists(),
+            "successful exact-owner cleanup must remove private root"
+        );
     }
     #[test]
     fn registered_fourth_genuine_resume_reaches_canonical_request_and_installs_context() {
