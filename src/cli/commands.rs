@@ -597,7 +597,7 @@ enum Top {
     PendingReceipts(PendingReceiptsArgs),
     /// Read thread history or follow new messages; reading never ACKs.
     #[command(
-        after_help = "Without THREAD, browse channels across this instance, including archives and nonmembers. Rows show active/archived status, joined participants, sampled messages/minute and the last message; active channels rank first by participants weighted with activity. Type a fuzzy name/topic filter; arrows or Ctrl-N/P move, Enter reads the canonical ID, Esc/Ctrl-C cancel with exit 0. Requires stdin/stdout/stderr TTYs, usable TERM, and no agent/cooperative caller, --machine or --json. Agents and scripts must supply an exact thread ID or unique name.\n\nHuman author/recipient nicknames are relative to the live caller: alice, tryout/alice, project/tryout/alice. History and follow never ACK or accept."
+        after_help = "Without THREAD, browse channels across this instance, including archives and nonmembers. Rows show active/archived status, joined participants, sampled messages/minute and the last message; active channels rank first by participants weighted with activity. Type a fuzzy name/topic filter; arrows or Ctrl-N/P move, Enter reads the canonical ID, Esc/Ctrl-C cancel with exit 0. Requires stdin/stdout/stderr TTYs, usable TERM, and no agent/cooperative caller, --machine or --json. Agents and scripts must supply an exact thread ID or unique name.\n\nAgent author/recipient nicknames are SPACE/PANE/SEAT_ID with no harness suffix. Human nicknames are relative to the live caller: alice, tryout/alice, project/tryout/alice. History and follow never ACK or accept."
     )]
     Read(ReadArgs),
     /// Follow new messages, shorthand for `read --follow`; never ACKs or accepts.

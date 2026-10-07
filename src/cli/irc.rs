@@ -1,9 +1,9 @@
 //! IRC-style human transcript of a thread: `[HH:MM] <nick> message`.
 //!
 //! Used by the human form of `read` and by `read --follow`. A nick is the
-//! author seat's Herdr space/tab/pane label relative to the live caller,
-//! otherwise the short seat ID, with the seat's current binding harness as a
-//! suffix (`alice·claude`) when known. System events (joins, accepts, leaves,
+//! agent seat's Herdr space/pane label followed by its full seat ID. Human
+//! names remain relative to the live caller. Host labels and local occupant
+//! kinds are advisory display inputs only. System events (joins, accepts, leaves,
 //! ACKs, warnings) become `-!-` notice lines. Bodies are shown in full,
 //! wrapped under the message column; very long bodies are folded with a hint
 //! naming the command that prints the whole body.
@@ -71,9 +71,10 @@ impl Nick {
         }
     }
 
-    /// `name·harness`, escaped and clipped. The harness suffix is left out
-    /// when the name already says it (`mad-tea-hatter-codex`).
+    /// Agent names are already bounded per host component; preserve their
+    /// complete canonical seat ID. Human names retain the harness suffix.
     pub fn display(&self) -> String {
+        let agent = matches!(self.harness.as_deref(), Some("claude" | "codex"));
         let bound = if self.name.contains('/') {
             (NICK_MAX + 1) * 3 + 2
         } else {
@@ -83,6 +84,9 @@ impl Nick {
             &self.name,
             crate::view::escape::Context::SingleLine,
         );
+        if agent {
+            return escaped.into_owned();
+        }
         let name = one_line(&escaped, false, bound);
         match &self.harness {
             Some(harness)
@@ -96,30 +100,50 @@ impl Nick {
     }
 }
 
+/// Absolute agent nick from the canonical seat target's advisory host labels.
+/// Without a host read, only the canonical seat ID is honest. Names use the
+/// existing terminal escaping and independent component bounds; no tab alias
+/// substitutes for a missing pane name.
+pub fn agent_seat_nick(
+    seat: &SeatId,
+    pane: Option<&crate::host::observation::SeatHostLabels>,
+) -> String {
+    let Some(pane) = pane else {
+        return seat.as_str().to_owned();
+    };
+    format!(
+        "{}/{}/{}",
+        nick_label(&pane.workspace_label, &pane.workspace_id),
+        nick_label(&pane.pane_label, pane.target.as_str()),
+        seat.as_str()
+    )
+}
+
+fn nick_label(name: &Option<String>, id: &str) -> String {
+    let raw = name
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(id);
+    let escaped =
+        crate::view::escape::escape_for_terminal(raw, crate::view::escape::Context::SingleLine);
+    one_line(&escaped, false, NICK_MAX)
+}
+
 /// Display a pane relative to the live caller's canonical parent IDs.
 /// Shared with handoff; labels are presentation only and never locate a seat.
 pub fn relative_pane_nick(
     pane: &crate::host::observation::SeatHostLabels,
     caller: Option<&crate::host::observation::SeatHostLabels>,
 ) -> String {
-    let label = |name: &Option<String>, id: &str| {
-        let raw = name
-            .as_deref()
-            .filter(|name| !name.is_empty())
-            .unwrap_or(id);
-        let escaped =
-            crate::view::escape::escape_for_terminal(raw, crate::view::escape::Context::SingleLine);
-        one_line(&escaped, false, NICK_MAX)
-    };
     let mut parts = Vec::new();
     let same_space = caller.is_some_and(|caller| caller.workspace_id == pane.workspace_id);
     if !same_space {
-        parts.push(label(&pane.workspace_label, &pane.workspace_id));
+        parts.push(nick_label(&pane.workspace_label, &pane.workspace_id));
     }
     if !same_space || caller.is_none_or(|caller| caller.tab_id != pane.tab_id) {
-        parts.push(label(&pane.tab_label, &pane.tab_id));
+        parts.push(nick_label(&pane.tab_label, &pane.tab_id));
     }
-    parts.push(label(&pane.pane_label, pane.target.as_str()));
+    parts.push(nick_label(&pane.pane_label, pane.target.as_str()));
     parts.join("/")
 }
 

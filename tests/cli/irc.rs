@@ -68,8 +68,8 @@ impl Lookup for Fixed {
 
 fn party() -> Fixed {
     Fixed(vec![
-        ("seat-Alice001", "alice", Some("claude")),
-        ("seat-Hatter01", "mad-tea-hatter-codex", Some("codex")),
+        ("s001", "w/alice/s001", Some("claude")),
+        ("s002", "w/mad-tea-hatter-codex/s002", Some("codex")),
         ("seat-Person01", "you", Some("human")),
     ])
 }
@@ -79,23 +79,63 @@ fn render(summary: &MessageSummary, lookup: &mut dyn Lookup) -> String {
 }
 
 #[test]
-fn ordinary_messages_are_irc_lines_with_pane_nicks_and_harness() {
+fn agent_harness_is_never_appended_to_display_names() {
     let out = render(
-        &summary(1, "seat-Alice001", "Why is a raven like a writing-desk?"),
+        &summary(1, "s001", "Why is a raven like a writing-desk?"),
         &mut party(),
     );
     assert_eq!(
         out,
-        "[12:34] <alice·claude> Why is a raven like a writing-desk?\n"
+        "[12:34] <w/alice/s001> Why is a raven like a writing-desk?\n"
     );
-    // The harness is not repeated when the pane name already says it.
+    // A harness word already present in an advisory name is kept as name text.
     let out = render(
-        &summary(2, "seat-Hatter01", "I haven't the slightest idea"),
+        &summary(2, "s002", "I haven't the slightest idea"),
         &mut party(),
     );
     assert_eq!(
         out,
-        "[12:34] <mad-tea-hatter-codex> I haven't the slightest idea\n"
+        "[12:34] <w/mad-tea-hatter-codex/s002> I haven't the slightest idea\n"
+    );
+}
+
+#[test]
+fn agent_nick_escapes_host_names_bounds_each_component_and_keeps_full_legacy_id() {
+    let seat = SeatId::new("seat-0b5a1c2e-1111-2222-3333-444455556666");
+    let mut labels = crate::host::observation::SeatHostLabels {
+        terminal: "terminal".into(),
+        incarnation: None,
+        target: crate::protocol::ids::HostTargetId::new("w1:p1"),
+        workspace_id: "w1".into(),
+        workspace_label: Some("a/b\x1b\n".into()),
+        tab_id: "t1".into(),
+        tab_label: Some("must-not-appear".into()),
+        pane_label: Some("alice\u{202e}".into()),
+    };
+    let nick = |labels: Option<&crate::host::observation::SeatHostLabels>| {
+        Nick {
+            name: agent_seat_nick(&seat, labels),
+            harness: Some("codex".into()),
+        }
+        .display()
+    };
+    // Slash text follows the existing label convention; controls are visible.
+    assert_eq!(
+        nick(Some(&labels)),
+        "a/b\\u{001b}\\n/alice\\u{202e}/seat-0b5a1c2e-1111-2222-3333-444455556666"
+    );
+    labels.workspace_label = Some("w".repeat(100));
+    labels.pane_label = Some("p".repeat(100));
+    assert_eq!(
+        nick(Some(&labels)),
+        "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww…/pppppppppppppppppppppppppppppppp…/seat-0b5a1c2e-1111-2222-3333-444455556666"
+    );
+    assert_eq!(nick(None), "seat-0b5a1c2e-1111-2222-3333-444455556666");
+    labels.workspace_label = Some(String::new());
+    labels.pane_label = None;
+    assert_eq!(
+        nick(Some(&labels)),
+        "w1/w1:p1/seat-0b5a1c2e-1111-2222-3333-444455556666"
     );
 }
 
@@ -132,10 +172,10 @@ fn long_bodies_wrap_under_the_message_column_and_keep_line_breaks() {
         ..Style::plain()
     };
     let body = "one two three four five six seven eight nine ten\nsecond paragraph";
-    let out = render_message(&summary(1, "seat-Alice001", body), &mut party(), &style);
+    let out = render_message(&summary(1, "s001", body), &mut party(), &style);
     assert_eq!(
         out,
-        "[12:34] <alice·claude> one two three four five six\n\
+        "[12:34] <w/alice/s001> one two three four five six\n\
          \x20                      seven eight nine ten\n\
          \x20                      second paragraph\n"
     );
@@ -147,20 +187,16 @@ fn long_bodies_wrap_under_the_message_column_and_keep_line_breaks() {
         width: 40,
         ..Style::plain()
     };
-    let out = render_message(&summary(1, "seat-Alice001", body), &mut party(), &narrow);
+    let out = render_message(&summary(1, "s001", body), &mut party(), &narrow);
     assert_eq!(
         out,
-        "[12:34] <alice·claude> one two three\n\
+        "[12:34] <w/alice/s001> one two three\n\
          \x20       four five six seven eight nine\n\
          \x20       ten\n\
          \x20       second paragraph\n"
     );
     // A word longer than the column is split rather than overflowing.
-    let out = render_message(
-        &summary(2, "seat-Alice001", &"x".repeat(80)),
-        &mut party(),
-        &narrow,
-    );
+    let out = render_message(&summary(2, "s001", &"x".repeat(80)), &mut party(), &narrow);
     assert!(out.lines().all(|line| line.chars().count() <= 40), "{out}");
     assert_eq!(out.matches('x').count(), 80);
 }
@@ -175,10 +211,10 @@ fn very_long_bodies_fold_with_a_hint() {
         .map(|n| format!("line {n}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let out = render_message(&summary(7, "seat-Alice001", &body), &mut party(), &style);
+    let out = render_message(&summary(7, "s001", &body), &mut party(), &style);
     assert_eq!(
         out,
-        "[12:34] <alice·claude> line 1\n\
+        "[12:34] <w/alice/s001> line 1\n\
          \x20                      line 2\n\
          \x20                      … (8 more lines; full message: herdr-threads body msg-7)\n"
     );
@@ -215,19 +251,19 @@ fn system_events_are_notice_lines_with_nicks() {
     let mut lookup = party();
     let cases = [
         (
-            r#"{"action":"accept","seat":"seat-Alice001","invitation":"inv-1"}"#,
-            "[12:34] -!- alice·claude joined\n",
+            r#"{"action":"accept","seat":"s001","invitation":"inv-1"}"#,
+            "[12:34] -!- w/alice/s001 joined\n",
         ),
         (
-            r#"{"action":"leave","seat":"seat-Hatter01"}"#,
-            "[12:34] -!- mad-tea-hatter-codex left\n",
+            r#"{"action":"leave","seat":"s002"}"#,
+            "[12:34] -!- w/mad-tea-hatter-codex/s002 left\n",
         ),
         (
-            r#"{"action":"invite","actor_seat":"seat-Person01","seat":"seat-Alice001","invitation":"inv-2","deadline_at":1}"#,
+            r#"{"action":"invite","actor_seat":"seat-Person01","seat":"s001","invitation":"inv-2","deadline_at":1}"#,
             "", // informational: hidden in the IRC view
         ),
         (
-            r#"{"event":"ack","seat":"seat-Hatter01","messages":["msg-a","msg-b","msg-c","msg-d"],"decided_at":1}"#,
+            r#"{"event":"ack","seat":"s002","messages":["msg-a","msg-b","msg-c","msg-d"],"decided_at":1}"#,
             "", // ACKs are hidden in the IRC view
         ),
         (r#"{"action":"archive","actor_seat":"seat-Person01"}"#, ""),
@@ -236,7 +272,7 @@ fn system_events_are_notice_lines_with_nicks() {
             "",
         ),
         (
-            r#"{"action":"set_topic","actor_seat":"seat-Alice001","topic":"riddles"}"#,
+            r#"{"action":"set_topic","actor_seat":"s001","topic":"riddles"}"#,
             "",
         ),
     ];
@@ -250,11 +286,11 @@ fn system_events_are_notice_lines_with_nicks() {
     let warning = event(
         2,
         MessageKind::Warn,
-        r#"{"obligation":"receipt","seat":"seat-Hatter01","deadline_at":1}"#,
+        r#"{"obligation":"receipt","seat":"s002","deadline_at":1}"#,
     );
     assert_eq!(
         render(&warning, &mut lookup),
-        "[12:34] -!- warning: mad-tea-hatter-codex is overdue on an ACK\n"
+        "[12:34] -!- warning: w/mad-tea-hatter-codex/s002 is overdue on an ACK\n"
     );
     // An unparseable (clipped) informational event is not a join or leave: hidden.
     let mut clipped = event(3, MessageKind::Info, "{\"action\":\"crea");
@@ -300,10 +336,10 @@ fn colors_are_only_emitted_when_selected() {
         color: true,
         ..Style::plain()
     };
-    let message = summary(1, "seat-Alice001", "hello");
+    let message = summary(1, "s001", "hello");
     let out = render_message(&message, &mut party(), &colored);
     assert!(out.contains("\u{1b}["), "{out:?}");
-    assert!(out.contains("alice·claude"), "{out:?}");
+    assert!(out.contains("alice"), "{out:?}");
     // The same nick always gets the same color.
     assert_eq!(out, render_message(&message, &mut party(), &colored));
     assert!(!render_message(&message, &mut party(), &Style::plain()).contains('\u{1b}'));
@@ -313,13 +349,9 @@ fn colors_are_only_emitted_when_selected() {
 fn pages_render_oldest_first_with_a_continuation() {
     let page = Page {
         items: vec![
-            summary(3, "seat-Alice001", "third"),
-            summary(1, "seat-Alice001", "first"),
-            event(
-                2,
-                MessageKind::Info,
-                r#"{"action":"accept","seat":"seat-Hatter01"}"#,
-            ),
+            summary(3, "s001", "third"),
+            summary(1, "s001", "first"),
+            event(2, MessageKind::Info, r#"{"action":"accept","seat":"s002"}"#),
         ],
         next_cursor: Some("c".into()),
         next_argv: Some(vec![
@@ -336,9 +368,9 @@ fn pages_render_oldest_first_with_a_continuation() {
     };
     assert_eq!(
         render_page(&page, &mut party(), &Style::plain()),
-        "[12:34] <alice·claude> first\n\
-         [12:34] -!- mad-tea-hatter-codex joined\n\
-         [12:34] <alice·claude> third\n\
+        "[12:34] <w/alice/s001> first\n\
+         [12:34] -!- w/mad-tea-hatter-codex/s002 joined\n\
+         [12:34] <w/alice/s001> third\n\
          more: herdr-threads read --cursor c\n"
     );
 }
@@ -363,16 +395,16 @@ fn follow_lines_mark_human_and_relayed_messages() {
         render(&human_row, &mut party()),
         "[12:34] <you·human> [human] hello\n"
     );
-    let mut relayed = summary(2, "seat-Alice001", "do it");
+    let mut relayed = summary(2, "s001", "do it");
     relayed.author_role = Some(AuthorRole::Agent);
     relayed.relays_user = true;
     assert_eq!(
         render(&relayed, &mut party()),
-        "[12:34] <alice·claude> [relays user] do it\n"
+        "[12:34] <w/alice/s001> [relays user] do it\n"
     );
     assert_eq!(
-        render(&summary(3, "seat-Alice001", "plain"), &mut party()),
-        "[12:34] <alice·claude> plain\n"
+        render(&summary(3, "s001", "plain"), &mut party()),
+        "[12:34] <w/alice/s001> plain\n"
     );
 }
 
@@ -455,7 +487,7 @@ fn user_intent_irc_markers_are_independent() {
             Some(UserIntent::Request),
             Some(UserIntent::Rule),
         ] {
-            let mut row = summary(1, "seat-Alice001", "quoted rule");
+            let mut row = summary(1, "s001", "quoted rule");
             row.author_role = Some(role);
             row.relays_user = relay;
             row.user_intent = intent;
@@ -468,7 +500,7 @@ fn user_intent_irc_markers_are_independent() {
         }
     }
     assert_eq!(
-        render(&summary(1, "seat-Alice001", "Always test."), &mut party()),
-        "[12:34] <alice·claude> Always test.\n"
+        render(&summary(1, "s001", "Always test."), &mut party()),
+        "[12:34] <w/alice/s001> Always test.\n"
     );
 }
