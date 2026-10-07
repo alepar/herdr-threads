@@ -624,11 +624,7 @@ fn report(
         "--pane".into(),
         plan.request.launch.target.as_str().to_owned(),
         "--kind".into(),
-        match plan.request.launch.harness {
-            crate::harness::context::Harness::Codex => "codex",
-            _ => "claude",
-        }
-        .into(),
+        plan.request.launch.harness.as_str().into(),
     ]);
     if let Some(name) = &plan.request.launch.name {
         manual.extend(["--name".into(), name.clone()]);
