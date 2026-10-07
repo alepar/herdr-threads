@@ -1259,3 +1259,132 @@ fn handoff_freezes_configured_options_for_preflight_launch_and_retry() {
         );
     }
 }
+
+/// Execute the reported shell command under new option settings, then pass
+/// its captured arguments through the same parser and option resolver as launch.
+#[test]
+fn handoff_manual_recovery_preserves_frozen_options_without_reentry() {
+    const CHILD: &str = "HT_MANUAL_RECOVERY_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let captured = fs::read(std::env::var_os("HT_MANUAL_RECOVERY_ARGS").unwrap()).unwrap();
+        let mut argv = vec!["herdr-threads".to_owned()];
+        argv.extend(
+            captured
+                .split(|byte| *byte == 0)
+                .filter(|word| !word.is_empty())
+                .map(|word| String::from_utf8(word.to_vec()).unwrap()),
+        );
+        let parsed = crate::cli::commands::parse_argv(argv).unwrap();
+        let crate::cli::commands::CliAction::Launch(request) = parsed.action else {
+            panic!("manual recovery must still use guarded launch");
+        };
+        let expected: Vec<String> =
+            serde_json::from_str(&std::env::var("HT_MANUAL_RECOVERY_EXPECTED").unwrap()).unwrap();
+        assert_eq!(request.with_process_options().unwrap().argv, expected);
+        return;
+    }
+    use crate::test_support::spawn::SpawnOwned;
+    use std::os::unix::fs::PermissionsExt;
+    for harness in [
+        crate::harness::context::Harness::Codex,
+        crate::harness::context::Harness::Claude,
+    ] {
+        let (_temp, journal) = journal();
+        let root = journal.root().parent().unwrap();
+        let bin = root.join("herdr-threads");
+        fs::write(
+            &bin,
+            "#!/bin/sh\nprintf '%s\\000' \"$@\" > \"$HT_MANUAL_RECOVERY_ARGS\"\nexec \"$HT_MANUAL_RECOVERY_EXE\" cli::handoff::tests::handoff_manual_recovery_preserves_frozen_options_without_reentry --exact\n",
+        )
+        .unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut request = request();
+        request.launch.harness = harness;
+        request.launch.argv = vec!["--model".into(), "caller model".into()];
+        request.launch = request
+            .launch
+            .with_configured_options(Some(
+                if harness == crate::harness::context::Harness::Codex {
+                    "--no-daemon --model 'frozen model'"
+                } else {
+                    "--model 'frozen model'"
+                }
+                .into(),
+            ))
+            .unwrap();
+        let plan = HandoffPlan {
+            request,
+            context: Default::default(),
+            recipient: SeatId::new("recipient"),
+            create_key: OperationId::new("create"),
+            invite_key: OperationId::new("invite"),
+            send_key: OperationId::new("send"),
+        };
+        let progress = Progress {
+            thread: Some(ThreadId::new("t1")),
+            ..Default::default()
+        };
+        let reference = frozen(&journal);
+        let report = report(
+            &reference,
+            &plan,
+            &progress,
+            "launch",
+            true,
+            false,
+            &claim(),
+        );
+        let manual: Vec<String> =
+            serde_json::from_value(report["manual_launch_after_confirming_no_start_argv"].clone())
+                .unwrap();
+        let mut expected = plan.request.launch.argv.clone();
+        expected.push(bootstrap(
+            &ThreadId::new("t1"),
+            &plan.context,
+            &claim().instance,
+        ));
+        for options in [
+            if harness == crate::harness::context::Harness::Codex {
+                "--no-daemon --model 'frozen model'"
+            } else {
+                "--model 'frozen model'"
+            },
+            "--model 'changed model'",
+            "--model 'unterminated",
+        ] {
+            let mut command = crate::test_support::spawn::command("/bin/sh");
+            command
+                .args(["-c", &crate::protocol::output::format_command_argv(&manual)])
+                .env("PATH", format!("{}:/usr/bin:/bin", root.display()))
+                .env(CHILD, "1")
+                .env("HT_MANUAL_RECOVERY_ARGS", root.join("args"))
+                .env("HT_MANUAL_RECOVERY_EXE", std::env::current_exe().unwrap())
+                .env(
+                    "HT_MANUAL_RECOVERY_EXPECTED",
+                    serde_json::to_string(&expected).unwrap(),
+                )
+                .env("HERDR_THREADS_CODEX_OPTS", options)
+                .env("HERDR_THREADS_CLAUDE_OPTS", options)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let mut child = command.spawn_owned().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while child.try_wait().unwrap().is_none() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "manual recovery test timed out"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{harness:?} {options:?}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
+    }
+}

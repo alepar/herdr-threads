@@ -626,7 +626,15 @@ fn report(
         "inspect".into(),
         plan.recipient.as_str().to_owned(),
     ]);
-    let mut manual = prefix;
+    // This command already carries the frozen configured prefix. Suppress
+    // option re-entry for this launch only, including changed/malformed current
+    // settings; retain every saved native argument without deduplication.
+    let mut manual = vec![
+        "env".into(),
+        "HERDR_THREADS_CODEX_OPTS=".into(),
+        "HERDR_THREADS_CLAUDE_OPTS=".into(),
+    ];
+    manual.extend(prefix);
     manual.extend([
         "launch".into(),
         "--pane".into(),
