@@ -619,3 +619,6 @@ macro_rules! no_durable_work {
         }
     };
 }
+
+#[cfg(feature = "test-support")]
+pub mod archival_composer_fixture;

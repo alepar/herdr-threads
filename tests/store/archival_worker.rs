@@ -273,6 +273,13 @@ fn archival_worker_negative_survives_failed_persistence_before_next_final_decisi
                 .unwrap()
                 .unwrap();
             let mut sample = super::channel_archival::sample(at, HostUiState::Idle);
+            // A synthetic certificate precondition remains an honest
+            // canonical association, never a manufactured native occupant.
+            assert!(sample.0.occupant.is_none());
+            assert_eq!(
+                sample.1.as_ref().unwrap().basis,
+                ComposerEvidenceBasis::RegisteredHostKindComposerRead
+            );
             sample.0.observation_sequence = at as u64 + 2;
             assert!(archival::record_sample(&mut db, &ticket, &rt, &sample).unwrap());
         }
