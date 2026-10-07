@@ -1218,6 +1218,57 @@ fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The collection and legacy scalar agree for shipped Codex advice, and
+/// aggregation only extracts its note, retaining native hook information.
+#[test]
+fn aggregate_codex_trust_collection_preserves_scalar_and_text_compatibility() {
+    let s = Scratch::new();
+    s.harness("codex", "wrapper-version-unknown");
+    fs::create_dir_all(&s.codex_home).unwrap();
+    let config = s.codex_home.join("config.toml");
+    fs::write(&config, b"model = \"user choice\"\n").unwrap();
+    let installed = s.run(&["--json", "setup"]);
+    assert_eq!(
+        installed.status.code(),
+        Some(0),
+        "{}",
+        text(&installed.stderr)
+    );
+    let report = json(&installed);
+    assert_eq!(
+        report["trust_reminders"],
+        serde_json::json!([{"harness":"codex", "note":report["trust_reminder"]}])
+    );
+    assert!(
+        report["trust_reminder"]
+            .as_str()
+            .unwrap()
+            .contains("/hooks")
+    );
+    let codex = report["harnesses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["harness"] == "codex")
+        .unwrap();
+    assert!(codex["report"]["trust"]["note"].is_null());
+    assert!(codex["report"]["trust"]["hooks"].is_array());
+    let printed = s.run(&["setup"]);
+    assert_eq!(printed.status.code(), Some(0));
+    let stdout = text(&printed.stdout);
+    let expected_line = format!(
+        "codex hook trust: {}\n",
+        report["trust_reminder"].as_str().unwrap()
+    );
+    assert_eq!(stdout.matches(&expected_line).count(), 1, "{stdout}");
+    assert_eq!(stdout.matches("codex hook trust:").count(), 1);
+    assert!(!stdout.contains("codex setup trust:"));
+    assert_eq!(fs::read(&config).unwrap(), b"model = \"user choice\"\n");
+    let status = json(&s.run(&["--json", "setup-status"]));
+    assert_eq!(status["trust_reminders"], serde_json::json!([]));
+    assert!(status["trust_reminder"].is_null());
+}
+
 /// Bare `setup` / `setup-status` / `unsetup` cover every detected harness:
 /// one summary line each, the Codex trust reminder exactly once, idempotent
 /// re-run, and byte-for-byte removal of both. Kills: bare setup handling only
