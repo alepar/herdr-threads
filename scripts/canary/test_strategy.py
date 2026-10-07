@@ -562,5 +562,284 @@ class LegacyCompanionLoader(unittest.TestCase):
                     self.assertEqual(list((pathlib.Path(d) / harness / "work").iterdir()), [])
 
 
+class RequiredPreflight(unittest.TestCase):
+    """Actual shell and Python entrypoints with bounded offline discovery and dispatch."""
+
+    def setUp(self):
+        import shutil
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = pathlib.Path(self.tmp.name)
+        self.root = self.base / "repo"
+        self.canary = self.root / "scripts/canary"
+        self.canary.mkdir(parents=True)
+        # Copy the real consumer sources, without adding a production companion or shortcut.
+        for name in ("run.py", "report.py", "versions.py", "isolation.py",
+                     "companion_schema.json", "artifact_index_schema.json"):
+            shutil.copy2(HERE / name, self.canary / name)
+        shutil.copy2(HERE.parent / "harness-canary.sh", self.root / "scripts/harness-canary.sh")
+        (self.root / "Cargo.toml").write_text('[package]\nversion = "1.2.3"\n')
+        baseline = self.root / "docs/compatibility/harness-versions.json"
+        baseline.parent.mkdir(parents=True)
+        baseline.write_text('{"schema_version":1,"rows":[]}')
+        self.bin = self.base / "bin"
+        self.bin.mkdir()
+        self.discovery = self.bin / "discovery"
+        self.discovery_log = self.base / "discovery.jsonl"
+        self.calls = self.base / "calls.jsonl"
+        self.home = self.base / "home"
+        self.home.mkdir()
+        self.env = {"PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
+                    "HOME": str(self.home), "TMPDIR": str(self.base),
+                    "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1"}
+        if "HT_LEAK_RUN_ID" in os.environ:
+            self.env["HT_LEAK_RUN_ID"] = os.environ["HT_LEAK_RUN_ID"]
+        sentinel = (f"#!{sys.executable}\nimport pathlib,sys\n"
+                    f"with pathlib.Path({str(self.calls)!r}).open('a') as f: f.write('forbidden npm/model\\n')\n"
+                    "sys.exit(91)\n")
+        for name in ("npm", "claude", "codex", "model"):
+            (self.bin / name).write_text(sentinel)
+            (self.bin / name).chmod(0o755)
+        self.runtime = self.base / "runtime.json"
+        self.runtime.write_text('["synthetic-input"]')
+        companions = self.canary / "adapters"
+        companions.mkdir()
+        self.companion = companions / "third.py"
+        r = result()
+        r["identity"] = {"key": "build:c7dac5c7b327a0ef51fc1e59d0a1e00d41988d64678433420766248b554c304e",
+                         "source": "git", "release_version": None, "base_version": None,
+                         "derived_version": None, "commit": "b" * 40, "dirty": False, "distance": 1}
+        self.companion.write_text("import json,sys,os,pathlib\n"
+            "args=dict(zip(sys.argv[1::2],sys.argv[2::2]))\n"
+            f"with pathlib.Path({str(self.calls)!r}).open('a') as f: f.write(args['--harness']+' '+args['--stage']+'\\n')\n"
+            f"r={r!r}\nr.update(harness=args['--harness'],attempt=args['--attempt'],evidence_stage=args['--stage'])\n"
+            "print(json.dumps(r))\n")
+
+    def descriptors(self):
+        values = [adapter(name) for name in ("claude", "codex", "third", "fourth")]
+        for a, key in zip(values, ("CANARY_FIRST_KEY", "CANARY_SECOND_KEY", "CANARY_THIRD_KEY", "CANARY_FOURTH_KEY")):
+            a["canary_strategy"]["model_key_env"] = key
+        return values
+
+    def registry(self, values, *, raw=None, code=0):
+        raw = json.dumps({"schema_version": 1, "adapters": values}) if raw is None else raw
+        self.discovery.write_text(f"#!{sys.executable}\nimport json,sys,pathlib\n"
+            f"with pathlib.Path({str(self.discovery_log)!r}).open('a') as f: f.write(json.dumps(sys.argv[1:])+'\\n')\n"
+            "assert sys.argv[1:] == ['adapters', '--json']\n"
+            f"print({raw!r})\nsys.exit({code})\n")
+        self.discovery.chmod(0o755)
+
+    def call(self, route, selector="all", tier="required", *, keys=None, out=True, extra=()):
+        dest = pathlib.Path(out) if isinstance(out, pathlib.Path) else self.base / "out"
+        if route == "shell":
+            argv = ["bash", str(self.root / "scripts/harness-canary.sh"), "--herdr-threads", str(self.discovery)]
+        else:
+            argv = [sys.executable, str(self.canary / "run.py"), "strategy", "--binary", str(self.discovery)]
+        argv += ["--harness", selector, "--model-tier", tier, "--runtime-command-file", str(self.runtime), *extra]
+        if out:
+            argv += ["--out", str(dest)]
+        env = dict(self.env, **(keys or {}))
+        rc, stdout, stderr = runner.bounded_capture(argv, timeout=15, env=env)
+        return subprocess.CompletedProcess(argv, rc, stdout.decode(), stderr.decode())
+
+    def refused(self, cp, names=(), diagnostic=None):
+        self.assertEqual(cp.returncode, 2, cp.stderr)
+        for name in names:
+            self.assertIn(name, cp.stderr)
+        if diagnostic:
+            self.assertIn(diagnostic, cp.stderr)
+        self.assertNotIn("inert-present-secret", cp.stderr + cp.stdout)
+        self.assertFalse((self.base / "out").exists(), "refused before output/index/work")
+        self.assertFalse(self.calls.exists(), "no partial attempt, companion, npm or model")
+
+    def test_required_preflight_checks_all_selected_keys_before_output_or_attempts(self):
+        values = self.descriptors()
+        for route in ("shell", "python"):
+            for reverse in (False, True):
+                self.registry(values[::-1] if reverse else values)
+                for selector in ("all", "both", "fourth"):
+                    for keys in ({}, {"CANARY_FIRST_KEY": "inert-present-secret"},
+                                 {"CANARY_FIRST_KEY": "inert-present-secret", "CANARY_SECOND_KEY": "",
+                                  "CANARY_FOURTH_KEY": ""}):
+                        with self.subTest(route=route, reverse=reverse, selector=selector, keys=list(keys)):
+                            names = [a["canary_strategy"]["model_key_env"] for a in values
+                                     if (selector == "all" or selector == "both" and a["id"] in ("claude", "codex")
+                                         or a["id"] == selector) and not keys.get(a["canary_strategy"]["model_key_env"])]
+                            self.refused(self.call(route, selector, keys=keys), names)
+                # Refusal must also leave an existing output tree byte-identical.
+                dest = self.base / "out"
+                dest.mkdir()
+                (dest / "sentinel").write_bytes(b"unchanged\x00")
+                cp = self.call(route, "all", keys={"CANARY_FIRST_KEY": "inert-present-secret"})
+                self.assertEqual(cp.returncode, 2, cp.stderr)
+                self.assertEqual({p.relative_to(dest).as_posix(): p.read_bytes() for p in dest.rglob('*') if p.is_file()},
+                                 {"sentinel": b"unchanged\x00"})
+                self.assertEqual(list(dest.iterdir()), [dest / "sentinel"])
+                (dest / "sentinel").unlink()
+                dest.rmdir()
+                self.assertFalse(self.calls.exists())
+
+    def test_required_preflight_realistic_discovery_reaches_shell_and_python(self):
+        import shutil
+        self.registry(self.descriptors())
+        for route in ("shell", "python"):
+            with self.subTest(route=route):
+                try:
+                    self.refused(self.call(route, "fourth"), ["CANARY_FOURTH_KEY"])
+                    self.assertEqual(json.loads(self.discovery_log.read_text().splitlines()[-1]), ["adapters", "--json"])
+                    before = set(self.base.iterdir())
+                    self.refused(self.call(route, "fourth", out=False), ["CANARY_FOURTH_KEY"])
+                    self.assertEqual(set(self.base.iterdir()), before, "implicit output deferred too")
+                finally:
+                    shutil.rmtree(self.base / "out", ignore_errors=True)
+                    self.calls.unlink(missing_ok=True)
+        # Exercise the corrected default-build fixture through the real leaf entrypoint too.
+        import test_capture_hook as tch
+        fixture = tch.ScriptTier1()
+        fixture.setUp()
+        try:
+            tch.write_exe(fixture.bin / "npm", f"#!{sys.executable}\nimport pathlib,sys\n"
+                          f"pathlib.Path({str(fixture.t / 'forbidden-npm')!r}).touch()\nsys.exit(91)\n")
+            argv = ["bash", tch.SCRIPT, "--harness", "both", "--model-tier", "required",
+                    "--out", str(fixture.t / "out")]
+            rc, _, err = runner.bounded_capture(argv, timeout=15, env=fixture.env(ANTHROPIC_API_KEY="inert-present-secret"))
+            self.assertEqual(rc, 2, err.decode())
+            self.assertIn(b"OPENAI_API_KEY", err)
+            self.assertNotIn(b"inert-present-secret", err)
+            self.assertFalse((fixture.t / "out").exists())
+            self.assertFalse((fixture.t / "forbidden-npm").exists())
+            self.assertTrue((fixture.fixture_target / "debug/herdr-threads").is_file())
+            self.assertEqual([json.loads(line) for line in fixture.discovery_log.read_text().splitlines()],
+                             [["adapters", "--json"]])
+        finally:
+            fixture.tearDown()
+
+    def test_required_preflight_invalid_or_unavailable_discovery_never_creates_output(self):
+        values = self.descriptors()
+        bads = [("garbage", "invalid"), ('{"schema_version":1,"schema_version":1,"adapters":[]}', "duplicate"),
+                (json.dumps({"schema_version": 2, "adapters": values}), "schema")]
+        for mutate in (lambda a: a["canary_strategy"].update(model_key_env="bad-key"),
+                       lambda a: a["canary_strategy"].update(companion="../bad.py"),
+                       lambda a: a["canary_strategy"].update(kind="invented"),
+                       lambda a: a["contracts"].append(dict(a["contracts"][0]))):
+            a = self.descriptors()[0]
+            mutate(a)
+            bads.append((json.dumps({"schema_version": 1, "adapters": [a]}), "invalid"))
+        duplicate = self.descriptors()
+        duplicate[1]["id"] = duplicate[0]["id"]
+        bads.append((json.dumps({"schema_version": 1, "adapters": duplicate}), "duplicate"))
+        for route in ("shell", "python"):
+            for raw, diagnostic in bads:
+                with self.subTest(route=route, raw=raw[:80]):
+                    self.registry([], raw=raw)
+                    self.refused(self.call(route), diagnostic=diagnostic)
+            self.registry(values, code=7)
+            self.refused(self.call(route), diagnostic="discovery failed")
+            self.discovery.unlink()
+            self.refused(self.call(route))
+            self.registry(values)
+            self.refused(self.call(route, "unknown"), diagnostic="unknown harness")
+
+    def test_required_preflight_no_declared_key_and_unsupported_remain_honest(self):
+        for route in ("shell", "python"):
+            for mode in ("no-key", "unsupported", "empty"):
+                values = self.descriptors()[:2]
+                if mode == "no-key":
+                    values[1]["canary_strategy"]["model_key_env"] = None
+                elif mode == "unsupported":
+                    values[1]["canary_strategy"] = None
+                else:
+                    values = []
+                self.registry(values)
+                for selector in (("all",) if mode == "empty" else ("all", "both", "codex")):
+                    self.refused(self.call(route, selector, keys={"CANARY_FIRST_KEY": "inert-present-secret"}),
+                                 diagnostic={"no-key": "no declared model key", "unsupported": "unsupported strategy",
+                                             "empty": "empty selection"}[mode])
+        # Unselected key declarations cannot block a permitted fourth-adapter dispatch.
+        self.registry(self.descriptors())
+        cp = self.call("python", "fourth", keys={"CANARY_FOURTH_KEY": "inert-present-secret"})
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        self.assertEqual(self.calls.read_text().splitlines(), ["fourth live"])
+        self.assertNotIn("inert-present-secret", cp.stdout + cp.stderr)
+
+    def test_required_preflight_output_fences_survive_deferred_allocation(self):
+        self.registry(self.descriptors())
+        keys = {"CANARY_FOURTH_KEY": "inert-present-secret"}
+        for route in ("shell", "python"):
+            for forbidden in (self.home / ".claude", self.home / ".codex", self.home / ".aisw",
+                              self.root / "unignored"):
+                with self.subTest(route=route, forbidden=forbidden.name):
+                    try:
+                        cp = self.call(route, "fourth", keys=keys, out=forbidden / "output")
+                        self.refused(cp, diagnostic="inside")
+                        self.assertFalse(forbidden.exists())
+                    finally:
+                        import shutil
+                        shutil.rmtree(forbidden, ignore_errors=True)
+                        self.calls.unlink(missing_ok=True)
+            # TMPDIR must not bypass the same output fences when --out is omitted.
+            forbidden = self.home / ".claude"
+            forbidden.mkdir()
+            previous = self.env["TMPDIR"]
+            self.env["TMPDIR"] = str(forbidden)
+            try:
+                with self.subTest(route=route, implicit=True):
+                    self.refused(self.call(route, "fourth", keys=keys, out=False), diagnostic="inside")
+                    self.assertEqual(list(forbidden.iterdir()), [])
+            finally:
+                self.env["TMPDIR"] = previous
+                for path in forbidden.glob("hc-*"):
+                    import shutil
+                    shutil.rmtree(path)
+                forbidden.rmdir()
+                self.calls.unlink(missing_ok=True)
+
+    def test_required_preflight_preserves_auto_off_and_live_safeguards(self):
+        import shutil
+        self.registry(self.descriptors())
+        for route in ("shell", "python"):
+            for tier, keys, stage in (("auto", {}, "no_model"),
+                                      ("off", {"CANARY_FOURTH_KEY": "inert-present-secret"}, "no_model"),
+                                      ("required", {a["canary_strategy"]["model_key_env"]: "inert-present-secret"
+                                                    for a in self.descriptors()}, "live")):
+                selector = "all" if tier == "required" else "fourth"
+                cp = self.call(route, selector, tier, keys=keys)
+                self.assertEqual(cp.returncode, 0, cp.stderr)
+                expected = [a["id"] + " live" for a in self.descriptors()] if selector == "all" else ["fourth " + stage]
+                self.assertEqual(self.calls.read_text().splitlines(), expected)
+                self.assertNotIn("inert-present-secret", cp.stdout + cp.stderr)
+                self.assertTrue(all(b"inert-present-secret" not in path.read_bytes()
+                                    for path in (self.base / "out").rglob('*') if path.is_file()))
+                report = json.loads((self.base / "out/canary-report.json").read_text())
+                self.assertTrue(all(b["evidence_stage"] == stage for b in report["harnesses"]))
+                shutil.rmtree(self.base / "out")
+                self.calls.unlink()
+            cp = self.call(route, "fourth", "auto", extra=("--evidence-stage", "live"))
+            self.assertEqual(cp.returncode, 1, cp.stderr)
+            self.assertFalse(self.calls.exists(), "live without credentials never invokes a companion")
+            report = json.loads((self.base / "out/canary-report.json").read_text())
+            self.assertIn("declared credential", report["harnesses"][0]["reason"])
+            shutil.rmtree(self.base / "out")
+            for stage in ("no_model", "source_captured"):
+                cp = self.call(route, "fourth", "off", extra=("--evidence-stage", stage))
+                self.assertEqual(cp.returncode, 0 if stage == "no_model" else 1, cp.stderr)
+                self.assertEqual(self.calls.read_text().splitlines(), ["fourth " + stage])
+                index = json.loads((self.base / "out/artifact-index.json").read_text())
+                self.assertEqual(index["attempts"][0]["evidence_stage"], stage)
+                shutil.rmtree(self.base / "out")
+                self.calls.unlink()
+
+        for route in ("shell", "python"):
+            for keep in (False, True):
+                cp = self.call(route, "fourth", "auto", out=False, extra=("--keep",) if keep else ())
+                self.assertEqual(cp.returncode, 0, cp.stderr)
+                directories = list(self.base.glob("hc-*"))
+                self.assertEqual(len(directories), int(keep))
+                if keep:
+                    self.assertTrue((directories[0] / "artifact-index.json").is_file())
+                    shutil.rmtree(directories[0])
+                self.calls.unlink()
+
+
 if __name__ == "__main__":
     unittest.main()

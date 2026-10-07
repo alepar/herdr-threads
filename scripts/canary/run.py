@@ -398,6 +398,23 @@ def select_adapters(discovery, selector):
     return [a for a in adapters if a["id"] in chosen]
 
 
+def required_preflight(adapters):
+    """Refuse the complete validated selection before allocating output or attempting work."""
+    problems = []
+    if not adapters:
+        problems.append("empty selection")
+    for adapter in adapters:
+        strategy = adapter.get("canary_strategy")
+        if strategy is None:
+            problems.append(adapter["id"] + ": unsupported strategy")
+        elif not strategy.get("model_key_env"):
+            problems.append(adapter["id"] + ": no declared model key")
+        elif not os.environ.get(strategy["model_key_env"]):
+            problems.append(adapter["id"] + ": " + strategy["model_key_env"] + " is empty or unset")
+    if problems:
+        raise ValueError("--model-tier required: " + "; ".join(problems))
+
+
 def isolated_env(work, strategy, stage):
     work = pathlib.Path(work)
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8", "TERM": "dumb",
@@ -702,7 +719,7 @@ def legacy_companion(argv, harness, companion):
 def strategy_main(argv):
     ap = argparse.ArgumentParser()
     ap.add_argument("--binary", required=True)
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--out")
     ap.add_argument("--harness", default="all")
     ap.add_argument("--model-tier", choices=("auto", "off", "required"), default="auto")
     ap.add_argument("--versions", default="since-verified")
@@ -715,16 +732,60 @@ def strategy_main(argv):
     ap.add_argument("--evidence-stage", choices=("source_captured", "no_model", "live"))
     args = ap.parse_args(argv)
     root = HERE.parents[1]
-    out = pathlib.Path(args.out).resolve()
-    out.mkdir(parents=True, exist_ok=True)
-    rc, raw, _ = bounded_capture([args.binary, "adapters", "--json"], timeout=30)
+    binary = pathlib.Path(args.binary).resolve()
+    rc, raw, _ = bounded_capture([str(binary), "adapters", "--json"], timeout=30)
     if rc:
         raise ValueError("same-binary adapter discovery failed")
     registry = _json(raw, 65536)
     adapters = select_adapters(registry, args.harness)
+    if args.model_tier == "required":
+        required_preflight(adapters)
     doc = _sibling("versions").load_versions_json(args.baseline_json) if args.baseline_json else {"rows": []}
+    temporary = args.out is None
+    if temporary:
+        # This directory also contains bisect.py; import tempfile without shadowing stdlib bisect.
+        saved_path = sys.path[:]
+        try:
+            sys.path[:] = [p for p in sys.path if os.path.realpath(p or ".") != str(HERE)]
+            import tempfile
+        finally:
+            sys.path[:] = saved_path
+        temp_root = pathlib.Path(os.environ.get("TMPDIR") or "/tmp").resolve()
+        refuse_output(temp_root / "hc-output", root)
+        out = pathlib.Path(tempfile.mkdtemp(prefix="hc-", dir=str(temp_root)))
+    else:
+        out = pathlib.Path(args.out).resolve()
+    try:
+        return write_strategy_output(args, adapters, binary, root, out, doc)
+    finally:
+        if temporary and not args.keep:
+            import shutil
+            shutil.rmtree(out)
+
+
+def refuse_output(out, root):
+    """Keep the shell output fences when Python owns explicit or temporary allocation."""
+    out, root = pathlib.Path(out).resolve(), pathlib.Path(root).resolve()
+    home = pathlib.Path(os.path.expanduser("~"))
+    for name in (".claude", ".codex", ".aisw"):
+        forbidden = (home / name).resolve()
+        if out.is_relative_to(forbidden):
+            raise ValueError("--out is inside " + str(forbidden))
+    if out.is_relative_to(root):
+        relative = str(out.relative_to(root))
+        _, tracked, _ = bounded_capture(["git", "-C", str(root), "ls-files", "--", relative], timeout=5)
+        if tracked:
+            raise ValueError("--out is inside the tracked tree")
+        rc, _, _ = bounded_capture(["git", "-C", str(root), "check-ignore", "-q", "--", relative], timeout=5)
+        if rc:
+            raise ValueError("--out is inside the repository checkout and not git-ignored")
+
+
+def write_strategy_output(args, adapters, binary, root, out, doc):
+    refuse_output(out, root)
+    out.mkdir(parents=True, exist_ok=True)
     index = {"schema_version": 1, "attempts": []}
-    blocks = [run_strategy(a, out, pathlib.Path(args.binary).resolve(), root, args.model_tier,
+    blocks = [run_strategy(a, out, binary, root, args.model_tier,
                           args.runtime_command_file, args.versions, doc, args.baseline, args.bisect,
                           index, args.versions_json, args.evidence_stage) for a in adapters]
     validate_index(json.dumps(index).encode(), out, adapters)

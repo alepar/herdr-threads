@@ -315,12 +315,6 @@ if [ "$MODEL_TIER" = required ] && [ "$MODE" = probe ]; then
   done
 fi
 
-if [ -z "$OUT" ]; then
-  OUT=$(mktemp -d "${TMPDIR:-/tmp}/hc-XXXXXX")
-  OUT_IS_TEMP=1
-fi
-OUT=$(abs_path "$OUT")
-
 refuse_out() {
   local out=$1 forbidden
   for forbidden in "$REAL_HOME/.claude" "$REAL_HOME/.codex" "$REAL_HOME/.aisw"; do
@@ -339,16 +333,16 @@ refuse_out() {
       ;;
   esac
 }
-refuse_out "$OUT"
-mkdir -p "$OUT/work"
+if [ -n "$OUT" ]; then OUT=$(abs_path "$OUT"); refuse_out "$OUT"; fi
 
 if [ "$MODE" = run ] && [ -z "${HT_CANARY_SOURCE_ONLY:-}" ]; then
   if [ -z "$HT_BIN" ]; then
     (cd "$ROOT" && nice cargo build --locked >&2) || die "cannot build discovery binary"
     HT_BIN=${CARGO_TARGET_DIR:-$ROOT/target}/debug/herdr-threads
   fi
-  strategy_args=(strategy --binary "$HT_BIN" --out "$OUT" --harness "$HARNESS"
+  strategy_args=(strategy --binary "$HT_BIN" --harness "$HARNESS"
     --versions "$VERSIONS" --model-tier "$MODEL_TIER" --baseline-json "$BJSON")
+  [ -z "$OUT" ] || strategy_args+=(--out "$OUT")
   [ "$BISECT" -eq 0 ] || strategy_args+=(--bisect)
   [ "$KEEP" -eq 0 ] || strategy_args+=(--keep)
   [ -z "$BASELINE" ] || strategy_args+=(--baseline "$BASELINE")
@@ -357,6 +351,15 @@ if [ "$MODE" = run ] && [ -z "${HT_CANARY_SOURCE_ONLY:-}" ]; then
   [ -z "$EVIDENCE_STAGE" ] || strategy_args+=(--evidence-stage "$EVIDENCE_STAGE")
   exec python3 "$CANARY/run.py" "${strategy_args[@]}"
 fi
+
+if [ -z "$OUT" ]; then
+  OUT=$(mktemp -d "${TMPDIR:-/tmp}/hc-XXXXXX")
+  OUT_IS_TEMP=1
+fi
+OUT=$(abs_path "$OUT")
+
+refuse_out "$OUT"
+mkdir -p "$OUT/work"
 
 NODE_BIN=$(command -v node || true)
 NPM_BIN=$(command -v npm || true)
