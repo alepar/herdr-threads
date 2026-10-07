@@ -1956,6 +1956,7 @@ fn run_launch<W: Write>(
             "launch is a local operator command; --cooperative-* caller selection does not apply",
         ));
     }
+    let mut request = request.clone().with_process_options()?;
     let mut env = setup::SetupEnv::from_process(&parsed.output)?;
     env.state_dir = Some(context.state_dir.clone());
     env.host_endpoint = Some(context.host_endpoint.clone());
@@ -1965,7 +1966,6 @@ fn run_launch<W: Write>(
         crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(clock));
     // Without `--name`, the agent is named after the pane's Herdr label. Best
     // effort: an unreadable snapshot leaves the short-seat-id fallback.
-    let mut request = request.clone();
     if request.name.is_none() {
         let budget = CallBudget {
             deadline: MonoInstant(clock.monotonic_now().0.saturating_add(3_000)),

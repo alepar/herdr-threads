@@ -238,6 +238,32 @@ Existing valid owned legacy records are inspected before hook updates and preser
 
 ## Managed launch
 
+Seat attribution requires hooks and tool commands to inherit the pane running the TUI.
+A shared harness server started in another pane can supply that server's pane instead.
+`setup` and `setup-status` inspect the user configuration and explain the foreground
+requirement; they do not change these settings. The user configuration is an advisory
+check, because wrappers and higher-precedence settings can change the effective mode.
+
+For Claude, set `"disableAgentView": true` in
+`$CLAUDE_CONFIG_DIR/settings.json` (default `~/.claude/settings.json`). The equivalent
+user-settings entry is `"env": {"CLAUDE_CODE_DISABLE_AGENT_VIEW": "1"}`. This disables
+background agents and their on-demand supervisor. `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`
+controls tool backgrounding and is not the supervisor opt-out.
+
+Codex 0.160.1 has no verified persistent setting equivalent to native `--no-daemon`.
+`[features] daemon_auto_start = false` prevents automatic startup but still permits
+attachment to an existing server. Configure your existing native launcher or wrapper
+to keep execution in the TUI process. For a Codex entrypoint that accepts the native flag,
+herdr-threads can add it explicitly:
+
+```sh
+export HERDR_THREADS_CODEX_OPTS='--no-daemon'
+```
+
+Leave this unset when your wrapper rejects the flag; configure that wrapper's supported
+foreground mode instead. The measured tool and hook behavior and setting sources are
+documented in [wrapper compatibility](compatibility/wrapper-seat-detection.md).
+
 `herdr-threads launch --pane PANE --kind claude|codex [--name NAME] [-- AGENT_ARG...]` starts Claude or Codex in one explicit existing Herdr pane that is at its interactive shell prompt. It never creates, splits or picks a pane, and never types into an occupied one.
 
 Before anything starts, launch:
@@ -250,7 +276,28 @@ Before anything starts, launch:
 
 The Herdr agent gets a readable name: `--name NAME` when given, else the pane's Herdr label (or its tab's label when the tab holds only that pane), else `seat-<short seat id>` (for example `seat-k3fq9a2b`). The name is fitted to Herdr's rule `[a-z][a-z0-9_-]{0,31}`: lowercased, other characters become `-`, anything before the first letter is dropped, and it is cut to 32 bytes (a `--name` with no letter is refused; a `--name` that had to change is reported in `warnings`). Launch correlates Herdr's start and readiness answers with that exact name. When Herdr refuses it as `agent_name_taken`, launch retries once with `-<short seat id>` appended, never more. The report and `launches.jsonl` record `agent_name` and `agent_name_source` (`name`, `pane_label` or `seat`); after exit 5 they list both `agent_name_candidates`.
 
-The agent's arguments are the arguments after `--`, unchanged and in order: the owned configuration is on disk, so launch adds no hook or sandbox arguments. Launch adds no daemon-mode argument and does not inspect shell functions or aliases to deduplicate one. This lets the pane's `codex` wrapper select its own supported mode: a wrapper script may reject `--no-daemon` even when native Codex accepts it. Explicit caller arguments remain unchanged, including a top-level `--no-daemon` for a native CLI that supports it. A Codex setup plan adds only its owned session `-c` overrides, inserted at the level that loads hooks (interactive, `exec`, or `exec resume`). Other subcommands (including top-level `resume`, `exec fork` and `exec review`), an explicit `--daemon`, duplicate or misplaced caller `--no-daemon`, and a caller `-c hooks.*` or whole-table `-c hooks=...` override that would replace the owned hook are refused. A separated `-i FILE` / `--image FILE` is refused too, because the option takes several values and would swallow a following subcommand or prompt: write `--image=FILE`, or put it after `--`. No auto-approve flag is added.
+The caller's arguments after `--` remain unchanged and in order: the owned configuration is on disk, so launch adds no hook or sandbox arguments. By default launch adds no daemon-mode argument and does not inspect shell functions or aliases to deduplicate one. This lets the pane's `codex` wrapper select its own supported mode: a wrapper script may reject `--no-daemon` even when native Codex accepts it. Explicit caller arguments remain unchanged, including a top-level `--no-daemon` for a native CLI that supports it. A Codex setup plan adds only its owned session `-c` overrides, inserted at the level that loads hooks (interactive, `exec`, or `exec resume`). Other subcommands (including top-level `resume`, `exec fork` and `exec review`), an explicit `--daemon`, duplicate or misplaced caller `--no-daemon`, and a caller `-c hooks.*` or whole-table `-c hooks=...` override that would replace the owned hook are refused. A separated `-i FILE` / `--image FILE` is refused too, because the option takes several values and would swallow a following subcommand or prompt: write `--image=FILE`, or put it after `--`. No auto-approve flag is added.
+
+Optional `HERDR_THREADS_CODEX_OPTS` and `HERDR_THREADS_CLAUDE_OPTS` add arguments for the
+selected harness only. They are read from the environment of the herdr-threads command,
+split using shell-style quotes, and placed before the caller's arguments so top-level
+flags such as `--no-daemon` precede a subcommand or prompt. Unset or empty variables add
+nothing. Values undergo no variable, wildcard or command expansion: `$HOME` and
+`$(command)` remain literal arguments. Invalid quoting, non-UTF-8 values and NUL bytes
+are refused before any launch or handoff effect. Existing launch validation also applies
+to configured arguments; conflicting hook overrides, duplicate `--no-daemon` and
+unsupported forms remain refused. A wrapper that supplies its own flag needs no duplicate
+here.
+
+For example:
+
+```sh
+export HERDR_THREADS_CODEX_OPTS='--no-daemon --model "my model"'
+export HERDR_THREADS_CLAUDE_OPTS='--model sonnet'
+```
+
+`handoff` freezes these arguments with the durable handoff before preflight and effects;
+retry uses the frozen arguments even if the environment later changes.
 
 Launch watches the start for up to its observation window (30 s). Herdr keeps an agent that exits straight away (for example Codex refusing its arguments with a usage error) `launch_pending` with no detected agent, so once a second after the first one launch also reads the pane's last lines: when the harness's command line was echoed and the pane is back at a shell prompt, launch fails at once with `invalid_request` quoting those lines (nothing is running) instead of waiting out the window and exiting 5.
 

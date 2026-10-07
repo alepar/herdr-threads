@@ -44,6 +44,7 @@ path = "tests/service.rs"
 required-features = ["test-support"]
 
 [dependencies]
+shlex = "=2.0.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 rusqlite = { version = "=0.39.0", features = ["bundled"] }

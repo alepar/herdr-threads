@@ -31,6 +31,10 @@ goal defaults to topic. --name names the native agent, not the channel.
 
 The one quoted body after -- is durable work. Native options use repeatable
 --agent-arg=OPTION; launch -- native arguments is unchanged.
+HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_CLAUDE_OPTS prepend optional arguments,
+using shell-style quotes and escapes without variable or command expansion. Unset
+or empty adds nothing. Handoff freezes these options before preflight; retry uses
+the saved arguments even if the environment changes.
 Handoff invites and sends before guarded launch. Startup gets fixed inbox
 instructions, not a second copy of the body. Launch never accepts or ACKs.
 
@@ -692,13 +696,18 @@ impl HandoffLauncher for NativeLauncher<'_> {
 }
 /// Called only after the shared caller mapping/context checks in run_selected.
 pub(crate) fn run<W: Write>(
-    parsed: super::commands::ParsedCli,
+    mut parsed: super::commands::ParsedCli,
     claim: CallerClaim,
     journal: &Journal,
     paths: &crate::daemon::paths::InstancePaths,
     writer: &mut W,
 ) -> Result<(), RunError> {
     use std::sync::Arc;
+    // Freeze options before preflight or any durable handoff mutations. Retry
+    // launches the stored argv and never reads the current options environment.
+    if let super::commands::CliAction::Handoff(request) = &mut parsed.action {
+        request.launch = request.launch.clone().with_process_options()?;
+    }
     let clock: Arc<dyn Clock> = Arc::new(super::SystemClock::new());
     let (instance, _, client) = super::connect(paths, &clock)?;
     let mut env = super::setup::SetupEnv::from_process(&parsed.output)?;

@@ -1,10 +1,13 @@
-# Independent checkpoint review
+# Historical independent checkpoint review
 
 Reviewed 2026-10-06 against base `cbd5b706` by independent agents `independent_review`
 and, after the live Bash-tool probe, `checkpoint_review`. This is a draft checkpoint,
-not approval to integrate the combined feature into main.
+not approval to integrate the combined feature into main at that checkpoint.
+The subsequent user decision adopts user-managed foreground configuration instead of
+automatic TUI-pane recovery. The current scope is documented in TRUST-POLICY and
+[the final feature review](final-review.md).
 
-P1 remains open: removing forced embedded Codex execution permits a shared app-server,
+The checkpoint P1 was: removing forced embedded Codex execution permits a shared app-server,
 while `HookEnv::from_process` still selects ambient `HERDR_PANE_ID`. Native Codex
 0.160.1 SessionStart and PreToolUse hooks receive the server pane. A client in another
 pane can therefore check in against the wrong seat. Explicit tool environment policy
@@ -33,4 +36,5 @@ Verification retained from the implementation checkpoint: 61 launch tests, 80 se
 tests and one emitted-flag canary passed. Root reran the rejecting-wrapper regression;
 the first reviewer ran two focused argv/wrapper tests. Required all-feature clippy,
 default-feature check, formatting and diff guards passed. No full suite or release
-operation was performed. Later changes add probe evidence and documentation only.
+operation was performed. At that checkpoint, later changes added probe evidence and documentation only.
+The final feature also adds installer foreground advice and optional launch arguments.

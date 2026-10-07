@@ -643,6 +643,81 @@ fn codex_launch_needs_the_user_installation_without_injected_daemon_flags() {
     assert_eq!(fs::read_to_string(&config).unwrap(), denied);
 }
 
+/// Kills implicit defaults, splitting quoted values, shell expansion and moving
+/// configured top-level options after a native subcommand.
+#[test]
+fn configured_launch_options_preserve_quotes_literals_and_caller_order() {
+    let caller = ["exec", "--json", "prompt  with spaces", ""];
+    for harness in [ContextHarness::Codex, ContextHarness::Claude] {
+        for options in [None, Some(""), Some("   ")] {
+            let launch = request(harness, &caller)
+                .with_configured_options(options.map(Into::into))
+                .unwrap();
+            assert_eq!(launch.argv, caller);
+        }
+        let launch = request(harness, &caller)
+            .with_configured_options(Some(
+                r#"--no-daemon --model 'model with spaces' "literal $HOME $(touch nope) `id`" '' escaped\ value"#.into(),
+            ))
+            .unwrap();
+        assert_eq!(
+            launch.argv,
+            [
+                "--no-daemon",
+                "--model",
+                "model with spaces",
+                "literal $HOME $(touch nope) `id`",
+                "",
+                "escaped value",
+                "exec",
+                "--json",
+                "prompt  with spaces",
+                "",
+            ]
+        );
+    }
+}
+
+/// Kills silently dropping malformed or non-native argument values.
+#[test]
+fn configured_launch_options_reject_invalid_values() {
+    use std::os::unix::ffi::OsStringExt;
+    for options in [
+        std::ffi::OsString::from("'unterminated"),
+        std::ffi::OsString::from("trailing\\"),
+        std::ffi::OsString::from("embedded\0nul"),
+        std::ffi::OsString::from_vec(vec![0xff]),
+    ] {
+        let error = request(ContextHarness::Codex, &[])
+            .with_configured_options(Some(options))
+            .unwrap_err();
+        assert!(matches!(error, RunError::Api(ref api) if api.code == ErrorCode::InvalidRequest));
+    }
+}
+
+/// Kills bypassing managed validation for configured arguments.
+#[test]
+fn configured_launch_options_pass_through_managed_validation() {
+    let s = Scratch::new();
+    s.harness("codex", "codex-cli 0.159.2", &committed_codex_schemas());
+    s.setup(ContextHarness::Codex);
+    let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
+    let launch = request(ContextHarness::Codex, &["exec", "PROMPT"])
+        .with_configured_options(Some("--no-daemon".into()))
+        .unwrap();
+    s.launch(&host, &seats, &handoff, launch).unwrap();
+    assert_eq!(host.submitted()[0].argv, ["--no-daemon", "exec", "PROMPT"]);
+    let host = FakeHost::new();
+    let launch = request(ContextHarness::Codex, &[])
+        .with_configured_options(Some("--daemon".into()))
+        .unwrap();
+    assert_eq!(
+        code(s.launch(&host, &seats, &handoff, launch)),
+        ErrorCode::InvalidRequest
+    );
+    assert!(host.submitted().is_empty());
+}
+
 /// `codex exec` retains caller arguments without injected daemon flags.
 /// Unsupported subcommands are refused.
 #[test]
@@ -1608,4 +1683,58 @@ fn versionless_launch_rejects_unusable_explicit_binary_before_host_calls() {
         assert_eq!(seats.calls.load(Ordering::SeqCst), 0);
         assert!(host.submitted().is_empty());
     }
+}
+
+/// Kills reading another harness's options or ignoring the configured process
+/// environment. Re-exec keeps environment changes out of parallel lib tests.
+#[test]
+fn configured_launch_options_read_matching_harness_environment() {
+    const CHILD: &str = "HT_LAUNCH_OPTIONS_ENV_PROBE";
+    if std::env::var_os(CHILD).is_some() {
+        assert_eq!(
+            request(ContextHarness::Codex, &["exec", "PROMPT"])
+                .with_process_options()
+                .unwrap()
+                .argv,
+            ["--no-daemon", "exec", "PROMPT"],
+        );
+        assert_eq!(
+            request(ContextHarness::Claude, &["PROMPT"])
+                .with_process_options()
+                .unwrap()
+                .argv,
+            ["--model", "claude model", "PROMPT"],
+        );
+        return;
+    }
+    use crate::test_support::spawn::SpawnOwned;
+    let mut command = crate::test_support::spawn::command(std::env::current_exe().unwrap());
+    command
+        .args([
+            "cli::launch::tests::configured_launch_options_read_matching_harness_environment",
+            "--exact",
+        ])
+        .env(CHILD, "1")
+        .env("HERDR_THREADS_CODEX_OPTS", "--no-daemon")
+        .env("HERDR_THREADS_CLAUDE_OPTS", "--model 'claude model'")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command.spawn_owned().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "options environment probe timed out"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
 }

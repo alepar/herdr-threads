@@ -189,8 +189,12 @@ for a new compact ID (seat-<short seat id> for a persisted ID),
 fitted to Herdr's [a-z][a-z0-9_-]{0,31}. If another live agent holds it, launch
 retries once with -<short seat id> appended.
 
-Arguments after `--` are passed to the agent unchanged and in order; the owned
-configuration is on disk, so launch adds no hook or daemon-mode arguments.
+Arguments after `--` are passed to the agent unchanged and in order. Optional
+HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_CLAUDE_OPTS are prepended to those arguments;
+unset or empty adds nothing. Use shell-style quotes and escapes; variables and
+commands are never expanded. For example, HERDR_THREADS_CODEX_OPTS='--no-daemon'.
+The combined arguments use the same managed-launch guards. The owned configuration
+is on disk, so launch adds no hook or daemon-mode arguments by default.
 Unsupported Codex subcommands, an explicit `--daemon`, a caller `--no-daemon`
 after the subcommand and a caller `-c hooks.*` override are refused. No
 auto-approve flag is added.
@@ -216,7 +220,7 @@ pub struct LaunchRequest {
     pub target: HostTargetId,
     pub harness: ContextHarness,
     pub harness_binary: Option<String>,
-    /// Caller native arguments, byte for byte and in order.
+    /// Configured options followed by caller native arguments in their original order.
     pub argv: Vec<String>,
     /// `--name`: the Herdr agent name wanted (sanitized to Herdr's rules).
     pub name: Option<String>,
@@ -226,6 +230,48 @@ pub struct LaunchRequest {
 }
 
 impl LaunchRequest {
+    /// Resolve optional native arguments once, before launch preflight. Handoff
+    /// stores this combined argv in its durable plan; retries must not reread
+    /// the environment or prepend these options again.
+    pub(crate) fn with_process_options(self) -> Result<Self, RunError> {
+        let options = self.options_variable().and_then(std::env::var_os);
+        self.with_configured_options(options)
+    }
+
+    fn options_variable(&self) -> Option<&'static str> {
+        match self.harness {
+            ContextHarness::Codex => Some("HERDR_THREADS_CODEX_OPTS"),
+            ContextHarness::Claude => Some("HERDR_THREADS_CLAUDE_OPTS"),
+            ContextHarness::Human => None,
+        }
+    }
+
+    pub(crate) fn with_configured_options(
+        mut self,
+        options: Option<std::ffi::OsString>,
+    ) -> Result<Self, RunError> {
+        let Some(options) = options else {
+            return Ok(self);
+        };
+        let variable = self.options_variable().unwrap_or("launch options");
+        let options = options.into_string().map_err(|_| {
+            super::invalid_request(&format!("{variable} must contain UTF-8 native arguments"))
+        })?;
+        if options.contains('\0') {
+            return Err(super::invalid_request(&format!(
+                "{variable} cannot contain a NUL byte"
+            )));
+        }
+        let mut configured = shlex::split(&options).ok_or_else(|| {
+            super::invalid_request(&format!(
+                "{variable} has invalid argument quoting; use shell-style quotes and escapes"
+            ))
+        })?;
+        configured.append(&mut self.argv);
+        self.argv = configured;
+        Ok(self)
+    }
+
     /// The agent name hint and where it came from: `--name`, else the pane
     /// label, else none (the adapter then uses the short seat id).
     pub fn name_hint(&self) -> (Option<String>, &'static str) {

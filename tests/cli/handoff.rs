@@ -160,6 +160,8 @@ struct Launcher {
     preflights: usize,
     starts: usize,
     submitted_argv: Vec<String>,
+    configured_prefix: Vec<String>,
+    preflight_argv: Vec<String>,
     refuse: bool,
     confirmed_refusal: bool,
     unknown: bool,
@@ -167,7 +169,8 @@ struct Launcher {
     panic_after_start: bool,
 }
 impl HandoffLauncher for Launcher {
-    fn preflight(&mut self, _: &LaunchRequest) -> Result<SeatId, RunError> {
+    fn preflight(&mut self, request: &LaunchRequest) -> Result<SeatId, RunError> {
+        self.preflight_argv = request.argv.clone();
         self.preflights += 1;
         Ok(SeatId::new("recipient"))
     }
@@ -178,7 +181,12 @@ impl HandoffLauncher for Launcher {
         gate: &mut dyn FnMut(bool) -> Result<(), ApiError>,
     ) -> Result<super::super::launch::LaunchReport, RunError> {
         assert_eq!(seat, &SeatId::new("recipient"));
-        assert_eq!(&request.argv[..2], ["-a", "on-request"]);
+        assert!(request.argv.starts_with(&self.configured_prefix));
+        let caller_start = self.configured_prefix.len();
+        assert_eq!(
+            &request.argv[caller_start..caller_start + 2],
+            ["-a", "on-request"]
+        );
         assert!(
             !request
                 .argv
@@ -1168,4 +1176,86 @@ fn handoff_bootstrap_is_one_native_shell_argument() {
     );
     assert!(prompt.contains("inbox") && prompt.contains("task for thread tReview01"));
     assert!(prompt.contains("Launch does not accept invitations or ACK messages"));
+}
+
+/// Kills rereading configured arguments after preflight, duplicating them on
+/// final launch, or losing them when a durable handoff resumes after refusal.
+#[test]
+fn handoff_freezes_configured_options_for_preflight_launch_and_retry() {
+    for retry in [false, true] {
+        let (_temp, journal) = journal();
+        let client = Client::new(None);
+        let mut launcher = Launcher {
+            configured_prefix: vec![
+                "--no-daemon".into(),
+                "--model".into(),
+                "model with spaces".into(),
+            ],
+            confirmed_refusal: retry,
+            ..Default::default()
+        };
+        let mut request = request();
+        request.launch = request
+            .launch
+            .with_configured_options(Some("--no-daemon --model 'model with spaces'".into()))
+            .unwrap();
+        let result = start(
+            &journal,
+            request,
+            claim(),
+            "bob",
+            &client,
+            &mut launcher,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut Vec::new(),
+        );
+        let expected = [
+            "--no-daemon",
+            "--model",
+            "model with spaces",
+            "-a",
+            "on-request",
+        ];
+        assert_eq!(launcher.preflight_argv, expected);
+        assert_eq!(&launcher.submitted_argv[..5], expected);
+        if retry {
+            assert!(result.is_err());
+            let reference = reference(&journal);
+            let pending = journal.load(&reference).unwrap();
+            let SemanticMutation::Frozen { mutation, .. } = pending.semantic else {
+                panic!("expected frozen handoff");
+            };
+            let SemanticMutation::Handoff(plan) = *mutation else {
+                panic!("expected handoff plan");
+            };
+            assert_eq!(plan.request.launch.argv, expected);
+            launcher.confirmed_refusal = false;
+            launcher.submitted_argv.clear();
+            resume(
+                &journal,
+                &reference,
+                &scope(),
+                &client,
+                &mut launcher,
+                &TestClock,
+                &OutputSpec::default(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+            assert_eq!(&launcher.submitted_argv[..5], expected);
+            assert_eq!(launcher.preflights, 1);
+        } else {
+            result.unwrap();
+        }
+        assert_eq!(launcher.starts, 1);
+        assert_eq!(
+            launcher
+                .submitted_argv
+                .iter()
+                .filter(|arg| *arg == "--no-daemon")
+                .count(),
+            1
+        );
+    }
 }

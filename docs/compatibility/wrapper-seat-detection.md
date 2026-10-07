@@ -1,6 +1,6 @@
 # Wrapper, TUI and server pane attribution
 
-Research date: 2026-10-06. This records compatibility evidence and remaining limits; it does not establish a general client-session-to-pane locator. The launch change removes automatic daemon-mode arguments, but the combined seat-detection feature is not ready for main integration.
+Research date: 2026-10-06. This records compatibility evidence and remaining limits; it does not establish a general client-session-to-pane locator. The launch change removes automatic daemon-mode arguments. Following the user decision below, foreground execution is a documented user-managed requirement; this change does not add automatic TUI-pane detection.
 
 ## Native Codex and wrapper argument handling
 
@@ -121,3 +121,35 @@ For managed launches, the target selected by the caller is explicit information.
 For an existing manual wrapper launch with no explicit registration, this research does not establish enough evidence to recover the correct TUI pane automatically. Report attribution unavailable rather than guess a pane. An explicit cooperative selector remains possible under policy A1.
 
 [TRUST-POLICY.md](../../TRUST-POLICY.md) governs any implementation: C1 prohibits allocating or moving seats using Herdr's agent field or saved hints; C5 rejects invented current-execution evidence. A1 treats pane/session attribution as a cooperative claim, never focused-pane inference. A2 requires the daemon's canonical deciding view; a client registry is a hint until validated in that view. Neither foreground argv classification nor best-effort `agent_session` observations authorize a seat transition. This document changes no invariant or accepted limit.
+
+## Adopted user-managed foreground configuration
+
+After the live Bash-tool test, the user chose to configure foreground execution at user
+level and have the installer inspect and explain it, rather than introduce another wrapper
+or heuristic seat correlation. `setup` and `setup-status` report this as advisory settings
+information, not execution proof; they do not write foreground settings.
+
+Claude 2.1.290 supports `disableAgentView: true`, or a user `env` entry setting
+`CLAUDE_CODE_DISABLE_AGENT_VIEW` to `"1"`. Its embedded schema describes disabling
+background agents, `--bg`, `/background` and the on-demand supervisor. The
+[official environment reference](https://code.claude.com/docs/en/env-vars) documents the
+equivalent environment control. Tool backgrounding via `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`
+is separate and does not disable the supervisor. User settings can be overridden by other
+configuration layers; no live Claude daemon-tool capture is claimed here.
+
+Codex 0.160.1 has no verified persistent equivalent to the `no_daemon` CLI field.
+`[features] daemon_auto_start = false` alone is insufficient: its
+[startup orchestration first selects an existing daemon](https://github.com/openai/codex/blob/rust-v0.160.1/codex-rs/tui/src/startup_orchestration.rs#L293-L306)
+and [only later gates automatic startup](https://github.com/openai/codex/blob/rust-v0.160.1/codex-rs/tui/src/startup_orchestration.rs#L475-L478).
+The installer explains that limit and recommends a supported foreground option in the
+existing launcher. For entrypoints that accept native Codex arguments,
+`HERDR_THREADS_CODEX_OPTS='--no-daemon'` supplies the explicit opt-out. Wrappers that reject
+it must use their own supported configuration.
+
+`HERDR_THREADS_CODEX_OPTS` and `HERDR_THREADS_CLAUDE_OPTS` are optional user-selected launch
+arguments, defaulting to none. Quoted argv splitting preserves values without shell
+expansion; arguments precede caller arguments and retain existing validation. Handoff
+persists them once and retry does not reread the environment. This changes no canonical
+seat, continuity or receipt checks. TRUST-POLICY records the accepted user-managed
+foreground assumption; automatic shared-server TUI-pane attribution remains outside the
+implemented contract.

@@ -295,6 +295,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shlex",
  "tokio",
  "toml_edit",
  "unicode-width",

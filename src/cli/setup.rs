@@ -33,6 +33,8 @@
 //! The installed hook command is exactly the hook entrypoint's
 //! [`hook::installed_argv`], which its `parse_hook_argv` accepts.
 
+mod foreground;
+
 use super::{RunError, hook};
 use crate::{
     daemon::paths::{RuntimeContext, ensure_owned_state_root, ensure_private_dir, instance_dir},
@@ -88,6 +90,14 @@ Scope (user level, like Herdr's own agent hooks):
           owned values and refuses edited ownership records. Codex runs user hooks only once
           you trust them: the next interactive `codex` start lists them for review (or use
           /hooks); Codex records their hashes in config.toml [hooks.state]. setup never writes trust.
+
+Foreground agents (user-managed, read-only inspection): setup and setup-status report user
+settings and manual advice for both harnesses. Claude: merge `disableAgentView: true` into
+user settings.json, or set its env.CLAUDE_CODE_DISABLE_AGENT_VIEW to `1`. Codex 0.160.1 has
+no persistent config/environment daemon opt-out; features.daemon_auto_start=false still attaches
+to an existing daemon. Use native --no-daemon, or HERDR_THREADS_CODEX_OPTS='--no-daemon'
+when the selected binary/wrapper supports and forwards it. Setup never sets these choices;
+configured settings/arguments do not prove foreground execution and overrides may change them.
 
 Claude prompt suggestions: Claude shows a dim prompt suggestion in its input box after every
 turn, which herdr-threads cannot tell from typed text, so it never pokes a Claude pane that shows
@@ -523,7 +533,7 @@ pub fn execute(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError
     {
         return Err(invalid(format!("{leftover}; nothing was changed")));
     }
-    match (request.harness, request.verb) {
+    let mut report = match (request.harness, request.verb) {
         (Harness::Claude, SetupVerb::Install) => claude_install(request, env),
         (Harness::Claude, SetupVerb::Remove) => claude_remove(env),
         (Harness::Claude, SetupVerb::Status) => claude_status(request, env),
@@ -531,7 +541,11 @@ pub fn execute(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError
         (Harness::Codex, SetupVerb::Remove) => codex_remove(env),
         (Harness::Codex, SetupVerb::Status) => codex_status(request, env),
         (Harness::Human, _) => Err(api(ErrorCode::InvalidRequest, NO_HUMAN_SETUP)),
+    }?;
+    if request.verb != SetupVerb::Remove {
+        foreground::attach(&mut report, request.harness, env);
     }
+    Ok(report)
 }
 
 // -------------------------------------------------------------- all harnesses
@@ -769,6 +783,18 @@ pub fn render_all_text(report: &Value) -> String {
         out.push_str(&format!("{name}: {line}\n"));
         if let Some(line) = prompt_suggestion_line(&inner["prompt_suggestions"]) {
             out.push_str(&format!("{name}: {line}\n"));
+        }
+        if let Some(status) = inner["foreground"]["status"].as_str() {
+            out.push_str(&format!(
+                "{name}: foreground user settings: {status}; execution unknown\n"
+            ));
+            if status == "configured" {
+                out.push_str(&format!(
+                    "{name}: {} {}\n",
+                    scalar(&inner["foreground"]["explanation"]),
+                    scalar(&inner["foreground"]["advice"])
+                ));
+            }
         }
         for warning in inner["warnings"].as_array().into_iter().flatten() {
             warnings.push(format!("warning: {name}: {}\n", scalar(warning)));
