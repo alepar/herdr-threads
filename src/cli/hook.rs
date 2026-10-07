@@ -2043,7 +2043,11 @@ impl PaneCall<'_> {
             prefix,
             &routing,
         )?;
-        done.recovery = self.recovery_rows(event, seat);
+        let recovery_event = LifecycleEvent {
+            kind: done.prepared_kind.unwrap_or(event.kind),
+            ..event.clone()
+        };
+        done.recovery = self.recovery_rows(&recovery_event, seat);
         Ok(done)
     }
 
@@ -2860,8 +2864,12 @@ fn run_admitted_hook_since(
             recovery,
             attention,
         }) => {
+            let composition_event = LifecycleEvent {
+                kind: prepared_kind.unwrap_or(event.kind),
+                ..event.clone()
+            };
             let context = compose_context(
-                &event,
+                &composition_event,
                 &registration.output_policy(),
                 decoded.metadata.skill_pointer,
                 &text,
