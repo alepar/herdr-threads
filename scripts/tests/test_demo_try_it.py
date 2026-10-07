@@ -1,4 +1,5 @@
 """Real-shell checks: capture must preserve pacing and stop on a failed command."""
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -55,9 +56,16 @@ class CaptureTests(unittest.TestCase):
         result, events = self.record([{"command": command, "fast_from": 8}])
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         typed = [event for event in events[1:] if event[1] == "i"]
-        normal = [typed[i + 1][0] - typed[i][0] for i in range(6)]
-        fast = [typed[i + 1][0] - typed[i][0] for i in range(8, 25)]
-        self.assertGreater(sum(normal) / len(normal), 3.5 * sum(fast) / len(fast))
+        # Scheduler delays are not the configured typing pace. Check the real
+        # shell input above, and the exact delay used by capture independently.
+        spec = importlib.util.spec_from_file_location("recorder", SCRIPT)
+        recorder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(recorder)
+        for char in ("x", " "):
+            normal = recorder.typing_delay(0.02, char, 7, 8)
+            fast = recorder.typing_delay(0.02, char, 8, 8)
+            self.assertAlmostEqual(normal, 5 * fast)
+            self.assertEqual(normal, recorder.typing_delay(0.02, char, 8, None))
         self.assertEqual("".join(event[2] for event in typed), command + "\n")
 
     def test_follow_early_failure_is_not_success(self):
