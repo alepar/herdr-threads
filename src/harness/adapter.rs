@@ -681,7 +681,106 @@ pub struct LaunchPreparation {
     pub environment_overrides: std::collections::BTreeMap<String, OsString>,
     pub report: serde_json::Value,
 }
+/// Opaque startup text data; composition declares grammar without inspecting text.
+#[derive(Debug, Clone, Copy)]
+pub struct StartupInputSpec {
+    pub max_text_bytes: usize,
+}
+
+/// Exactly one text argument inserted among unchanged caller tokens.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartupInputTemplate {
+    pub insertion_index: usize,
+    pub before: Vec<String>,
+    pub after: Vec<String>,
+    pub prefix: String,
+    pub suffix: String,
+    pub max_arg_bytes: usize,
+}
+impl StartupInputTemplate {
+    pub fn positional(insertion_index: usize) -> Self {
+        Self {
+            insertion_index,
+            before: vec![],
+            after: vec![],
+            prefix: String::new(),
+            suffix: String::new(),
+            max_arg_bytes: crate::ports::NativeLaunchRequest::MAX_ARG_BYTES,
+        }
+    }
+    pub fn validate(&self, caller_len: usize) -> Result<(), crate::protocol::results::ApiError> {
+        use crate::protocol::results::{ApiError, ErrorCode};
+        let invalid = || ApiError::new(ErrorCode::InvalidRequest, "invalid startup input template");
+        if self.insertion_index > caller_len
+            || self.max_arg_bytes == 0
+            || self.max_arg_bytes > crate::ports::NativeLaunchRequest::MAX_ARG_BYTES
+            || self
+                .before
+                .len()
+                .checked_add(self.after.len())
+                .is_none_or(|count| count > 8)
+            || self.prefix.len() > 128
+            || self.suffix.len() > 128
+            || self
+                .prefix
+                .chars()
+                .chain(self.suffix.chars())
+                .any(char::is_control)
+        {
+            return Err(invalid());
+        }
+        let mut bytes = 0usize;
+        for token in self.before.iter().chain(&self.after) {
+            if token.is_empty() || token.len() > 4096 || token.chars().any(char::is_control) {
+                return Err(invalid());
+            }
+            bytes = bytes.checked_add(token.len()).ok_or_else(invalid)?;
+        }
+        if bytes > 16384 {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+    pub fn apply(
+        &self,
+        caller: &[String],
+        text: &str,
+    ) -> Result<(Vec<String>, usize), crate::protocol::results::ApiError> {
+        use crate::protocol::results::{ApiError, ErrorCode};
+        self.validate(caller.len())?;
+        let bytes = self
+            .prefix
+            .len()
+            .checked_add(text.len())
+            .and_then(|n| n.checked_add(self.suffix.len()));
+        if bytes.is_none_or(|n| n > self.max_arg_bytes) {
+            return Err(ApiError::new(
+                ErrorCode::InvalidRequest,
+                "startup input exceeds complete native argument limit",
+            ));
+        }
+        let mut argv = caller[..self.insertion_index].to_vec();
+        argv.extend(self.before.iter().cloned());
+        let slot = argv.len();
+        argv.push(format!("{}{}{}", self.prefix, text, self.suffix));
+        argv.extend(self.after.iter().cloned());
+        argv.extend_from_slice(&caller[self.insertion_index..]);
+        crate::ports::validate_native_argv(&argv)
+            .map_err(|detail| ApiError::new(ErrorCode::InvalidRequest, detail))?;
+        Ok((argv, slot))
+    }
+}
+
 pub trait LaunchPolicy: Send + Sync {
+    /// Optional pure original-caller grammar. Absence is honest unsupported handoff.
+    fn prepare_startup_input(
+        &self,
+        _: &[String],
+        _: &StartupInputSpec,
+    ) -> Result<Option<StartupInputTemplate>, crate::protocol::results::ApiError> {
+        Ok(None)
+    }
     /// Optional adapter-owned configured arguments; absent providers inherit no key.
     /// Declarations must be ASCII, at most 128 bytes, and match
     /// HERDR_THREADS_[A-Z0-9_]+_OPTS with a nonempty middle. Consumers validate

@@ -188,6 +188,26 @@ impl LaunchPolicy for HermesLaunch {
     fn uses_prelaunch_observation(&self) -> bool {
         true
     }
+    fn prepare_startup_input(
+        &self,
+        caller: &[String],
+        _: &StartupInputSpec,
+    ) -> Result<Option<StartupInputTemplate>, ApiError> {
+        let args = parse(caller)?;
+        if args.values.iter().any(|(key, _)| key == "--query") {
+            return Err(error(ErrorCode::Conflict, "Hermes query input is occupied"));
+        }
+        if caller.len().checked_add(2).is_none_or(|n| n > 32) {
+            return Err(error(
+                ErrorCode::InvalidRequest,
+                "Hermes launch argv exceeds bounds",
+            ));
+        }
+        let mut template = StartupInputTemplate::positional(caller.len());
+        template.before.push("--query".into());
+        template.max_arg_bytes = 4096;
+        Ok(Some(template))
+    }
     fn validate_native_argv(&self, argv: &[String]) -> Result<(), ApiError> {
         parse(argv).map(|_| ())
     }

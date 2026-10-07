@@ -295,6 +295,7 @@ fn channel_activation_cli_complete_removal_failure_archived_binding_retry_is_cle
     let frozen_alias = w.root.join("legacy-alias");
     std::os::unix::fs::symlink(&w.root, &frozen_alias).unwrap();
     let plan = HandoffPlan {
+        startup_input: None,
         request: HandoffRequest {
             thread: None,
             thread_name: Some("legacy handoff".into()),

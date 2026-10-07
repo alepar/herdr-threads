@@ -284,6 +284,8 @@ pub fn prepare_managed_with_registry(
         Some(argv) => argv,
         None => policy.compose_argv(request.argv.clone(), configuration.argv)?,
     };
+    crate::ports::validate_native_argv(&argv)
+        .map_err(|detail| error(ErrorCode::InvalidRequest, detail))?;
     let first = host.observe_current_target(
         &request.target,
         &HostCallContext {

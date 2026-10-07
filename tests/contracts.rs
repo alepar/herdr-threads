@@ -859,8 +859,14 @@ fn managed_launch_request_preserves_bounded_native_argument_tokens() {
             .unwrap_err()
             .contains("total over 32 KiB")
     );
-    request.argv = vec![String::new()];
-    assert!(request.validate().is_err());
+    for argv in [
+        vec![String::new()],
+        vec!["before".into(), "".into(), "after".into(), "".into()],
+    ] {
+        request.argv = argv.clone();
+        assert!(request.validate().is_ok());
+        assert_eq!(request.argv, argv, "empty native data remains lossless");
+    }
     // Herdr types the command into the pane's shell: a line break would submit it early.
     request.argv = vec!["line one\nline two".into()];
     assert!(request.validate().unwrap_err().contains("line break"));
@@ -2528,4 +2534,91 @@ fn process_hint_mode_mismatch_rejects_correlation() {
     );
     correlation.process_hint = false;
     assert!(correlation.matches_request(&request, &context));
+}
+
+#[test]
+fn task48_native_lexical_and_reserved_boundaries() {
+    use herdr_threads::ports::{
+        NativeLaunchRequest, validate_native_argv, validate_native_argv_with_reserved_bytes,
+    };
+    for argv in [
+        vec![],
+        vec![String::new()],
+        vec!["".into(), "opaque".into(), "".into(), "".into()],
+    ] {
+        let original = argv.clone();
+        validate_native_argv(&argv).unwrap();
+        assert_eq!(argv, original);
+    }
+    for argv in [
+        vec!["a\0b".into()],
+        vec!["a\rb".into()],
+        vec!["a\nb".into()],
+        vec!["".into(); 65],
+        vec!["x".repeat(16385)],
+        vec!["x".repeat(16384), "x".repeat(16384), "x".into()],
+    ] {
+        assert!(validate_native_argv(&argv).is_err());
+    }
+    let bound = NativeLaunchRequest::MAX_ARG_BYTES;
+    let exact = vec!["x".repeat(bound - 128), "x".repeat(bound)];
+    validate_native_argv_with_reserved_bytes(&exact, 0, 128).unwrap();
+    assert!(validate_native_argv_with_reserved_bytes(&exact, 0, 129).is_err());
+    assert!(validate_native_argv_with_reserved_bytes(&exact, 2, 0).is_err());
+    assert!(validate_native_argv_with_reserved_bytes(&exact, 0, usize::MAX).is_err());
+    assert!(validate_native_argv_with_reserved_bytes(&[], 0, 0).is_err());
+    let exact_prefix_suffix = vec![format!("--query={}suffix", "x".repeat(bound - 8 - 6))];
+    validate_native_argv(&exact_prefix_suffix).unwrap();
+    assert!(validate_native_argv_with_reserved_bytes(&exact_prefix_suffix, 0, 1).is_err());
+    validate_native_argv(&vec![String::new(); 64]).unwrap();
+    validate_native_argv(&["é".repeat(bound / 2)]).unwrap();
+    assert!(validate_native_argv(&["é".repeat(bound / 2 + 1)]).is_err());
+}
+
+#[test]
+fn task48_native_empty_data_retains_internal_field_fences() {
+    use herdr_threads::ports::{ConfiguredHook, NativeLaunchRequest};
+    use herdr_threads::protocol::{
+        authority::Harness,
+        ids::{HostTargetId, SeatId, TerminalId},
+    };
+    let original = NativeLaunchRequest {
+        process_hint: false,
+        seat: SeatId::new("seat"),
+        target: HostTargetId::new("pane"),
+        harness: Harness::Claude,
+        argv: vec![String::new()],
+        configured_hook: ConfiguredHook {
+            scope: "project".into(),
+            path: "/tmp/owned".into(),
+            fingerprint: "hash".into(),
+        },
+        expected_terminal: TerminalId::new("terminal"),
+        expected_generation: 1,
+        expected_incarnation: "incarnation".into(),
+        name_hint: None,
+    };
+    original.validate().unwrap();
+    for field in 0..4 {
+        for oversized in [false, true] {
+            let mut request = original.clone();
+            let (value, limit) = match field {
+                0 => (&mut request.expected_incarnation, 128),
+                1 => (&mut request.configured_hook.scope, 128),
+                2 => (&mut request.configured_hook.path, 1024),
+                _ => (&mut request.configured_hook.fingerprint, 256),
+            };
+            *value = if oversized {
+                "x".repeat(limit + 1)
+            } else {
+                String::new()
+            };
+            assert!(
+                request
+                    .validate()
+                    .unwrap_err()
+                    .contains("internal host or hook")
+            );
+        }
+    }
 }

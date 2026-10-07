@@ -605,7 +605,9 @@ pub fn execute_with_registry(
     request: &LaunchRequest,
     parts: &LaunchParts<'_>,
 ) -> Result<LaunchReport, RunError> {
-    execute_guarded_inner(registry, request, parts, false, false, &mut |_| Ok(()))
+    execute_guarded_inner(registry, request, parts, false, false, false, &mut |_| {
+        Ok(())
+    })
 }
 
 /// A preflight uses the exact launch guards but does not submit or record a start.
@@ -621,14 +623,45 @@ pub fn execute_guarded(
     preflight: bool,
     boundary: &mut dyn FnMut(LaunchBoundary<'_>) -> Result<(), ApiError>,
 ) -> Result<LaunchReport, RunError> {
-    execute_guarded_inner(
+    execute_guarded_with_registry(
         crate::harness::registry::builtins(),
         request,
         parts,
         preflight,
-        true,
         boundary,
     )
+}
+pub(crate) fn execute_guarded_with_registry(
+    registry: &crate::harness::registry::Registry,
+    request: &LaunchRequest,
+    parts: &LaunchParts<'_>,
+    preflight: bool,
+    boundary: &mut dyn FnMut(LaunchBoundary<'_>) -> Result<(), ApiError>,
+) -> Result<LaunchReport, RunError> {
+    execute_guarded_inner(registry, request, parts, preflight, true, false, boundary)
+}
+
+/// Actual selected native data, prepared without host or seat resolution.
+#[derive(Debug, Clone)]
+pub(crate) struct NativeInput {
+    pub argv: Vec<String>,
+}
+pub(crate) fn prepare_native_input_with_registry(
+    registry: &crate::harness::registry::Registry,
+    request: &LaunchRequest,
+    parts: &LaunchParts<'_>,
+) -> Result<NativeInput, RunError> {
+    let result = execute_guarded_inner(
+        registry,
+        request,
+        parts,
+        true,
+        true,
+        true,
+        &mut |_| unreachable!(),
+    )?;
+    let argv = serde_json::from_value(result.report["argv"].clone()).map_err(io::Error::other)?;
+    Ok(NativeInput { argv })
 }
 
 fn execute_guarded_inner(
@@ -637,6 +670,7 @@ fn execute_guarded_inner(
     parts: &LaunchParts<'_>,
     preflight: bool,
     typed_evidence: bool,
+    input_only: bool,
     boundary: &mut dyn FnMut(LaunchBoundary<'_>) -> Result<(), ApiError>,
 ) -> Result<LaunchReport, RunError> {
     use crate::harness::adapter::{
@@ -924,6 +958,14 @@ fn execute_guarded_inner(
         Ok(())
     };
     recheck_configuration()?;
+    crate::ports::validate_native_argv(&preparation.argv)
+        .map_err(|detail| api(ErrorCode::InvalidRequest, detail))?;
+    if input_only {
+        return Ok(LaunchReport {
+            report: json!({"argv": preparation.argv}),
+            exit: 0,
+        });
+    }
     // 2-3. Policy: fresh read, seat, owned hooks, recheck, guarded start.
     let prepared = crate::harness::launch::prepare_managed_with_registry(
         registry,
@@ -945,7 +987,7 @@ fn execute_guarded_inner(
     let prepared = prepared?;
     if preflight {
         return Ok(LaunchReport {
-            report: json!({"seat": prepared.request.seat}),
+            report: json!({"seat": prepared.request.seat, "argv": prepared.request.argv}),
             exit: 0,
         });
     }
@@ -1691,6 +1733,7 @@ mod task23_tests {
                 },
                 false,
                 false,
+                false,
                 &mut boundary,
             );
             assert!(
@@ -1746,6 +1789,7 @@ mod task23_tests {
                     record_dir: Some(&s.root),
                     shell_probe: &probe
                 },
+                false,
                 false,
                 false,
                 &mut boundary

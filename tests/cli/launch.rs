@@ -1589,7 +1589,10 @@ fn handoff_native_launcher_checks_frozen_seat_and_propagates_confirmed_refusal()
         record_dir: Some(&scratch.root),
         shell_probe: &probe,
     };
-    let mut launcher = NativeLauncher { parts };
+    let mut launcher = NativeLauncher {
+        parts,
+        registry: crate::harness::registry::builtins(),
+    };
     let req = request(ContextHarness::Claude, &["bootstrap"]);
     let mut events = vec![];
     let result = launcher.launch(&req, &SeatId::new("changed-seat"), &mut |possible| {
@@ -1802,6 +1805,22 @@ pub(crate) mod fourth_adapter {
         }
     }
     impl LaunchPolicy for Fourth {
+        fn prepare_startup_input(
+            &self,
+            caller: &[String],
+            _: &StartupInputSpec,
+        ) -> Result<Option<StartupInputTemplate>, ApiError> {
+            if !self.options_fixture {
+                return Ok(None);
+            }
+            if caller.iter().any(|token| token.starts_with("--initial=")) {
+                return Err(api(ErrorCode::Conflict, "fourth initial input occupied"));
+            }
+            let mut template = StartupInputTemplate::positional(caller.len());
+            template.prefix = "--initial=".into();
+            template.max_arg_bytes = 4096;
+            Ok(Some(template))
+        }
         fn native_options_env(&self) -> Option<&'static str> {
             self.options_key
         }
@@ -2543,11 +2562,13 @@ fn stage_a_registered_options_validate_keys_and_preserve_literal_tokens() {
                 record_dir: None,
                 shell_probe: &probe,
             };
+            execute_with_registry(&registry, &launch, &parts).unwrap();
             assert_eq!(
-                code(execute_with_registry(&registry, &launch, &parts)),
-                ErrorCode::InvalidRequest
+                host.submitted()[0].argv,
+                std::iter::once("--fourth-owned".to_owned())
+                    .chain(launch.argv.iter().cloned())
+                    .collect::<Vec<_>>()
             );
-            assert!(host.submitted().is_empty());
             let submitted = request(harness, &["--model", "caller"])
                 .with_configured_options_with_registry(
                     &registry,
@@ -2556,7 +2577,7 @@ fn stage_a_registered_options_validate_keys_and_preserve_literal_tokens() {
                 .unwrap();
             execute_with_registry(&registry, &submitted, &parts).unwrap();
             assert_eq!(
-                host.submitted()[0].argv,
+                host.submitted()[1].argv,
                 [
                     "--fourth-owned",
                     "--model",
@@ -2627,4 +2648,244 @@ fn stage_a_registered_options_validate_keys_and_preserve_literal_tokens() {
     );
     let absent = ContextHarness::from(OccupantHarness::Agent(registry.agent("third").unwrap()));
     assert!(native_options_env(crate::harness::registry::builtins(), absent).is_err());
+}
+
+// Synthetic captured observations: neither executable imports Python or Hermes.
+// Actual selected Hermes policy still decodes observations and verifies owned assets.
+pub(in crate::cli) fn task48_hermes_native_fixture<R>(
+    run: impl FnOnce(&mut crate::cli::handoff::NativeLauncher<'_>, LaunchRequest) -> R,
+) -> (R, Vec<NativeLaunchRequest>, usize, Vec<Value>) {
+    use crate::harness::hermes::{assets, runtime};
+    let mut scratch = Scratch::new();
+    let profile_home = scratch.root.join("profile");
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&profile_home)
+        .unwrap();
+    scratch.env.home = Some(scratch.root.clone().into_os_string());
+    let interpreter = scratch.root.join("bin/synthetic-interpreter");
+    let native = scratch.root.join("bin/hermes");
+    let mut profile: Value =
+        serde_json::from_slice(include_bytes!("../fixtures/hermes/plugin-assets.json")).unwrap();
+    profile["home"] = json!(profile_home);
+    profile["physical_home"] = json!(profile_home);
+    profile["interpreter"] = json!(interpreter);
+    profile["disabled"] = json!([]);
+    let mut prelaunch = profile.clone();
+    prelaunch["schema_version"] = json!(3);
+    prelaunch["evidence_stage"] = json!("prelaunch_api_profile_observation");
+    prelaunch["api"] = json!({"register_hook":true,"on_unload":true,"invoke_hook":true,"callbacks":["pre_llm_call","post_tool_call","on_session_start","on_session_reset"]});
+    prelaunch["module_origins"]["hermes_cli.plugins"] =
+        json!("/fixture/native source/hermes_cli/plugins.py");
+    prelaunch["module_origins"]["hermes_cli.plugins_dispatch"] =
+        json!("/fixture/native source/hermes_cli/plugins_dispatch.py");
+    let mut machine: Vec<String> =
+        serde_json::from_slice(include_bytes!("../fixtures/hermes/runtime-command.json")).unwrap();
+    machine[0] = interpreter.display().to_string();
+    machine[6] = scratch
+        .root
+        .join("state/setup/hermes-runtime-helper.py")
+        .display()
+        .to_string();
+    fs::write(
+        &native,
+        format!(
+            "#!/bin/sh\n[ \"$1\" = --print-runtime-command ] || exit 71\nprintf '%s\\n' {}\n",
+            shlex::try_quote(&serde_json::to_string(&machine).unwrap()).unwrap()
+        ),
+    )
+    .unwrap();
+    // The captured Python code argument is inert data: this shell never evaluates it.
+    fs::write(&interpreter, format!("#!/bin/sh\ncase \"$HERDR_HERMES_INSPECTION_SCOPE\" in\n  *inspect_prelaunch*) printf '%s\\n' {} ;;\n  *discover_selected_profile*) printf '%s\\n' {} ;;\n  *) exit 72 ;;\nesac\n", shlex::try_quote(&prelaunch.to_string()).unwrap(), shlex::try_quote(&profile.to_string()).unwrap())).unwrap();
+    for file in [&native, &interpreter] {
+        fs::set_permissions(file, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let observed = runtime::decode_discovered_profile(
+        &serde_json::to_vec(&profile).unwrap(),
+        &interpreter,
+        "default",
+    )
+    .unwrap();
+    assets::setup(
+        &observed,
+        scratch.env.state_dir.as_ref().unwrap(),
+        &scratch.env.executable,
+        scratch.env.host_endpoint.as_ref().unwrap(),
+    )
+    .unwrap();
+    let host = Task48HintHost(FakeHost::new());
+    let seats = seats();
+    let handoff = handoff();
+    let clock = Clock0(AtomicU64::new(1));
+    let probe = FakeProbe;
+    let mut launcher = crate::cli::handoff::NativeLauncher {
+        registry: crate::harness::registry::builtins(),
+        parts: LaunchParts {
+            env: &scratch.env,
+            host: &host,
+            seats: &seats,
+            handoff: &handoff,
+            clock: &clock,
+            record_dir: Some(&scratch.root),
+            shell_probe: &probe,
+        },
+    };
+    let harness = ContextHarness::from(crate::harness::registry::OccupantHarness::Agent(
+        crate::harness::registry::builtins()
+            .agent("hermes")
+            .unwrap(),
+    ));
+    let mut req = request(harness, &["--model", "fixture-model"]);
+    req.harness_binary = Some(native.display().to_string());
+    let result = run(&mut launcher, req);
+    (
+        result,
+        host.0.submitted(),
+        seats.calls.load(Ordering::SeqCst),
+        scratch.records(),
+    )
+}
+
+struct Task48HintHost(FakeHost);
+impl HostPort for Task48HintHost {
+    fn native_launch_capability(&self) -> NativeLaunchCapability {
+        self.0.native_launch_capability()
+    }
+    fn observe_current_target(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<HostObservation, ApiError> {
+        self.0.observe_current_target(target, context)
+    }
+    fn observe_current_target_for_archival(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<crate::ports::ComposerObservation, ApiError> {
+        self.0.observe_current_target_for_archival(target, context)
+    }
+    fn enumerate_targets(&self, context: &HostCallContext) -> Result<HostSnapshot, ApiError> {
+        self.0.enumerate_targets(context)
+    }
+    fn safe_wake_target(
+        &self,
+        seat: &SeatId,
+        observation: &HostObservation,
+    ) -> Option<SafeWakeTarget> {
+        self.0.safe_wake_target(seat, observation)
+    }
+    fn submit_prompt(
+        &self,
+        target: &SafeWakeTarget,
+        text: &str,
+        context: &HostCallContext,
+    ) -> Result<PromptOutcome, ApiError> {
+        self.0.submit_prompt(target, text, context)
+    }
+    fn pane_agent_state(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<crate::ports::AgentComposerState, ApiError> {
+        self.0.pane_agent_state(target, context)
+    }
+    fn send_submit_key(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        self.0.send_submit_key(target, context)
+    }
+    fn launch_native(
+        &self,
+        request: NativeLaunchRequest,
+        context: &HostCallContext,
+    ) -> Result<NativeLaunchOutcome, ApiError> {
+        let required = request.process_hint;
+        self.0.launch_native(request, context).map(|mut outcome| {
+            if let NativeLaunchOutcome::ObservedStartup { correlation, .. } = &mut outcome {
+                correlation.process_hint = required;
+            }
+            outcome
+        })
+    }
+}
+
+pub(in crate::cli) fn task48_claude_native_fixture<R>(
+    run: impl FnOnce(&mut crate::cli::handoff::NativeLauncher<'_>, LaunchRequest) -> R,
+) -> (R, Vec<NativeLaunchRequest>, usize, Vec<Value>) {
+    task48_claude_native_fixture_refused(false, run)
+}
+pub(in crate::cli) fn task48_claude_native_fixture_refused<R>(
+    refused: bool,
+    run: impl FnOnce(&mut crate::cli::handoff::NativeLauncher<'_>, LaunchRequest) -> R,
+) -> (R, Vec<NativeLaunchRequest>, usize, Vec<Value>) {
+    let scratch = Scratch::new();
+    scratch.harness("claude", "2.1.285 (Claude Code)", b"");
+    scratch.setup_claude();
+    let mut host = FakeHost::new();
+    host.confirmed_refusal = refused;
+    let seats = seats();
+    let handoff = handoff();
+    let clock = Clock0(AtomicU64::new(1));
+    let probe = FakeProbe;
+    let mut launcher = crate::cli::handoff::NativeLauncher {
+        registry: crate::harness::registry::builtins(),
+        parts: LaunchParts {
+            env: &scratch.env,
+            host: &host,
+            seats: &seats,
+            handoff: &handoff,
+            clock: &clock,
+            record_dir: Some(&scratch.root),
+            shell_probe: &probe,
+        },
+    };
+    let result = run(&mut launcher, request(ContextHarness::Claude, &[]));
+    (
+        result,
+        host.submitted(),
+        seats.calls.load(Ordering::SeqCst),
+        scratch.records(),
+    )
+}
+
+pub(in crate::cli) fn task48_fourth_native_fixture<R>(
+    run: impl FnOnce(&mut crate::cli::handoff::NativeLauncher<'_>, LaunchRequest) -> R,
+) -> (R, Vec<NativeLaunchRequest>, usize) {
+    use crate::harness::registry::OccupantHarness;
+    let scratch = Scratch::new();
+    scratch.harness("fourth", "fourth-fixture", &[]);
+    let (registry, _) = fourth_adapter::registry_with_options(
+        true,
+        false,
+        false,
+        Some("HERDR_THREADS_FOURTH_OPTS"),
+    );
+    let host = FakeHost::new();
+    let seats = seats();
+    let handoff = handoff();
+    let clock = Clock0(AtomicU64::new(1));
+    let probe = FakeProbe;
+    let mut launcher = crate::cli::handoff::NativeLauncher {
+        registry: &registry,
+        parts: LaunchParts {
+            env: &scratch.env,
+            host: &host,
+            seats: &seats,
+            handoff: &handoff,
+            clock: &clock,
+            record_dir: Some(&scratch.root),
+            shell_probe: &probe,
+        },
+    };
+    let harness = ContextHarness::from(OccupantHarness::Agent(
+        registry.agent("synthetic_fourth").unwrap(),
+    ));
+    let result = run(
+        &mut launcher,
+        request(harness, &["literal", "", "$HOME $(id)"]),
+    );
+    (result, host.submitted(), seats.calls.load(Ordering::SeqCst))
 }

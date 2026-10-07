@@ -1473,3 +1473,145 @@ fn process_hint_policy_reaches_generic_native_request() {
         }
     }
 }
+
+struct Task48OwnedHooks {
+    hook: ConfiguredHook,
+    argv: Vec<String>,
+}
+impl LaunchHookInspector for Task48OwnedHooks {
+    fn configured_hook(
+        &self,
+        _: Harness,
+        _: &CallBudget,
+    ) -> Result<Option<ConfiguredHook>, ApiError> {
+        Ok(Some(self.hook.clone()))
+    }
+    fn launch_configuration(
+        &self,
+        _: Harness,
+        _: &CallBudget,
+    ) -> Result<Option<LaunchHookConfiguration>, ApiError> {
+        Ok(Some(LaunchHookConfiguration {
+            hook: self.hook.clone(),
+            argv: self.argv.clone(),
+        }))
+    }
+}
+
+#[test]
+fn task48_actual_owned_preparation_preserves_empty_data() {
+    let (host, seats, hooks, clock, budget) = fixture();
+    let owned = Task48OwnedHooks {
+        hook: hooks.0.unwrap(),
+        argv: vec!["--model".into(), "owned-model".into()],
+    };
+    let caller = [
+        "--model",
+        "caller-model",
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "{\"mcpServers\":{}}",
+    ];
+    let prepared = prepare_managed_with_registry(
+        crate::harness::registry::builtins(),
+        &host,
+        &seats,
+        &owned,
+        &clock,
+        request(Harness::Claude, &caller),
+        &budget,
+        None,
+    );
+    eprintln!(
+        "task48 actual Claude owned preparation: result={:?} seat_calls={} remaining_observations={}",
+        prepared.as_ref().map(|p| &p.request),
+        seats.calls.load(Ordering::SeqCst),
+        host.observations.lock().unwrap().len()
+    );
+    let prepared =
+        prepared.expect("actual generic preparation must preserve the captured empty tools token");
+    let expected: Vec<String> = owned
+        .argv
+        .iter()
+        .cloned()
+        .chain(caller.into_iter().map(str::to_owned))
+        .collect();
+    assert_eq!(prepared.request.argv, expected);
+    assert_eq!(
+        prepared
+            .request
+            .argv
+            .iter()
+            .filter(|arg| arg.is_empty())
+            .count(),
+        1
+    );
+    assert_eq!(prepared.request.configured_hook, owned.hook);
+    assert!(host.submitted.lock().unwrap().is_empty());
+}
+
+#[test]
+fn task48_composed_overflow_refuses_before_seat_work() {
+    let mut observed = vec![];
+    for (label, additions) in [
+        ("count", vec!["owned".to_owned(); 65]),
+        (
+            "single",
+            vec!["x".repeat(NativeLaunchRequest::MAX_ARG_BYTES + 1)],
+        ),
+        (
+            "total",
+            vec!["x".repeat(NativeLaunchRequest::MAX_ARG_BYTES); 2],
+        ),
+    ] {
+        for supplied in [false, true] {
+            let (host, seats, hooks, clock, budget) = fixture();
+            let registry = process_hint_registry(false);
+            let harness = Harness::Agent(registry.agent("hinted").unwrap());
+            let owned = Task48OwnedHooks {
+                hook: hooks.0.unwrap(),
+                argv: additions.clone(),
+            };
+            let caller = request(harness, &["caller"]);
+            let override_argv = supplied.then(|| [additions.clone(), caller.argv.clone()].concat());
+            let result = prepare_managed_with_registry(
+                registry,
+                &host,
+                &seats,
+                &owned,
+                &clock,
+                caller,
+                &budget,
+                override_argv,
+            );
+            let seat_calls = seats.calls.load(Ordering::SeqCst);
+            let observation_calls = 2 - host.observations.lock().unwrap().len();
+            eprintln!(
+                "task48 actual composed {label} override={supplied}: result={:?} seat_calls={seat_calls} observation_calls={observation_calls}",
+                result.as_ref().map(|p| &p.request)
+            );
+            observed.push((
+                label,
+                supplied,
+                result.map(|p| p.request),
+                seat_calls,
+                observation_calls,
+                host.submitted.lock().unwrap().len(),
+            ));
+        }
+    }
+    for (label, supplied, result, seat_calls, observation_calls, submissions) in observed {
+        assert_eq!(result.unwrap_err().code, ErrorCode::InvalidRequest);
+        assert_eq!(
+            seat_calls, 0,
+            "{label} override={supplied}: lexical refusal preceded seat work"
+        );
+        assert_eq!(
+            observation_calls, 0,
+            "{label} override={supplied}: lexical refusal preceded host work"
+        );
+        assert_eq!(submissions, 0);
+    }
+}

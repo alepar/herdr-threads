@@ -2618,6 +2618,74 @@ pub(crate) mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn task48_default_and_required_native_start_preserve_empty_correlation() {
+        let mut observations = vec![];
+        for required in [false, true] {
+            let (mut request, mut context, mut observation) = launch_fixture();
+            let registry = crate::harness::launch::tests::process_hint_registry(required);
+            request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+            request.process_hint = required;
+            request.argv = vec!["before".into(), "".into(), "after".into(), "".into()];
+            let name = request.agent_name();
+            let argv = request.argv.clone();
+            let mut fixture = HintSocketFixture::new(move |stream, wire| {
+                let response = match wire["method"].as_str().unwrap() {
+                    "ping" => {
+                        json!({"type":"pong","version":"0.9.3","protocol":22,"capabilities":{"agent_start_process_hint_v1":true}})
+                    }
+                    "pane.get" => json!({"type":"pane_info"}),
+                    "agent.start" => {
+                        assert_eq!(wire["params"]["args"], json!(argv));
+                        assert_eq!(
+                            wire["params"]["process_hint"],
+                            if required { json!(true) } else { Value::Null }
+                        );
+                        let mut response = started(name.clone());
+                        response["argv"] = json!([vec!["codex".to_owned()], argv.clone()].concat());
+                        response
+                    }
+                    other => panic!("unexpected Task48 synthetic socket operation: {other}"),
+                };
+                answer(stream, wire, response);
+            });
+            fixture.cli.registry = registry;
+            if required {
+                fixture.bind_preflight(&mut request, &mut context, &mut observation);
+            }
+            let result = fixture
+                .cli
+                .guarded_start_with_evidence(&request, &context, &observation);
+            let frames = fixture.finish();
+            eprintln!(
+                "task48 actual NativeCli required={required}: result={result:?} methods={:?}",
+                frames
+                    .iter()
+                    .map(|frame| frame["method"].clone())
+                    .collect::<Vec<_>>()
+            );
+            observations.push((request, context, result, frames));
+        }
+        // Both real consumers are reached at BASE before either expected-success assertion.
+        for (request, context, result, frames) in observations {
+            let NativeLaunchOutcome::ObservedStartup { correlation, .. } =
+                result.expect("actual NativeCli must admit lossless bounded empty data")
+            else {
+                panic!("empty data startup was not correlated");
+            };
+            assert_eq!(
+                frames
+                    .iter()
+                    .filter(|frame| frame["method"] == "agent.start")
+                    .count(),
+                1
+            );
+            assert_eq!(correlation.argv, request.argv);
+            assert!(correlation.matches_request(&request, &context));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn process_hint_retry_renegotiates_and_unknown_write_is_possible() {
         for case in [
             "lost-capability",
@@ -2749,7 +2817,6 @@ pub(crate) mod tests {
     fn process_hint_invalid_native_argv_is_not_submitted_in_either_mode() {
         for required in [false, true] {
             for argv in [
-                vec![String::new()],
                 vec!["a\0b".into()],
                 vec!["a\nb".into()],
                 vec!["a\rb".into()],
@@ -2794,6 +2861,112 @@ pub(crate) mod tests {
             }
         }
     }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn task48_empty_return_mismatches_and_prewrite_internal_mode_budget_fences() {
+        for required in [false, true] {
+            for case in [
+                "missing-argv",
+                "drop-empty",
+                "reorder-empty",
+                "wrong-name",
+                "wrong-terminal",
+                "internal",
+                "mode",
+                "cancelled",
+                "expired",
+                "generation",
+                "incarnation",
+            ] {
+                let (mut request, mut context, mut observation) = launch_fixture();
+                let registry = crate::harness::launch::tests::process_hint_registry(required);
+                request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+                request.process_hint = required;
+                request.argv = vec!["before".into(), "".into(), "after".into()];
+                let name = request.agent_name();
+                let mut fixture = HintSocketFixture::new(move |stream, wire| {
+                    let response = match wire["method"].as_str().unwrap() {
+                        "ping" => {
+                            json!({"type":"pong","version":"0.9.3","protocol":22,"capabilities":{"agent_start_process_hint_v1":true}})
+                        }
+                        "pane.get" => json!({"type":"pane_info"}),
+                        "agent.start" => {
+                            let mut response = started(name.clone());
+                            response["argv"] = json!(["codex", "before", "", "after"]);
+                            match case {
+                                "missing-argv" => {
+                                    response.as_object_mut().unwrap().remove("argv");
+                                }
+                                "drop-empty" => {
+                                    response["argv"] = json!(["codex", "before", "after"])
+                                }
+                                "reorder-empty" => {
+                                    response["argv"] = json!(["codex", "", "before", "after"])
+                                }
+                                "wrong-name" => response["agent"]["name"] = json!("foreign"),
+                                "wrong-terminal" => {
+                                    response["agent"]["terminal_id"] = json!("foreign")
+                                }
+                                _ => panic!("prewrite-invalid case submitted agent.start: {case}"),
+                            }
+                            response
+                        }
+                        other => panic!("unexpected Task48 correlation operation: {other}"),
+                    };
+                    answer(stream, wire, response);
+                });
+                fixture.cli.registry = registry;
+                if required {
+                    fixture.bind_preflight(&mut request, &mut context, &mut observation);
+                }
+                let prewrite = matches!(
+                    case,
+                    "internal" | "mode" | "cancelled" | "expired" | "generation" | "incarnation"
+                );
+                match case {
+                    "internal" => request.configured_hook.fingerprint.clear(),
+                    "mode" => request.process_hint = !required,
+                    "cancelled" => context.budget.cancellation.cancel(),
+                    "expired" => context.budget.deadline = MonoInstant(0),
+                    "generation" => request.expected_generation += 1,
+                    "incarnation" => request.expected_incarnation.push_str("-changed"),
+                    _ => {}
+                }
+                let result =
+                    fixture
+                        .cli
+                        .guarded_start_with_evidence(&request, &context, &observation);
+                let frames = fixture.finish();
+                assert!(
+                    !matches!(result, Ok(NativeLaunchOutcome::ObservedStartup { .. })),
+                    "{case} required={required} fabricated startup"
+                );
+                if prewrite {
+                    assert_eq!(
+                        frames
+                            .iter()
+                            .filter(|frame| frame["method"] == "agent.start")
+                            .count(),
+                        0,
+                        "{case} required={required}"
+                    );
+                    assert_eq!(
+                        result.unwrap_err().submission,
+                        ports::NativeSubmission::NotSubmitted
+                    );
+                } else {
+                    assert_eq!(
+                        frames
+                            .iter()
+                            .filter(|frame| frame["method"] == "agent.start")
+                            .count(),
+                        1
+                    );
+                }
+            }
+        }
+    }
+
     fn started(name: String) -> Value {
         // The live Herdr 0.9.1 `agent.start` success shape (captured
         // 2026-09-30 with a stand-in executable): `agent` names the detected
