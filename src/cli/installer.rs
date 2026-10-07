@@ -69,24 +69,29 @@ fn execute_for_registry<F: FnMut(&str) -> io::Result<bool>>(
                     if component == "hooks" {
                         registration
                             .inspect_installer_hooks(request, &budget)
-                            .map(|state| state == InstallerHookState::Owned)
+                            .map(|state| Some(state == InstallerHookState::Owned))
                             .map_err(|e| failure(e.to_string()))
                     } else {
-                        let destination = registration
+                        let Some(destination) = registration
                             .installer_skill_destination(&request.scope)
                             .map_err(|e| failure(e.to_string()))?
-                            .ok_or_else(|| {
-                                failure("registered adapter declares no skill destination")
-                            })?;
+                        else {
+                            return Ok(None);
+                        };
                         SkillFile::inspect(env, name, &destination).map(|file| {
                             let installed = file.installed();
                             skill_file = Some(file);
-                            installed
+                            Some(installed)
                         })
                     }
                 });
             let mut entry = json!({"harness":name,"component":component});
             let result = state.and_then(|installed| {
+                let Some(installed) = installed else {
+                    entry["outcome"] = json!("unavailable");
+                    entry["detail"] = json!("registered adapter declares no skill destination");
+                    return Ok(());
+                };
                 if !installed && !confirm_missing {
                     if !interactive {
                         entry["outcome"] = json!("skipped");
