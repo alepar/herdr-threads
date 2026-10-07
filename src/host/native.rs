@@ -1009,13 +1009,13 @@ impl HostPort for NativeCli {
         context: &HostCallContext,
     ) -> Result<ports::ComposerObservation, ApiError> {
         let started = Instant::now();
-        let observation = self.observe_target(target, context, true)?;
+        let (observation, composer) = self.observe_target_with_composer(target, context, true)?;
         // Composer I/O happens after pane.get's first fence. A concurrent host
         // failure or cancellation during that read must not earn idle evidence.
         self.check_epoch(observation.epoch)?;
         self.check_context(context)?;
         self.check_after_parse_unfenced(&context.budget, started, Duration::from_secs(5))?;
-        Ok(ports::ComposerObservation(observation))
+        Ok(ports::ComposerObservation(observation, composer))
     }
 
     /// Herdr 0.9.1 builds `session.snapshot` in one `&self` call on its
@@ -1634,6 +1634,16 @@ impl NativeCli {
         context: &HostCallContext,
         composer_ui: bool,
     ) -> Result<HostObservation, ApiError> {
+        self.observe_target_with_composer(target, context, composer_ui)
+            .map(|(observation, _)| observation)
+    }
+
+    fn observe_target_with_composer(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+        composer_ui: bool,
+    ) -> Result<(HostObservation, Option<ports::RegisteredComposerEvidence>), ApiError> {
         self.check_context(context)?;
         let epoch = self.epoch();
         let started = self.clock.monotonic_now();
@@ -1646,10 +1656,10 @@ impl NativeCli {
         self.check_boot(context, incarnation.as_ref())?;
         // Herdr's `agent_status` is not a composer: an idle agent may hold
         // typed text, so a poke's UI state also needs the composer read.
-        let ui = if composer_ui {
+        let (ui, composer) = if composer_ui {
             self.observed_ui(&pane, context)
         } else {
-            status_ui(&pane, self.registry)
+            (status_ui(&pane, self.registry), None)
         };
         let sequence = self.next_sequence();
         let mut observation = self.observation(
@@ -1662,30 +1672,54 @@ impl NativeCli {
             sequence,
         );
         observation.ui = ui;
-        Ok(observation)
+        Ok((observation, composer))
     }
 
     /// The UI state a pane shows: Herdr's agent status plus, for an idle,
     /// done or working claude/codex agent, a composer read. A failed or
     /// timed-out read never fails the observation; it yields `Unknown`.
-    fn observed_ui(&self, pane: &NativePane, context: &HostCallContext) -> HostUiState {
-        let Some(harness) = pane
-            .agent
-            .as_deref()
-            .and_then(|kind| self.registry.by_host_kind(kind))
+    fn observed_ui(
+        &self,
+        pane: &NativePane,
+        context: &HostCallContext,
+    ) -> (HostUiState, Option<ports::RegisteredComposerEvidence>) {
+        // The bounded transport supplies the string; exact immutable registry
+        // membership determines which declared alias may select a parser.
+        let Some(kind) = pane.agent.as_deref() else {
+            return (HostUiState::Unknown, None);
+        };
+        let Some(parser) = self
+            .registry
+            .by_host_kind(kind)
             .and_then(|r| self.registry.agent(r.metadata().id).ok())
-            .map(Harness::Agent)
         else {
-            return HostUiState::Unknown;
+            return (HostUiState::Unknown, None);
         };
         let status = pane.status.as_str();
         match status {
-            "blocked" => composer::observed_ui(Some(status), None),
+            "blocked" => (composer::observed_ui(Some(status), None), None),
             "idle" | "done" | "working" => {
-                let read = self.read_composer(&pane.target, harness, context).ok();
-                composer::observed_ui(Some(status), read.as_ref())
+                if self.composer_policy(Harness::Agent(parser)).is_none() {
+                    return (HostUiState::Unknown, None);
+                }
+                let read = self
+                    .read_composer(&pane.target, Harness::Agent(parser), context)
+                    .ok();
+                let ui = composer::observed_ui(Some(status), read.as_ref());
+                let evidence = read.as_ref().map(|read| ports::RegisteredComposerEvidence {
+                    parser,
+                    reported_host_kind: kind.into(),
+                    classification: match read {
+                        ComposerRead::Empty => ports::ComposerClassification::Empty,
+                        ComposerRead::Text(_) => ports::ComposerClassification::Text,
+                        ComposerRead::Unsafe { .. } => ports::ComposerClassification::Unsafe,
+                        ComposerRead::Unreadable => ports::ComposerClassification::Unreadable,
+                    },
+                    basis: ports::ComposerEvidenceBasis::RegisteredHostKindComposerRead,
+                });
+                (ui, evidence)
             }
-            _ => HostUiState::Unknown,
+            _ => (HostUiState::Unknown, None),
         }
     }
 
@@ -5133,6 +5167,27 @@ pub(crate) mod tests {
                 cli.observe_current_target_for_archival(&HostTargetId::new("w4:p1"), &context);
             worker.join().unwrap();
             fs::remove_file(socket).unwrap();
+            if let Ok(sample) = &result {
+                assert!(sample.0.occupant.is_none());
+                assert_eq!(sample.0.execution, ExecutionEvidence::Unknown);
+                let evidence = sample
+                    .1
+                    .as_ref()
+                    .expect("same validated composer read retains parser evidence");
+                assert_eq!(
+                    evidence.parser,
+                    registry::builtins().agent("claude").unwrap()
+                );
+                assert_eq!(evidence.reported_host_kind, "claude");
+                assert_eq!(
+                    evidence.classification,
+                    if mode == "idle" {
+                        ports::ComposerClassification::Empty
+                    } else {
+                        ports::ComposerClassification::Unsafe
+                    }
+                );
+            }
             match mode {
                 "idle" => assert_eq!(result.unwrap().0.ui, HostUiState::Idle),
                 "draft" => assert_eq!(result.unwrap().0.ui, HostUiState::HumanInput),

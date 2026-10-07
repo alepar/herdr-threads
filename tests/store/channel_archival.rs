@@ -173,37 +173,46 @@ pub(super) fn sample(
 ) -> archival::ComposerObservation {
     use herdr_threads::{
         ports::*,
-        protocol::{authority::Harness, ids::*, time::MonoInstant},
+        protocol::{ids::*, time::MonoInstant},
     };
-    archival::ComposerObservation(HostObservation {
-        target: HostTargetId::new("p"),
-        host_boot: HostBootId::new("b"),
-        epoch: 1,
-        generation: 0,
-        observed_at_utc: UtcMillis(at),
-        observed_at_mono: MonoInstant(at as u64),
-        provenance: ObservationProvenance::FreshCurrentTarget,
-        occupant: Some(NativeOccupant {
-            harness: Harness::Codex,
-            session: NativeSessionId::new("not-execution-proof"),
-            execution: ExecutionId::new("not-execution-proof"),
-            is_top_level: false,
-        }),
-        ui,
-        focused: false,
-        terminal: Some(TerminalId::new("term")),
-        occupancy: StructuralOccupancy::Unknown,
-        incarnation: IncarnationEvidence::Verified {
-            identity: "inc".into(),
-            evidence_kind: EvidenceKind::NativeCurrentTarget,
+    archival::ComposerObservation(
+        HostObservation {
+            target: HostTargetId::new("p"),
+            host_boot: HostBootId::new("b"),
+            epoch: 1,
+            generation: 0,
+            observed_at_utc: UtcMillis(at),
+            observed_at_mono: MonoInstant(at as u64),
+            provenance: ObservationProvenance::FreshCurrentTarget,
+            occupant: None,
+            ui,
+            focused: false,
+            terminal: Some(TerminalId::new("term")),
+            occupancy: StructuralOccupancy::Unknown,
+            incarnation: IncarnationEvidence::Verified {
+                identity: "inc".into(),
+                evidence_kind: EvidenceKind::NativeCurrentTarget,
+            },
+            execution: ExecutionEvidence::Unknown,
+            call_id: HostCallId::new(format!("read-{at}")),
+            connection_epoch: 1,
+            observation_sequence: (at / 60_000 + 2) as u64,
+            started_at_mono: MonoInstant(at as u64),
+            completed_at_mono: MonoInstant(at as u64),
         },
-        execution: ExecutionEvidence::Unknown,
-        call_id: HostCallId::new(format!("read-{at}")),
-        connection_epoch: 1,
-        observation_sequence: (at / 60_000 + 2) as u64,
-        started_at_mono: MonoInstant(at as u64),
-        completed_at_mono: MonoInstant(at as u64),
-    })
+        Some(RegisteredComposerEvidence {
+            parser: herdr_threads::harness::registry::builtins()
+                .agent("codex")
+                .unwrap(),
+            reported_host_kind: "codex".into(),
+            classification: if ui == HostUiState::Idle {
+                ComposerClassification::Empty
+            } else {
+                ComposerClassification::Text
+            },
+            basis: ComposerEvidenceBasis::RegisteredHostKindComposerRead,
+        }),
+    )
 }
 fn authority_snapshot(db: &Connection) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
     [
@@ -800,5 +809,1237 @@ fn archival_connection_epoch_change_accepts_new_order_but_rejects_delayed_old_ep
     assert!(
         !archival::record_sample(&mut db, &ticket, &rt, &observation).unwrap(),
         "delayed earlier connection cannot regain positive evidence"
+    );
+}
+
+// SOURCE_UNCOMPILED_UNEXECUTED. Additive draft for tests/store/channel_archival.rs.
+// Not a new test target or product module. Rebind to the actual B4 successor.
+// Uses only existing BASE APIs, including the one-field ComposerObservation.
+#[cfg(target_os = "macos")]
+mod archival_actual_producer_base_fixture {
+    use herdr_threads::{
+        host::native::NativeCli,
+        ports::{
+            ExecutionEvidence, HostCallContext, HostObservation, HostPort, HostUiState,
+            IncarnationEvidence, ObservationProvenance, StructuralOccupancy,
+        },
+        protocol::{
+            ids::HostTargetId,
+            time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis},
+        },
+        store::{archival, effective},
+    };
+    use rusqlite::{Connection, params};
+    use serde_json::{Value, json};
+    use std::{
+        io::{Read, Write},
+        os::unix::net::{UnixListener, UnixStream},
+        path::PathBuf,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread::{self, JoinHandle},
+        time::{Duration, Instant},
+    };
+
+    struct FixedClock;
+    impl Clock for FixedClock {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(1_000)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(1_000)
+        }
+    }
+
+    // No child process, native executable, daemon or real Herdr. The actual
+    // NativeCli witnesses this test process's socket peer PID/start/UID.
+    struct OwnedPeer {
+        socket: PathBuf,
+        stop: Arc<AtomicBool>,
+        worker: Option<JoinHandle<()>>,
+        errors: Arc<Mutex<Vec<String>>>,
+        methods: Arc<Mutex<Vec<String>>>,
+    }
+    impl OwnedPeer {
+        fn new(kind: &'static str, capture: &'static str) -> Self {
+            Self::configured(kind, capture, "idle")
+        }
+        fn configured(kind: &'static str, capture: &'static str, status: &'static str) -> Self {
+            let socket =
+                PathBuf::from(format!("/private/tmp/ha-{}", uuid::Uuid::new_v4().simple()));
+            assert!(socket.as_os_str().as_encoded_bytes().len() < 104);
+            let listener = UnixListener::bind(&socket).expect("owned fixture socket bind");
+            // Guard owns the pathname before every later fallible operation.
+            let mut owned = Self {
+                socket,
+                stop: Arc::new(AtomicBool::new(false)),
+                worker: None,
+                errors: Arc::new(Mutex::new(Vec::new())),
+                methods: Arc::new(Mutex::new(Vec::new())),
+            };
+            listener
+                .set_nonblocking(true)
+                .expect("owned nonblocking listener");
+            let stop = owned.stop.clone();
+            let errors = owned.errors.clone();
+            let methods = owned.methods.clone();
+            owned.worker = Some(thread::spawn(move || {
+                let until = Instant::now() + Duration::from_secs(5);
+                while !stop.load(Ordering::Acquire) && Instant::now() < until {
+                    let (mut stream, _) = match listener.accept() {
+                        Ok(pair) => pair,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(2));
+                            continue;
+                        }
+                        Err(e) => {
+                            errors.lock().unwrap().push(format!("accept: {e}"));
+                            break;
+                        }
+                    };
+                    if let Err(e) =
+                        Self::exchange(&mut stream, kind, capture, status, &stop, until, &methods)
+                    {
+                        if !stop.load(Ordering::Acquire) {
+                            errors.lock().unwrap().push(e);
+                        }
+                        break;
+                    }
+                }
+                if !stop.load(Ordering::Acquire) {
+                    errors
+                        .lock()
+                        .unwrap()
+                        .push("owned server reached five-second bound".into());
+                }
+            }));
+            owned
+        }
+        fn exchange(
+            stream: &mut UnixStream,
+            kind: &str,
+            capture: &str,
+            status: &str,
+            stop: &AtomicBool,
+            until: Instant,
+            methods: &Mutex<Vec<String>>,
+        ) -> Result<(), String> {
+            stream
+                .set_read_timeout(Some(Duration::from_millis(50)))
+                .map_err(|e| e.to_string())?;
+            stream
+                .set_write_timeout(Some(Duration::from_millis(100)))
+                .map_err(|e| e.to_string())?;
+            let mut bytes = Vec::new();
+            loop {
+                if stop.load(Ordering::Acquire) || Instant::now() >= until {
+                    return Err("owned fixture stopped while reading".into());
+                }
+                let mut byte = [0];
+                match stream.read(&mut byte) {
+                    Ok(0) => return Err("request EOF before newline".into()),
+                    Ok(_) if byte[0] == b'\n' => break,
+                    Ok(_) => {
+                        bytes.push(byte[0]);
+                        if bytes.len() > 4_096 {
+                            return Err("fixture request exceeds bound".into());
+                        }
+                    }
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::WouldBlock
+                                | std::io::ErrorKind::TimedOut
+                                | std::io::ErrorKind::Interrupted
+                        ) =>
+                    {
+                        continue;
+                    }
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+            let request: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            let method = request["method"].as_str().ok_or("missing method")?;
+            methods.lock().unwrap().push(method.to_owned());
+            let result = match method {
+                "ping" => json!({"type":"pong","version":"0.9.1","protocol":22}),
+                "pane.get" if request["params"]["pane_id"] == "w4:p1" => json!({
+                    "type":"pane_info","pane":{"pane_id":"w4:p1","terminal_id":"term_1",
+                    "workspace_id":"w4","tab_id":"w4:t1","focused":false,
+                    "agent_status":status,"agent":kind,"revision":2}}),
+                "agent.read"
+                    if request["params"] == json!({"target":"w4:p1","source":"detection"}) =>
+                {
+                    json!({
+                    "type":"pane_read","read":{"pane_id":if capture=="FIXTURE WRONG PANE" {"w4:p2"} else {"w4:p1"},"source":if capture=="FIXTURE WRONG SOURCE" {"recent"} else {"detection"},
+                    "format":"text","text":capture,"revision":0,"truncated":false}})
+                }
+                _ => return Err(format!("unexpected bounded fixture request: {request}")),
+            };
+            writeln!(stream, "{}", json!({"id":request["id"],"result":result}))
+                .map_err(|e| e.to_string())
+        }
+        fn settle(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(worker) = self.worker.take()
+                && worker.join().is_err()
+            {
+                self.errors
+                    .lock()
+                    .unwrap()
+                    .push("owned worker panicked".into());
+            }
+        }
+        fn assert_protocol(&mut self) {
+            self.settle();
+            std::fs::remove_file(&self.socket)
+                .expect("owned fixture socket removal after joined worker");
+            assert!(
+                !self.socket.exists(),
+                "owned socket removed before deciding consumer"
+            );
+            let errors = self.errors.lock().unwrap().clone();
+            assert!(errors.is_empty(), "fixture errors: {errors:?}");
+            assert_eq!(
+                *self.methods.lock().unwrap(),
+                ["ping", "pane.get", "ping", "pane.get", "ping", "agent.read"],
+                "one ordinary observation plus exactly one actual archival composer read"
+            );
+        }
+    }
+    impl Drop for OwnedPeer {
+        fn drop(&mut self) {
+            self.settle();
+            // A unique successfully bound owned path; no foreign path scanning.
+            let _ = std::fs::remove_file(&self.socket);
+        }
+    }
+
+    // Derive canonical state from actual ordinary NativeCli observation;
+    // response JSON cannot set the peer-derived boot/incarnation/generation.
+    fn seed_canonical(db: &Connection, harness: &str, observation: &HostObservation) {
+        let proof = observation
+            .verified_structural_proof()
+            .expect("prerequisite: macOS actual peer structural proof");
+        assert!(observation.occupant.is_none());
+        assert!(
+            matches!(
+                observation.ui,
+                HostUiState::Unknown | HostUiState::ApprovalOrQuestion
+            ),
+            "ordinary read cannot prove idle"
+        );
+        db.execute(
+            "UPDATE host_instances SET host_boot=?1,host_epoch=?2 WHERE id='i'",
+            params![proof.host_boot().as_str(), proof.host_epoch() as i64],
+        )
+        .unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s','i','resolved','native',?1,1,?2,0)",
+            params![proof.target().as_str(), proof.target_generation() as i64]).unwrap();
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('s',1,?1,?2,?3,?4,'session','00000000-0000-4000-8000-000000000001','cooperative_top_level',1000,1000)",
+            params![proof.target().as_str(), proof.host_boot().as_str(), proof.host_epoch() as i64, harness]).unwrap();
+        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch,ui_state) VALUES('i',?1,?2,?3,?4,?5,'fresh',1000,?6,?7,'native_current_target',?8,'unknown')",
+            params![proof.target().as_str(), proof.host_boot().as_str(), proof.host_epoch() as i64,
+                proof.target_generation() as i64, observation.observation_sequence as i64,
+                proof.terminal().as_str(), proof.incarnation(), proof.connection_epoch() as i64]).unwrap();
+        db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES('t','s','joined',1000)").unwrap();
+    }
+
+    fn one_case(harness: &'static str, capture: &'static str) -> bool {
+        let mut peer = OwnedPeer::new(harness, capture);
+        let cli = NativeCli::new(peer.socket.clone(), Arc::new(FixedClock));
+        let target = HostTargetId::new("w4:p1");
+        let context = HostCallContext {
+            budget: CallBudget {
+                deadline: MonoInstant(11_000),
+                cancellation: Cancellation::default(),
+            },
+            expected_boot: None,
+            expected_epoch: None,
+        };
+        let ordinary = cli
+            .observe_current_target(&target, &context)
+            .expect("prerequisite: ordinary witnessed native read");
+        assert_eq!(
+            ordinary.ui,
+            HostUiState::Unknown,
+            "first causal ordinary C/C read remains Unknown"
+        );
+        let mut db = super::fixture();
+        super::thread(&db);
+        seed_canonical(&db, harness, &ordinary);
+        let rt = archival::Runtime {
+            boot: "actual-producer-fixture-runtime".into(),
+            mono: 1_000,
+            utc: UtcMillis(1_000),
+            after_ms: 60_000,
+            host_generation: 0,
+            coherent: true,
+            valid_until_mono: None,
+            legacy_source: Some("covered-source".into()),
+        };
+        super::tick(&mut db, &rt); // Actual advance initializes runtime and seat certificate rows.
+        assert!(!super::archived(&db), "fresh joined channel cannot archive");
+        let captured: (String, i64, i64) = db.query_row("SELECT ai.runtime_boot,ai.evidence_epoch,a.activity_revision FROM archival_instances ai JOIN seat_archival a ON a.instance_id=ai.instance_id WHERE ai.instance_id='i' AND a.seat_id='s'", [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!(captured.0, rt.boot);
+        let ticket = archival::observation_ticket(&db, "i", "s", &rt)
+            .unwrap()
+            .expect("prerequisite: canonical registered cooperative C/C ticket exists");
+        assert_eq!(ticket.target(), &target);
+        assert_eq!(ticket.seat(), "s");
+        let sample = cli
+            .observe_current_target_for_archival(
+                &target,
+                &ticket.host_context(context.budget.clone()),
+            )
+            .expect("prerequisite: real archival parser/wrapper completes");
+        peer.assert_protocol(); // Join before causal assertion; Drop also covers any prior panic.
+        let observed = &sample.0; // Never mutate/copy substitute this envelope.
+        assert_eq!(
+            observed.ui,
+            HostUiState::Idle,
+            "prerequisite: captured real composer grammar Empty + Idle"
+        );
+        assert!(
+            observed.occupant.is_none(),
+            "actual native producer must stay honest"
+        );
+        assert_eq!(observed.occupancy, StructuralOccupancy::Unknown);
+        assert_eq!(observed.execution, ExecutionEvidence::Unknown);
+        assert_eq!(
+            observed.provenance,
+            ObservationProvenance::FreshCurrentTarget
+        );
+        assert!(matches!(
+            observed.incarnation,
+            IncarnationEvidence::Verified { .. }
+        ));
+        let proof = observed
+            .verified_structural_proof()
+            .expect("prerequisite: actual archival structural proof");
+        let current = effective::effective_observation(&db, "i", target.as_str())
+            .unwrap()
+            .unwrap();
+        assert_eq!(proof.target().as_str(), current.target_id);
+        assert_eq!(proof.host_boot().as_str(), current.host_boot);
+        assert_eq!(proof.host_epoch() as i64, current.epoch);
+        assert_eq!(
+            proof.target_generation() as i64,
+            current.structural_generation
+        );
+        assert_eq!(
+            Some(proof.terminal().as_str()),
+            current.terminal_id.as_deref()
+        );
+        assert_eq!(Some(proof.incarnation()), current.incarnation.as_deref());
+        assert!(current.observation_sequence <= observed.observation_sequence as i64);
+        assert_eq!(proof.connection_epoch(), cli.epoch());
+        assert!(observed.completed_at_mono.0 <= rt.mono as u64);
+        assert!(observed.started_at_mono.0 >= rt.mono.saturating_sub(5_000).max(0) as u64);
+        let deciding: (String, i64, i64) = db.query_row("SELECT ai.runtime_boot,ai.evidence_epoch,a.activity_revision FROM archival_instances ai JOIN seat_archival a ON a.instance_id=ai.instance_id WHERE ai.instance_id='i' AND a.seat_id='s'", [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!(
+            captured, deciding,
+            "ticket runtime/evidence/activity unchanged across real host I/O"
+        );
+        let registered: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id='s' AND generation=1 AND harness=?1 AND native_session='session' AND execution_id='00000000-0000-4000-8000-000000000001' AND ended_at IS NULL AND registered_at IS NOT NULL AND observation_provenance='cooperative_top_level')", [harness], |r| r.get(0)).unwrap();
+        assert!(
+            registered,
+            "prerequisite: exact open registered cooperative identity unchanged"
+        );
+        let accepted = archival::record_sample(&mut db, &ticket, &rt, &sample).unwrap();
+        eprintln!(
+            "actual-producer case={harness} prerequisite_checks=passed occupant=None execution=Unknown sample_accepted={accepted}"
+        );
+        accepted
+    }
+
+    struct MovingClock(std::sync::atomic::AtomicU64);
+    impl Clock for MovingClock {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(self.0.load(Ordering::Acquire) as i64)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(self.0.load(Ordering::Acquire))
+        }
+    }
+    fn complete_authority(db: &Connection) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
+        ["seats","occupant_bindings","memberships","membership_intervals","receipts","receipt_state",
+         "invitations","invitation_rejections","invitation_cancellations","requirement_episodes",
+         "send_preparations","prepared_recipients","prepared_unavailable_warnings","send_manifests",
+         "service_notification_preparations","catch_up","summary_jobs","channel_handoff_fences","host_instances"]
+        .into_iter().map(|table| {
+            let projection=if table=="host_instances" {
+                let mut fields=db.prepare("SELECT name FROM pragma_table_info('host_instances') WHERE name<>'decision_seq' ORDER BY cid").unwrap();
+                fields.query_map([],|r|r.get::<_,String>(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap().join(",")
+            } else { "*".into() };
+            let mut st=db.prepare(&format!("SELECT {projection} FROM {table} ORDER BY rowid")).unwrap();let n=st.column_count();
+            st.query_map([],|r|(0..n).map(|i|r.get(i)).collect()).unwrap().collect::<Result<_,_>>().unwrap()
+        }).collect()
+    }
+    pub(super) fn registered_alias_family_actual_producer_and_poke() {
+        use herdr_threads::{
+            harness::registry, test_support::archival_composer_fixture as injected,
+        };
+        let r = injected::registry();
+        assert_eq!(injected::ALIAS_64.len(), 64);
+        assert_eq!(injected::ALIAS_65.len(), 65);
+        assert_eq!(
+            r.agent("synthetic_fourth").unwrap(),
+            registry::builtins().agent("synthetic_fourth").unwrap()
+        );
+        let mut cases = Vec::new();
+        for kind in [
+            injected::ALIAS_64,
+            injected::ALIAS_65,
+            injected::ALIAS_CONTROL,
+        ] {
+            assert_eq!(
+                r.by_host_kind(kind).unwrap().metadata().id,
+                "synthetic_fourth"
+            );
+            cases.push((
+                kind,
+                r,
+                "idle",
+                HostUiState::Unknown,
+                HostUiState::Idle,
+                true,
+            ));
+            cases.push((
+                kind,
+                r,
+                "blocked",
+                HostUiState::ApprovalOrQuestion,
+                HostUiState::ApprovalOrQuestion,
+                false,
+            ));
+        }
+        cases.extend([
+            (
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                r,
+                "idle",
+                HostUiState::Unknown,
+                HostUiState::Unknown,
+                false,
+            ),
+            (
+                "synthetic_fourth\tundeclared",
+                r,
+                "blocked",
+                HostUiState::Unknown,
+                HostUiState::Unknown,
+                false,
+            ),
+            (
+                "synthetic_fourth_alias",
+                registry::builtins(),
+                "idle",
+                HostUiState::Unknown,
+                HostUiState::Unknown,
+                false,
+            ),
+        ]);
+        let mut failures = Vec::new();
+        for (kind, r, status, want_ordinary, want_composer, want_accept) in cases {
+            let mut peer = OwnedPeer::configured(kind, "SYNTHETIC COMPOSER EMPTY", status);
+            let cli = NativeCli::with_registry(peer.socket.clone(), Arc::new(FixedClock), r);
+            let target = HostTargetId::new("w4:p1");
+            let context = HostCallContext {
+                budget: CallBudget {
+                    deadline: MonoInstant(10000),
+                    cancellation: Cancellation::default(),
+                },
+                expected_boot: None,
+                expected_epoch: None,
+            };
+            let ordinary = cli.observe_current_target(&target, &context).unwrap();
+            let db = super::fixture();
+            super::thread(&db);
+            seed_canonical(&db, "synthetic_fourth", &ordinary);
+            let authority = complete_authority(&db);
+            let rt = archival::Runtime {
+                boot: "alias-family-runtime".into(),
+                mono: 1000,
+                utc: UtcMillis(1000),
+                after_ms: 60000,
+                host_generation: 0,
+                coherent: true,
+                valid_until_mono: None,
+                legacy_source: Some("covered-source".into()),
+            };
+            injected::advance(&db, "i", &rt, r).unwrap();
+            let ticket = injected::ticket(&db, "i", "s", &rt, r).unwrap();
+            let sample = cli
+                .observe_current_target_for_archival(&target, &context)
+                .unwrap();
+            let poke = cli
+                .observe_current_target_for_poke(&target, &context)
+                .unwrap();
+            let accepted = ticket
+                .as_ref()
+                .is_some_and(|t| injected::sample(&db, t, &rt, &sample, r).unwrap());
+            // Cleanup precedes the behavioral assertion, including at frozen RED.
+            peer.settle();
+            std::fs::remove_file(&peer.socket).unwrap();
+            assert!(!peer.socket.exists());
+            let errors = peer.errors.lock().unwrap().clone();
+            assert!(errors.is_empty(), "fixture protocol errors: {errors:?}");
+            let methods = peer.methods.lock().unwrap().clone();
+            let reads = methods
+                .iter()
+                .filter(|m| m.as_str() == "agent.read")
+                .count();
+            assert_eq!(
+                methods.iter().filter(|m| m.as_str() == "pane.get").count(),
+                3
+            );
+            assert!(sample.0.verified_structural_proof().is_some());
+            assert!(sample.0.occupant.is_none());
+            assert_eq!(sample.0.occupancy, StructuralOccupancy::Unknown);
+            assert_eq!(sample.0.execution, ExecutionEvidence::Unknown);
+            assert_eq!(complete_authority(&db), authority);
+            let evidence_matches = sample.1.as_ref().is_some_and(|e| {
+                e.parser == r.agent("synthetic_fourth").unwrap()
+                    && e.reported_host_kind == kind
+                    && e.classification == herdr_threads::ports::ComposerClassification::Empty
+            });
+            let ok = ordinary.ui == want_ordinary
+                && sample.0.ui == want_composer
+                && poke.ui == want_composer
+                && accepted == want_accept
+                && evidence_matches == want_accept
+                && reads == if want_accept { 2 } else { 0 };
+            eprintln!(
+                "alias-family actual kind={kind:?} bytes={} status={status} ordinary={:?} archival={:?} poke={:?} ticket={} evidence={} accepted={accepted} detection_reads={reads} peer_joined=true socket_absent=true protocol_errors=0",
+                kind.len(),
+                ordinary.ui,
+                sample.0.ui,
+                poke.ui,
+                ticket.is_some(),
+                evidence_matches
+            );
+            if !ok {
+                failures.push(format!("{kind:?}/{status}: ordinary={:?} archival={:?} poke={:?} accepted={accepted} evidence={evidence_matches} reads={reads}", ordinary.ui, sample.0.ui, poke.ui));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "exact declared aliases must preserve real producer/canonical/poke behavior: {failures:?}"
+        );
+    }
+
+    pub(super) fn full_grace_actual_producers() {
+        use herdr_threads::{
+            harness::registry, test_support::archival_composer_fixture as injected,
+        };
+        for (binding, kind, capture, r) in [
+            (
+                "claude",
+                "claude",
+                include_str!(
+                    "../../docs/evidence/poke-spike/captures/claude-q1-empty.read-detection.txt"
+                ),
+                registry::builtins(),
+            ),
+            (
+                "codex",
+                "codex",
+                include_str!(
+                    "../../docs/evidence/poke-spike/captures/codex-q6-workers.read-detection.txt"
+                ),
+                registry::builtins(),
+            ),
+            (
+                "synthetic_fourth",
+                "synthetic_fourth_alias",
+                "SYNTHETIC COMPOSER EMPTY",
+                injected::registry(),
+            ),
+            (
+                "synthetic_fourth",
+                injected::ALIAS_64,
+                "SYNTHETIC COMPOSER EMPTY",
+                injected::registry(),
+            ),
+            (
+                "synthetic_fourth",
+                injected::ALIAS_65,
+                "SYNTHETIC COMPOSER EMPTY",
+                injected::registry(),
+            ),
+            (
+                "synthetic_fourth",
+                injected::ALIAS_CONTROL,
+                "SYNTHETIC COMPOSER EMPTY",
+                injected::registry(),
+            ),
+        ] {
+            let mut peer = OwnedPeer::new(kind, capture);
+            let clock = Arc::new(MovingClock(std::sync::atomic::AtomicU64::new(1000)));
+            let cli = NativeCli::with_registry(peer.socket.clone(), clock.clone(), r);
+            let target = HostTargetId::new("w4:p1");
+            let context = HostCallContext {
+                budget: CallBudget {
+                    deadline: MonoInstant(10000),
+                    cancellation: Cancellation::default(),
+                },
+                expected_boot: None,
+                expected_epoch: None,
+            };
+            let ordinary = cli.observe_current_target(&target, &context).unwrap();
+            let db = super::fixture();
+            super::thread(&db);
+            seed_canonical(&db, binding, &ordinary);
+            let authority = complete_authority(&db);
+            let before_decision: i64 = db
+                .query_row(
+                    "SELECT decision_seq FROM host_instances WHERE id='i'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            for at in [1000, 61000] {
+                clock.0.store(at, Ordering::Release);
+                let rt = archival::Runtime {
+                    boot: "full-grace-runtime".into(),
+                    mono: at as i64,
+                    utc: UtcMillis(at as i64),
+                    after_ms: 60000,
+                    host_generation: 0,
+                    coherent: true,
+                    valid_until_mono: None,
+                    legacy_source: Some("covered-source".into()),
+                };
+                injected::advance(&db, "i", &rt, r).unwrap();
+                let ticket = injected::ticket(&db, "i", "s", &rt, r).unwrap().unwrap();
+                let sample = cli
+                    .observe_current_target_for_archival(
+                        &target,
+                        &ticket.host_context(CallBudget {
+                            deadline: MonoInstant(at + 5000),
+                            cancellation: Cancellation::default(),
+                        }),
+                    )
+                    .unwrap();
+                assert!(sample.0.occupant.is_none());
+                assert_eq!(sample.0.execution, ExecutionEvidence::Unknown);
+                assert_eq!(sample.1.as_ref().unwrap().parser, r.agent(binding).unwrap());
+                assert_eq!(sample.1.as_ref().unwrap().reported_host_kind, kind);
+                assert!(
+                    injected::sample(&db, &ticket, &rt, &sample, r).unwrap(),
+                    "real unchanged {binding} envelope at {at}"
+                );
+                for _ in 0..20 {
+                    if !injected::advance(&db, "i", &rt, r).unwrap().has_more {
+                        break;
+                    }
+                }
+                assert_eq!(super::archived(&db), at == 61000, "whole grace {binding}");
+            }
+            peer.settle();
+            std::fs::remove_file(&peer.socket).unwrap();
+            assert!(peer.errors.lock().unwrap().is_empty());
+            assert!(!peer.socket.exists());
+            assert_eq!(
+                *peer.methods.lock().unwrap(),
+                [
+                    "ping",
+                    "pane.get",
+                    "ping",
+                    "pane.get",
+                    "ping",
+                    "agent.read",
+                    "ping",
+                    "pane.get",
+                    "ping",
+                    "agent.read"
+                ]
+            );
+            assert_eq!(
+                complete_authority(&db),
+                authority,
+                "archive changes no accountable authority for {binding}"
+            );
+            assert_eq!(
+                db.query_row(
+                    "SELECT decision_seq FROM host_instances WHERE id='i'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                before_decision + 1,
+                "one lifecycle bookkeeping decision"
+            );
+            let identity:(String,String,String,i64)=db.query_row("SELECT harness,native_session,execution,binding_generation FROM seat_archival WHERE seat_id='s'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+            assert_eq!(
+                identity,
+                (
+                    binding.into(),
+                    "session".into(),
+                    "00000000-0000-4000-8000-000000000001".into(),
+                    1
+                )
+            );
+            let (actor, payload): (Option<String>, String) = db
+                .query_row(
+                    "SELECT actor_seat_id,event_json FROM messages WHERE thread_id='t'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert!(actor.is_none());
+            assert_eq!(
+                serde_json::from_str::<Value>(&payload).unwrap()["provenance"],
+                "daemon_lifecycle"
+            );
+        }
+    }
+    pub(super) fn actual_parser_negatives() {
+        let empty = include_str!(
+            "../../docs/evidence/poke-spike/captures/claude-q1-empty.read-detection.txt"
+        );
+        for (binding, kind, capture, status, want_ui, want_read) in [
+            ("codex", "claude", empty, "idle", HostUiState::Idle, true),
+            (
+                "codex",
+                "codex",
+                "unrecognizable capture",
+                "idle",
+                HostUiState::Unknown,
+                true,
+            ),
+            (
+                "codex",
+                "hermes",
+                "unused",
+                "idle",
+                HostUiState::Unknown,
+                false,
+            ),
+            (
+                "codex",
+                "unregistered",
+                "unused",
+                "idle",
+                HostUiState::Unknown,
+                false,
+            ),
+            (
+                "codex",
+                "codex",
+                include_str!(
+                    "../../docs/evidence/poke-spike/captures/codex-q-cycle-1-draft.read-detection.txt"
+                ),
+                "idle",
+                HostUiState::HumanInput,
+                true,
+            ),
+            (
+                "claude",
+                "claude",
+                include_str!(
+                    "../../docs/evidence/poke-spike/captures/claude-q-cycle-1-draft.read-detection.txt"
+                ),
+                "idle",
+                HostUiState::HumanInput,
+                true,
+            ),
+            (
+                "codex",
+                "codex",
+                "FIXTURE WRONG SOURCE",
+                "idle",
+                HostUiState::Unknown,
+                true,
+            ),
+            (
+                "codex",
+                "codex",
+                "FIXTURE WRONG PANE",
+                "idle",
+                HostUiState::Unknown,
+                true,
+            ),
+            (
+                "codex",
+                "codex",
+                "unused",
+                "blocked",
+                HostUiState::ApprovalOrQuestion,
+                false,
+            ),
+            (
+                "codex",
+                "codex",
+                "unused",
+                "unrecognized_status",
+                HostUiState::Unknown,
+                false,
+            ),
+            (
+                "codex",
+                "codex",
+                include_str!(
+                    "../../docs/evidence/poke-spike/captures/codex-q6-workers.read-detection.txt"
+                ),
+                "working",
+                HostUiState::ActiveTurn,
+                true,
+            ),
+        ] {
+            let mut peer = OwnedPeer::configured(kind, capture, status);
+            let cli = NativeCli::new(peer.socket.clone(), Arc::new(FixedClock));
+            let target = HostTargetId::new("w4:p1");
+            let context = HostCallContext {
+                budget: CallBudget {
+                    deadline: MonoInstant(10000),
+                    cancellation: Cancellation::default(),
+                },
+                expected_boot: None,
+                expected_epoch: None,
+            };
+            let observed = cli.observe_current_target(&target, &context);
+            if status == "unrecognized_status" {
+                assert_eq!(
+                    observed.unwrap_err().code,
+                    herdr_threads::protocol::results::ErrorCode::StaleHostObservation
+                );
+                peer.settle();
+                std::fs::remove_file(&peer.socket).unwrap();
+                assert!(peer.errors.lock().unwrap().is_empty());
+                assert!(!peer.socket.exists());
+                assert_eq!(*peer.methods.lock().unwrap(), ["ping", "pane.get"]);
+                continue;
+            }
+            let ordinary = observed.unwrap();
+            let mut db = super::fixture();
+            super::thread(&db);
+            seed_canonical(&db, binding, &ordinary);
+            let rt = archival::Runtime {
+                boot: "negative-runtime".into(),
+                mono: 1000,
+                utc: UtcMillis(1000),
+                after_ms: 60000,
+                host_generation: 0,
+                coherent: true,
+                valid_until_mono: None,
+                legacy_source: Some("covered-source".into()),
+            };
+            super::tick(&mut db, &rt);
+            let ticket = archival::observation_ticket(&db, "i", "s", &rt)
+                .unwrap()
+                .unwrap();
+            let sample = cli
+                .observe_current_target_for_archival(&target, &ticket.host_context(context.budget))
+                .unwrap();
+            peer.settle();
+            std::fs::remove_file(&peer.socket).unwrap();
+            assert!(peer.errors.lock().unwrap().is_empty());
+            assert!(!peer.socket.exists());
+            assert_eq!(sample.0.ui, want_ui, "{kind}");
+            assert!(sample.0.occupant.is_none());
+            assert_eq!(
+                peer.methods
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|m| m.as_str() == "agent.read")
+                    .count(),
+                usize::from(want_read)
+            );
+            assert!(
+                !archival::record_sample(&mut db, &ticket, &rt, &sample).unwrap(),
+                "parser/refusal {kind}"
+            );
+            assert!(!super::archived(&db));
+        }
+    }
+
+    pub(super) fn run_both_captured_grammars() {
+        let observations = [
+            (
+                "claude",
+                one_case(
+                    "claude",
+                    include_str!(
+                        "../../docs/evidence/poke-spike/captures/claude-q1-empty.read-detection.txt"
+                    ),
+                ),
+            ),
+            (
+                "codex",
+                one_case(
+                    "codex",
+                    include_str!(
+                        "../../docs/evidence/poke-spike/captures/codex-q6-workers.read-detection.txt"
+                    ),
+                ),
+            ),
+        ];
+        // Delayed assertion ensures BOTH captured grammars reach the deciding
+        // consumer on BASE, and both owned servers are joined before RED.
+        assert!(
+            observations.iter().all(|(_, accepted)| *accepted),
+            "actual unchanged None-occupant native envelopes must qualify first canonical samples: {observations:?}"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_archival_none_occupant_reaches_canonical_sample() {
+    archival_actual_producer_base_fixture::run_both_captured_grammars();
+}
+
+#[test]
+fn archival_registry_scaffold_builtin_semantics_are_equal() {
+    use herdr_threads::{
+        harness::registry, ports::HostUiState, test_support::archival_composer_fixture as injected,
+    };
+    let mut a = fixture();
+    let b = fixture();
+    thread(&a);
+    thread(&b);
+    joined_agent(&a);
+    joined_agent(&b);
+    ordinary(&a);
+    ordinary(&b);
+    let rt = runtime(0);
+    let r = registry::builtins();
+    assert_eq!(
+        archival::advance(&a, "i", &rt).unwrap(),
+        injected::advance(&b, "i", &rt, r).unwrap()
+    );
+    let ta = archival::observation_ticket(&a, "i", "s", &rt)
+        .unwrap()
+        .unwrap();
+    let tb = injected::ticket(&b, "i", "s", &rt, r).unwrap().unwrap();
+    assert_eq!((ta.target(), ta.seat()), (tb.target(), tb.seat()));
+    assert_eq!(
+        archival::record_sample(&mut a, &ta, &rt, &sample(0, HostUiState::Idle)).unwrap(),
+        injected::sample(&b, &tb, &rt, &sample(0, HostUiState::Idle), r).unwrap()
+    );
+    let na = archival::next_observation(&a, "i", &rt).unwrap();
+    let nb = injected::next(&b, "i", &rt, r).unwrap();
+    assert_eq!(
+        na.as_ref().map(|t| (t.target(), t.seat())),
+        nb.as_ref().map(|t| (t.target(), t.seat()))
+    );
+    for table in ["seat_archival", "channel_archival", "archival_instances"] {
+        fn rows(db: &Connection, table: &str) -> Vec<Vec<rusqlite::types::Value>> {
+            let mut st = db
+                .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+                .unwrap();
+            let n = st.column_count();
+            st.query_map([], |r| (0..n).map(|i| r.get(i)).collect())
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        }
+        assert_eq!(
+            rows(&a, table),
+            rows(&b, table),
+            "same canonical state for {table}"
+        );
+    }
+}
+#[test]
+fn registered_composer_archival_ticket_and_scheduler_preserve_identity() {
+    use herdr_threads::{harness::registry, test_support::archival_composer_fixture as injected};
+    let db = fixture();
+    thread(&db);
+    joined_agent(&db);
+    ordinary(&db);
+    db.execute(
+        "UPDATE occupant_bindings SET harness='synthetic_fourth' WHERE seat_id='s'",
+        [],
+    )
+    .unwrap();
+    let rt = runtime(0);
+    let r = injected::registry();
+    assert_eq!(
+        r.agent("synthetic_fourth").unwrap(),
+        registry::builtins().agent("synthetic_fourth").unwrap()
+    );
+    assert!(
+        registry::builtins()
+            .by_id(registry::builtins().agent("synthetic_fourth").unwrap())
+            .unwrap()
+            .composer_policy()
+            .is_none()
+    );
+    assert!(
+        r.by_host_kind("synthetic_fourth_alias")
+            .unwrap()
+            .composer_policy()
+            .is_some()
+    );
+    injected::advance(&db, "i", &rt, r).unwrap();
+    let ticket = injected::ticket(&db, "i", "s", &rt, r).unwrap();
+    let scheduled = injected::next(&db, "i", &rt, r).unwrap();
+    let next: Option<i64> = db
+        .query_row(
+            "SELECT next_mono FROM seat_archival WHERE seat_id='s'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    eprintln!(
+        "fourth gate witness ticket={} scheduled={} next={next:?}",
+        ticket.is_some(),
+        scheduled.is_some()
+    );
+    assert!(
+        ticket.is_some() && scheduled.is_some() && next.is_some(),
+        "lawful composer registry identity must retain ticket and due scheduling"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn archival_actual_producer_full_grace_and_authority_are_exact() {
+    archival_actual_producer_base_fixture::full_grace_actual_producers();
+}
+#[cfg(target_os = "macos")]
+#[test]
+fn archival_actual_producer_parser_mismatch_and_absence_refuse() {
+    archival_actual_producer_base_fixture::actual_parser_negatives();
+}
+#[test]
+fn archival_registered_binding_and_composer_evidence_neighbors_refuse() {
+    use herdr_threads::{
+        harness::registry, ports::*, test_support::archival_composer_fixture as injected,
+    };
+    for bad in [
+        "no evidence",
+        "wrong parser",
+        "wrong kind",
+        "unreadable",
+        "text",
+        "unsafe",
+        "unknown ui",
+        "conflicting occupant",
+        "unregistered",
+        "managed",
+        "held",
+        "unresolved",
+        "retired",
+        "session",
+        "execution",
+        "generation",
+        "target",
+        "boot",
+        "epoch",
+        "terminal",
+        "incarnation",
+    ] {
+        let mut db = fixture();
+        thread(&db);
+        joined_agent(&db);
+        ordinary(&db);
+        let rt = runtime(0);
+        archival::advance(&db, "i", &rt).unwrap();
+        let ticket = archival::observation_ticket(&db, "i", "s", &rt)
+            .unwrap()
+            .unwrap();
+        let mut value = sample(0, HostUiState::Idle);
+        match bad {
+            "no evidence" => value.1 = None,
+            "wrong parser" => {
+                value.1.as_mut().unwrap().parser = registry::builtins().agent("claude").unwrap()
+            }
+            "wrong kind" => value.1.as_mut().unwrap().reported_host_kind = "claude".into(),
+            "unreadable" => {
+                value.1.as_mut().unwrap().classification = ComposerClassification::Unreadable
+            }
+            "text" => value.1.as_mut().unwrap().classification = ComposerClassification::Text,
+            "unsafe" => value.1.as_mut().unwrap().classification = ComposerClassification::Unsafe,
+            "unknown ui" => value.0.ui = HostUiState::Unknown,
+            "conflicting occupant" => {
+                value.0.occupant = Some(NativeOccupant {
+                    harness: herdr_threads::protocol::authority::Harness::Claude,
+                    session: herdr_threads::protocol::ids::NativeSessionId::new("claim"),
+                    execution: herdr_threads::protocol::ids::ExecutionId::new("claim"),
+                    is_top_level: true,
+                })
+            }
+            "unregistered" => {
+                db.execute("UPDATE occupant_bindings SET registered_at=NULL", [])
+                    .unwrap();
+            }
+            "managed" => {
+                db.execute(
+                    "UPDATE occupant_bindings SET observation_provenance='managed_launch'",
+                    [],
+                )
+                .unwrap();
+            }
+            "held" => {
+                db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('i','p','b',1,'fixture hold')",[]).unwrap();
+            }
+            "unresolved" => {
+                db.execute("UPDATE seats SET state='unresolved'", [])
+                    .unwrap();
+            }
+            "retired" => {
+                db.execute("UPDATE seats SET state='retired',retired_at=1000", [])
+                    .unwrap();
+            }
+            "session" => {
+                db.execute("UPDATE occupant_bindings SET native_session='changed'", [])
+                    .unwrap();
+            }
+            "execution" => {
+                db.execute("UPDATE occupant_bindings SET execution_id='00000000-0000-4000-8000-000000000002'",[]).unwrap();
+            }
+            "generation" => {
+                db.execute("UPDATE seats SET generation=2", []).unwrap();
+            }
+            "target" => {
+                value.0.target = herdr_threads::protocol::ids::HostTargetId::new("different");
+            }
+            "boot" => {
+                value.0.host_boot = herdr_threads::protocol::ids::HostBootId::new("different");
+            }
+            "epoch" => value.0.epoch = 2,
+            "terminal" => {
+                value.0.terminal = Some(herdr_threads::protocol::ids::TerminalId::new("different"))
+            }
+            "incarnation" => {
+                value.0.incarnation = IncarnationEvidence::Verified {
+                    identity: "different".into(),
+                    evidence_kind: EvidenceKind::NativeCurrentTarget,
+                }
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            !archival::record_sample(&mut db, &ticket, &rt, &value).unwrap(),
+            "canonical/evidence refusal {bad}"
+        );
+    }
+    for absent in ["human", "unknown_adapter", "hermes", "synthetic_fourth"] {
+        let db = fixture();
+        thread(&db);
+        joined_agent(&db);
+        ordinary(&db);
+        db.execute("UPDATE occupant_bindings SET harness=?1", [absent])
+            .unwrap();
+        let rt = runtime(0);
+        archival::advance(&db, "i", &rt).unwrap();
+        assert!(
+            archival::observation_ticket(&db, "i", "s", &rt)
+                .unwrap()
+                .is_none()
+        );
+        assert!(archival::next_observation(&db, "i", &rt).unwrap().is_none());
+    }
+    // The same overlay identity is eligible only with its optional provider.
+    assert!(
+        injected::registry()
+            .by_id(injected::registry().agent("synthetic_fourth").unwrap())
+            .unwrap()
+            .composer_policy()
+            .is_some()
+    );
+}
+#[test]
+fn archival_stale_sample_harness_cannot_pass_final_member_scan() {
+    use herdr_threads::ports::HostUiState;
+    let mut db = fixture();
+    thread(&db);
+    joined_agent(&db);
+    ordinary(&db);
+    let mut rt = runtime(0);
+    rt.after_ms = 60000;
+    for at in [0, 60000] {
+        rt.mono = at;
+        rt.utc = UtcMillis(at);
+        archival::advance(&db, "i", &rt).unwrap();
+        let t = archival::observation_ticket(&db, "i", "s", &rt)
+            .unwrap()
+            .unwrap();
+        assert!(archival::record_sample(&mut db, &t, &rt, &sample(at, HostUiState::Idle)).unwrap());
+    }
+    db.execute(
+        "UPDATE seat_archival SET harness='claude' WHERE seat_id='s'",
+        [],
+    )
+    .unwrap();
+    tick(&mut db, &rt);
+    assert!(
+        !archived(&db),
+        "stale sample harness must not qualify exact current binding"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn archival_registered_alias_family_actual_producer_and_poke() {
+    archival_actual_producer_base_fixture::registered_alias_family_actual_producer_and_poke();
+}
+
+// Isolates the deciding consumer guard with explicitly synthetic envelopes.
+// Actual NativeCli closure is exercised separately without rewriting its envelope.
+#[test]
+fn archival_registered_alias_family_canonical_sample() {
+    use herdr_threads::{
+        harness::registry, ports::HostUiState, test_support::archival_composer_fixture as injected,
+    };
+    let r = injected::registry();
+    let mut failures = Vec::new();
+    for (kind, wrong_parser, want_accept) in [
+        (injected::ALIAS_64, false, true),
+        (injected::ALIAS_65, false, true),
+        (injected::ALIAS_CONTROL, false, true),
+        (
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            false,
+            false,
+        ),
+        ("synthetic_fourth\tundeclared", false, false),
+        (injected::ALIAS_65, true, false),
+    ] {
+        let db = fixture();
+        thread(&db);
+        joined_agent(&db);
+        ordinary(&db);
+        db.execute(
+            "UPDATE occupant_bindings SET harness='synthetic_fourth'",
+            [],
+        )
+        .unwrap();
+        let rt = runtime(0);
+        injected::advance(&db, "i", &rt, r).unwrap();
+        let ticket = injected::ticket(&db, "i", "s", &rt, r).unwrap().unwrap();
+        assert!(injected::next(&db, "i", &rt, r).unwrap().is_some());
+        let mut value = sample(0, HostUiState::Idle);
+        let e = value.1.as_mut().unwrap();
+        e.parser = if wrong_parser {
+            registry::builtins().agent("codex").unwrap()
+        } else {
+            r.agent("synthetic_fourth").unwrap()
+        };
+        e.reported_host_kind = kind.into();
+        assert!(value.0.occupant.is_none());
+        let accepted = injected::sample(&db, &ticket, &rt, &value, r).unwrap();
+        eprintln!(
+            "alias-family synthetic-consumer kind={kind:?} bytes={} wrong_parser={wrong_parser} accepted={accepted}",
+            kind.len()
+        );
+        if accepted != want_accept {
+            failures.push(format!(
+                "{kind:?}: accepted={accepted} expected={want_accept}"
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "exact registered aliases must qualify canonical synthetic samples: {failures:?}"
     );
 }

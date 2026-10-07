@@ -8,6 +8,22 @@ use crate::protocol::{ids::ThreadId, results::ErrorCode, service::EventAuthor};
 use crate::protocol::{results::ApiError, time::UtcMillis};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
+/// Private certificates associate parser evidence with canonical bindings only;
+/// they do not attest native execution or grant accountable authority (TRUST A3).
+pub const CANONICAL_BINDING_COMPOSER: &str = "canonical_binding_composer";
+fn eligible_composer(
+    registry: &crate::harness::registry::Registry,
+    harness: &str,
+) -> Option<crate::harness::registry::AgentHarnessId> {
+    registry.agent(harness).ok().filter(|id| {
+        registry
+            .by_id(*id)
+            .ok()
+            .and_then(|r| r.composer_policy())
+            .is_some()
+    })
+}
+
 pub const DEFAULT_AFTER_MS: u64 = 3_600_000;
 pub const CADENCE_MS: i64 = 60_000;
 pub const MAX_GAP_MS: i64 = 120_000;
@@ -46,6 +62,14 @@ pub(crate) fn advance_in(
     instance: &str,
     rt: &Runtime,
 ) -> Result<Progress, ApiError> {
+    advance_in_with_registry(tx, instance, rt, crate::harness::registry::builtins())
+}
+pub(crate) fn advance_in_with_registry(
+    tx: &Transaction<'_>,
+    instance: &str,
+    rt: &Runtime,
+    registry: &crate::harness::registry::Registry,
+) -> Result<Progress, ApiError> {
     if rt.mono < 0 || rt.after_ms < 0 || rt.after_ms > i64::MAX - MAX_GAP_MS {
         return Err(api_error(
             ErrorCode::InvalidRequest,
@@ -70,8 +94,15 @@ pub(crate) fn advance_in(
         "SELECT thread_id FROM channel_archival WHERE instance_id=?1 AND enabled=1 AND due_mono<=?2 ORDER BY due_mono,thread_id LIMIT 1",
         params![instance,rt.mono], |r|r.get(0)).optional().map_err(store_error)?;
     if let Some(thread) = candidate {
-        progress.visited =
-            advance_channel(tx, instance, &thread, rt, epoch, &mut progress.archived)?;
+        progress.visited = advance_channel(
+            tx,
+            instance,
+            &thread,
+            rt,
+            epoch,
+            &mut progress.archived,
+            registry,
+        )?;
         progress.has_more |= tx.query_row("SELECT EXISTS(SELECT 1 FROM channel_archival WHERE instance_id=?1 AND enabled=1 AND due_mono<=?2)",params![instance,rt.mono],|r|r.get::<_,bool>(0)).map_err(store_error)?;
     }
     Ok(progress)
@@ -182,6 +213,7 @@ fn advance_channel(
     rt: &Runtime,
     epoch: i64,
     archived: &mut Vec<String>,
+    registry: &crate::harness::registry::Registry,
 ) -> Result<usize, ApiError> {
     type ChannelColumns = (
         Option<i64>,
@@ -224,7 +256,7 @@ fn advance_channel(
         return Ok(1);
     }
     let (visited, exhausted, blocked) = match phase {
-        0 => scan_members(tx, instance, thread, rt, epoch, cursor)?,
+        0 => scan_members(tx, instance, thread, rt, epoch, cursor, registry)?,
         1 => scan_invitations(tx, thread, cursor)?,
         2 => scan_receipts(tx, thread)?,
         3 => scan_preparations(tx, thread)?,
@@ -273,6 +305,7 @@ fn scan_members(
     rt: &Runtime,
     epoch: i64,
     cursor: i64,
+    registry: &crate::harness::registry::Registry,
 ) -> Result<(usize, bool, bool), ApiError> {
     let mut statement=tx.prepare("SELECT ordinal,seat_id FROM memberships WHERE thread_id=?1 AND state='joined' AND ordinal>?2 ORDER BY ordinal LIMIT ?3").map_err(store_error)?;
     let rows = statement
@@ -283,10 +316,13 @@ fn scan_members(
         .collect::<Result<Vec<_>, _>>()
         .map_err(store_error)?;
     for (ordinal, seat) in &rows {
-        let qualified:Option<i64>=tx.query_row("SELECT a.last_mono FROM seat_archival a JOIN seats s ON s.id=a.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL JOIN host_instances h ON h.id=s.instance_id WHERE a.seat_id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=a.binding_generation AND s.target_generation=a.target_generation AND s.target_id=a.target_id AND b.generation=a.binding_generation AND b.registered_at IS NOT NULL AND b.harness IN ('claude','codex') AND b.observation_provenance='cooperative_top_level' AND b.native_session=a.native_session AND b.execution_id=a.execution AND h.host_boot=a.host_boot AND h.host_epoch=a.host_epoch AND a.runtime_boot=?3 AND a.evidence_epoch=?4 AND a.samples>=2 AND a.idle_mono<=?5 AND a.last_mono>=?6 AND a.last_mono<=?7 AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.instance_id=s.instance_id AND rh.target_id=s.target_id AND rh.released_at IS NULL)",params![seat,instance,rt.boot,epoch,rt.mono.saturating_sub(rt.after_ms),rt.mono.saturating_sub(MAX_GAP_MS),rt.mono],|r|r.get(0)).optional().map_err(store_error)?.flatten();
-        let Some(last) = qualified else {
+        let qualified:Option<(i64,String)>=tx.query_row("SELECT a.last_mono,b.harness FROM seat_archival a JOIN seats s ON s.id=a.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL JOIN host_instances h ON h.id=s.instance_id WHERE a.seat_id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=a.binding_generation AND s.target_generation=a.target_generation AND s.target_id=a.target_id AND b.generation=a.binding_generation AND b.registered_at IS NOT NULL AND b.harness=a.harness AND b.observation_provenance='cooperative_top_level' AND b.native_session=a.native_session AND b.execution_id=a.execution AND h.host_boot=a.host_boot AND h.host_epoch=a.host_epoch AND a.runtime_boot=?3 AND a.evidence_epoch=?4 AND a.samples>=2 AND a.idle_mono<=?5 AND a.last_mono>=?6 AND a.last_mono<=?7 AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.instance_id=s.instance_id AND rh.target_id=s.target_id AND rh.released_at IS NULL)",params![seat,instance,rt.boot,epoch,rt.mono.saturating_sub(rt.after_ms),rt.mono.saturating_sub(MAX_GAP_MS),rt.mono],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(store_error)?;
+        let Some((last, harness)) = qualified else {
             return Ok((rows.len(), false, true));
         };
+        if eligible_composer(registry, &harness).is_none() {
+            return Ok((rows.len(), false, true));
+        }
         // Structural snapshots may supersede an inspected current-target sample;
         // they cannot grant idle evidence, but a conflicting canonical identity
         // or newer nonidle read must invalidate it.
@@ -475,11 +511,20 @@ pub fn observation_ticket(
     seat: &str,
     rt: &Runtime,
 ) -> Result<Option<ObservationTicket>, ApiError> {
+    observation_ticket_with_registry(db, instance, seat, rt, crate::harness::registry::builtins())
+}
+pub(crate) fn observation_ticket_with_registry(
+    db: &Connection,
+    instance: &str,
+    seat: &str,
+    rt: &Runtime,
+    registry: &crate::harness::registry::Registry,
+) -> Result<Option<ObservationTicket>, ApiError> {
     use crate::protocol::{
         authority::{CallerClaim, CallerRole, Harness},
         ids::*,
     };
-    let row=db.query_row("SELECT s.target_id,b.generation,b.harness,b.native_session,b.execution_id,a.activity_revision,ai.runtime_boot,ai.evidence_epoch FROM seats s JOIN seat_archival a ON a.seat_id=s.id JOIN archival_instances ai ON ai.instance_id=s.instance_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND b.registered_at IS NOT NULL AND b.observation_provenance='cooperative_top_level' AND b.harness IN ('codex','claude')",params![seat,instance],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,i64>(5)?,r.get::<_,String>(6)?,r.get::<_,i64>(7)?))).optional().map_err(store_error)?;
+    let row=db.query_row("SELECT s.target_id,b.generation,b.harness,b.native_session,b.execution_id,a.activity_revision,ai.runtime_boot,ai.evidence_epoch FROM seats s JOIN seat_archival a ON a.seat_id=s.id JOIN archival_instances ai ON ai.instance_id=s.instance_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND b.registered_at IS NOT NULL AND b.observation_provenance='cooperative_top_level'",params![seat,instance],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,i64>(5)?,r.get::<_,String>(6)?,r.get::<_,i64>(7)?))).optional().map_err(store_error)?;
     let Some((
         target,
         generation,
@@ -493,16 +538,15 @@ pub fn observation_ticket(
     else {
         return Ok(None);
     };
+    let Some(agent) = eligible_composer(registry, &harness) else {
+        return Ok(None);
+    };
     let claim = CallerClaim {
         instance: instance.into(),
         seat: SeatId::new(seat),
         binding_generation: generation as u64,
         role: CallerRole::TopLevel,
-        harness: if harness == "codex" {
-            Harness::Codex
-        } else {
-            Harness::Claude
-        },
+        harness: Harness::Agent(agent),
         native_session: NativeSessionId::new(session),
         execution: ExecutionId::new(execution),
         target: HostTargetId::new(target),
@@ -542,6 +586,14 @@ pub(crate) fn next_observation_in(
     instance: &str,
     rt: &Runtime,
 ) -> Result<Option<ObservationTicket>, ApiError> {
+    next_observation_in_with_registry(tx, instance, rt, crate::harness::registry::builtins())
+}
+pub(crate) fn next_observation_in_with_registry(
+    tx: &Transaction<'_>,
+    instance: &str,
+    rt: &Runtime,
+    registry: &crate::harness::registry::Registry,
+) -> Result<Option<ObservationTicket>, ApiError> {
     let mut statement=tx.prepare("SELECT seat_id FROM seat_archival WHERE instance_id=?1 AND next_mono<=?2 ORDER BY next_mono,seat_id LIMIT ?3").map_err(store_error)?;
     let rows = statement
         .query_map(params![instance, rt.mono, PAGE as i64], |r| {
@@ -558,9 +610,12 @@ pub(crate) fn next_observation_in(
             params![seat, rt.mono.saturating_add(CADENCE_MS)],
         )
         .map_err(store_error)?;
-        let active:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL WHERE s.id=?1 AND s.state='resolved' AND b.registered_at IS NOT NULL AND b.observation_provenance='cooperative_top_level' AND b.harness IN ('codex','claude') AND EXISTS(SELECT 1 FROM memberships INDEXED BY memberships_archival_joined_seat WHERE seat_id=s.id AND state='joined'))",[&seat],|r|r.get(0)).map_err(store_error)?;
+        let active_harness:Option<String>=tx.query_row("SELECT b.harness FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL WHERE s.id=?1 AND s.state='resolved' AND b.registered_at IS NOT NULL AND b.observation_provenance='cooperative_top_level' AND EXISTS(SELECT 1 FROM memberships INDEXED BY memberships_archival_joined_seat WHERE seat_id=s.id AND state='joined')",[&seat],|r|r.get(0)).optional().map_err(store_error)?;
+        let active = active_harness
+            .as_deref()
+            .is_some_and(|h| eligible_composer(registry, h).is_some());
         if active {
-            selected = observation_ticket(tx, instance, &seat, rt)?;
+            selected = observation_ticket_with_registry(tx, instance, &seat, rt, registry)?;
         }
         if selected.is_some() {
             break;
@@ -608,6 +663,15 @@ pub(crate) fn record_sample_in(
     rt: &Runtime,
     sample: &ComposerObservation,
 ) -> Result<bool, ApiError> {
+    record_sample_in_with_registry(tx, ticket, rt, sample, crate::harness::registry::builtins())
+}
+pub(crate) fn record_sample_in_with_registry(
+    tx: &Transaction<'_>,
+    ticket: &ObservationTicket,
+    rt: &Runtime,
+    sample: &ComposerObservation,
+    registry: &crate::harness::registry::Registry,
+) -> Result<bool, ApiError> {
     let claim = &ticket.claim;
     let epoch = reconcile_runtime(tx, &claim.instance, rt)?;
     let observation = &sample.0;
@@ -626,10 +690,16 @@ pub(crate) fn record_sample_in(
         && ticket.evidence_epoch == epoch
         && ticket.activity_revision == activity
         && observation.ui == crate::ports::HostUiState::Idle
-        && observation
-            .occupant
-            .as_ref()
-            .is_some_and(|occupant| occupant.harness == claim.harness)
+        && eligible_composer(registry,claim.harness.as_str()).is_some_and(|agent| {
+            sample.1.as_ref().is_some_and(|e| {
+                e.parser==agent && e.classification==crate::ports::ComposerClassification::Empty
+                && e.basis==crate::ports::ComposerEvidenceBasis::RegisteredHostKindComposerRead
+                // Exact static alias membership agrees with the real producer.
+                && registry.by_host_kind(&e.reported_host_kind).is_some_and(|r|r.metadata().id==agent.as_str())
+            })
+        })
+        && observation.occupant.as_ref().is_none_or(|occupant|occupant.harness==claim.harness)
+        && tx.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND ended_at IS NULL AND registered_at IS NOT NULL AND observation_provenance='cooperative_top_level')",params![claim.seat.as_str(),claim.binding_generation as i64],|r|r.get::<_,bool>(0)).map_err(store_error)?
         && observation.completed_at_mono.0 <= rt.mono as u64
         && observation.started_at_mono.0 >= rt.mono.saturating_sub(5_000).max(0) as u64
         && proof.as_ref().zip(mapping.as_ref()).is_some_and(|(p, m)| {

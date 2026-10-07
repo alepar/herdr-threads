@@ -2866,7 +2866,28 @@ pub enum AgentComposerState {
 /// Explicit adapter contract for a current structural observation plus composer
 /// classification. Plain current-target reads and snapshots never imply this.
 #[derive(Debug, Clone)]
-pub struct ComposerObservation(pub HostObservation);
+pub struct ComposerObservation(pub HostObservation, pub Option<RegisteredComposerEvidence>);
+
+/// Parser choice from the same fresh, validated detection read. This is not
+/// occupancy, execution, liveness or caller authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposerClassification {
+    Empty,
+    Text,
+    Unsafe,
+    Unreadable,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposerEvidenceBasis {
+    RegisteredHostKindComposerRead,
+}
+#[derive(Debug, Clone)]
+pub struct RegisteredComposerEvidence {
+    pub parser: crate::harness::registry::AgentHarnessId,
+    pub reported_host_kind: String,
+    pub classification: ComposerClassification,
+    pub basis: ComposerEvidenceBasis,
+}
 
 pub trait HostPort: Send + Sync {
     /// Adapter-owned, verified support; callers cannot assert a launch capability.
