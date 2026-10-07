@@ -822,9 +822,8 @@ fn verb_name(verb: SetupVerb) -> &'static str {
 ///   or not the harness is still on PATH (removal never depends on it).
 /// - `setup-status` reports both harnesses.
 ///
-/// `exit_status` is that of the first harness that `failed`, else 0. An
-/// undetectable Herdr instance is refused up front (status 2) whenever a
-/// harness would be written.
+/// `exit_status` is that of the first harness that `failed`, else 0. Each
+/// provider enforces its own local requirements before writing its files.
 pub fn execute_all(
     verb: SetupVerb,
     prompt_suggestions: PromptSuggestionPolicy,
@@ -871,45 +870,32 @@ pub fn execute_all_registered(
             )
         })
         .collect();
-    let eligible = |registration: &&crate::harness::registry::Registration| {
-        registration
+    let mut entries = Vec::new();
+    let mut exit_status = 0;
+    let mut trust_reminder = Value::Null;
+    let mut trust_reminders = Vec::new();
+    for (registration, harness, binary) in found {
+        let name = harness_name(harness);
+        let mut entry = json!({"harness": name, "detected": binary.is_some()});
+        if registration
+            .metadata()
+            .setup_scopes
+            .iter()
+            .any(|scope| matches!(scope, crate::harness::adapter::SetupScopeKind::Profile))
+        {
+            entry["outcome"] = json!("skipped");
+            entry["reason"] = json!("requires explicit harness selection for a profile scope");
+            entries.push(entry);
+            continue;
+        }
+        if !registration
             .metadata()
             .setup_scopes
             .iter()
             .any(|scope| matches!(scope, crate::harness::adapter::SetupScopeKind::ConfigRoot))
-            && !registration
-                .metadata()
-                .setup_scopes
-                .iter()
-                .any(|scope| matches!(scope, crate::harness::adapter::SetupScopeKind::Profile))
-    };
-    match verb {
-        SetupVerb::Install => {
-            if let Some((_, harness, _)) = found
-                .iter()
-                .find(|(registration, _, binary)| eligible(registration) && binary.is_some())
-            {
-                env.hook_argv(*harness)?;
-            }
-        }
-        SetupVerb::Remove
-            if found
-                .iter()
-                .any(|(registration, _, _)| eligible(registration)) =>
         {
-            env.state_dir()?;
-        }
-        _ => {}
-    }
-    let mut entries = Vec::new();
-    let mut exit_status = 0;
-    let mut trust_reminder = Value::Null;
-    for (registration, harness, binary) in found {
-        let name = harness_name(harness);
-        let mut entry = json!({"harness": name, "detected": binary.is_some()});
-        if !eligible(&registration) {
             entry["outcome"] = json!("skipped");
-            entry["reason"] = json!("requires explicit harness selection for a profile scope");
+            entry["reason"] = json!("local setup unavailable");
             entries.push(entry);
             continue;
         }
@@ -948,9 +934,12 @@ pub fn execute_all_registered(
                 if verb == SetupVerb::Install
                     && let Some(trust) = report["trust"].as_object_mut()
                 {
-                    // Printed once for the whole run (`trust_reminder`).
+                    // Preserve the producer; the scalar is Codex compatibility only.
                     if let Some(note) = trust.remove("note") {
-                        trust_reminder = note;
+                        if name == "codex" {
+                            trust_reminder = note.clone();
+                        }
+                        trust_reminders.push(json!({"harness": name, "note": note}));
                     }
                 }
                 entry["report"] = report;
@@ -979,12 +968,12 @@ pub fn execute_all_registered(
         }),
         "harnesses": entries,
         "trust_reminder": trust_reminder,
+        "trust_reminders": trust_reminders,
         "exit_status": exit_status,
     }))
 }
 
-/// One summary line per harness, its warnings, then the Codex trust
-/// reminder once.
+/// One summary line per harness, its warnings, then each provider's trust advice once.
 pub fn render_all_text(report: &Value) -> String {
     let mut out = String::new();
     let mut warnings = Vec::new();
@@ -1075,7 +1064,22 @@ pub fn render_all_text(report: &Value) -> String {
     if report["action"] == "install_all" {
         out.push_str("installed is not observed: run `herdr-threads doctor` for native evidence\n");
     }
-    if let Some(note) = report["trust_reminder"].as_str() {
+    if let Some(reminders) = report["trust_reminders"].as_array() {
+        for reminder in reminders {
+            if let Some(note) = reminder["note"].as_str() {
+                let prefix = if reminder["harness"] == "codex" {
+                    "codex hook trust".to_owned()
+                } else {
+                    format!("{} setup trust", scalar(&reminder["harness"]))
+                };
+                out.push_str(&format!("{prefix}: {}\n", scalar(&json!(note))));
+            }
+        }
+    } else if !report
+        .as_object()
+        .is_some_and(|report| report.contains_key("trust_reminders"))
+        && let Some(note) = report["trust_reminder"].as_str()
+    {
         out.push_str(&format!("codex hook trust: {}\n", scalar(&json!(note))));
     }
     out

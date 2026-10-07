@@ -1267,6 +1267,8 @@ mod tests {
         event_id: &'static str,
         harness: OnceLock<AgentHarnessId>,
         offers: std::sync::Mutex<Vec<String>>,
+        setup_advice: Option<serde_json::Value>,
+        setup_unsupported: bool,
     }
     impl HarnessAdapter for TestAdapter {
         type Admission = usize;
@@ -1392,6 +1394,13 @@ mod tests {
             request: &SetupRequest,
             _: &CallBudget,
         ) -> Result<SetupOutcome, SetupFailure> {
+            if self.setup_unsupported {
+                return Err(SetupFailure::Api(
+                    crate::protocol::results::ApiError::unsupported_harness(
+                        "fixture setup unavailable",
+                    ),
+                ));
+            }
             let root = local_root(&request.scope);
             std::fs::create_dir_all(root).map_err(SetupFailure::Io)?;
             let bytes = request
@@ -1401,11 +1410,15 @@ mod tests {
                 .unwrap()
                 .as_encoded_bytes();
             std::fs::write(root.join("owned"), bytes).map_err(SetupFailure::Io)?;
+            let mut projection = serde_json::json!({"action":"installed", "executable":request.executable, "native_binary":request.native_binary, "toggle":request.options.get("toggle"), "cwd_bytes":request.environment.cwd.as_os_str().as_encoded_bytes(), "path_bytes":request.environment.path.as_ref().map(|path| path.as_encoded_bytes()), "home_bytes":request.environment.home.as_ref().map(|home| home.as_encoded_bytes())});
+            if let Some(note) = &self.setup_advice {
+                projection["trust"] = serde_json::json!({"note": note, "hooks": ["owned-hook"], "provider_field": "preserved"});
+            }
             Ok(SetupOutcome {
                 actions: vec![SetupAction::InstalledOwned],
                 diagnostic: String::new(),
                 diagnostics: vec![],
-                projection: serde_json::json!({"action":"installed", "executable":request.executable, "native_binary":request.native_binary, "toggle":request.options.get("toggle"), "cwd_bytes":request.environment.cwd.as_os_str().as_encoded_bytes(), "path_bytes":request.environment.path.as_ref().map(|path| path.as_encoded_bytes()), "home_bytes":request.environment.home.as_ref().map(|home| home.as_encoded_bytes())}),
+                projection,
             })
         }
         fn status(&self, request: &StatusRequest, _: &CallBudget) -> SetupStatus {
@@ -1629,6 +1642,8 @@ mod tests {
                 event_id: "codex",
                 harness: OnceLock::new(),
                 offers: std::sync::Mutex::new(vec![]),
+                setup_advice: None,
+                setup_unsupported: false,
             })) as &'static TestAdapter
         };
         let first = root_fixture("first", "First", &["first"]);
@@ -1700,6 +1715,8 @@ mod tests {
                 event_id: "codex",
                 harness: OnceLock::new(),
                 offers: std::sync::Mutex::new(vec![]),
+                setup_advice: None,
+                setup_unsupported: false,
             }));
             let registry = registry(&[adapter]).unwrap();
             let environment = SetupEnvironment {
@@ -1727,6 +1744,479 @@ mod tests {
                 );
             }
         }
+    }
+
+    // These fixtures exercise aggregate dispatch, not native executable loading.
+    struct AggregateScratch(std::path::PathBuf);
+    impl AggregateScratch {
+        fn new() -> Self {
+            let root =
+                std::env::temp_dir().join(format!("adapter-optional-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&root).unwrap();
+            std::fs::create_dir(root.join("bin")).unwrap();
+            Self(root)
+        }
+        fn environment(&self, ids: &[&str]) -> SetupEnvironment {
+            use std::os::unix::fs::PermissionsExt;
+            let binary = self.0.join("bin/sentinel");
+            std::fs::write(&binary, "#!/bin/sh\n: > \"${0%/*}/invoked\"\nexit 99\n").unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let mut environment = SetupEnvironment {
+                executable: self.0.join("owned-plugin"),
+                cwd: self.0.clone(),
+                home: Some(self.0.join("home").into_os_string()),
+                path: Some(self.0.join("bin").into_os_string()),
+                ..Default::default()
+            };
+            environment
+                .declared
+                .insert("LOCAL_INPUT".into(), "captured bytes".into());
+            for id in ids {
+                environment
+                    .config_roots
+                    .insert((*id).into(), self.0.join(id));
+            }
+            environment
+        }
+    }
+    impl Drop for AggregateScratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn aggregate_fixture(
+        id: &'static str,
+        spelling: &'static str,
+        scopes: &'static [SetupScopeKind],
+        advice: Option<serde_json::Value>,
+    ) -> &'static TestAdapter {
+        Box::leak(Box::new(TestAdapter {
+            metadata: Box::leak(Box::new(AdapterMetadata {
+                setup_scopes: scopes,
+                executable: ExecutableLookup::Path("sentinel"),
+                budget: EventBudgetPolicy {
+                    lifecycle_ms: 5,
+                    observer_ms: 2,
+                },
+                ..*fixture(id, spelling, &[], &[]).metadata
+            })),
+            calls: AtomicUsize::new(0),
+            event_id: "codex",
+            harness: OnceLock::new(),
+            offers: std::sync::Mutex::new(vec![]),
+            setup_advice: advice,
+            setup_unsupported: false,
+        }))
+    }
+    #[test]
+    fn aggregate_optional_root_without_host_state_reaches_provider() {
+        use crate::cli::setup::{
+            PromptSuggestionPolicy, SetupVerb, execute_all_registered, execute_registered,
+        };
+        let scratch = AggregateScratch::new();
+        let adapter = aggregate_fixture(
+            "independent",
+            "Independent",
+            &[SetupScopeKind::ConfigRoot],
+            None,
+        );
+        let registry = registry(&[adapter]).unwrap();
+        let mut environment = scratch.environment(&["independent"]);
+        assert!(environment.state_dir.is_none());
+        assert!(environment.host_endpoint.is_none());
+        let registration = registry
+            .by_id(registry.agent("independent").unwrap())
+            .unwrap();
+        // Named dispatch is a neighboring positive, with the very same provider.
+        let named = execute_registered(
+            registration,
+            SetupVerb::Install,
+            &Default::default(),
+            None,
+            Default::default(),
+            &environment,
+        )
+        .unwrap();
+        assert_eq!(named["action"], "installed");
+        std::fs::remove_file(scratch.0.join("independent/owned")).unwrap();
+        let installed = execute_all_registered(
+            &registry,
+            SetupVerb::Install,
+            PromptSuggestionPolicy::Ask,
+            &environment,
+        )
+        .expect("independent ConfigRoot provider must not require host state");
+        assert_eq!(installed["exit_status"], 0);
+        assert_eq!(installed["harnesses"][0]["harness"], "independent");
+        assert_eq!(installed["harnesses"][0]["outcome"], "installed");
+        assert_eq!(
+            std::fs::read(scratch.0.join("independent/owned")).unwrap(),
+            b"captured bytes"
+        );
+        assert!(installed["harnesses"][0]["report"]["foreground"].is_null());
+        std::fs::remove_file(scratch.0.join("bin/sentinel")).unwrap();
+        environment.path = None;
+        let status = execute_all_registered(
+            &registry,
+            SetupVerb::Status,
+            PromptSuggestionPolicy::Ask,
+            &environment,
+        )
+        .unwrap();
+        assert_eq!(
+            status["harnesses"][0]["report"],
+            serde_json::json!({"action":"status", "installed":true})
+        );
+        assert_eq!(status["harnesses"][0]["detected"], false);
+        let removed = execute_all_registered(
+            &registry,
+            SetupVerb::Remove,
+            PromptSuggestionPolicy::Ask,
+            &environment,
+        )
+        .unwrap();
+        assert_eq!(removed["harnesses"][0]["outcome"], "removed");
+        assert_eq!(removed["exit_status"], 0);
+        assert!(!scratch.0.join("independent/owned").exists());
+        assert!(!scratch.0.join("bin/invoked").exists());
+        assert!(!scratch.0.join("state").exists());
+    }
+    #[test]
+    fn aggregate_trust_notes_preserve_producer_through_text() {
+        use crate::cli::setup::{
+            PromptSuggestionPolicy, SetupVerb, execute_all_registered, render_all_text,
+        };
+        let scratch = AggregateScratch::new();
+        let first = aggregate_fixture(
+            "first_advice",
+            "FirstAdvice",
+            &[SetupScopeKind::ConfigRoot],
+            Some(serde_json::json!("first manual review")),
+        );
+        let second = aggregate_fixture(
+            "second_advice",
+            "SecondAdvice",
+            &[SetupScopeKind::ConfigRoot],
+            Some(serde_json::json!("second manual review")),
+        );
+        let mut environment = scratch.environment(&["first_advice", "second_advice"]);
+        // Isolate provenance from the independent dependency defect: old preflight
+        // gets valid synthetic paths. There is no socket listener or connection.
+        environment.state_dir = Some(scratch.0.join("state"));
+        environment.host_endpoint = Some(scratch.0.join("host.sock"));
+        for adapters in [[first, second], [second, first]] {
+            let registry = registry(&adapters).unwrap();
+            let report = execute_all_registered(
+                &registry,
+                SetupVerb::Install,
+                PromptSuggestionPolicy::Ask,
+                &environment,
+            )
+            .unwrap();
+            let expected = if adapters[0].metadata.id == "first_advice" {
+                serde_json::json!([{"harness":"first_advice","note":"first manual review"},{"harness":"second_advice","note":"second manual review"}])
+            } else {
+                serde_json::json!([{"harness":"second_advice","note":"second manual review"},{"harness":"first_advice","note":"first manual review"}])
+            };
+            assert_eq!(
+                report["trust_reminders"], expected,
+                "both producer identities must survive aggregation"
+            );
+            assert!(report["trust_reminder"].is_null());
+            let text = render_all_text(&report);
+            assert_eq!(
+                text.matches("first_advice setup trust: first manual review\n")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                text.matches("second_advice setup trust: second manual review\n")
+                    .count(),
+                1
+            );
+            assert!(!text.contains("codex hook trust:"));
+            assert!(
+                text.find(&format!("{} setup trust:", adapters[0].metadata.id))
+                    .unwrap()
+                    < text
+                        .find(&format!("{} setup trust:", adapters[1].metadata.id))
+                        .unwrap()
+            );
+            for entry in report["harnesses"].as_array().unwrap() {
+                assert!(entry["report"]["trust"]["note"].is_null());
+                assert_eq!(
+                    entry["report"]["trust"]["hooks"],
+                    serde_json::json!(["owned-hook"])
+                );
+                assert_eq!(entry["report"]["trust"]["provider_field"], "preserved");
+            }
+        }
+        assert!(!scratch.0.join("bin/invoked").exists());
+        assert!(!scratch.0.join("state").exists());
+    }
+
+    #[test]
+    fn aggregate_trust_custom_codex_nonstring_and_old_report_boundaries() {
+        use crate::cli::setup::{
+            PromptSuggestionPolicy, SetupVerb, execute_all_registered, render_all_text,
+        };
+        let scratch = AggregateScratch::new();
+        let mut environment = scratch.environment(&["custom", "codex", "silent", "structured"]);
+        environment.state_dir = Some(scratch.0.join("state"));
+        environment.host_endpoint = Some(scratch.0.join("host.sock"));
+        let custom = aggregate_fixture(
+            "custom",
+            "Custom",
+            &[SetupScopeKind::ConfigRoot],
+            Some(serde_json::json!("review\n\u{202e}\u{0001} safely")),
+        );
+        let codex = aggregate_fixture(
+            "codex",
+            "Codex",
+            &[SetupScopeKind::ConfigRoot],
+            Some(serde_json::json!("Codex manual review")),
+        );
+        let silent = aggregate_fixture("silent", "Silent", &[SetupScopeKind::ConfigRoot], None);
+        let structured = aggregate_fixture(
+            "structured",
+            "Structured",
+            &[SetupScopeKind::ConfigRoot],
+            Some(serde_json::json!({"manual":true})),
+        );
+        for adapters in [
+            vec![custom],
+            vec![codex],
+            vec![silent],
+            vec![structured],
+            vec![codex, custom],
+            vec![custom, codex],
+        ] {
+            let registry = registry(&adapters).unwrap();
+            let report = execute_all_registered(
+                &registry,
+                SetupVerb::Install,
+                PromptSuggestionPolicy::Ask,
+                &environment,
+            )
+            .unwrap();
+            let text = render_all_text(&report);
+            let has_codex = adapters
+                .iter()
+                .any(|adapter| adapter.metadata.id == "codex");
+            assert_eq!(
+                report["trust_reminder"],
+                if has_codex {
+                    serde_json::json!("Codex manual review")
+                } else {
+                    serde_json::Value::Null
+                }
+            );
+            assert_eq!(
+                text.matches("codex hook trust: Codex manual review\n")
+                    .count(),
+                usize::from(has_codex)
+            );
+            if adapters
+                .iter()
+                .any(|adapter| adapter.metadata.id == "custom")
+            {
+                assert_eq!(text.matches("custom setup trust:").count(), 1);
+                assert!(!text.contains('\u{202e}'));
+                assert!(!text.contains('\u{0001}'));
+                assert!(!text.contains("custom setup trust: review\n"));
+                assert!(text.contains("safely"));
+            }
+            if adapters[0].metadata.id == "silent" {
+                assert_eq!(report["trust_reminders"], serde_json::json!([]));
+                assert!(!text.contains("setup trust:"));
+            }
+            if adapters[0].metadata.id == "structured" {
+                assert_eq!(
+                    report["trust_reminders"],
+                    serde_json::json!([{"harness":"structured","note":{"manual":true}}])
+                );
+                assert!(!text.contains("setup trust:"));
+            }
+            let mut old_report = report.clone();
+            old_report
+                .as_object_mut()
+                .unwrap()
+                .remove("trust_reminders");
+            assert_eq!(
+                render_all_text(&old_report)
+                    .matches("codex hook trust:")
+                    .count(),
+                usize::from(has_codex)
+            );
+            let mut collection_wins = report;
+            collection_wins["trust_reminder"] = serde_json::json!("stale fallback");
+            assert!(!render_all_text(&collection_wins).contains("stale fallback"));
+        }
+        assert!(!scratch.0.join("bin/invoked").exists());
+        assert!(!scratch.0.join("state").exists());
+    }
+
+    #[test]
+    fn aggregate_optional_scopes_and_missing_path_skip_before_resolver() {
+        use crate::cli::setup::{PromptSuggestionPolicy, SetupVerb, execute_all_registered};
+        let scratch = AggregateScratch::new();
+        let environment = scratch.environment(&[]);
+        for (scopes, reason) in [
+            (&[][..], "local setup unavailable"),
+            (
+                &[SetupScopeKind::Profile][..],
+                "requires explicit harness selection for a profile scope",
+            ),
+            (
+                &[SetupScopeKind::ConfigRoot, SetupScopeKind::Profile][..],
+                "requires explicit harness selection for a profile scope",
+            ),
+        ] {
+            let adapter = aggregate_fixture("sparse", "Sparse", scopes, None);
+            let registry = registry(&[adapter]).unwrap();
+            // No root is present, so an accidental scope resolution panics.
+            for verb in [SetupVerb::Install, SetupVerb::Status, SetupVerb::Remove] {
+                let report = execute_all_registered(
+                    &registry,
+                    verb,
+                    PromptSuggestionPolicy::Ask,
+                    &environment,
+                )
+                .unwrap();
+                assert_eq!(report["exit_status"], 0);
+                assert_eq!(report["harnesses"][0]["outcome"], "skipped");
+                assert_eq!(report["harnesses"][0]["reason"], reason);
+            }
+        }
+        let adapter = aggregate_fixture("missing", "Missing", &[SetupScopeKind::ConfigRoot], None);
+        let registry = registry(&[adapter]).unwrap();
+        let mut absent = environment;
+        absent.path = None;
+        let report = execute_all_registered(
+            &registry,
+            SetupVerb::Install,
+            PromptSuggestionPolicy::Ask,
+            &absent,
+        )
+        .unwrap();
+        assert_eq!(report["harnesses"][0]["outcome"], "skipped");
+        assert_eq!(report["exit_status"], 0);
+        assert!(!scratch.0.join("bin/invoked").exists());
+    }
+
+    #[test]
+    fn aggregate_optional_mixed_legacy_requirements_refuse_before_writes() {
+        use crate::cli::setup::{PromptSuggestionPolicy, SetupVerb, execute_all_registered};
+        let scratch = AggregateScratch::new();
+        let independent = aggregate_fixture(
+            "independent",
+            "Independent",
+            &[SetupScopeKind::ConfigRoot],
+            None,
+        );
+        let registry = Registry::new(Box::leak(
+            vec![
+                Registration::new(&crate::harness::claude::ClaudeAdapter),
+                Registration::new(independent),
+                Registration::new(&crate::harness::codex::CodexAdapter),
+            ]
+            .into_boxed_slice(),
+        ))
+        .unwrap();
+        let mut environment = scratch.environment(&["claude", "independent", "codex"]);
+        for id in ["claude", "codex"] {
+            std::fs::copy(
+                scratch.0.join("bin/sentinel"),
+                scratch.0.join("bin").join(id),
+            )
+            .unwrap();
+            std::fs::create_dir(scratch.0.join(id)).unwrap();
+        }
+        let settings = scratch.0.join("claude/settings.json");
+        let hooks = scratch.0.join("codex/hooks.json");
+        let config = scratch.0.join("codex/config.toml");
+        std::fs::write(&settings, b"{\"user\":true}").unwrap();
+        std::fs::write(&hooks, b"{\"hooks\":{}}").unwrap();
+        std::fs::write(&config, b"model = \"user choice\"\n").unwrap();
+        for state in [None, Some(scratch.0.join("state"))] {
+            environment.state_dir = state;
+            let report = execute_all_registered(
+                &registry,
+                SetupVerb::Install,
+                PromptSuggestionPolicy::Keep,
+                &environment,
+            )
+            .unwrap();
+            assert_eq!(report["exit_status"], 2);
+            assert_eq!(report["harnesses"][0]["outcome"], "failed");
+            assert_eq!(report["harnesses"][1]["outcome"], "installed");
+            assert_eq!(report["harnesses"][2]["outcome"], "failed");
+            assert_eq!(std::fs::read(&settings).unwrap(), b"{\"user\":true}");
+            assert_eq!(std::fs::read(&hooks).unwrap(), b"{\"hooks\":{}}");
+            assert_eq!(
+                std::fs::read(&config).unwrap(),
+                b"model = \"user choice\"\n"
+            );
+            assert_eq!(
+                std::fs::read(scratch.0.join("independent/owned")).unwrap(),
+                b"captured bytes"
+            );
+            assert!(!scratch.0.join("state").exists());
+            assert!(!scratch.0.join("bin/invoked").exists());
+        }
+        environment.state_dir = None;
+        let removed = execute_all_registered(
+            &registry,
+            SetupVerb::Remove,
+            PromptSuggestionPolicy::Keep,
+            &environment,
+        )
+        .unwrap();
+        assert_eq!(removed["exit_status"], 2);
+        assert_eq!(removed["harnesses"][0]["outcome"], "failed");
+        assert_eq!(removed["harnesses"][1]["outcome"], "removed");
+        assert_eq!(removed["harnesses"][2]["outcome"], "failed");
+        assert_eq!(std::fs::read(&settings).unwrap(), b"{\"user\":true}");
+        assert_eq!(std::fs::read(&hooks).unwrap(), b"{\"hooks\":{}}");
+    }
+
+    #[test]
+    fn aggregate_optional_unsupported_provider_is_nonfailure_and_continues() {
+        use crate::cli::setup::{PromptSuggestionPolicy, SetupVerb, execute_all_registered};
+        let scratch = AggregateScratch::new();
+        let base = aggregate_fixture("refused", "Refused", &[SetupScopeKind::ConfigRoot], None);
+        let refused = Box::leak(Box::new(TestAdapter {
+            metadata: base.metadata,
+            calls: AtomicUsize::new(0),
+            event_id: "codex",
+            harness: OnceLock::new(),
+            offers: std::sync::Mutex::new(vec![]),
+            setup_advice: None,
+            setup_unsupported: true,
+        }));
+        let later = aggregate_fixture("later", "Later", &[SetupScopeKind::ConfigRoot], None);
+        let registry = registry(&[refused, later]).unwrap();
+        let environment = scratch.environment(&["refused", "later"]);
+        let report = execute_all_registered(
+            &registry,
+            SetupVerb::Install,
+            PromptSuggestionPolicy::Ask,
+            &environment,
+        )
+        .unwrap();
+        assert_eq!(report["exit_status"], 0);
+        assert_eq!(report["harnesses"][0]["outcome"], "refused");
+        assert_eq!(
+            report["harnesses"][0]["reason"],
+            "fixture setup unavailable"
+        );
+        assert_eq!(report["harnesses"][1]["outcome"], "installed");
+        assert!(!scratch.0.join("refused").exists());
+        assert_eq!(
+            std::fs::read(scratch.0.join("later/owned")).unwrap(),
+            b"captured bytes"
+        );
+        assert!(!scratch.0.join("bin/invoked").exists());
     }
 
     fn fixture(
@@ -1769,6 +2259,8 @@ mod tests {
             event_id: "codex",
             harness: OnceLock::new(),
             offers: std::sync::Mutex::new(vec![]),
+            setup_advice: None,
+            setup_unsupported: false,
         }))
     }
     fn registry(adapters: &[&'static TestAdapter]) -> Result<Registry, RegistryError> {
