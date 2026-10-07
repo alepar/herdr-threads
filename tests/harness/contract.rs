@@ -596,21 +596,150 @@ fn adapters_local_dispatch_keeps_legacy_contract_id_bytes() {
     let mut output = Vec::new();
     crate::cli::run_in_pane(["herdr-threads", "adapters", "--json"], None, &mut output).unwrap();
     let discovery = crate::harness::discovery::Discovery::parse(&output).unwrap();
+    use crate::harness::{adapter::SetupScopeKind, registry::builtins};
+    use std::collections::BTreeSet;
+    let registry = builtins();
+    let actual: BTreeSet<_> = discovery
+        .adapters
+        .iter()
+        .map(|row| row.id.as_str())
+        .collect();
+    let registered: BTreeSet<_> = registry
+        .registrations()
+        .iter()
+        .map(|r| r.metadata().id)
+        .collect();
     assert_eq!(
-        discovery
+        actual.len(),
+        discovery.adapters.len(),
+        "discovery IDs must be unique"
+    );
+    assert_eq!(actual, registered);
+    for registration in registry.registrations() {
+        let metadata = registration.metadata();
+        let row = discovery
             .adapters
             .iter()
-            .map(|a| a.id.as_str())
-            .collect::<Vec<_>>(),
-        ["claude", "codex"]
-    );
+            .find(|row| row.id == metadata.id)
+            .unwrap();
+        assert_eq!(row.display_name, metadata.display_label);
+        assert!(!row.display_name.is_empty());
+        assert_eq!(row.host_kinds, metadata.host_kinds);
+        assert!(!row.host_kinds.is_empty());
+        let scopes: Vec<_> = metadata
+            .setup_scopes
+            .iter()
+            .map(|kind| match kind {
+                SetupScopeKind::ConfigRoot => "config_root",
+                SetupScopeKind::Profile => "profile",
+            })
+            .collect();
+        assert_eq!(row.setup_scopes, scopes);
+        assert!(!row.setup_scopes.is_empty());
+        assert_eq!(row.legacy_contract_id, registration.legacy_contract_id());
+        assert_eq!(
+            row.canary_strategy,
+            registration.canary_strategy().map(|p| p.descriptor())
+        );
+        let domains: BTreeSet<_> = row.contracts.iter().map(|d| d.domain.as_str()).collect();
+        assert_eq!(domains.len(), row.contracts.len());
+        assert_eq!(
+            domains,
+            registration
+                .contracts()
+                .iter()
+                .map(|d| d.domain_id)
+                .collect()
+        );
+        assert!(!domains.is_empty());
+        for descriptor in registration.contracts() {
+            let domain = row
+                .contracts
+                .iter()
+                .find(|d| d.domain == descriptor.domain_id)
+                .unwrap();
+            assert_eq!(domain.origin, descriptor.origin);
+            assert_eq!(domain.id, descriptor.contract_id_v2().unwrap());
+            assert_eq!(domain.required_milestones, descriptor.required_milestones);
+            assert!(!domain.required_milestones.is_empty());
+            let events: BTreeSet<_> = domain.events.iter().map(|e| e.event.as_str()).collect();
+            assert_eq!(events.len(), domain.events.len());
+            assert_eq!(
+                events,
+                descriptor.events.iter().map(|e| e.native_event).collect()
+            );
+            assert!(!events.is_empty());
+            for declared in descriptor.events {
+                let event = domain
+                    .events
+                    .iter()
+                    .find(|e| e.event == declared.native_event)
+                    .unwrap();
+                assert_eq!(event.milestone.as_deref(), declared.milestone);
+                assert_eq!(event.always_send, declared.always_send);
+            }
+        }
+        eprintln!(
+            "actual adapters CLI identity={} scopes={:?} domains={:?} canary={}",
+            row.id,
+            row.setup_scopes,
+            domains,
+            row.canary_strategy.is_some()
+        );
+    }
+    let row = |id: &str| discovery.adapters.iter().find(|row| row.id == id).unwrap();
+    for (id, pinned) in [
+        ("claude", "3f860645de4c3363"),
+        ("codex", "d3b98d74f26f7e2c"),
+    ] {
+        assert_eq!(row(id).legacy_contract_id.as_deref(), Some(pinned));
+        assert!(row(id).contracts.iter().all(|domain| domain.id != pinned));
+    }
+    let hermes = row("hermes");
+    assert_eq!(hermes.display_name, "Hermes");
+    assert!(hermes.host_kinds.iter().any(|kind| kind == "hermes"));
+    assert!(hermes.setup_scopes.iter().any(|kind| kind == "profile"));
     assert_eq!(
-        discovery.adapters[0].legacy_contract_id.as_deref(),
-        Some("3f860645de4c3363")
+        registry.by_host_kind("hermes").unwrap().metadata().id,
+        "hermes"
     );
-    assert_eq!(
-        discovery.adapters[1].legacy_contract_id.as_deref(),
-        Some("d3b98d74f26f7e2c")
-    );
-    assert_ne!(discovery.adapters[0].contracts[0].id, "3f860645de4c3363");
+    assert_eq!(registry.agent("hermes").unwrap().as_str(), "hermes");
+    assert!(hermes.legacy_contract_id.is_none());
+    let native = hermes
+        .contracts
+        .iter()
+        .find(|d| d.domain == "native_callback")
+        .unwrap();
+    let bridge = hermes
+        .contracts
+        .iter()
+        .find(|d| d.domain == "bridge_envelope")
+        .unwrap();
+    assert_ne!(native.id, bridge.id);
+    assert_ne!(native.origin, bridge.origin);
+    #[cfg(feature = "test-support")]
+    {
+        let fourth = row("synthetic_fourth");
+        assert!(fourth.canary_strategy.is_none());
+        assert!(fourth.contracts.iter().any(|d| d.domain == "synthetic"));
+        assert!(
+            fourth
+                .host_kinds
+                .iter()
+                .any(|kind| kind == "synthetic_fourth_alias")
+        );
+        assert_eq!(
+            registry
+                .by_host_kind("synthetic_fourth_alias")
+                .unwrap()
+                .metadata()
+                .id,
+            fourth.id
+        );
+    }
+    #[cfg(not(feature = "test-support"))]
+    {
+        assert!(!actual.contains("synthetic_fourth"));
+        assert!(registry.agent("synthetic_fourth").is_err());
+    }
 }
