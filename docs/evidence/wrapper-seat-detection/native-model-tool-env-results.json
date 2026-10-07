@@ -1,0 +1,339 @@
+{
+  "binary": "/Users/alepar/.codex/packages/standalone/releases/0.160.1-aarch64-apple-darwin/bin/codex",
+  "scenarios": [
+    {
+      "name": "private-server",
+      "client_pid": 82566,
+      "argv": [
+        "/Users/alepar/.codex/packages/standalone/releases/0.160.1-aarch64-apple-darwin/bin/codex",
+        "--remote",
+        "unix:///private/tmp/ht-model-env-quzkmj29/server.sock",
+        "--dangerously-bypass-hook-trust",
+        "--no-alt-screen",
+        "-C",
+        "/private/tmp/ht-model-env-quzkmj29/project"
+      ],
+      "client_HERDR_PANE_ID": "probe-client:p2",
+      "path": "TUI prompt -> local Responses SSE function_call -> native exec_command",
+      "submitted": true,
+      "requests": [
+        {
+          "path": "/v1/responses",
+          "content_encoding": null,
+          "tool_names": [
+            "exec_command",
+            "write_stdin",
+            "request_user_input",
+            "view_image",
+            "multi_agent_v1",
+            "get_goal",
+            "create_goal",
+            "update_goal",
+            null
+          ],
+          "tool_outputs": []
+        },
+        {
+          "path": "/v1/responses",
+          "content_encoding": null,
+          "tool_names": [],
+          "tool_outputs": []
+        },
+        {
+          "path": "/v1/responses",
+          "content_encoding": null,
+          "tool_names": [
+            "exec_command",
+            "write_stdin",
+            "request_user_input",
+            "view_image",
+            "multi_agent_v1",
+            "get_goal",
+            "create_goal",
+            "update_goal",
+            null
+          ],
+          "tool_outputs": [
+            {
+              "type": "function_call_output",
+              "id": "fco_01a11462-f7c3-76d1-ab31-c64cc1aad44b",
+              "call_id": "probe-exec-call",
+              "output": "Chunk ID: 077183\nWall time: 0.0000 seconds\nProcess exited with code 0\nOriginal token count: 43\nOutput:\nHT_ENV_CAPTURE {\"pid\": 82601, \"ppid\": 82564, \"HERDR_PANE_ID\": \"probe-server:p1\", \"HT_PROBE_MARKER\": \"server\", \"CODEX_THREAD_ID\": \"01a11462-eb88-7873-9c00-4c18f8ad7c1d\"}\n"
+            }
+          ]
+        }
+      ],
+      "emitted_call": {
+        "type": "function_call",
+        "call_id": "probe-exec-call",
+        "name": "exec_command",
+        "arguments": "{\"cmd\": \"/usr/bin/python3 /private/tmp/ht-model-env-quzkmj29/capture.py tool /private/tmp/ht-model-env-quzkmj29/private-server.json\", \"login\": false, \"max_output_tokens\": 1000}"
+      },
+      "hook_captures": [
+        {
+          "pid": 82599,
+          "ppid": 82564,
+          "HERDR_PANE_ID": "probe-server:p1",
+          "HT_PROBE_MARKER": "server",
+          "CODEX_THREAD_ID": null,
+          "hook_event_name": "SessionStart",
+          "session_id": "01a11462-eb88-7873-9c00-4c18f8ad7c1d",
+          "tool_name": null
+        },
+        {
+          "pid": 82600,
+          "ppid": 82564,
+          "HERDR_PANE_ID": "probe-server:p1",
+          "HT_PROBE_MARKER": "server",
+          "CODEX_THREAD_ID": null,
+          "hook_event_name": "PreToolUse",
+          "session_id": "01a11462-eb88-7873-9c00-4c18f8ad7c1d",
+          "tool_name": "Bash"
+        }
+      ],
+      "capture": {
+        "pid": 82601,
+        "ppid": 82564,
+        "HERDR_PANE_ID": "probe-server:p1",
+        "HT_PROBE_MARKER": "server",
+        "CODEX_THREAD_ID": "01a11462-eb88-7873-9c00-4c18f8ad7c1d"
+      }
+    },
+    {
+      "name": "private-server-tool-policy",
+      "client_pid": 82602,
+      "argv": [
+        "/Users/alepar/.codex/packages/standalone/releases/0.160.1-aarch64-apple-darwin/bin/codex",
+        "--remote",
+        "unix:///private/tmp/ht-model-env-quzkmj29/server.sock",
+        "-c",
+        "shell_environment_policy.set.HERDR_PANE_ID=\"probe-client:p2\"",
+        "--dangerously-bypass-hook-trust",
+        "--no-alt-screen",
+        "-C",
+        "/private/tmp/ht-model-env-quzkmj29/project"
+      ],
+      "client_HERDR_PANE_ID": "probe-client:p2",
+      "path": "TUI prompt -> local Responses SSE function_call -> native exec_command",
+      "submitted": true,
+      "requests": [
+        {
+          "path": "/v1/responses",
+          "content_encoding": null,
+          "tool_names": [
+            "exec_command",
+            "write_stdin",
+            "request_user_input",
+            "view_image",
+            "multi_agent_v1",
+            "get_goal",
+            "create_goal",
+            "update_goal",
+            null
+          ],
+          "tool_outputs": []
+        },
+        {
+          "path": "/v1/responses",
+          "content_encoding": null,
+          "tool_names": [],
+          "tool_outputs": []
+        },
+        {
+          "path": "/v1/responses",
+          "content_encoding": null,
+          "tool_names": [
+            "exec_command",
+            "write_stdin",
+            "request_user_input",
+            "view_image",
+            "multi_agent_v1",
+            "get_goal",
+            "create_goal",
+            "update_goal",
+            null
+          ],
+          "tool_outputs": [
+            {
+              "type": "function_call_output",
+              "id": "fco_01a11463-04b7-7001-a176-52281dfe64f0",
+              "call_id": "probe-exec-call",
+              "output": "Chunk ID: 4b3ab8\nWall time: 0.0000 seconds\nProcess exited with code 0\nOriginal token count: 43\nOutput:\nHT_ENV_CAPTURE {\"pid\": 82624, \"ppid\": 82564, \"HERDR_PANE_ID\": \"probe-client:p2\", \"HT_PROBE_MARKER\": \"server\", \"CODEX_THREAD_ID\": \"01a11462-f8f6-7a01-b56c-ba83678b8287\"}\n"
+            }
+          ]
+        }
+      ],
+      "emitted_call": {
+        "type": "function_call",
+        "call_id": "probe-exec-call",
+        "name": "exec_command",
+        "arguments": "{\"cmd\": \"/usr/bin/python3 /private/tmp/ht-model-env-quzkmj29/capture.py tool /private/tmp/ht-model-env-quzkmj29/private-server-tool-policy.json\", \"login\": false, \"max_output_tokens\": 1000}"
+      },
+      "hook_captures": [
+        {
+          "pid": 82622,
+          "ppid": 82564,
+          "HERDR_PANE_ID": "probe-server:p1",
+          "HT_PROBE_MARKER": "server",
+          "CODEX_THREAD_ID": null,
+          "hook_event_name": "SessionStart",
+          "session_id": "01a11462-f8f6-7a01-b56c-ba83678b8287",
+          "tool_name": null
+        },
+        {
+          "pid": 82623,
+          "ppid": 82564,
+          "HERDR_PANE_ID": "probe-server:p1",
+          "HT_PROBE_MARKER": "server",
+          "CODEX_THREAD_ID": null,
+          "hook_event_name": "PreToolUse",
+          "session_id": "01a11462-f8f6-7a01-b56c-ba83678b8287",
+          "tool_name": "Bash"
+        }
+      ],
+      "capture": {
+        "pid": 82624,
+        "ppid": 82564,
+        "HERDR_PANE_ID": "probe-client:p2",
+        "HT_PROBE_MARKER": "server",
+        "CODEX_THREAD_ID": "01a11462-f8f6-7a01-b56c-ba83678b8287"
+      }
+    },
+    {
+      "name": "embedded-control",
+      "client_pid": 82625,
+      "argv": [
+        "/Users/alepar/.codex/packages/standalone/releases/0.160.1-aarch64-apple-darwin/bin/codex",
+        "--no-daemon",
+        "--dangerously-bypass-hook-trust",
+        "--no-alt-screen",
+        "-C",
+        "/private/tmp/ht-model-env-quzkmj29/project"
+      ],
+      "client_HERDR_PANE_ID": "probe-client:p2",
+      "path": "TUI prompt -> local Responses SSE function_call -> native exec_command",
+      "submitted": true,
+      "requests": [
+        {
+          "path": "/v1/responses",
+          "content_encoding": null,
+          "tool_names": [
+            "exec_command",
+            "write_stdin",
+            "request_user_input",
+            "view_image",
+            "multi_agent_v1",
+            "get_goal",
+            "create_goal",
+            "update_goal",
+            null
+          ],
+          "tool_outputs": []
+        },
+        {
+          "path": "/v1/responses",
+          "content_encoding": null,
+          "tool_names": [],
+          "tool_outputs": []
+        },
+        {
+          "path": "/v1/responses",
+          "content_encoding": null,
+          "tool_names": [
+            "exec_command",
+            "write_stdin",
+            "request_user_input",
+            "view_image",
+            "multi_agent_v1",
+            "get_goal",
+            "create_goal",
+            "update_goal",
+            null
+          ],
+          "tool_outputs": [
+            {
+              "type": "function_call_output",
+              "id": "fco_01a11463-11b7-7b71-8781-7f9960fe3c4d",
+              "call_id": "probe-exec-call",
+              "output": "Chunk ID: 31cf03\nWall time: 0.0000 seconds\nProcess exited with code 0\nOriginal token count: 43\nOutput:\nHT_ENV_CAPTURE {\"pid\": 82651, \"ppid\": 82625, \"HERDR_PANE_ID\": \"probe-client:p2\", \"HT_PROBE_MARKER\": \"client\", \"CODEX_THREAD_ID\": \"01a11463-05e9-7bb0-ba50-b119aa1784e1\"}\n"
+            }
+          ]
+        }
+      ],
+      "emitted_call": {
+        "type": "function_call",
+        "call_id": "probe-exec-call",
+        "name": "exec_command",
+        "arguments": "{\"cmd\": \"/usr/bin/python3 /private/tmp/ht-model-env-quzkmj29/capture.py tool /private/tmp/ht-model-env-quzkmj29/embedded-control.json\", \"login\": false, \"max_output_tokens\": 1000}"
+      },
+      "hook_captures": [
+        {
+          "pid": 82649,
+          "ppid": 82625,
+          "HERDR_PANE_ID": "probe-client:p2",
+          "HT_PROBE_MARKER": "client",
+          "CODEX_THREAD_ID": null,
+          "hook_event_name": "SessionStart",
+          "session_id": "01a11463-05e9-7bb0-ba50-b119aa1784e1",
+          "tool_name": null
+        },
+        {
+          "pid": 82650,
+          "ppid": 82625,
+          "HERDR_PANE_ID": "probe-client:p2",
+          "HT_PROBE_MARKER": "client",
+          "CODEX_THREAD_ID": null,
+          "hook_event_name": "PreToolUse",
+          "session_id": "01a11463-05e9-7bb0-ba50-b119aa1784e1",
+          "tool_name": "Bash"
+        }
+      ],
+      "capture": {
+        "pid": 82651,
+        "ppid": 82625,
+        "HERDR_PANE_ID": "probe-client:p2",
+        "HT_PROBE_MARKER": "client",
+        "CODEX_THREAD_ID": "01a11463-05e9-7bb0-ba50-b119aa1784e1"
+      }
+    }
+  ],
+  "cleanup": true,
+  "model": "local deterministic Responses SSE fixture; no external model/account",
+  "hook_trust": "scratch --dangerously-bypass-hook-trust; environment evidence only",
+  "source": "https://github.com/openai/codex/blob/rust-v0.160.1/codex-rs/core/tests/common/responses.rs#L699-L727",
+  "version": "codex-cli 0.160.1",
+  "server": {
+    "pid": 82564,
+    "argv": [
+      "/Users/alepar/.codex/packages/standalone/releases/0.160.1-aarch64-apple-darwin/bin/codex",
+      "app-server",
+      "--listen",
+      "unix:///private/tmp/ht-model-env-quzkmj29/server.sock"
+    ],
+    "HERDR_PANE_ID": "probe-server:p1"
+  },
+  "success": true,
+  "cleanup_groups": [
+    {
+      "leader": 82564,
+      "returncode": 0,
+      "group_exists": false
+    },
+    {
+      "leader": 82566,
+      "returncode": -15,
+      "group_exists": false
+    },
+    {
+      "leader": 82602,
+      "returncode": -15,
+      "group_exists": false
+    },
+    {
+      "leader": 82625,
+      "returncode": -15,
+      "group_exists": false
+    }
+  ],
+  "scratch_removed": true
+}

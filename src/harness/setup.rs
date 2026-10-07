@@ -1,6 +1,6 @@
 //! Scoped hook proposals and explicit user-settings installation (Claude `settings.json`, Codex
 //! `hooks.json`). No process launch or trust change.
-use super::{codex, launch::compose_native_argv_with};
+use super::{codex, launch::compose_native_argv};
 use crate::ports::ConfiguredHook;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -45,29 +45,20 @@ pub struct EventGroups {
 pub struct CodexSetupPlan {
     pub base_fingerprint: String,
     pub events: Vec<EventGroups>,
-    /// The launch line with no caller arguments: `--no-daemon` once, then the session `-c`
-    /// overrides ([`CodexSetupPlan::launch_argv_for`] composes it for caller arguments).
+    /// The owned session overrides for a launch with no caller arguments.
     pub launch_argv: Vec<String>,
-    /// The session `-c hooks.*=...` overrides alone (no `--no-daemon`).
+    /// The session `-c hooks.*=...` overrides alone.
     pub session_config: Vec<String>,
     pub owned: Vec<OwnedEntry>,
 }
 
 impl CodexSetupPlan {
-    /// The launch argv for `caller` arguments, composed by the one launch rule
-    /// ([`compose_native_argv_with`]): `--no-daemon` exactly once at the top level, none when
-    /// `shell_passes_no_daemon` (the pane's `codex` function or alias supplies it; Codex
-    /// refuses the flag twice), and a caller's own single `--no-daemon` kept in place.
-    pub fn launch_argv_for(
-        &self,
-        caller: Vec<String>,
-        shell_passes_no_daemon: bool,
-    ) -> Result<Vec<String>, SetupError> {
-        compose_native_argv_with(
+    /// Compose owned overrides with caller arguments using the launch rule.
+    pub fn launch_argv_for(&self, caller: Vec<String>) -> Result<Vec<String>, SetupError> {
+        compose_native_argv(
             crate::protocol::authority::Harness::Codex,
             caller,
             self.session_config.clone(),
-            shell_passes_no_daemon,
         )
         .map_err(|_| SetupError::Invalid)
     }
@@ -792,7 +783,7 @@ fn plan_codex(
         session_config,
         owned: owned_entries,
     };
-    plan.launch_argv = plan.launch_argv_for(Vec::new(), false)?;
+    plan.launch_argv = plan.launch_argv_for(Vec::new())?;
     Ok(plan)
 }
 

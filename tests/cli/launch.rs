@@ -236,13 +236,9 @@ impl HandoffReader for FakeHandoff {
     }
 }
 
-/// A canned pane-shell answer for `codex`; never runs a shell.
-struct FakeProbe(Result<String, String>);
-impl CodexShellProbe for FakeProbe {
-    fn resolve_codex(&self) -> Result<String, String> {
-        self.0.clone()
-    }
-}
+/// A pane shell with no configuration exports; never runs a real shell.
+struct FakeProbe;
+impl CodexShellProbe for FakeProbe {}
 
 struct Scratch {
     root: std::path::PathBuf,
@@ -302,7 +298,7 @@ impl Scratch {
         handoff: &FakeHandoff,
         request: LaunchRequest,
     ) -> Result<LaunchReport, RunError> {
-        let probe = FakeProbe(Ok("codex is /usr/local/bin/codex\n".into()));
+        let probe = FakeProbe;
         self.launch_with_probe(host, seats, handoff, request, &probe)
     }
     fn launch_with_probe(
@@ -590,11 +586,11 @@ fn unknown_outcome_exits_five_and_keeps_handoff_discoverable() {
 }
 
 /// Codex set up at user level: owned hooks are on disk, so launch
-/// adds no hook or sandbox arguments, keeps the caller's unchanged and adds
-/// `--no-daemon` exactly once. Command approvals replace the allowance check.
-/// Kills: launching without owned hooks, reordering args or duplicating --no-daemon.
+/// adds no hook, sandbox or daemon arguments and keeps the caller's unchanged.
+/// Command approvals replace the allowance check.
+/// Kills launching without owned hooks or changing caller arguments.
 #[test]
-fn codex_launch_needs_the_user_installation_and_adds_only_no_daemon() {
+fn codex_launch_needs_the_user_installation_without_injected_daemon_flags() {
     let s = Scratch::new();
     s.harness("codex", "codex-cli 0.159.2", &committed_codex_schemas());
     let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
@@ -620,8 +616,7 @@ fn codex_launch_needs_the_user_installation_and_adds_only_no_daemon() {
         .unwrap();
     assert_eq!(out.exit, 0);
     let argv = &host.submitted()[0].argv;
-    assert_eq!(argv[0], "--no-daemon");
-    assert_eq!(&argv[1..], caller);
+    assert_eq!(argv, &caller);
     assert!(!argv.iter().any(|a| a.contains("bypass") || a == "--yolo"));
     assert_eq!(host.submitted()[0].configured_hook.scope, "user");
 
@@ -648,12 +643,10 @@ fn codex_launch_needs_the_user_installation_and_adds_only_no_daemon() {
     assert_eq!(fs::read_to_string(&config).unwrap(), denied);
 }
 
-/// `codex exec` (native-codex-matrix-1 P4/P5): `--no-daemon` precedes
-/// `exec` and the caller's arguments follow unchanged. Kills: `--no-daemon`
-/// after the subcommand or the prompt, and starting an unconfigurable
-/// subcommand.
+/// `codex exec` retains caller arguments without injected daemon flags.
+/// Unsupported subcommands are refused.
 #[test]
-fn codex_exec_launch_keeps_no_daemon_before_exec() {
+fn codex_exec_launch_preserves_caller_arguments() {
     let s = Scratch::new();
     s.harness("codex", "codex-cli 0.159.2", &committed_codex_schemas());
     s.setup(ContextHarness::Codex);
@@ -669,8 +662,7 @@ fn codex_exec_launch_keeps_no_daemon_before_exec() {
         .unwrap();
     assert_eq!(out.exit, 0);
     let argv = &host.submitted()[0].argv;
-    assert_eq!(argv[0], "--no-daemon");
-    assert_eq!(&argv[1..], caller);
+    assert_eq!(argv, &caller);
 
     // An unconfigurable subcommand is refused and nothing is started.
     let host = FakeHost::new();
@@ -717,7 +709,7 @@ fn codex_without_measured_allowance_uses_command_approvals() {
         .launch(&host, &seats, &handoff, request(ContextHarness::Codex, &[]))
         .unwrap();
     assert_eq!(result.exit, 0);
-    assert_eq!(host.submitted()[0].argv, ["--no-daemon"]);
+    assert!(host.submitted()[0].argv.is_empty());
 }
 
 /// Newer admitted Codex builds use approved outside-sandbox CLI calls. A
@@ -741,7 +733,7 @@ fn future_codex_launch_uses_command_approvals_without_network_allowance() {
         )
         .unwrap();
     assert_eq!(result.exit, 0);
-    assert_eq!(&host.submitted()[0].argv[1..], caller);
+    assert_eq!(host.submitted()[0].argv, caller);
     assert!(
         !config.exists(),
         "launch must not install network permissions"
@@ -849,74 +841,48 @@ fn launch_syntax_keeps_agent_arguments_verbatim() {
     }
 }
 
-/// The user's zsh wrapper (`whence -f codex`) already passes `--no-daemon`:
-/// launch adds none (Codex refuses the flag twice) and says so in the report
-/// and the record; a wrapper without it, or a failed probe, keeps launch's
-/// single `--no-daemon`. Kills: `error: the argument '--no-daemon' cannot be
-/// used multiple times` under such a wrapper, and dropping the flag when the
-/// shell could not be asked.
+/// A wrapper selected as `codex` rejects --no-daemon. Managed launch must
+/// preserve its supported arguments without inspecting aliases or adding flags.
 #[test]
-fn codex_shell_wrapper_with_no_daemon_suppresses_launch_flag() {
+fn codex_wrapper_rejecting_no_daemon_accepts_managed_launch_arguments() {
     let s = Scratch::new();
-    s.harness("codex", "codex-cli 0.159.2", &committed_codex_schemas());
-    s.setup(ContextHarness::Codex);
-    let caller = ["--model", "gpt-test"];
-    let wrapper = "codex () {\n\tcommand aisw workspace check --tool codex || return $?\n\t\
-                   HERDR_AGENT=codex command codex --no-daemon --approve-for-me \"$@\"\n}\n";
-    let launch = |probe: FakeProbe| {
-        let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
-        let out = s
-            .launch_with_probe(
-                &host,
-                &seats,
-                &handoff,
-                request(ContextHarness::Codex, &caller),
-                &probe,
-            )
-            .unwrap();
-        assert_eq!(out.exit, 0);
-        (host.submitted()[0].argv.clone(), out.report)
-    };
-
-    let (argv, report) = launch(FakeProbe(Ok(wrapper.into())));
-    assert_eq!(argv, caller);
-    assert!(!argv.iter().any(|a| a == "--approve-for-me"));
-    assert_eq!(report["codex_wrapper"], CODEX_WRAPPER_NO_DAEMON);
+    let wrapper = s.root.join("bin/codex");
+    fs::write(&wrapper, b"#!/bin/sh\nfor arg do\n  if [ \"$arg\" = --no-daemon ]; then exit 64; fi\ndone\nprintf '%s\\n' \"$@\"\n").unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut rejected = crate::test_support::spawn::command(&wrapper);
     assert_eq!(
-        s.records().last().unwrap()["codex_wrapper"],
-        CODEX_WRAPPER_NO_DAEMON
+        rejected.arg("--no-daemon").output().unwrap().status.code(),
+        Some(64)
     );
-
-    let plain = "codex () {\n\tcommand codex --approve-for-me \"$@\"\n}\n";
-    let (argv, report) = launch(FakeProbe(Ok(plain.into())));
-    assert_eq!(argv, ["--no-daemon", "--model", "gpt-test"]);
-    assert_eq!(report["codex_wrapper"], Value::Null);
-
-    let (argv, report) = launch(FakeProbe(Err("the shell probe timed out".into())));
-    assert_eq!(argv, ["--no-daemon", "--model", "gpt-test"]);
-    assert_eq!(report["codex_wrapper"], Value::Null);
-}
-
-/// The wrapper scan matches `--no-daemon` as its own word only. Kills:
-/// matching a comment, a longer flag, or `--no-daemon=...`.
-#[test]
-fn wrapper_scan_matches_the_flag_word_only() {
-    assert!(wrapper_passes_no_daemon(
-        "codex () {\n\tcommand codex --no-daemon \"$@\"\n}"
-    ));
-    assert!(wrapper_passes_no_daemon("codex='codex --no-daemon'"));
-    assert!(wrapper_passes_no_daemon(
-        "codex is aliased to `codex --no-daemon'"
-    ));
-    assert!(!wrapper_passes_no_daemon("codex is /usr/local/bin/codex"));
-    assert!(!wrapper_passes_no_daemon("\t# add --no-daemon later\n"));
-    assert!(!wrapper_passes_no_daemon("command codex --no-daemon-x"));
-    assert!(!wrapper_passes_no_daemon("command codex --no-daemon=false"));
-    assert!(!wrapper_passes_no_daemon(""));
+    s.setup(ContextHarness::Codex);
+    let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
+    let caller = ["--model", "gpt-test"];
+    let out = s
+        .launch_with_probe(
+            &host,
+            &seats,
+            &handoff,
+            request(ContextHarness::Codex, &caller),
+            &FakeProbe,
+        )
+        .unwrap();
+    assert_eq!(out.exit, 0);
+    let argv = host.submitted()[0].argv.clone();
+    assert_eq!(argv, caller);
+    let output = crate::test_support::spawn::command(&wrapper)
+        .args(&argv)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "--model\ngpt-test\n"
+    );
+    assert!(out.report.get("codex_wrapper").is_none());
 }
 
 /// The real probe is bounded: a shell that never answers times out and is
-/// reported as a failure (launch then keeps its own `--no-daemon`).
+/// returns no export.
 #[test]
 fn system_shell_probe_is_bounded_and_reads_stdout() {
     let dir = std::env::temp_dir().join(format!(
@@ -936,23 +902,8 @@ fn system_shell_probe_is_bounded_and_reads_stdout() {
         timeout: std::time::Duration::from_millis(200),
     };
     let started = std::time::Instant::now();
-    assert!(probe.resolve_codex().is_err());
+    assert_eq!(probe.pane_shell_env("CODEX_HOME"), None);
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
-    let fake_zsh = write(
-        "zsh",
-        "#!/bin/sh\n[ \"$1\" = -ic ] || exit 9\necho \"$2\"\necho noise >&2\n",
-    );
-    let probe = SystemShellProbe {
-        shell: fake_zsh,
-        // A liveness bound only: these probes answer at once, but `sh` start-up
-        // under a loaded parallel suite can take seconds (the bound itself is
-        // the 200 ms `slow` case above).
-        timeout: std::time::Duration::from_secs(30),
-    };
-    assert_eq!(
-        probe.resolve_codex().unwrap(),
-        "whence -f codex 2>/dev/null || type codex\n"
-    );
     // The pane shell's own export is read back between markers (startup-file
     // noise is ignored); a shell that exports nothing yields none, whatever
     // the launcher's environment holds (the variable is removed first).
@@ -1104,9 +1055,6 @@ struct PaneExports {
     claude_config_dir: Option<String>,
 }
 impl CodexShellProbe for PaneExports {
-    fn resolve_codex(&self) -> Result<String, String> {
-        Ok("codex is /usr/local/bin/codex\n".into())
-    }
     fn pane_shell_env(&self, var: &str) -> Option<String> {
         match var {
             "CODEX_HOME" => self.codex_home.clone(),
@@ -1516,7 +1464,7 @@ fn handoff_preflight_and_failed_durable_gate_never_submit_or_record_start() {
     scratch.setup_claude();
     let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
     let clock = Clock0(AtomicU64::new(1));
-    let probe = FakeProbe(Ok(String::new()));
+    let probe = FakeProbe;
     let parts = LaunchParts {
         env: &scratch.env,
         host: &host,
@@ -1552,7 +1500,7 @@ fn handoff_native_launcher_checks_frozen_seat_and_propagates_confirmed_refusal()
     let (mut host, seats, handoff) = (FakeHost::new(), seats(), handoff());
     host.confirmed_refusal = true;
     let clock = Clock0(AtomicU64::new(1));
-    let probe = FakeProbe(Ok(String::new()));
+    let probe = FakeProbe;
     let parts = LaunchParts {
         env: &scratch.env,
         host: &host,

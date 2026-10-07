@@ -97,8 +97,8 @@ fn codex_inline_flags_preserve_groups_and_do_not_invent_trust() {
         &crate::harness::operational::CodexContract::registered(),
     )
     .unwrap();
-    assert_eq!(plan.launch_argv[0], "--no-daemon");
-    let flag = &plan.launch_argv[2];
+    assert_eq!(plan.launch_argv[0], "-c");
+    let flag = &plan.launch_argv[1];
     assert!(flag.starts_with("hooks.SessionStart=["));
     assert!(flag.contains("user-hook"));
     assert!(flag.contains("space 雪"));
@@ -115,50 +115,33 @@ fn codex_inline_flags_preserve_groups_and_do_not_invent_trust() {
         plan.events
     );
 }
-/// P1 (ht-p03.15). Kills: a launch line that always prepends `--no-daemon` (Codex refuses the
-/// flag twice, so the line fails where the user's `codex` function already adds it or the
-/// caller passes it), one that drops it for a plain launch, and a second composition rule that
-/// disagrees with `launch`'s.
+/// Setup lines add only owned hook configuration and retain caller arguments.
 #[test]
-fn setup_codex_launch_argv_has_one_no_daemon() {
-    let count = |argv: &[String]| argv.iter().filter(|a| *a == "--no-daemon").count();
+fn setup_codex_launch_argv_does_not_inject_daemon_flags() {
     let plan = plan_codex_for_version(&[], &["/tmp/owned".into()], &pinned()).unwrap();
-    assert_eq!(count(&plan.launch_argv), 1);
-    assert_eq!(plan.launch_argv[0], "--no-daemon");
-    assert_eq!(plan.launch_argv[1], "-c");
-    assert_eq!(&plan.launch_argv[1..], plan.session_config.as_slice());
-
-    // The caller's own flag is the single one (kept, not duplicated).
+    assert_eq!(plan.launch_argv, plan.session_config);
+    assert_eq!(plan.launch_argv[0], "-c");
+    assert!(!plan.launch_argv.iter().any(|arg| arg == "--no-daemon"));
     let with_flag = plan
-        .launch_argv_for(vec!["--no-daemon".into(), "PROMPT".into()], false)
+        .launch_argv_for(vec!["--no-daemon".into(), "PROMPT".into()])
         .unwrap();
-    assert_eq!(count(&with_flag), 1, "{with_flag:?}");
-    assert_eq!(with_flag.last().unwrap(), "PROMPT");
-    // A shell function that adds it leaves none here, whether or not the caller had it.
-    for caller in [
-        vec!["PROMPT".to_owned()],
-        vec!["--no-daemon".into(), "PROMPT".into()],
-    ] {
-        let wrapped = plan.launch_argv_for(caller, true).unwrap();
-        assert_eq!(count(&wrapped), 0, "{wrapped:?}");
-        assert_eq!(wrapped.last().unwrap(), "PROMPT");
-        assert_eq!(wrapped[0], "-c");
-    }
-    // The same rule as `launch`.
     assert_eq!(
-        plan.launch_argv_for(vec!["exec".into(), "PROMPT".into()], false)
+        with_flag.iter().filter(|arg| *arg == "--no-daemon").count(),
+        1
+    );
+    assert_eq!(with_flag.last().unwrap(), "PROMPT");
+    assert_eq!(
+        plan.launch_argv_for(vec!["exec".into(), "PROMPT".into()])
             .unwrap(),
-        crate::harness::launch::compose_native_argv_with(
+        crate::harness::launch::compose_native_argv(
             crate::protocol::authority::Harness::Codex,
             vec!["exec".into(), "PROMPT".into()],
             plan.session_config.clone(),
-            false
         )
         .unwrap()
     );
-    // A daemon-mode conflict is refused rather than composed.
     assert_eq!(
-        plan.launch_argv_for(vec!["--daemon".into()], false),
+        plan.launch_argv_for(vec!["--daemon".into()]),
         Err(SetupError::Invalid)
     );
 }

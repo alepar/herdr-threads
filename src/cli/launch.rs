@@ -14,9 +14,7 @@
 //!    a network allowance), and a last fenced recheck;
 //! 3. Herdr's guarded `agent.start` with the argument array: the caller's
 //!    arguments byte for byte and in order (the owned configuration is on
-//!    disk, so launch adds none), and Codex `--no-daemon` exactly once at the
-//!    top level (`harness::launch::compose_native_argv`), or not at all when
-//!    the pane shell's `codex` wrapper already passes it ([`CodexShellProbe`]).
+//!    disk, so launch adds none). No daemon-mode argument is injected.
 //!
 //! Launch never registers, accepts or ACKs. After an accepted, correlated
 //! startup it asks the daemon to record a `managed_launch` binding on a seat
@@ -70,15 +68,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// How the pane's interactive shell resolves `codex`. Herdr starts the
-/// agent by name inside that shell, so a user function or alias wrapping
-/// `codex` runs first and may already pass `--no-daemon` (Codex refuses the
-/// flag twice). Injected so tests never run a real shell.
+/// Reads configuration exports from the pane's interactive shell.
+/// Injected so tests never run the user's real shell.
 pub trait CodexShellProbe {
-    /// The shell's description of `codex` (stdout only), or why it could
-    /// not be obtained.
-    fn resolve_codex(&self) -> Result<String, String>;
-
     /// The value the pane's interactive shell itself gives `var` (an `export`
     /// in its startup files), without the launcher's own value; `None` when
     /// the shell sets none or cannot be asked. Herdr's `agent.start` carries
@@ -88,12 +80,11 @@ pub trait CodexShellProbe {
     }
 }
 
-/// The bound on the shell probe; on timeout launch keeps adding `--no-daemon`.
+/// The bound on configuration-directory shell probes.
 pub const SHELL_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Runs the user's `$SHELL` (else `/bin/zsh`) interactively, as the pane
-/// does: zsh `whence -f codex 2>/dev/null || type codex`, otherwise
-/// `type codex`. Stdout only; stdin and stderr are null.
+/// Runs the user's `$SHELL` (else `/bin/zsh`) interactively to read exports.
+/// Stdout only; stdin and stderr are null.
 pub struct SystemShellProbe {
     pub shell: std::path::PathBuf,
     pub timeout: Duration,
@@ -161,20 +152,6 @@ impl SystemShellProbe {
 }
 
 impl CodexShellProbe for SystemShellProbe {
-    fn resolve_codex(&self) -> Result<String, String> {
-        let is_zsh = self
-            .shell
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.contains("zsh"));
-        let script = if is_zsh {
-            "whence -f codex 2>/dev/null || type codex"
-        } else {
-            "type codex"
-        };
-        self.run_script(script, None)
-    }
-
     fn pane_shell_env(&self, var: &str) -> Option<String> {
         const BEGIN: &str = "HT_PANE_ENV_BEGIN";
         const END: &str = "HT_PANE_ENV_END";
@@ -188,26 +165,6 @@ impl CodexShellProbe for SystemShellProbe {
         (!value.is_empty()).then(|| value.to_owned())
     }
 }
-
-/// Whether a shell's description of `codex` (a function body or alias)
-/// passes `--no-daemon` as a word of its own. Comment lines are ignored;
-/// `--no-daemon=...` is not the flag.
-pub fn wrapper_passes_no_daemon(description: &str) -> bool {
-    description
-        .lines()
-        .filter(|line| !line.trim_start().starts_with('#'))
-        .flat_map(|line| {
-            line.split(|c: char| {
-                c.is_whitespace() || matches!(c, '\'' | '"' | '`' | ';' | '(' | ')' | '|' | '&')
-            })
-        })
-        .any(|word| word == "--no-daemon")
-}
-
-/// The report text when the pane shell's `codex` wrapper already passes
-/// `--no-daemon` and launch therefore adds none.
-pub const CODEX_WRAPPER_NO_DAEMON: &str =
-    "shell function or alias already passes --no-daemon; launch added none";
 
 /// `launch --help` epilogue.
 pub const LAUNCH_HELP: &str = "Target:
@@ -233,11 +190,9 @@ fitted to Herdr's [a-z][a-z0-9_-]{0,31}. If another live agent holds it, launch
 retries once with -<short seat id> appended.
 
 Arguments after `--` are passed to the agent unchanged and in order; the owned
-configuration is on disk, so launch adds no hook arguments. Codex gets `--no-daemon`
-exactly once before any subcommand; when the pane shell's `codex` function or alias
-already passes it (probed with `$SHELL -ic`, 3 s bound), launch adds none and reports
-`codex_wrapper`. Other Codex subcommands, an explicit `--daemon`, a
-`--no-daemon` after the subcommand and a caller `-c hooks.*` override are refused. No
+configuration is on disk, so launch adds no hook or daemon-mode arguments.
+Unsupported Codex subcommands, an explicit `--daemon`, a caller `--no-daemon`
+after the subcommand and a caller `-c hooks.*` override are refused. No
 auto-approve flag is added.
 
 Launch is not receipt: it never checks in, accepts or ACKs. Invitations and messages
@@ -806,14 +761,6 @@ fn execute_guarded_inner(
         deadline: MonoInstant(parts.clock.monotonic_now().0.saturating_add(40_000)),
         cancellation: Cancellation::default(),
     };
-    // The pane's shell may wrap `codex` with its own `--no-daemon`; a probe
-    // failure or timeout keeps launch adding the flag.
-    let shell_passes_no_daemon = request.harness == ContextHarness::Codex
-        && parts
-            .shell_probe
-            .resolve_codex()
-            .is_ok_and(|description| wrapper_passes_no_daemon(&description));
-    let codex_wrapper = shell_passes_no_daemon.then_some(CODEX_WRAPPER_NO_DAEMON);
     let (name_hint, name_source) = request.name_hint();
     // 2-3. Policy: fresh read, seat, owned hooks, recheck, guarded start.
     let prepared = prepare_managed(
@@ -825,7 +772,6 @@ fn execute_guarded_inner(
             target: request.target.clone(),
             harness: policy_harness(request.harness),
             argv: request.argv.clone(),
-            shell_passes_no_daemon,
             name_hint: name_hint.clone(),
         },
         &budget,
@@ -933,7 +879,6 @@ fn execute_guarded_inner(
         "agent_name_candidates": agent_name_candidates,
         "argv": argv,
         "caller_argv": request.argv,
-        "codex_wrapper": codex_wrapper,
         "config_dir": config_dir,
         "codex": codex,
         "harness_version": observed.version,
@@ -955,7 +900,6 @@ fn execute_guarded_inner(
         "agent_name": agent_name,
         "agent_name_source": name_source,
         "argv": argv,
-        "codex_wrapper": codex_wrapper,
         "config_dir": config_dir,
         "codex": codex,
         "harness_version": {

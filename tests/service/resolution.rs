@@ -2842,13 +2842,9 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
         fixture.descriptor.instance_uuid,
         fixture.clock.as_ref(),
     );
-    // Claude launch never asks the pane shell how it resolves `codex`.
+    // No configuration exports from this pane shell.
     struct NoShell;
-    impl CodexShellProbe for NoShell {
-        fn resolve_codex(&self) -> Result<String, String> {
-            panic!("Claude launch probed the shell for codex")
-        }
-    }
+    impl CodexShellProbe for NoShell {}
     for unknown in [false, true] {
         let host = LaunchHost {
             sequence: AtomicU64::new(1),

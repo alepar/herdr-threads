@@ -19,10 +19,6 @@ pub struct ManagedLaunchRequest {
     pub harness: Harness,
     /// Native agent arguments; their order and bytes are retained.
     pub argv: Vec<String>,
-    /// Codex only: the pane's shell resolves `codex` to a wrapper (function
-    /// or alias) that already passes `--no-daemon`, so the composed argv
-    /// must not carry one (Codex refuses a repeated `--no-daemon`).
-    pub shell_passes_no_daemon: bool,
     /// Readable Herdr agent name wanted (`launch --name`, else the pane
     /// label); see [`NativeLaunchRequest::agent_name`].
     pub name_hint: Option<String>,
@@ -247,15 +243,14 @@ pub(super) const CODEX_EXEC_UNSUPPORTED_SUBCOMMANDS: &[&str] = &["fork", "review
 /// Where a managed Codex launch places the owned `-c` configuration. Codex
 /// 0.159.2 `exec` ignores root-level `hooks.*` overrides
 /// (`native-codex-matrix-1/hook-placement-probe`), so each subcommand form
-/// carries them at its own level; `--no-daemon` is a top-level flag and
-/// always precedes the subcommand.
+/// carries them at its own level.
 ///
 /// Evidence per form:
-/// - `Interactive`: `codex --no-daemon -c hooks.* [PROMPT]`, the launch line
+/// - `Interactive`: `codex -c hooks.* [PROMPT]`, the launch line
 ///   `setup codex` prints (root-level session overrides);
-/// - `Exec`: `codex --no-daemon exec -c hooks.* ... PROMPT`
+/// - `Exec`: `codex exec -c hooks.* ... PROMPT`
 ///   (`hook-placement-probe/exec.jsonl`, `codex-158-live-hook-capture/run1.sh`);
-/// - `ExecResume`: `codex --no-daemon exec ... resume ... -c hooks.* ID PROMPT`
+/// - `ExecResume`: `codex exec ... resume ... -c hooks.* ID PROMPT`
 ///   (`codex-158-live-hook-capture/run3.sh`, SessionStart resume captured);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodexLaunchForm {
@@ -384,31 +379,14 @@ fn codex_form(argv: &[String]) -> Result<(CodexLaunchForm, usize, Option<usize>)
     }
 }
 
-/// The native argument array a managed launch submits: for Claude the owned
-/// arguments then the caller's; for Codex `--no-daemon` exactly once at the
-/// top level, then the caller's arguments byte for byte and in order with the
-/// owned configuration inserted at the level of the caller's subcommand
-/// ([`CodexLaunchForm`]). An owned `--no-daemon` is dropped, never
-/// duplicated. Unsupported subcommands, conflicting daemon modes, a
-/// misplaced `--no-daemon` and caller `hooks.*` overrides are refused.
+/// Compose owned configuration at the caller's subcommand level, retaining
+/// caller arguments in order. No daemon-mode argument is added. Unsupported
+/// subcommands, conflicting daemon modes, misplaced caller `--no-daemon` and
+/// caller hook overrides are refused.
 pub fn compose_native_argv(
     harness: Harness,
     caller: Vec<String>,
     owned: Vec<String>,
-) -> Result<Vec<String>, ApiError> {
-    compose_native_argv_with(harness, caller, owned, false)
-}
-
-/// [`compose_native_argv`] for a pane whose shell wrapper may already pass
-/// `--no-daemon`. With `shell_passes_no_daemon` the composed Codex argv
-/// carries no `--no-daemon` at all (the wrapper supplies the single one), so
-/// a caller's own top-level `--no-daemon` is dropped too; every other check
-/// and placement is unchanged.
-pub fn compose_native_argv_with(
-    harness: Harness,
-    caller: Vec<String>,
-    owned: Vec<String>,
-    shell_passes_no_daemon: bool,
 ) -> Result<Vec<String>, ApiError> {
     if harness != Harness::Codex {
         return Ok(owned.into_iter().chain(caller).collect());
@@ -524,29 +502,6 @@ pub fn compose_native_argv_with(
     }
     let owned = owned.into_iter().filter(|arg| arg != "--no-daemon");
     let mut argv = Vec::with_capacity(caller.len() + 8);
-    let (caller, insert_at) = match (shell_passes_no_daemon, no_daemon.first()) {
-        (true, Some(&at)) => {
-            // The wrapper's flag is the single one; removing a top-level
-            // switch never changes the subcommand form.
-            let mut caller = caller;
-            caller.remove(at);
-            (
-                caller,
-                if at < insert_at {
-                    insert_at - 1
-                } else {
-                    insert_at
-                },
-            )
-        }
-        (true, None) => (caller, insert_at),
-        (false, _) => {
-            if no_daemon.is_empty() {
-                argv.push("--no-daemon".to_owned());
-            }
-            (caller, insert_at)
-        }
-    };
     let mut caller = caller.into_iter();
     argv.extend(caller.by_ref().take(insert_at));
     argv.extend(owned);
@@ -604,12 +559,7 @@ pub fn prepare_managed(
         ));
     }
     // Refuse an unconfigurable form before any host or seat work.
-    compose_native_argv_with(
-        request.harness,
-        request.argv.clone(),
-        Vec::new(),
-        request.shell_passes_no_daemon,
-    )?;
+    compose_native_argv(request.harness, request.argv.clone(), Vec::new())?;
     // All launch work shares one finite absolute deadline and cancellation token.
     let budget = CallBudget {
         deadline: MonoInstant(
@@ -668,12 +618,7 @@ pub fn prepare_managed(
     let hook = configuration.hook;
     // Owned configuration at the caller's subcommand level (Codex) or first
     // (Claude); the caller's arguments keep their bytes and order.
-    let argv = compose_native_argv_with(
-        request.harness,
-        request.argv,
-        configuration.argv,
-        request.shell_passes_no_daemon,
-    )?;
+    let argv = compose_native_argv(request.harness, request.argv, configuration.argv)?;
     if budget.is_exhausted(clock) {
         return Err(error(
             ErrorCode::DeadlineExceeded,
