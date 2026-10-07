@@ -184,6 +184,11 @@ impl crate::harness::adapter::HarnessAdapter for FourthInstaller {
         env: &crate::harness::adapter::SetupEnvironment,
     ) -> Result<crate::harness::adapter::ResolvedSetupScope, crate::harness::adapter::SetupFailure>
     {
+        if env.declared.contains_key("FIXTURE_SCOPE_ERROR") {
+            return Err(crate::harness::adapter::SetupFailure::Invalid(
+                "fixture scope unavailable".into(),
+            ));
+        }
         if let Some(counter) = env.declared.get("FIXTURE_SCOPE_CALLS") {
             let call = fs::read_to_string(counter).unwrap().parse::<u32>().unwrap() + 1;
             fs::write(counter, call.to_string()).unwrap();
@@ -310,6 +315,19 @@ impl crate::harness::adapter::InstallerPolicy for FourthInstaller {
         let crate::harness::adapter::ResolvedSetupScope::ConfigRoot(root) = s else {
             return None;
         };
+        // A lawful hooks-only registration declares no optional skill facility.
+        if root.file_name().is_some_and(|name| name == "hooks-only") {
+            return None;
+        }
+        if root
+            .file_name()
+            .is_some_and(|name| name == "escaping-skill")
+        {
+            return Some(crate::harness::adapter::InstallerSkillDestination {
+                root: root.clone(),
+                file: root.parent().unwrap().join("outside/SKILL.md"),
+            });
+        }
         Some(crate::harness::adapter::InstallerSkillDestination {
             root: root.clone(),
             file: root.join("skills/herdr-threads/SKILL.md"),
@@ -537,4 +555,216 @@ fn changing_scope_fixture() -> (Fixture, PathBuf, PathBuf, PathBuf) {
         fs::remove_file(f.root.join("bin").join(name)).unwrap();
     }
     (f, root, next_root, counter)
+}
+
+// Kills treating a provider's absent optional skill as installer failure or inspecting a guessed path.
+#[test]
+fn optional_skill_none_is_unavailable_and_hooks_succeed() {
+    use crate::harness::registry::{Registration, Registry};
+    for (confirm_missing, interactive) in [(false, true), (true, false)] {
+        let mut f = Fixture::new();
+        for name in ["claude", "codex"] {
+            fs::remove_file(f.root.join("bin").join(name)).unwrap();
+        }
+        let binary = f.root.join("bin/fourth-cli");
+        let marker = f.root.join("native-invoked");
+        fs::write(
+            &binary,
+            format!("#!/bin/sh\nprintf x > '{}'\nexit 99\n", marker.display()),
+        )
+        .unwrap();
+        fs::set_permissions(binary, fs::Permissions::from_mode(0o755)).unwrap();
+        let root = f.root.join("hooks-only");
+        f.env
+            .declared_environment
+            .insert("FIXTURE_INSTALL_ROOT".into(), root.clone().into_os_string());
+        // Skill inspection requires state; hooks-only setup does not. None must bypass inspection.
+        f.env.state_dir = None;
+        let registry = Registry::new(Box::leak(
+            vec![Registration::new(&FourthInstaller)].into_boxed_slice(),
+        ))
+        .unwrap();
+        let mut prompts = Vec::new();
+        let report = execute_for_registry(&registry, &f.env, confirm_missing, interactive, |q| {
+            prompts.push(q.to_owned());
+            Ok(true)
+        });
+        assert_eq!(report["exit_status"], 0, "{report}");
+        assert_eq!(
+            prompts,
+            if interactive {
+                vec!["Install herdr-threads hooks for fourth?"]
+            } else {
+                vec![]
+            }
+        );
+        assert_eq!(report["integrations"].as_array().unwrap().len(), 2);
+        assert_eq!(report["integrations"][0]["component"], "hooks");
+        assert_eq!(report["integrations"][0]["outcome"], "installed");
+        assert_eq!(
+            report["integrations"][1],
+            json!({"harness":"fourth","component":"skill","outcome":"unavailable",
+                   "detail":"registered adapter declares no skill destination"})
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("owned-hooks")).unwrap(),
+            "owned"
+        );
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        assert!(!f.root.join("state").exists());
+        assert!(!marker.exists());
+        let updated = execute_for_registry(&registry, &f.env, false, true, |_| {
+            panic!("owned hooks and unavailable skill cannot prompt")
+        });
+        assert_eq!(updated["exit_status"], 0, "{updated}");
+        assert_eq!(updated["integrations"][0]["outcome"], "updated");
+        assert_eq!(updated["integrations"][1]["outcome"], "unavailable");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+
+        // A second provider's genuine failures remain independent and ordered.
+        let codex = f.root.join("bin/codex");
+        fs::copy(f.root.join("bin/fourth-cli"), codex).unwrap();
+        let mixed = Registry::new(Box::leak(
+            vec![
+                Registration::new(&FourthInstaller),
+                Registration::new(&crate::harness::codex::CodexAdapter),
+            ]
+            .into_boxed_slice(),
+        ))
+        .unwrap();
+        let report = execute_for_registry(&mixed, &f.env, true, false, |_| panic!("explicit"));
+        assert_eq!(report["exit_status"], 1, "{report}");
+        assert_eq!(report["integrations"][0]["harness"], "fourth");
+        assert_eq!(report["integrations"][0]["outcome"], "updated");
+        assert_eq!(report["integrations"][1]["outcome"], "unavailable");
+        assert_eq!(report["integrations"][2]["harness"], "codex");
+        assert_eq!(report["integrations"][2]["outcome"], "failed");
+        assert_eq!(report["integrations"][3]["outcome"], "failed");
+        assert!(!f.root.join("codex").exists());
+        assert!(!marker.exists());
+    }
+}
+
+fn installer_provider_fixture(scope: &str) -> (Fixture, PathBuf) {
+    let mut f = Fixture::new();
+    for name in ["claude", "codex"] {
+        fs::remove_file(f.root.join("bin").join(name)).unwrap();
+    }
+    let binary = f.root.join("bin/fourth-cli");
+    fs::write(&binary, "#!/bin/sh\nexit 99\n").unwrap();
+    fs::set_permissions(binary, fs::Permissions::from_mode(0o755)).unwrap();
+    let root = f.root.join(scope);
+    f.env
+        .declared_environment
+        .insert("FIXTURE_INSTALL_ROOT".into(), root.clone().into_os_string());
+    (f, root)
+}
+
+// Kills conflating unavailable with declared-but-missing, declined, invalid, or failed scope.
+#[test]
+fn optional_skill_present_and_invalid_keep_their_distinct_verdicts() {
+    use crate::harness::registry::{Registration, Registry};
+    let registry = Registry::new(Box::leak(
+        vec![Registration::new(&FourthInstaller)].into_boxed_slice(),
+    ))
+    .unwrap();
+    let (f, root) = installer_provider_fixture("present-skill");
+    let skipped = execute_for_registry(&registry, &f.env, false, false, |_| panic!("no tty"));
+    assert_eq!(skipped["exit_status"], 0);
+    assert_eq!(skipped["integrations"][1]["outcome"], "skipped");
+    assert!(!root.exists());
+    let mut prompts = Vec::new();
+    let declined = execute_for_registry(&registry, &f.env, false, true, |q| {
+        prompts.push(q.to_owned());
+        Ok(false)
+    });
+    assert_eq!(declined["exit_status"], 0);
+    assert_eq!(declined["integrations"][1]["outcome"], "declined");
+    assert_eq!(prompts.len(), 2);
+    assert!(!root.exists());
+    let (f, root) = installer_provider_fixture("escaping-skill");
+    let invalid = execute_for_registry(&registry, &f.env, true, false, |_| panic!("explicit"));
+    assert_eq!(invalid["exit_status"], 1, "{invalid}");
+    assert_eq!(invalid["integrations"][0]["outcome"], "installed");
+    assert_eq!(invalid["integrations"][1]["outcome"], "failed");
+    assert!(!f.root.join("outside").exists());
+    assert_eq!(fs::read_dir(root).unwrap().count(), 1);
+    let (mut f, root) = installer_provider_fixture("hooks-only");
+    f.env
+        .declared_environment
+        .insert("FIXTURE_SCOPE_ERROR".into(), "yes".into());
+    let failed = execute_for_registry(&registry, &f.env, true, false, |_| panic!("bad scope"));
+    assert_eq!(failed["exit_status"], 1, "{failed}");
+    assert_eq!(failed["integrations"][0]["outcome"], "failed");
+    assert_eq!(failed["integrations"][1]["outcome"], "failed");
+    assert!(!root.exists());
+}
+
+// Kills turning a refused declared skill into optional absence or overwriting its bytes.
+#[test]
+fn declared_skill_ownership_refusals_preserve_bytes_and_hooks() {
+    use crate::harness::registry::{Registration, Registry};
+    let registry = Registry::new(Box::leak(
+        vec![Registration::new(&FourthInstaller)].into_boxed_slice(),
+    ))
+    .unwrap();
+    for kind in [
+        "foreign",
+        "edited",
+        "partial",
+        "malformed",
+        "symlink",
+        "oversized",
+    ] {
+        let (f, root) = installer_provider_fixture("present-skill");
+        let report = execute_for_registry(&registry, &f.env, true, false, |_| panic!("explicit"));
+        assert_eq!(report["exit_status"], 0, "{report}");
+        let skill = root.join("skills/herdr-threads/SKILL.md");
+        let manifest =
+            setup::manifest_path(f.env.state_dir.as_ref().unwrap(), "fourth-skill", &skill);
+        match kind {
+            "foreign" => {
+                fs::remove_file(&manifest).unwrap();
+                fs::write(&skill, "foreign skill").unwrap();
+            }
+            "edited" => fs::write(&skill, "edited skill").unwrap(),
+            "partial" => {
+                let mut value: Value =
+                    serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+                value["complete"] = json!(false);
+                fs::write(&manifest, serde_json::to_vec(&value).unwrap()).unwrap();
+            }
+            "malformed" => fs::write(&manifest, "invalid manifest").unwrap(),
+            "symlink" => {
+                fs::remove_file(&skill).unwrap();
+                let target = f.root.join("foreign-target");
+                fs::write(&target, "foreign target bytes").unwrap();
+                std::os::unix::fs::symlink(target, &skill).unwrap();
+            }
+            "oversized" => fs::write(&skill, vec![b'x'; 1_048_577]).unwrap(),
+            _ => unreachable!(),
+        }
+        let before = fs::read(&skill).unwrap();
+        let manifest_before = fs::read(&manifest).ok();
+        let report = execute_for_registry(&registry, &f.env, false, true, |_| {
+            panic!("ownership refusal or owned hooks must not prompt")
+        });
+        assert_eq!(report["exit_status"], 1, "{kind}: {report}");
+        assert_eq!(report["integrations"][0]["outcome"], "updated", "{kind}");
+        assert_eq!(report["integrations"][1]["outcome"], "failed", "{kind}");
+        assert_eq!(fs::read(&skill).unwrap(), before, "{kind}");
+        assert_eq!(fs::read(&manifest).ok(), manifest_before, "{kind}");
+        assert_eq!(
+            fs::read_to_string(root.join("owned-hooks")).unwrap(),
+            "owned"
+        );
+        if kind == "symlink" {
+            assert!(
+                fs::symlink_metadata(skill)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+        }
+    }
 }
