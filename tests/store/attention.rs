@@ -296,7 +296,8 @@ fn burst_after_handoff(burst: i64) -> Connection {
 // native-codex-matrix-2 P6: under an invitation burst the handoff thread's
 // own invitation is older than the newest MAX_DIGEST_IDS, yet it is listed
 // (first), so the hook's step 1 emits its plain, non-optional accept line
-// before the read and ACK; the newest burst invitations fill the rest. Holds
+// immediately after the pinned inbox action; the newest burst invitations fill
+// the rest after the reply template. Holds
 // also when the seat walk saturates and the handoff invitation lies outside
 // its window (one bounded per-thread walk). Kills: a newest-only selection,
 // a listed count above MAX_DIGEST_IDS, an optional label on the handoff
@@ -323,9 +324,9 @@ fn burst_lists_the_receipt_threads_older_invitation_first() {
         assert_eq!(
             actions.items[..3],
             [
+                "- pending mail for th and other threads: herdr-threads inbox",
                 "- accept: herdr-threads accept th",
-                "- read: herdr-threads read th --recent 20",
-                "- ACK after reading: herdr-threads ack m-h",
+                "- reply (replace <text>): herdr-threads send th --body '<text>'",
             ],
             "{burst}: {:?}",
             actions.items
