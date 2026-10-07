@@ -573,6 +573,9 @@ class RequiredPreflight(unittest.TestCase):
         self.root = self.base / "repo"
         self.canary = self.root / "scripts/canary"
         self.canary.mkdir(parents=True)
+        # A copied ROOT needs its own Git boundary even when TMPDIR is under an ignored checkout path.
+        rc, _, err = runner.bounded_capture(["git", "init", "-q", str(self.root)], timeout=5)
+        self.assertEqual(rc, 0, err)
         # Copy the real consumer sources, without adding a production companion or shortcut.
         for name in ("run.py", "report.py", "versions.py", "isolation.py",
                      "companion_schema.json", "artifact_index_schema.json"):
@@ -651,6 +654,161 @@ class RequiredPreflight(unittest.TestCase):
         self.assertNotIn("inert-present-secret", cp.stderr + cp.stdout)
         self.assertFalse((self.base / "out").exists(), "refused before output/index/work")
         self.assertFalse(self.calls.exists(), "no partial attempt, companion, npm or model")
+
+    def build_fixture(self, behavior="success"):
+        self.registry(self.descriptors())
+        self.discovery.write_text(self.discovery.read_text().replace(
+            "assert sys.argv", f"pathlib.Path({str(self.base / 'executed-binary')!r}).write_text(str(pathlib.Path(__file__).resolve()))\nassert sys.argv"))
+        with self.companion.open("a") as f:
+            f.write(f"pathlib.Path({str(self.base / 'dispatch-binary')!r}).write_text(args['--binary'])\n")
+        log = self.base / "build.json"
+        cargo = self.bin / "cargo"
+        cargo.write_text(f"#!{sys.executable}\nimport json,os,pathlib,shutil,signal,sys,time\n"
+            f"log=pathlib.Path({str(log)!r})\n"
+            "target=pathlib.Path(os.environ.get('CARGO_TARGET_DIR') or 'target').resolve()\n"
+            "log.write_text(json.dumps({'argv':sys.argv[1:],'cwd':os.getcwd(),'target':str(target),'pid':os.getpid()}))\n"
+            f"behavior={behavior!r}\n"
+            "if behavior == 'hang':\n"
+            " child=os.fork()\n"
+            " if child == 0:\n"
+            "  def stop(signum, frame):\n"
+            "   log.with_suffix('.child-stopped').write_text(str(os.getpid()));sys.exit(0)\n"
+            "  signal.signal(signal.SIGTERM,stop)\n"
+            "  log.with_suffix('.child-pid').write_text(str(os.getpid()))\n"
+            "  while True: time.sleep(.02)\n"
+            " def stop(signum,frame):\n"
+            "  os.kill(child,signal.SIGTERM);os.waitpid(child,0)\n"
+            "  log.with_suffix('.reaped').write_text(str(child));sys.exit(0)\n"
+            " signal.signal(signal.SIGTERM,stop)\n"
+            " while not log.with_suffix('.child-pid').exists(): time.sleep(.005)\n"
+            " print('offline cargo lock wait',file=sys.stderr,flush=True)\n"
+            " while True: time.sleep(.02)\n"
+            "if behavior == 'failure':\n"
+            " print('offline build failure',file=sys.stderr);sys.exit(17)\n"
+            "binary=target/'debug/herdr-threads'\n"
+            "binary.parent.mkdir(parents=True,exist_ok=True)\n"
+            f"shutil.copy2({str(self.discovery)!r},binary)\n")
+        cargo.chmod(0o755)
+        return log
+
+    def build_call(self, env, timeout=10):
+        argv = ["bash", str(self.root / "scripts/harness-canary.sh"), "--harness", "fourth",
+                "--model-tier", "required", "--runtime-command-file", str(self.runtime),
+                "--out", str(self.base / "out")]
+        return runner.bounded_capture(argv, timeout=timeout, env=env, cwd=self.base)
+
+    def test_default_build_timeout_cancels_and_reaps_before_output(self):
+        import time
+        log = self.build_fixture("hang")
+        copied = self.canary / "run.py"
+        source = copied.read_text()
+        # Only the private copy is calibrated; the real product has an immutable 60s bound.
+        calibrated = source.replace("BUILD_TIMEOUT = 60", "BUILD_TIMEOUT = 0.3")
+        copied.write_text(calibrated)
+        import difflib
+        (self.base / "deadline-calibration.diff").write_text("".join(difflib.unified_diff(
+            source.splitlines(keepends=True), calibrated.splitlines(keepends=True),
+            fromfile="production-run.py", tofile="private-calibrated-run.py")))
+        (self.base / "deadline-calibration.json").write_text(json.dumps({
+            "before": runner.hashlib.sha256(source.encode()).hexdigest(),
+            "after": runner.hashlib.sha256(calibrated.encode()).hexdigest(),
+            "replacement": "BUILD_TIMEOUT = 60 -> BUILD_TIMEOUT = 0.3",
+            "replacements": source.count("BUILD_TIMEOUT = 60")}))
+        observed = None
+        try:
+            started = time.monotonic()
+            try:
+                observed = self.build_call(self.env, timeout=3)
+            except ValueError as exc:
+                observed = str(exc)  # BASE outer safety timeout is failure, never product refusal.
+            elapsed = time.monotonic() - started
+        finally:
+            # Record BASE's safety cancellation; GREEN must prove product termination and child reaping.
+            if log.exists():
+                pids = [json.loads(log.read_text())["pid"]]
+                child_file = log.with_suffix('.child-pid')
+                if child_file.exists():
+                    pids.append(int(child_file.read_text()))
+                (self.base / "timeout-observation.json").write_text(json.dumps({
+                    "product_result": [observed[0], observed[1].decode(), observed[2].decode()]
+                                      if isinstance(observed, tuple) else observed,
+                    "elapsed": elapsed, "owned_pids": pids}))
+                if isinstance(observed, tuple):
+                    for pid in pids:
+                        with self.assertRaises(ProcessLookupError):
+                            os.kill(pid, 0)
+                    self.assertEqual(log.with_suffix('.reaped').read_text(), child_file.read_text())
+                    self.assertEqual(log.with_suffix('.child-stopped').read_text(), child_file.read_text())
+        self.assertIsInstance(observed, tuple, "product build must refuse before the outer safety timeout")
+        rc, out, err = observed
+        self.assertEqual(rc, 2, err)
+        self.assertIn(b"cannot build discovery binary", err)
+        self.assertIn(b"deadline exceeded", err)
+        self.assertLess(elapsed, 2)
+        self.assertEqual(out, b"")
+        self.assertFalse((self.base / "out").exists())
+        self.assertFalse(self.discovery_log.exists())
+        self.assertFalse(self.calls.exists())
+
+    def test_default_build_failure_is_infrastructure_before_discovery(self):
+        log = self.build_fixture("failure")
+        rc, out, err = self.build_call(self.env)
+        self.assertEqual(rc, 2, err)
+        self.assertIn(b"cannot build discovery binary", err)
+        self.assertIn(b"exited 17", err)
+        self.assertIn(b"offline build failure", err)
+        self.assertEqual(out, b"")
+        self.assertFalse((self.base / "out").exists())
+        self.assertFalse(self.discovery_log.exists())
+        self.assertFalse(self.calls.exists())
+        self.assertEqual(json.loads(log.read_text())["cwd"], str(self.root))
+
+    def test_default_build_binds_default_absolute_and_root_relative_targets(self):
+        import shutil
+        log = self.build_fixture()
+        stale = self.base / "private-target/debug/herdr-threads"
+        stale.parent.mkdir(parents=True)
+        stale.write_text(f"#!{sys.executable}\nimport pathlib,sys\n"
+                         f"pathlib.Path({str(self.base / 'stale-called')!r}).touch()\nsys.exit(93)\n")
+        stale.chmod(0o755)
+        config = self.root / ".cargo/config.toml"
+        config.parent.mkdir()
+        config.write_text('[build]\ntarget-dir = "configured-competing-target"\n')
+        for selection, target in (("private-target", self.root / "private-target"),
+                                  (str(self.base / "absolute-target"), self.base / "absolute-target"),
+                                  (None, self.root / "target")):
+            with self.subTest(selection=selection):
+                (self.base / "stale-called").unlink(missing_ok=True)
+                env = dict(self.env)
+                if selection is not None:
+                    env["CARGO_TARGET_DIR"] = selection
+                rc, out, err = self.build_call(env)
+                self.assertEqual(rc, 2, err)
+                self.assertIn(b"CANARY_FOURTH_KEY", err)
+                self.assertFalse((self.base / "stale-called").exists())
+                self.assertFalse((self.base / "out").exists())
+                self.assertFalse(self.calls.exists())
+                built = json.loads(log.read_text())
+                self.assertEqual(built['cwd'], str(self.root))
+                self.assertEqual(built['target'], str(target))
+                self.assertEqual(built['argv'], ['build', '--locked', '--target-dir', str(target)])
+                binary = target / "debug/herdr-threads"
+                self.assertEqual(binary.read_bytes(), self.discovery.read_bytes())
+                self.assertEqual((self.base / 'executed-binary').read_text(), str(binary))
+                self.assertEqual(json.loads(self.discovery_log.read_text().splitlines()[-1]), ['adapters', '--json'])
+                env['CANARY_FOURTH_KEY'] = 'inert-present-secret'
+                rc, out, err = self.build_call(env)
+                self.assertEqual(rc, 0, err)
+                self.assertEqual(self.calls.read_text().splitlines(), ['fourth live'])
+                self.assertEqual((self.base / 'dispatch-binary').read_text(), str(binary))
+                self.assertNotIn(b'inert-present-secret', out + err)
+                self.assertTrue(all(b'inert-present-secret' not in path.read_bytes()
+                                    for path in (self.base / 'out').rglob('*') if path.is_file()))
+                request = json.loads(next((self.base / 'out').rglob('request.json')).read_text())
+                self.assertEqual(request['adapter']['id'], 'fourth')
+                shutil.rmtree(self.base / 'out')
+                self.calls.unlink()
+        self.assertFalse((self.root / 'configured-competing-target').exists())
 
     def test_required_preflight_checks_all_selected_keys_before_output_or_attempts(self):
         values = self.descriptors()

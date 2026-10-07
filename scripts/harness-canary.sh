@@ -337,8 +337,9 @@ if [ -n "$OUT" ]; then OUT=$(abs_path "$OUT"); refuse_out "$OUT"; fi
 
 if [ "$MODE" = run ] && [ -z "${HT_CANARY_SOURCE_ONLY:-}" ]; then
   if [ -z "$HT_BIN" ]; then
-    (cd "$ROOT" && nice cargo build --locked >&2) || die "cannot build discovery binary"
-    HT_BIN=${CARGO_TARGET_DIR:-$ROOT/target}/debug/herdr-threads
+    # One-minute bounded owned build, before OUT/work; same absolute target for Cargo and discovery.
+    # CARGO_TARGET_DIR resolves against ROOT; absent/empty selects ROOT/target, overriding Cargo config.
+    HT_BIN=$(python3 "$CANARY/run.py" build-discovery) || die "cannot build discovery binary"
   fi
   strategy_args=(strategy --binary "$HT_BIN" --harness "$HARNESS"
     --versions "$VERSIONS" --model-tier "$MODEL_TIER" --baseline-json "$BJSON")

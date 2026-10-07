@@ -116,6 +116,32 @@ def bounded_capture(argv, timeout=60, env=None, cwd=None, stdout_limit=65536, st
         proc.stderr.close()
 
 
+# Default discovery builds share the repository's one-minute incremental build budget.
+BUILD_TIMEOUT = 60
+
+
+def build_discovery():
+    """Build before output allocation; explicitly override Cargo's configured target directory."""
+    root = HERE.parents[1]
+    selected = pathlib.Path(os.environ.get("CARGO_TARGET_DIR") or "target")
+    target = (root / selected).resolve()
+    env = dict(os.environ, CARGO_TARGET_DIR=str(target))
+    try:
+        code, raw, err = bounded_capture(
+            ["nice", "cargo", "build", "--locked", "--target-dir", str(target)],
+            timeout=BUILD_TIMEOUT, env=env, cwd=root)
+    except (ValueError, OSError) as e:
+        raise ValueError("cannot build discovery binary: " + str(e)) from e
+    # Diagnostics remain bounded by bounded_capture; stdout is reserved for the bound binary path.
+    for data in (raw, err):
+        if data:
+            print(data.decode("utf-8", errors="replace"), end="", file=sys.stderr)
+    if code:
+        raise ValueError(f"cannot build discovery binary: cargo exited {code}")
+    print(target / "debug/herdr-threads")
+    return 0
+
+
 def emit_shell_functions(companion, timeout=5):
     """Complete one bounded owned emission before the shell loads any functions."""
     code, raw, _ = bounded_capture([sys.executable, str(companion), "--shell-functions"], timeout=timeout)
@@ -803,6 +829,8 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, _interrupted)
     signal.signal(signal.SIGINT, _interrupted)
     try:
+        if sys.argv[1:] == ["build-discovery"]:
+            sys.exit(build_discovery())
         if sys.argv[1:2] == ["shell-functions"]:
             if len(sys.argv) != 3:
                 raise ValueError("shell-functions needs one companion path")
