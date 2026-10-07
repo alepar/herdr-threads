@@ -5895,6 +5895,14 @@ mod registered_resume {
                     ))
                 }
                 Command::CheckIn(c) => {
+                    if self.transcript.as_ref().is_some_and(|path| {
+                        path.with_file_name("task52-checkin-failure.json").exists()
+                    }) {
+                        return Err(ApiError::new(
+                            ErrorCode::ReadBudgetExhausted,
+                            "task52 uncertain preparation",
+                        ));
+                    }
                     let mut claim = c.claim;
                     if matches!(
                         c.mode,
@@ -5920,7 +5928,28 @@ mod registered_resume {
                     d.seat = SeatId::new("registered-seat");
                     Ok(CommandResult::AttentionDigest(d))
                 }
-                Command::Directory(_) => Ok(CommandResult::Directory(empty())),
+                Command::Directory(_) => {
+                    if self.transcript.as_ref().is_some_and(|path| {
+                        path.with_file_name("task52-directory-failure.json")
+                            .exists()
+                    }) {
+                        return Err(crate::test_support::unserved(
+                            "task52 output preparation failed",
+                        ));
+                    }
+                    Ok(CommandResult::Directory(empty()))
+                }
+                Command::HotThreads(query) => {
+                    assert_eq!(query.seat.as_str(), "registered-seat");
+                    let path = self
+                        .transcript
+                        .as_ref()
+                        .unwrap()
+                        .with_file_name("task52-hot.json");
+                    let hot = read_fixture_json(&path, 4096)
+                        .map_err(|_| crate::test_support::unserved("no scripted hot threads"))?;
+                    Ok(CommandResult::HotThreads(hot))
+                }
                 Command::HookParseFailure(_) => Ok(CommandResult::HookParseFailureRecorded),
                 _ => Err(crate::test_support::unserved(
                     "unused registered fixture command",
@@ -6837,6 +6866,316 @@ mod registered_resume {
             bytes: serde_json::to_vec(&p).unwrap(),
             registered_event: Some(callback.into()),
         }
+    }
+    fn task52_registration() -> &'static Registration {
+        builtins()
+            .by_id(builtins().agent("hermes").unwrap())
+            .unwrap()
+    }
+    fn task52_hot_fixture() -> Fixture {
+        let f = Fixture::new(true);
+        write_fixture_json(
+            &f.root.join("task52-hot.json"),
+            &crate::protocol::results::HotThreads {
+                hot: vec![hot_row("task52-hot", "hot \"topic\"\npeer")],
+                overflow: vec![],
+            },
+        )
+        .unwrap();
+        f
+    }
+    fn task52_commands(f: &Fixture) -> (usize, usize) {
+        assert!(f.service.requests().is_empty());
+        let seen = f.service.seen.lock().unwrap();
+        assert!(
+            !seen
+                .iter()
+                .any(|c| matches!(c, Command::Ack(_) | Command::AckDisplayed(_)))
+        );
+        (
+            seen.iter()
+                .filter(|c| matches!(c, Command::CheckIn(_)))
+                .count(),
+            seen.iter()
+                .filter(|c| matches!(c, Command::HotThreads(_)))
+                .count(),
+        )
+    }
+    fn task52_output(outcome: &HookOutcome, mode: &str, input: &HookInput) -> serde_json::Value {
+        assert_eq!(outcome.diagnostic, None);
+        let output: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+        let original: serde_json::Value = serde_json::from_slice(&input.bytes).unwrap();
+        assert_eq!(
+            output["lifecycle_ack"],
+            serde_json::json!({
+                "event_id": original["event_id"], "session_id": original["session_id"], "mode": mode
+            })
+        );
+        output
+    }
+    fn task52_clear_input(f: &Fixture) -> HookInput {
+        let r = task52_registration();
+        let start = hermes_input("pre_llm_call", "task52-old", "turn-1", 1, "top");
+        task52_output(&f.run(r, &start), "startup", &start);
+        let saved = f.saved().unwrap();
+        let before = task52_commands(f);
+        let reset = hermes_input("on_session_reset", "task52-new", "reset", 2, "unknown");
+        let observer = f.run(r, &reset);
+        assert!(observer.stdout.is_empty());
+        assert!(observer.attention.is_none());
+        assert_eq!(f.saved(), Some(saved));
+        assert_eq!(task52_commands(f), before);
+        hermes_input("pre_llm_call", "task52-new", "turn-3", 3, "top")
+    }
+    fn task52_assert_recovery(output: &serde_json::Value) {
+        let context = output["context"].as_str().unwrap();
+        assert!(
+            context
+                .lines()
+                .any(|line| line == crate::harness::recovery_instruction()),
+            "{context}"
+        );
+        let (_, data) = split_recovery(context);
+        let row: serde_json::Value = data
+            .iter()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|row| row["thread"] == "task52-hot")
+            .expect("actual escaped hot row missing");
+        assert_eq!(row["topic"], "hot \"topic\"peer");
+        assert_eq!(row["hot"], "pending_receipt");
+    }
+    #[test]
+    fn task52_facade_declared_reset_clear_has_hot_rows_guidance_and_precise_ack() {
+        let f = task52_hot_fixture();
+        let clear = task52_clear_input(&f);
+        let outcome = f.run(task52_registration(), &clear);
+        let output = task52_output(&outcome, "clear", &clear);
+        // BASE passes precise immutable ACK, then fails actual recovery composition.
+        task52_assert_recovery(&output);
+        assert_eq!(task52_commands(&f), (2, 1));
+        let sequence: Vec<_> = f
+            .service
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|c| match c {
+                Command::CheckIn(c) => Some(("check-in", c.claim.harness.as_str().to_owned())),
+                Command::HotThreads(_) => Some(("hot", "hermes".into())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sequence,
+            [
+                ("check-in", "hermes".into()),
+                ("check-in", "hermes".into()),
+                ("hot", "hermes".into())
+            ]
+        );
+        assert!(outcome.attention.is_some());
+        let saved = f.saved().unwrap();
+        assert_eq!(saved.session, SessionReference::Native("task52-new".into()));
+        let contexts =
+            crate::cli::seat_contexts(&f.paths, f.instance, &SeatId::new("registered-seat"))
+                .unwrap();
+        assert_eq!(
+            contexts.prepared_kind_for_event("pre_llm_call-3").unwrap(),
+            EventKind::Clear
+        );
+        assert!(contexts.attention_mark(saved.execution).is_none());
+        outcome.attention.unwrap().commit().unwrap();
+        assert!(contexts.attention_mark(saved.execution).is_some());
+    }
+    #[test]
+    fn task52_accepted_kind_replay_and_refused_neighbors_preserve_original_eligibility() {
+        let r = task52_registration();
+        let f = task52_hot_fixture();
+        let clear = task52_clear_input(&f);
+        // Failure after accepted CheckIn keeps its canonical result for replay,
+        // and cannot commit the undelivered attention mark.
+        write_fixture_json(&f.root.join("task52-directory-failure.json"), &true).unwrap();
+        let failed = f.run(r, &clear);
+        assert!(failed.diagnostic.is_some());
+        assert!(failed.attention.is_none());
+        assert_eq!(task52_commands(&f), (2, 0));
+        let saved = f.saved().unwrap();
+        let contexts =
+            crate::cli::seat_contexts(&f.paths, f.instance, &SeatId::new("registered-seat"))
+                .unwrap();
+        assert!(contexts.attention_mark(saved.execution).is_none());
+        assert!(
+            contexts
+                .completed_for_event("pre_llm_call-3")
+                .unwrap()
+                .is_some()
+        );
+        std::fs::remove_file(f.root.join("task52-directory-failure.json")).unwrap();
+        let delivered = f.run(r, &clear);
+        task52_assert_recovery(&task52_output(&delivered, "clear", &clear));
+        assert_eq!(task52_commands(&f), (2, 1));
+        assert_eq!(f.saved(), Some(saved.clone()));
+        let replay = f.run(r, &clear);
+        task52_assert_recovery(&task52_output(&replay, "clear", &clear));
+        assert_eq!(task52_commands(&f), (2, 2));
+        assert_eq!(f.saved(), Some(saved));
+        for (session, seq, expected) in [
+            ("task52-new", 4, "current"),
+            ("unknown-rotation", 5, "startup"),
+        ] {
+            let i = hermes_input("pre_llm_call", session, "neighbor", seq, "top");
+            let output = task52_output(&f.run(r, &i), expected, &i);
+            assert!(
+                !output["context"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&crate::harness::recovery_instruction())
+            );
+            assert_eq!(task52_commands(&f).1, 2);
+        }
+        for (callback, role, seq) in [
+            ("on_session_start", "unknown", 6),
+            ("pre_llm_call", "child", 7),
+            ("pre_llm_call", "unknown", 8),
+        ] {
+            let original = f.saved();
+            let before = task52_commands(&f);
+            let i = hermes_input(callback, "unknown-rotation", "excluded", seq, role);
+            let outcome = f.run(r, &i);
+            assert!(outcome.attention.is_none());
+            assert_eq!(f.saved(), original);
+            assert_eq!(task52_commands(&f), before);
+        }
+        let before = task52_commands(&f);
+        let saved = f.saved();
+        let mut tool = hermes_input("pre_llm_call", "unknown-rotation", "neighbor", 9, "top");
+        let mut p: serde_json::Value = serde_json::from_slice(&tool.bytes).unwrap();
+        p["callback"] = "post_tool_call".into();
+        p["role_association"]["provenance"] = "qualified_pre_llm_cache".into();
+        p["parent_session_id"] = serde_json::Value::Null;
+        p["shape"]["parent_session_id"] = serde_json::json!({"presence":"missing","type":"absent"});
+        tool.bytes = serde_json::to_vec(&p).unwrap();
+        tool.registered_event = Some("post_tool_call".into());
+        let outcome = f.run(r, &tool);
+        assert_eq!(outcome.diagnostic, None);
+        assert_eq!(outcome.stdout, br#"{"context":null,"lifecycle_ack":null}"#);
+        assert!(outcome.attention.is_none());
+        let child = HookInput {
+            registered_event: Some("SubagentStart".into()),
+            bytes: serde_json::to_vec(&serde_json::json!({
+                "hook_event_name": "SubagentStart", "session_id": "child-session",
+                "source": "startup", "agent_id": "child", "agent_type": "worker",
+                "turn_id": "child-turn", "cwd": "/tmp", "model": "test",
+                "permission_mode": "default", "transcript_path": null
+            }))
+            .unwrap(),
+        };
+        let outcome = f.run(
+            builtins()
+                .by_id(builtins().agent("claude").unwrap())
+                .unwrap(),
+            &child,
+        );
+        assert!(outcome.attention.is_none());
+        assert!(!String::from_utf8_lossy(&outcome.stdout).contains("task52-hot"));
+        assert_eq!(f.saved(), saved);
+        assert_eq!(task52_commands(&f), before);
+        // Each hint neighbor starts from an otherwise eligible qualified startup.
+        for refusal in ["expired", "wrong-session", "wrong-target", "stale-order"] {
+            let f = task52_hot_fixture();
+            let start = hermes_input("pre_llm_call", "task52-old", "first", 1, "top");
+            task52_output(&f.run(r, &start), "startup", &start);
+            let saved = f.saved().unwrap();
+            let mut reset = hermes_input("on_session_reset", "task52-new", "reset", 2, "unknown");
+            if refusal == "expired" || refusal == "stale-order" {
+                let mut p: serde_json::Value = serde_json::from_slice(&reset.bytes).unwrap();
+                if refusal == "expired" {
+                    p["started_at"] = 1.into();
+                    p["deadline_at"] = 1201.into();
+                    p["observation_order"]["observed_at_millis"] = 1.into();
+                } else {
+                    p["observation_order"]["sequence"] = 1.into();
+                }
+                reset.bytes = serde_json::to_vec(&p).unwrap();
+            }
+            if refusal == "wrong-target" {
+                let mut a = args(&f.root);
+                a.harness = OccupantHarness::Agent(builtins().agent("hermes").unwrap()).into();
+                a.event = reset.registered_event.clone();
+                let outcome = run_hook_registered(
+                    r,
+                    &a,
+                    &claude(),
+                    &reset.bytes,
+                    &HookEnv {
+                        herdr_env: true,
+                        pane: Some("w9:p2".into()),
+                    },
+                    Instant::now() + LIFECYCLE_BUDGET,
+                    Arc::new(SystemClock::new()),
+                    None,
+                );
+                assert!(outcome.attention.is_none());
+            } else {
+                assert!(f.run(r, &reset).attention.is_none());
+            }
+            assert_eq!(f.saved(), Some(saved));
+            let session = if refusal == "wrong-session" {
+                "another-session"
+            } else {
+                "task52-new"
+            };
+            let i = hermes_input("pre_llm_call", session, "next", 3, "top");
+            let output = task52_output(&f.run(r, &i), "startup", &i);
+            assert!(
+                !output["context"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&crate::harness::recovery_instruction()),
+                "{refusal}"
+            );
+            assert_eq!(task52_commands(&f), (2, 0), "{refusal}");
+        }
+        let f = task52_hot_fixture();
+        let clear = task52_clear_input(&f);
+        let before = f.saved();
+        write_fixture_json(&f.root.join("task52-checkin-failure.json"), &true).unwrap();
+        let failed = f.run(r, &clear);
+        assert!(failed.diagnostic.is_some());
+        assert!(failed.attention.is_none());
+        assert_eq!(f.saved(), before);
+        let contexts =
+            crate::cli::seat_contexts(&f.paths, f.instance, &SeatId::new("registered-seat"))
+                .unwrap();
+        let pending = contexts.pending().unwrap().unwrap();
+        assert_eq!(
+            contexts.prepared_kind_for_event("pre_llm_call-3").unwrap(),
+            EventKind::Clear
+        );
+        assert_eq!(task52_commands(&f), (2, 0));
+        std::fs::remove_file(f.root.join("task52-checkin-failure.json")).unwrap();
+        let delivered = f.run(r, &clear);
+        task52_assert_recovery(&task52_output(&delivered, "clear", &clear));
+        assert!(contexts.pending().unwrap().is_none());
+        let checks: Vec<_> = f
+            .service
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|c| {
+                if let Command::CheckIn(c) = c {
+                    Some(c.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(checks[1], checks[2]);
+        assert_eq!(
+            checks[2].operation.as_str(),
+            pending.operation_id.to_string()
+        );
     }
     #[test]
     fn hermes_qualified_turn_reset_and_rotation_never_infer_resume() {
