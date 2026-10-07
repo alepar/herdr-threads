@@ -14,6 +14,127 @@ impl Clock for TestClock {
         MonoInstant(1)
     }
 }
+
+#[test]
+fn task48_uncertain_retry_never_begins_or_launches() {
+    let mut observed = vec![];
+    for (label, bytes) in [
+        ("malformed", "{"),
+        ("possible-start", "{\"possible_start\":true}"),
+        (
+            "started-without-thread",
+            "{\"possible_start\":false,\"launch\":{\"outcome\":\"started\"}}",
+        ),
+        (
+            "partial-success",
+            "{\"thread\":\"t1\",\"possible_start\":false,\"launch\":{\"outcome\":\"started\"},\"invitation\":{\"kind\":\"invitation\",\"data\":\"i1\"}}",
+        ),
+        (
+            "nonobject-launch",
+            "{\"thread\":\"t1\",\"possible_start\":false,\"launch\":\"started\"}",
+        ),
+    ] {
+        let (_temp, journal) = journal();
+        let reference = frozen(&journal);
+        std::fs::write(progress_path(&journal, &reference), bytes).unwrap();
+        let events = std::sync::Arc::new(Mutex::new(vec![]));
+        let client = FencedClient {
+            inner: Client::new(None),
+            terminal: false.into(),
+            events: events.clone(),
+        };
+        let mut launcher = Launcher::default();
+        let before = std::fs::read(progress_path(&journal, &reference)).unwrap();
+        let mut writer = Output {
+            events: events.clone(),
+            fail_flush: false,
+        };
+        let result = resume(
+            &journal,
+            &reference,
+            &scope(),
+            &client,
+            &mut launcher,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut writer,
+        );
+        eprintln!(
+            "task48 uncertain {label}: result={result:?} events={:?} child_calls={} preflights={} starts={}",
+            events.lock().unwrap(),
+            client.inner.calls.lock().unwrap().len(),
+            launcher.preflights,
+            launcher.starts
+        );
+        observed.push((
+            label,
+            result,
+            events.lock().unwrap().clone(),
+            client.inner.calls.lock().unwrap().len(),
+            launcher.preflights,
+            launcher.starts,
+            std::fs::read(progress_path(&journal, &reference)).unwrap() == before,
+            journal.load(&reference).is_ok(),
+        ));
+    }
+    for (label, result, events, child_calls, preflights, starts, unchanged, retained) in observed {
+        assert!(
+            result.is_err(),
+            "{label}: uncertainty remains handled pending"
+        );
+        assert!(
+            events.iter().all(|event| *event == "flush"),
+            "{label}: no canonical mutation"
+        );
+        assert_eq!(child_calls, 0, "{label}: no child mutation");
+        assert_eq!((preflights, starts), (0, 0), "{label}: no current runtime");
+        assert!(unchanged, "{label}: retained progress bytes unchanged");
+        assert!(retained, "{label}: intent retained");
+    }
+}
+
+#[test]
+fn task48_progress_unknown_and_oversized_tails_fail_before_begin() {
+    for bytes in [
+        br#"{"possible_start":false,"unrecognized":true}"#.to_vec(),
+        {
+            let mut bytes = br#"{"possible_start":false}"#.to_vec();
+            bytes.resize(4 * 1024 * 1024, b' ');
+            bytes.push(b'{');
+            bytes
+        },
+    ] {
+        let (_temp, journal) = journal();
+        let reference = frozen(&journal);
+        std::fs::write(progress_path(&journal, &reference), &bytes).unwrap();
+        assert!(retained_retry_phase(&journal, &reference).is_err());
+        let events = std::sync::Arc::new(Mutex::new(vec![]));
+        let client = FencedClient {
+            inner: Client::new(None),
+            terminal: false.into(),
+            events: events.clone(),
+        };
+        let result = resume(
+            &journal,
+            &reference,
+            &scope(),
+            &client,
+            &mut RetainedOnlyLauncher,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut Vec::new(),
+        );
+        assert!(result.is_err());
+        assert!(events.lock().unwrap().is_empty());
+        assert!(client.inner.calls.lock().unwrap().is_empty());
+        assert_eq!(
+            std::fs::read(progress_path(&journal, &reference)).unwrap(),
+            bytes
+        );
+        assert!(journal.load(&reference).is_ok());
+    }
+}
+
 fn claim() -> CallerClaim {
     CallerClaim {
         instance: "00000000-0000-0000-0000-0000000000b1".into(),
@@ -169,6 +290,14 @@ struct Launcher {
     panic_after_start: bool,
 }
 impl HandoffLauncher for Launcher {
+    fn select_startup_input(
+        &mut self,
+        request: &LaunchRequest,
+    ) -> Result<crate::harness::adapter::StartupInputTemplate, RunError> {
+        Ok(crate::harness::adapter::StartupInputTemplate::positional(
+            request.argv.len(),
+        ))
+    }
     fn preflight(&mut self, request: &LaunchRequest) -> Result<SeatId, RunError> {
         self.preflight_argv = request.argv.clone();
         self.preflights += 1;
@@ -846,6 +975,7 @@ fn frozen_in(
             scope(),
             SemanticMutation::freeze(
                 SemanticMutation::Handoff(Box::new(HandoffPlan {
+                    startup_input: None,
                     request: request(),
                     context,
                     recipient: SeatId::new("recipient"),
@@ -1214,6 +1344,12 @@ impl std::ops::DerefMut for RecordingLauncher {
     }
 }
 impl HandoffLauncher for RecordingLauncher {
+    fn select_startup_input(
+        &mut self,
+        request: &LaunchRequest,
+    ) -> Result<crate::harness::adapter::StartupInputTemplate, RunError> {
+        self.inner.select_startup_input(request)
+    }
     fn preflight(&mut self, request: &LaunchRequest) -> Result<SeatId, RunError> {
         self.inner.preflight(request)
     }
@@ -1843,6 +1979,7 @@ fn registered_plan_fixture(
     context: crate::protocol::output::ContinuationContext,
 ) -> HandoffPlan {
     HandoffPlan {
+        startup_input: None,
         request: req,
         context,
         recipient: SeatId::new("recipient"),
@@ -2115,6 +2252,7 @@ fn handoff_manual_recovery_preserves_frozen_options_without_reentry() {
             ))
             .unwrap();
         let plan = HandoffPlan {
+            startup_input: None,
             request,
             context: Default::default(),
             recipient: SeatId::new("recipient"),
@@ -2257,6 +2395,7 @@ fn stage_a_manual_recovery_extra_key_lossless_shell_parser_resolver() {
         )
         .unwrap();
     let plan = HandoffPlan {
+        startup_input: None,
         request,
         context: Default::default(),
         recipient: SeatId::new("recipient"),
@@ -2496,4 +2635,1005 @@ fn stage_a_registered_options_freeze_once_and_retry_ignores_current_environment(
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+}
+
+struct Task48DurableClient {
+    events: Mutex<Vec<&'static str>>,
+}
+impl LocalClient for Task48DurableClient {
+    fn call_with_output(
+        &self,
+        command: Command,
+        _: &OutputSpec,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.call(command, budget)
+    }
+    fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        use crate::protocol::handoff::{HandoffResult, HandoffState};
+        let mut events = self.events.lock().unwrap();
+        Ok(match command {
+            Command::BeginHandoff(q) => {
+                events.push("begin");
+                CommandResult::Handoff(HandoffResult {
+                    compound: q.identity.compound,
+                    thread: events.contains(&"create").then(|| ThreadId::new("t1")),
+                    state: HandoffState::Live,
+                })
+            }
+            Command::CompleteHandoff(q) => {
+                events.push("complete");
+                CommandResult::Handoff(HandoffResult {
+                    compound: q.identity.compound,
+                    thread: Some(ThreadId::new("t1")),
+                    state: HandoffState::Completed,
+                })
+            }
+            Command::CreateThread(_) => {
+                events.push("create");
+                CommandResult::ThreadCreated(ThreadId::new("t1"))
+            }
+            Command::Invite(q) => {
+                assert_eq!(q.seat.as_str(), "seat_launch");
+                events.push("invite");
+                CommandResult::Invitation(InvitationId::new("i1"))
+            }
+            Command::SendMessage(q) => {
+                assert_eq!(q.invited_recipients, [SeatId::new("seat_launch")]);
+                events.push("send");
+                CommandResult::MessageSent(MessageId::new("m1"))
+            }
+            other => panic!("unexpected actual Task48 coordinator command: {other:?}"),
+        })
+    }
+}
+
+#[test]
+fn task48_hermes_actual_native_launcher_composes_before_durable_work() {
+    let (_temp, journal) = journal();
+    let client = Task48DurableClient {
+        events: Mutex::new(vec![]),
+    };
+    let output = OutputSpec {
+        context: selected_context(&journal),
+        ..Default::default()
+    };
+    let ((result, bytes), native, seat_calls, records) =
+        crate::cli::launch::tests::task48_hermes_native_fixture(|launcher, launch| {
+            // BASE original prompt-free preflight must reach real selected Hermes preparation.
+            assert_eq!(launcher.preflight(&launch).unwrap().as_str(), "seat_launch");
+            let req = HandoffRequest {
+                launch,
+                ..request()
+            };
+            let mut bytes = vec![];
+            let result = start(
+                &journal,
+                req,
+                claim(),
+                "worker",
+                &client,
+                launcher,
+                &TestClock,
+                &output,
+                &mut bytes,
+            );
+            (result, bytes)
+        });
+    eprintln!(
+        "task48 actual coordinator/Hermes: result={result:?} durable={:?} native_starts={} seat_calls={seat_calls} records={} output={}",
+        client.events.lock().unwrap(),
+        native.len(),
+        records.len(),
+        String::from_utf8_lossy(&bytes)
+    );
+    result.expect("selected Hermes must carry startup through its separate query transport");
+    assert_eq!(
+        &*client.events.lock().unwrap(),
+        &["begin", "create", "invite", "send", "complete"]
+    );
+    assert_eq!(native.len(), 1);
+    assert_eq!(
+        native[0].argv[..4],
+        ["--profile", "default", "--cli", "chat"]
+    );
+    let query = native[0]
+        .argv
+        .iter()
+        .position(|arg| arg == "--query")
+        .unwrap();
+    assert!(native[0].argv[query + 1].starts_with("Expected handoff command routing"));
+    assert!(native[0].argv[query + 1].contains("The task for thread t1 is stored in inbox"));
+    assert_eq!(records.len(), 1);
+}
+
+fn task48_policy(id: &str) -> &'static dyn crate::harness::adapter::LaunchPolicy {
+    let registry = crate::harness::registry::builtins();
+    registry
+        .by_id(registry.agent(id).unwrap())
+        .unwrap()
+        .launch_policy()
+        .unwrap()
+}
+fn task48_select(
+    id: &str,
+    argv: &[&str],
+) -> Result<crate::harness::adapter::StartupInputTemplate, ApiError> {
+    task48_policy(id)
+        .prepare_startup_input(
+            &argv
+                .iter()
+                .map(|token| (*token).to_owned())
+                .collect::<Vec<_>>(),
+            &crate::harness::adapter::StartupInputSpec {
+                max_text_bytes: 16384,
+            },
+        )
+        .map(|template| template.unwrap())
+}
+#[test]
+fn task48_finite_grammar_keeps_captured_caller_states_and_refuses_neighbors() {
+    let uuid = "01234567-89ab-cdef-0123-456789abcdef";
+    let block = [
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "{\"mcpServers\":{}}",
+    ];
+    for argv in [
+        vec![],
+        vec!["--model", "sonnet", "--model", "haiku"],
+        vec![
+            "--effort",
+            "low",
+            "--settings",
+            "path with spaces",
+            "--setting-sources",
+            "user",
+            "--permission-mode",
+            "default",
+            "--max-budget-usd",
+            "1",
+        ],
+        vec!["-p"],
+        vec!["--continue"],
+        vec!["--resume", uuid],
+        vec!["--session-id", uuid],
+        vec!["--"],
+        vec!["--output-format", "stream-json", "--verbose", "-p"],
+        vec![
+            "--setting-sources",
+            "project,local",
+            "-p",
+            "--output-format",
+            "json",
+        ],
+    ] {
+        let template = task48_select("claude", &argv).unwrap();
+        assert_eq!(template.insertion_index, argv.len());
+        for placement in 0..=1 {
+            let mut full = argv.clone();
+            if full.last() == Some(&"--") {
+                full.pop();
+            }
+            let expected = if placement == 0 {
+                let n = full.len();
+                full.extend(block);
+                n
+            } else {
+                let mut prefix = block.to_vec();
+                prefix.extend(full);
+                full = prefix;
+                0
+            };
+            let template = task48_select("claude", &full).unwrap();
+            assert_eq!(template.insertion_index, expected);
+        }
+    }
+    let mut multiple = vec!["--model", "sonnet"];
+    multiple.extend(block);
+    multiple.extend(["-p", "--continue"]);
+    multiple.extend(block);
+    multiple.push("--");
+    assert_eq!(
+        task48_select("claude", &multiple).unwrap().insertion_index,
+        2
+    );
+    for argv in [
+        vec![""],
+        vec!["PROMPT"],
+        vec!["-p", "/compact", "--output-format", "json"],
+        vec!["--model"],
+        vec!["--model", ""],
+        vec!["--model", "--continue"],
+        vec!["--model=sonnet"],
+        vec!["--effort=low"],
+        vec!["--setting-sources", "local"],
+        vec!["--output-format", "json"],
+        vec!["--verbose"],
+        vec!["--print"],
+        vec!["-p", "-p"],
+        vec!["--resume"],
+        vec!["--resume", "named"],
+        vec!["--resume=01234567-89ab-cdef-0123-456789abcdef"],
+        vec!["--continue", "--continue"],
+        vec!["--continue", "--resume", uuid],
+        vec!["--resume", uuid, "--session-id", uuid],
+        vec!["--tools", "tool"],
+        vec!["--tools", "", "--mcp-config", "{\"mcpServers\":{}}"],
+        vec!["--mcp-config", "{\"mcpServers\":{}}"],
+        vec!["--help"],
+        vec!["--", "--continue"],
+        vec!["--", "--"],
+        vec!["-"],
+    ] {
+        assert!(
+            task48_select("claude", &argv).is_err(),
+            "accepted Claude {argv:?}"
+        );
+    }
+    for argv in [
+        vec![],
+        vec!["--model", "exec"],
+        vec!["--model=--last"],
+        vec!["--image=one.png"],
+        vec!["--no-daemon"],
+        vec!["--"],
+        vec!["exec"],
+        vec!["exec", "--json", "--"],
+        vec!["exec", "resume", "session"],
+        vec!["exec", "resume", "session", "--json", "--"],
+        vec!["exec", "resume", "--last"],
+        vec!["--model", "resume", "exec", "resume", "--last"],
+    ] {
+        assert!(
+            task48_select("codex", &argv).is_ok(),
+            "refused Codex {argv:?}"
+        );
+    }
+    for argv in [
+        vec![""],
+        vec!["PROMPT"],
+        vec!["exec", "PROMPT"],
+        vec!["exec", "--", "resume"],
+        vec!["resume"],
+        vec!["exec", "resume"],
+        vec!["exec", "resume", "--"],
+        vec!["exec", "resume", "--", "session"],
+        vec!["exec", "resume", "session", "PROMPT"],
+        vec!["exec", "resume", "--last", "PROMPT"],
+        vec!["exec", "resume", "session", "--last"],
+        vec!["exec", "resume", "--last", "--last"],
+        vec!["--json"],
+        vec!["exec", "--no-daemon"],
+        vec!["--model"],
+        vec!["--model", ""],
+        vec!["--model", "--last"],
+        vec!["--image", "file"],
+        vec!["-ifile"],
+        vec!["-msonnet"],
+        vec!["--unknown"],
+        vec!["--no-daemon=true"],
+        vec!["--", "--"],
+    ] {
+        assert!(
+            task48_select("codex", &argv).is_err(),
+            "accepted Codex {argv:?}"
+        );
+    }
+    for argv in [
+        vec![],
+        vec!["--cli"],
+        vec!["--profile= DEFAULT "],
+        vec!["-p", "default", "-m", "model", "--provider", "provider"],
+    ] {
+        let template = task48_select("hermes", &argv).unwrap();
+        assert_eq!(template.before, ["--query"]);
+        assert_eq!(template.max_arg_bytes, 4096);
+    }
+    for argv in [
+        vec!["--query", "occupied"],
+        vec!["-q", "occupied"],
+        vec!["--query"],
+        vec!["--query", ""],
+        vec!["--profile", "a", "--profile", "b"],
+        vec!["--query=occupied"],
+        vec!["--model=sonnet"],
+        vec!["--provider=p"],
+        vec!["chat"],
+        vec!["--"],
+        vec![""],
+    ] {
+        assert!(
+            task48_select("hermes", &argv).is_err(),
+            "accepted Hermes {argv:?}"
+        );
+    }
+}
+
+struct Task48UnavailableLauncher;
+impl HandoffLauncher for Task48UnavailableLauncher {
+    fn select_startup_input(
+        &mut self,
+        _: &LaunchRequest,
+    ) -> Result<crate::harness::adapter::StartupInputTemplate, RunError> {
+        panic!("absorbing replay selected current transport")
+    }
+    fn native_input(&mut self, _: &LaunchRequest) -> Result<Vec<String>, RunError> {
+        panic!("absorbing replay prepared current runtime")
+    }
+    fn preflight(&mut self, _: &LaunchRequest) -> Result<SeatId, RunError> {
+        panic!("absorbing replay preflighted runtime")
+    }
+    fn launch(
+        &mut self,
+        _: &LaunchRequest,
+        _: &SeatId,
+        _: &mut dyn FnMut(bool) -> Result<(), ApiError>,
+    ) -> Result<super::super::launch::LaunchReport, RunError> {
+        panic!("absorbing replay started runtime")
+    }
+}
+struct Task48PhaseClient {
+    state: crate::protocol::handoff::HandoffState,
+    thread: Option<ThreadId>,
+    fail_begin: bool,
+    fail_complete: bool,
+    events: std::sync::Arc<Mutex<Vec<&'static str>>>,
+}
+impl LocalClient for Task48PhaseClient {
+    fn call_with_output(
+        &self,
+        command: Command,
+        _: &OutputSpec,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.call(command, budget)
+    }
+    fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        use crate::protocol::handoff::{HandoffResult, HandoffState};
+        let (mutation, complete) = match command {
+            Command::BeginHandoff(mutation) => (mutation, false),
+            Command::CompleteHandoff(mutation) => (mutation, true),
+            other => panic!("absorbing replay child effect {other:?}"),
+        };
+        self.events
+            .lock()
+            .unwrap()
+            .push(if complete { "complete" } else { "begin" });
+        if (complete && self.fail_complete) || (!complete && self.fail_begin) {
+            return Err(ApiError::new(
+                ErrorCode::UnknownOutcome,
+                "canonical response lost",
+            ));
+        }
+        Ok(CommandResult::Handoff(HandoffResult {
+            compound: mutation.identity.compound,
+            thread: self.thread.clone(),
+            state: if complete {
+                HandoffState::Completed
+            } else {
+                self.state
+            },
+        }))
+    }
+}
+#[test]
+fn task48_terminal_thin_uncertain_matrix_is_runtime_free_and_canonically_completed() {
+    use crate::protocol::handoff::HandoffState;
+    for (label, progress) in [
+        (
+            "terminal",
+            Progress {
+                thread: Some(ThreadId::new("t1")),
+                invitation: Some(CommandResult::Invitation(InvitationId::new("i1"))),
+                message: Some(CommandResult::MessageSent(MessageId::new("m1"))),
+                possible_start: true,
+                launch: Some(serde_json::json!({"outcome":"started"})),
+            },
+        ),
+        (
+            "thin",
+            Progress {
+                thread: Some(ThreadId::new("t1")),
+                launch: Some(serde_json::json!({"outcome":"started"})),
+                ..Default::default()
+            },
+        ),
+        (
+            "partial",
+            Progress {
+                thread: Some(ThreadId::new("t1")),
+                invitation: Some(CommandResult::Invitation(InvitationId::new("i1"))),
+                launch: Some(serde_json::json!({"outcome":"started"})),
+                ..Default::default()
+            },
+        ),
+        (
+            "unknown",
+            Progress {
+                possible_start: true,
+                ..Default::default()
+            },
+        ),
+        (
+            "already-joined-conflict",
+            Progress {
+                thread: Some(ThreadId::new("t1")),
+                invitation: Some(CommandResult::AlreadyJoined(
+                    crate::protocol::results::AlreadyJoined {
+                        thread: ThreadId::new("t1"),
+                        seat: SeatId::new("foreign"),
+                    },
+                )),
+                message: Some(CommandResult::MessageSent(MessageId::new("m1"))),
+                launch: Some(serde_json::json!({"outcome":"started"})),
+                ..Default::default()
+            },
+        ),
+    ] {
+        for canonical in ["completed", "live", "missing-thread"] {
+            for boundary in ["success", "write", "flush", "begin-lost", "complete-lost"] {
+                let (_temp, journal) = journal();
+                let reference = frozen(&journal);
+                save(&journal, &reference, &progress).unwrap();
+                let events = std::sync::Arc::new(Mutex::new(vec![]));
+                let client = Task48PhaseClient {
+                    state: if canonical == "completed" {
+                        HandoffState::Completed
+                    } else {
+                        HandoffState::Live
+                    },
+                    thread: (canonical != "missing-thread").then(|| ThreadId::new("t1")),
+                    fail_begin: boundary == "begin-lost",
+                    fail_complete: boundary == "complete-lost",
+                    events: events.clone(),
+                };
+                let mut output = RegisteredOutput {
+                    bytes: vec![],
+                    events: events.clone(),
+                    fail_write: boundary == "write",
+                    fail_flush: boundary == "flush",
+                };
+                let result = resume(
+                    &journal,
+                    &reference,
+                    &scope(),
+                    &client,
+                    &mut Task48UnavailableLauncher,
+                    &TestClock,
+                    &registered_output(&journal),
+                    &mut output,
+                );
+                let events = events.lock().unwrap().clone();
+                let absorbing = matches!(label, "partial" | "unknown" | "already-joined-conflict");
+                if absorbing {
+                    assert!(!events.contains(&"begin") && !events.contains(&"complete"));
+                    assert!(result.is_err());
+                    assert!(journal.load(&reference).is_ok());
+                } else {
+                    assert_eq!(events.first(), Some(&"begin"));
+                    let completed =
+                        canonical == "completed" || (canonical == "live" && label == "terminal");
+                    let succeeds = completed
+                        && !matches!(boundary, "write" | "flush" | "begin-lost")
+                        && !(boundary == "complete-lost" && canonical == "live");
+                    assert_eq!(
+                        result.is_ok(),
+                        succeeds,
+                        "{label} {canonical} {boundary}: {result:?} {events:?}"
+                    );
+                    assert_eq!(journal.load(&reference).is_err(), succeeds);
+                    if events.contains(&"complete") {
+                        assert_eq!(label, "terminal");
+                        assert_eq!(canonical, "live");
+                        assert!(events.windows(2).any(|pair| pair == ["flush", "complete"]));
+                    }
+                    if label == "thin" || canonical == "completed" {
+                        assert!(!events.contains(&"complete"));
+                    }
+                }
+                if journal.load(&reference).is_ok() {
+                    assert_eq!(
+                        serde_json::to_value(load(&journal, &reference).unwrap()).unwrap(),
+                        serde_json::to_value(&progress).unwrap()
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn task48_old_plan_digest_and_new_template_selection_remain_immutable() {
+    let (_temp, journal) = journal();
+    let reference = frozen(&journal);
+    let pending = journal.load(&reference).unwrap();
+    let old = serde_json::to_vec(&pending.semantic).unwrap();
+    assert!(!String::from_utf8_lossy(&old).contains("startup_input"));
+    assert_eq!(
+        serde_json::to_vec(&journal.load(&reference).unwrap().semantic).unwrap(),
+        old
+    );
+    let SemanticMutation::Frozen { mutation, .. } = pending.semantic else {
+        panic!("frozen")
+    };
+    let SemanticMutation::Handoff(mut plan) = *mutation else {
+        panic!("handoff")
+    };
+    plan.startup_input = Some(crate::harness::adapter::StartupInputTemplate::positional(
+        plan.request.launch.argv.len() + 1,
+    ));
+    assert!(plan.validate().is_err());
+    assert_eq!(
+        serde_json::to_vec(&journal.load(&reference).unwrap().semantic).unwrap(),
+        old
+    );
+}
+
+#[test]
+fn task48_envelope_true_reserved_bounds_and_opaque_slot_are_exact() {
+    use crate::harness::adapter::StartupInputTemplate;
+    let req = request().launch;
+    let context = crate::protocol::output::ContinuationContext::default();
+    let mut template = StartupInputTemplate::positional(req.argv.len());
+    template.prefix = "--initial=".into();
+    template.suffix = "suffix".into();
+    let envelope = startup_envelope(&req, &context, &claim().instance, None, &template).unwrap();
+    assert!(!envelope.slot_token.contains("task for thread t"));
+    let measured = envelope.slot_token.len() + 128;
+    template.max_arg_bytes = measured;
+    let exact = startup_envelope(&req, &context, &claim().instance, None, &template).unwrap();
+    validate_whole_input(&exact, &exact.request.argv).unwrap();
+    template.max_arg_bytes = measured - 1;
+    assert!(startup_envelope(&req, &context, &claim().instance, None, &template).is_err());
+    let mut duplicated = exact.request.argv.clone();
+    duplicated.push(exact.slot_token.clone());
+    assert!(validate_whole_input(&exact, &duplicated).is_err());
+    let mut transformed = exact.request.argv.clone();
+    transformed.last_mut().unwrap().push('x');
+    assert!(validate_whole_input(&exact, &transformed).is_err());
+    let thread = ThreadId::new("x".repeat(128));
+    template.max_arg_bytes = measured;
+    let known =
+        startup_envelope(&req, &context, &claim().instance, Some(&thread), &template).unwrap();
+    assert_eq!(known.slot_token.len(), exact.slot_token.len() + 128);
+    assert_eq!(known.reserve, 0);
+    assert!(startup_envelope(&req, &context, &"x".repeat(16385), None, &template).is_err());
+    let escaped = crate::protocol::output::ContinuationContext {
+        state_dir: Some("/tmp/'quoted\nstate".into()),
+        host: Some("/tmp/'quoted\nhost".into()),
+    };
+    template.max_arg_bytes = 16384;
+    let envelope = startup_envelope(&req, &escaped, &claim().instance, None, &template).unwrap();
+    assert!(!envelope.slot_token.contains(['\n', '\r']));
+    assert!(envelope.slot_token.contains("\\n"));
+}
+
+// Independent stated grammar model: native greedy lists consume non-options,
+// including an unsafe appended instruction. This is not installed parser proof.
+fn task48_claude_instruction_is_positional(argv: &[String]) -> bool {
+    let mut index = 0;
+    let mut prompts = vec![];
+    let mut list_values = vec![];
+    while index < argv.len() {
+        match argv[index].as_str() {
+            "--tools" | "--mcp-config" => {
+                index += 1;
+                while index < argv.len() && !argv[index].starts_with('-') {
+                    list_values.push(argv[index].as_str());
+                    index += 1;
+                }
+            }
+            "--model" | "--effort" | "--settings" | "--permission-mode" | "--max-budget-usd"
+            | "--setting-sources" | "--output-format" | "--resume" | "--session-id" => {
+                index += 2;
+            }
+            "--strict-mcp-config" | "-p" | "--continue" | "--verbose" | "--" => index += 1,
+            other if other.starts_with('-') => return false,
+            _ => {
+                prompts.push(argv[index].as_str());
+                index += 1;
+            }
+        }
+    }
+    prompts
+        .iter()
+        .filter(|token| token.starts_with("Expected handoff command routing"))
+        .count()
+        == 1
+        && !list_values
+            .iter()
+            .any(|token| token.starts_with("Expected handoff command routing"))
+}
+struct Task48SelectionSpy<'a, 'b> {
+    inner: &'a mut NativeLauncher<'b>,
+    selections: usize,
+}
+impl HandoffLauncher for Task48SelectionSpy<'_, '_> {
+    fn select_startup_input(
+        &mut self,
+        request: &LaunchRequest,
+    ) -> Result<crate::harness::adapter::StartupInputTemplate, RunError> {
+        self.selections += 1;
+        self.inner.select_startup_input(request)
+    }
+    fn native_input(&mut self, request: &LaunchRequest) -> Result<Vec<String>, RunError> {
+        self.inner.native_input(request)
+    }
+    fn preflight_startup(
+        &mut self,
+        original: &LaunchRequest,
+        effective: &LaunchRequest,
+    ) -> Result<StartupPreflight, RunError> {
+        self.inner.preflight_startup(original, effective)
+    }
+    fn preflight_saved(
+        &mut self,
+        original: &LaunchRequest,
+        effective: &LaunchRequest,
+        recipient: &SeatId,
+    ) -> Result<StartupPreflight, RunError> {
+        self.inner.preflight_saved(original, effective, recipient)
+    }
+    fn preflight(&mut self, request: &LaunchRequest) -> Result<SeatId, RunError> {
+        self.inner.preflight(request)
+    }
+    fn launch(
+        &mut self,
+        request: &LaunchRequest,
+        recipient: &SeatId,
+        gate: &mut dyn FnMut(bool) -> Result<(), ApiError>,
+    ) -> Result<super::super::launch::LaunchReport, RunError> {
+        self.inner.launch(request, recipient, gate)
+    }
+}
+#[test]
+fn task48_claude_actual_native_boundary_covers_fresh_old_new_and_safe_list_mutant() {
+    let block = [
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "{\"mcpServers\":{}}",
+    ];
+    let uuid = "01234567-89ab-cdef-0123-456789abcdef";
+    let forms = [
+        block.to_vec(),
+        [block.to_vec(), vec!["--resume", uuid]].concat(),
+        [vec!["-p", "--continue"], block.to_vec()].concat(),
+        [block.to_vec(), vec!["-p", "--output-format", "json"]].concat(),
+        [block.to_vec(), vec!["--"]].concat(),
+        [
+            vec!["--model", "one", "--model", "two"],
+            block.to_vec(),
+            block.to_vec(),
+        ]
+        .concat(),
+    ];
+    for argv in forms {
+        for lane in ["fresh", "old", "new"] {
+            let (_temp, journal) = journal();
+            let client = Task48DurableClient {
+                events: Mutex::new(vec![]),
+            };
+            let output = registered_output(&journal);
+            if lane == "new" {
+                let (result, submitted, _, _) =
+                    crate::cli::launch::tests::task48_claude_native_fixture_refused(
+                        true,
+                        |launcher, mut launch| {
+                            launch.argv = argv.iter().map(|token| (*token).to_owned()).collect();
+                            start(
+                                &journal,
+                                HandoffRequest {
+                                    launch,
+                                    ..request()
+                                },
+                                claim(),
+                                "worker",
+                                &client,
+                                launcher,
+                                &TestClock,
+                                &output,
+                                &mut Vec::new(),
+                            )
+                        },
+                    );
+                assert!(result.is_err());
+                assert!(submitted.is_empty());
+            }
+            let ((result, selections, original), native, _, _) =
+                crate::cli::launch::tests::task48_claude_native_fixture(|launcher, mut launch| {
+                    launch.argv = argv.iter().map(|token| (*token).to_owned()).collect();
+                    let original = launch.argv.clone();
+                    let mut spy = Task48SelectionSpy {
+                        inner: launcher,
+                        selections: 0,
+                    };
+                    let result = match lane {
+                        "fresh" => start(
+                            &journal,
+                            HandoffRequest {
+                                launch,
+                                ..request()
+                            },
+                            claim(),
+                            "worker",
+                            &client,
+                            &mut spy,
+                            &TestClock,
+                            &output,
+                            &mut Vec::new(),
+                        ),
+                        "new" => {
+                            let reference = reference(&journal);
+                            resume(
+                                &journal,
+                                &reference,
+                                &scope(),
+                                &client,
+                                &mut spy,
+                                &TestClock,
+                                &output,
+                                &mut Vec::new(),
+                            )
+                        }
+                        _ => {
+                            let plan = HandoffPlan {
+                                startup_input: None,
+                                request: HandoffRequest {
+                                    launch,
+                                    ..request()
+                                },
+                                context: output.context.clone(),
+                                recipient: SeatId::new("seat_launch"),
+                                create_key: OperationId::new("create"),
+                                invite_key: OperationId::new("invite"),
+                                send_key: OperationId::new("send"),
+                            };
+                            let reference = journal
+                                .record(
+                                    scope(),
+                                    SemanticMutation::freeze(
+                                        SemanticMutation::Handoff(Box::new(plan)),
+                                        claim(),
+                                    )
+                                    .unwrap(),
+                                    0,
+                                )
+                                .unwrap();
+                            resume(
+                                &journal,
+                                &reference,
+                                &scope(),
+                                &client,
+                                &mut spy,
+                                &TestClock,
+                                &output,
+                                &mut Vec::new(),
+                            )
+                        }
+                    };
+                    (result, spy.selections, original)
+                });
+            result.unwrap();
+            assert_eq!(selections, usize::from(lane != "new"));
+            assert_eq!(native.len(), 1);
+            let actual = &native[0].argv;
+            assert!(
+                task48_claude_instruction_is_positional(actual),
+                "{lane} {actual:?}"
+            );
+            let prompt = actual
+                .iter()
+                .position(|token| token.starts_with("Expected handoff command routing"))
+                .unwrap();
+            let mut recovered = actual.clone();
+            let instruction = recovered.remove(prompt);
+            assert_eq!(recovered, original);
+            let mut unsafe_tail = block
+                .iter()
+                .map(|token| (*token).to_owned())
+                .collect::<Vec<_>>();
+            unsafe_tail.push(instruction);
+            assert!(
+                !task48_claude_instruction_is_positional(&unsafe_tail),
+                "unsafe MCP-last mutant was accepted"
+            );
+            assert_eq!(
+                actual.iter().filter(|token| token.is_empty()).count(),
+                argv.iter().filter(|token| token.is_empty()).count()
+            );
+        }
+    }
+    assert!(task48_claude_instruction_is_positional(&[
+        "Expected handoff command routing fixture".into(),
+        "--model".into(),
+        "sonnet".into(),
+        "-p".into()
+    ]));
+}
+
+#[test]
+fn task48_claude_lossless_manual_shell_parser_options_and_actual_native_chain() {
+    use crate::test_support::spawn::SpawnOwned;
+    use std::os::unix::fs::PermissionsExt;
+    const CHILD: &str = "HT_TASK48_MANUAL_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let bytes = fs::read(std::env::var_os("HT_TASK48_ARGS").unwrap()).unwrap();
+        let mut captured = bytes.split(|byte| *byte == 0).collect::<Vec<_>>();
+        assert_eq!(captured.pop(), Some(&b""[..]));
+        let argv = std::iter::once("ht".to_owned())
+            .chain(
+                captured
+                    .into_iter()
+                    .map(|bytes| String::from_utf8(bytes.to_vec()).unwrap()),
+            )
+            .collect::<Vec<_>>();
+        let parsed = crate::cli::commands::parse_argv(argv).unwrap();
+        let crate::cli::commands::CliAction::Launch(request) = parsed.action else {
+            panic!("manual launch")
+        };
+        let before = request.argv.clone();
+        let request = request.with_process_options().unwrap();
+        assert_eq!(request.argv, before);
+        let (result, native, _, _) =
+            crate::cli::launch::tests::task48_claude_native_fixture(|launcher, _| {
+                launcher.launch(&request, &SeatId::new("seat_launch"), &mut |_| Ok(()))
+            });
+        assert_eq!(result.unwrap().exit, 0);
+        assert_eq!(native.len(), 1);
+        assert!(task48_claude_instruction_is_positional(&native[0].argv));
+        fs::write(
+            std::env::var_os("HT_TASK48_RESULT").unwrap(),
+            serde_json::to_vec(&native[0].argv).unwrap(),
+        )
+        .unwrap();
+        return;
+    }
+    let (_temp, journal) = journal();
+    let root = journal.root().parent().unwrap();
+    let client = Task48DurableClient {
+        events: Mutex::new(vec![]),
+    };
+    let output = registered_output(&journal);
+    let argv = vec![
+        "--model",
+        "frozen model",
+        "--model",
+        "caller model",
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "{\"mcpServers\":{}}",
+    ];
+    let ((result, bytes), native, _, _) =
+        crate::cli::launch::tests::task48_claude_native_fixture_refused(
+            true,
+            |launcher, mut launch| {
+                launch.argv = argv.iter().map(|token| (*token).to_owned()).collect();
+                let mut bytes = vec![];
+                let result = start(
+                    &journal,
+                    HandoffRequest {
+                        launch,
+                        ..request()
+                    },
+                    claim(),
+                    "worker",
+                    &client,
+                    launcher,
+                    &TestClock,
+                    &output,
+                    &mut bytes,
+                );
+                (result, bytes)
+            },
+        );
+    assert!(result.is_err());
+    assert!(native.is_empty());
+    let report = handoff_json(&bytes);
+    assert_eq!(report["outcome"], "pending");
+    let manual: Vec<String> =
+        serde_json::from_value(report["manual_launch_after_confirming_no_start_argv"].clone())
+            .unwrap();
+    assert!(!manual.is_empty());
+    let command = root.join("herdr-threads");
+    fs::write(&command,"#!/bin/sh\nprintf '%s\\000' \"$@\" > \"$HT_TASK48_ARGS\"\nexec \"$HT_TASK48_EXE\" cli::handoff::tests::task48_claude_lossless_manual_shell_parser_options_and_actual_native_chain --exact\n").unwrap();
+    fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).unwrap();
+    for inherited in ["--model 'frozen model'", "--model changed", "'malformed"] {
+        let args = root.join("args");
+        let result = root.join("result");
+        let mut shell = crate::test_support::spawn::command("/bin/sh");
+        shell
+            .args(["-c", &crate::protocol::output::format_command_argv(&manual)])
+            .env_clear()
+            .env("PATH", format!("{}:/usr/bin:/bin", root.display()))
+            .env("HOME", root)
+            .env("CLAUDE_CONFIG_DIR", root.join("claude"))
+            .env("CODEX_HOME", root.join("codex"))
+            .env("TMPDIR", std::env::temp_dir())
+            .env(CHILD, "1")
+            .env("HT_TASK48_ARGS", &args)
+            .env("HT_TASK48_RESULT", &result)
+            .env("HT_TASK48_EXE", std::env::current_exe().unwrap())
+            .env("HERDR_THREADS_CLAUDE_OPTS", inherited)
+            .env("HERDR_THREADS_CODEX_OPTS", inherited)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        if let Some(run_id) = std::env::var_os("HT_LEAK_RUN_ID") {
+            shell.env("HT_LEAK_RUN_ID", run_id);
+        }
+        let child = shell.spawn_owned().unwrap().wait_with_output().unwrap();
+        assert!(
+            child.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        let actual: Vec<String> = serde_json::from_slice(&fs::read(&result).unwrap()).unwrap();
+        assert!(task48_claude_instruction_is_positional(&actual));
+        let original = actual
+            .iter()
+            .filter(|token| !token.starts_with("Expected handoff command routing"))
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        assert_eq!(original, argv);
+        assert_eq!(actual.iter().filter(|token| token.is_empty()).count(), 1);
+    }
+}
+
+#[test]
+fn task48_nonpositional_optional_provider_reaches_actual_guarded_native() {
+    let (_temp, journal) = journal();
+    let client = Task48DurableClient {
+        events: Mutex::new(vec![]),
+    };
+    let output = registered_output(&journal);
+    let (result, native, _) =
+        crate::cli::launch::tests::task48_fourth_native_fixture(|launcher, launch| {
+            start(
+                &journal,
+                HandoffRequest {
+                    launch,
+                    ..request()
+                },
+                claim(),
+                "worker",
+                &client,
+                launcher,
+                &TestClock,
+                &output,
+                &mut Vec::new(),
+            )
+        });
+    result.unwrap();
+    assert_eq!(native.len(), 1);
+    assert_eq!(
+        &native[0].argv[..4],
+        ["--fourth-owned", "literal", "", "$HOME $(id)"]
+    );
+    let input = native[0].argv.last().unwrap();
+    assert!(input.starts_with("--initial=Expected handoff command routing"));
+    let (registry, _) = crate::cli::launch::tests::fourth_adapter::registry(true, false);
+    let policy = registry
+        .by_id(registry.agent("fourth").unwrap())
+        .unwrap()
+        .launch_policy()
+        .unwrap();
+    assert!(
+        policy
+            .prepare_startup_input(
+                &[],
+                &crate::harness::adapter::StartupInputSpec {
+                    max_text_bytes: 16384
+                }
+            )
+            .unwrap()
+            .is_none()
+    );
 }

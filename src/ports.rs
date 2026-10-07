@@ -1696,38 +1696,7 @@ impl NativeLaunchRequest {
     pub const MAX_ARGV_BYTES: usize = 32 * 1024;
 
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.argv.len() > 64 {
-            return Err("invalid native launch request: more than 64 native arguments");
-        }
-        if self
-            .argv
-            .iter()
-            .any(|arg| arg.is_empty() || arg.contains('\0'))
-        {
-            return Err(
-                "invalid native launch request: an empty native argument or one containing NUL",
-            );
-        }
-        // Herdr starts the agent by typing its command line into the pane's
-        // shell, so a line break would submit a truncated command and the start
-        // is never confirmed (observed: outcome_unknown with nothing started).
-        if self
-            .argv
-            .iter()
-            .any(|arg| arg.contains('\n') || arg.contains('\r'))
-        {
-            return Err(
-                "invalid native launch request: a native argument contains a line break; Herdr starts agents through the pane's shell, so pass the prompt on one line (or put it in a file and ask the agent to read it)",
-            );
-        }
-        if self.argv.iter().any(|arg| arg.len() > Self::MAX_ARG_BYTES) {
-            return Err(
-                "invalid native launch request: a native argument is over 16 KiB (put a long prompt in a file and ask the agent to read it)",
-            );
-        }
-        if self.argv.iter().map(String::len).sum::<usize>() > Self::MAX_ARGV_BYTES {
-            return Err("invalid native launch request: native arguments total over 32 KiB");
-        }
+        validate_native_argv(&self.argv)?;
         if self.expected_incarnation.is_empty()
             || self.expected_incarnation.len() > 128
             || self.configured_hook.scope.is_empty()
@@ -1741,6 +1710,62 @@ impl NativeLaunchRequest {
         }
         Ok(())
     }
+}
+/// Exact native argument data boundary; empty elements remain lossless data.
+pub fn validate_native_argv(argv: &[String]) -> Result<(), &'static str> {
+    validate_native_argv_with_reservation(argv, None)
+}
+
+/// Project additional UTF-8 bytes onto one existing opaque argument.
+/// The reservation is never a submitted request or an extra argument.
+pub fn validate_native_argv_with_reserved_bytes(
+    argv: &[String],
+    slot_index: usize,
+    reserved_bytes: usize,
+) -> Result<(), &'static str> {
+    if slot_index >= argv.len() {
+        return Err("invalid native launch request: reserved argument index out of range");
+    }
+    validate_native_argv_with_reservation(argv, Some((slot_index, reserved_bytes)))
+}
+
+fn validate_native_argv_with_reservation(
+    argv: &[String],
+    reserve: Option<(usize, usize)>,
+) -> Result<(), &'static str> {
+    if argv.len() > 64 {
+        return Err("invalid native launch request: more than 64 native arguments");
+    }
+    let mut total = 0usize;
+    for (index, arg) in argv.iter().enumerate() {
+        if arg.contains('\0') {
+            return Err("invalid native launch request: a native argument containing NUL");
+        }
+        if arg.contains('\n') || arg.contains('\r') {
+            return Err(
+                "invalid native launch request: a native argument contains a line break; Herdr starts agents through the pane's shell, so pass the prompt on one line (or put it in a file and ask the agent to read it)",
+            );
+        }
+        let extra = reserve
+            .filter(|(slot, _)| *slot == index)
+            .map_or(0, |(_, bytes)| bytes);
+        let bytes = arg
+            .len()
+            .checked_add(extra)
+            .ok_or("invalid native launch request: native argument byte count overflow")?;
+        if bytes > NativeLaunchRequest::MAX_ARG_BYTES {
+            return Err(
+                "invalid native launch request: a native argument is over 16 KiB (put a long prompt in a file and ask the agent to read it)",
+            );
+        }
+        total = total
+            .checked_add(bytes)
+            .ok_or("invalid native launch request: native argument byte count overflow")?;
+    }
+    if total > NativeLaunchRequest::MAX_ARGV_BYTES {
+        return Err("invalid native launch request: native arguments total over 32 KiB");
+    }
+    Ok(())
 }
 /// A trusted host adapter's correlation of one submitted start request with a
 /// ready `agent_started` response. This is startup evidence only; it proves no

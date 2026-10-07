@@ -942,6 +942,136 @@ impl LaunchPolicy for ClaudeAdapter {
     ) -> Result<LaunchScope, crate::protocol::results::ApiError> {
         super::launch::native_scope(request, "claude", "CLAUDE_CONFIG_DIR", probe, budget)
     }
+    fn prepare_startup_input(
+        &self,
+        caller: &[String],
+        _: &StartupInputSpec,
+    ) -> Result<Option<StartupInputTemplate>, crate::protocol::results::ApiError> {
+        use crate::protocol::results::{ApiError, ErrorCode};
+        let unsupported = || {
+            ApiError::new(
+                ErrorCode::InvalidRequest,
+                "uncaptured Claude handoff option or arity",
+            )
+        };
+        let conflict = || {
+            ApiError::new(
+                ErrorCode::Conflict,
+                "Claude handoff input or session selector is occupied",
+            )
+        };
+        let mut index = 0;
+        let mut insertion = caller.len();
+        let mut print = false;
+        let mut print_dependent = false;
+        let mut selector = false;
+        let mut occupied = false;
+        while index < caller.len() {
+            match caller[index].as_str() {
+                "--" => {
+                    occupied |= index + 1 < caller.len();
+                    break;
+                }
+                "--model" | "--effort" | "--settings" | "--permission-mode"
+                | "--max-budget-usd" => {
+                    let value = caller
+                        .get(index + 1)
+                        .filter(|value| !value.is_empty() && !value.starts_with('-'))
+                        .ok_or_else(unsupported)?;
+                    let _ = value;
+                    index += 2;
+                }
+                "--setting-sources" => {
+                    if !caller
+                        .get(index + 1)
+                        .is_some_and(|v| matches!(v.as_str(), "user" | "project,local"))
+                    {
+                        return Err(unsupported());
+                    }
+                    index += 2;
+                }
+                "--output-format" => {
+                    if !caller
+                        .get(index + 1)
+                        .is_some_and(|v| matches!(v.as_str(), "json" | "stream-json"))
+                    {
+                        return Err(unsupported());
+                    }
+                    print_dependent = true;
+                    index += 2;
+                }
+                "--verbose" => {
+                    print_dependent = true;
+                    index += 1;
+                }
+                "-p" => {
+                    if print {
+                        return Err(unsupported());
+                    }
+                    print = true;
+                    index += 1;
+                }
+                "--strict-mcp-config" => {
+                    index += 1;
+                }
+                "--tools" => {
+                    let recipe = [
+                        "--tools",
+                        "",
+                        "--strict-mcp-config",
+                        "--mcp-config",
+                        "{\"mcpServers\":{}}",
+                    ];
+                    if caller
+                        .get(index..index + recipe.len())
+                        .is_none_or(|tokens| !tokens.iter().map(String::as_str).eq(recipe))
+                    {
+                        return Err(unsupported());
+                    }
+                    insertion = insertion.min(index);
+                    index += recipe.len();
+                }
+                "--resume" | "--session-id" => {
+                    if selector {
+                        return Err(conflict());
+                    }
+                    let uuid = caller.get(index + 1).ok_or_else(unsupported)?;
+                    if uuid.len() != 36
+                        || !uuid.bytes().enumerate().all(|(i, b)| {
+                            if [8, 13, 18, 23].contains(&i) {
+                                b == b'-'
+                            } else {
+                                b.is_ascii_digit() || (b'a'..=b'f').contains(&b)
+                            }
+                        })
+                    {
+                        return Err(unsupported());
+                    }
+                    selector = true;
+                    index += 2;
+                }
+                "--continue" => {
+                    if selector {
+                        return Err(conflict());
+                    }
+                    selector = true;
+                    index += 1;
+                }
+                token if token.starts_with('-') => return Err(unsupported()),
+                _ => {
+                    occupied = true;
+                    index += 1;
+                }
+            }
+        }
+        if occupied {
+            return Err(conflict());
+        }
+        if print_dependent && !print {
+            return Err(unsupported());
+        }
+        Ok(Some(StartupInputTemplate::positional(insertion)))
+    }
     fn validate_native_argv(&self, _: &[String]) -> Result<(), crate::protocol::results::ApiError> {
         Ok(())
     }

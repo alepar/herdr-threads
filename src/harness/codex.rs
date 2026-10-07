@@ -2026,6 +2026,111 @@ impl LaunchPolicy for CodexAdapter {
         }
         Ok(scope)
     }
+    fn prepare_startup_input(
+        &self,
+        caller: &[String],
+        _: &StartupInputSpec,
+    ) -> Result<Option<StartupInputTemplate>, crate::protocol::results::ApiError> {
+        use crate::protocol::results::{ApiError, ErrorCode};
+        let invalid = || {
+            ApiError::new(
+                ErrorCode::InvalidRequest,
+                "uncaptured Codex handoff option, arity or selector",
+            )
+        };
+        let conflict = || {
+            ApiError::new(
+                ErrorCode::Conflict,
+                "Codex handoff prompt or selector is occupied",
+            )
+        };
+        self.validate_native_argv(caller)?;
+        let mut state = 0; // root, exec, exec-resume
+        let mut selector = false;
+        let mut index = 0;
+        while index < caller.len() {
+            let token = caller[index].as_str();
+            if token == "--" {
+                if index + 1 != caller.len() {
+                    return Err(conflict());
+                }
+                break;
+            }
+            if token == "--no-daemon" {
+                if state != 0 {
+                    return Err(invalid());
+                }
+                index += 1;
+                continue;
+            }
+            if token == "--json" {
+                if state == 0 {
+                    return Err(invalid());
+                }
+                index += 1;
+                continue;
+            }
+            if token == "--last" {
+                if state != 2 {
+                    return Err(invalid());
+                }
+                if selector {
+                    return Err(conflict());
+                }
+                selector = true;
+                index += 1;
+                continue;
+            }
+            if token == "-i" || token == "--image" {
+                return Err(invalid());
+            }
+            if launch::CODEX_VALUE_OPTIONS.contains(&token) {
+                if caller
+                    .get(index + 1)
+                    .is_none_or(|v| v.is_empty() || v.starts_with('-'))
+                {
+                    return Err(invalid());
+                }
+                index += 2;
+                continue;
+            }
+            if let Some((name, value)) = token.split_once('=') {
+                if !name.starts_with("--")
+                    || !launch::CODEX_VALUE_OPTIONS.contains(&name)
+                    || value.is_empty()
+                {
+                    return Err(invalid());
+                }
+                index += 1;
+                continue;
+            }
+            if token.starts_with('-') {
+                return Err(invalid());
+            }
+            match state {
+                0 if token == "exec" => state = 1,
+                0 if launch::CODEX_UNSUPPORTED_SUBCOMMANDS.contains(&token) => {
+                    return Err(invalid());
+                }
+                1 if token == "resume" => state = 2,
+                1 if launch::CODEX_EXEC_UNSUPPORTED_SUBCOMMANDS.contains(&token) => {
+                    return Err(invalid());
+                }
+                2 if !selector
+                    && !token.is_empty()
+                    && !launch::CODEX_EXEC_UNSUPPORTED_SUBCOMMANDS.contains(&token) =>
+                {
+                    selector = true
+                }
+                _ => return Err(conflict()),
+            }
+            index += 1;
+        }
+        if state == 2 && !selector {
+            return Err(invalid());
+        }
+        Ok(Some(StartupInputTemplate::positional(caller.len())))
+    }
     fn validate_native_argv(
         &self,
         argv: &[String],

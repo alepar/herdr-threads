@@ -102,6 +102,7 @@ fn compound_in(
     };
     let id = super::handoff_fences::identity();
     let plan = HandoffPlan {
+        startup_input: None,
         request: HandoffRequest {
             thread: Some(ThreadId::new("t")),
             thread_name: None,
