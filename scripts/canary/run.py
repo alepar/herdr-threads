@@ -286,6 +286,7 @@ def verified_domains(result, adapter):
     validate_identity(result["identity"])
     contracts = {c["domain"]: c for c in adapter["contracts"]}
     return [d for d in result["domains"] if d["outcome"] == "compatible"
+            and contracts[d["domain"]]["required_milestones"]
             and set(contracts[d["domain"]]["required_milestones"]) <= set(d["successful_milestones"])]
 
 
@@ -565,6 +566,8 @@ def run_strategy(adapter, out, binary, root, model_tier="off", runtime_command=N
             elif result["outcome"] == "complete" and result["identity"] is not None and stage != "source_captured" and any(
                     d["outcome"] == "contract_violation" for d in result["domains"]):
                 block["status"] = "break"
+            if block["status"] == "inconclusive" and result["outcome"] == "complete" and not block["reason"]:
+                block["reason"] = "required runtime evidence incomplete"
             return block
         if strategy["kind"] != "npm_release" or strategy["candidate_kind"] != "stable_release" or not strategy.get("npm_package"):
             raise ValueError("invalid stable-release strategy")
@@ -617,6 +620,8 @@ def run_strategy(adapter, out, binary, root, model_tier="off", runtime_command=N
                     if result["outcome"] == "complete" and any(
                             d["outcome"] == "contract_violation" for d in result["domains"]):
                         verdict = "fail"
+                    if result["outcome"] == "complete" and verdict == "infra":
+                        incomplete_runtime[0] = True
                     checks, ft, contract_result = [], None, None
                 if result["outcome"] == "infra_failure":
                     verdict = "infra"

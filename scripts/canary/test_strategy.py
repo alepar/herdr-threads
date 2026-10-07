@@ -44,6 +44,38 @@ def result():
 
 
 class Strategy(unittest.TestCase):
+    # Empty optional declarations are lawful observations, never verification by vacuity.
+    def test_empty_required_domains_never_verify(self):
+        a = adapter()
+        a["contracts"][0].update(required_milestones=[], events=[])
+        self.assertEqual(runner.select_adapters({"schema_version": 1, "adapters": [a]}, "all"), [a])
+        r = result()
+        r["identity"] = {"key": "build:c7dac5c7b327a0ef51fc1e59d0a1e00d41988d64678433420766248b554c304e",
+                         "source": "git", "release_version": None, "base_version": None,
+                         "derived_version": None, "commit": "b" * 40, "dirty": False, "distance": 1}
+        r["domains"][0]["successful_milestones"] = []
+        retained = runner.validate_result(json.dumps(r).encode(), a, "try1", "no_model")
+        self.assertEqual(retained, r)
+        self.assertEqual(runner.verified_domains(retained, a), [])
+
+    def test_empty_required_generic_release_is_not_all_pass(self):
+        fixture = RequiredPreflight()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        a = adapter(kind="npm_release")
+        a["contracts"][0].update(required_milestones=[], events=[])
+        fixture.optional_fixture(a)
+        for route in ("shell", "python"):
+            with self.subTest(route=route):
+                out = fixture.base / ("generic-" + route)
+                cp = fixture.call(route, "third", "off", out=out, extra=("--versions", "latest"))
+                report, index, retained = fixture.optional_observation("generic-" + route, cp, out, a)
+                self.assertGreater(len(index["attempts"]), 0)
+                self.assertTrue(all(r["identity"]["key"] == "release:1.2.3" for r in retained))
+                self.assertTrue(all(r["domains"][0]["successful_milestones"] == [] for r in retained))
+                self.assertEqual(report["harnesses"][0]["status"], "inconclusive", report)
+                self.assertEqual(cp.returncode, 1, cp.stderr)
+
     # Catches fixed two-brand selection and treating unsupported metadata as PASS.
     def test_strategy_runner_dynamic_all_exact_runtime_and_missing_companion_are_inconclusive(self):
         doc = json.loads((HERE.parent / "harness-canary-selftest/fixtures/adapter-discovery.json").read_text())
@@ -617,6 +649,176 @@ class RequiredPreflight(unittest.TestCase):
             f"with pathlib.Path({str(self.calls)!r}).open('a') as f: f.write(args['--harness']+' '+args['--stage']+'\\n')\n"
             f"r={r!r}\nr.update(harness=args['--harness'],attempt=args['--attempt'],evidence_stage=args['--stage'])\n"
             "print(json.dumps(r))\n")
+
+    def optional_fixture(self, a, *, outcome="complete", missing=False, identity=True, violation=False):
+        """Inert producer uses the actual request's exact descriptor, never patches consumers."""
+        self.registry([a])
+        self.companion.write_text("import json,sys,os,pathlib\n"
+            "args=dict(zip(sys.argv[1::2],sys.argv[2::2]))\n"
+            "work=pathlib.Path(args['--work-dir'])\n"
+            "q=json.loads((work/'request.json').read_text())\n"
+            "a=q['adapter']\n"
+            f"with pathlib.Path({str(self.calls)!r}).open('a') as f: f.write(args['--harness']+' '+args['--stage']+'\\n')\n"
+            "ident={'key':'build:c7dac5c7b327a0ef51fc1e59d0a1e00d41988d64678433420766248b554c304e',"
+            "'source':'git','release_version':None,'base_version':None,'derived_version':None,"
+            "'commit':'" + "b" * 40 + "','dirty':False,'distance':1}\n"
+            "if 'version' in q:\n"
+            " ident.update(key='release:'+q['version'],source='npm',release_version=q['version'],commit=None,dirty=None,distance=None)\n"
+            "domains=[]\n"
+            "for c in a['contracts']:\n"
+            " successes=list(c['required_milestones'])\n"
+            f" if {missing!r} and successes: successes.pop()\n"
+            " domains.append({'domain':c['domain'],'origin':c['origin'],'contract_id':c['id'],"
+            "'successful_milestones':successes,'violations':[],'outcome':'compatible'})\n"
+            f"if {violation!r}:\n"
+            " domains[0].update(outcome='contract_violation',successful_milestones=[],"
+            "violations=[{'event':a['contracts'][0]['events'][0]['event'],'field':'session_id'}])\n"
+            f"r={{'schema_version':1,'harness':args['--harness'],'attempt':args['--attempt'],"
+            f"'identity':ident if {identity!r} else None,'evidence_stage':args['--stage'],"
+            f"'outcome':{outcome!r},'reason':None,'domains':domains}}\n"
+            "(work/'observed.json').write_text(json.dumps({'pid':os.getpid(),'argv':args,'cwd':os.getcwd(),"
+            "'request':q,'home':os.environ['HOME'],'credential_present':any(k.endswith('_KEY') for k in os.environ)}))\n"
+            "print(json.dumps(r))\n")
+        if a["canary_strategy"] and a["canary_strategy"]["kind"] == "npm_release":
+            import shutil
+            shutil.copy2(HERE / "bisect.py", self.canary / "bisect.py")
+            npm = self.bin / "npm"
+            npm.write_text(f"#!{sys.executable}\nimport json,pathlib,sys\n"
+                "assert sys.argv[1:] == ['view','@example/third','versions','--json']\n"
+                f"with pathlib.Path({str(self.base / 'npm.jsonl')!r}).open('a') as f: f.write(json.dumps(sys.argv[1:])+'\\n')\n"
+                "print('[\"1.2.3\"]')\n")
+            npm.chmod(0o755)
+
+    def optional_observation(self, label, cp, out, a):
+        report = json.loads((out / "canary-report.json").read_text())
+        index = json.loads((out / "artifact-index.json").read_text())
+        retained = [json.loads((out / e["result_path"]).read_text()) for e in index["attempts"]]
+        # Save raw product outputs before assertions and before TemporaryDirectory cleanup, including RED.
+        evidence = os.environ.get("HT_TASK44_EVIDENCE")
+        if evidence:
+            import shutil
+            dest = pathlib.Path(evidence) / label
+            dest.mkdir(parents=True)
+            shutil.copytree(out, dest / "out")
+            for name in ("discovery.jsonl", "calls.jsonl", "npm.jsonl"):
+                if (self.base / name).exists():
+                    shutil.copy2(self.base / name, dest / name)
+            (dest / "invocation.json").write_text(json.dumps({"argv":cp.args,"exit":cp.returncode,
+                "stdout":cp.stdout,"stderr":cp.stderr,"fixture_root":str(self.base),"env":self.env,
+                "consumer_sha256":{n:runner.hashlib.sha256((self.canary/n).read_bytes()).hexdigest()
+                                   for n in ("run.py", "report.py", "versions.py", "isolation.py")}}, indent=2))
+        self.assertEqual(cp.returncode, report["exit_code"], cp.stderr)
+        self.assertEqual(runner._sibling("report").exit_code(report), cp.returncode)
+        self.assertEqual(runner.validate_index(json.dumps(index).encode(), out, [a]), index)
+        for entry, r in zip(index["attempts"], retained):
+            self.assertEqual(runner.validate_result(json.dumps(r).encode(), a, entry["attempt"], r["evidence_stage"]), r)
+            observed = json.loads((out / pathlib.Path(entry["result_path"]).parent / "observed.json").read_text())
+            self.assertEqual(observed["request"]["adapter"], a)
+            self.assertFalse(observed["credential_present"])
+            self.assertTrue(pathlib.Path(observed["home"]).is_relative_to(out))
+            with self.assertRaises(ProcessLookupError):
+                os.kill(observed["pid"], 0)
+        if self.calls.exists():
+            self.assertNotIn("forbidden", self.calls.read_text())
+        self.assertEqual(json.loads(self.discovery_log.read_text().splitlines()[-1]), ["adapters", "--json"])
+        return report, index, retained
+
+    def test_empty_required_exact_runtime_is_inconclusive_through_report(self):
+        a = adapter()
+        a["contracts"][0].update(required_milestones=[], events=[])
+        self.optional_fixture(a)
+        for route in ("shell", "python"):
+            with self.subTest(route=route):
+                out = self.base / ("exact-" + route)
+                cp = self.call(route, "third", "off", out=out)
+                report, index, retained = self.optional_observation("exact-" + route, cp, out, a)
+                self.assertEqual(len(index["attempts"]), 1)
+                self.assertEqual(retained[0]["domains"][0]["successful_milestones"], [])
+                block = report["harnesses"][0]
+                self.assertEqual(block["identity"], retained[0]["identity"])
+                self.assertEqual(block["domains"], retained[0]["domains"])
+                self.assertEqual(block["status"], "inconclusive", report)
+                self.assertEqual(cp.returncode, 1, cp.stderr)
+
+    def test_optional_evidence_boundaries_preserve_positive_and_negative_results(self):
+        # Literal expected verdicts cover shared verification and distinct infrastructure semantics.
+        cases = [("empty", "inconclusive"), ("observer_events", "inconclusive"),
+                 ("mixed", "inconclusive"), ("zero", "inconclusive"), ("positive", "all_pass"),
+                 ("missing_milestone", "inconclusive"), ("no_identity", "inconclusive"),
+                 ("source", "inconclusive"), ("violation", "break"),
+                 ("infra_failure", "infra_error"), ("unsupported", "inconclusive"),
+                 ("inconclusive", "inconclusive"), ("no_provider", "inconclusive"),
+                 ("no_runtime", "inconclusive"), ("no_companion", "inconclusive")]
+        for kind in ("exact_runtime", "npm_release"):
+            for label, expected in cases:
+                if kind == "npm_release" and label == "no_runtime":
+                    continue  # Stable-release invocation has no explicit command prerequisite.
+                a = adapter(kind=kind)
+                outcome = label if label in ("infra_failure", "unsupported", "inconclusive") else "complete"
+                if label in ("empty", "observer_events"):
+                    a["contracts"][0].update(required_milestones=[], events=[] if label == "empty" else [
+                        {"event": "Observe", "milestone": None, "always_send": False}])
+                elif label == "mixed":
+                    a["contracts"].append({"domain":"observer", "origin":"bridge_envelope",
+                        "id":"1111111111111111", "events":[], "required_milestones":[]})
+                elif label == "zero":
+                    a["contracts"] = []
+                elif label == "no_provider":
+                    a["canary_strategy"] = None
+                self.optional_fixture(a, outcome=outcome, missing=label == "missing_milestone",
+                                      identity=label != "no_identity", violation=label == "violation")
+                if label == "no_runtime":
+                    self.runtime.unlink()
+                elif label == "no_companion":
+                    self.companion.unlink()
+                if kind == "exact_runtime" and label == "infra_failure":
+                    expected = "inconclusive"
+                for route in ("shell", "python"):
+                    with self.subTest(kind=kind, case=label, route=route):
+                        out = self.base / (kind + "-" + label + "-" + route)
+                        self.calls.unlink(missing_ok=True)
+                        extra = ("--versions", "latest", "--evidence-stage",
+                                 "source_captured" if label == "source" else "no_model")
+                        cp = self.call(route, "third", "off", out=out, extra=extra)
+                        report, index, retained = self.optional_observation(out.name, cp, out, a)
+                        block = report["harnesses"][0]
+                        self.assertEqual(block["status"], expected, report)
+                        self.assertEqual(cp.returncode, {"all_pass":0,"inconclusive":1,"break":1,"infra_error":2}[expected])
+                        if expected != "break":
+                            self.assertIsNone(block["first_bad"])
+                        if label in ("no_provider", "no_runtime", "no_companion"):
+                            self.assertEqual(index["attempts"], [])
+                            self.assertFalse(self.calls.exists())
+                        else:
+                            self.assertGreater(len(index["attempts"]), 0)
+                            for r in retained:
+                                self.assertEqual(r["outcome"], outcome)
+                                self.assertEqual([(d["domain"],d["origin"],d["contract_id"]) for d in r["domains"]],
+                                                 [(c["domain"],c["origin"],c["id"]) for c in a["contracts"]])
+                                self.assertEqual(r["evidence_stage"], "source_captured" if label == "source" else "no_model")
+                                if kind == "exact_runtime":
+                                    self.assertEqual(block["identity"], r["identity"])
+                                    self.assertEqual(block["domains"], r["domains"])
+                                verified = runner.verified_domains(r, a)
+                                self.assertEqual(len(verified), 1 if label in ("positive", "mixed") else 0)
+                if label == "no_runtime":
+                    self.runtime.write_text('["synthetic-input"]')
+        # Malformed producers stay rejected separately; sparse legality never excuses a mismatched join.
+        a = adapter()
+        for change in ({"origin":"bridge_envelope"}, {"domain":"undeclared"}, {"contract_id":"1111111111111111"}):
+            r = result()
+            r["domains"][0].update(change)
+            with self.subTest(malformed=change), self.assertRaises(ValueError):
+                runner.validate_result(json.dumps(r).encode(), a, "try1", "no_model")
+        r = result()
+        r["domains"][0]["outcome"] = "inconclusive"
+        with self.assertRaisesRegex(ValueError, "inconsistent complete"):
+            runner.validate_result(json.dumps(r).encode(), a, "try1", "no_model")
+        for change in ({"id":"bad"}, {"origin":"undeclared"}, {"required_milestones":["undeclared"]}):
+            bad = adapter()
+            bad["contracts"][0].update(change)
+            with self.subTest(malformed_descriptor=change), self.assertRaises(ValueError):
+                runner.select_adapters({"schema_version":1,"adapters":[bad]}, "all")
 
     def descriptors(self):
         values = [adapter(name) for name in ("claude", "codex", "third", "fourth")]
