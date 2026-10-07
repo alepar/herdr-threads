@@ -3202,6 +3202,661 @@ fn public_hermes_recorded_scope_preserves_assets_on_lock_alias_and_generation_ch
     );
     assert!(!bridge.parent().unwrap().exists());
 }
+// Task51 exercises concrete public consumers, including the syscall boundary.
+fn task51_command(f: &HermesScopeFixture, verb: &str, json_format: bool) -> Command {
+    let mut command = f.scratch.command(&f.scratch.root);
+    command
+        .env("PATH", &f.scratch.bin)
+        .env("HERMES_HOME", &f.native_home)
+        .arg("--state-dir")
+        .arg(&f.scratch.state)
+        .arg("--host-endpoint")
+        .arg(f.scratch.host());
+    if json_format {
+        command.arg("--json");
+    }
+    command.args([verb, "hermes", "--profile", "work"]);
+    if verb != "unsetup" {
+        command.arg("--harness-binary").arg(&f.launcher);
+    }
+    herdr_threads::test_support::spawn::tag(&mut command);
+    command
+}
+
+fn task51_manifest(f: &HermesScopeFixture) -> PathBuf {
+    let selected = f.selected_home("work");
+    let mut manifests: Vec<_> = fs::read_dir(f.scratch.state.join("setup/hermes"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .filter(|path| {
+            let value: serde_json::Value =
+                serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            value["home"].as_str() == selected.to_str()
+        })
+        .collect();
+    assert_eq!(
+        manifests.len(),
+        1,
+        "expected one installed manifest for selected physical home"
+    );
+    manifests.pop().unwrap()
+}
+
+fn task51_installed() -> HermesScopeFixture {
+    let f = HermesScopeFixture::new();
+    let out = f.run("setup", "work", true);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+    f
+}
+
+fn task51_public_assertions(
+    out: &Output,
+    json_format: bool,
+    removed: &[&str],
+    residue: &[&str],
+    incomplete: bool,
+) {
+    assert!(
+        out.status.success(),
+        "{}{}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+    if json_format {
+        let report = json(out);
+        assert_eq!(report["residue"], serde_json::json!(residue));
+        assert_eq!(report["incomplete"], incomplete);
+        assert_eq!(
+            report["manual_argv"],
+            serde_json::json!([
+                "hermes",
+                "--profile",
+                "work",
+                "plugins",
+                "disable",
+                "herdr-threads"
+            ])
+        );
+        let actual = report["removed"]
+            .as_array()
+            .expect("actual completed removals missing");
+        for name in removed {
+            assert!(actual.contains(&serde_json::json!(name)), "{report}");
+        }
+        if removed.is_empty() {
+            assert!(actual.is_empty(), "{report}");
+            assert_eq!(report["actions"], serde_json::json!(["Unchanged"]));
+        } else {
+            assert_eq!(report["actions"], serde_json::json!(["RemovedOwned"]));
+        }
+        let diagnostic = report["diagnostic"].as_str().expect("diagnostic missing");
+        assert!(
+            diagnostic.contains(if incomplete { "incomplete" } else { "removed" }),
+            "{diagnostic}"
+        );
+    } else {
+        let report = text(&out.stdout);
+        assert!(
+            report.contains(&format!("incomplete: {incomplete}")),
+            "{report}"
+        );
+        assert!(
+            report.contains("manual_argv: hermes --profile work plugins disable herdr-threads"),
+            "{report}"
+        );
+        assert!(
+            report.contains(if incomplete { "incomplete" } else { "removed" }),
+            "{report}"
+        );
+        assert!(
+            report.contains(if removed.is_empty() {
+                "actions: Unchanged"
+            } else {
+                "actions: RemovedOwned"
+            }),
+            "{report}"
+        );
+        if removed.is_empty() {
+            assert!(!report.contains("RemovedOwned"), "{report}");
+            assert!(
+                report.lines().any(|line| line.trim_end() == "removed:"),
+                "{report}"
+            );
+        }
+        for name in removed {
+            assert!(report.contains(name), "{report}");
+        }
+        for name in residue {
+            assert!(report.contains(name), "{report}");
+        }
+        assert!(
+            report.lines().any(|line| line.starts_with("residue:")),
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn task51_public_hermes_removal_reports_modified_residue_and_no_removal() {
+    for json_format in [true, false] {
+        let f = task51_installed();
+        let dir = f.selected_home("work").join("plugins/herdr-threads");
+        let manifest = task51_manifest(&f);
+        let index = f.scratch.state.join("setup/hermes/selectors-v1.json");
+        let before_manifest = fs::read(&manifest).unwrap();
+        let before_index = fs::read(&index).unwrap();
+        let other: Vec<_> = ["bridge_config.json", "plugin.yaml"]
+            .into_iter()
+            .map(|name| (dir.join(name), fs::read(dir.join(name)).unwrap()))
+            .collect();
+        let user = b"# exact user-owned bridge edit\n";
+        fs::write(dir.join("__init__.py"), user).unwrap();
+        let out = task51_command(&f, "unsetup", json_format).output().unwrap();
+        assert_eq!(fs::read(dir.join("__init__.py")).unwrap(), user);
+        assert_eq!(fs::read(manifest).unwrap(), before_manifest);
+        assert_eq!(fs::read(index).unwrap(), before_index);
+        for (path, bytes) in other {
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+        task51_public_assertions(&out, json_format, &[], &["__init__.py"], true);
+    }
+}
+
+#[test]
+fn task51_public_hermes_removal_reports_foreign_directory_residue() {
+    for json_format in [true, false] {
+        let f = task51_installed();
+        let dir = f.selected_home("work").join("plugins/herdr-threads");
+        let manifest = task51_manifest(&f);
+        let before_manifest = fs::read(&manifest).unwrap();
+        let index = f.scratch.state.join("setup/hermes/selectors-v1.json");
+        let before_index = fs::read(&index).unwrap();
+        fs::write(dir.join("foreign.txt"), b"foreign exact bytes\n").unwrap();
+        let out = task51_command(&f, "unsetup", json_format).output().unwrap();
+        assert_eq!(
+            fs::read(dir.join("foreign.txt")).unwrap(),
+            b"foreign exact bytes\n"
+        );
+        assert_eq!(fs::read(manifest).unwrap(), before_manifest);
+        assert_eq!(fs::read(index).unwrap(), before_index);
+        for name in ["__init__.py", "bridge_config.json", "plugin.yaml"] {
+            assert!(!dir.join(name).exists());
+        }
+        task51_public_assertions(
+            &out,
+            json_format,
+            &["__init__.py", "bridge_config.json", "plugin.yaml"],
+            &["herdr-threads/"],
+            true,
+        );
+        if json_format {
+            assert!(
+                !json(&out)["removed"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!("herdr-threads/"))
+            );
+        } else {
+            assert!(
+                !text(&out.stdout)
+                    .lines()
+                    .find(|l| l.starts_with("removed:"))
+                    .unwrap()
+                    .contains("herdr-threads/")
+            );
+        }
+    }
+}
+
+#[test]
+fn task51_public_hermes_clean_and_absent_removal_reports_actual_actions() {
+    for json_format in [true, false] {
+        let f = task51_installed();
+        let manifest = task51_manifest(&f);
+        let out = task51_command(&f, "unsetup", json_format).output().unwrap();
+        assert!(
+            !f.selected_home("work")
+                .join("plugins/herdr-threads")
+                .exists()
+        );
+        assert!(!manifest.exists());
+        task51_public_assertions(
+            &out,
+            json_format,
+            &[
+                "__init__.py",
+                "bridge_config.json",
+                "plugin.yaml",
+                "herdr-threads/",
+            ],
+            &[],
+            false,
+        );
+        let absent = task51_command(&f, "unsetup", json_format).output().unwrap();
+        assert!(
+            !absent.status.success(),
+            "missing recorded selector must refuse"
+        );
+        assert!(!text(&absent.stdout).contains("RemovedOwned"));
+        assert!(
+            !f.selected_home("work")
+                .join("plugins/herdr-threads")
+                .exists()
+        );
+    }
+    // Existing exact-home legacy facade can report absence without selector guessing.
+    use herdr_threads::harness::{adapter::*, registry};
+    let f = HermesScopeFixture::new();
+    let registry = registry::builtins();
+    let registration = registry.by_id(registry.agent("hermes").unwrap()).unwrap();
+    let environment = SetupEnvironment {
+        state_dir: Some(f.scratch.state.clone()),
+        ..Default::default()
+    };
+    let result = registration
+        .unsetup(
+            &UnsetupRequest {
+                scope: ResolvedSetupScope::Profile {
+                    name: "work".into(),
+                    home: f.selected_home("work"),
+                },
+                environment,
+            },
+            &herdr_threads::protocol::time::CallBudget {
+                deadline: herdr_threads::protocol::time::MonoInstant(u64::MAX),
+                cancellation: Default::default(),
+            },
+        )
+        .unwrap();
+    assert!(matches!(
+        result.actions.as_slice(),
+        [SetupAction::Unchanged]
+    ));
+    assert_eq!(result.projection["removed"], serde_json::json!([]));
+    assert!(!f.selected_home("work").join("plugins").exists());
+}
+
+fn task51_snapshot(root: &Path) -> Vec<(PathBuf, u64, u32, Option<Vec<u8>>)> {
+    use std::os::unix::fs::MetadataExt;
+    let mut paths: Vec<_> = fs::read_dir(root)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    paths.sort();
+    let mut result = Vec::new();
+    for path in paths {
+        // The selected synthetic launcher logs discovery for status; harness stdout
+        // and stderr are predeclared scaffolding. Never open special files to snapshot.
+        if path
+            .file_name()
+            .is_some_and(|n| n == "selected-launcher-calls.jsonl")
+        {
+            continue;
+        }
+        let m = fs::symlink_metadata(&path).unwrap();
+        let bytes = m.is_file().then(|| fs::read(&path).unwrap());
+        result.push((path.clone(), m.ino(), m.mode(), bytes));
+        if m.is_dir() {
+            result.extend(task51_snapshot(&path));
+        }
+    }
+    result
+}
+
+fn task51_bounded(
+    command: &mut Command,
+    log_root: &Path,
+    label: &str,
+) -> (Option<std::process::ExitStatus>, String, String) {
+    use herdr_threads::test_support::spawn::SpawnOwned;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::{
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+    // Evidence-root authority comes only from the parent-declared task env.
+    // Ordinary runs keep all logs inside the caller's owned Scratch cleanup.
+    let retained = std::env::var_os("HT_TASK51_CHILD_LOG_ROOT").map(PathBuf::from);
+    let parent = retained.as_deref().unwrap_or(log_root);
+    assert!(parent.is_absolute() && fs::symlink_metadata(parent).unwrap().is_dir());
+    let case = parent.join(format!("{label}-{}", uuid::Uuid::new_v4()));
+    fs::DirBuilder::new().mode(0o700).create(&case).unwrap();
+    let log_root = case.as_path();
+    let exclusive = |path: &Path| {
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+            .unwrap()
+    };
+    let stdout = log_root.join(format!("{label}.stdout"));
+    let stderr = log_root.join(format!("{label}.stderr"));
+    command
+        .stdout(Stdio::from(exclusive(&stdout)))
+        .stderr(Stdio::from(exclusive(&stderr)));
+    if retained.is_some() {
+        task51_limit_child_raw_files(command);
+    }
+    let mut child = command.spawn_owned().unwrap();
+    let pid = child.id();
+    eprintln!("task51 enrolled child pid={pid} consumer={label}");
+    // Record actual OS start identity while the enrolled child exists. A fast
+    // refusal may already have exited; preserve UNKNOWN instead of inventing it.
+    let identity_path = log_root.join(format!("{label}.start-identity"));
+    let mut identity_command = herdr_threads::test_support::spawn::command("/bin/ps");
+    identity_command
+        .args(["-p", &pid.to_string(), "-o", "lstart="])
+        .stdout(Stdio::from(exclusive(&identity_path)))
+        .stderr(Stdio::null());
+    if retained.is_some() {
+        task51_limit_child_raw_files(&mut identity_command);
+    }
+    let mut identity_child = identity_command.spawn_owned().unwrap();
+    let identity_deadline = Instant::now() + Duration::from_millis(500);
+    while identity_child.try_wait().unwrap().is_none() && Instant::now() < identity_deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    identity_child.stop();
+    let identity = fs::read_to_string(&identity_path).unwrap();
+    eprintln!(
+        "task51 enrolled child pid={pid} os_start_identity={}",
+        if identity.trim().is_empty() {
+            "UNKNOWN"
+        } else {
+            identity.trim()
+        }
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    // Immediate RAII protection above; explicitly stop/reap before lock proof even
+    // for a completed leader, so no descendant can retain the generation lock.
+    let reaped = child.stop();
+    assert!(reaped.is_some(), "owned child {pid} was not reaped");
+    assert!(child.try_wait().unwrap().is_some());
+    eprintln!(
+        "task51 child pid={pid} consumer={label} completed={} reaped=true",
+        status.is_some()
+    );
+    eprintln!(
+        "task51 child raw directory={} retained={}",
+        log_root.display(),
+        retained.is_some()
+    );
+    for path in [&stdout, &stderr, &identity_path] {
+        let length = fs::metadata(path).unwrap().len();
+        eprintln!("task51 child raw file={} bytes={length}", path.display());
+        // Reaching the file-size cap is adverse output, retained in full. No
+        // truncated-to-success claim; all children are already stopped/reaped.
+        assert!(
+            retained.is_none() || length < 1_048_576,
+            "retained raw output reached 1MiB cap: {}",
+            path.display()
+        );
+    }
+    (
+        status,
+        text(&fs::read(stdout).unwrap()),
+        text(&fs::read(stderr).unwrap()),
+    )
+}
+
+fn task51_limit_child_raw_files(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // Child-only resource limit, before exec; never mutates the test process.
+    // Existing synthetic writes are below MAX. SIGXFSZ/cap attainment is a
+    // recorded adverse run, not a behavioral RED or permission to trim bytes.
+    unsafe {
+        command.pre_exec(|| {
+            let limit = libc::rlimit {
+                rlim_cur: 1_048_576,
+                rlim_max: 1_048_576,
+            };
+            if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+}
+
+#[test]
+fn task51_lock_probe_child() {
+    let Some(paths) = std::env::var_os("HT_TASK51_LOCK_PROBE") else {
+        return;
+    };
+    use std::os::{fd::AsRawFd, unix::fs::MetadataExt};
+    for path in std::env::split_paths(&paths) {
+        let before = fs::symlink_metadata(&path).unwrap();
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let held = file.metadata().unwrap();
+        assert_eq!((held.dev(), held.ino()), (before.dev(), before.ino()));
+        assert_eq!(
+            unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0,
+            "held lock after refused consumer: {}",
+            path.display()
+        );
+        assert_eq!(unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) }, 0);
+    }
+}
+
+fn task51_locks_released(f: &HermesScopeFixture, log_root: &Path) {
+    let paths = [
+        f.scratch.state.join("setup/hermes/.selectors.lock"),
+        f.selected_home("work")
+            .join("plugins/.herdr-threads-operation.lock"),
+    ];
+    let mut probe = herdr_threads::test_support::spawn::command(std::env::current_exe().unwrap());
+    probe
+        .args([
+            "--exact",
+            "setup_cli::task51_lock_probe_child",
+            "--nocapture",
+        ])
+        .env(
+            "HT_TASK51_LOCK_PROBE",
+            std::env::join_paths(&paths).unwrap(),
+        )
+        .env("HOME", &f.scratch.home)
+        .env("CLAUDE_CONFIG_DIR", &f.scratch.claude_config)
+        .env("CODEX_HOME", &f.scratch.codex_home);
+    let (status, stdout, stderr) = task51_bounded(&mut probe, log_root, "lock-probe");
+    assert!(status.is_some_and(|s| s.success()), "{stdout}{stderr}");
+    assert!(
+        stdout.contains("1 passed"),
+        "lock probe did not execute: {stdout}"
+    );
+}
+
+fn task51_target(f: &HermesScopeFixture, name: &str) -> PathBuf {
+    match name {
+        "index-marker" => f.scratch.state.join("setup/hermes/.selectors.identity"),
+        "index" => f.scratch.state.join("setup/hermes/selectors-v1.json"),
+        "physical-marker" => f
+            .selected_home("work")
+            .join("plugins/.herdr-threads-operation.identity"),
+        "manifest" => task51_manifest(f),
+        "helper" => f.scratch.state.join("setup/hermes-runtime-helper.py"),
+        name => f
+            .selected_home("work")
+            .join("plugins/herdr-threads")
+            .join(name),
+    }
+}
+
+#[test]
+fn task51_owned_consumers_refuse_fifo_without_writes_or_held_locks() {
+    use std::ffi::CString;
+    let mut timeouts = Vec::new();
+    for (name, verb) in [
+        ("index-marker", "unsetup"),
+        ("index", "unsetup"),
+        ("physical-marker", "unsetup"),
+        ("physical-marker", "setup-status"),
+        ("manifest", "unsetup"),
+        ("manifest", "setup-status"),
+        ("__init__.py", "unsetup"),
+        ("__init__.py", "setup-status"),
+        ("bridge_config.json", "unsetup"),
+        ("plugin.yaml", "unsetup"),
+        ("helper", "setup"),
+        ("helper", "setup-status"),
+    ] {
+        let f = task51_installed();
+        let path = task51_target(&f, name);
+        fs::remove_file(&path).unwrap();
+        let c_path = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        let before = task51_snapshot(&f.scratch.root);
+        let calls = fs::read(&f.calls).unwrap();
+        let logs = Scratch::new();
+        let label = format!("{name}-{verb}");
+        let (status, stdout, stderr) =
+            task51_bounded(&mut task51_command(&f, verb, true), &logs.root, &label);
+        assert_eq!(
+            task51_snapshot(&f.scratch.root),
+            before,
+            "mutated on {label}"
+        );
+        task51_locks_released(&f, &logs.root);
+        if name == "helper" || verb == "unsetup" {
+            assert_eq!(
+                fs::read(&f.calls).unwrap(),
+                calls,
+                "launcher/helper executed before refusal on {label}"
+            );
+        }
+        match status {
+            None => timeouts.push(label),
+            Some(status) => assert!(
+                !status.success(),
+                "special file accepted: {label}: {stdout}{stderr}"
+            ),
+        }
+    }
+    assert!(
+        timeouts.is_empty(),
+        "bounded-completion failed for no-writer FIFO consumers: {timeouts:?}"
+    );
+}
+
+#[test]
+fn task51_owned_read_regular_and_refusal_neighbors() {
+    use std::os::unix::fs::symlink;
+    // Each metadata policy is exercised through its actual caller, including
+    // helper multi-link acceptance versus selector multi-link refusal.
+    for name in [
+        "index-marker",
+        "index",
+        "physical-marker",
+        "manifest",
+        "__init__.py",
+        "bridge_config.json",
+        "plugin.yaml",
+        "helper",
+    ] {
+        for neighbor in [
+            "regular",
+            "missing",
+            "symlink",
+            "directory",
+            "oversize",
+            "public-mode",
+            "hardlink",
+        ] {
+            let f = task51_installed();
+            let path = task51_target(&f, name);
+            let original = fs::read(&path).unwrap();
+            let spare = f.scratch.root.join("neighbor-original");
+            match neighbor {
+                "regular" => {}
+                "missing" => {
+                    fs::remove_file(&path).unwrap();
+                }
+                "symlink" => {
+                    fs::rename(&path, &spare).unwrap();
+                    symlink(&spare, &path).unwrap();
+                }
+                "directory" => {
+                    fs::remove_file(&path).unwrap();
+                    fs::create_dir(&path).unwrap();
+                }
+                "oversize" => {
+                    fs::write(&path, vec![b'x'; 1_048_577]).unwrap();
+                }
+                "public-mode" => {
+                    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+                }
+                "hardlink" => {
+                    fs::hard_link(&path, &spare).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let verb = if name == "helper" {
+                "setup-status"
+            } else {
+                "unsetup"
+            };
+            let logs = Scratch::new();
+            let label = format!("{name}-{neighbor}");
+            let before = task51_snapshot(&f.scratch.root);
+            let calls = fs::read(&f.calls).unwrap();
+            let (status, stdout, stderr) =
+                task51_bounded(&mut task51_command(&f, verb, true), &logs.root, &label);
+            let status = status.unwrap_or_else(|| panic!("neighbor blocked: {label}"));
+            let selector = name == "index" || name == "index-marker";
+            let physical_marker = name == "physical-marker";
+            let asset = ["__init__.py", "bridge_config.json", "plugin.yaml"].contains(&name);
+            let accepted = neighbor == "regular"
+                || (neighbor == "missing" && (asset || name == "helper"))
+                || (neighbor == "public-mode" && !selector && !physical_marker && name != "helper")
+                || (neighbor == "hardlink" && !selector && !physical_marker);
+            assert_eq!(status.success(), accepted, "{label}: {stdout}{stderr}");
+            task51_locks_released(&f, &logs.root);
+            if !accepted {
+                assert_eq!(
+                    task51_snapshot(&f.scratch.root),
+                    before,
+                    "refusal mutated {label}"
+                );
+                if name == "helper" {
+                    assert_eq!(
+                        fs::read(&f.calls).unwrap(),
+                        calls,
+                        "executed refused helper"
+                    );
+                }
+            }
+            if path.is_file() && (name == "helper" || !accepted) && neighbor != "oversize" {
+                assert_eq!(fs::read(&path).unwrap(), original, "{label}");
+            }
+        }
+    }
+}
+
 /// Foreground settings remain user-owned; setup only inspects and advises.
 #[test]
 fn foreground_setup_and_status_inspect_both_harnesses_without_editing_flags() {
