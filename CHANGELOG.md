@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.2.10
+
+- **Agent seat nicknames.** Human transcripts and follow output show `<space name>/<seat name>/<seatid>` for agent seats, removing the Claude/Codex suffix. Missing host names use existing ID fallbacks; the full canonical seat ID stays visible. Labels remain advisory and do not change identity or receipt semantics.
+
 ## v0.2.9
 
 - **Wrapper-compatible launch.** Stop automatically adding Codex `--no-daemon`, so managed launch works with entrypoints that do not recognize that flag. Foreground execution remains user-managed: setup explains Claude `disableAgentView` and Codex foreground options without changing them. A shared app-server can supply its own pane environment; automatic TUI-pane recovery is not claimed.
