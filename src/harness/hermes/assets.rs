@@ -39,6 +39,8 @@ pub struct LaunchAssetSettings {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Removal {
+    /// Completed owned deletions only; absent files and preserved residue are excluded.
+    pub removed: Vec<String>,
     pub residue: Vec<String>,
     pub manual_argv: Vec<String>,
 }
@@ -115,34 +117,62 @@ fn valid_generation(token: &str) -> bool {
 fn valid_selector(selector: &str) -> bool {
     !selector.is_empty() && selector.len() <= 256 && !selector.chars().any(char::is_control)
 }
-fn owned_bytes(path: &Path, maximum: u64) -> Result<Option<Vec<u8>>, SetupError> {
-    let mut file = match OpenOptions::new()
+pub(super) enum RegularReadError {
+    Open(std::io::Error),
+    Io(std::io::Error),
+    Conflict,
+    TooLarge,
+}
+
+/// Open without waiting on a FIFO or following a link, then validate the
+/// opened regular file before any content read. Each caller retains its own
+/// ownership rules; manifests/assets do not inherit selector/helper rules.
+pub(super) fn read_regular(
+    path: &Path,
+    maximum: u64,
+    valid_metadata: impl FnOnce(&fs::Metadata) -> bool,
+) -> Result<Vec<u8>, RegularReadError> {
+    let read_limit = maximum.checked_add(1).ok_or(RegularReadError::TooLarge)?;
+    let mut file = OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
         .open(path)
-    {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(SetupError::Conflict),
-    };
-    let meta = file.metadata().map_err(|_| SetupError::Io)?;
-    if !meta.is_file()
-        || meta.uid() != unsafe { libc::geteuid() }
-        || meta.nlink() != 1
-        || meta.mode() & 0o077 != 0
-        || meta.len() > maximum
-    {
-        return Err(SetupError::Conflict);
+        .map_err(RegularReadError::Open)?;
+    let meta = file.metadata().map_err(RegularReadError::Io)?;
+    if !meta.is_file() || meta.len() > maximum || !valid_metadata(&meta) {
+        return Err(RegularReadError::Conflict);
     }
     let mut bytes = Vec::new();
     (&mut file)
-        .take(maximum + 1)
+        .take(read_limit)
         .read_to_end(&mut bytes)
-        .map_err(|_| SetupError::Io)?;
+        .map_err(RegularReadError::Io)?;
     if bytes.len() as u64 > maximum {
-        return Err(SetupError::TooLarge);
+        return Err(RegularReadError::TooLarge);
     }
-    Ok(Some(bytes))
+    Ok(bytes)
+}
+
+fn asset_bytes(
+    path: &Path,
+    maximum: u64,
+    valid_metadata: impl FnOnce(&fs::Metadata) -> bool,
+) -> Result<Option<Vec<u8>>, SetupError> {
+    match read_regular(path, maximum, valid_metadata) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(RegularReadError::Open(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(None)
+        }
+        Err(RegularReadError::Open(_) | RegularReadError::Conflict) => Err(SetupError::Conflict),
+        Err(RegularReadError::Io(_)) => Err(SetupError::Io),
+        Err(RegularReadError::TooLarge) => Err(SetupError::TooLarge),
+    }
+}
+
+fn owned_bytes(path: &Path, maximum: u64) -> Result<Option<Vec<u8>>, SetupError> {
+    asset_bytes(path, maximum, |meta| {
+        meta.uid() == unsafe { libc::geteuid() } && meta.nlink() == 1 && meta.mode() & 0o077 == 0
+    })
 }
 /// Local state ordering is always index -> physical profile; no native discovery.
 struct IndexLock {
@@ -179,7 +209,7 @@ impl IndexLock {
             .write(true)
             .create(create)
             .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
             .open(&named)
             .map_err(|_| SetupError::Conflict)?;
         let meta = file.metadata().map_err(|_| SetupError::Io)?;
@@ -437,7 +467,7 @@ impl ProfileLock {
             .write(true)
             .create(create)
             .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
             .open(plugins.join(LOCK))
             .map_err(|_| SetupError::Conflict)?;
         let meta = file.metadata().map_err(|_| SetupError::Io)?;
@@ -565,28 +595,7 @@ fn manifest_path(state: &Path, home: &Path, create: bool) -> Result<PathBuf, Set
     )))
 }
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, SetupError> {
-    let mut file = match OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)
-    {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(SetupError::Conflict),
-    };
-    let meta = file.metadata().map_err(|_| SetupError::Io)?;
-    if !meta.is_file() || meta.len() > MAX {
-        return Err(SetupError::Conflict);
-    }
-    let mut bytes = Vec::new();
-    (&mut file)
-        .take(MAX + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| SetupError::Io)?;
-    if bytes.len() as u64 > MAX {
-        return Err(SetupError::TooLarge);
-    }
-    Ok(Some(bytes))
+    asset_bytes(path, MAX, |_| true)
 }
 fn read_manifest(path: &Path, home: &Path) -> Result<Option<Manifest>, SetupError> {
     let Some(bytes) = read_optional(path)? else {
@@ -953,6 +962,7 @@ fn unsetup_locked(
         return Err(SetupError::Invalid);
     }
     let mut result = Removal {
+        removed: vec![],
         residue: vec![],
         manual_argv: guidance(profile, "disable"),
     };
@@ -984,6 +994,7 @@ fn unsetup_locked(
             return Err(SetupError::Conflict);
         }
         fs::remove_file(manifest).map_err(|_| SetupError::Io)?;
+        result.removed.push("ownership manifest".into());
         return Ok(result);
     } else {
         generation_directory(lock, &m)?
@@ -1017,12 +1028,13 @@ fn unsetup_locked(
                 return Err(SetupError::Conflict);
             }
             fs::remove_file(path).map_err(|_| SetupError::Io)?;
+            result.removed.push(name.into());
         }
     }
     lock.validate()?;
     if dir.exists() {
         match fs::remove_dir(&dir) {
-            Ok(()) => (),
+            Ok(()) => result.removed.push("herdr-threads/".into()),
             Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
                 result.residue.push("herdr-threads/".into())
             }
@@ -1031,6 +1043,7 @@ fn unsetup_locked(
     }
     if result.residue.is_empty() {
         fs::remove_file(manifest).map_err(|_| SetupError::Io)?;
+        result.removed.push("ownership manifest".into());
     }
     Ok(result)
 }

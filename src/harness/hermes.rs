@@ -1041,11 +1041,33 @@ fn launcher(env: &SetupEnvironment) -> Option<PathBuf> {
     })
 }
 fn removal_outcome(removed: assets::Removal) -> RemovalOutcome {
+    let incomplete = !removed.residue.is_empty();
+    let changed = !removed.removed.is_empty();
+    let actions = vec![if changed {
+        SetupAction::RemovedOwned
+    } else {
+        SetupAction::Unchanged
+    }];
+    let action = if changed { "RemovedOwned" } else { "Unchanged" };
+    let diagnostic = if incomplete {
+        "owned removal incomplete; preserved residue; native disable remains manual"
+    } else if changed {
+        "exact owned assets removed; native disable remains manual"
+    } else {
+        "no owned assets removed; native disable remains manual"
+    };
     RemovalOutcome {
-        actions: vec![SetupAction::RemovedOwned],
-        diagnostic: "exact owned assets removed; native disable remains manual".into(),
+        actions,
+        diagnostic: diagnostic.into(),
         residue: removed.residue.iter().map(PathBuf::from).collect(),
-        projection: serde_json::json!({"manual_argv":removed.manual_argv}),
+        projection: serde_json::json!({
+            "actions": [action],
+            "removed": removed.removed,
+            "residue": removed.residue,
+            "incomplete": incomplete,
+            "diagnostic": diagnostic,
+            "manual_argv": removed.manual_argv,
+        }),
         diagnostics: vec![],
     }
 }
@@ -1071,7 +1093,7 @@ fn inspection_helper(env: &SetupEnvironment) -> Result<PathBuf, SetupFailure> {
         .join("setup/hermes-runtime-helper.py");
     crate::daemon::paths::ensure_private_dir(helper.parent().unwrap()).map_err(SetupFailure::Io)?;
     use std::{
-        io::{Read, Write},
+        io::Write,
         os::unix::fs::{MetadataExt, OpenOptionsExt},
     };
     let expected = include_bytes!("../../integrations/hermes/runtime_helper.py");
@@ -1089,25 +1111,19 @@ fn inspection_helper(env: &SetupEnvironment) -> Result<PathBuf, SetupFailure> {
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(&helper)
-                .map_err(SetupFailure::Io)?;
-            let metadata = file.metadata().map_err(SetupFailure::Io)?;
-            if !metadata.is_file()
-                || metadata.uid() != unsafe { libc::geteuid() }
-                || metadata.mode() & 0o077 != 0
-                || metadata.len() != expected.len() as u64
-            {
-                return Err(SetupFailure::Invalid(
-                    "Hermes helper ownership conflict".into(),
-                ));
-            }
-            let mut bytes = Vec::new();
-            file.take(expected.len() as u64 + 1)
-                .read_to_end(&mut bytes)
-                .map_err(SetupFailure::Io)?;
+            let bytes = assets::read_regular(&helper, expected.len() as u64, |metadata| {
+                metadata.uid() == unsafe { libc::geteuid() }
+                    && metadata.mode() & 0o077 == 0
+                    && metadata.len() == expected.len() as u64
+            })
+            .map_err(|error| match error {
+                assets::RegularReadError::Open(error) | assets::RegularReadError::Io(error) => {
+                    SetupFailure::Io(error)
+                }
+                assets::RegularReadError::Conflict | assets::RegularReadError::TooLarge => {
+                    SetupFailure::Invalid("Hermes helper ownership conflict".into())
+                }
+            })?;
             if bytes != expected {
                 return Err(SetupFailure::Invalid(
                     "Hermes helper ownership conflict".into(),
