@@ -1,0 +1,85 @@
+{
+  "binary": "/Users/alepar/.codex/packages/standalone/releases/0.160.1-aarch64-apple-darwin/bin/codex",
+  "scenarios": [
+    {
+      "name": "private-server",
+      "client_pid": 81535,
+      "argv": [
+        "/Users/alepar/.codex/packages/standalone/releases/0.160.1-aarch64-apple-darwin/bin/codex",
+        "--remote",
+        "unix:///private/tmp/ht-tui-env-tc_40_m0/server.sock",
+        "--no-alt-screen",
+        "-C",
+        "/private/tmp/ht-tui-env-tc_40_m0/project"
+      ],
+      "client_HERDR_PANE_ID": "probe-client:p2",
+      "path": "TUI ! shortcut",
+      "submitted": true,
+      "capture": {
+        "pid": 81593,
+        "ppid": 81532,
+        "HERDR_PANE_ID": "probe-server:p1",
+        "HT_PROBE_MARKER": "server",
+        "CODEX_THREAD_ID": "01a1145d-089f-73a3-aee3-5ce100469c2b"
+      }
+    },
+    {
+      "name": "private-server-tool-policy",
+      "client_pid": 81595,
+      "argv": [
+        "/Users/alepar/.codex/packages/standalone/releases/0.160.1-aarch64-apple-darwin/bin/codex",
+        "--remote",
+        "unix:///private/tmp/ht-tui-env-tc_40_m0/server.sock",
+        "-c",
+        "shell_environment_policy.set.HERDR_PANE_ID=\"probe-client:p2\"",
+        "--no-alt-screen",
+        "-C",
+        "/private/tmp/ht-tui-env-tc_40_m0/project"
+      ],
+      "client_HERDR_PANE_ID": "probe-client:p2",
+      "path": "TUI ! shortcut",
+      "submitted": true,
+      "capture": {
+        "pid": 81669,
+        "ppid": 81532,
+        "HERDR_PANE_ID": "probe-client:p2",
+        "HT_PROBE_MARKER": "server",
+        "CODEX_THREAD_ID": "01a1145d-15d5-7912-b7ed-d9c33ae99134"
+      }
+    },
+    {
+      "name": "embedded-control",
+      "client_pid": 81670,
+      "argv": [
+        "/Users/alepar/.codex/packages/standalone/releases/0.160.1-aarch64-apple-darwin/bin/codex",
+        "--no-daemon",
+        "--no-alt-screen",
+        "-C",
+        "/private/tmp/ht-tui-env-tc_40_m0/project"
+      ],
+      "client_HERDR_PANE_ID": "probe-client:p2",
+      "path": "TUI ! shortcut",
+      "submitted": true,
+      "capture": {
+        "pid": 81695,
+        "ppid": 81670,
+        "HERDR_PANE_ID": "probe-client:p2",
+        "HT_PROBE_MARKER": "client",
+        "CODEX_THREAD_ID": "01a1145d-24c4-7f80-8496-18300e975cd8"
+      }
+    }
+  ],
+  "cleanup": true,
+  "version": "codex-cli 0.160.1",
+  "server": {
+    "pid": 81532,
+    "argv": [
+      "/Users/alepar/.codex/packages/standalone/releases/0.160.1-aarch64-apple-darwin/bin/codex",
+      "app-server",
+      "--listen",
+      "unix:///private/tmp/ht-tui-env-tc_40_m0/server.sock"
+    ],
+    "HERDR_PANE_ID": "probe-server:p1"
+  },
+  "success": true
+}

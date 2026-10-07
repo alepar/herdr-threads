@@ -289,7 +289,7 @@ pub(crate) fn codex_unmeasured_allowance_warning(
     }
     let observed = match version {
         Some(version) => format!("Codex {version}"),
-        None => "a Codex version that was not observed or not admitted".to_owned(),
+        None => "a Codex runtime whose metadata is unavailable".to_owned(),
     };
     Some(format!(
         "WARNING: sandbox_workspace_write.network_access=true is installed in {} for an \

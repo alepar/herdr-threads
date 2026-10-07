@@ -2557,6 +2557,26 @@ fn legacy_adapter_backends_reopen_owned_manifests_and_preserve_consent() {
         };
         let installed = registration.setup(&request, &budget).unwrap();
         assert_eq!(installed.projection["action"], "installed");
+        assert_eq!(installed.projection["foreground"]["status"], "required");
+        assert_eq!(
+            installed.projection["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|warning| warning
+                    .as_str()
+                    .is_some_and(|s| s.starts_with("Foreground user settings")))
+                .count(),
+            1
+        );
+        assert_eq!(
+            installed
+                .diagnostics
+                .iter()
+                .filter(|d| d.text.starts_with("Foreground user settings"))
+                .count(),
+            1
+        );
         if name == "claude" {
             assert_eq!(
                 installed.projection["prompt_suggestions"]["action"],
@@ -2602,6 +2622,15 @@ fn legacy_adapter_backends_reopen_owned_manifests_and_preserve_consent() {
         let SetupStatus::Detailed(status) = status else {
             panic!("adapter did not return detailed local status")
         };
+        assert_eq!(status.projection["foreground"]["status"], "required");
+        assert_eq!(
+            status
+                .diagnostics
+                .iter()
+                .filter(|d| d.text.starts_with("Foreground user settings"))
+                .count(),
+            1
+        );
         assert!(status.installed);
         assert_eq!(
             status.projection["command"],
@@ -3121,4 +3150,252 @@ fn public_hermes_recorded_scope_preserves_assets_on_lock_alias_and_generation_ch
         "interrupted exact removal did not recover"
     );
     assert!(!bridge.parent().unwrap().exists());
+}
+/// Foreground settings remain user-owned; setup only inspects and advises.
+#[test]
+fn foreground_setup_and_status_inspect_both_harnesses_without_editing_flags() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.290");
+    s.harness("codex", "0.160.1");
+    fs::create_dir_all(&s.claude_config).unwrap();
+    fs::create_dir_all(&s.codex_home).unwrap();
+    let config = s.codex_home.join("config.toml");
+    for (bytes, observed) in [
+        (
+            "[features]\ndaemon_auto_start = true\n",
+            serde_json::json!(true),
+        ),
+        (
+            "[features]\ndaemon_auto_start = false\n",
+            serde_json::json!(false),
+        ),
+        ("model = \"user-choice\"\n", serde_json::Value::Null),
+    ] {
+        fs::write(&config, bytes).unwrap();
+        let out = s.run(&["setup-status", "codex", "--json"]);
+        assert!(out.status.success());
+        let report = json(&out);
+        assert_eq!(report["foreground"]["status"], "required");
+        assert_eq!(report["foreground"]["daemon_auto_start"], observed);
+        assert_eq!(fs::read(&config).unwrap(), bytes.as_bytes());
+    }
+    let codex_bytes = b"[features]\ndaemon_auto_start = false\n";
+    fs::write(&config, codex_bytes).unwrap();
+    for (setting, expected) in [
+        ("{}", "required"),
+        (r#"{"disableAgentView":true}"#, "configured"),
+        (r#"{"disableAgentView":false}"#, "required"),
+        (
+            r#"{"env":{"CLAUDE_CODE_DISABLE_AGENT_VIEW":"1"}}"#,
+            "configured",
+        ),
+        (
+            r#"{"env":{"CLAUDE_CODE_DISABLE_AGENT_VIEW":" TRUE "}}"#,
+            "configured",
+        ),
+    ] {
+        fs::write(s.settings(), setting).unwrap();
+        for verb in ["setup-status", "setup"] {
+            let mut args = vec![verb, "claude", "--json"];
+            if verb == "setup" {
+                args.push("--keep-prompt-suggestions");
+            }
+            let out = s.run(&args);
+            assert!(out.status.success(), "{}", text(&out.stderr));
+            let report = json(&out);
+            assert_eq!(report["foreground"]["status"], expected);
+            if expected == "configured" {
+                assert!(
+                    !report["warnings"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|warning| warning
+                            .as_str()
+                            .is_some_and(|w| w.starts_with("Foreground user settings")))
+                );
+            }
+            let value: serde_json::Value =
+                serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
+            let original: serde_json::Value = serde_json::from_str(setting).unwrap();
+            assert_eq!(
+                value.get("disableAgentView"),
+                original.get("disableAgentView")
+            );
+            assert_eq!(value.get("env"), original.get("env"));
+            let codex = s.run(&[verb, "codex", "--json"]);
+            assert!(codex.status.success(), "{}", text(&codex.stderr));
+            let codex = json(&codex);
+            assert_eq!(codex["foreground"]["status"], "required");
+            assert!(
+                codex["foreground"]["advice"]
+                    .as_str()
+                    .unwrap()
+                    .contains("--no-daemon")
+            );
+            assert_eq!(fs::read(&config).unwrap(), codex_bytes);
+        }
+        let removed = s.run(&["unsetup", "claude"]);
+        assert!(removed.status.success(), "{}", text(&removed.stderr));
+    }
+    for verb in ["setup-status", "setup"] {
+        let mut args = vec![verb, "--json"];
+        if verb == "setup" {
+            args.push("--keep-prompt-suggestions");
+        }
+        let all = s.run(&args);
+        assert!(all.status.success());
+        for entry in json(&all)["harnesses"].as_array().unwrap() {
+            if !matches!(entry["harness"].as_str(), Some("claude" | "codex")) {
+                assert!(entry["report"]["foreground"].is_null());
+                assert!(
+                    !entry["report"]["warnings"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .any(|warning| warning
+                            .as_str()
+                            .is_some_and(|s| s.starts_with("Foreground user settings")))
+                );
+                continue;
+            }
+            assert!(entry["report"]["foreground"].is_object());
+            let warnings = entry["report"]["warnings"].as_array().unwrap();
+            let mut unique = warnings.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+            unique.sort();
+            unique.dedup();
+            assert_eq!(unique.len(), warnings.len());
+        }
+    }
+    for args in [
+        vec!["setup-status"],
+        vec!["setup", "--keep-prompt-suggestions"],
+        vec!["setup-status", "codex"],
+    ] {
+        let out = s.run(&args);
+        assert!(out.status.success());
+        let out = text(&out.stdout);
+        assert!(out.contains("--no-daemon"), "{out}");
+        if args.len() == 1 || args[0] == "setup" {
+            assert!(out.contains("disableAgentView"), "{out}");
+        }
+    }
+}
+
+#[test]
+fn foreground_status_missing_and_malformed_user_files_are_honest_and_read_only() {
+    for harness in ["claude", "codex"] {
+        let s = Scratch::new();
+        s.harness(harness, "wrapper-version-unknown");
+        let out = s.run(&["setup-status", harness, "--json"]);
+        assert!(out.status.success(), "{}", text(&out.stderr));
+        assert_eq!(json(&out)["foreground"]["status"], "required");
+        let path = if harness == "claude" {
+            s.settings()
+        } else {
+            s.codex_home.join("config.toml")
+        };
+        assert!(!path.exists());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "invalid {{").unwrap();
+        let out = s.run(&["setup-status", harness, "--json"]);
+        assert!(out.status.success(), "{}", text(&out.stderr));
+        let report = json(&out);
+        assert_eq!(report["foreground"]["status"], "unknown");
+        assert!(report["foreground"]["inspection_error"].is_string());
+        assert_eq!(fs::read(&path).unwrap(), b"invalid {{");
+        let out = s.run(&["setup-status", harness]);
+        assert!(out.status.success());
+        assert!(text(&out.stdout).contains("unknown"));
+    }
+}
+
+/// Kills deleting the launch entrypoint's configured-option resolution: with
+/// no daemon or host socket, the specific quoting error must still be reported.
+#[test]
+fn launch_entrypoint_rejects_malformed_configured_options_before_connect() {
+    use herdr_threads::test_support::spawn::SpawnOwned;
+    for (harness, variable) in [
+        ("codex", "HERDR_THREADS_CODEX_OPTS"),
+        ("claude", "HERDR_THREADS_CLAUDE_OPTS"),
+    ] {
+        let s = Scratch::new();
+        let mut command = s.command(&s.root);
+        herdr_threads::test_support::spawn::tag(&mut command);
+        command
+            .arg("--state-dir")
+            .arg(&s.state)
+            .arg("--host-endpoint")
+            .arg(s.host())
+            .args(["launch", "--pane", "w1:p2", "--kind", harness])
+            .env(variable, "'unterminated")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let output = command.spawn_owned().unwrap().wait_with_output().unwrap();
+        let stderr = text(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{harness}: {stderr}");
+        assert!(
+            stderr.contains(&format!("{variable} has invalid argument quoting")),
+            "{harness}: {stderr}"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "{harness}: {}",
+            text(&output.stdout)
+        );
+        assert!(!s.state.exists(), "{harness}: launch created durable state");
+        assert!(
+            !s.host().exists(),
+            "{harness}: launch created a host socket"
+        );
+        assert!(
+            !s.settings().exists(),
+            "{harness}: launch wrote Claude settings"
+        );
+        assert!(!s.hooks().exists(), "{harness}: launch wrote Codex hooks");
+    }
+}
+
+/// Catches malformed fresh handoff options reaching caller/daemon resolution first.
+#[test]
+fn stage_a_handoff_malformed_options_refuse_before_caller_connection() {
+    use herdr_threads::test_support::spawn::SpawnOwned;
+    for (harness, variable) in [
+        ("codex", "HERDR_THREADS_CODEX_OPTS"),
+        ("claude", "HERDR_THREADS_CLAUDE_OPTS"),
+    ] {
+        let s = Scratch::new();
+        let mut command = s.command(&s.root);
+        command
+            .arg("--state-dir")
+            .arg(&s.state)
+            .arg("--host-endpoint")
+            .arg(s.host())
+            .args([
+                "handoff",
+                "--new-thread",
+                "--pane",
+                "w1:p2",
+                "--kind",
+                harness,
+                "--",
+                "durable body",
+            ])
+            .env(variable, "'unterminated")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let output = command.spawn_owned().unwrap().wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        let stderr = text(&output.stderr);
+        assert!(
+            stderr.contains(&format!("{variable} has invalid argument quoting")),
+            "{stderr}"
+        );
+        assert!(!s.state.exists());
+        assert!(!s.host().exists());
+        assert!(!s.settings().exists());
+        assert!(!s.hooks().exists());
+    }
 }

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v0.2.9
+
+- **Wrapper-compatible launch.** Stop automatically adding Codex `--no-daemon`, so managed launch works with entrypoints that do not recognize that flag. Foreground execution remains user-managed: setup explains Claude `disableAgentView` and Codex foreground options without changing them. A shared app-server can supply its own pane environment; automatic TUI-pane recovery is not claimed.
+- **Optional launch arguments.** `HERDR_THREADS_CODEX_OPTS` and `HERDR_THREADS_CLAUDE_OPTS` provide explicitly chosen native arguments, parsed with quoting but no shell expansion. Handoffs freeze these arguments once; retries and reported manual recovery preserve them even when current settings change.
+- **Mailbox-first agent guidance.** Hooks and handoffs direct agents to one inbox command and its printed continuations, avoiding routine duplicate history reads, manual ACKs and reply polling. Explicit invitation acceptance and receipt provenance remain unchanged.
+- **Updated walkthrough.** The README includes a seekable three-pane recording of the try-it-yourself scenario, with visible human typing, reciprocal discussion and measured Codex inbox behavior.
+
 ## v0.2.7
 
 - **Stable channel picker.** Bare `read` and `read --follow` update only changed rows, preserving the selected channel during refresh and avoiding idle flicker. Keyboard input and cancellation remain responsive while pages load.

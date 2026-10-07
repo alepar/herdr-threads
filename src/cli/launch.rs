@@ -14,9 +14,7 @@
 //!    a network allowance), and a last fenced recheck;
 //! 3. Herdr's guarded `agent.start` with the argument array: the caller's
 //!    arguments byte for byte and in order (the owned configuration is on
-//!    disk, so launch adds none), and Codex `--no-daemon` exactly once at the
-//!    top level (`harness::launch::compose_native_argv`), or not at all when
-//!    the pane shell's `codex` wrapper already passes it ([`CodexShellProbe`]).
+//!    disk, so launch adds none). No daemon-mode argument is injected.
 //!
 //! Launch never registers, accepts or ACKs. After an accepted, correlated
 //! startup it asks the daemon to record a `managed_launch` binding on a seat
@@ -69,9 +67,7 @@ use std::{
     sync::Mutex,
 };
 
-pub use crate::harness::codex::launch::{
-    CODEX_WRAPPER_NO_DAEMON, codex_profile, wrapper_passes_no_daemon,
-};
+pub use crate::harness::codex::launch::codex_profile;
 pub use crate::harness::launch::{CodexShellProbe, SHELL_PROBE_TIMEOUT, SystemShellProbe};
 
 /// `launch --help` epilogue.
@@ -97,12 +93,14 @@ for a new compact ID (seat-<short seat id> for a persisted ID),
 fitted to Herdr's [a-z][a-z0-9_-]{0,31}. If another live agent holds it, launch
 retries once with -<short seat id> appended.
 
-Arguments after `--` are passed to the agent unchanged and in order; the owned
-configuration is on disk, so launch adds no hook arguments. Codex gets `--no-daemon`
-exactly once before any subcommand; when the pane shell's `codex` function or alias
-already passes it (probed with `$SHELL -ic`, 3 s bound), launch adds none and reports
-`codex_wrapper`. Other Codex subcommands, an explicit `--daemon`, a
-`--no-daemon` after the subcommand and a caller `-c hooks.*` override are refused. No
+Arguments after `--` are passed to the agent unchanged and in order. Optional
+HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_CLAUDE_OPTS are prepended to those arguments;
+unset or empty adds nothing. Use shell-style quotes and escapes; variables and
+commands are never expanded. For example, HERDR_THREADS_CODEX_OPTS='--no-daemon'.
+The combined arguments use the same managed-launch guards. The owned configuration
+is on disk, so launch adds no hook or daemon-mode arguments by default.
+Unsupported Codex subcommands, an explicit `--daemon`, a caller `--no-daemon`
+after the subcommand and a caller `-c hooks.*` override are refused. No
 auto-approve flag is added.
 
 Launch is not receipt: it never checks in, accepts or ACKs. Invitations and messages
@@ -138,7 +136,7 @@ pub struct LaunchRequest {
     pub target: HostTargetId,
     pub harness: ContextHarness,
     pub harness_binary: Option<String>,
-    /// Caller native arguments, byte for byte and in order.
+    /// Configured options followed by caller native arguments in their original order.
     pub argv: Vec<String>,
     /// `--name`: the Herdr agent name wanted (sanitized to Herdr's rules).
     pub name: Option<String>,
@@ -147,7 +145,100 @@ pub struct LaunchRequest {
     pub pane_label: Option<String>,
 }
 
+/// Resolve and validate the current producer declaration before lookup or shell output.
+pub(crate) fn native_options_env(
+    registry: &crate::harness::registry::Registry,
+    harness: ContextHarness,
+) -> Result<Option<&'static str>, ApiError> {
+    let registration =
+        crate::harness::launch::launch_registration(registry, policy_harness(harness))?;
+    let declaration = registration
+        .launch_policy()
+        .expect("checked provider")
+        .native_options_env();
+    if let Some(key) = declaration {
+        let valid = key.is_ascii()
+            && key.len() <= 128
+            && key
+                .strip_prefix("HERDR_THREADS_")
+                .and_then(|middle| middle.strip_suffix("_OPTS"))
+                .is_some_and(|middle| {
+                    !middle.is_empty()
+                        && middle.bytes().all(|byte| {
+                            byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
+                        })
+                });
+        if !valid {
+            return Err(api(
+                ErrorCode::InvalidRequest,
+                "invalid native options environment declaration",
+            ));
+        }
+    }
+    Ok(declaration)
+}
+
 impl LaunchRequest {
+    /// Resolve optional native arguments once, before launch preflight. Handoff
+    /// stores this combined argv in its durable plan; retries must not reread
+    /// the environment or prepend these options again.
+    pub(crate) fn with_process_options(self) -> Result<Self, RunError> {
+        self.with_process_options_with_registry(crate::harness::registry::builtins())
+    }
+
+    pub(crate) fn with_process_options_with_registry(
+        self,
+        registry: &crate::harness::registry::Registry,
+    ) -> Result<Self, RunError> {
+        let variable = native_options_env(registry, self.harness)?;
+        let options = variable.and_then(std::env::var_os);
+        self.parse_configured_options(variable, options)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_configured_options(
+        self,
+        options: Option<std::ffi::OsString>,
+    ) -> Result<Self, RunError> {
+        self.with_configured_options_with_registry(crate::harness::registry::builtins(), options)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_configured_options_with_registry(
+        self,
+        registry: &crate::harness::registry::Registry,
+        options: Option<std::ffi::OsString>,
+    ) -> Result<Self, RunError> {
+        let variable = native_options_env(registry, self.harness)?;
+        self.parse_configured_options(variable, options)
+    }
+
+    fn parse_configured_options(
+        mut self,
+        variable: Option<&'static str>,
+        options: Option<std::ffi::OsString>,
+    ) -> Result<Self, RunError> {
+        let (Some(variable), Some(options)) = (variable, options) else {
+            return Ok(self);
+        };
+        let options = options.into_string().map_err(|_| {
+            super::invalid_request(&format!("{variable} must contain UTF-8 native arguments"))
+        })?;
+        if options.contains('\0') {
+            return Err(super::invalid_request(&format!(
+                "{variable} cannot contain a NUL byte"
+            )));
+        }
+        let mut configured = shlex::split(&options).ok_or_else(|| {
+            super::invalid_request(&format!(
+                "{variable} has invalid argument quoting; use shell-style quotes and escapes"
+            ))
+        })?;
+        configured.append(&mut self.argv);
+        self.argv = configured;
+        Ok(self)
+    }
+
     /// The agent name hint and where it came from: `--name`, else the pane
     /// label, else none (the adapter then uses the short seat id).
     pub fn name_hint(&self) -> (Option<String>, &'static str) {
@@ -801,7 +892,7 @@ fn execute_guarded_inner(
         deadline: MonoInstant(parts.clock.monotonic_now().0.saturating_add(remaining)),
         cancellation: local_budget.cancellation.clone(),
     };
-    let codex_wrapper = preparation.wrapper_warning;
+
     let config_dir_source = scope.config_source;
     let (name_hint, name_source) = request.name_hint();
     let recheck_configuration = || -> Result<(), ApiError> {
@@ -844,7 +935,7 @@ fn execute_guarded_inner(
             target: request.target.clone(),
             harness: policy_harness(request.harness),
             argv: request.argv.clone(),
-            shell_passes_no_daemon: false,
+
             name_hint: name_hint.clone(),
         },
         &budget,
@@ -937,7 +1028,6 @@ fn execute_guarded_inner(
         "agent_name_candidates": agent_name_candidates,
         "argv": argv,
         "caller_argv": request.argv,
-        "codex_wrapper": codex_wrapper,
         "config_dir": config_dir,
         "codex": codex,
         "harness_version": observed.version,
@@ -960,7 +1050,6 @@ fn execute_guarded_inner(
         "agent_name": agent_name,
         "agent_name_source": name_source,
         "argv": argv,
-        "codex_wrapper": codex_wrapper,
         "config_dir": config_dir,
         "codex": codex,
         "harness_version": {
@@ -994,7 +1083,7 @@ fn execute_guarded_inner(
 
 #[cfg(test)]
 #[path = "../../tests/cli/launch.rs"]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(all(test, feature = "test-support"))]
 #[allow(dead_code)]
@@ -1236,11 +1325,7 @@ mod task23_tests {
 
     /// A canned pane-shell answer for `codex`; never runs a shell.
     struct FakeProbe(Result<String, String>);
-    impl CodexShellProbe for FakeProbe {
-        fn resolve_codex(&self) -> Result<String, String> {
-            self.0.clone()
-        }
-    }
+    impl CodexShellProbe for FakeProbe {}
 
     struct Scratch {
         root: std::path::PathBuf,

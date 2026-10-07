@@ -340,7 +340,6 @@ fn fourth_author_consumers() {
             target: herdr_threads::protocol::ids::HostTargetId::new("w1:p4"),
             harness: OccupantHarness::Agent(id),
             argv: vec!["synthetic-prompt".into()],
-            shell_passes_no_daemon: false,
             name_hint: Some("synthetic author fixture".into()),
         },
         &budget,
@@ -458,11 +457,7 @@ fn fourth_author_consumers() {
 }
 
 struct NoShell;
-impl herdr_threads::harness::launch::CodexShellProbe for NoShell {
-    fn resolve_codex(&self) -> Result<String, String> {
-        panic!("fourth adapter must not probe a Codex shell")
-    }
-}
+impl herdr_threads::harness::launch::CodexShellProbe for NoShell {}
 
 fn settings_conservation() {
     use herdr_threads::{protocol::results::HealthSettings, service::config::ServiceConfig};

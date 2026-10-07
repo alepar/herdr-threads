@@ -390,6 +390,18 @@ where
     if let CliAction::SetupAll(verb, prompt_suggestions) = &parsed.action {
         return setup::run_all(*verb, *prompt_suggestions, &parsed.output, writer);
     }
+    // Fresh native options are data: resolve them once before host locators,
+    // caller mapping, connection, journal creation or any durable work. Retry
+    // consumes the saved argv and never enters these action branches.
+    match &mut parsed.action {
+        CliAction::Launch(request) => {
+            *request = request.clone().with_process_options()?;
+        }
+        CliAction::Handoff(request) => {
+            request.launch = request.launch.clone().with_process_options()?;
+        }
+        _ => {}
+    }
     let (context, _) = instance::resolve_context(&instance::InstanceInputs::from_process(
         parsed.output.context.state_dir.as_ref().map(PathBuf::from),
         parsed.output.context.host.as_ref().map(PathBuf::from),
@@ -1962,6 +1974,7 @@ fn run_launch<W: Write>(
             "launch is a local operator command; --cooperative-* caller selection does not apply",
         ));
     }
+    let mut request = request.clone();
     let mut env = setup::SetupEnv::from_process(&parsed.output)?;
     env.state_dir = Some(context.state_dir.clone());
     env.host_endpoint = Some(context.host_endpoint.clone());
@@ -1971,7 +1984,6 @@ fn run_launch<W: Write>(
         crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(clock));
     // Without `--name`, the agent is named after the pane's Herdr label. Best
     // effort: an unreadable snapshot leaves the short-seat-id fallback.
-    let mut request = request.clone();
     if request.name.is_none() {
         let budget = CallBudget {
             deadline: MonoInstant(clock.monotonic_now().0.saturating_add(3_000)),

@@ -1681,22 +1681,12 @@ pub mod launch {
         }
     }
 
-    /// The native argument array a managed launch submits: for Claude the owned
-    /// arguments then the caller's; for Codex `--no-daemon` exactly once at the
-    /// top level, then the caller's arguments byte for byte and in order with the
-    /// owned configuration inserted at the level of the caller's subcommand
-    /// ([`CodexLaunchForm`]). An owned `--no-daemon` is dropped, never
-    /// duplicated. Unsupported subcommands, conflicting daemon modes, a
-    /// misplaced `--no-daemon` and caller `hooks.*` overrides are refused.
-    /// [`compose_native_argv`](crate::harness::launch::compose_native_argv) for a pane whose shell wrapper may already pass
-    /// `--no-daemon`. With `shell_passes_no_daemon` the composed Codex argv
-    /// carries no `--no-daemon` at all (the wrapper supplies the single one), so
-    /// a caller's own top-level `--no-daemon` is dropped too; every other check
-    /// and placement is unchanged.
-    pub fn compose_native_argv_with(
+    /// Insert owned configuration at the caller's supported subcommand level,
+    /// retaining every caller token in order. No daemon-mode argument is added;
+    /// obsolete owned --no-daemon is filtered. Existing native guards still apply.
+    pub fn compose_native_argv(
         caller: Vec<String>,
         owned: Vec<String>,
-        shell_passes_no_daemon: bool,
     ) -> Result<Vec<String>, ApiError> {
         let options_end = caller
             .iter()
@@ -1810,29 +1800,6 @@ pub mod launch {
         }
         let owned = owned.into_iter().filter(|arg| arg != "--no-daemon");
         let mut argv = Vec::with_capacity(caller.len() + 8);
-        let (caller, insert_at) = match (shell_passes_no_daemon, no_daemon.first()) {
-            (true, Some(&at)) => {
-                // The wrapper's flag is the single one; removing a top-level
-                // switch never changes the subcommand form.
-                let mut caller = caller;
-                caller.remove(at);
-                (
-                    caller,
-                    if at < insert_at {
-                        insert_at - 1
-                    } else {
-                        insert_at
-                    },
-                )
-            }
-            (true, None) => (caller, insert_at),
-            (false, _) => {
-                if no_daemon.is_empty() {
-                    argv.push("--no-daemon".to_owned());
-                }
-                (caller, insert_at)
-            }
-        };
         let mut caller = caller.into_iter();
         argv.extend(caller.by_ref().take(insert_at));
         argv.extend(owned);
@@ -1847,24 +1814,8 @@ pub mod launch {
         key == "hooks" || key.starts_with("hooks.")
     }
 
-    /// How the pane's interactive shell resolves `codex`. Herdr starts the
-    /// agent by name inside that shell, so a user function or alias wrapping
-    /// `codex` runs first and may already pass `--no-daemon` (Codex refuses the
-    /// flag twice). Injected so tests never run a real shell.
+    /// Bounded pane-shell configuration exports; tests inject synthetic probes.
     pub trait CodexShellProbe {
-        /// The shell's description of `codex` (stdout only), or why it could
-        /// not be obtained.
-        fn resolve_codex(&self) -> Result<String, String>;
-        fn resolve_codex_bounded(
-            &self,
-            clock: &dyn crate::protocol::time::Clock,
-            budget: &CallBudget,
-        ) -> Result<String, String> {
-            if budget.is_exhausted(clock) {
-                return Err("launch budget exhausted".into());
-            }
-            self.resolve_codex()
-        }
         fn pane_shell_env_bounded(
             &self,
             var: &str,
@@ -1886,12 +1837,10 @@ pub mod launch {
         }
     }
 
-    /// The bound on the shell probe; on timeout launch keeps adding `--no-daemon`.
+    /// The bound on configuration-directory shell probes.
     pub const SHELL_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
-    /// Runs the user's `$SHELL` (else `/bin/zsh`) interactively, as the pane
-    /// does: zsh `whence -f codex 2>/dev/null || type codex`, otherwise
-    /// `type codex`. Stdout only; stdin and stderr are null.
+    /// Runs the pane interactive shell to inspect configuration exports only.
     pub struct SystemShellProbe {
         pub shell: std::path::PathBuf,
         pub timeout: Duration,
@@ -1959,21 +1908,6 @@ pub mod launch {
     }
 
     impl CodexShellProbe for SystemShellProbe {
-        fn resolve_codex_bounded(
-            &self,
-            clock: &dyn crate::protocol::time::Clock,
-            budget: &CallBudget,
-        ) -> Result<String, String> {
-            let remaining = budget.deadline.0.saturating_sub(clock.monotonic_now().0);
-            if remaining == 0 {
-                return Err("launch budget exhausted".into());
-            }
-            Self {
-                shell: self.shell.clone(),
-                timeout: self.timeout.min(Duration::from_millis(remaining)),
-            }
-            .resolve_codex()
-        }
         fn pane_shell_env_bounded(
             &self,
             var: &str,
@@ -1991,20 +1925,6 @@ pub mod launch {
             .pane_shell_env(var)
         }
 
-        fn resolve_codex(&self) -> Result<String, String> {
-            let is_zsh = self
-                .shell
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.contains("zsh"));
-            let script = if is_zsh {
-                "whence -f codex 2>/dev/null || type codex"
-            } else {
-                "type codex"
-            };
-            self.run_script(script, None)
-        }
-
         fn pane_shell_env(&self, var: &str) -> Option<String> {
             const BEGIN: &str = "HT_PANE_ENV_BEGIN";
             const END: &str = "HT_PANE_ENV_END";
@@ -2018,26 +1938,6 @@ pub mod launch {
             (!value.is_empty()).then(|| value.to_owned())
         }
     }
-
-    /// Whether a shell's description of `codex` (a function body or alias)
-    /// passes `--no-daemon` as a word of its own. Comment lines are ignored;
-    /// `--no-daemon=...` is not the flag.
-    pub fn wrapper_passes_no_daemon(description: &str) -> bool {
-        description
-            .lines()
-            .filter(|line| !line.trim_start().starts_with('#'))
-            .flat_map(|line| {
-                line.split(|c: char| {
-                    c.is_whitespace() || matches!(c, '\'' | '"' | '`' | ';' | '(' | ')' | '|' | '&')
-                })
-            })
-            .any(|word| word == "--no-daemon")
-    }
-
-    /// The report text when the pane shell's `codex` wrapper already passes
-    /// `--no-daemon` and launch therefore adds none.
-    pub const CODEX_WRAPPER_NO_DAEMON: &str =
-        "shell function or alias already passes --no-daemon; launch added none";
 
     /// The Codex profile Codex applies: `-p/--profile` before `--` (the last one
     /// wins), else the top-level `profile` key of `config.toml`, else none.
@@ -2090,6 +1990,9 @@ pub mod launch {
 }
 
 impl LaunchPolicy for CodexAdapter {
+    fn native_options_env(&self) -> Option<&'static str> {
+        Some("HERDR_THREADS_CODEX_OPTS")
+    }
     fn resolve_scope(
         &self,
         request: &LaunchRequest,
@@ -2127,15 +2030,14 @@ impl LaunchPolicy for CodexAdapter {
         &self,
         argv: &[String],
     ) -> Result<(), crate::protocol::results::ApiError> {
-        launch::compose_native_argv_with(argv.to_vec(), Vec::new(), false).map(|_| ())
+        launch::compose_native_argv(argv.to_vec(), Vec::new()).map(|_| ())
     }
     fn compose_argv(
         &self,
         caller: Vec<String>,
         owned: Vec<String>,
-        shell: bool,
     ) -> Result<Vec<String>, crate::protocol::results::ApiError> {
-        launch::compose_native_argv_with(caller, owned, shell)
+        launch::compose_native_argv(caller, owned)
     }
     fn prepare_launch(
         &self,
@@ -2143,8 +2045,8 @@ impl LaunchPolicy for CodexAdapter {
         scope: &LaunchScope,
         admitted: &super::registry::AdmittedHandle,
         status: &LocalSetupStatus,
-        probe: &dyn super::launch::CodexShellProbe,
-        budget: &CallBudget,
+        _probe: &dyn super::launch::CodexShellProbe,
+        _budget: &CallBudget,
     ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
         if admitted.metadata().id != "codex" || status.scope != scope.setup {
             return Err(crate::protocol::results::ApiError::new(
@@ -2159,9 +2061,6 @@ impl LaunchPolicy for CodexAdapter {
                 "selected native setup status changed before preparation",
             ));
         }
-        let shell = probe
-            .resolve_codex_bounded(request.environment.clock.as_ref(), budget)
-            .is_ok_and(|text| launch::wrapper_passes_no_daemon(&text));
         let env = crate::harness::setup::legacy::scoped_legacy_environment(
             Harness::Codex,
             &scope.setup,
@@ -2174,12 +2073,11 @@ impl LaunchPolicy for CodexAdapter {
             )
         })?;
         Ok(LaunchPreparation {
-            argv: self.compose_argv(request.argv.clone(), Vec::new(), shell)?,
+            argv: self.compose_argv(request.argv.clone(), Vec::new())?,
             hook,
             working_directory: scope.working_directory.clone(),
             environment_overrides: Default::default(),
             report: json!({"codex": launch::codex_report(&env, &request.argv)}),
-            wrapper_warning: shell.then_some(launch::CODEX_WRAPPER_NO_DAEMON),
         })
     }
     fn configuration_fingerprint(

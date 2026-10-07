@@ -21,10 +21,6 @@ pub struct ManagedLaunchRequest {
     pub harness: Harness,
     /// Native agent arguments; their order and bytes are retained.
     pub argv: Vec<String>,
-    /// Codex only: the pane's shell resolves `codex` to a wrapper (function
-    /// or alias) that already passes `--no-daemon`, so the composed argv
-    /// must not carry one (Codex refuses a repeated `--no-daemon`).
-    pub shell_passes_no_daemon: bool,
     /// Readable Herdr agent name wanted (`launch --name`, else the pane
     /// label); see [`NativeLaunchRequest::agent_name`].
     pub name_hint: Option<String>,
@@ -171,19 +167,11 @@ pub fn compose_native_argv(
     caller: Vec<String>,
     owned: Vec<String>,
 ) -> Result<Vec<String>, ApiError> {
-    compose_native_argv_with(harness, caller, owned, false)
-}
-pub fn compose_native_argv_with(
-    harness: Harness,
-    caller: Vec<String>,
-    owned: Vec<String>,
-    shell: bool,
-) -> Result<Vec<String>, ApiError> {
     let registration = launch_registration(super::registry::builtins(), harness)?;
     registration
         .launch_policy()
         .expect("checked provider")
-        .compose_argv(caller, owned, shell)
+        .compose_argv(caller, owned)
 }
 pub fn launch_registration(
     registry: &super::registry::Registry,
@@ -294,11 +282,7 @@ pub fn prepare_managed_with_registry(
     // (Claude); the caller's arguments keep their bytes and order.
     let argv = match native_argv {
         Some(argv) => argv,
-        None => policy.compose_argv(
-            request.argv.clone(),
-            configuration.argv,
-            request.shell_passes_no_daemon,
-        )?,
+        None => policy.compose_argv(request.argv.clone(), configuration.argv)?,
     };
     let first = host.observe_current_target(
         &request.target,

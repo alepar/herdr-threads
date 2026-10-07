@@ -576,7 +576,7 @@ fn every_emitted_launch_flag_has_a_tsv_row() {
         // so it emits no flags.
     ] {
         let caller = caller.iter().map(|a| (*a).to_owned()).collect();
-        let argv = codex_plan.launch_argv_for(caller, false).unwrap();
+        let argv = codex_plan.launch_argv_for(caller).unwrap();
         emitted.extend(
             argv.into_iter()
                 .filter(|a| a.starts_with('-'))
@@ -595,10 +595,12 @@ fn every_emitted_launch_flag_has_a_tsv_row() {
 
     let flags: std::collections::BTreeSet<_> = emitted.iter().map(|(_, f)| f.as_str()).collect();
     assert!(
-        ["--no-daemon", "-c", "--settings"]
-            .iter()
-            .all(|f| flags.contains(f)),
-        "the launch/setup code no longer emits one of --no-daemon, -c, --settings: {flags:?}"
+        ["-c", "--settings"].iter().all(|f| flags.contains(f)),
+        "the launch/setup code no longer emits one of -c, --settings: {flags:?}"
+    );
+    assert!(
+        !flags.contains("--no-daemon"),
+        "managed setup must not inject daemon flags"
     );
     let missing: Vec<_> = emitted
         .iter()

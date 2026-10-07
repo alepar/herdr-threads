@@ -340,6 +340,18 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   they never grant evidence verification, seat continuity or receipt authority. The filter is in memory
   and starts empty on daemon restart; suppression does not claim durable session history.
 
+- **Foreground harness execution is user managed.** Hooks and tools must inherit the TUI
+  pane's `HERDR_PANE_ID`. A shared harness server started in another pane can instead supply
+  its own pane environment; herdr-threads does not recover the attaching TUI pane from
+  process names, cached sessions or focus. Setup and setup-status inspect user settings and
+  explain the required foreground configuration without changing it. A configured setting
+  is advisory, not execution proof: wrappers and higher-precedence settings remain the
+  user's responsibility. Claude's `disableAgentView: true` disables its background agent
+  supervisor. For captured Codex 0.160.1, `daemon_auto_start = false` still permits attachment
+  to an existing server; native `--no-daemon` is the supported opt-out. Optional
+  `HERDR_THREADS_CODEX_OPTS` and `HERDR_THREADS_CLAUDE_OPTS` add user-selected launch
+  arguments, with no automatic daemon argument by default. No argument or settings check
+  grants receipt authority, moves a seat or relaxes the canonical binding checks in A2.
 - **Child agents can ACK.** Subagents are instructed not to; the plugin cannot tell them from their parent.
 - **Same-user spoofing.** Any same-user process can select another seat, set `HERDR_PANE_ID`, or write another
   seat's files under the instance `contexts/` and `intents/` directories (writable from the Codex sandbox by
@@ -421,6 +433,18 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   nothing references it.
 
 ## Decision record
+
+### Wrapper compatibility and foreground execution (2026-10-06)
+
+A user's `codex` alias resolves to a wrapper that rejects native `--no-daemon`. Removing
+automatic injection preserves that wrapper's argument contract. The isolated native Codex
+0.160.1 probe shows that model-selected Bash execution and lifecycle hooks both inherit the
+app-server environment; overriding tool environment alone does not fix hooks. User decision:
+rely on user-managed foreground settings, inspect and explain them during installation, and
+offer optional per-harness launch arguments through environment variables. No additional
+wrapper or heuristic TUI-to-seat association is introduced. Setup never writes these
+foreground settings. The retained measurements and source limits are in
+`docs/compatibility/wrapper-seat-detection.md`.
 
 ### F6: restored-pane creation versus repair reservation (resolved 2026-10-01)
 

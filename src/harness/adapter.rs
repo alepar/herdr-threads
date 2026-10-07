@@ -680,9 +680,15 @@ pub struct LaunchPreparation {
     pub working_directory: std::path::PathBuf,
     pub environment_overrides: std::collections::BTreeMap<String, OsString>,
     pub report: serde_json::Value,
-    pub wrapper_warning: Option<&'static str>,
 }
 pub trait LaunchPolicy: Send + Sync {
+    /// Optional adapter-owned configured arguments; absent providers inherit no key.
+    /// Declarations must be ASCII, at most 128 bytes, and match
+    /// HERDR_THREADS_[A-Z0-9_]+_OPTS with a nonempty middle. Consumers validate
+    /// before environment lookup or recovery serialization; no key is inferred.
+    fn native_options_env(&self) -> Option<&'static str> {
+        None
+    }
     /// Cooperative host recognition input; never caller or runtime authority.
     fn requires_process_hint(&self) -> bool {
         false
@@ -739,7 +745,6 @@ pub trait LaunchPolicy: Send + Sync {
         &self,
         caller: Vec<String>,
         owned: Vec<String>,
-        shell_passes_no_daemon: bool,
     ) -> Result<Vec<String>, crate::protocol::results::ApiError>;
     fn prepare_launch(
         &self,

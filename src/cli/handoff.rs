@@ -31,6 +31,10 @@ goal defaults to topic. --name names the native agent, not the channel.
 
 The one quoted body after -- is durable work. Native options use repeatable
 --agent-arg=OPTION; launch -- native arguments is unchanged.
+HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_CLAUDE_OPTS prepend optional arguments,
+using shell-style quotes and escapes without variable or command expansion. Unset
+or empty adds nothing. Handoff freezes these options before preflight; retry uses
+the saved arguments even if the environment changes.
 Handoff invites and sends before guarded launch. Startup gets fixed inbox
 instructions, not a second copy of the body. Launch never accepts or ACKs.
 
@@ -605,6 +609,26 @@ fn report(
     unknown: bool,
     claim: &CallerClaim,
 ) -> serde_json::Value {
+    report_with_registry(
+        reference,
+        plan,
+        progress,
+        phase,
+        failed,
+        unknown,
+        (claim, crate::harness::registry::builtins()),
+    )
+}
+fn report_with_registry(
+    reference: &IntentRef,
+    plan: &HandoffPlan,
+    progress: &Progress,
+    phase: &str,
+    failed: bool,
+    unknown: bool,
+    context: (&CallerClaim, &crate::harness::registry::Registry),
+) -> serde_json::Value {
+    let (claim, registry) = context;
     let prefix = super::hook::cli_prefix(&plan.context);
     let mut retry = vec![
         "env".into(),
@@ -618,7 +642,24 @@ fn report(
         "inspect".into(),
         plan.recipient.as_str().to_owned(),
     ]);
-    let mut manual = prefix;
+    // This command already carries the frozen configured prefix. Suppress
+    // option re-entry for this launch only, including changed/malformed current
+    // settings; retain every saved native argument without deduplication.
+    let mut manual = vec![
+        "env".into(),
+        "HERDR_THREADS_CODEX_OPTS=".into(),
+        "HERDR_THREADS_CLAUDE_OPTS=".into(),
+    ];
+    let declaration = super::launch::native_options_env(registry, plan.request.launch.harness);
+    if let Ok(Some(key)) = declaration.as_ref()
+        && !matches!(
+            *key,
+            "HERDR_THREADS_CODEX_OPTS" | "HERDR_THREADS_CLAUDE_OPTS"
+        )
+    {
+        manual.push(format!("{key}="));
+    }
+    manual.extend(prefix);
     manual.extend([
         "launch".into(),
         "--pane".into(),
@@ -637,7 +678,12 @@ fn report(
     if let Some(thread) = &progress.thread {
         manual.push(bootstrap(thread, &plan.context, &claim.instance));
     }
-    serde_json::json!({"phase":phase,"failed":failed,"outcome":if unknown {"outcome_unknown"} else if failed {"pending"} else {"started"},"thread":progress.thread,"seat":plan.recipient,"pane":plan.request.launch.target,"invitation":progress.invitation,"message":progress.message,"recovery_ref":reference.recovery_ref(),"retry_argv":retry,"inspect_argv":inspect,"manual_launch_after_confirming_no_start_argv":manual,"launch":progress.launch})
+    // Unsafe declarations cannot be serialized into runnable recovery text.
+    let recovery_error = declaration.err().map(|error| error.detail);
+    if recovery_error.is_some() {
+        manual.clear();
+    }
+    serde_json::json!({"phase":phase,"failed":failed,"outcome":if unknown {"outcome_unknown"} else if failed {"pending"} else {"started"},"thread":progress.thread,"seat":plan.recipient,"pane":plan.request.launch.target,"invitation":progress.invitation,"message":progress.message,"recovery_ref":reference.recovery_ref(),"retry_argv":retry,"inspect_argv":inspect,"manual_launch_after_confirming_no_start_argv":manual,"launch":progress.launch,"manual_recovery_error":recovery_error})
 }
 
 pub(crate) fn is_handoff(semantic: &SemanticMutation) -> bool {
@@ -691,6 +737,7 @@ pub(crate) fn run<W: Write>(
     writer: &mut W,
 ) -> Result<(), RunError> {
     use std::sync::Arc;
+    // Fresh argv was resolved once in top-level dispatch before caller/connection work.
     let clock: Arc<dyn Clock> = Arc::new(super::SystemClock::new());
     let (instance, _, client) = super::connect(paths, &clock)?;
     let mut env = super::setup::SetupEnv::from_process(&parsed.output)?;

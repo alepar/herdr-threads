@@ -237,13 +237,9 @@ impl HandoffReader for FakeHandoff {
     }
 }
 
-/// A canned pane-shell answer for `codex`; never runs a shell.
-struct FakeProbe(Result<String, String>);
-impl CodexShellProbe for FakeProbe {
-    fn resolve_codex(&self) -> Result<String, String> {
-        self.0.clone()
-    }
-}
+/// A pane shell with no configuration exports; never runs a real shell.
+struct FakeProbe;
+impl CodexShellProbe for FakeProbe {}
 
 struct Scratch {
     root: std::path::PathBuf,
@@ -306,7 +302,7 @@ impl Scratch {
         handoff: &FakeHandoff,
         request: LaunchRequest,
     ) -> Result<LaunchReport, RunError> {
-        let probe = FakeProbe(Ok("codex is /usr/local/bin/codex\n".into()));
+        let probe = FakeProbe;
         self.launch_with_probe(host, seats, handoff, request, &probe)
     }
     fn launch_with_probe(
@@ -594,11 +590,11 @@ fn unknown_outcome_exits_five_and_keeps_handoff_discoverable() {
 }
 
 /// Codex set up at user level: owned hooks are on disk, so launch
-/// adds no hook or sandbox arguments, keeps the caller's unchanged and adds
-/// `--no-daemon` exactly once. Command approvals replace the allowance check.
-/// Kills: launching without owned hooks, reordering args or duplicating --no-daemon.
+/// adds no hook, sandbox or daemon arguments and keeps the caller's unchanged.
+/// Command approvals replace the allowance check.
+/// Kills launching without owned hooks or changing caller arguments.
 #[test]
-fn codex_launch_needs_the_user_installation_and_adds_only_no_daemon() {
+fn codex_launch_needs_the_user_installation_without_injected_daemon_flags() {
     let s = Scratch::new();
     s.harness("codex", "codex-cli 0.159.2", &committed_codex_schemas());
     let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
@@ -624,8 +620,7 @@ fn codex_launch_needs_the_user_installation_and_adds_only_no_daemon() {
         .unwrap();
     assert_eq!(out.exit, 0);
     let argv = &host.submitted()[0].argv;
-    assert_eq!(argv[0], "--no-daemon");
-    assert_eq!(&argv[1..], caller);
+    assert_eq!(argv, &caller);
     assert!(!argv.iter().any(|a| a.contains("bypass") || a == "--yolo"));
     assert_eq!(host.submitted()[0].configured_hook.scope, "user");
 
@@ -652,12 +647,85 @@ fn codex_launch_needs_the_user_installation_and_adds_only_no_daemon() {
     assert_eq!(fs::read_to_string(&config).unwrap(), denied);
 }
 
-/// `codex exec` (native-codex-matrix-1 P4/P5): `--no-daemon` precedes
-/// `exec` and the caller's arguments follow unchanged. Kills: `--no-daemon`
-/// after the subcommand or the prompt, and starting an unconfigurable
-/// subcommand.
+/// Kills implicit defaults, splitting quoted values, shell expansion and moving
+/// configured top-level options after a native subcommand.
 #[test]
-fn codex_exec_launch_keeps_no_daemon_before_exec() {
+fn configured_launch_options_preserve_quotes_literals_and_caller_order() {
+    let caller = ["exec", "--json", "prompt  with spaces", ""];
+    for harness in [ContextHarness::Codex, ContextHarness::Claude] {
+        for options in [None, Some(""), Some("   ")] {
+            let launch = request(harness, &caller)
+                .with_configured_options(options.map(Into::into))
+                .unwrap();
+            assert_eq!(launch.argv, caller);
+        }
+        let launch = request(harness, &caller)
+            .with_configured_options(Some(
+                r#"--no-daemon --model 'model with spaces' "literal $HOME $(touch nope) `id`" '' escaped\ value"#.into(),
+            ))
+            .unwrap();
+        assert_eq!(
+            launch.argv,
+            [
+                "--no-daemon",
+                "--model",
+                "model with spaces",
+                "literal $HOME $(touch nope) `id`",
+                "",
+                "escaped value",
+                "exec",
+                "--json",
+                "prompt  with spaces",
+                "",
+            ]
+        );
+    }
+}
+
+/// Kills silently dropping malformed or non-native argument values.
+#[test]
+fn configured_launch_options_reject_invalid_values() {
+    use std::os::unix::ffi::OsStringExt;
+    for options in [
+        std::ffi::OsString::from("'unterminated"),
+        std::ffi::OsString::from("trailing\\"),
+        std::ffi::OsString::from("embedded\0nul"),
+        std::ffi::OsString::from_vec(vec![0xff]),
+    ] {
+        let error = request(ContextHarness::Codex, &[])
+            .with_configured_options(Some(options))
+            .unwrap_err();
+        assert!(matches!(error, RunError::Api(ref api) if api.code == ErrorCode::InvalidRequest));
+    }
+}
+
+/// Kills bypassing managed validation for configured arguments.
+#[test]
+fn configured_launch_options_pass_through_managed_validation() {
+    let s = Scratch::new();
+    s.harness("codex", "codex-cli 0.159.2", &committed_codex_schemas());
+    s.setup(ContextHarness::Codex);
+    let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
+    let launch = request(ContextHarness::Codex, &["exec", "PROMPT"])
+        .with_configured_options(Some("--no-daemon".into()))
+        .unwrap();
+    s.launch(&host, &seats, &handoff, launch).unwrap();
+    assert_eq!(host.submitted()[0].argv, ["--no-daemon", "exec", "PROMPT"]);
+    let host = FakeHost::new();
+    let launch = request(ContextHarness::Codex, &[])
+        .with_configured_options(Some("--daemon".into()))
+        .unwrap();
+    assert_eq!(
+        code(s.launch(&host, &seats, &handoff, launch)),
+        ErrorCode::InvalidRequest
+    );
+    assert!(host.submitted().is_empty());
+}
+
+/// `codex exec` retains caller arguments without injected daemon flags.
+/// Unsupported subcommands are refused.
+#[test]
+fn codex_exec_launch_preserves_caller_arguments() {
     let s = Scratch::new();
     s.harness("codex", "codex-cli 0.159.2", &committed_codex_schemas());
     s.setup(ContextHarness::Codex);
@@ -673,8 +741,7 @@ fn codex_exec_launch_keeps_no_daemon_before_exec() {
         .unwrap();
     assert_eq!(out.exit, 0);
     let argv = &host.submitted()[0].argv;
-    assert_eq!(argv[0], "--no-daemon");
-    assert_eq!(&argv[1..], caller);
+    assert_eq!(argv, &caller);
 
     // An unconfigurable subcommand is refused and nothing is started.
     let host = FakeHost::new();
@@ -721,7 +788,7 @@ fn codex_without_measured_allowance_uses_command_approvals() {
         .launch(&host, &seats, &handoff, request(ContextHarness::Codex, &[]))
         .unwrap();
     assert_eq!(result.exit, 0);
-    assert_eq!(host.submitted()[0].argv, ["--no-daemon"]);
+    assert!(host.submitted()[0].argv.is_empty());
 }
 
 /// Newer admitted Codex builds use approved outside-sandbox CLI calls. A
@@ -745,7 +812,7 @@ fn future_codex_launch_uses_command_approvals_without_network_allowance() {
         )
         .unwrap();
     assert_eq!(result.exit, 0);
-    assert_eq!(&host.submitted()[0].argv[1..], caller);
+    assert_eq!(host.submitted()[0].argv, caller);
     assert!(
         !config.exists(),
         "launch must not install network permissions"
@@ -853,74 +920,48 @@ fn launch_syntax_keeps_agent_arguments_verbatim() {
     }
 }
 
-/// The user's zsh wrapper (`whence -f codex`) already passes `--no-daemon`:
-/// launch adds none (Codex refuses the flag twice) and says so in the report
-/// and the record; a wrapper without it, or a failed probe, keeps launch's
-/// single `--no-daemon`. Kills: `error: the argument '--no-daemon' cannot be
-/// used multiple times` under such a wrapper, and dropping the flag when the
-/// shell could not be asked.
+/// A wrapper selected as `codex` rejects --no-daemon. Managed launch must
+/// preserve its supported arguments without inspecting aliases or adding flags.
 #[test]
-fn codex_shell_wrapper_with_no_daemon_suppresses_launch_flag() {
+fn codex_wrapper_rejecting_no_daemon_accepts_managed_launch_arguments() {
     let s = Scratch::new();
-    s.harness("codex", "codex-cli 0.159.2", &committed_codex_schemas());
-    s.setup(ContextHarness::Codex);
-    let caller = ["--model", "gpt-test"];
-    let wrapper = "codex () {\n\tcommand aisw workspace check --tool codex || return $?\n\t\
-                   HERDR_AGENT=codex command codex --no-daemon --approve-for-me \"$@\"\n}\n";
-    let launch = |probe: FakeProbe| {
-        let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
-        let out = s
-            .launch_with_probe(
-                &host,
-                &seats,
-                &handoff,
-                request(ContextHarness::Codex, &caller),
-                &probe,
-            )
-            .unwrap();
-        assert_eq!(out.exit, 0);
-        (host.submitted()[0].argv.clone(), out.report)
-    };
-
-    let (argv, report) = launch(FakeProbe(Ok(wrapper.into())));
-    assert_eq!(argv, caller);
-    assert!(!argv.iter().any(|a| a == "--approve-for-me"));
-    assert_eq!(report["codex_wrapper"], CODEX_WRAPPER_NO_DAEMON);
+    let wrapper = s.root.join("bin/codex");
+    fs::write(&wrapper, b"#!/bin/sh\nfor arg do\n  if [ \"$arg\" = --no-daemon ]; then exit 64; fi\ndone\nprintf '%s\\n' \"$@\"\n").unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut rejected = crate::test_support::spawn::command(&wrapper);
     assert_eq!(
-        s.records().last().unwrap()["codex_wrapper"],
-        CODEX_WRAPPER_NO_DAEMON
+        rejected.arg("--no-daemon").output().unwrap().status.code(),
+        Some(64)
     );
-
-    let plain = "codex () {\n\tcommand codex --approve-for-me \"$@\"\n}\n";
-    let (argv, report) = launch(FakeProbe(Ok(plain.into())));
-    assert_eq!(argv, ["--no-daemon", "--model", "gpt-test"]);
-    assert_eq!(report["codex_wrapper"], Value::Null);
-
-    let (argv, report) = launch(FakeProbe(Err("the shell probe timed out".into())));
-    assert_eq!(argv, ["--no-daemon", "--model", "gpt-test"]);
-    assert_eq!(report["codex_wrapper"], Value::Null);
-}
-
-/// The wrapper scan matches `--no-daemon` as its own word only. Kills:
-/// matching a comment, a longer flag, or `--no-daemon=...`.
-#[test]
-fn wrapper_scan_matches_the_flag_word_only() {
-    assert!(wrapper_passes_no_daemon(
-        "codex () {\n\tcommand codex --no-daemon \"$@\"\n}"
-    ));
-    assert!(wrapper_passes_no_daemon("codex='codex --no-daemon'"));
-    assert!(wrapper_passes_no_daemon(
-        "codex is aliased to `codex --no-daemon'"
-    ));
-    assert!(!wrapper_passes_no_daemon("codex is /usr/local/bin/codex"));
-    assert!(!wrapper_passes_no_daemon("\t# add --no-daemon later\n"));
-    assert!(!wrapper_passes_no_daemon("command codex --no-daemon-x"));
-    assert!(!wrapper_passes_no_daemon("command codex --no-daemon=false"));
-    assert!(!wrapper_passes_no_daemon(""));
+    s.setup(ContextHarness::Codex);
+    let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
+    let caller = ["--model", "gpt-test"];
+    let out = s
+        .launch_with_probe(
+            &host,
+            &seats,
+            &handoff,
+            request(ContextHarness::Codex, &caller),
+            &FakeProbe,
+        )
+        .unwrap();
+    assert_eq!(out.exit, 0);
+    let argv = host.submitted()[0].argv.clone();
+    assert_eq!(argv, caller);
+    let output = crate::test_support::spawn::command(&wrapper)
+        .args(&argv)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "--model\ngpt-test\n"
+    );
+    assert!(out.report.get("codex_wrapper").is_none());
 }
 
 /// The real probe is bounded: a shell that never answers times out and is
-/// reported as a failure (launch then keeps its own `--no-daemon`).
+/// returns no export.
 #[test]
 fn system_shell_probe_is_bounded_and_reads_stdout() {
     let dir = std::env::temp_dir().join(format!(
@@ -940,23 +981,8 @@ fn system_shell_probe_is_bounded_and_reads_stdout() {
         timeout: std::time::Duration::from_millis(200),
     };
     let started = std::time::Instant::now();
-    assert!(probe.resolve_codex().is_err());
+    assert_eq!(probe.pane_shell_env("CODEX_HOME"), None);
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
-    let fake_zsh = write(
-        "zsh",
-        "#!/bin/sh\n[ \"$1\" = -ic ] || exit 9\necho \"$2\"\necho noise >&2\n",
-    );
-    let probe = SystemShellProbe {
-        shell: fake_zsh,
-        // A liveness bound only: these probes answer at once, but `sh` start-up
-        // under a loaded parallel suite can take seconds (the bound itself is
-        // the 200 ms `slow` case above).
-        timeout: std::time::Duration::from_secs(30),
-    };
-    assert_eq!(
-        probe.resolve_codex().unwrap(),
-        "whence -f codex 2>/dev/null || type codex\n"
-    );
     // The pane shell's own export is read back between markers (startup-file
     // noise is ignored); a shell that exports nothing yields none, whatever
     // the launcher's environment holds (the variable is removed first).
@@ -1108,9 +1134,6 @@ struct PaneExports {
     claude_config_dir: Option<String>,
 }
 impl CodexShellProbe for PaneExports {
-    fn resolve_codex(&self) -> Result<String, String> {
-        Ok("codex is /usr/local/bin/codex\n".into())
-    }
     fn pane_shell_env(&self, var: &str) -> Option<String> {
         match var {
             "CODEX_HOME" => self.codex_home.clone(),
@@ -1520,7 +1543,7 @@ fn handoff_preflight_and_failed_durable_gate_never_submit_or_record_start() {
     scratch.setup_claude();
     let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
     let clock = Clock0(AtomicU64::new(1));
-    let probe = FakeProbe(Ok(String::new()));
+    let probe = FakeProbe;
     let parts = LaunchParts {
         env: &scratch.env,
         host: &host,
@@ -1556,7 +1579,7 @@ fn handoff_native_launcher_checks_frozen_seat_and_propagates_confirmed_refusal()
     let (mut host, seats, handoff) = (FakeHost::new(), seats(), handoff());
     host.confirmed_refusal = true;
     let clock = Clock0(AtomicU64::new(1));
-    let probe = FakeProbe(Ok(String::new()));
+    let probe = FakeProbe;
     let parts = LaunchParts {
         env: &scratch.env,
         host: &host,
@@ -1614,7 +1637,7 @@ fn adapter_launch_configuration_mutation_before_submit_refuses() {
     let seats = seats();
     let handoff = FakeHandoff(AtomicUsize::new(0));
     let clock = Clock0(AtomicU64::new(1));
-    let probe = FakeProbe(Err("unused".into()));
+    let probe = FakeProbe;
     let result = execute_guarded(
         &request(ContextHarness::Claude, &[]),
         &LaunchParts {
@@ -1650,7 +1673,7 @@ fn adapter_launch_configuration_mutation_before_submit_refuses() {
     assert!(seats.recorded.lock().unwrap().is_empty());
 }
 
-mod fourth_adapter {
+pub(crate) mod fourth_adapter {
     use super::*;
     use crate::harness::adapter::*;
     use crate::harness::registry::{AdmittedHandle, Registration, Registry};
@@ -1671,6 +1694,8 @@ mod fourth_adapter {
     };
     pub struct Fourth {
         pub provider: bool,
+        pub options_key: Option<&'static str>,
+        pub options_fixture: bool,
         pub disabled: bool,
         pub wrong_scope: bool,
         pub mutate_binary: std::sync::atomic::AtomicBool,
@@ -1679,6 +1704,14 @@ mod fourth_adapter {
     impl HarnessAdapter for Fourth {
         type Admission = ();
         fn metadata(&self) -> &'static AdapterMetadata {
+            if self.options_fixture {
+                static OPTIONS_METADATA: AdapterMetadata = AdapterMetadata {
+                    id: "synthetic_fourth",
+                    context_spelling: "SyntheticFourth",
+                    ..METADATA
+                };
+                return &OPTIONS_METADATA;
+            }
             &METADATA
         }
         fn contracts(&self) -> &'static [ContractDescriptor] {
@@ -1769,6 +1802,9 @@ mod fourth_adapter {
         }
     }
     impl LaunchPolicy for Fourth {
+        fn native_options_env(&self) -> Option<&'static str> {
+            self.options_key
+        }
         fn resolve_scope(
             &self,
             request: &crate::harness::adapter::LaunchRequest,
@@ -1794,7 +1830,6 @@ mod fourth_adapter {
             &self,
             caller: Vec<String>,
             owned: Vec<String>,
-            _: bool,
         ) -> Result<Vec<String>, ApiError> {
             Ok([vec!["--fourth-owned".into()], owned, caller].concat())
         }
@@ -1808,12 +1843,11 @@ mod fourth_adapter {
             _: &CallBudget,
         ) -> Result<LaunchPreparation, ApiError> {
             Ok(LaunchPreparation {
-                argv: self.compose_argv(request.argv.clone(), vec![], false)?,
+                argv: self.compose_argv(request.argv.clone(), vec![])?,
                 hook: crate::harness::launch::owned_launch_hook(status)?,
                 working_directory: scope.working_directory.clone(),
                 environment_overrides: Default::default(),
                 report: json!({"fourth": {"mode": "fixture"}}),
-                wrapper_warning: None,
             })
         }
         fn configuration_fingerprint(
@@ -1835,8 +1869,27 @@ mod fourth_adapter {
         disabled: bool,
         wrong_scope: bool,
     ) -> (Registry, &'static Fourth) {
+        registry_internal(provider, disabled, wrong_scope, None, false)
+    }
+    pub fn registry_with_options(
+        provider: bool,
+        disabled: bool,
+        wrong_scope: bool,
+        options_key: Option<&'static str>,
+    ) -> (Registry, &'static Fourth) {
+        registry_internal(provider, disabled, wrong_scope, options_key, true)
+    }
+    fn registry_internal(
+        provider: bool,
+        disabled: bool,
+        wrong_scope: bool,
+        options_key: Option<&'static str>,
+        options_fixture: bool,
+    ) -> (Registry, &'static Fourth) {
         let fourth = Box::leak(Box::new(Fourth {
             provider,
+            options_key,
+            options_fixture,
             disabled,
             wrong_scope,
             mutate_binary: std::sync::atomic::AtomicBool::new(false),
@@ -1934,7 +1987,7 @@ fn adapter_launch_keeps_native_argv_guards_and_managed_launch_only_provenance() 
     let seats = seats();
     let handoff = handoff();
     let clock = Clock0(AtomicU64::new(1));
-    let probe = FakeProbe(Err("fourth must not probe Codex".into()));
+    let probe = FakeProbe;
     let parts = LaunchParts {
         env: &s.env,
         host: &host,
@@ -1981,7 +2034,7 @@ fn adapter_launch_injected_missing_provider_never_inspects_or_starts() {
     let seats = seats();
     let handoff = handoff();
     let clock = Clock0(AtomicU64::new(1));
-    let probe = FakeProbe(Err("unused".into()));
+    let probe = FakeProbe;
     let harness = ContextHarness::from(crate::harness::registry::OccupantHarness::Agent(
         registry.agent("fourth").unwrap(),
     ));
@@ -2017,7 +2070,7 @@ fn adapter_launch_disabled_configuration_never_allocates_or_starts() {
     let seats = seats();
     let handoff = handoff();
     let clock = Clock0(AtomicU64::new(1));
-    let probe = FakeProbe(Err("unused".into()));
+    let probe = FakeProbe;
     let harness = ContextHarness::from(crate::harness::registry::OccupantHarness::Agent(
         registry.agent("fourth").unwrap(),
     ));
@@ -2051,7 +2104,7 @@ fn adapter_launch_selected_scope_mismatch_refuses_before_seat() {
     let seats = seats();
     let handoff = handoff();
     let clock = Clock0(AtomicU64::new(1));
-    let probe = FakeProbe(Err("unused".into()));
+    let probe = FakeProbe;
     let harness = ContextHarness::from(crate::harness::registry::OccupantHarness::Agent(
         registry.agent("fourth").unwrap(),
     ));
@@ -2086,7 +2139,7 @@ fn adapter_launch_executable_change_during_preparation_never_allocates() {
     let seats = seats();
     let handoff = handoff();
     let clock = Clock0(AtomicU64::new(1));
-    let probe = FakeProbe(Err("unused".into()));
+    let probe = FakeProbe;
     let harness = ContextHarness::from(crate::harness::registry::OccupantHarness::Agent(
         registry.agent("fourth").unwrap(),
     ));
@@ -2165,7 +2218,7 @@ fn adapter_launch_preparation_rejects_stale_native_setup_status() {
             environment,
             native_binary: None,
         };
-        let probe = FakeProbe(Err("unused".into()));
+        let probe = FakeProbe;
         let scope = registration
             .launch_policy()
             .unwrap()
@@ -2370,4 +2423,208 @@ fn versionless_launch_selects_wrapper_and_refuses_resume_without_start() {
             assert!(!log.exists());
         }
     }
+}
+
+/// Kills reading another harness's options or ignoring the configured process
+/// environment. Re-exec keeps environment changes out of parallel lib tests.
+#[test]
+fn configured_launch_options_read_matching_harness_environment() {
+    const CHILD: &str = "HT_LAUNCH_OPTIONS_ENV_PROBE";
+    if std::env::var_os(CHILD).is_some() {
+        assert_eq!(
+            request(ContextHarness::Codex, &["exec", "PROMPT"])
+                .with_process_options()
+                .unwrap()
+                .argv,
+            ["--no-daemon", "exec", "PROMPT"],
+        );
+        assert_eq!(
+            request(ContextHarness::Claude, &["PROMPT"])
+                .with_process_options()
+                .unwrap()
+                .argv,
+            ["--model", "claude model", "PROMPT"],
+        );
+        return;
+    }
+    use crate::test_support::spawn::SpawnOwned;
+    let mut command = crate::test_support::spawn::command(std::env::current_exe().unwrap());
+    command
+        .args([
+            "cli::launch::tests::configured_launch_options_read_matching_harness_environment",
+            "--exact",
+        ])
+        .env(CHILD, "1")
+        .env("HERDR_THREADS_CODEX_OPTS", "--no-daemon")
+        .env("HERDR_THREADS_CLAUDE_OPTS", "--model 'claude model'")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command.spawn_owned().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "options environment probe timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+}
+
+/// Catches accidental legacy-key fallback for providers without configured options.
+#[test]
+fn stage_a_options_declaration_is_optional_and_provider_owned() {
+    let registry = crate::harness::registry::builtins();
+    for (name, expected) in [
+        ("claude", Some("HERDR_THREADS_CLAUDE_OPTS")),
+        ("codex", Some("HERDR_THREADS_CODEX_OPTS")),
+        ("hermes", None),
+    ] {
+        let registration = registry.by_id(registry.agent(name).unwrap()).unwrap();
+        assert_eq!(
+            registration.launch_policy().unwrap().native_options_env(),
+            expected
+        );
+    }
+}
+
+/// Catches unsafe declarations reaching getenv, implicit brand fallbacks, and lost literal tokens.
+#[test]
+fn stage_a_registered_options_validate_keys_and_preserve_literal_tokens() {
+    use crate::harness::registry::OccupantHarness;
+    let key128: &'static str =
+        Box::leak(format!("HERDR_THREADS_{}_OPTS", "A".repeat(109)).into_boxed_str());
+    let key129: &'static str =
+        Box::leak(format!("HERDR_THREADS_{}_OPTS", "A".repeat(110)).into_boxed_str());
+    for (key, valid) in [
+        ("HERDR_THREADS_FOURTH_9_OPTS", true),
+        (key128, true),
+        (key129, false),
+        ("HERDR_THREADS__OPTS", false),
+        ("HERDR_THREADS_x_OPTS", false),
+        ("HERDR_THREADS_É_OPTS", false),
+        ("HERDR_THREADS_X=Y_OPTS", false),
+        ("HERDR_THREADS_X\n_OPTS", false),
+        ("HERDR_THREADS_$(ID)_OPTS", false),
+        ("PATH", false),
+        ("LC_ALL", false),
+        ("HERDR_THREADS_CODEX_HOME", false),
+    ] {
+        let (registry, _) = fourth_adapter::registry_with_options(true, false, false, Some(key));
+        let harness = ContextHarness::from(OccupantHarness::Agent(
+            registry.agent("synthetic_fourth").unwrap(),
+        ));
+        let result = request(harness, &["--model", "caller", ""])
+            .with_configured_options_with_registry(
+                &registry,
+                Some("--model 'configured' '' '$HOME' '$(id)' '*' '~'".into()),
+            );
+        if valid {
+            let launch = result.unwrap();
+            let scratch = Scratch::new();
+            scratch.harness("fourth", "fourth-fixture", &[]);
+            let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
+            let clock = Clock0(AtomicU64::new(1));
+            let probe = FakeProbe;
+            let parts = LaunchParts {
+                env: &scratch.env,
+                host: &host,
+                seats: &seats,
+                handoff: &handoff,
+                clock: &clock,
+                record_dir: None,
+                shell_probe: &probe,
+            };
+            assert_eq!(
+                code(execute_with_registry(&registry, &launch, &parts)),
+                ErrorCode::InvalidRequest
+            );
+            assert!(host.submitted().is_empty());
+            let submitted = request(harness, &["--model", "caller"])
+                .with_configured_options_with_registry(
+                    &registry,
+                    Some("--model configured '$HOME' '$(id)' '*' '~'".into()),
+                )
+                .unwrap();
+            execute_with_registry(&registry, &submitted, &parts).unwrap();
+            assert_eq!(
+                host.submitted()[0].argv,
+                [
+                    "--fourth-owned",
+                    "--model",
+                    "configured",
+                    "$HOME",
+                    "$(id)",
+                    "*",
+                    "~",
+                    "--model",
+                    "caller"
+                ]
+            );
+            assert_eq!(
+                launch.argv,
+                [
+                    "--model",
+                    "configured",
+                    "",
+                    "$HOME",
+                    "$(id)",
+                    "*",
+                    "~",
+                    "--model",
+                    "caller",
+                    ""
+                ]
+            );
+        } else {
+            assert!(
+                matches!(result, Err(RunError::Api(ref error)) if error.code == ErrorCode::InvalidRequest)
+            );
+            assert!(
+                native_options_env(&registry, harness)
+                    .unwrap_err()
+                    .detail
+                    .len()
+                    < 128
+            );
+        }
+    }
+    let (registry, _) = fourth_adapter::registry(true, false);
+    let harness = ContextHarness::from(OccupantHarness::Agent(registry.agent("fourth").unwrap()));
+    assert_eq!(
+        request(harness, &["caller"])
+            .with_configured_options_with_registry(&registry, Some("'malformed".into()))
+            .unwrap()
+            .argv,
+        ["caller"]
+    );
+    for name in ["third", "hermes"] {
+        let builtin = crate::harness::registry::builtins();
+        let selected = if name == "third" { &registry } else { builtin };
+        let harness = ContextHarness::from(OccupantHarness::Agent(selected.agent(name).unwrap()));
+        let result = request(harness, &[])
+            .with_configured_options_with_registry(selected, Some("'malformed".into()));
+        if name == "third" {
+            assert!(
+                matches!(result, Err(RunError::Api(ref e)) if e.code == ErrorCode::UnsupportedHarness)
+            );
+        } else {
+            assert!(result.unwrap().argv.is_empty());
+        }
+    }
+    assert!(
+        request(ContextHarness::Human, &[])
+            .with_configured_options(None)
+            .is_err()
+    );
+    let absent = ContextHarness::from(OccupantHarness::Agent(registry.agent("third").unwrap()));
+    assert!(native_options_env(crate::harness::registry::builtins(), absent).is_err());
 }

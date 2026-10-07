@@ -228,7 +228,6 @@ fn request(harness: Harness, argv: &[&str]) -> ManagedLaunchRequest {
         target: HostTargetId::new("pane_1"),
         harness,
         argv: argv.iter().map(|s| (*s).into()).collect(),
-        shell_passes_no_daemon: false,
         name_hint: None,
     }
 }
@@ -239,11 +238,7 @@ fn correlation_for_empty_args(harness: Harness) -> CorrelatedStartup {
         seat: SeatId::new("seat_1"),
         target: HostTargetId::new("pane_1"),
         harness,
-        argv: if harness == Harness::Codex {
-            vec!["--no-daemon".into()]
-        } else {
-            Vec::new()
-        },
+        argv: Vec::new(),
         configured_hook: ConfiguredHook {
             scope: "codex".into(),
             path: "/path with spaces/hook".into(),
@@ -409,7 +404,6 @@ fn native_argument_forms_preserve_caller_options_and_transport_only() {
     assert_eq!(
         sent.argv,
         [
-            "--no-daemon",
             "--model",
             "model with spaces",
             "--sandbox",
@@ -749,19 +743,12 @@ impl LaunchHookInspector for OwnedHooks {
     }
 }
 
-/// Interactive Codex: `--no-daemon` then the owned configuration precede the
-/// caller's unchanged arguments, and an owned `--no-daemon` is never
-/// duplicated.
-/// Kills: appending owned arguments after the caller's (a later `-c` wins in
-/// Codex), dropping the owned configuration, and a second `--no-daemon`.
+/// Interactive Codex places owned configuration before unchanged caller arguments.
+/// Kills dropping owned hooks or adding daemon-mode arguments.
 #[test]
-fn owned_configuration_precedes_caller_arguments_with_one_no_daemon() {
+fn owned_configuration_precedes_caller_arguments_without_daemon_flags() {
     let (host, seats, _, clock, budget) = fixture();
-    let owned = OwnedHooks(vec![
-        "--no-daemon".into(),
-        "-c".into(),
-        "hooks.SessionStart=[owned]".into(),
-    ]);
+    let owned = OwnedHooks(vec!["-c".into(), "hooks.SessionStart=[owned]".into()]);
     let _ = launch_managed(
         &host,
         &seats,
@@ -774,7 +761,6 @@ fn owned_configuration_precedes_caller_arguments_with_one_no_daemon() {
     assert_eq!(
         submitted[0].argv,
         [
-            "--no-daemon",
             "-c",
             "hooks.SessionStart=[owned]",
             "--model",
@@ -828,15 +814,9 @@ fn caller_codex_hook_overrides_are_refused_before_seat_resolution() {
 }
 
 fn owned() -> Vec<String> {
-    [
-        "--no-daemon",
-        "-c",
-        "hooks.SessionStart=[o]",
-        "-c",
-        "allow=[s]",
-    ]
-    .map(String::from)
-    .to_vec()
+    ["-c", "hooks.SessionStart=[o]", "-c", "allow=[s]"]
+        .map(String::from)
+        .to_vec()
 }
 
 fn compose(argv: &[&str]) -> Result<Vec<String>, ApiError> {
@@ -848,41 +828,28 @@ fn compose(argv: &[&str]) -> Result<Vec<String>, ApiError> {
 }
 
 /// The argument array for each supported Codex form (native-codex-matrix-1
-/// P4/P5): `--no-daemon` once at the top level before any subcommand, and
+/// P4/P5): only caller daemon flags, and
 /// the owned `-c` pairs at the level of the subcommand that reads them
 /// (`hook-placement-probe`: `exec` ignores root-level `hooks.*`). Kills:
-/// appending `--no-daemon` after the subcommand or prompt, and placing the
+/// injecting daemon arguments, and placing the
 /// owned hooks before `exec`/`resume`.
 #[test]
 fn codex_argv_composition_per_form() {
     let o = ["-c", "hooks.SessionStart=[o]", "-c", "allow=[s]"];
     let cases: &[(&[&str], Vec<&str>)] = &[
         // interactive, no prompt
-        (&[], [&["--no-daemon"][..], &o].concat()),
+        (&[], o.to_vec()),
         // interactive with options and a prompt
         (
             &["-m", "exec", "--search", "fix it"],
-            [
-                &["--no-daemon"][..],
-                &o,
-                &["-m", "exec", "--search", "fix it"],
-            ]
-            .concat(),
+            [&o[..], &["-m", "exec", "--search", "fix it"]].concat(),
         ),
         // interactive with a prompt after `--` that looks like a subcommand
-        (
-            &["--", "exec"],
-            [&["--no-daemon"][..], &o, &["--", "exec"]].concat(),
-        ),
+        (&["--", "exec"], [&o[..], &["--", "exec"]].concat()),
         // exec
         (
             &["exec", "--json", "-s", "read-only", "PROMPT"],
-            [
-                &["--no-daemon", "exec"][..],
-                &o,
-                &["--json", "-s", "read-only", "PROMPT"],
-            ]
-            .concat(),
+            [&["exec"][..], &o, &["--json", "-s", "read-only", "PROMPT"]].concat(),
         ),
         // exec with root options and the caller's own top-level --no-daemon
         (
@@ -906,7 +873,7 @@ fn codex_argv_composition_per_form() {
                 "PROMPT",
             ],
             [
-                &["--no-daemon", "exec", "-s", "read-only", "resume"][..],
+                &["exec", "-s", "read-only", "resume"][..],
                 &o,
                 &["--json", "ID", "PROMPT"],
             ]
@@ -915,48 +882,35 @@ fn codex_argv_composition_per_form() {
         // exec resume --last
         (
             &["exec", "resume", "--last"],
-            [&["--no-daemon", "exec", "resume"][..], &o, &["--last"]].concat(),
+            [&["exec", "resume"][..], &o, &["--last"]].concat(),
         ),
         // exec whose prompt is the word "resume" after `--`
         (
             &["exec", "--", "resume"],
-            [&["--no-daemon", "exec"][..], &o, &["--", "resume"]].concat(),
+            [&["exec"][..], &o, &["--", "resume"]].concat(),
         ),
         // interactive whose prompt is a refused subcommand name after `--`
-        (
-            &["--", "update"],
-            [&["--no-daemon"][..], &o, &["--", "update"]].concat(),
-        ),
+        (&["--", "update"], [&o[..], &["--", "update"]].concat()),
         // exec whose prompt is the word "fork" after `--`
         (
             &["exec", "--", "fork"],
-            [&["--no-daemon", "exec"][..], &o, &["--", "fork"]].concat(),
+            [&["exec"][..], &o, &["--", "fork"]].concat(),
         ),
         // exec resume behind a value-taking exec option (0.159.2
         // `--thread-source`): the hooks go after `resume`, not after `exec`
         (
             &["exec", "--thread-source", "X", "resume", "ID"],
-            [
-                &["--no-daemon", "exec", "--thread-source", "X", "resume"][..],
-                &o,
-                &["ID"],
-            ]
-            .concat(),
+            [&["exec", "--thread-source", "X", "resume"][..], &o, &["ID"]].concat(),
         ),
         // image in the `=` form is a single self-contained argument
         (
             &["exec", "--image=a.png", "PROMPT"],
-            [
-                &["--no-daemon", "exec"][..],
-                &o,
-                &["--image=a.png", "PROMPT"],
-            ]
-            .concat(),
+            [&["exec"][..], &o, &["--image=a.png", "PROMPT"]].concat(),
         ),
         // image option after `--` is prompt text
         (
             &["exec", "--", "-i", "x"],
-            [&["--no-daemon", "exec"][..], &o, &["--", "-i", "x"]].concat(),
+            [&["exec"][..], &o, &["--", "-i", "x"]].concat(),
         ),
     ];
     for (caller, expected) in cases {
@@ -964,7 +918,7 @@ fn codex_argv_composition_per_form() {
         let argv = compose(caller).unwrap();
         assert_eq!(
             argv.iter().filter(|a| *a == "--no-daemon").count(),
-            1,
+            caller.iter().filter(|arg| **arg == "--no-daemon").count(),
             "{caller:?}"
         );
     }
@@ -1152,53 +1106,33 @@ fn scoped_codex_policy_requires_one_explicit_absolute_cwd() {
     }
 }
 
-/// A pane shell whose `codex` wrapper already passes `--no-daemon`: the
-/// composed argv carries none (owned, launch-added or the caller's own
-/// top-level one), and the owned configuration keeps its placement. Kills:
-/// Codex refusing `--no-daemon` given twice (wrapper plus launch), and
-/// shifting the owned configuration when the caller's flag is dropped.
+/// Explicit caller daemon arguments remain intact; the owned configuration
+/// cannot inject an obsolete daemon argument.
 #[test]
-fn shell_wrapper_no_daemon_is_never_duplicated() {
-    let o = ["-c", "hooks.SessionStart=[owned]"];
-    let owned = || -> Vec<String> {
-        ["--no-daemon", o[0], o[1]]
-            .iter()
-            .map(|s| (*s).into())
-            .collect()
-    };
-    let compose = |caller: &[&str], shell: bool| {
-        compose_native_argv_with(
+fn caller_daemon_flag_is_preserved_without_injection() {
+    let owned = vec![
+        "--no-daemon".into(),
+        "-c".into(),
+        "hooks.SessionStart=[owned]".into(),
+    ];
+    assert_eq!(
+        compose_native_argv(Harness::Codex, Vec::new(), owned.clone()).unwrap(),
+        ["-c", "hooks.SessionStart=[owned]"]
+    );
+    assert_eq!(
+        compose_native_argv(
             Harness::Codex,
-            caller.iter().map(|s| (*s).into()).collect(),
-            owned(),
-            shell,
+            vec!["--no-daemon".into(), "exec".into(), "PROMPT".into()],
+            owned
         )
-        .unwrap()
-    };
-    assert_eq!(compose(&[], true), o);
-    assert_eq!(compose(&[], false), [&["--no-daemon"][..], &o].concat());
-    assert_eq!(
-        compose(&["--no-daemon", "-C", "/p", "exec", "PROMPT"], true),
-        [&["-C", "/p", "exec"][..], &o, &["PROMPT"]].concat()
-    );
-    assert_eq!(
-        compose(&["exec", "PROMPT"], true),
-        [&["exec"][..], &o, &["PROMPT"]].concat()
-    );
-    // Refusals are unchanged by the wrapper.
-    assert!(
-        compose_native_argv_with(
-            Harness::Codex,
-            vec!["exec".into(), "--no-daemon".into()],
-            Vec::new(),
-            true
-        )
-        .is_err()
-    );
-    // Claude is untouched.
-    assert_eq!(
-        compose_native_argv_with(Harness::Claude, vec!["x".into()], Vec::new(), true).unwrap(),
-        ["x"]
+        .unwrap(),
+        [
+            "--no-daemon",
+            "exec",
+            "-c",
+            "hooks.SessionStart=[owned]",
+            "PROMPT"
+        ]
     );
 }
 
@@ -1493,7 +1427,7 @@ macro_rules! hint_policy {
     $($hint)?
     fn resolve_scope(&self,r:&crate::harness::adapter::LaunchRequest,_:&dyn CodexShellProbe,_:&CallBudget)->Result<crate::harness::adapter::LaunchScope,ApiError> { Ok(crate::harness::adapter::LaunchScope {setup:crate::harness::adapter::ResolvedSetupScope::ConfigRoot(r.environment.cwd.clone()),working_directory:r.environment.cwd.clone(),config_source:"fixture"}) }
     fn validate_native_argv(&self,_:&[String])->Result<(),ApiError>{Ok(())}
-    fn compose_argv(&self,caller:Vec<String>,owned:Vec<String>,_:bool)->Result<Vec<String>,ApiError>{Ok([owned,caller].concat())}
+    fn compose_argv(&self,caller:Vec<String>,owned:Vec<String>)->Result<Vec<String>,ApiError>{Ok([owned,caller].concat())}
     fn prepare_launch(&self,_:&crate::harness::adapter::LaunchRequest,_:&crate::harness::adapter::LaunchScope,_:&crate::harness::registry::AdmittedHandle,_:&crate::harness::adapter::LocalSetupStatus,_:&dyn CodexShellProbe,_:&CallBudget)->Result<crate::harness::adapter::LaunchPreparation,ApiError>{panic!("generic preparation uses supplied owned hook")}
     fn configuration_fingerprint(&self,_:&crate::harness::adapter::LaunchRequest,_:&crate::harness::adapter::LaunchScope)->Result<String,ApiError>{Ok("hint-fixture".into())}
     fn expected_host_kinds(&self)-> &'static [&'static str]{ &["codex"] }

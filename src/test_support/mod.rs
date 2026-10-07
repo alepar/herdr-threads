@@ -459,7 +459,6 @@ pub mod synthetic_fourth {
             &self,
             caller: Vec<String>,
             owned: Vec<String>,
-            _: bool,
         ) -> Result<Vec<String>, crate::protocol::results::ApiError> {
             self.validate_native_argv(&caller)?;
             Ok([vec!["--synthetic-only".into()], owned, caller].concat())
@@ -474,12 +473,11 @@ pub mod synthetic_fourth {
             _: &CallBudget,
         ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
             Ok(LaunchPreparation {
-                argv: self.compose_argv(request.argv.clone(), vec![], false)?,
+                argv: self.compose_argv(request.argv.clone(), vec![])?,
                 hook: crate::harness::launch::owned_launch_hook(status)?,
                 working_directory: scope.working_directory.clone(),
                 environment_overrides: Default::default(),
                 report: json!({"synthetic": true, "runtime": null}),
-                wrapper_warning: None,
             })
         }
         fn configuration_fingerprint(

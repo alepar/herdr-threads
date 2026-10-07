@@ -239,7 +239,6 @@ impl LaunchPolicy for HermesLaunch {
         &self,
         caller: Vec<String>,
         owned: Vec<String>,
-        _: bool,
     ) -> Result<Vec<String>, ApiError> {
         if !owned.is_empty() {
             return Err(error(
@@ -306,14 +305,13 @@ impl LaunchPolicy for HermesLaunch {
             ));
         }
         Ok(LaunchPreparation {
-            argv: self.compose_argv(request.argv.clone(), vec![], false)?,
+            argv: self.compose_argv(request.argv.clone(), vec![])?,
             hook,
             working_directory: scope.working_directory.clone(),
             environment_overrides: BTreeMap::new(),
             report: serde_json::json!({"hermes":{"profile":captured.observation.profile.profile,"home":captured.observation.profile.home,
             "identity":captured.observation.profile.identity,"identity_provenance":"startup_captured_prelaunch_observation",
             "environment_scope":"declared_child_input_plus_native_bootstrap_profile_effects","api":"presence_only","callback_qualified":false,"native_acceptance":"unmet"}}),
-            wrapper_warning: None,
         })
     }
     fn recheck_prelaunch(
@@ -368,7 +366,7 @@ mod tests {
         );
         for case in fixture["cases"].as_array().unwrap() {
             let input: Vec<String> = serde_json::from_value(case["input"].clone()).unwrap();
-            let result = POLICY.compose_argv(input, vec![], false);
+            let result = POLICY.compose_argv(input, vec![]);
             if case["refused"] == true {
                 assert!(result.is_err(), "accepted {case}");
             } else {

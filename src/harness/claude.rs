@@ -931,6 +931,9 @@ impl HarnessAdapter for ClaudeAdapter {
 }
 
 impl LaunchPolicy for ClaudeAdapter {
+    fn native_options_env(&self) -> Option<&'static str> {
+        Some("HERDR_THREADS_CLAUDE_OPTS")
+    }
     fn resolve_scope(
         &self,
         request: &LaunchRequest,
@@ -946,7 +949,6 @@ impl LaunchPolicy for ClaudeAdapter {
         &self,
         caller: Vec<String>,
         owned: Vec<String>,
-        _: bool,
     ) -> Result<Vec<String>, crate::protocol::results::ApiError> {
         Ok(owned.into_iter().chain(caller).collect())
     }
@@ -978,7 +980,6 @@ impl LaunchPolicy for ClaudeAdapter {
             working_directory: scope.working_directory.clone(),
             environment_overrides: Default::default(),
             report: Value::Null,
-            wrapper_warning: None,
         })
     }
     fn configuration_fingerprint(

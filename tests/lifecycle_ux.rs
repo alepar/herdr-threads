@@ -1460,7 +1460,7 @@ fn legacy_codex_allowance_warns_with_unavailable_runtime_and_preserves_foreign_b
         text(&doctor_text.stdout)
     );
 
-    // After unsetup nothing is installed and nothing warns.
+    // After unsetup no legacy allowance remains; foreground advice stays independent.
     let out = invoke(&upgraded, &["--json", "unsetup", "codex"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     let removed =
@@ -1468,7 +1468,15 @@ fn legacy_codex_allowance_warns_with_unavailable_runtime_and_preserves_foreign_b
     assert_eq!(removed["action"], "removed", "{removed}");
     let status = setup(&upgraded, "setup-status");
     assert!(status["sandbox"]["warning"].is_null(), "{status}");
-    assert!(status["warnings"].is_null(), "{status}");
+    let warnings = status["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{status}");
+    assert!(
+        warnings[0]
+            .as_str()
+            .unwrap()
+            .starts_with("Foreground user settings required."),
+        "{status}"
+    );
     let after = doctor(&upgraded);
     assert!(
         after["hooks"]["codex"]["sandbox_warning"].is_null(),

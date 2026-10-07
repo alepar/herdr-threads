@@ -160,6 +160,8 @@ struct Launcher {
     preflights: usize,
     starts: usize,
     submitted_argv: Vec<String>,
+    configured_prefix: Vec<String>,
+    preflight_argv: Vec<String>,
     refuse: bool,
     confirmed_refusal: bool,
     unknown: bool,
@@ -167,7 +169,8 @@ struct Launcher {
     panic_after_start: bool,
 }
 impl HandoffLauncher for Launcher {
-    fn preflight(&mut self, _: &LaunchRequest) -> Result<SeatId, RunError> {
+    fn preflight(&mut self, request: &LaunchRequest) -> Result<SeatId, RunError> {
+        self.preflight_argv = request.argv.clone();
         self.preflights += 1;
         Ok(SeatId::new("recipient"))
     }
@@ -178,7 +181,12 @@ impl HandoffLauncher for Launcher {
         gate: &mut dyn FnMut(bool) -> Result<(), ApiError>,
     ) -> Result<super::super::launch::LaunchReport, RunError> {
         assert_eq!(seat, &SeatId::new("recipient"));
-        assert_eq!(&request.argv[..2], ["-a", "on-request"]);
+        assert!(request.argv.starts_with(&self.configured_prefix));
+        let caller_start = self.configured_prefix.len();
+        assert_eq!(
+            &request.argv[caller_start..caller_start + 2],
+            ["-a", "on-request"]
+        );
         assert!(
             !request
                 .argv
@@ -1970,4 +1978,522 @@ fn registered_handoff_selectors_refuse_human_and_unknown_without_fallback() {
         serde_json::to_value(journal.load(&sentinel).unwrap().semantic).unwrap(),
         before
     );
+}
+
+/// Kills rereading configured arguments after preflight, duplicating them on
+/// final launch, or losing them when a durable handoff resumes after refusal.
+#[test]
+fn handoff_freezes_configured_options_for_preflight_launch_and_retry() {
+    for retry in [false, true] {
+        let (_temp, journal) = journal();
+        let client = Client::new(None);
+        let mut launcher = Launcher {
+            configured_prefix: vec![
+                "--no-daemon".into(),
+                "--model".into(),
+                "model with spaces".into(),
+            ],
+            confirmed_refusal: retry,
+            ..Default::default()
+        };
+        let mut request = request();
+        request.launch = request
+            .launch
+            .with_configured_options(Some("--no-daemon --model 'model with spaces'".into()))
+            .unwrap();
+        let result = start(
+            &journal,
+            request,
+            claim(),
+            "bob",
+            &client,
+            &mut launcher,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut Vec::new(),
+        );
+        let expected = [
+            "--no-daemon",
+            "--model",
+            "model with spaces",
+            "-a",
+            "on-request",
+        ];
+        assert_eq!(launcher.preflight_argv, expected);
+        assert_eq!(&launcher.submitted_argv[..5], expected);
+        if retry {
+            assert!(result.is_err());
+            let reference = reference(&journal);
+            let pending = journal.load(&reference).unwrap();
+            let SemanticMutation::Frozen { mutation, .. } = pending.semantic else {
+                panic!("expected frozen handoff");
+            };
+            let SemanticMutation::Handoff(plan) = *mutation else {
+                panic!("expected handoff plan");
+            };
+            assert_eq!(plan.request.launch.argv, expected);
+            launcher.confirmed_refusal = false;
+            launcher.submitted_argv.clear();
+            resume(
+                &journal,
+                &reference,
+                &scope(),
+                &client,
+                &mut launcher,
+                &TestClock,
+                &OutputSpec::default(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+            assert_eq!(&launcher.submitted_argv[..5], expected);
+            assert_eq!(launcher.preflights, 1);
+        } else {
+            result.unwrap();
+        }
+        assert_eq!(launcher.starts, 1);
+        assert_eq!(
+            launcher
+                .submitted_argv
+                .iter()
+                .filter(|arg| *arg == "--no-daemon")
+                .count(),
+            1
+        );
+    }
+}
+
+/// Execute the reported shell command under new option settings, then pass
+/// its captured arguments through the same parser and option resolver as launch.
+#[test]
+fn handoff_manual_recovery_preserves_frozen_options_without_reentry() {
+    const CHILD: &str = "HT_MANUAL_RECOVERY_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let captured = fs::read(std::env::var_os("HT_MANUAL_RECOVERY_ARGS").unwrap()).unwrap();
+        let mut argv = vec!["herdr-threads".to_owned()];
+        argv.extend(
+            captured
+                .split(|byte| *byte == 0)
+                .filter(|word| !word.is_empty())
+                .map(|word| String::from_utf8(word.to_vec()).unwrap()),
+        );
+        let parsed = crate::cli::commands::parse_argv(argv).unwrap();
+        let crate::cli::commands::CliAction::Launch(request) = parsed.action else {
+            panic!("manual recovery must still use guarded launch");
+        };
+        let expected: Vec<String> =
+            serde_json::from_str(&std::env::var("HT_MANUAL_RECOVERY_EXPECTED").unwrap()).unwrap();
+        assert_eq!(request.with_process_options().unwrap().argv, expected);
+        return;
+    }
+    use crate::test_support::spawn::SpawnOwned;
+    use std::os::unix::fs::PermissionsExt;
+    for harness in [
+        crate::harness::context::Harness::Codex,
+        crate::harness::context::Harness::Claude,
+    ] {
+        let (_temp, journal) = journal();
+        let root = journal.root().parent().unwrap();
+        let bin = root.join("herdr-threads");
+        fs::write(
+            &bin,
+            "#!/bin/sh\nprintf '%s\\000' \"$@\" > \"$HT_MANUAL_RECOVERY_ARGS\"\nexec \"$HT_MANUAL_RECOVERY_EXE\" cli::handoff::tests::handoff_manual_recovery_preserves_frozen_options_without_reentry --exact\n",
+        )
+        .unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut request = request();
+        request.launch.harness = harness;
+        request.launch.argv = vec!["--model".into(), "caller model".into()];
+        request.launch = request
+            .launch
+            .with_configured_options(Some(
+                if harness == crate::harness::context::Harness::Codex {
+                    "--no-daemon --model 'frozen model'"
+                } else {
+                    "--model 'frozen model'"
+                }
+                .into(),
+            ))
+            .unwrap();
+        let plan = HandoffPlan {
+            request,
+            context: Default::default(),
+            recipient: SeatId::new("recipient"),
+            create_key: OperationId::new("create"),
+            invite_key: OperationId::new("invite"),
+            send_key: OperationId::new("send"),
+        };
+        let progress = Progress {
+            thread: Some(ThreadId::new("t1")),
+            ..Default::default()
+        };
+        let reference = frozen(&journal);
+        let report = report(
+            &reference,
+            &plan,
+            &progress,
+            "launch",
+            true,
+            false,
+            &claim(),
+        );
+        let manual: Vec<String> =
+            serde_json::from_value(report["manual_launch_after_confirming_no_start_argv"].clone())
+                .unwrap();
+        let mut expected = plan.request.launch.argv.clone();
+        expected.push(bootstrap(
+            &ThreadId::new("t1"),
+            &plan.context,
+            &claim().instance,
+        ));
+        for options in [
+            if harness == crate::harness::context::Harness::Codex {
+                "--no-daemon --model 'frozen model'"
+            } else {
+                "--model 'frozen model'"
+            },
+            "--model 'changed model'",
+            "--model 'unterminated",
+        ] {
+            let mut command = crate::test_support::spawn::command("/bin/sh");
+            command
+                .args(["-c", &crate::protocol::output::format_command_argv(&manual)])
+                .env("PATH", format!("{}:/usr/bin:/bin", root.display()))
+                .env(CHILD, "1")
+                .env("HT_MANUAL_RECOVERY_ARGS", root.join("args"))
+                .env("HT_MANUAL_RECOVERY_EXE", std::env::current_exe().unwrap())
+                .env(
+                    "HT_MANUAL_RECOVERY_EXPECTED",
+                    serde_json::to_string(&expected).unwrap(),
+                )
+                .env("HERDR_THREADS_CODEX_OPTS", options)
+                .env("HERDR_THREADS_CLAUDE_OPTS", options)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let mut child = command.spawn_owned().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while child.try_wait().unwrap().is_none() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "manual recovery test timed out"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{harness:?} {options:?}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
+    }
+}
+
+/// Catches extra-key reentry and shell capture dropping empty frozen native arguments.
+#[test]
+fn stage_a_manual_recovery_extra_key_lossless_shell_parser_resolver() {
+    const CHILD: &str = "HT_STAGE_A_MANUAL_CHILD";
+    use crate::cli::launch::tests::fourth_adapter;
+    use crate::harness::registry::OccupantHarness;
+    if std::env::var_os(CHILD).is_some() {
+        let key: &'static str = Box::leak(
+            std::env::var("HT_STAGE_A_OPTIONS_KEY")
+                .unwrap()
+                .into_boxed_str(),
+        );
+        let (registry, _) = fourth_adapter::registry_with_options(true, false, false, Some(key));
+        let captured = fs::read(std::env::var_os("HT_STAGE_A_ARGS").unwrap()).unwrap();
+        assert_eq!(captured.last(), Some(&0));
+        let mut argv = vec!["herdr-threads".to_owned()];
+        argv.extend(
+            captured[..captured.len() - 1]
+                .split(|byte| *byte == 0)
+                .map(|word| String::from_utf8(word.to_vec()).unwrap()),
+        );
+        let parsed = crate::cli::commands::parse_argv_in_registry(argv, &registry).unwrap();
+        let crate::cli::commands::CliAction::Launch(request) = parsed.action else {
+            panic!("guarded launch required")
+        };
+        assert_eq!(request.target.as_str(), "w1:p2");
+        assert_eq!(request.name.as_deref(), Some("worker"));
+        assert_eq!(request.harness_binary.as_deref(), Some("/fixture/fourth"));
+        let expected: Vec<String> =
+            serde_json::from_str(&std::env::var("HT_STAGE_A_EXPECTED").unwrap()).unwrap();
+        assert_eq!(
+            request
+                .with_process_options_with_registry(&registry)
+                .unwrap()
+                .argv,
+            expected
+        );
+        return;
+    }
+    use crate::test_support::spawn::SpawnOwned;
+    use std::os::unix::fs::PermissionsExt;
+    let (_temp, journal) = journal();
+    let root = journal.root().parent().unwrap();
+    let bin = root.join("herdr-threads");
+    fs::write(&bin, "#!/bin/sh\nprintf '%s\\000' \"$@\" > \"$HT_STAGE_A_ARGS\"\nexec \"$HT_STAGE_A_EXE\" cli::handoff::tests::stage_a_manual_recovery_extra_key_lossless_shell_parser_resolver --exact\n").unwrap();
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o700)).unwrap();
+    let (original, _) = fourth_adapter::registry_with_options(
+        true,
+        false,
+        false,
+        Some("HERDR_THREADS_FOURTH_OPTS"),
+    );
+    let mut request = request();
+    request.launch.harness = crate::harness::context::Harness::from(OccupantHarness::Agent(
+        original.agent("synthetic_fourth").unwrap(),
+    ));
+    request.launch.harness_binary = Some("/fixture/fourth".into());
+    request.launch.argv = vec!["--model".into(), "caller model".into(), "".into()];
+    request.launch = request
+        .launch
+        .with_configured_options_with_registry(
+            &original,
+            Some("--model 'frozen model' '' '$HOME $(id)'".into()),
+        )
+        .unwrap();
+    let plan = HandoffPlan {
+        request,
+        context: Default::default(),
+        recipient: SeatId::new("recipient"),
+        create_key: OperationId::new("create"),
+        invite_key: OperationId::new("invite"),
+        send_key: OperationId::new("send"),
+    };
+    let progress = Progress {
+        thread: Some(ThreadId::new("t1")),
+        ..Default::default()
+    };
+    let reference = frozen(&journal);
+    let mut expected = plan.request.launch.argv.clone();
+    expected.push(bootstrap(
+        &ThreadId::new("t1"),
+        &plan.context,
+        &claim().instance,
+    ));
+    for key in [
+        "HERDR_THREADS_FOURTH_OPTS",
+        "HERDR_THREADS_SUCCESSOR_OPTS",
+        "HERDR_THREADS_CODEX_OPTS",
+        "HERDR_THREADS_CLAUDE_OPTS",
+    ] {
+        let (current, _) = fourth_adapter::registry_with_options(true, false, false, Some(key));
+        let report = report_with_registry(
+            &reference,
+            &plan,
+            &progress,
+            "launch",
+            true,
+            false,
+            (&claim(), &current),
+        );
+        let manual: Vec<String> =
+            serde_json::from_value(report["manual_launch_after_confirming_no_start_argv"].clone())
+                .unwrap();
+        assert_eq!(
+            &manual[..3],
+            [
+                "env",
+                "HERDR_THREADS_CODEX_OPTS=",
+                "HERDR_THREADS_CLAUDE_OPTS="
+            ]
+        );
+        assert_eq!(
+            manual
+                .iter()
+                .filter(|arg| *arg == &format!("{key}="))
+                .count(),
+            1
+        );
+        assert_eq!(
+            manual
+                .iter()
+                .filter(|arg| *arg == "HERDR_THREADS_CODEX_OPTS=")
+                .count(),
+            1
+        );
+        for value in ["--model 'frozen model'", "--model changed", "'unterminated"] {
+            let mut command = crate::test_support::spawn::command("/bin/sh");
+            command
+                .args(["-c", &crate::protocol::output::format_command_argv(&manual)])
+                .env("PATH", format!("{}:/usr/bin:/bin", root.display()))
+                .env(CHILD, "1")
+                .env("HT_STAGE_A_ARGS", root.join("args"))
+                .env("HT_STAGE_A_EXE", std::env::current_exe().unwrap())
+                .env("HT_STAGE_A_OPTIONS_KEY", key)
+                .env(
+                    "HT_STAGE_A_EXPECTED",
+                    serde_json::to_string(&expected).unwrap(),
+                )
+                .env("HERDR_THREADS_CODEX_OPTS", "'malformed")
+                .env("HERDR_THREADS_CLAUDE_OPTS", "'malformed")
+                .env(key, value)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let output = command.spawn_owned().unwrap().wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
+    }
+    let (invalid, _) =
+        fourth_adapter::registry_with_options(true, false, false, Some("HERDR_THREADS_$(ID)_OPTS"));
+    let report = report_with_registry(
+        &reference,
+        &plan,
+        &progress,
+        "launch",
+        true,
+        true,
+        (&claim(), &invalid),
+    );
+    assert_eq!(report["outcome"], "outcome_unknown");
+    assert_eq!(
+        report["manual_launch_after_confirming_no_start_argv"],
+        serde_json::json!([])
+    );
+    assert!(report["manual_recovery_error"].is_string());
+}
+
+/// Catches reparsing the current declared options during a durable registered-provider retry.
+#[test]
+fn stage_a_registered_options_freeze_once_and_retry_ignores_current_environment() {
+    use crate::cli::launch::tests::fourth_adapter;
+    use crate::harness::registry::OccupantHarness;
+    use crate::test_support::spawn::SpawnOwned;
+    const CHILD: &str = "HT_STAGE_A_FREEZE_CHILD";
+    let (registry, _) = fourth_adapter::registry_with_options(
+        true,
+        false,
+        false,
+        Some("HERDR_THREADS_FOURTH_OPTS"),
+    );
+    if std::env::var_os(CHILD).is_some() {
+        let journal = Journal::open(std::env::var_os("HT_STAGE_A_JOURNAL").unwrap()).unwrap();
+        let reference = reference(&journal);
+        let plan = registered_plan(&journal, &reference);
+        let mut launcher = Launcher {
+            configured_prefix: vec!["--model".into(), "frozen model".into(), "".into()],
+            ..Default::default()
+        };
+        let client = Client::new(None);
+        resume(
+            &journal,
+            &reference,
+            &scope(),
+            &client,
+            &mut launcher,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            &launcher.submitted_argv[..plan.request.launch.argv.len()],
+            plan.request.launch.argv
+        );
+        assert_eq!(launcher.preflights, 0);
+        assert_eq!(launcher.starts, 1);
+        return;
+    }
+    // A separate child owns process options, with no global environment mutation.
+    const FRESH: &str = "HT_STAGE_A_FREEZE_FRESH";
+    if std::env::var_os(FRESH).is_none() {
+        let output = crate::test_support::spawn::command(std::env::current_exe().unwrap())
+            .args(["cli::handoff::tests::stage_a_registered_options_freeze_once_and_retry_ignores_current_environment", "--exact"])
+            .env(FRESH, "1").env("HERDR_THREADS_FOURTH_OPTS", "--model 'frozen model' ''")
+            .env("HERDR_THREADS_CODEX_OPTS", "'malformed").env("HERDR_THREADS_CLAUDE_OPTS", "'malformed")
+            .output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    let builtin = crate::harness::registry::builtins();
+    let hermes = crate::harness::context::Harness::from(OccupantHarness::Agent(
+        builtin.agent("hermes").unwrap(),
+    ));
+    let mut unrelated = request().launch;
+    unrelated.harness = hermes;
+    assert_eq!(
+        unrelated.clone().with_process_options().unwrap().argv,
+        unrelated.argv
+    );
+    let (none_registry, _) = fourth_adapter::registry(true, false);
+    unrelated.harness = crate::harness::context::Harness::from(OccupantHarness::Agent(
+        none_registry.agent("fourth").unwrap(),
+    ));
+    assert_eq!(
+        unrelated
+            .clone()
+            .with_process_options_with_registry(&none_registry)
+            .unwrap()
+            .argv,
+        unrelated.argv
+    );
+    let (_temp, journal) = journal();
+    let mut request = request();
+    request.launch.harness = crate::harness::context::Harness::from(OccupantHarness::Agent(
+        registry.agent("synthetic_fourth").unwrap(),
+    ));
+    request.launch = request
+        .launch
+        .with_process_options_with_registry(&registry)
+        .unwrap();
+    assert_eq!(
+        request.launch.argv,
+        ["--model", "frozen model", "", "-a", "on-request"]
+    );
+    let client = Client::new(None);
+    let mut launcher = Launcher {
+        configured_prefix: vec!["--model".into(), "frozen model".into(), "".into()],
+        confirmed_refusal: true,
+        ..Default::default()
+    };
+    assert!(
+        start(
+            &journal,
+            request.clone(),
+            claim(),
+            "worker",
+            &client,
+            &mut launcher,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut Vec::new()
+        )
+        .is_err()
+    );
+    let reference = reference(&journal);
+    assert_eq!(
+        registered_plan(&journal, &reference).request.launch.argv,
+        request.launch.argv
+    );
+    assert_eq!(launcher.preflight_argv, request.launch.argv);
+    let mut retry = crate::test_support::spawn::command(std::env::current_exe().unwrap());
+    retry.args(["cli::handoff::tests::stage_a_registered_options_freeze_once_and_retry_ignores_current_environment", "--exact"])
+        .env(CHILD, "1").env("HT_STAGE_A_JOURNAL", journal.root())
+        .env("HERDR_THREADS_FOURTH_OPTS", "'malformed changed current value")
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let output = retry.spawn_owned().unwrap().wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
 }
