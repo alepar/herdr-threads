@@ -1620,11 +1620,9 @@ const CONTINUITY_BACKOFF_CAP: Duration = Duration::from_millis(400);
 
 fn wire_harness(harness: Harness) -> Option<crate::protocol::authority::Harness> {
     use crate::protocol::authority::Harness as Wire;
-    match harness {
-        Harness::Claude => Some(Wire::Claude),
-        Harness::Codex => Some(Wire::Codex),
-        Harness::Human => None,
-        _ => None,
+    match harness.occupant() {
+        occupant @ Wire::Agent(_) => Some(occupant),
+        Wire::Human => None,
     }
 }
 
